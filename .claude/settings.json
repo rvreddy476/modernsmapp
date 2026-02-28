@@ -7,7 +7,9 @@
       "Bash(bash -c 'grep -n \"\"channel\\\\|user:.*:messages\\\\|func.*broadcastTo\\\\|GetMembers\\\\|rdb.Publish\"\" /c/workspace/atpost/chat-service/services/message-service/internal/service/message.go | head -15')",
       "Bash(bash -c 'grep -n \"\"CheckMembership\\\\|IsMember\\\\|membershipCheck\"\" /c/workspace/atpost/chat-service/services/message-service/internal/service/message.go | head -10')",
       "Read(//c/workspace/**)",
-      "Bash(popd)"
+      "Bash(popd)",
+      "Bash(git reset HEAD -- .idea/ .claude/settings.local.json Architecture/server Architecture/server.exe identity-platform/.idea/ identity-platform/server.exe identity-platform/services/profile-service/profile-service.exe)",
+      "Bash(git commit:*)"
     ],
     "additionalDirectories": [
       "\\tmp",
