@@ -17,6 +17,7 @@ type ViewerSignals struct {
 	Velocities       map[string]float64 // post_id -> velocity
 	Interactions     map[string]bool    // post_id -> already interacted
 	MutualFollows    map[string]bool    // author_id -> mutual follow
+	ContentQuality   map[string]float64 // post_id -> CQS (Content Quality Score)
 }
 
 // MediaPrefs stores the viewer's per-media-type dwell time percentiles.
@@ -45,6 +46,7 @@ func (sl *SignalLoader) LoadSignals(ctx context.Context, viewerID uuid.UUID, can
 		Velocities:       make(map[string]float64, len(candidates)),
 		Interactions:     make(map[string]bool, len(candidates)),
 		MutualFollows:    make(map[string]bool),
+		ContentQuality:   make(map[string]float64, len(candidates)),
 	}
 
 	if len(candidates) == 0 {
@@ -89,6 +91,13 @@ func (sl *SignalLoader) LoadSignals(ctx context.Context, viewerID uuid.UUID, can
 	// --- 5. Mutual follows: SMEMBERS user:mutual_follows:{viewerID}
 	mutualKey := fmt.Sprintf("user:mutual_follows:%s", viewerID.String())
 	mutualCmd := pipe.SMembers(ctx, mutualKey)
+
+	// --- 6. Content Quality Scores: pipelined GET post:cqs:{postID}
+	cqsCmds := make(map[string]*redis.StringCmd, len(candidates))
+	for _, c := range candidates {
+		pid := c.PostID.String()
+		cqsCmds[pid] = pipe.Get(ctx, fmt.Sprintf("post:cqs:%s", pid))
+	}
 
 	// Execute the pipeline.
 	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
@@ -155,6 +164,14 @@ func (sl *SignalLoader) LoadSignals(ctx context.Context, viewerID uuid.UUID, can
 		}
 	} else {
 		log.Printf("ranking/signals: mutual follows fetch error: %v", err)
+	}
+
+	// --- Harvest 6: content quality scores
+	for pid, cmd := range cqsCmds {
+		if v, err := cmd.Float64(); err == nil {
+			vs.ContentQuality[pid] = v
+		}
+		// redis.Nil means no CQS cached; treat as 0.
 	}
 
 	return vs, nil

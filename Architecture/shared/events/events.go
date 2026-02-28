@@ -46,6 +46,17 @@ const (
 	SubscriptionCreated  = "SubscriptionCreated"  // payload: SubscriptionCreatedPayload
 	SubscriptionCanceled = "SubscriptionCanceled" // payload: SubscriptionCanceledPayload
 	PayoutRequested      = "PayoutRequested"      // payload: PayoutRequestedPayload
+
+	// Video Analytics & Quality Scoring
+	VideoImpression        = "VideoImpression"        // payload: VideoImpressionPayload
+	VideoPlayStart         = "VideoPlayStart"         // payload: VideoPlayStartPayload
+	VideoHeartbeat         = "VideoHeartbeat"         // payload: VideoHeartbeatPayload
+	VideoMilestone         = "VideoMilestone"         // payload: VideoMilestonePayload
+	VideoPlayEnd           = "VideoPlayEnd"           // payload: VideoPlayEndPayload
+	VideoFollowFromContent = "VideoFollowFromContent" // payload: VideoEngagementPayload
+	VideoNotInterested     = "VideoNotInterested"     // payload: VideoEngagementPayload
+	VideoReport            = "VideoReport"            // payload: VideoEngagementPayload
+	VideoBlockCreator      = "VideoBlockCreator"      // payload: VideoEngagementPayload
 )
 
 // EventEnvelope is the CloudEvents-ish structure we use on Kafka.
@@ -245,9 +256,87 @@ type SubscriptionCanceledPayload struct {
 }
 
 type PayoutRequestedPayload struct {
-	UserID   string    `json:"user_id"`
-	Amount   float64   `json:"amount"`
-	Currency string    `json:"currency"`
-	MethodID string    `json:"method_id"`
+	UserID      string    `json:"user_id"`
+	Amount      float64   `json:"amount"`
+	Currency    string    `json:"currency"`
+	MethodID    string    `json:"method_id"`
 	RequestedAt time.Time `json:"requested_at"`
+}
+
+// --- Video Analytics Payloads ---
+
+type VideoImpressionPayload struct {
+	ContentID    string `json:"content_id"`
+	CreatorID    string `json:"creator_id"`
+	ViewerID     string `json:"viewer_id"`
+	SessionID    string `json:"session_id"`
+	Surface      string `json:"surface"`
+	VisibleMS    int64  `json:"visible_ms"`
+	DeviceIDHash string `json:"device_id_hash"`
+	Country      string `json:"country"`
+	IsAutoplay   bool   `json:"is_autoplay"`
+}
+
+type VideoPlayStartPayload struct {
+	ContentID         string `json:"content_id"`
+	CreatorID         string `json:"creator_id"`
+	ViewerID          string `json:"viewer_id"`
+	SessionID         string `json:"session_id"`
+	Surface           string `json:"surface"`
+	ContentType       string `json:"content_type"` // reel, long_video
+	ContentDurationMS int64  `json:"content_duration_ms"`
+	StartMethod       string `json:"start_method"` // autoplay, tap, resume
+	IsAutoplay        bool   `json:"is_autoplay"`
+	DeviceIDHash      string `json:"device_id_hash"`
+	Country           string `json:"country"`
+}
+
+type VideoHeartbeatPayload struct {
+	ContentID          string  `json:"content_id"`
+	ViewerID           string  `json:"viewer_id"`
+	SessionID          string  `json:"session_id"`
+	WatchedMSIncrement int64   `json:"watched_ms_increment"`
+	WatchedMSTotal     int64   `json:"watched_ms_total"`
+	PlayheadPositionMS int64   `json:"playhead_position_ms"`
+	PlaybackSpeed      float64 `json:"playback_speed"`
+	LoopCount          int     `json:"loop_count"`
+}
+
+type VideoMilestonePayload struct {
+	ContentID     string `json:"content_id"`
+	CreatorID     string `json:"creator_id"`
+	ViewerID      string `json:"viewer_id"`
+	SessionID     string `json:"session_id"`
+	ContentType   string `json:"content_type"`
+	MilestoneType string `json:"milestone_type"` // VIEW_1S, VIEW_3S, PCT_25, etc.
+	WatchedMS     int64  `json:"watched_ms"`
+}
+
+type VideoPlayEndPayload struct {
+	ContentID            string  `json:"content_id"`
+	CreatorID            string  `json:"creator_id"`
+	ViewerID             string  `json:"viewer_id"`
+	SessionID            string  `json:"session_id"`
+	ContentType          string  `json:"content_type"`
+	ContentDurationMS    int64   `json:"content_duration_ms"`
+	WatchedMSTotal       int64   `json:"watched_ms_total"`
+	MaxContinuousWatchMS int64   `json:"max_continuous_watch_ms"`
+	PercentViewed        float64 `json:"percent_viewed"`
+	LoopCount            int     `json:"loop_count"`
+	EndReason            string  `json:"end_reason"` // swipe_next, back, ended, background, error
+	Surface              string  `json:"surface"`
+	Country              string  `json:"country"`
+	DeviceIDHash         string  `json:"device_id_hash"`
+	IsAutoplay           bool    `json:"is_autoplay"`
+}
+
+// VideoEngagementPayload is used for like, share, save, follow_from_content,
+// not_interested, report, block_creator events on video content.
+type VideoEngagementPayload struct {
+	ContentID string `json:"content_id"`
+	CreatorID string `json:"creator_id"`
+	ViewerID  string `json:"viewer_id"`
+	SessionID string `json:"session_id"`
+	Surface   string `json:"surface"`
+	Action    string `json:"action"` // like, share, save, follow, not_interested, report, block
 }

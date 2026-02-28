@@ -95,7 +95,13 @@ func ScoreCandidates(candidates []Candidate, signals *ViewerSignals) []Candidate
 			interactionPenalty = 0.5
 		}
 
-		c.Score = (interest*recency*mediaBoost) + momentum + socialProximity - interactionPenalty
+		// 7. quality_boost (0.0-0.25): CQS-based boost for high-quality content
+		qualityBoost := 0.0
+		if cqs, ok := signals.ContentQuality[pid]; ok && cqs > 0 {
+			qualityBoost = cqs * 0.25
+		}
+
+		c.Score = (interest*recency*mediaBoost) + momentum + socialProximity + qualityBoost - interactionPenalty
 	}
 
 	return scored

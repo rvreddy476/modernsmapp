@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/facebook-like/monetization-service/internal/store/postgres"
@@ -216,6 +218,66 @@ func (s *Service) GetDashboard(ctx context.Context, userID uuid.UUID) (*postgres
 // WriteAuditLog writes an entry to the audit log.
 func (s *Service) WriteAuditLog(ctx context.Context, entry *postgres.AuditLogEntry) error {
 	return s.store.WriteAuditLog(ctx, entry)
+}
+
+// ---------------------------------------------------------------------------
+// View Earnings
+// ---------------------------------------------------------------------------
+
+// ProcessViewEarnings calculates and credits view-based earnings for a creator
+// over the specified period (e.g. "7d", "30d"). It queries the analytics
+// daily summary table for aggregated view scores, applies an earnings rate,
+// and creates a wallet transaction if earnings are positive.
+func (s *Service) ProcessViewEarnings(ctx context.Context, creatorID uuid.UUID, period string) error {
+	// Parse period string (e.g. "7d", "30d") into days.
+	if !strings.HasSuffix(period, "d") {
+		return fmt.Errorf("INVALID_PERIOD: expected format like '7d' or '30d', got %q", period)
+	}
+	daysStr := strings.TrimSuffix(period, "d")
+	days, err := strconv.Atoi(daysStr)
+	if err != nil || days <= 0 {
+		return fmt.Errorf("INVALID_PERIOD: %q is not a positive number of days", daysStr)
+	}
+
+	// Determine the date range.
+	now := time.Now().UTC()
+	startDate := now.AddDate(0, 0, -days)
+
+	// Query analytics.content_daily_summary (PostgreSQL) for the creator's total view score.
+	viewScoreTotal, err := s.store.QueryViewScoreTotal(ctx, creatorID, startDate, now)
+	if err != nil {
+		return fmt.Errorf("query view_score_total: %w", err)
+	}
+
+	// Calculate earnings: 1 mill per 1000 view score = 0.001 per view score.
+	const earningsRate = 0.001
+	earnings := viewScoreTotal * earningsRate
+
+	if earnings <= 0 {
+		return nil
+	}
+
+	// Ensure the creator's wallet exists.
+	wallet, err := s.store.EnsureWallet(ctx, creatorID)
+	if err != nil {
+		return fmt.Errorf("ensure wallet: %w", err)
+	}
+
+	// Create a view_earnings transaction.
+	tx := &postgres.Transaction{
+		ID:          uuid.New(),
+		WalletID:    wallet.UserID,
+		Type:        "view_earnings",
+		Amount:      earnings,
+		Currency:    wallet.Currency,
+		Description: fmt.Sprintf("View earnings for %s period (%d days, %.2f view score)", period, days, viewScoreTotal),
+		CreatedAt:   time.Now(),
+	}
+	if err := s.store.CreateTransaction(ctx, tx); err != nil {
+		return fmt.Errorf("create view_earnings transaction: %w", err)
+	}
+
+	return nil
 }
 
 // ---------------------------------------------------------------------------

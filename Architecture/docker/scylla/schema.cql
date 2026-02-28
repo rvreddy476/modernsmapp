@@ -155,3 +155,38 @@ CREATE TABLE IF NOT EXISTS chatservice.message_reactions (
     PRIMARY KEY ((conversation_id, bucket), msg_ts, msg_id, emoji, user_id)
 ) WITH CLUSTERING ORDER BY (msg_ts DESC, msg_id DESC, emoji ASC, user_id ASC);
 
+
+-- Video Analytics Keyspace (used by analytics-service)
+CREATE KEYSPACE IF NOT EXISTS social_analytics WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1};
+
+CREATE TABLE IF NOT EXISTS social_analytics.watch_sessions (
+    content_id     UUID,
+    session_id     TEXT,
+    viewer_id      UUID,
+    content_type   TEXT,
+    duration_ms    BIGINT,
+    watched_ms     BIGINT,
+    percent_viewed DOUBLE,
+    loop_count     INT,
+    is_display_view BOOLEAN,
+    milestones_hit SET<TEXT>,
+    surface        TEXT,
+    country        TEXT,
+    device_hash    TEXT,
+    is_autoplay    BOOLEAN,
+    end_reason     TEXT,
+    trust_factor   DOUBLE,
+    vqs            DOUBLE,
+    created_at     TIMESTAMP,
+    updated_at     TIMESTAMP,
+    PRIMARY KEY ((content_id), session_id)
+) WITH default_time_to_live = 7776000;
+
+CREATE TABLE IF NOT EXISTS social_analytics.viewer_history (
+    viewer_id  UUID,
+    content_id UUID,
+    first_view TIMESTAMP,
+    view_count INT,
+    PRIMARY KEY ((viewer_id), content_id)
+) WITH default_time_to_live = 7776000;
+
