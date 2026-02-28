@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/facebook-like/post-service/internal/http/middleware"
 	"github.com/facebook-like/post-service/internal/service"
@@ -54,6 +55,32 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.POST("/:postId/vote", h.CastVote)
 	}
 
+	// Stories
+	stories := r.Group("/v1/stories")
+	{
+		stories.POST("", h.CreateStory)
+		stories.GET("/feed", h.GetStoriesFeed)
+		stories.GET("/:storyId", h.GetStory)
+		stories.DELETE("/:storyId", h.DeleteStory)
+		stories.POST("/:storyId/view", h.ViewStory)
+	}
+
+	// Multi-reactions (new)
+	v1.POST("/:postId/react", h.ToggleReaction)
+	v1.GET("/:postId/reactions/counts", h.GetReactionCounts)
+
+	// Saved items
+	saved := r.Group("/v1/saved")
+	{
+		saved.POST("", h.SaveItem)
+		saved.GET("", h.ListSavedItems)
+		saved.DELETE("/:savedId", h.UnsaveItem)
+		saved.GET("/collections", h.ListCollections)
+	}
+
+	// Hashtag search
+	r.GET("/v1/hashtags/:tag/posts", h.GetPostsByHashtag)
+
 	// Comment-level routes
 	comments := r.Group("/v1/comments")
 	{
@@ -84,6 +111,11 @@ type CreatePostRequest struct {
 	Poll           *CreatePollRequest `json:"poll"`
 	NoComments     bool            `json:"no_comments"`
 	NoLikes        bool            `json:"no_likes"`
+	LocationName   *string         `json:"location_name"`
+	LocationLat    *float64        `json:"location_lat"`
+	LocationLng    *float64        `json:"location_lng"`
+	PostType       string          `json:"post_type"`
+	AppOrigin      string          `json:"app_origin"`
 }
 
 func (h *Handler) CreatePost(c *gin.Context) {
@@ -128,6 +160,11 @@ func (h *Handler) CreatePost(c *gin.Context) {
 		RichText:       req.RichText,
 		NoComments:     req.NoComments,
 		NoLikes:        req.NoLikes,
+		LocationName:   req.LocationName,
+		LocationLat:    req.LocationLat,
+		LocationLng:    req.LocationLng,
+		PostType:       req.PostType,
+		AppOrigin:      req.AppOrigin,
 	}
 
 	if req.Poll != nil {
@@ -962,4 +999,359 @@ func (h *Handler) BatchGetPosts(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, data, nil)
+}
+
+// ============================================================
+// Story Handlers
+// ============================================================
+
+type CreateStoryRequest struct {
+	MediaURL       string  `json:"media_url" binding:"required"`
+	MediaType      string  `json:"media_type" binding:"required,oneof=image video"`
+	Caption        string  `json:"caption"`
+	Visibility     string  `json:"visibility" binding:"required,oneof=public followers close_friends"`
+	IsHighlight    bool    `json:"is_highlight"`
+	HighlightGroup *string `json:"highlight_group"`
+}
+
+func (h *Handler) CreateStory(c *gin.Context) {
+	authorIDStr := c.GetHeader("X-User-Id")
+	authorID, err := uuid.Parse(authorIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	var req CreateStoryRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+
+	story, err := h.svc.CreateStory(c.Request.Context(), &service.CreateStoryInput{
+		AuthorID:       authorID,
+		MediaURL:       req.MediaURL,
+		MediaType:      req.MediaType,
+		Caption:        req.Caption,
+		Visibility:     req.Visibility,
+		IsHighlight:    req.IsHighlight,
+		HighlightGroup: req.HighlightGroup,
+	})
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusCreated, story, nil)
+}
+
+func (h *Handler) GetStory(c *gin.Context) {
+	storyIDStr := c.Param("storyId")
+	storyID, err := uuid.Parse(storyIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid story ID", nil, nil)
+		return
+	}
+
+	story, err := h.svc.GetStory(c.Request.Context(), storyID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	if story == nil {
+		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Story not found", nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, story, nil)
+}
+
+func (h *Handler) GetStoriesFeed(c *gin.Context) {
+	// The followed user IDs come as a comma-separated query param set by the API gateway
+	// or the client passes them explicitly.
+	followedStr := c.DefaultQuery("followed_ids", "")
+	if followedStr == "" {
+		api.JSON(c.Writer, http.StatusOK, []postgres.Story{}, nil)
+		return
+	}
+
+	parts := strings.Split(followedStr, ",")
+	var followedIDs []uuid.UUID
+	for _, p := range parts {
+		id, err := uuid.Parse(strings.TrimSpace(p))
+		if err != nil {
+			continue
+		}
+		followedIDs = append(followedIDs, id)
+	}
+
+	stories, err := h.svc.GetStoriesFeed(c.Request.Context(), followedIDs)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	if stories == nil {
+		stories = []postgres.Story{}
+	}
+
+	api.JSON(c.Writer, http.StatusOK, stories, nil)
+}
+
+func (h *Handler) DeleteStory(c *gin.Context) {
+	authorIDStr := c.GetHeader("X-User-Id")
+	authorID, err := uuid.Parse(authorIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	storyIDStr := c.Param("storyId")
+	storyID, err := uuid.Parse(storyIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid story ID", nil, nil)
+		return
+	}
+
+	if err := h.svc.DeleteStory(c.Request.Context(), storyID, authorID); err != nil {
+		if err.Error() == "STORY_NOT_FOUND" {
+			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Story not found or not yours", nil, nil)
+			return
+		}
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "deleted"}, nil)
+}
+
+func (h *Handler) ViewStory(c *gin.Context) {
+	storyIDStr := c.Param("storyId")
+	storyID, err := uuid.Parse(storyIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid story ID", nil, nil)
+		return
+	}
+
+	if err := h.svc.ViewStory(c.Request.Context(), storyID); err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "viewed"}, nil)
+}
+
+// ============================================================
+// Multi-Reaction Handlers
+// ============================================================
+
+type ToggleReactionRequest struct {
+	ReactionType string `json:"reaction_type" binding:"required"`
+}
+
+func (h *Handler) ToggleReaction(c *gin.Context) {
+	userIDStr := c.GetHeader("X-User-Id")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	postIDStr := c.Param("postId")
+	postID, err := uuid.Parse(postIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		return
+	}
+
+	var req ToggleReactionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+
+	result, err := h.svc.ToggleReaction(c.Request.Context(), postID, userID, req.ReactionType)
+	if err != nil {
+		switch err.Error() {
+		case "INVALID_REACTION_TYPE":
+			api.Error(c.Writer, http.StatusBadRequest, "INVALID_REACTION_TYPE", "Valid types: like, love, haha, wow, sad, angry", nil, nil)
+		case "RATE_LIMITED":
+			api.Error(c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many reactions, please slow down", nil, nil)
+		default:
+			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		}
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, result, nil)
+}
+
+func (h *Handler) GetReactionCounts(c *gin.Context) {
+	postIDStr := c.Param("postId")
+	postID, err := uuid.Parse(postIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		return
+	}
+
+	counts, err := h.svc.GetReactionCounts(c.Request.Context(), postID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, counts, nil)
+}
+
+// ============================================================
+// Saved Item Handlers
+// ============================================================
+
+type SaveItemRequest struct {
+	TargetType     string `json:"target_type" binding:"required,oneof=post video reel"`
+	TargetID       string `json:"target_id" binding:"required"`
+	CollectionName string `json:"collection_name"`
+}
+
+func (h *Handler) SaveItem(c *gin.Context) {
+	userIDStr := c.GetHeader("X-User-Id")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	var req SaveItemRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+
+	targetID, err := uuid.Parse(req.TargetID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "Invalid target ID", nil, nil)
+		return
+	}
+
+	item, err := h.svc.SaveItem(c.Request.Context(), userID, req.TargetType, targetID, req.CollectionName)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusCreated, item, nil)
+}
+
+func (h *Handler) ListSavedItems(c *gin.Context) {
+	userIDStr := c.GetHeader("X-User-Id")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	collectionName := c.DefaultQuery("collection", "")
+	cursor := c.DefaultQuery("cursor", "")
+	limit := 20
+	if l, err := strconv.Atoi(c.DefaultQuery("limit", "20")); err == nil && l > 0 {
+		limit = l
+	}
+
+	items, nextCursor, err := h.svc.ListSavedItems(c.Request.Context(), userID, collectionName, limit, cursor)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	if items == nil {
+		items = []postgres.SavedItem{}
+	}
+
+	var meta *api.Meta
+	if nextCursor != "" {
+		meta = &api.Meta{NextCursor: nextCursor}
+	}
+
+	api.JSON(c.Writer, http.StatusOK, items, meta)
+}
+
+func (h *Handler) UnsaveItem(c *gin.Context) {
+	userIDStr := c.GetHeader("X-User-Id")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	savedIDStr := c.Param("savedId")
+	savedID, err := uuid.Parse(savedIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid saved item ID", nil, nil)
+		return
+	}
+
+	if err := h.svc.UnsaveItem(c.Request.Context(), savedID, userID); err != nil {
+		if err.Error() == "SAVED_ITEM_NOT_FOUND" {
+			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Saved item not found", nil, nil)
+			return
+		}
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "unsaved"}, nil)
+}
+
+func (h *Handler) ListCollections(c *gin.Context) {
+	userIDStr := c.GetHeader("X-User-Id")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	collections, err := h.svc.ListCollections(c.Request.Context(), userID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	if collections == nil {
+		collections = []postgres.SavedCollection{}
+	}
+
+	api.JSON(c.Writer, http.StatusOK, collections, nil)
+}
+
+// ============================================================
+// Hashtag Handler
+// ============================================================
+
+func (h *Handler) GetPostsByHashtag(c *gin.Context) {
+	tag := c.Param("tag")
+	if tag == "" {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "Hashtag is required", nil, nil)
+		return
+	}
+	// Strip leading # if present
+	tag = strings.TrimPrefix(tag, "#")
+
+	cursor := c.DefaultQuery("cursor", "")
+	limit := 20
+	if l, err := strconv.Atoi(c.DefaultQuery("limit", "20")); err == nil && l > 0 {
+		limit = l
+	}
+
+	posts, nextCursor, err := h.svc.GetPostsByHashtag(c.Request.Context(), tag, limit, cursor)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	if posts == nil {
+		posts = []service.PostDetail{}
+	}
+
+	var meta *api.Meta
+	if nextCursor != "" {
+		meta = &api.Meta{NextCursor: nextCursor}
+	}
+
+	api.JSON(c.Writer, http.StatusOK, posts, meta)
 }

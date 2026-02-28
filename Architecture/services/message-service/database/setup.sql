@@ -45,3 +45,9 @@ CREATE TABLE IF NOT EXISTS chat.message_reads (
 
 CREATE INDEX IF NOT EXISTS idx_message_reads_msg ON chat.message_reads (message_id);
 CREATE INDEX IF NOT EXISTS idx_conv_members_user ON chat.conversation_members (user_id);
+
+-- Phase 5: Pinned messages
+ALTER TABLE chat.conversations
+    ADD COLUMN IF NOT EXISTS pinned_message_id TEXT,
+    ADD COLUMN IF NOT EXISTS pinned_at         TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS pinned_by         UUID;

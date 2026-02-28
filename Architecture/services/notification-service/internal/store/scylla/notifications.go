@@ -80,3 +80,11 @@ func (s *NotificationStore) MarkRead(ctx context.Context, userID uuid.UUID, buck
 		WHERE user_id = ? AND bucket = ? AND ts = ?
 	`, gocql.UUID(userID), bucket, ts).Exec()
 }
+
+// DeleteNotification removes a notification row.
+func (s *NotificationStore) DeleteNotification(ctx context.Context, userID uuid.UUID, bucket int, ts gocql.UUID) error {
+	return s.session.Query(`
+		DELETE FROM notifications_by_user
+		WHERE user_id = ? AND bucket = ? AND ts = ?
+	`, gocql.UUID(userID), bucket, ts).Exec()
+}

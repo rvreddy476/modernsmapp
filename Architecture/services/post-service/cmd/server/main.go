@@ -111,6 +111,25 @@ func main() {
 	reconciler := engagement.NewReconciler(rdb, scyllaSession, dbPool)
 	go reconciler.Start(consumerCtx, 5*time.Minute)
 
+	// Story expiry cleanup (every 5 min)
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-consumerCtx.Done():
+				return
+			case <-ticker.C:
+				deleted, err := postSvc.CleanupExpiredStories(consumerCtx)
+				if err != nil {
+					log.Printf("Story cleanup error: %v", err)
+				} else if deleted > 0 {
+					log.Printf("Cleaned up %d expired stories", deleted)
+				}
+			}
+		}
+	}()
+
 	// Event log cleanup (every hour)
 	go func() {
 		ticker := time.NewTicker(1 * time.Hour)
@@ -209,6 +228,87 @@ func ensureSchema(ctx context.Context, db *pgxpool.Pool) {
 		INSERT INTO post_engagement_counts (post_id)
 		SELECT id FROM posts WHERE id NOT IN (SELECT post_id FROM post_engagement_counts)
 		ON CONFLICT DO NOTHING`)
+
+	// Stories table
+	storyDDL := []string{
+		`CREATE TABLE IF NOT EXISTS stories (
+			id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			author_id       UUID NOT NULL,
+			media_url       TEXT NOT NULL,
+			media_type      TEXT NOT NULL CHECK (media_type IN ('image', 'video')),
+			caption         TEXT NOT NULL DEFAULT '',
+			visibility      TEXT NOT NULL DEFAULT 'public' CHECK (visibility IN ('public', 'followers', 'close_friends')),
+			view_count      INTEGER NOT NULL DEFAULT 0,
+			expires_at      TIMESTAMPTZ NOT NULL,
+			is_highlight    BOOLEAN NOT NULL DEFAULT FALSE,
+			highlight_group TEXT,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_stories_author ON stories (author_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_stories_expires ON stories (expires_at) WHERE is_highlight = FALSE`,
+	}
+	for _, stmt := range storyDDL {
+		if _, err := db.Exec(ctx, stmt); err != nil {
+			log.Printf("Warning: stories schema: %v", err)
+		}
+	}
+
+	// Reactions table (multi-reaction: like, love, haha, wow, sad, angry)
+	reactionDDL := []string{
+		`CREATE TABLE IF NOT EXISTS reactions (
+			id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			target_type   TEXT NOT NULL,
+			target_id     UUID NOT NULL,
+			user_id       UUID NOT NULL,
+			reaction_type TEXT NOT NULL CHECK (reaction_type IN ('like', 'love', 'haha', 'wow', 'sad', 'angry')),
+			created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+			UNIQUE(target_type, target_id, user_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_reactions_target ON reactions (target_type, target_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_reactions_user ON reactions (user_id, target_type, target_id)`,
+	}
+	for _, stmt := range reactionDDL {
+		if _, err := db.Exec(ctx, stmt); err != nil {
+			log.Printf("Warning: reactions schema: %v", err)
+		}
+	}
+
+	// Saved items table
+	savedDDL := []string{
+		`CREATE TABLE IF NOT EXISTS saved_items (
+			id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			user_id         UUID NOT NULL,
+			target_type     TEXT NOT NULL,
+			target_id       UUID NOT NULL,
+			collection_name TEXT NOT NULL DEFAULT 'All Saved',
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+			UNIQUE(user_id, target_type, target_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_saved_items_user ON saved_items (user_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_saved_items_collection ON saved_items (user_id, collection_name, created_at DESC)`,
+	}
+	for _, stmt := range savedDDL {
+		if _, err := db.Exec(ctx, stmt); err != nil {
+			log.Printf("Warning: saved_items schema: %v", err)
+		}
+	}
+
+	// Alter posts table to add new columns (safe — ADD COLUMN IF NOT EXISTS)
+	alterPostsDDL := []string{
+		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS hashtags TEXT[] DEFAULT '{}'`,
+		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS mentions UUID[] DEFAULT '{}'`,
+		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS location_name TEXT`,
+		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS location_lat DOUBLE PRECISION`,
+		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS location_lng DOUBLE PRECISION`,
+		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS post_type TEXT NOT NULL DEFAULT 'text'`,
+		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS app_origin TEXT NOT NULL DEFAULT 'postbook'`,
+		`CREATE INDEX IF NOT EXISTS idx_posts_hashtags ON posts USING GIN (hashtags)`,
+	}
+	for _, stmt := range alterPostsDDL {
+		if _, err := db.Exec(ctx, stmt); err != nil {
+			log.Printf("Warning: alter posts schema: %v", err)
+		}
+	}
 
 	log.Println("Engagement schema ensured")
 }

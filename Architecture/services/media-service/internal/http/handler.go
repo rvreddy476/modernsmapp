@@ -26,6 +26,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, optionalAuthMW gin.Handl
 		v1.POST("/init", authMW, h.InitUpload)
 		v1.POST("/confirm", authMW, h.ConfirmUpload)
 		v1.DELETE("/:mediaId", authMW, h.DeleteMedia)
+		v1.PATCH("/:mediaId/alt-text", authMW, h.UpdateAltText)
+		v1.POST("/upload/presigned", authMW, h.GetPresignedUploadURL)
 
 		// Read endpoints — public (media URLs need to be accessible for rendering)
 		v1.POST("/batch", h.BatchMediaURLs)
@@ -276,4 +278,72 @@ func (h *Handler) ServeMediaVariant(c *gin.Context) {
 	}
 
 	c.Redirect(http.StatusTemporaryRedirect, imgURL)
+}
+
+type UpdateAltTextRequest struct {
+	AltText string `json:"alt_text" binding:"required"`
+}
+
+func (h *Handler) UpdateAltText(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	mediaID, err := uuid.Parse(c.Param("mediaId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil, nil)
+		return
+	}
+
+	var req UpdateAltTextRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		return
+	}
+
+	err = h.svc.UpdateAltText(c.Request.Context(), mediaID, userID, req.AltText)
+	if err != nil {
+		if err.Error() == "no rows in result set" {
+			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found or not owned by user", nil, nil)
+			return
+		}
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "updated"}, nil)
+}
+
+type GetPresignedUploadURLRequest struct {
+	Filename    string `json:"filename" binding:"required"`
+	ContentType string `json:"content_type" binding:"required"`
+}
+
+func (h *Handler) GetPresignedUploadURL(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	var req GetPresignedUploadURLRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		return
+	}
+
+	res, err := h.svc.GetPresignedUploadURL(c.Request.Context(), userID, req.Filename, req.ContentType)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{
+		"upload_url": res.UploadURL,
+		"media_id":   res.MediaID,
+		"object_key": res.ObjectKey,
+		"expires_at": res.ExpiresAt,
+	}, nil)
 }

@@ -10,6 +10,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// PinnedMessage holds the pinned message details for a conversation.
+type PinnedMessage struct {
+	MessageID string    `json:"message_id"`
+	PinnedAt  time.Time `json:"pinned_at"`
+	PinnedBy  uuid.UUID `json:"pinned_by"`
+}
+
 type ConversationStore struct {
 	db *pgxpool.Pool
 }
@@ -374,4 +381,52 @@ func (s *ConversationStore) RemoveGroupConversationMember(ctx context.Context, c
 		WHERE conversation_id = $1 AND user_id = $2 AND left_at IS NULL
 	`, conversationID, userID)
 	return err
+}
+
+// ---------------------------------------------------------------------------
+// Pinned messages
+// ---------------------------------------------------------------------------
+
+// PinMessage sets the pinned message for a conversation.
+func (s *ConversationStore) PinMessage(ctx context.Context, conversationID uuid.UUID, messageID string, pinnedBy uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE chat.conversations
+		SET pinned_message_id = $2,
+		    pinned_at         = NOW(),
+		    pinned_by         = $3,
+		    updated_at        = NOW()
+		WHERE id = $1
+	`, conversationID, messageID, pinnedBy)
+	return err
+}
+
+// UnpinMessage clears the pinned message for a conversation.
+func (s *ConversationStore) UnpinMessage(ctx context.Context, conversationID uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE chat.conversations
+		SET pinned_message_id = NULL,
+		    pinned_at         = NULL,
+		    pinned_by         = NULL,
+		    updated_at        = NOW()
+		WHERE id = $1
+	`, conversationID)
+	return err
+}
+
+// GetPinnedMessage returns the pinned message for a conversation, or nil if none is set.
+func (s *ConversationStore) GetPinnedMessage(ctx context.Context, conversationID uuid.UUID) (*PinnedMessage, error) {
+	var pm PinnedMessage
+	err := s.db.QueryRow(ctx, `
+		SELECT pinned_message_id, pinned_at, pinned_by
+		FROM chat.conversations
+		WHERE id = $1
+		  AND pinned_message_id IS NOT NULL
+	`, conversationID).Scan(&pm.MessageID, &pm.PinnedAt, &pm.PinnedBy)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &pm, nil
 }

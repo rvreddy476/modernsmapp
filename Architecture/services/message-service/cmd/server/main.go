@@ -75,6 +75,19 @@ func main() {
 	}
 	slog.Info("connected to Postgres")
 
+	// 3b. Schema migration — pinned message columns (idempotent via ADD COLUMN IF NOT EXISTS)
+	_, err = pgPool.Exec(ctx, `
+		ALTER TABLE chat.conversations
+		    ADD COLUMN IF NOT EXISTS pinned_message_id TEXT,
+		    ADD COLUMN IF NOT EXISTS pinned_at         TIMESTAMPTZ,
+		    ADD COLUMN IF NOT EXISTS pinned_by         UUID;
+	`)
+	if err != nil {
+		slog.Error("failed to run pinned-message schema migration", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("pinned-message schema migration applied")
+
 	// 4. Database (ScyllaDB)
 	cluster := gocql.NewCluster(strings.Split(scyllaHosts, ",")...)
 	cluster.Keyspace = "postbook"

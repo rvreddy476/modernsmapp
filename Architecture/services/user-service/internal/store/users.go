@@ -12,24 +12,28 @@ import (
 
 // User represents a user profile.
 type User struct {
-	ID            uuid.UUID  `json:"id"`
-	Username      *string    `json:"username,omitempty"`
-	DisplayName   string     `json:"display_name"`
-	FirstName     *string    `json:"first_name,omitempty"`
-	LastName      *string    `json:"last_name,omitempty"`
-	Bio           string     `json:"bio"`
-	DoB           *time.Time `json:"dob,omitempty"`
-	Gender        *string    `json:"gender,omitempty"`
-	AvatarMediaID *uuid.UUID `json:"avatar_media_id,omitempty"`
-	CoverMediaID  *uuid.UUID `json:"cover_media_id,omitempty"`
-	Category      *string    `json:"category,omitempty"`
-	Profession    *string    `json:"profession,omitempty"`
-	Website       *string    `json:"website,omitempty"`
-	Location      *string    `json:"location,omitempty"`
-	BadgeFlags    int        `json:"badge_flags"`
-	IsVerified    bool       `json:"is_verified"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
+	ID              uuid.UUID  `json:"id"`
+	Username        *string    `json:"username,omitempty"`
+	DisplayName     string     `json:"display_name"`
+	FirstName       *string    `json:"first_name,omitempty"`
+	LastName        *string    `json:"last_name,omitempty"`
+	Bio             string     `json:"bio"`
+	DoB             *time.Time `json:"dob,omitempty"`
+	Gender          *string    `json:"gender,omitempty"`
+	AvatarMediaID   *uuid.UUID `json:"avatar_media_id,omitempty"`
+	CoverMediaID    *uuid.UUID `json:"cover_media_id,omitempty"`
+	Category        *string    `json:"category,omitempty"`
+	Profession      *string    `json:"profession,omitempty"`
+	Website         *string    `json:"website,omitempty"`
+	Location        *string    `json:"location,omitempty"`
+	Pronouns        *string    `json:"pronouns,omitempty"`
+	StatusText      string     `json:"status_text,omitempty"`
+	StatusEmoji     string     `json:"status_emoji,omitempty"`
+	StatusExpiresAt *time.Time `json:"status_expires_at,omitempty"`
+	BadgeFlags      int        `json:"badge_flags"`
+	IsVerified      bool       `json:"is_verified"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
 // UserLink represents a social/external link on a user's profile.
@@ -60,14 +64,16 @@ func New(db *pgxpool.Pool) *Store {
 }
 
 const userColumns = `id, username, display_name, first_name, last_name, bio, dob, gender,
-	avatar_media_id, cover_media_id, category, profession, website, location, badge_flags,
-	is_verified, created_at, updated_at`
+	avatar_media_id, cover_media_id, category, profession, website, location,
+	pronouns, status_text, status_emoji, status_expires_at,
+	badge_flags, is_verified, created_at, updated_at`
 
 func scanUser(row pgx.Row) (*User, error) {
 	var u User
 	err := row.Scan(
 		&u.ID, &u.Username, &u.DisplayName, &u.FirstName, &u.LastName, &u.Bio, &u.DoB, &u.Gender,
 		&u.AvatarMediaID, &u.CoverMediaID, &u.Category, &u.Profession, &u.Website, &u.Location,
+		&u.Pronouns, &u.StatusText, &u.StatusEmoji, &u.StatusExpiresAt,
 		&u.BadgeFlags, &u.IsVerified, &u.CreatedAt, &u.UpdatedAt,
 	)
 	if err != nil {

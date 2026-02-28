@@ -778,3 +778,81 @@ func (s *Service) RemoveGroupConversationMember(ctx context.Context, conversatio
 	}
 	return s.convStore.RemoveGroupConversationMember(ctx, conversationID, userID)
 }
+
+// ---------------------------------------------------------------------------
+// Pinned messages
+// ---------------------------------------------------------------------------
+
+// PinMessage pins a message in a conversation. The caller must be a member.
+func (s *Service) PinMessage(ctx context.Context, userID, conversationID uuid.UUID, messageID string) error {
+	if s.convStore == nil {
+		return errors.New("conversation store not configured")
+	}
+	ok, err := s.convStore.CheckMembership(ctx, conversationID, userID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errors.New("not a conversation member")
+	}
+	if err := s.convStore.PinMessage(ctx, conversationID, messageID, userID); err != nil {
+		return err
+	}
+	// Broadcast pin event to all conversation members.
+	go func() {
+		bctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		s.broadcastToConversation(bctx, conversationID, nil, map[string]interface{}{
+			"type":            "message_pinned",
+			"conversation_id": conversationID.String(),
+			"message_id":      messageID,
+			"pinned_by":       userID.String(),
+			"pinned_at":       time.Now().Format(time.RFC3339Nano),
+		})
+	}()
+	return nil
+}
+
+// UnpinMessage removes the pinned message from a conversation. The caller must be a member.
+func (s *Service) UnpinMessage(ctx context.Context, userID, conversationID uuid.UUID) error {
+	if s.convStore == nil {
+		return errors.New("conversation store not configured")
+	}
+	ok, err := s.convStore.CheckMembership(ctx, conversationID, userID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errors.New("not a conversation member")
+	}
+	if err := s.convStore.UnpinMessage(ctx, conversationID); err != nil {
+		return err
+	}
+	// Broadcast unpin event to all conversation members.
+	go func() {
+		bctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		s.broadcastToConversation(bctx, conversationID, nil, map[string]interface{}{
+			"type":            "message_unpinned",
+			"conversation_id": conversationID.String(),
+			"unpinned_by":     userID.String(),
+		})
+	}()
+	return nil
+}
+
+// GetPinnedMessage returns the currently pinned message for a conversation.
+// Returns nil, nil when no message is pinned.
+func (s *Service) GetPinnedMessage(ctx context.Context, userID, conversationID uuid.UUID) (*postgres.PinnedMessage, error) {
+	if s.convStore == nil {
+		return nil, errors.New("conversation store not configured")
+	}
+	ok, err := s.convStore.CheckMembership(ctx, conversationID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, errors.New("not a conversation member")
+	}
+	return s.convStore.GetPinnedMessage(ctx, conversationID)
+}

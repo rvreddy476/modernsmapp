@@ -43,6 +43,8 @@ func (c *Consumer) Start(ctx context.Context) {
 		switch envelope.EventType {
 		case events.UserRegistered:
 			c.handleUserRegistered(ctx, envelope.Payload)
+		case events.UserEndorsed:
+			c.handleUserEndorsed(ctx, envelope.Payload)
 		default:
 			// Ignore other events
 		}
@@ -71,5 +73,36 @@ func (c *Consumer) handleUserRegistered(ctx context.Context, payload json.RawMes
 		log.Printf("Failed to create user profile for %s: %v\n", userID, err)
 	} else {
 		log.Printf("Created user profile for %s\n", userID)
+	}
+}
+
+func (c *Consumer) handleUserEndorsed(ctx context.Context, payload json.RawMessage) {
+	var p events.UserEndorsedPayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		log.Printf("Error unmarshalling UserEndorsed payload: %v\n", err)
+		return
+	}
+
+	toUserID, err := uuid.Parse(p.ToUserID)
+	if err != nil {
+		log.Printf("Invalid to_user_id in endorsement event: %s\n", p.ToUserID)
+		return
+	}
+
+	// Recalculate reputation trust score based on endorsement count
+	rep, err := c.svc.GetReputation(ctx, toUserID)
+	if err != nil {
+		log.Printf("Failed to get reputation for %s: %v\n", toUserID, err)
+		return
+	}
+
+	// Simple trust score formula: base 0.50 + 0.05 per endorsement, capped at 1.00
+	newScore := 0.50 + float64(rep.EndorsementCount)*0.05
+	if newScore > 1.00 {
+		newScore = 1.00
+	}
+
+	if newScore != rep.TrustScore {
+		log.Printf("Reputation recalc for %s: endorsements=%d, trust_score=%.2f\n", toUserID, rep.EndorsementCount, newScore)
 	}
 }

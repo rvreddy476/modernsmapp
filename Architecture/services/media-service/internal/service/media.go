@@ -445,3 +445,66 @@ func (s *Service) populateMediaURLs(ctx context.Context, media *postgres.MediaAs
 		log.Printf("Warning: failed to update media URLs for %s: %v", media.ID, err)
 	}
 }
+
+// ─── Alt Text ──────────────────────────────────────────────────────
+
+// UpdateAltText updates the alt_text field of a media asset owned by userID.
+// Returns an error if the asset does not exist or is not owned by userID.
+func (s *Service) UpdateAltText(ctx context.Context, mediaID uuid.UUID, userID uuid.UUID, altText string) error {
+	return s.pgStore.UpdateAltText(ctx, mediaID, userID, altText)
+}
+
+// ─── Presigned Upload ──────────────────────────────────────────────
+
+// PresignedUploadResponse is returned by GetPresignedUploadURL.
+type PresignedUploadResponse struct {
+	UploadURL string    `json:"upload_url"`
+	MediaID   uuid.UUID `json:"media_id"`
+	ObjectKey string    `json:"object_key"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// GetPresignedUploadURL creates a new media asset record in pending_upload state and
+// returns a presigned PUT URL that the client can use to upload the file directly to
+// object storage.
+func (s *Service) GetPresignedUploadURL(ctx context.Context, userID uuid.UUID, filename, contentType string) (*PresignedUploadResponse, error) {
+	mediaID := uuid.New()
+	expiry := 15 * time.Minute
+
+	// Derive file_type from content_type
+	fileType := "image"
+	if strings.HasPrefix(contentType, "video/") {
+		fileType = "video"
+	}
+
+	objectKey := fmt.Sprintf("user/%s/%s/original/%s", userID, mediaID, filename)
+
+	presignedURL, err := s.blobStore.GeneratePresignedPutURL(ctx, objectKey, expiry)
+	if err != nil {
+		return nil, fmt.Errorf("generate presigned put url: %w", err)
+	}
+
+	media := &postgres.MediaAsset{
+		ID:               mediaID,
+		UploaderID:       userID,
+		FileType:         fileType,
+		MediaSubtype:     "general",
+		MimeType:         contentType,
+		FileSizeBytes:    0, // unknown at presign time
+		StorageBucket:    s.blobStore.Bucket(),
+		StorageKey:       objectKey,
+		ProcessingStatus: "pending_upload",
+		CreatedAt:        time.Now(),
+	}
+
+	if err := s.pgStore.CreateMedia(ctx, media); err != nil {
+		return nil, fmt.Errorf("create media record: %w", err)
+	}
+
+	return &PresignedUploadResponse{
+		UploadURL: presignedURL.String(),
+		MediaID:   mediaID,
+		ObjectKey: objectKey,
+		ExpiresAt: time.Now().Add(expiry),
+	}, nil
+}

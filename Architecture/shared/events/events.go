@@ -32,6 +32,20 @@ const (
 	GroupMemberJoined = "GroupMemberJoined" // payload: GroupMemberJoinedPayload
 	GroupMemberLeft   = "GroupMemberLeft"   // payload: GroupMemberLeftPayload
 	GroupPostCreated  = "GroupPostCreated"  // payload: GroupPostCreatedPayload
+
+	StoryCreated = "StoryCreated" // payload: StoryCreatedPayload
+	StoryViewed  = "StoryViewed"  // payload: StoryViewedPayload
+
+	// Endorsements & Reputation (Phase 6)
+	UserEndorsed = "UserEndorsed" // payload: UserEndorsedPayload
+
+	// Business Pages (Phase 6)
+	BusinessReviewCreated = "BusinessReviewCreated" // payload: BusinessReviewCreatedPayload
+
+	// Monetization (Phase 7)
+	SubscriptionCreated  = "SubscriptionCreated"  // payload: SubscriptionCreatedPayload
+	SubscriptionCanceled = "SubscriptionCanceled" // payload: SubscriptionCanceledPayload
+	PayoutRequested      = "PayoutRequested"      // payload: PayoutRequestedPayload
 )
 
 // EventEnvelope is the CloudEvents-ish structure we use on Kafka.
@@ -182,4 +196,58 @@ type GroupPostCreatedPayload struct {
 	PostID    string    `json:"post_id"`
 	AuthorID  string    `json:"author_id"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+type StoryCreatedPayload struct {
+	StoryID   string    `json:"story_id"`
+	AuthorID  string    `json:"author_id"`
+	MediaType string    `json:"media_type"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type StoryViewedPayload struct {
+	StoryID  string    `json:"story_id"`
+	AuthorID string    `json:"author_id"`
+	ViewerID string    `json:"viewer_id"`
+	ViewedAt time.Time `json:"viewed_at"`
+}
+
+type UserEndorsedPayload struct {
+	FromUserID string    `json:"from_user_id"`
+	ToUserID   string    `json:"to_user_id"`
+	SkillTag   string    `json:"skill_tag"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+type BusinessReviewCreatedPayload struct {
+	PageID     string    `json:"page_id"`
+	PageOwner  string    `json:"page_owner_id"`
+	ReviewerID string    `json:"reviewer_id"`
+	Rating     int       `json:"rating"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+type SubscriptionCreatedPayload struct {
+	SubscriptionID string  `json:"subscription_id"`
+	SubscriberID   string  `json:"subscriber_id"`
+	CreatorID      string  `json:"creator_id"`
+	TierName       string  `json:"tier_name"`
+	Price          float64 `json:"price"`
+	Currency       string  `json:"currency"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+type SubscriptionCanceledPayload struct {
+	SubscriptionID string    `json:"subscription_id"`
+	SubscriberID   string    `json:"subscriber_id"`
+	CreatorID      string    `json:"creator_id"`
+	CanceledAt     time.Time `json:"canceled_at"`
+}
+
+type PayoutRequestedPayload struct {
+	UserID   string    `json:"user_id"`
+	Amount   float64   `json:"amount"`
+	Currency string    `json:"currency"`
+	MethodID string    `json:"method_id"`
+	RequestedAt time.Time `json:"requested_at"`
 }

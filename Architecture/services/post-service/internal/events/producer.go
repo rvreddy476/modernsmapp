@@ -70,6 +70,16 @@ func (p *Producer) PublishCommentCreated(ctx context.Context, commentID, postID,
 	return p.publish(ctx, events.CommentCreated, &authorID, payload)
 }
 
+func (p *Producer) PublishStoryCreated(ctx context.Context, storyID, authorID uuid.UUID, mediaType string) error {
+	payload := events.StoryCreatedPayload{
+		StoryID:   storyID.String(),
+		AuthorID:  authorID.String(),
+		MediaType: mediaType,
+		CreatedAt: time.Now(),
+	}
+	return p.publish(ctx, events.StoryCreated, &authorID, payload)
+}
+
 func (p *Producer) publish(ctx context.Context, eventType string, actorID *uuid.UUID, payload interface{}) error {
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {

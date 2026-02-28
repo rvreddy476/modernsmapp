@@ -48,6 +48,9 @@ type Store interface {
 	GetUserByID(ctx context.Context, userID uuid.UUID) (*store.User, error)
 	UpdateLastLogin(ctx context.Context, userID uuid.UUID) error
 	SoftDeleteUser(ctx context.Context, userID uuid.UUID) error
+	UpdatePassword(ctx context.Context, userID uuid.UUID, passwordHash string) error
+	MarkEmailVerified(ctx context.Context, userID uuid.UUID) error
+	MarkPhoneVerified(ctx context.Context, userID uuid.UUID) error
 	// Sessions
 	CreateSession(ctx context.Context, sess *store.Session) error
 	GetSessionByRefreshTokenHash(ctx context.Context, refreshTokenHash string) (*store.Session, error)
@@ -582,4 +585,273 @@ func maskPhone(phone string) string {
 		return strings.Repeat("*", len(trimmed))
 	}
 	return strings.Repeat("*", len(trimmed)-2) + trimmed[len(trimmed)-2:]
+}
+
+// --- Password Reset ---
+
+// ForgotPassword sends a password reset OTP to the user's phone or email.
+func (s *Service) ForgotPassword(ctx context.Context, identifier string) error {
+	// Find user by phone or email
+	user, err := s.store.GetUserByPhone(ctx, identifier)
+	if err != nil {
+		return err
+	}
+	if user == nil {
+		user, err = s.store.GetUserByEmail(ctx, identifier)
+		if err != nil {
+			return err
+		}
+	}
+	if user == nil {
+		// Don't reveal whether the user exists
+		return nil
+	}
+
+	otp, err := s.generateOTP()
+	if err != nil {
+		return fmt.Errorf("failed to generate otp: %w", err)
+	}
+
+	// Use phone as OTP key; fall back to email
+	otpKey := user.Phone
+	if otpKey == "" && user.Email != nil {
+		otpKey = *user.Email
+	}
+	if otpKey == "" {
+		return errors.New("user has no phone or email")
+	}
+
+	s.log.Debug("password reset otp generated", "identifier", maskPhone(identifier))
+	return s.store.SaveOTP(ctx, otpKey, otp, "password_reset", s.cfg.OTPExpiry)
+}
+
+// ResetPassword verifies the OTP and sets a new password.
+func (s *Service) ResetPassword(ctx context.Context, identifier, code, newPassword string) error {
+	// Find user
+	user, err := s.store.GetUserByPhone(ctx, identifier)
+	if err != nil {
+		return err
+	}
+	if user == nil {
+		user, err = s.store.GetUserByEmail(ctx, identifier)
+		if err != nil {
+			return err
+		}
+	}
+	if user == nil {
+		return errors.New("invalid credentials")
+	}
+
+	// Verify OTP
+	otpKey := user.Phone
+	if otpKey == "" && user.Email != nil {
+		otpKey = *user.Email
+	}
+
+	otp, err := s.store.GetOTP(ctx, otpKey, "password_reset")
+	if err != nil {
+		return err
+	}
+	if otp == nil {
+		return errors.New("invalid or expired code")
+	}
+	if otp.Attempts >= s.cfg.OTPMaxAttempts {
+		return errors.New("too many attempts")
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(otp.Hash), []byte(code)); err != nil {
+		s.store.IncrementOTPAttempts(ctx, otp.ID)
+		return errors.New("invalid or expired code")
+	}
+
+	_ = s.store.DeleteOTP(ctx, otp.ID)
+
+	// Hash new password and update
+	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+
+	if err := s.store.UpdatePassword(ctx, user.ID, string(hash)); err != nil {
+		return err
+	}
+
+	// Revoke all existing sessions for security
+	s.store.RevokeAllSessions(ctx, user.ID)
+
+	s.log.Info("password reset successful", "user_id", user.ID)
+	return nil
+}
+
+// --- Email/Phone Verification ---
+
+// RequestEmailVerification sends a verification OTP to the user's email.
+func (s *Service) RequestEmailVerification(ctx context.Context, userID uuid.UUID) error {
+	user, err := s.store.GetUserByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if user == nil {
+		return errors.New("user not found")
+	}
+	if user.Email == nil || *user.Email == "" {
+		return errors.New("no email on account")
+	}
+	if user.EmailVerified {
+		return errors.New("email already verified")
+	}
+
+	otp, err := s.generateOTP()
+	if err != nil {
+		return fmt.Errorf("failed to generate otp: %w", err)
+	}
+
+	return s.store.SaveOTP(ctx, *user.Email, otp, "email_verify", s.cfg.OTPExpiry)
+}
+
+// VerifyEmail checks the OTP and marks the user's email as verified.
+func (s *Service) VerifyEmail(ctx context.Context, userID uuid.UUID, code string) error {
+	user, err := s.store.GetUserByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if user == nil {
+		return errors.New("user not found")
+	}
+	if user.Email == nil {
+		return errors.New("no email on account")
+	}
+
+	otp, err := s.store.GetOTP(ctx, *user.Email, "email_verify")
+	if err != nil {
+		return err
+	}
+	if otp == nil {
+		return errors.New("invalid or expired code")
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(otp.Hash), []byte(code)); err != nil {
+		s.store.IncrementOTPAttempts(ctx, otp.ID)
+		return errors.New("invalid or expired code")
+	}
+
+	_ = s.store.DeleteOTP(ctx, otp.ID)
+	return s.store.MarkEmailVerified(ctx, userID)
+}
+
+// RequestPhoneVerification sends a verification OTP to the user's phone.
+func (s *Service) RequestPhoneVerification(ctx context.Context, userID uuid.UUID) error {
+	user, err := s.store.GetUserByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if user == nil {
+		return errors.New("user not found")
+	}
+	if user.Phone == "" {
+		return errors.New("no phone on account")
+	}
+	if user.PhoneVerified {
+		return errors.New("phone already verified")
+	}
+
+	otp, err := s.generateOTP()
+	if err != nil {
+		return fmt.Errorf("failed to generate otp: %w", err)
+	}
+
+	return s.store.SaveOTP(ctx, user.Phone, otp, "phone_verify", s.cfg.OTPExpiry)
+}
+
+// VerifyPhone checks the OTP and marks the user's phone as verified.
+func (s *Service) VerifyPhone(ctx context.Context, userID uuid.UUID, code string) error {
+	user, err := s.store.GetUserByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if user == nil {
+		return errors.New("user not found")
+	}
+	if user.Phone == "" {
+		return errors.New("no phone on account")
+	}
+
+	otp, err := s.store.GetOTP(ctx, user.Phone, "phone_verify")
+	if err != nil {
+		return err
+	}
+	if otp == nil {
+		return errors.New("invalid or expired code")
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(otp.Hash), []byte(code)); err != nil {
+		s.store.IncrementOTPAttempts(ctx, otp.ID)
+		return errors.New("invalid or expired code")
+	}
+
+	_ = s.store.DeleteOTP(ctx, otp.ID)
+	return s.store.MarkPhoneVerified(ctx, userID)
+}
+
+// --- Trusted Devices ---
+
+// ListTrustedDevices returns all trusted devices for a user.
+func (s *Service) ListTrustedDevices(ctx context.Context, userID uuid.UUID) ([]store.TrustedDevice, error) {
+	return s.store.ListTrustedDevices(ctx, userID)
+}
+
+// TrustDevice registers a device as trusted for a user.
+func (s *Service) TrustDevice(ctx context.Context, userID uuid.UUID, fingerprint string, deviceName *string) error {
+	d := &store.TrustedDevice{
+		ID:                uuid.New(),
+		UserID:            userID,
+		DeviceFingerprint: fingerprint,
+		DeviceName:        deviceName,
+	}
+	return s.store.UpsertTrustedDevice(ctx, d)
+}
+
+// RemoveTrustedDevice deletes a trusted device.
+func (s *Service) RemoveTrustedDevice(ctx context.Context, userID, deviceID uuid.UUID) error {
+	return s.store.DeleteTrustedDevice(ctx, userID, deviceID)
+}
+
+// createSessionForUser is a helper to create a full session (shared logic).
+func (s *Service) createSessionForUser(ctx context.Context, user *store.User, deviceID, platform, ip, userAgent string) (*AuthResponse, error) {
+	sessionID := uuid.New()
+	refreshToken, err := generateOpaqueToken(32)
+	if err != nil {
+		return nil, err
+	}
+
+	sess := &store.Session{
+		ID:           sessionID,
+		UserID:       user.ID,
+		RefreshToken: hashToken(refreshToken),
+		DeviceID:     deviceID,
+		Platform:     platform,
+		IP:           ip,
+		UserAgent:    userAgent,
+		CreatedAt:    time.Now(),
+		ExpiresAt:    time.Now().Add(s.cfg.RefreshTokenTTL),
+	}
+
+	if err := s.store.CreateSession(ctx, sess); err != nil {
+		return nil, err
+	}
+
+	accessToken, err := s.generateAccessToken(user.ID, sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &AuthResponse{
+		Tokens: TokenPair{
+			AccessToken:  accessToken,
+			RefreshToken: refreshToken,
+			ExpiresAt:    time.Now().Add(s.cfg.AccessTokenTTL),
+		},
+		User:      user,
+		SessionID: sessionID,
+	}, nil
 }

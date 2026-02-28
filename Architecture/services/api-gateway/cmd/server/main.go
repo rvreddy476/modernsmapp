@@ -27,13 +27,23 @@ func main() {
 		{"/v1/admin/flags", env("FLAGS_SERVICE_URL", "http://feature-flag-service:8095")},
 		{"/v1/auth", env("AUTH_SERVICE_URL", "http://identity-auth:8081")},
 		{"/v1/profiles", env("PROFILE_SERVICE_URL", "http://identity-profile:8098")},
+		// User service: users, channels, pages, links
+		{"/v1/channels", env("USER_SERVICE_URL", "http://user-service:8082")},
+		{"/v1/pages", env("USER_SERVICE_URL", "http://user-service:8082")},
+		{"/v1/links", env("USER_SERVICE_URL", "http://user-service:8082")},
 		{"/v1/users", env("USER_SERVICE_URL", "http://user-service:8082")},
 		{"/v1/graph", env("GRAPH_SERVICE_URL", "http://graph-service:8083")},
+		// Post service: posts, comments, stories, reactions, saved, hashtags
+		{"/v1/stories", env("POST_SERVICE_URL", "http://post-service:8084")},
+		{"/v1/saved", env("POST_SERVICE_URL", "http://post-service:8084")},
+		{"/v1/hashtags", env("POST_SERVICE_URL", "http://post-service:8084")},
 		{"/v1/comments", env("POST_SERVICE_URL", "http://post-service:8084")},
 		{"/v1/posts", env("POST_SERVICE_URL", "http://post-service:8084")},
 		{"/v1/feed", env("FEED_SERVICE_URL", "http://feed-service:8086")},
 		{"/v1/media", env("MEDIA_SERVICE_URL", "http://media-service:8087")},
 		{"/v1/notifications", env("NOTIFY_SERVICE_URL", "http://notification-service:8088")},
+		// Search service: search, discover
+		{"/v1/discover", env("SEARCH_SERVICE_URL", "http://search-service:8089")},
 		{"/v1/search", env("SEARCH_SERVICE_URL", "http://search-service:8089")},
 		{"/v1/groups", env("GROUP_SERVICE_URL", "http://group-service:8090")},
 		{"/v1/reports", env("TRUST_SAFETY_SERVICE_URL", "http://trust-safety-service:8091")},
@@ -41,6 +51,8 @@ func main() {
 		{"/v1/analytics", env("ANALYTICS_SERVICE_URL", "http://analytics-service:8093")},
 		{"/v1/flags", env("FLAGS_SERVICE_URL", "http://feature-flag-service:8095")},
 		{"/v1/admin", env("ADMIN_SERVICE_URL", "http://admin-service:8096")},
+		// Monetization service
+		{"/v1/monetization", env("MONETIZATION_SERVICE_URL", "http://monetization-service:8099")},
 	}
 
 	var routes []route
@@ -63,7 +75,7 @@ func main() {
 		if origin != "" && isAllowedOrigin(origin, allowedOrigins) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-User-Id, X-Requested-With, Authorization, X-Admin-Api-Key")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-User-Id, X-Requested-With, Authorization, X-Admin-Api-Key, X-CSRF-Token")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
 			w.Header().Set("Access-Control-Max-Age", "86400")
 		}

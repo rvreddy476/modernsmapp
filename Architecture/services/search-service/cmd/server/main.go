@@ -10,6 +10,7 @@ import (
 	"github.com/facebook-like/search-service/internal/http"
 	"github.com/facebook-like/search-service/internal/store/search"
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -29,6 +30,11 @@ func main() {
 		kafkaBrokers = "redpanda:9092"
 	}
 
+	redisAddr := os.Getenv("REDIS_ADDR")
+	if redisAddr == "" {
+		redisAddr = "redis:6379"
+	}
+
 	// 2. OpenSearch Store
 	searchStore, err := search.New(opensearchURL)
 	if err != nil {
@@ -36,20 +42,30 @@ func main() {
 	}
 	log.Println("Connected to OpenSearch")
 
-	// 3. Kafka Consumer
+	// 3. Redis
+	ctx := context.Background()
+	rdb := redis.NewClient(&redis.Options{
+		Addr: redisAddr,
+	})
+	if err := rdb.Ping(ctx).Err(); err != nil {
+		log.Fatalf("Redis ping failed: %v", err)
+	}
+	log.Println("Connected to Redis")
+
+	// 4. Kafka Consumer
 	consumer := events.NewConsumer(
 		strings.Split(kafkaBrokers, ","),
 		"search-service-group",
 		"social.events.v1",
 		searchStore,
 	)
-	go consumer.Start(context.Background())
+	go consumer.Start(ctx)
 	log.Println("Started Kafka Consumer")
 
-	// 4. HTTP Handlers
-	handler := http.New(searchStore)
+	// 5. HTTP Handlers
+	handler := http.New(searchStore, rdb)
 
-	// 5. Server
+	// 6. Server
 	r := gin.Default()
 	handler.RegisterRoutes(r)
 

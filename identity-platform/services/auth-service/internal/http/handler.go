@@ -50,6 +50,18 @@ type AuthService interface {
 	GetOAuthRedirectURL(ctx context.Context, provider string) (string, error)
 	HandleOAuthCallback(ctx context.Context, provider, code, state string) (*service.AuthResponse, error)
 	HandleOAuthToken(ctx context.Context, provider, accessToken string) (*service.AuthResponse, error)
+	// Password reset
+	ForgotPassword(ctx context.Context, identifier string) error
+	ResetPassword(ctx context.Context, identifier, code, newPassword string) error
+	// Email/Phone verification
+	RequestEmailVerification(ctx context.Context, userID uuid.UUID) error
+	VerifyEmail(ctx context.Context, userID uuid.UUID, code string) error
+	RequestPhoneVerification(ctx context.Context, userID uuid.UUID) error
+	VerifyPhone(ctx context.Context, userID uuid.UUID, code string) error
+	// Trusted devices
+	ListTrustedDevices(ctx context.Context, userID uuid.UUID) ([]store.TrustedDevice, error)
+	TrustDevice(ctx context.Context, userID uuid.UUID, fingerprint string, deviceName *string) error
+	RemoveTrustedDevice(ctx context.Context, userID, deviceID uuid.UUID) error
 }
 
 func New(svc AuthService, cfg *config.Config, logger *slog.Logger) *Handler {
@@ -79,6 +91,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 		v1.GET("/oauth/:provider/callback", h.OAuthCallback)
 		v1.POST("/oauth/:provider/token", h.OAuthToken)
 
+		// Password reset (public)
+		v1.POST("/forgot-password", h.ForgotPassword)
+		v1.POST("/reset-password", h.ResetPassword)
+
 		// Protected routes (require auth + CSRF)
 		protected := v1.Group("", authMW, csrfMW)
 		{
@@ -91,6 +107,16 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 			protected.POST("/2fa/setup", h.Setup2FA)
 			protected.POST("/2fa/verify-setup", h.Verify2FASetup)
 			protected.POST("/2fa/disable", h.Disable2FA)
+
+			// Email/Phone verification (protected)
+			protected.POST("/verify-email", h.VerifyEmail)
+			protected.POST("/verify-phone", h.VerifyPhone)
+			protected.POST("/resend-verification", h.ResendVerification)
+
+			// Trusted devices (protected)
+			protected.GET("/trusted-devices", h.ListTrustedDevices)
+			protected.DELETE("/trusted-devices/:id", h.RemoveTrustedDevice)
+			protected.POST("/trust-device", h.TrustDevice)
 		}
 	}
 }
@@ -380,6 +406,209 @@ func (h *Handler) DeleteAccount(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, gin.H{"status": "ok", "message": "Account scheduled for deletion in 30 days"}, nil)
 }
 
+// --- Password Reset ---
+
+type ForgotPasswordRequest struct {
+	Identifier string `json:"identifier" binding:"required"` // email or phone
+}
+
+func (h *Handler) ForgotPassword(c *gin.Context) {
+	var req ForgotPasswordRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+
+	if err := h.svc.ForgotPassword(c.Request.Context(), req.Identifier); err != nil {
+		h.log.Error("forgot-password failed", "err", err, "identifier", maskIdentifier(req.Identifier), "request_id", RequestIDFromContext(c))
+		// Always return 200 to prevent user enumeration
+	}
+
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"message": "If the account exists, a reset code has been sent"}, nil)
+}
+
+type ResetPasswordRequest struct {
+	Identifier  string `json:"identifier" binding:"required"`
+	Code        string `json:"code" binding:"required"`
+	NewPassword string `json:"new_password" binding:"required"`
+}
+
+func (h *Handler) ResetPassword(c *gin.Context) {
+	var req ResetPasswordRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+
+	if err := h.svc.ResetPassword(c.Request.Context(), req.Identifier, req.Code, req.NewPassword); err != nil {
+		h.log.Warn("reset-password failed", "err", err, "identifier", maskIdentifier(req.Identifier), "request_id", RequestIDFromContext(c))
+		api.Error(c.Writer, http.StatusBadRequest, "RESET_FAILED", "Password reset failed", nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"message": "Password reset successfully"}, nil)
+}
+
+// --- Email/Phone Verification ---
+
+type VerifyEmailRequest struct {
+	Code string `json:"code" binding:"required"`
+}
+
+func (h *Handler) VerifyEmail(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid user ID", nil, nil)
+		return
+	}
+
+	var req VerifyEmailRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+
+	if err := h.svc.VerifyEmail(c.Request.Context(), userID, req.Code); err != nil {
+		h.log.Warn("email verification failed", "err", err, "user_id", userID, "request_id", RequestIDFromContext(c))
+		api.Error(c.Writer, http.StatusBadRequest, "VERIFY_FAILED", "Email verification failed", nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"message": "Email verified successfully"}, nil)
+}
+
+type VerifyPhoneRequest struct {
+	Code string `json:"code" binding:"required"`
+}
+
+func (h *Handler) VerifyPhone(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid user ID", nil, nil)
+		return
+	}
+
+	var req VerifyPhoneRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+
+	if err := h.svc.VerifyPhone(c.Request.Context(), userID, req.Code); err != nil {
+		h.log.Warn("phone verification failed", "err", err, "user_id", userID, "request_id", RequestIDFromContext(c))
+		api.Error(c.Writer, http.StatusBadRequest, "VERIFY_FAILED", "Phone verification failed", nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"message": "Phone verified successfully"}, nil)
+}
+
+type ResendVerificationRequest struct {
+	Type string `json:"type" binding:"required"` // "email" or "phone"
+}
+
+func (h *Handler) ResendVerification(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid user ID", nil, nil)
+		return
+	}
+
+	var req ResendVerificationRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+
+	switch req.Type {
+	case "email":
+		if err := h.svc.RequestEmailVerification(c.Request.Context(), userID); err != nil {
+			h.log.Error("resend email verification failed", "err", err, "user_id", userID, "request_id", RequestIDFromContext(c))
+			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to send verification", nil, nil)
+			return
+		}
+	case "phone":
+		if err := h.svc.RequestPhoneVerification(c.Request.Context(), userID); err != nil {
+			h.log.Error("resend phone verification failed", "err", err, "user_id", userID, "request_id", RequestIDFromContext(c))
+			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to send verification", nil, nil)
+			return
+		}
+	default:
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "type must be email or phone", nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"message": "Verification code sent"}, nil)
+}
+
+// --- Trusted Devices ---
+
+func (h *Handler) ListTrustedDevices(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid user ID", nil, nil)
+		return
+	}
+
+	devices, err := h.svc.ListTrustedDevices(c.Request.Context(), userID)
+	if err != nil {
+		h.log.Error("list trusted devices failed", "err", err, "user_id", userID, "request_id", RequestIDFromContext(c))
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, devices, nil)
+}
+
+func (h *Handler) RemoveTrustedDevice(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid user ID", nil, nil)
+		return
+	}
+
+	deviceID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "Invalid device ID", nil, nil)
+		return
+	}
+
+	if err := h.svc.RemoveTrustedDevice(c.Request.Context(), userID, deviceID); err != nil {
+		h.log.Warn("remove trusted device failed", "err", err, "user_id", userID, "device_id", deviceID, "request_id", RequestIDFromContext(c))
+		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Device not found", nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "ok"}, nil)
+}
+
+type TrustDeviceRequest struct {
+	Fingerprint string  `json:"fingerprint" binding:"required"`
+	DeviceName  *string `json:"device_name"`
+}
+
+func (h *Handler) TrustDevice(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid user ID", nil, nil)
+		return
+	}
+
+	var req TrustDeviceRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+
+	if err := h.svc.TrustDevice(c.Request.Context(), userID, req.Fingerprint, req.DeviceName); err != nil {
+		h.log.Error("trust device failed", "err", err, "user_id", userID, "request_id", RequestIDFromContext(c))
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "ok", "message": "Device trusted"}, nil)
+}
+
 // Docs Routes
 func (h *Handler) RegisterDocsRoutes(r *gin.Engine) {
 	v1 := r.Group("/v1/auth")
@@ -475,10 +704,10 @@ func (h *Handler) clearAuthCookies(c *gin.Context) {
 
 func validateOTPPurpose(purpose string) error {
 	switch purpose {
-	case "login", "register":
+	case "login", "register", "password_reset", "email_verify", "phone_verify":
 		return nil
 	default:
-		return errors.New("purpose must be login or register")
+		return errors.New("purpose must be one of: login, register, password_reset, email_verify, phone_verify")
 	}
 }
 

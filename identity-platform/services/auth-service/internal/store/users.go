@@ -647,3 +647,29 @@ func (s *Store) MarkOutboxEventPublished(ctx context.Context, id int64) error {
 	`, id)
 	return err
 }
+
+// --- Password Reset & Verification ---
+
+// UpdatePassword updates a user's password hash.
+func (s *Store) UpdatePassword(ctx context.Context, userID uuid.UUID, passwordHash string) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE auth.users SET password_hash = $1, updated_at = NOW() WHERE user_id = $2
+	`, passwordHash, userID)
+	return err
+}
+
+// MarkEmailVerified sets email_verified = true for a user.
+func (s *Store) MarkEmailVerified(ctx context.Context, userID uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE auth.users SET email_verified = TRUE, updated_at = NOW() WHERE user_id = $1
+	`, userID)
+	return err
+}
+
+// MarkPhoneVerified sets phone_verified = true for a user.
+func (s *Store) MarkPhoneVerified(ctx context.Context, userID uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE auth.users SET phone_verified = TRUE, updated_at = NOW() WHERE user_id = $1
+	`, userID)
+	return err
+}

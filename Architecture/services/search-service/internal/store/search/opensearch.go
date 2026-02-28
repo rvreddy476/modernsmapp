@@ -54,10 +54,17 @@ func (s *Store) initIndices() {
 		"settings": { "number_of_shards": 1, "number_of_replicas": 0 },
 		"mappings": {
 			"properties": {
-				"post_id": { "type": "keyword" },
-				"author_id": { "type": "keyword" },
-				"text": { "type": "text" },
-				"created_at": { "type": "date" }
+				"post_id":         { "type": "keyword" },
+				"author_id":       { "type": "keyword" },
+				"author_username": { "type": "keyword" },
+				"text":            { "type": "text" },
+				"hashtags":        { "type": "keyword" },
+				"visibility":      { "type": "keyword" },
+				"like_count":      { "type": "long" },
+				"comment_count":   { "type": "long" },
+				"post_type":       { "type": "keyword" },
+				"app_origin":      { "type": "keyword" },
+				"created_at":      { "type": "date" }
 			}
 		}
 	}`)
@@ -99,10 +106,23 @@ type UserDoc struct {
 }
 
 type PostDoc struct {
-	PostID    string    `json:"post_id"`
-	AuthorID  string    `json:"author_id"`
-	Text      string    `json:"text"`
-	CreatedAt time.Time `json:"created_at"`
+	PostID         string    `json:"post_id"`
+	AuthorID       string    `json:"author_id"`
+	AuthorUsername string    `json:"author_username,omitempty"`
+	Text           string    `json:"text"`
+	Hashtags       []string  `json:"hashtags,omitempty"`
+	Visibility     string    `json:"visibility,omitempty"`
+	LikeCount      int       `json:"like_count"`
+	CommentCount   int       `json:"comment_count"`
+	PostType       string    `json:"post_type,omitempty"`
+	AppOrigin      string    `json:"app_origin,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+// UniversalSearchResult holds combined results from users and posts.
+type UniversalSearchResult struct {
+	Users []UserDoc `json:"users"`
+	Posts []PostDoc `json:"posts"`
 }
 
 // IndexUser
@@ -305,4 +325,139 @@ func (s *Store) execPostSearch(ctx context.Context, query interface{}) ([]PostDo
 		docs = append(docs, doc)
 	}
 	return docs, nil
+}
+
+// SearchHashtags performs a prefix-filtered terms aggregation on the hashtags field
+// and returns the top matching hashtag strings for autocomplete.
+func (s *Store) SearchHashtags(ctx context.Context, prefix string, limit int) ([]string, error) {
+	prefix = strings.ToLower(prefix)
+
+	q := map[string]interface{}{
+		"size": 0, // No document hits needed, only aggregation results
+		"query": map[string]interface{}{
+			"prefix": map[string]interface{}{
+				"hashtags": prefix,
+			},
+		},
+		"aggs": map[string]interface{}{
+			"hashtag_counts": map[string]interface{}{
+				"terms": map[string]interface{}{
+					"field": "hashtags",
+					"size":  limit,
+					"include": fmt.Sprintf("%s.*", prefix),
+				},
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(q); err != nil {
+		return nil, err
+	}
+
+	res, err := s.client.Search(
+		s.client.Search.WithContext(ctx),
+		s.client.Search.WithIndex("posts_v1"),
+		s.client.Search.WithBody(&buf),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+
+	if res.IsError() {
+		return nil, fmt.Errorf("hashtag search error: %s", res.String())
+	}
+
+	var r map[string]interface{}
+	if err := json.NewDecoder(res.Body).Decode(&r); err != nil {
+		return nil, err
+	}
+
+	var hashtags []string
+	aggs, ok := r["aggregations"].(map[string]interface{})
+	if !ok {
+		return hashtags, nil
+	}
+	buckets, ok := aggs["hashtag_counts"].(map[string]interface{})["buckets"].([]interface{})
+	if !ok {
+		return hashtags, nil
+	}
+	for _, b := range buckets {
+		bucket := b.(map[string]interface{})
+		if key, ok := bucket["key"].(string); ok {
+			hashtags = append(hashtags, key)
+		}
+	}
+	return hashtags, nil
+}
+
+// UniversalSearch searches across users_v1 and posts_v1 and returns combined results.
+// searchType can be "all", "profiles", or "posts".
+func (s *Store) UniversalSearch(ctx context.Context, query string, searchType string, limit int) (*UniversalSearchResult, error) {
+	result := &UniversalSearchResult{
+		Users: []UserDoc{},
+		Posts: []PostDoc{},
+	}
+
+	switch searchType {
+	case "profiles":
+		users, err := s.SearchUsers(ctx, query, limit)
+		if err != nil {
+			return nil, fmt.Errorf("user search failed: %w", err)
+		}
+		if users != nil {
+			result.Users = users
+		}
+
+	case "posts":
+		posts, err := s.SearchPosts(ctx, query, limit)
+		if err != nil {
+			return nil, fmt.Errorf("post search failed: %w", err)
+		}
+		if posts != nil {
+			result.Posts = posts
+		}
+
+	default: // "all"
+		// Run user and post searches with half the limit each to balance results
+		halfLimit := limit / 2
+		if halfLimit < 1 {
+			halfLimit = 1
+		}
+
+		users, err := s.SearchUsers(ctx, query, halfLimit)
+		if err != nil {
+			log.Printf("UniversalSearch users error: %v", err)
+		} else if users != nil {
+			result.Users = users
+		}
+
+		posts, err := s.SearchPosts(ctx, query, halfLimit)
+		if err != nil {
+			log.Printf("UniversalSearch posts error: %v", err)
+		} else if posts != nil {
+			result.Posts = posts
+		}
+	}
+
+	return result, nil
+}
+
+// GetPopularPosts returns posts sorted by like_count descending (for discovery).
+func (s *Store) GetPopularPosts(ctx context.Context, limit int) ([]PostDoc, error) {
+	q := map[string]interface{}{
+		"size": limit,
+		"query": map[string]interface{}{
+			"match_all": map[string]interface{}{},
+		},
+		"sort": []interface{}{
+			map[string]interface{}{
+				"like_count": map[string]interface{}{
+					"order": "desc",
+				},
+			},
+		},
+	}
+	return s.execPostSearch(ctx, q)
 }

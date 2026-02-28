@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/facebook-like/post-service/internal/engagement"
@@ -14,6 +16,11 @@ import (
 	"github.com/gocql/gocql"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
+)
+
+var (
+	hashtagRegex = regexp.MustCompile(`#(\w{1,50})`)
+	mentionRegex = regexp.MustCompile(`@(\w{1,30})`)
 )
 
 type Service struct {
@@ -71,6 +78,11 @@ type CreatePostInput struct {
 	Poll           *CreatePollInput
 	NoComments     bool
 	NoLikes        bool
+	LocationName   *string
+	LocationLat    *float64
+	LocationLng    *float64
+	PostType       string
+	AppOrigin      string
 }
 
 // CreatePollInput holds poll creation data.
@@ -81,11 +93,56 @@ type CreatePollInput struct {
 	DurationHours  *int
 }
 
+// extractHashtags parses #hashtag patterns from text.
+func extractHashtags(text string) []string {
+	matches := hashtagRegex.FindAllStringSubmatch(text, -1)
+	seen := make(map[string]bool)
+	var tags []string
+	for _, match := range matches {
+		tag := strings.ToLower(match[1])
+		if !seen[tag] {
+			seen[tag] = true
+			tags = append(tags, tag)
+		}
+	}
+	return tags
+}
+
+// extractMentions parses @username patterns from text.
+func extractMentions(text string) []string {
+	matches := mentionRegex.FindAllStringSubmatch(text, -1)
+	seen := make(map[string]bool)
+	var usernames []string
+	for _, match := range matches {
+		username := match[1]
+		if !seen[username] {
+			seen[username] = true
+			usernames = append(usernames, username)
+		}
+	}
+	return usernames
+}
+
 func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*postgres.Post, error) {
 	contentType := input.ContentType
 	if contentType == "" {
 		contentType = "post"
 	}
+
+	postType := input.PostType
+	if postType == "" {
+		postType = "text"
+	}
+	appOrigin := input.AppOrigin
+	if appOrigin == "" {
+		appOrigin = "postbook"
+	}
+
+	// Extract hashtags from text
+	hashtags := extractHashtags(input.Text)
+
+	// Extract @mentions from text (stored as usernames for now; could resolve to UUIDs)
+	_ = extractMentions(input.Text)
 
 	p := &postgres.Post{
 		ID:             uuid.New(),
@@ -99,6 +156,12 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		RichText:       input.RichText,
 		NoComments:     input.NoComments,
 		NoLikes:        input.NoLikes,
+		Hashtags:       hashtags,
+		LocationName:   input.LocationName,
+		LocationLat:    input.LocationLat,
+		LocationLng:    input.LocationLng,
+		PostType:       postType,
+		AppOrigin:      appOrigin,
 		CreatedAt:      time.Now(),
 	}
 
@@ -972,4 +1035,192 @@ func (s *Service) ListCommentsPG(ctx context.Context, postID uuid.UUID, cursor s
 // GetCommentsAroundPG returns comments surrounding a target comment for deep-link navigation.
 func (s *Service) GetCommentsAroundPG(ctx context.Context, postID, commentID uuid.UUID, limit int) ([]postgres.Comment, error) {
 	return s.pgStore.GetCommentsAround(ctx, postID, commentID, limit)
+}
+
+// ============================================================
+// Stories
+// ============================================================
+
+// CreateStoryInput holds fields for creating a story.
+type CreateStoryInput struct {
+	AuthorID       uuid.UUID
+	MediaURL       string
+	MediaType      string
+	Caption        string
+	Visibility     string
+	IsHighlight    bool
+	HighlightGroup *string
+}
+
+// CreateStory creates a new ephemeral story with 24h expiry.
+func (s *Service) CreateStory(ctx context.Context, input *CreateStoryInput) (*postgres.Story, error) {
+	visibility := input.Visibility
+	if visibility == "" {
+		visibility = "followers"
+	}
+
+	story := &postgres.Story{
+		ID:             uuid.New(),
+		AuthorID:       input.AuthorID,
+		MediaURL:       input.MediaURL,
+		MediaType:      input.MediaType,
+		Caption:        input.Caption,
+		Visibility:     visibility,
+		ViewCount:      0,
+		ExpiresAt:      time.Now().Add(24 * time.Hour),
+		IsHighlight:    input.IsHighlight,
+		HighlightGroup: input.HighlightGroup,
+		CreatedAt:      time.Now(),
+	}
+
+	if err := s.pgStore.CreateStory(ctx, story); err != nil {
+		return nil, err
+	}
+
+	// Publish story created event
+	if s.producer != nil {
+		go func() {
+			bgCtx := context.Background()
+			if err := s.producer.PublishStoryCreated(bgCtx, story.ID, story.AuthorID, story.MediaType); err != nil {
+				log.Printf("Warning: failed to publish story.created event: %v", err)
+			}
+		}()
+	}
+
+	return story, nil
+}
+
+// GetStory returns a single story by ID.
+func (s *Service) GetStory(ctx context.Context, storyID uuid.UUID) (*postgres.Story, error) {
+	return s.pgStore.GetStory(ctx, storyID)
+}
+
+// GetStoriesFeed returns stories from followed users. Caller provides followed user IDs.
+func (s *Service) GetStoriesFeed(ctx context.Context, followedUserIDs []uuid.UUID) ([]postgres.Story, error) {
+	return s.pgStore.GetStoriesFeed(ctx, followedUserIDs)
+}
+
+// DeleteStory removes a story.
+func (s *Service) DeleteStory(ctx context.Context, storyID, authorID uuid.UUID) error {
+	return s.pgStore.DeleteStory(ctx, storyID, authorID)
+}
+
+// ViewStory increments the view count of a story.
+func (s *Service) ViewStory(ctx context.Context, storyID uuid.UUID) error {
+	return s.pgStore.IncrementStoryViewCount(ctx, storyID)
+}
+
+// CleanupExpiredStories removes stories past their expiry. Called by cron.
+func (s *Service) CleanupExpiredStories(ctx context.Context) (int64, error) {
+	return s.pgStore.CleanupExpiredStories(ctx)
+}
+
+// ============================================================
+// Multi-Reactions
+// ============================================================
+
+// ReactionToggleResult is the response for the multi-reaction toggle API.
+type ReactionToggleResult struct {
+	ReactionType string                `json:"reaction_type"`
+	IsSet        bool                  `json:"is_set"`
+	Counts       *postgres.ReactionCounts `json:"counts"`
+}
+
+// ToggleReaction sets, changes, or removes a reaction on a post.
+func (s *Service) ToggleReaction(ctx context.Context, postID, userID uuid.UUID, reactionType string) (*ReactionToggleResult, error) {
+	if !postgres.ValidReactionTypes[reactionType] {
+		return nil, fmt.Errorf("INVALID_REACTION_TYPE")
+	}
+
+	if !s.rateLimiter.Allow(ctx, fmt.Sprintf("rl:react:%s", userID), engagement.LikeLimitPerHour, time.Hour) {
+		return nil, fmt.Errorf("RATE_LIMITED")
+	}
+
+	newType, isSet, err := s.pgStore.ToggleReaction(ctx, "post", postID, userID, reactionType)
+	if err != nil {
+		return nil, err
+	}
+
+	// Also sync to ScyllaDB for feed hydration compatibility
+	if isSet {
+		if err := s.scyllaStore.React(ctx, postID, userID, newType); err != nil {
+			log.Printf("Warning: failed to sync reaction to ScyllaDB: %v", err)
+		}
+	} else {
+		if err := s.scyllaStore.Unreact(ctx, postID, userID); err != nil {
+			log.Printf("Warning: failed to remove reaction from ScyllaDB: %v", err)
+		}
+	}
+
+	// Get updated counts
+	counts, err := s.pgStore.GetReactionCounts(ctx, "post", postID)
+	if err != nil {
+		log.Printf("Warning: failed to get reaction counts: %v", err)
+	}
+
+	// Publish event for notifications
+	if s.producer != nil && isSet {
+		go func() {
+			post, err := s.pgStore.GetPost(context.Background(), postID)
+			if err == nil && post != nil && post.AuthorID != userID {
+				s.producer.PublishPostReacted(context.Background(), postID, post.AuthorID, userID, newType)
+			}
+		}()
+	}
+
+	return &ReactionToggleResult{
+		ReactionType: newType,
+		IsSet:        isSet,
+		Counts:       counts,
+	}, nil
+}
+
+// GetReactionCounts returns the breakdown of reaction counts for a post.
+func (s *Service) GetReactionCounts(ctx context.Context, postID uuid.UUID) (*postgres.ReactionCounts, error) {
+	return s.pgStore.GetReactionCounts(ctx, "post", postID)
+}
+
+// ============================================================
+// Saved Items / Collections
+// ============================================================
+
+// SaveItem saves a post/video/reel to a user's collection.
+func (s *Service) SaveItem(ctx context.Context, userID uuid.UUID, targetType string, targetID uuid.UUID, collectionName string) (*postgres.SavedItem, error) {
+	return s.pgStore.SaveItem(ctx, userID, targetType, targetID, collectionName)
+}
+
+// UnsaveItem removes a saved item.
+func (s *Service) UnsaveItem(ctx context.Context, savedID, userID uuid.UUID) error {
+	return s.pgStore.UnsaveItem(ctx, savedID, userID)
+}
+
+// ListSavedItems returns paginated saved items.
+func (s *Service) ListSavedItems(ctx context.Context, userID uuid.UUID, collectionName string, limit int, cursor string) ([]postgres.SavedItem, string, error) {
+	return s.pgStore.ListSavedItems(ctx, userID, collectionName, limit, cursor)
+}
+
+// ListCollections returns all saved collections for a user.
+func (s *Service) ListCollections(ctx context.Context, userID uuid.UUID) ([]postgres.SavedCollection, error) {
+	return s.pgStore.ListCollections(ctx, userID)
+}
+
+// ============================================================
+// Hashtag Search
+// ============================================================
+
+// GetPostsByHashtag returns posts with a specific hashtag.
+func (s *Service) GetPostsByHashtag(ctx context.Context, hashtag string, limit int, cursor string) ([]PostDetail, string, error) {
+	posts, nextCursor, err := s.pgStore.GetPostsByHashtag(ctx, hashtag, limit, cursor)
+	if err != nil {
+		return nil, "", err
+	}
+
+	details := make([]PostDetail, len(posts))
+	for i, p := range posts {
+		post := p
+		counts, _ := s.scyllaStore.GetCounts(ctx, p.ID)
+		details[i] = PostDetail{Post: &post, Counts: counts}
+	}
+
+	return details, nextCursor, nil
 }

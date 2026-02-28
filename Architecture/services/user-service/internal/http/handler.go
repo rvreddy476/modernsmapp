@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/facebook-like/shared/api"
@@ -44,6 +45,51 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/:userId/about/:section", h.GetAboutSection)
 		v1.PUT("/me/about/:section", h.UpsertAboutItem)
 		v1.DELETE("/me/about/:section/:itemId", h.DeleteAboutItem)
+
+		// Status/Mood
+		v1.PATCH("/me/status", h.UpdateStatus)
+
+		// Reputation & Endorsements
+		v1.GET("/:userId/reputation", h.GetReputation)
+		v1.GET("/:userId/endorsements", h.GetEndorsements)
+		v1.POST("/:userId/endorse", h.EndorseUser)
+
+		// Compatibility
+		v1.GET("/:userId/compatibility", h.GetCompatibility)
+
+		// Link Analytics
+		v1.POST("/links/:platform/click", h.TrackLinkClick)
+		v1.GET("/me/links/analytics", h.GetLinkAnalytics)
+	}
+
+	// Channels
+	channels := r.Group("/v1/channels")
+	{
+		channels.GET("/:handle", h.GetChannel)
+	}
+	myChannels := r.Group("/v1/users/me/channels")
+	{
+		myChannels.POST("", h.CreateChannel)
+		myChannels.GET("", h.ListMyChannels)
+	}
+	channelByID := r.Group("/v1/channels")
+	{
+		channelByID.PATCH("/:id", h.UpdateChannel)
+		channelByID.DELETE("/:id", h.DeleteChannel)
+	}
+
+	// Business Pages
+	pages := r.Group("/v1/pages")
+	{
+		pages.GET("/:handle", h.GetBusinessPage)
+		pages.PATCH("/:id", h.UpdateBusinessPage)
+		pages.GET("/:id/reviews", h.GetPageReviews)
+		pages.POST("/:id/reviews", h.SubmitReview)
+	}
+	myPages := r.Group("/v1/users/me/pages")
+	{
+		myPages.POST("", h.CreateBusinessPage)
+		myPages.GET("", h.ListMyBusinessPages)
 	}
 }
 
@@ -400,4 +446,555 @@ func (h *Handler) DeleteAboutItem(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "deleted"}, nil)
+}
+
+// --- Status/Mood ---
+
+type UpdateStatusRequest struct {
+	StatusText  string     `json:"status_text"`
+	StatusEmoji string     `json:"status_emoji"`
+	ExpiresAt   *time.Time `json:"expires_at"`
+}
+
+func (h *Handler) UpdateStatus(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	var req UpdateStatusRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+
+	if err := h.svc.UpdateStatus(c.Request.Context(), userID, req.StatusText, req.StatusEmoji, req.ExpiresAt); err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "updated"}, nil)
+}
+
+// --- Reputation & Endorsements ---
+
+func (h *Handler) GetReputation(c *gin.Context) {
+	userID, err := uuid.Parse(c.Param("userId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil, nil)
+		return
+	}
+
+	rep, err := h.svc.GetReputation(c.Request.Context(), userID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+
+	summary, _ := h.svc.GetEndorsementSummary(c.Request.Context(), userID)
+	if summary == nil {
+		summary = []store.SkillEndorsementSummary{}
+	}
+
+	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{
+		"reputation":          rep,
+		"endorsement_summary": summary,
+	}, nil)
+}
+
+func (h *Handler) GetEndorsements(c *gin.Context) {
+	userID, err := uuid.Parse(c.Param("userId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil, nil)
+		return
+	}
+
+	endorsements, err := h.svc.GetEndorsements(c.Request.Context(), userID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	if endorsements == nil {
+		endorsements = []store.Endorsement{}
+	}
+
+	api.JSON(c.Writer, http.StatusOK, endorsements, nil)
+}
+
+type EndorseRequest struct {
+	SkillTag string `json:"skill_tag" binding:"required"`
+	Message  string `json:"message"`
+}
+
+func (h *Handler) EndorseUser(c *gin.Context) {
+	fromUserID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+	toUserID, err := uuid.Parse(c.Param("userId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil, nil)
+		return
+	}
+
+	var req EndorseRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+
+	e := &store.Endorsement{
+		FromUserID: fromUserID,
+		ToUserID:   toUserID,
+		SkillTag:   req.SkillTag,
+		Message:    req.Message,
+	}
+
+	if err := h.svc.EndorseUser(c.Request.Context(), e); err != nil {
+		if err.Error() == "CANNOT_ENDORSE_SELF" {
+			api.Error(c.Writer, http.StatusBadRequest, "CANNOT_ENDORSE_SELF", "Cannot endorse yourself", nil, nil)
+			return
+		}
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusCreated, e, nil)
+}
+
+// --- Compatibility ---
+
+func (h *Handler) GetCompatibility(c *gin.Context) {
+	viewerID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+	otherID, err := uuid.Parse(c.Param("userId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil, nil)
+		return
+	}
+
+	score, err := h.svc.GetCompatibility(c.Request.Context(), viewerID, otherID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, map[string]float64{"compatibility_score": score}, nil)
+}
+
+// --- Link Analytics ---
+
+func (h *Handler) TrackLinkClick(c *gin.Context) {
+	userIDStr := c.Query("user_id")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user_id query param", nil, nil)
+		return
+	}
+	platform := c.Param("platform")
+
+	if err := h.svc.TrackLinkClick(c.Request.Context(), userID, platform); err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "tracked"}, nil)
+}
+
+func (h *Handler) GetLinkAnalytics(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	analytics, err := h.svc.GetLinkAnalytics(c.Request.Context(), userID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	if analytics == nil {
+		analytics = []store.LinkAnalytics{}
+	}
+	api.JSON(c.Writer, http.StatusOK, analytics, nil)
+}
+
+// --- Channels ---
+
+type CreateChannelRequest struct {
+	Handle          string `json:"handle" binding:"required"`
+	Name            string `json:"name" binding:"required"`
+	Description     string `json:"description"`
+	IconURL         string `json:"icon_url"`
+	BannerURL       string `json:"banner_url"`
+	Category        string `json:"category"`
+	Country         string `json:"country"`
+	Language        string `json:"language"`
+	ContactEmail    string `json:"contact_email"`
+	CollabStatus    string `json:"collab_status"`
+	ContentSchedule string `json:"content_schedule"`
+}
+
+func (h *Handler) CreateChannel(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	var req CreateChannelRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+
+	ch := &store.Channel{
+		UserID:          userID,
+		Handle:          req.Handle,
+		Name:            req.Name,
+		Description:     req.Description,
+		IconURL:         req.IconURL,
+		BannerURL:       req.BannerURL,
+		Category:        req.Category,
+		Country:         req.Country,
+		Language:        req.Language,
+		ContactEmail:    req.ContactEmail,
+		CollabStatus:    req.CollabStatus,
+		ContentSchedule: req.ContentSchedule,
+	}
+
+	if err := h.svc.CreateChannel(c.Request.Context(), ch); err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusCreated, ch, nil)
+}
+
+func (h *Handler) GetChannel(c *gin.Context) {
+	handle := c.Param("handle")
+	detail, err := h.svc.GetChannel(c.Request.Context(), handle)
+	if err != nil {
+		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Channel not found", nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, detail, nil)
+}
+
+func (h *Handler) ListMyChannels(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	channels, err := h.svc.GetUserChannels(c.Request.Context(), userID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	if channels == nil {
+		channels = []store.Channel{}
+	}
+	api.JSON(c.Writer, http.StatusOK, channels, nil)
+}
+
+type UpdateChannelRequest struct {
+	Name            string `json:"name"`
+	Description     string `json:"description"`
+	IconURL         string `json:"icon_url"`
+	BannerURL       string `json:"banner_url"`
+	Category        string `json:"category"`
+	Country         string `json:"country"`
+	Language        string `json:"language"`
+	ContactEmail    string `json:"contact_email"`
+	CollabStatus    string `json:"collab_status"`
+	ContentSchedule string `json:"content_schedule"`
+}
+
+func (h *Handler) UpdateChannel(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+	channelID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil, nil)
+		return
+	}
+
+	var req UpdateChannelRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+
+	ch := &store.Channel{
+		ID:              channelID,
+		UserID:          userID,
+		Name:            req.Name,
+		Description:     req.Description,
+		IconURL:         req.IconURL,
+		BannerURL:       req.BannerURL,
+		Category:        req.Category,
+		Country:         req.Country,
+		Language:        req.Language,
+		ContactEmail:    req.ContactEmail,
+		CollabStatus:    req.CollabStatus,
+		ContentSchedule: req.ContentSchedule,
+	}
+
+	if err := h.svc.UpdateChannel(c.Request.Context(), ch); err != nil {
+		if err.Error() == "CHANNEL_NOT_FOUND" {
+			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Channel not found or not owned by you", nil, nil)
+			return
+		}
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "updated"}, nil)
+}
+
+func (h *Handler) DeleteChannel(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+	channelID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil, nil)
+		return
+	}
+
+	if err := h.svc.DeleteChannel(c.Request.Context(), channelID, userID); err != nil {
+		if err.Error() == "CHANNEL_NOT_FOUND" {
+			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Channel not found or not owned by you", nil, nil)
+			return
+		}
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "deleted"}, nil)
+}
+
+// --- Business Pages ---
+
+type CreateBusinessPageRequest struct {
+	PageHandle    string          `json:"page_handle" binding:"required"`
+	PageName      string          `json:"page_name" binding:"required"`
+	Category      string          `json:"category" binding:"required"`
+	Description   string          `json:"description"`
+	Address       string          `json:"address"`
+	Lat           *float64        `json:"lat"`
+	Lng           *float64        `json:"lng"`
+	BusinessHours json.RawMessage `json:"business_hours"`
+	Phone         string          `json:"phone"`
+	Whatsapp      string          `json:"whatsapp"`
+	BusinessEmail string          `json:"business_email"`
+	Services      json.RawMessage `json:"services"`
+	PriceRange    string          `json:"price_range"`
+	BookingURL    string          `json:"booking_url"`
+	MenuURLs      json.RawMessage `json:"menu_urls"`
+	FAQ           json.RawMessage `json:"faq"`
+}
+
+func (h *Handler) CreateBusinessPage(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	var req CreateBusinessPageRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+
+	p := &store.BusinessPage{
+		UserID:        userID,
+		PageHandle:    req.PageHandle,
+		PageName:      req.PageName,
+		Category:      req.Category,
+		Description:   req.Description,
+		Address:       req.Address,
+		Lat:           req.Lat,
+		Lng:           req.Lng,
+		BusinessHours: req.BusinessHours,
+		Phone:         req.Phone,
+		Whatsapp:      req.Whatsapp,
+		BusinessEmail: req.BusinessEmail,
+		Services:      req.Services,
+		PriceRange:    req.PriceRange,
+		BookingURL:    req.BookingURL,
+		MenuURLs:      req.MenuURLs,
+		FAQ:           req.FAQ,
+	}
+
+	if err := h.svc.CreateBusinessPage(c.Request.Context(), p); err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusCreated, p, nil)
+}
+
+func (h *Handler) GetBusinessPage(c *gin.Context) {
+	handle := c.Param("handle")
+	page, err := h.svc.GetBusinessPage(c.Request.Context(), handle)
+	if err != nil {
+		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Business page not found", nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, page, nil)
+}
+
+func (h *Handler) UpdateBusinessPage(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+	pageID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid page ID", nil, nil)
+		return
+	}
+
+	var req CreateBusinessPageRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+
+	p := &store.BusinessPage{
+		ID:            pageID,
+		UserID:        userID,
+		PageName:      req.PageName,
+		Category:      req.Category,
+		Description:   req.Description,
+		Address:       req.Address,
+		Lat:           req.Lat,
+		Lng:           req.Lng,
+		BusinessHours: req.BusinessHours,
+		Phone:         req.Phone,
+		Whatsapp:      req.Whatsapp,
+		BusinessEmail: req.BusinessEmail,
+		Services:      req.Services,
+		PriceRange:    req.PriceRange,
+		BookingURL:    req.BookingURL,
+		MenuURLs:      req.MenuURLs,
+		FAQ:           req.FAQ,
+	}
+
+	if err := h.svc.UpdateBusinessPage(c.Request.Context(), p); err != nil {
+		if err.Error() == "PAGE_NOT_FOUND" {
+			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Page not found or not owned by you", nil, nil)
+			return
+		}
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "updated"}, nil)
+}
+
+func (h *Handler) GetPageReviews(c *gin.Context) {
+	pageID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid page ID", nil, nil)
+		return
+	}
+
+	cursor := time.Now()
+	if cursorStr := c.Query("cursor"); cursorStr != "" {
+		if t, err := time.Parse(time.RFC3339Nano, cursorStr); err == nil {
+			cursor = t
+		}
+	}
+	limit := 20
+	if limitStr := c.Query("limit"); limitStr != "" {
+		if n, err := strconv.Atoi(limitStr); err == nil {
+			limit = n
+		}
+	}
+
+	reviews, err := h.svc.GetPageReviews(c.Request.Context(), pageID, cursor, limit)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	if reviews == nil {
+		reviews = []store.BusinessReview{}
+	}
+
+	var meta *api.Meta
+	if len(reviews) == limit {
+		meta = &api.Meta{NextCursor: reviews[len(reviews)-1].CreatedAt.Format(time.RFC3339Nano)}
+	}
+
+	api.JSON(c.Writer, http.StatusOK, reviews, meta)
+}
+
+type SubmitReviewRequest struct {
+	Rating     int    `json:"rating" binding:"required"`
+	ReviewText string `json:"review_text"`
+}
+
+func (h *Handler) SubmitReview(c *gin.Context) {
+	reviewerID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+	pageID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid page ID", nil, nil)
+		return
+	}
+
+	var req SubmitReviewRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+
+	if req.Rating < 1 || req.Rating > 5 {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_RATING", "Rating must be between 1 and 5", nil, nil)
+		return
+	}
+
+	r := &store.BusinessReview{
+		PageID:     pageID,
+		ReviewerID: reviewerID,
+		Rating:     req.Rating,
+		ReviewText: req.ReviewText,
+	}
+
+	if err := h.svc.SubmitReview(c.Request.Context(), r); err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusCreated, r, nil)
+}
+
+func (h *Handler) ListMyBusinessPages(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	pages, err := h.svc.GetUserBusinessPages(c.Request.Context(), userID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	if pages == nil {
+		pages = []store.BusinessPage{}
+	}
+	api.JSON(c.Writer, http.StatusOK, pages, nil)
 }

@@ -350,3 +350,19 @@ func (s *MediaAssetStore) UpdateMediaURLs(ctx context.Context, id uuid.UUID, ori
 	`, originalURL, cdnURL, thumbnailURL, id)
 	return err
 }
+
+// UpdateAltText sets the alt_text field for a media asset owned by uploaderID.
+// Returns pgx.ErrNoRows if the asset does not exist or is not owned by uploaderID.
+func (s *MediaAssetStore) UpdateAltText(ctx context.Context, id uuid.UUID, uploaderID uuid.UUID, altText string) error {
+	tag, err := s.db.Exec(ctx, `
+		UPDATE media_assets SET alt_text = $1, updated_at = NOW()
+		WHERE id = $2 AND uploader_id = $3
+	`, altText, id, uploaderID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}

@@ -4,11 +4,36 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"regexp"
+	"strings"
 
 	"github.com/facebook-like/search-service/internal/store/search"
 	"github.com/facebook-like/shared/events"
 	"github.com/segmentio/kafka-go"
 )
+
+// hashtagRegex matches #word patterns in text (word chars and underscores).
+var hashtagRegex = regexp.MustCompile(`#(\w+)`)
+
+// extractHashtags parses all #hashtag occurrences from text and returns
+// lowercase deduplicated hashtag strings (without the leading #).
+func extractHashtags(text string) []string {
+	matches := hashtagRegex.FindAllStringSubmatch(text, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+
+	seen := make(map[string]struct{}, len(matches))
+	tags := make([]string, 0, len(matches))
+	for _, m := range matches {
+		tag := strings.ToLower(m[1])
+		if _, ok := seen[tag]; !ok {
+			seen[tag] = struct{}{}
+			tags = append(tags, tag)
+		}
+	}
+	return tags
+}
 
 type Consumer struct {
 	reader *kafka.Reader
@@ -87,11 +112,15 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 			return err
 		}
 
+		hashtags := extractHashtags(p.Text)
+
 		return c.store.IndexPost(ctx, search.PostDoc{
-			PostID:    p.PostID,
-			AuthorID:  p.AuthorID,
-			Text:      p.Text,
-			CreatedAt: p.CreatedAt,
+			PostID:     p.PostID,
+			AuthorID:   p.AuthorID,
+			Text:       p.Text,
+			Hashtags:   hashtags,
+			Visibility: p.Visibility,
+			CreatedAt:  p.CreatedAt,
 		})
 
 	default:

@@ -123,6 +123,7 @@ services:
       MEDIA_SERVICE_URL: http://media-service:8087
       NOTIFY_SERVICE_URL: http://notification-service:8088
       SEARCH_SERVICE_URL: http://search-service:8089
+      MONETIZATION_SERVICE_URL: http://monetization-service:8099
       TRUST_SAFETY_SERVICE_URL: http://trust-safety-service:8091
       MESSAGE_SERVICE_URL: http://chat-message-service:8092
       ANALYTICS_SERVICE_URL: http://analytics-service:8094
@@ -430,6 +431,22 @@ services:
     ports:
       - "8093:8093"
     depends_on:
+      redis:
+        condition: service_healthy
+
+  monetization-service:
+    build:
+      context: ..
+      dockerfile: services/monetization-service/Dockerfile
+    environment:
+      HTTP_PORT: "8099"
+      POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/app?sslmode=disable
+      REDIS_ADDR: redis:6379
+    ports:
+      - "8099:8099"
+    depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
 

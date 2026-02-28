@@ -200,3 +200,167 @@ func (s *Service) GetSettings(ctx context.Context, id uuid.UUID) (*store.UserSet
 func (s *Service) UpdateSettings(ctx context.Context, settings *store.UserSettings) (*store.UserSettings, error) {
 	return s.store.UpdateSettings(ctx, settings)
 }
+
+// --- Channels ---
+
+// CreateChannel creates a new creator channel.
+func (s *Service) CreateChannel(ctx context.Context, ch *store.Channel) error {
+	return s.store.CreateChannel(ctx, ch)
+}
+
+// GetChannel returns a channel by handle with links and milestones.
+func (s *Service) GetChannel(ctx context.Context, handle string) (*store.ChannelDetail, error) {
+	ch, err := s.store.GetChannelByHandle(ctx, handle)
+	if err != nil {
+		return nil, err
+	}
+	links, err := s.store.GetChannelLinks(ctx, ch.ID)
+	if err != nil {
+		return nil, err
+	}
+	milestones, err := s.store.GetChannelMilestones(ctx, ch.ID, true)
+	if err != nil {
+		return nil, err
+	}
+	if links == nil {
+		links = []store.ChannelLink{}
+	}
+	if milestones == nil {
+		milestones = []store.ChannelMilestone{}
+	}
+	return &store.ChannelDetail{Channel: *ch, Links: links, Milestones: milestones}, nil
+}
+
+// UpdateChannel updates a channel's editable fields.
+func (s *Service) UpdateChannel(ctx context.Context, ch *store.Channel) error {
+	return s.store.UpdateChannel(ctx, ch)
+}
+
+// DeleteChannel removes a channel.
+func (s *Service) DeleteChannel(ctx context.Context, id, userID uuid.UUID) error {
+	return s.store.DeleteChannel(ctx, id, userID)
+}
+
+// GetUserChannels returns all channels for a user.
+func (s *Service) GetUserChannels(ctx context.Context, userID uuid.UUID) ([]store.Channel, error) {
+	return s.store.GetUserChannels(ctx, userID)
+}
+
+// --- Business Pages ---
+
+// CreateBusinessPage creates a new business page.
+func (s *Service) CreateBusinessPage(ctx context.Context, p *store.BusinessPage) error {
+	return s.store.CreateBusinessPage(ctx, p)
+}
+
+// GetBusinessPage returns a business page by handle.
+func (s *Service) GetBusinessPage(ctx context.Context, handle string) (*store.BusinessPage, error) {
+	return s.store.GetBusinessPageByHandle(ctx, handle)
+}
+
+// UpdateBusinessPage updates a business page.
+func (s *Service) UpdateBusinessPage(ctx context.Context, p *store.BusinessPage) error {
+	return s.store.UpdateBusinessPage(ctx, p)
+}
+
+// GetPageReviews returns reviews for a business page.
+func (s *Service) GetPageReviews(ctx context.Context, pageID uuid.UUID, cursor time.Time, limit int) ([]store.BusinessReview, error) {
+	return s.store.GetPageReviews(ctx, pageID, cursor, limit)
+}
+
+// SubmitReview adds a review for a business page.
+func (s *Service) SubmitReview(ctx context.Context, r *store.BusinessReview) error {
+	return s.store.SubmitReview(ctx, r)
+}
+
+// GetUserBusinessPages returns all business pages for a user.
+func (s *Service) GetUserBusinessPages(ctx context.Context, userID uuid.UUID) ([]store.BusinessPage, error) {
+	return s.store.GetUserBusinessPages(ctx, userID)
+}
+
+// --- Reputation & Endorsements ---
+
+// GetReputation returns a user's reputation.
+func (s *Service) GetReputation(ctx context.Context, userID uuid.UUID) (*store.UserReputation, error) {
+	return s.store.GetReputation(ctx, userID)
+}
+
+// EndorseUser creates an endorsement.
+func (s *Service) EndorseUser(ctx context.Context, e *store.Endorsement) error {
+	if e.FromUserID == e.ToUserID {
+		return fmt.Errorf("CANNOT_ENDORSE_SELF")
+	}
+	return s.store.CreateEndorsement(ctx, e)
+}
+
+// GetEndorsements returns all endorsements for a user.
+func (s *Service) GetEndorsements(ctx context.Context, userID uuid.UUID) ([]store.Endorsement, error) {
+	return s.store.GetEndorsements(ctx, userID)
+}
+
+// GetEndorsementSummary returns endorsement counts by skill.
+func (s *Service) GetEndorsementSummary(ctx context.Context, userID uuid.UUID) ([]store.SkillEndorsementSummary, error) {
+	return s.store.GetEndorsementSummary(ctx, userID)
+}
+
+// --- Status/Mood ---
+
+// UpdateStatus sets a user's status/mood.
+func (s *Service) UpdateStatus(ctx context.Context, userID uuid.UUID, statusText, statusEmoji string, expiresAt *time.Time) error {
+	err := s.store.UpdateStatus(ctx, userID, statusText, statusEmoji, expiresAt)
+	if err != nil {
+		return err
+	}
+	// Invalidate user cache
+	cardKey := fmt.Sprintf("user:card:%s", userID)
+	s.rdb.Del(ctx, cardKey)
+	return nil
+}
+
+// ClearExpiredStatuses clears statuses that have expired.
+func (s *Service) ClearExpiredStatuses(ctx context.Context) (int64, error) {
+	return s.store.ClearExpiredStatuses(ctx)
+}
+
+// --- Link Analytics ---
+
+// TrackLinkClick increments click count for a user link.
+func (s *Service) TrackLinkClick(ctx context.Context, userID uuid.UUID, platform string) error {
+	return s.store.TrackLinkClick(ctx, userID, platform)
+}
+
+// GetLinkAnalytics returns click counts for a user's links.
+func (s *Service) GetLinkAnalytics(ctx context.Context, userID uuid.UUID) ([]store.LinkAnalytics, error) {
+	return s.store.GetLinkAnalytics(ctx, userID)
+}
+
+// GetCompatibility returns a compatibility score between two users.
+func (s *Service) GetCompatibility(ctx context.Context, userID, otherID uuid.UUID) (float64, error) {
+	myAbout, err := s.store.GetAllAbout(ctx, userID)
+	if err != nil {
+		return 0, err
+	}
+	otherAbout, err := s.store.GetAllAbout(ctx, otherID)
+	if err != nil {
+		return 0, err
+	}
+
+	sharedSections := 0
+	totalSections := 0
+	for section := range myAbout {
+		totalSections++
+		if _, ok := otherAbout[section]; ok {
+			sharedSections++
+		}
+	}
+	for section := range otherAbout {
+		if _, ok := myAbout[section]; !ok {
+			totalSections++
+		}
+	}
+
+	if totalSections == 0 {
+		return 0.5, nil
+	}
+	return float64(sharedSections) / float64(totalSections), nil
+}

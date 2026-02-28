@@ -2,12 +2,14 @@ package http
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"strconv"
 
 	"github.com/facebook-like/notification-service/internal/service"
+	"github.com/facebook-like/notification-service/internal/store/postgres"
 	"github.com/facebook-like/shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -29,6 +31,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("", h.GetNotifications)
 		v1.GET("/stream", h.StreamNotifications)
 		v1.POST("/read", h.MarkRead)
+		v1.GET("/unread-count", h.GetUnreadCount)
+		v1.PATCH("/read-all", h.MarkAllRead)
+		v1.DELETE("/:bucket/:ts", h.DeleteNotification)
+		v1.GET("/preferences", h.GetPreferences)
+		v1.PATCH("/preferences", h.UpdatePreferences)
+		v1.POST("/devices", h.RegisterDevice)
+		v1.DELETE("/devices/:id", h.UnregisterDevice)
 	}
 }
 
@@ -91,6 +100,210 @@ func (h *Handler) MarkRead(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "ok"}, nil)
+}
+
+func (h *Handler) GetUnreadCount(c *gin.Context) {
+	userIDStr := c.GetHeader("X-User-Id")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	count, err := h.svc.GetUnreadCount(c.Request.Context(), userID)
+	if err != nil {
+		log.Printf("Failed to get unread count: %v", err)
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get unread count", nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, map[string]int64{"count": count}, nil)
+}
+
+func (h *Handler) MarkAllRead(c *gin.Context) {
+	userIDStr := c.GetHeader("X-User-Id")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	if err := h.svc.MarkAllRead(c.Request.Context(), userID); err != nil {
+		log.Printf("Failed to mark all read: %v", err)
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to mark all as read", nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "ok"}, nil)
+}
+
+type DeleteNotificationRequest struct {
+	Bucket string `uri:"bucket" binding:"required"`
+	TS     string `uri:"ts" binding:"required"`
+}
+
+func (h *Handler) DeleteNotification(c *gin.Context) {
+	userIDStr := c.GetHeader("X-User-Id")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	bucketStr := c.Param("bucket")
+	bucket, err := strconv.Atoi(bucketStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid bucket", nil, nil)
+		return
+	}
+
+	ts := c.Param("ts")
+	if ts == "" {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Missing ts", nil, nil)
+		return
+	}
+
+	if err := h.svc.DeleteNotification(c.Request.Context(), userID, bucket, ts); err != nil {
+		log.Printf("Failed to delete notification: %v", err)
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to delete notification", nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "deleted"}, nil)
+}
+
+func (h *Handler) GetPreferences(c *gin.Context) {
+	userIDStr := c.GetHeader("X-User-Id")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	prefs, err := h.svc.GetPreferences(c.Request.Context(), userID)
+	if err != nil {
+		log.Printf("Failed to get preferences: %v", err)
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get preferences", nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, prefs, nil)
+}
+
+type UpdatePreferencesRequest struct {
+	EmailEnabled    *bool            `json:"email_enabled"`
+	PushEnabled     *bool            `json:"push_enabled"`
+	SMSEnabled      *bool            `json:"sms_enabled"`
+	QuietHoursStart *string          `json:"quiet_hours_start"`
+	QuietHoursEnd   *string          `json:"quiet_hours_end"`
+	MutedTypes      *json.RawMessage `json:"muted_types"`
+}
+
+func (h *Handler) UpdatePreferences(c *gin.Context) {
+	userIDStr := c.GetHeader("X-User-Id")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	var req UpdatePreferencesRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		return
+	}
+
+	// Fetch current, merge updates
+	current, err := h.svc.GetPreferences(c.Request.Context(), userID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+
+	if req.EmailEnabled != nil {
+		current.EmailEnabled = *req.EmailEnabled
+	}
+	if req.PushEnabled != nil {
+		current.PushEnabled = *req.PushEnabled
+	}
+	if req.SMSEnabled != nil {
+		current.SMSEnabled = *req.SMSEnabled
+	}
+	if req.QuietHoursStart != nil {
+		current.QuietHoursStart = req.QuietHoursStart
+	}
+	if req.QuietHoursEnd != nil {
+		current.QuietHoursEnd = req.QuietHoursEnd
+	}
+	if req.MutedTypes != nil {
+		current.MutedTypes = *req.MutedTypes
+	}
+	current.UserID = userID
+
+	if err := h.svc.UpdatePreferences(c.Request.Context(), current); err != nil {
+		log.Printf("Failed to update preferences: %v", err)
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to update preferences", nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, current, nil)
+}
+
+type RegisterDeviceRequest struct {
+	Platform  string `json:"platform" binding:"required,oneof=ios android web"`
+	PushToken string `json:"push_token" binding:"required"`
+}
+
+func (h *Handler) RegisterDevice(c *gin.Context) {
+	userIDStr := c.GetHeader("X-User-Id")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	var req RegisterDeviceRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		return
+	}
+
+	device, err := h.svc.RegisterDevice(c.Request.Context(), userID, req.Platform, req.PushToken)
+	if err != nil {
+		log.Printf("Failed to register device: %v", err)
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to register device", nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusCreated, device, nil)
+}
+
+func (h *Handler) UnregisterDevice(c *gin.Context) {
+	userIDStr := c.GetHeader("X-User-Id")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	deviceIDStr := c.Param("id")
+	deviceID, err := uuid.Parse(deviceIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid device ID", nil, nil)
+		return
+	}
+
+	if err := h.svc.UnregisterDevice(c.Request.Context(), deviceID, userID); err != nil {
+		if err.Error() == "DEVICE_NOT_FOUND" {
+			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Device not found", nil, nil)
+			return
+		}
+		log.Printf("Failed to unregister device: %v", err)
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to unregister device", nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "removed"}, nil)
 }
 
 // StreamNotifications uses SSE to push real-time notifications from Redis pub/sub

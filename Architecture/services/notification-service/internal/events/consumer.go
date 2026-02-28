@@ -162,6 +162,63 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		deepLink := fmt.Sprintf("/u/%s", e.ReceiverID)
 		return c.service.CreateNotification(ctx, senderID, receiverID, "friend_accepted", "user", receiverID, deepLink, e.AcceptedAt)
 
+	case events.StoryCreated:
+		var e events.StoryCreatedPayload
+		if err := unmarshalPayload(envelope.Payload, &e); err != nil {
+			return err
+		}
+		// Story notifications are handled client-side via the story feed; no push notification needed
+		return nil
+
+	case events.UserEndorsed:
+		var e events.UserEndorsedPayload
+		if err := unmarshalPayload(envelope.Payload, &e); err != nil {
+			return err
+		}
+
+		fromUserID, _ := uuid.Parse(e.FromUserID)
+		toUserID, _ := uuid.Parse(e.ToUserID)
+
+		deepLink := fmt.Sprintf("/u/%s", e.FromUserID)
+		return c.service.CreateNotification(ctx, toUserID, fromUserID, "endorsement", "user", fromUserID, deepLink, e.CreatedAt)
+
+	case events.BusinessReviewCreated:
+		var e events.BusinessReviewCreatedPayload
+		if err := unmarshalPayload(envelope.Payload, &e); err != nil {
+			return err
+		}
+
+		pageOwnerID, _ := uuid.Parse(e.PageOwner)
+		reviewerID, _ := uuid.Parse(e.ReviewerID)
+		pageID, _ := uuid.Parse(e.PageID)
+
+		if pageOwnerID == reviewerID {
+			return nil
+		}
+
+		deepLink := fmt.Sprintf("/page/%s", e.PageID)
+		return c.service.CreateNotification(ctx, pageOwnerID, reviewerID, "business_review", "business_page", pageID, deepLink, e.CreatedAt)
+
+	case events.SubscriptionCreated:
+		var e events.SubscriptionCreatedPayload
+		if err := unmarshalPayload(envelope.Payload, &e); err != nil {
+			return err
+		}
+
+		subscriberID, _ := uuid.Parse(e.SubscriberID)
+		creatorID, _ := uuid.Parse(e.CreatorID)
+
+		deepLink := fmt.Sprintf("/u/%s", e.SubscriberID)
+		return c.service.CreateNotification(ctx, creatorID, subscriberID, "new_subscriber", "user", subscriberID, deepLink, e.CreatedAt)
+
+	case events.GroupMemberJoined:
+		var e events.GroupMemberJoinedPayload
+		if err := unmarshalPayload(envelope.Payload, &e); err != nil {
+			return err
+		}
+		// Group join notifications are handled by the group service itself
+		return nil
+
 	default:
 		return nil
 	}

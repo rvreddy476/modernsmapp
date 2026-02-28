@@ -52,6 +52,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// Group members
 		v1.POST("/conversations/:conversationId/members", h.AddMember)
 		v1.DELETE("/conversations/:conversationId/members/:userId", h.RemoveMember)
+
+		// Pinned messages
+		v1.POST("/conversations/:id/pin/:msgId", h.PinMessage)
+		v1.DELETE("/conversations/:id/pin", h.UnpinMessage)
+		v1.GET("/conversations/:id/pin", h.GetPinnedMessage)
 	}
 }
 
@@ -622,6 +627,100 @@ func (h *Handler) RemoveMember(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, gin.H{"removed": true}, nil)
+}
+
+// ---------------------------------------------------------------------------
+// Pinned messages
+// ---------------------------------------------------------------------------
+
+func (h *Handler) PinMessage(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+
+	convIDStr := c.Param("id")
+	convID, err := uuid.Parse(convIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Invalid conversation ID format", nil, nil)
+		return
+	}
+
+	msgID := c.Param("msgId")
+	if msgID == "" {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Missing message ID", nil, nil)
+		return
+	}
+
+	if err := h.svc.PinMessage(c.Request.Context(), userID, convID, msgID); err != nil {
+		slog.Error("failed to pin message", "error", err, "user_id", userID, "conversation_id", convID, "message_id", msgID)
+		status := http.StatusBadRequest
+		if err.Error() == "not a conversation member" {
+			status = http.StatusForbidden
+		}
+		api.Error(c.Writer, status, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, gin.H{"pinned": true}, nil)
+}
+
+func (h *Handler) UnpinMessage(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+
+	convIDStr := c.Param("id")
+	convID, err := uuid.Parse(convIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Invalid conversation ID format", nil, nil)
+		return
+	}
+
+	if err := h.svc.UnpinMessage(c.Request.Context(), userID, convID); err != nil {
+		slog.Error("failed to unpin message", "error", err, "user_id", userID, "conversation_id", convID)
+		status := http.StatusBadRequest
+		if err.Error() == "not a conversation member" {
+			status = http.StatusForbidden
+		}
+		api.Error(c.Writer, status, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, gin.H{"unpinned": true}, nil)
+}
+
+func (h *Handler) GetPinnedMessage(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+
+	convIDStr := c.Param("id")
+	convID, err := uuid.Parse(convIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Invalid conversation ID format", nil, nil)
+		return
+	}
+
+	pm, err := h.svc.GetPinnedMessage(c.Request.Context(), userID, convID)
+	if err != nil {
+		slog.Error("failed to get pinned message", "error", err, "user_id", userID, "conversation_id", convID)
+		status := http.StatusBadRequest
+		if err.Error() == "not a conversation member" {
+			status = http.StatusForbidden
+		}
+		api.Error(c.Writer, status, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+
+	if pm == nil {
+		api.JSON(c.Writer, http.StatusOK, gin.H{"pinned_message": nil}, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, gin.H{"pinned_message": pm}, nil)
 }
 
 // ---------------------------------------------------------------------------
