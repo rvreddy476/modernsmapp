@@ -1,0 +1,447 @@
+package service
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	mediaEvents "github.com/facebook-like/media-service/internal/events"
+	"github.com/facebook-like/media-service/internal/processing"
+	"github.com/facebook-like/media-service/internal/store/blob"
+	"github.com/facebook-like/media-service/internal/store/postgres"
+	"github.com/google/uuid"
+)
+
+// Size limits per subtype/file_type
+const (
+	MaxImageSize  int64 = 20 * 1024 * 1024  // 20 MB
+	MaxVideoSize  int64 = 500 * 1024 * 1024 // 500 MB
+	MaxAvatarSize int64 = 10 * 1024 * 1024  // 10 MB
+	MaxCoverSize  int64 = 10 * 1024 * 1024  // 10 MB
+	MaxGIFSize    int64 = 15 * 1024 * 1024  // 15 MB
+)
+
+type Service struct {
+	pgStore   *postgres.MediaAssetStore
+	blobStore *blob.Store
+	producer  *mediaEvents.Producer // optional, nil = skip Kafka
+}
+
+func New(pg *postgres.MediaAssetStore, blob *blob.Store) *Service {
+	return &Service{
+		pgStore:   pg,
+		blobStore: blob,
+	}
+}
+
+// SetProducer sets the Kafka producer for async video transcoding events.
+func (s *Service) SetProducer(p *mediaEvents.Producer) {
+	s.producer = p
+}
+
+type InitUploadResponse struct {
+	MediaID   uuid.UUID `json:"media_id"`
+	UploadURL string    `json:"upload_url"`
+	ObjectKey string    `json:"object_key"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// ValidateUpload checks size and mime constraints for the given file type and subtype.
+func ValidateUpload(fileType, mediaSubtype, mimeType string, fileSizeBytes int64) error {
+	// Check subtype-specific limits first
+	switch mediaSubtype {
+	case "avatar":
+		if fileSizeBytes > MaxAvatarSize {
+			return fmt.Errorf("avatar size exceeds %d MB limit", MaxAvatarSize/(1024*1024))
+		}
+		if !strings.HasPrefix(mimeType, "image/") {
+			return fmt.Errorf("avatar must be an image, got: %s", mimeType)
+		}
+		return nil
+	case "cover":
+		if fileSizeBytes > MaxCoverSize {
+			return fmt.Errorf("cover size exceeds %d MB limit", MaxCoverSize/(1024*1024))
+		}
+		if !strings.HasPrefix(mimeType, "image/") {
+			return fmt.Errorf("cover must be an image, got: %s", mimeType)
+		}
+		return nil
+	case "gif":
+		if fileSizeBytes > MaxGIFSize {
+			return fmt.Errorf("gif size exceeds %d MB limit", MaxGIFSize/(1024*1024))
+		}
+		if mimeType != "image/gif" {
+			return fmt.Errorf("invalid mime type for gif: %s", mimeType)
+		}
+		return nil
+	}
+
+	// Fall through to file_type checks for general subtype
+	switch fileType {
+	case "image":
+		if fileSizeBytes > MaxImageSize {
+			return fmt.Errorf("image size exceeds %d MB limit", MaxImageSize/(1024*1024))
+		}
+		if !strings.HasPrefix(mimeType, "image/") {
+			return fmt.Errorf("invalid mime type for image: %s", mimeType)
+		}
+	case "video":
+		if fileSizeBytes > MaxVideoSize {
+			return fmt.Errorf("video size exceeds %d MB limit", MaxVideoSize/(1024*1024))
+		}
+		validMimes := map[string]bool{"video/mp4": true, "video/webm": true, "video/quicktime": true}
+		if !validMimes[mimeType] {
+			return fmt.Errorf("invalid mime type for video: %s", mimeType)
+		}
+	default:
+		return fmt.Errorf("unknown file type: %s", fileType)
+	}
+	return nil
+}
+
+func (s *Service) InitUpload(ctx context.Context, userID uuid.UUID, fileType, mediaSubtype, mimeType string, fileSizeBytes int64, altText string) (*InitUploadResponse, error) {
+	if err := ValidateUpload(fileType, mediaSubtype, mimeType, fileSizeBytes); err != nil {
+		return nil, err
+	}
+
+	mediaID := uuid.New()
+	storageKey := fmt.Sprintf("user/%s/%s/original", userID, mediaID)
+	expiry := 15 * time.Minute
+
+	url, err := s.blobStore.GeneratePresignedPutURL(ctx, storageKey, expiry)
+	if err != nil {
+		return nil, err
+	}
+
+	media := &postgres.MediaAsset{
+		ID:               mediaID,
+		UploaderID:       userID,
+		FileType:         fileType,
+		MediaSubtype:     mediaSubtype,
+		MimeType:         mimeType,
+		FileSizeBytes:    fileSizeBytes,
+		StorageBucket:    s.blobStore.Bucket(),
+		StorageKey:       storageKey,
+		ProcessingStatus: "pending_upload",
+		AltText:          altText,
+		CreatedAt:        time.Now(),
+	}
+
+	if err := s.pgStore.CreateMedia(ctx, media); err != nil {
+		return nil, err
+	}
+
+	return &InitUploadResponse{
+		MediaID:   mediaID,
+		UploadURL: url.String(),
+		ObjectKey: storageKey,
+		ExpiresAt: time.Now().Add(expiry),
+	}, nil
+}
+
+func (s *Service) ConfirmUpload(ctx context.Context, mediaID uuid.UUID, userID uuid.UUID) (*postgres.MediaAsset, error) {
+	// 1. Fetch the record and verify ownership
+	media, err := s.pgStore.GetMedia(ctx, mediaID)
+	if err != nil {
+		return nil, err
+	}
+	if media.UploaderID != userID {
+		return nil, fmt.Errorf("forbidden: you do not own this media")
+	}
+
+	// 2. Update status to 'uploaded'
+	if err := s.pgStore.UpdateStatus(ctx, mediaID, "uploaded"); err != nil {
+		return nil, err
+	}
+
+	// 3. Process based on file_type + media_subtype
+	switch {
+	case media.FileType == "image" && (media.MediaSubtype == "general" || media.MediaSubtype == "avatar" || media.MediaSubtype == "cover"):
+		if err := s.processImage(ctx, media); err != nil {
+			_ = s.pgStore.UpdateStatus(ctx, mediaID, "failed")
+			media.ProcessingStatus = "failed"
+			return media, nil
+		}
+		media.ProcessingStatus = "ready"
+
+	case media.MediaSubtype == "gif":
+		if err := s.processImage(ctx, media); err != nil {
+			_ = s.pgStore.UpdateStatus(ctx, mediaID, "failed")
+			media.ProcessingStatus = "failed"
+			return media, nil
+		}
+		media.ProcessingStatus = "ready"
+
+	case media.FileType == "video":
+		// Set to processing — video transcoding is async
+		if err := s.pgStore.UpdateStatus(ctx, mediaID, "processing"); err != nil {
+			return nil, err
+		}
+		media.ProcessingStatus = "processing"
+		// Emit MediaTranscodeRequested to Kafka for the worker to pick up
+		if s.producer != nil {
+			if err := s.producer.PublishTranscodeRequested(ctx, media.ID, media.UploaderID, media.StorageKey, media.MimeType); err != nil {
+				log.Printf("Warning: failed to publish transcode event for %s: %v", media.ID, err)
+			}
+		}
+	}
+
+	return media, nil
+}
+
+// processImage handles synchronous image processing (resize + upload variants).
+func (s *Service) processImage(ctx context.Context, media *postgres.MediaAsset) error {
+	outputs, meta, err := processing.ProcessImage(
+		ctx, s.blobStore, media.StorageKey,
+		media.ID.String(), media.UploaderID.String(),
+	)
+	if err != nil {
+		return fmt.Errorf("process image: %w", err)
+	}
+
+	// Update media metadata (including blurhash)
+	if err := s.pgStore.UpdateMediaMeta(ctx, media.ID, meta.Width, meta.Height, meta.Blurhash, nil); err != nil {
+		return fmt.Errorf("update media meta: %w", err)
+	}
+
+	// Insert variant records
+	var variants []postgres.MediaVariant
+	for _, out := range outputs {
+		w := out.Width
+		h := out.Height
+		sz := out.SizeBytes
+		variants = append(variants, postgres.MediaVariant{
+			MediaAssetID: media.ID,
+			Name:         out.Name,
+			Width:        &w,
+			Height:       &h,
+			SizeBytes:    &sz,
+			Mime:         out.Mime,
+			ObjectKey:    out.ObjectKey,
+		})
+	}
+
+	if err := s.pgStore.InsertVariants(ctx, variants); err != nil {
+		return fmt.Errorf("insert variants: %w", err)
+	}
+
+	// Populate URL fields
+	s.populateMediaURLs(ctx, media, variants)
+
+	// Mark as ready
+	return s.pgStore.UpdateStatus(ctx, media.ID, "ready")
+}
+
+func (s *Service) GetMedia(ctx context.Context, mediaID uuid.UUID) (*postgres.MediaAsset, error) {
+	return s.pgStore.GetMediaWithVariants(ctx, mediaID)
+}
+
+// MediaURLResponse is the response for serving media URLs.
+type MediaURLResponse struct {
+	MediaID  uuid.UUID         `json:"media_id"`
+	FileType string            `json:"kind"`
+	Status   string            `json:"status"`
+	Width    *int              `json:"width,omitempty"`
+	Height   *int              `json:"height,omitempty"`
+	Blurhash *string           `json:"blurhash,omitempty"`
+	Variants map[string]string `json:"variants"`
+}
+
+// GetMediaURL generates presigned GET URLs for a media item and all its variants.
+func (s *Service) GetMediaURL(ctx context.Context, mediaID uuid.UUID) (*MediaURLResponse, error) {
+	media, err := s.pgStore.GetMediaWithVariants(ctx, mediaID)
+	if err != nil {
+		return nil, err
+	}
+
+	expiry := 15 * time.Minute
+	variants := make(map[string]string)
+
+	// Original
+	origURL, err := s.blobStore.GeneratePresignedGetURL(ctx, media.StorageKey, expiry)
+	if err == nil {
+		variants["original"] = origURL.String()
+	}
+
+	// Each variant
+	for _, v := range media.Variants {
+		vURL, err := s.blobStore.GeneratePresignedGetURL(ctx, v.ObjectKey, expiry)
+		if err == nil {
+			variants[v.Name] = vURL.String()
+		}
+	}
+
+	return &MediaURLResponse{
+		MediaID:  media.ID,
+		FileType: media.FileType,
+		Status:   media.ProcessingStatus,
+		Width:    media.Width,
+		Height:   media.Height,
+		Blurhash: media.Blurhash,
+		Variants: variants,
+	}, nil
+}
+
+// GetMediaVariantURL generates a presigned GET URL for a specific variant.
+func (s *Service) GetMediaVariantURL(ctx context.Context, mediaID uuid.UUID, variant string) (string, error) {
+	if variant == "original" {
+		media, err := s.pgStore.GetMedia(ctx, mediaID)
+		if err != nil {
+			return "", err
+		}
+		u, err := s.blobStore.GeneratePresignedGetURL(ctx, media.StorageKey, 15*time.Minute)
+		if err != nil {
+			return "", err
+		}
+		return u.String(), nil
+	}
+
+	variants, err := s.pgStore.GetVariants(ctx, mediaID)
+	if err != nil {
+		return "", err
+	}
+	for _, v := range variants {
+		if v.Name == variant {
+			u, err := s.blobStore.GeneratePresignedGetURL(ctx, v.ObjectKey, 15*time.Minute)
+			if err != nil {
+				return "", err
+			}
+			return u.String(), nil
+		}
+	}
+	return "", fmt.Errorf("variant %q not found", variant)
+}
+
+// BatchMediaURLs returns presigned URLs for multiple media items.
+func (s *Service) BatchMediaURLs(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]*MediaURLResponse, error) {
+	if len(ids) > 50 {
+		return nil, fmt.Errorf("batch limit is 50 media items")
+	}
+
+	medias, err := s.pgStore.GetMediaBatch(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+
+	expiry := 15 * time.Minute
+	result := make(map[uuid.UUID]*MediaURLResponse, len(medias))
+
+	for _, m := range medias {
+		variants := make(map[string]string)
+		origURL, err := s.blobStore.GeneratePresignedGetURL(ctx, m.StorageKey, expiry)
+		if err == nil {
+			variants["original"] = origURL.String()
+		}
+		for _, v := range m.Variants {
+			vURL, err := s.blobStore.GeneratePresignedGetURL(ctx, v.ObjectKey, expiry)
+			if err == nil {
+				variants[v.Name] = vURL.String()
+			}
+		}
+		result[m.ID] = &MediaURLResponse{
+			MediaID:  m.ID,
+			FileType: m.FileType,
+			Status:   m.ProcessingStatus,
+			Width:    m.Width,
+			Height:   m.Height,
+			Blurhash: m.Blurhash,
+			Variants: variants,
+		}
+	}
+
+	return result, nil
+}
+
+// ─── Delete ────────────────────────────────────────────────────────
+
+// DeleteMedia verifies ownership, removes blobs from storage, then deletes the DB record.
+func (s *Service) DeleteMedia(ctx context.Context, mediaID uuid.UUID, userID uuid.UUID) error {
+	// 1. Fetch and verify ownership
+	media, err := s.pgStore.GetMedia(ctx, mediaID)
+	if err != nil {
+		return fmt.Errorf("media not found")
+	}
+	if media.UploaderID != userID {
+		return fmt.Errorf("forbidden: you do not own this media")
+	}
+
+	// 2. Delete from DB (returns all object keys)
+	objectKeys, err := s.pgStore.DeleteMedia(ctx, mediaID)
+	if err != nil {
+		return fmt.Errorf("delete media record: %w", err)
+	}
+
+	// 3. Delete blobs from storage (best-effort, don't fail the request)
+	for _, key := range objectKeys {
+		if err := s.blobStore.DeleteObject(ctx, key); err != nil {
+			log.Printf("Warning: failed to delete blob %s: %v", key, err)
+		}
+	}
+
+	return nil
+}
+
+// ─── Status ────────────────────────────────────────────────────────
+
+// MediaStatusResponse is the response for the status endpoint.
+type MediaStatusResponse struct {
+	MediaID          uuid.UUID                `json:"media_id"`
+	ProcessingStatus string                   `json:"processing_status"`
+	FileType         string                   `json:"file_type"`
+	Width            *int                     `json:"width,omitempty"`
+	Height           *int                     `json:"height,omitempty"`
+	DurationSeconds  *int                     `json:"duration_seconds,omitempty"`
+	TranscodingJobs  []postgres.TranscodingJob `json:"transcoding_jobs,omitempty"`
+}
+
+// GetMediaStatus returns the processing status and transcoding job details.
+func (s *Service) GetMediaStatus(ctx context.Context, mediaID uuid.UUID) (*MediaStatusResponse, error) {
+	media, err := s.pgStore.GetMedia(ctx, mediaID)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := &MediaStatusResponse{
+		MediaID:          media.ID,
+		ProcessingStatus: media.ProcessingStatus,
+		FileType:         media.FileType,
+		Width:            media.Width,
+		Height:           media.Height,
+		DurationSeconds:  media.DurationSeconds,
+	}
+
+	// Include transcoding jobs for videos
+	if media.FileType == "video" {
+		jobs, err := s.pgStore.GetTranscodingJobs(ctx, mediaID)
+		if err != nil {
+			log.Printf("Warning: failed to fetch transcoding jobs for %s: %v", mediaID, err)
+		} else {
+			resp.TranscodingJobs = jobs
+		}
+	}
+
+	return resp, nil
+}
+
+// ─── URL Population ────────────────────────────────────────────────
+
+// populateMediaURLs generates and stores the URL references for a processed media item.
+func (s *Service) populateMediaURLs(ctx context.Context, media *postgres.MediaAsset, variants []postgres.MediaVariant) {
+	originalURL := media.StorageKey
+	cdnURL := fmt.Sprintf("/%s/%s", media.StorageBucket, media.StorageKey)
+
+	var thumbnailURL *string
+	for _, v := range variants {
+		if v.Name == "thumb_150" {
+			key := v.ObjectKey
+			thumbnailURL = &key
+			break
+		}
+	}
+
+	if err := s.pgStore.UpdateMediaURLs(ctx, media.ID, &originalURL, &cdnURL, thumbnailURL); err != nil {
+		log.Printf("Warning: failed to update media URLs for %s: %v", media.ID, err)
+	}
+}

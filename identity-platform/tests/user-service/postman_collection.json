@@ -1,0 +1,141 @@
+{
+  "info": {
+    "name": "User Service",
+    "_postman_id": "user-service-collection",
+    "description": "User service endpoints",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://localhost:8082/v1/users/health",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8082",
+          "path": [
+            "v1",
+            "users",
+            "health"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Get User By ID",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://localhost:8082/v1/users/{{user_id}}",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8082",
+          "path": [
+            "v1",
+            "users",
+            "{{user_id}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Get Me",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "{{user_id}}"
+          }
+        ],
+        "url": {
+          "raw": "http://localhost:8082/v1/users/me",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8082",
+          "path": [
+            "v1",
+            "users",
+            "me"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Get My Settings",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "{{user_id}}"
+          }
+        ],
+        "url": {
+          "raw": "http://localhost:8082/v1/users/me/settings",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8082",
+          "path": [
+            "v1",
+            "users",
+            "me",
+            "settings"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Update My Settings",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-User-Id",
+            "value": "{{user_id}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"account_visibility\": \"public\",\n  \"allow_messages_from\": \"everyone\",\n  \"allow_comments_from\": \"everyone\"\n}"
+        },
+        "url": {
+          "raw": "http://localhost:8082/v1/users/me/settings",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8082",
+          "path": [
+            "v1",
+            "users",
+            "me",
+            "settings"
+          ]
+        }
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "user_id",
+      "value": "00000000-0000-0000-0000-000000000000"
+    }
+  ]
+}

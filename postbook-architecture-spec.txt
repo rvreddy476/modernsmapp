@@ -1,0 +1,3428 @@
+
+POSTBOOK PLATFORM
+Complete System Architecture
+& Technical Specification
+Postbook  •  Postgram  •  PostTube
+8 Microservices  •  5 Domain Databases  •  Event-Driven Architecture
+
+Version 2.0  •  February 2026
+Project Owner: RaghuvarnReddy
+Classification: Internal – Engineering Team
+
+Table of Contents
+
+
+
+1. System Architecture Overview
+The Postbook platform is a social networking ecosystem consisting of three consumer-facing applications (Postbook, Postgram, PostTube) powered by 8 backend microservices and 5 domain-grouped databases. This document is the single source of truth for all services, schemas, APIs, and inter-service communication patterns.
+
+1.1 Service Registry
+Service
+Responsibility
+Port
+Database Group
+Auth Service
+Registration, login, JWT, 2FA, sessions
+55193
+Identity DB
+Profile Service
+User profiles, about sections, links, reputation
+TBD
+Identity DB
+Chat Service
+Real-time messaging, rooms, DMs
+7142
+Social DB
+Notification Service
+Push, email, in-app notifications, queues
+TBD
+Social DB
+Content Service
+Posts, stories, videos, comments, reactions
+TBD
+Content DB
+Media Service
+File upload, CDN, transcoding, thumbnails
+TBD
+Content DB
+Search Service
+Full-text search, discovery, recommendations
+TBD
+Search (Elasticsearch)
+Monetization Service
+Payouts, subscriptions, wallets, creator tiers
+TBD
+Monetization DB
+
+1.2 Database Domain Grouping
+Services that share closely related data are grouped onto the same PostgreSQL instance. Each group is a separate PostgreSQL database (not schema) for clean isolation with the option to split onto separate servers later.
+
+Database
+Services
+Tables
+Rationale
+identity_db
+Auth + Profile
+users, sessions, profiles, profile_about, profile_links, channels, business_pages, privacy, reputation, preferences
+Auth and Profile always need each other. Profile reads user_id from users on every request. Keeping them together avoids cross-DB joins.
+social_db
+Chat + Notification
+conversations, messages, message_reads, notification_templates, notifications, notification_preferences, user_devices
+Chat generates notifications. Co-locating avoids async delays for read receipts and typing indicators.
+content_db
+Content + Media
+posts, comments, reactions, stories, videos, media_assets, transcoding_jobs, playlists
+Content and media are tightly coupled. Every post/video references media assets. Same transaction boundary.
+search_db
+Search
+Elasticsearch indices (not PostgreSQL)
+Separate engine. Synced from other DBs via events.
+monetization_db
+Monetization
+wallets, transactions, subscriptions, payouts, creator_monetization, tax_info
+Financial data needs strict isolation for security, auditing, and compliance.
+
+1.3 Inter-Service Communication
+Services communicate via two patterns depending on the use case:
+
+Pattern
+When to Use
+Technology
+Examples
+Synchronous REST
+Request needs an immediate response; user is waiting
+HTTP/REST via Axios (existing interceptor pattern)
+Profile Service calls Auth Service to validate JWT; Content Service calls Profile to get author info
+Async Event Bus
+Fire-and-forget; eventual consistency is fine; fan-out to multiple consumers
+Redis Streams or RabbitMQ
+New post created → Notification Service sends push; User updates profile → Search Service reindexes
+
+1.4 Event Catalog
+Every cross-service action publishes an event. Below are the core events. Each event has a standard envelope:
+{ "event_id": "uuid", "event_type": "string", "timestamp": "ISO8601",
+  "source_service": "string", "payload": { ... } }
+
+Event
+Publisher
+Consumers
+Purpose
+user.registered
+Auth
+Profile, Notification, Search
+Create default profile; send welcome notification; index user
+user.deleted
+Auth
+Profile, Content, Chat, Search, Monetization
+Cascade cleanup across all services
+profile.updated
+Profile
+Search, Content
+Reindex search; update cached author info in content
+profile.avatar_changed
+Profile
+Chat, Content
+Update cached avatar in messages and posts
+post.created
+Content
+Notification, Search, Profile
+Notify followers; index post; update post count
+post.liked
+Content
+Notification
+Notify post author
+comment.created
+Content
+Notification
+Notify post author and thread participants
+video.uploaded
+Media
+Content, Notification
+Create video record; notify subscribers
+video.transcoded
+Media
+Content
+Mark video as ready; update qualities available
+message.sent
+Chat
+Notification
+Send push notification if recipient offline
+channel.milestone
+Profile
+Notification
+Notify channel owner of achievement
+subscription.created
+Monetization
+Notification, Profile
+Notify creator; update subscriber count
+payout.completed
+Monetization
+Notification
+Notify creator of payment
+
+1.5 API Gateway Pattern
+All client requests go through a single API Gateway. The gateway handles: SSL termination, rate limiting (global), JWT validation (pass token to downstream services), request routing based on URL prefix, and CORS headers. The gateway does NOT do business logic.
+
+URL Prefix
+Routed To
+Notes
+/api/v1/auth/*
+Auth Service (:55193)
+Login, register, token refresh, 2FA
+/api/v1/profiles/*
+Profile Service
+Profile CRUD, about, links, channels, reputation
+/api/v1/chat/*
+Chat Service (:7142)
+Conversations, messages, WebSocket upgrade
+/api/v1/notifications/*
+Notification Service
+Notification list, mark read, preferences
+/api/v1/posts/*
+Content Service
+Posts, comments, reactions, stories, feed
+/api/v1/videos/*
+Content Service
+Video metadata, playlists
+/api/v1/media/*
+Media Service
+Upload, CDN URLs, transcoding status
+/api/v1/search/*
+Search Service
+Full-text search, discover, recommendations
+/api/v1/monetization/*
+Monetization Service
+Wallet, payouts, subscriptions
+
+2. Identity Database (Auth + Profile Services)
+This is the most critical database. It stores user authentication data and all profile information. Both the Auth Service and Profile Service connect to this database. The Auth Service owns the users and sessions tables; the Profile Service owns everything else.
+
+⚠️  CRITICAL: All table and column names MUST use lowercase snake_case. Never use quoted identifiers. This prevents the PostgreSQL case-sensitivity bugs previously encountered with 'Id' vs 'id'.
+
+2.1 Auth Service Tables
+
+2.1.1 users
+Owned by Auth Service. Profile Service has READ-ONLY access to this table (for user_id lookups and account_type checks).
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK, DEFAULT gen_random_uuid()
+Never expose raw
+email
+VARCHAR(255)
+UNIQUE, NULLABLE
+Login option 1
+phone
+VARCHAR(20)
+UNIQUE, NULLABLE
+Login option 2
+password_hash
+VARCHAR(255)
+NULLABLE
+bcrypt(12+)/argon2id; NULL if OTP-only
+email_verified
+BOOLEAN
+DEFAULT false
+
+phone_verified
+BOOLEAN
+DEFAULT false
+
+two_factor_enabled
+BOOLEAN
+DEFAULT false
+TOTP or SMS
+two_factor_secret
+VARCHAR(255)
+NULLABLE, ENCRYPTED
+TOTP secret key
+account_type
+ENUM
+DEFAULT 'personal'
+personal | creator | business
+account_status
+ENUM
+DEFAULT 'active'
+active | suspended | deleted | pending_deletion
+login_provider
+VARCHAR(50)
+NULLABLE
+google | apple | github | email | phone
+recovery_email
+VARCHAR(255)
+NULLABLE
+Backup recovery
+recovery_phone
+VARCHAR(20)
+NULLABLE
+Backup recovery
+age_verification
+ENUM
+DEFAULT 'unverified'
+unverified | under_16 | minor | adult
+consent_terms
+BOOLEAN
+DEFAULT false
+
+consent_privacy
+BOOLEAN
+DEFAULT false
+
+consent_age
+BOOLEAN
+DEFAULT false
+
+deletion_requested_at
+TIMESTAMPTZ
+NULLABLE
+GDPR/DPDP compliance
+scheduled_purge_date
+TIMESTAMPTZ
+NULLABLE
+30 days after request
+created_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+last_login_at
+TIMESTAMPTZ
+NULLABLE
+Updated on each login
+updated_at
+TIMESTAMPTZ
+DEFAULT NOW()
+Auto-trigger
+
+CHECK (email IS NOT NULL OR phone IS NOT NULL)  -- At least one login method
+
+2.1.2 sessions
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+user_id
+UUID
+FK → users(id) ON DELETE CASCADE
+
+refresh_token_hash
+VARCHAR(255)
+NOT NULL
+Hashed refresh token
+device_info
+JSONB
+NULLABLE
+{browser, os, ip, geo}
+is_active
+BOOLEAN
+DEFAULT true
+Revoke by setting false
+expires_at
+TIMESTAMPTZ
+NOT NULL
+7 days from creation
+created_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+2.1.3 trusted_devices
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+user_id
+UUID
+FK → users(id) ON DELETE CASCADE
+
+device_fingerprint
+VARCHAR(255)
+NOT NULL
+Browser/device hash
+device_name
+VARCHAR(100)
+NULLABLE
+iPhone 15, Chrome on Mac
+last_used_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+trusted_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+2.2 Profile Service Tables
+
+2.2.1 profiles
+One-to-one with users. This is the most-queried table in the entire system. Every profile view, every post render (for author info), every search result hits this table.
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK, DEFAULT gen_random_uuid()
+Profile record ID
+user_id
+UUID
+FK → users(id), UNIQUE, NOT NULL
+One profile per user
+username
+VARCHAR(30)
+UNIQUE, NOT NULL
+Handle; regex validated
+display_name
+VARCHAR(100)
+NOT NULL
+Shown publicly
+preferred_name
+VARCHAR(100)
+NULLABLE
+Nickname / inclusivity
+bio
+VARCHAR(250)
+NULLABLE
+Short bio
+avatar_url
+VARCHAR(500)
+NULLABLE
+CDN URL
+cover_photo_url
+VARCHAR(500)
+NULLABLE
+Postbook + Tube cover
+pronouns
+VARCHAR(30)
+NULLABLE
+he/him, she/her, custom
+category
+ENUM
+DEFAULT 'personal'
+personal | creator | business
+is_verified
+BOOLEAN
+DEFAULT false
+Blue check
+verification_level
+ENUM
+DEFAULT 'email'
+email | phone | id | org
+status_text
+VARCHAR(100)
+NULLABLE
+Currently working on...
+status_emoji
+VARCHAR(10)
+NULLABLE
+Status emoji
+status_expires_at
+TIMESTAMPTZ
+NULLABLE
+Auto-clear status
+profile_theme_color
+VARCHAR(7)
+DEFAULT '#1A73E8'
+Accent color hex
+intro_media_url
+VARCHAR(500)
+NULLABLE
+10s audio/video intro
+intro_media_type
+ENUM
+NULLABLE
+audio | video
+cta_label
+VARCHAR(30)
+NULLABLE
+Book, Shop, Hire Me
+cta_url
+VARCHAR(500)
+NULLABLE
+CTA destination
+member_since_badge
+BOOLEAN
+DEFAULT true
+Show Member since YYYY
+timezone
+VARCHAR(50)
+NULLABLE
+IANA timezone
+follower_count
+BIGINT
+DEFAULT 0
+Denormalized counter
+following_count
+BIGINT
+DEFAULT 0
+Denormalized counter
+friend_count
+BIGINT
+DEFAULT 0
+Denormalized counter
+post_count
+BIGINT
+DEFAULT 0
+Denormalized counter
+created_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+updated_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+Username regex: ^[a-zA-Z][a-zA-Z0-9._]{2,29}$
+
+2.2.2 profile_about (Flexible About Sections)
+Stores all 'About' data: basic info, contact, location, life entries (work/education/achievements), interests, and services. Uses JSONB for zero-migration flexibility.
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+profile_id
+UUID
+FK → profiles(id) ON DELETE CASCADE
+
+section_type
+ENUM
+NOT NULL
+basic_info | contact | location | life_entry | interests | services
+data
+JSONB
+NOT NULL, DEFAULT '{}'
+Section-specific structured data
+visibility
+JSONB
+NOT NULL, DEFAULT '{}'
+Per-field visibility overrides
+sort_order
+INT
+DEFAULT 0
+Ordering within section
+is_pinned
+BOOLEAN
+DEFAULT false
+Pin to top of section
+created_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+updated_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+2.2.3 profile_links (Built-in Link Tree)
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+profile_id
+UUID
+FK → profiles(id) ON DELETE CASCADE
+
+title
+VARCHAR(100)
+NOT NULL
+Link display text
+url
+VARCHAR(500)
+NOT NULL
+Destination URL
+icon
+VARCHAR(50)
+NULLABLE
+Icon name or emoji
+category
+VARCHAR(50)
+NULLABLE
+My Music, Socials, etc.
+sort_order
+INT
+DEFAULT 0
+Drag to reorder
+click_count
+BIGINT
+DEFAULT 0
+Atomic increment
+is_pinned
+BOOLEAN
+DEFAULT false
+Top of list
+visibility
+ENUM
+DEFAULT 'public'
+public | followers | friends | only_me
+created_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+2.2.4 channels (Creator/Channel Profile)
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+profile_id
+UUID
+FK → profiles(id) ON DELETE CASCADE
+Owner
+handle
+VARCHAR(30)
+UNIQUE, NOT NULL
+Channel @handle
+name
+VARCHAR(100)
+NOT NULL
+Channel display name
+description
+TEXT
+NULLABLE
+Long description
+icon_url
+VARCHAR(500)
+NULLABLE
+Can differ from user avatar
+banner_url
+VARCHAR(500)
+NULLABLE
+Channel banner
+category
+VARCHAR(50)
+NULLABLE
+Gaming, Education, Music
+country
+VARCHAR(3)
+NULLABLE
+ISO 3166-1 alpha-3
+language
+VARCHAR(10)
+NULLABLE
+ISO 639-1
+contact_email
+VARCHAR(255)
+NULLABLE
+Business inquiries
+collab_status
+ENUM
+DEFAULT 'not_set'
+open | closed | not_set
+content_schedule
+VARCHAR(200)
+NULLABLE
+Videos every Friday
+subscriber_count
+BIGINT
+DEFAULT 0
+Denormalized
+is_verified
+BOOLEAN
+DEFAULT false
+
+created_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+updated_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+2.2.5 channel_links
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+channel_id
+UUID
+FK → channels(id) ON DELETE CASCADE
+
+title
+VARCHAR(100)
+NOT NULL
+
+url
+VARCHAR(500)
+NOT NULL
+
+sort_order
+INT
+DEFAULT 0
+
+
+2.2.6 channel_milestones
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+channel_id
+UUID
+FK → channels(id) ON DELETE CASCADE
+
+milestone_type
+ENUM
+NOT NULL
+subscriber_count | anniversary | content_count | custom
+title
+VARCHAR(200)
+NOT NULL
+Reached 10K subs!
+achieved_at
+TIMESTAMPTZ
+NOT NULL
+
+is_public
+BOOLEAN
+DEFAULT true
+
+
+2.2.7 business_pages
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+profile_id
+UUID
+FK → profiles(id) ON DELETE CASCADE
+Owner
+page_handle
+VARCHAR(30)
+UNIQUE, NOT NULL
+
+page_name
+VARCHAR(100)
+NOT NULL
+
+category
+VARCHAR(50)
+NOT NULL
+Restaurant, Store, etc.
+description
+TEXT
+NULLABLE
+
+address
+TEXT
+NULLABLE
+Full address
+latitude
+DECIMAL(10,7)
+NULLABLE
+Map pin
+longitude
+DECIMAL(10,7)
+NULLABLE
+Map pin
+business_hours
+JSONB
+NULLABLE
+{mon: {open, close}, ...}
+phone
+VARCHAR(20)
+NULLABLE
+
+whatsapp
+VARCHAR(20)
+NULLABLE
+
+business_email
+VARCHAR(255)
+NULLABLE
+
+services
+JSONB
+NULLABLE
+[{name, desc, price}]
+price_range
+ENUM
+NULLABLE
+$ | $$ | $$$ | $$$$
+booking_url
+VARCHAR(500)
+NULLABLE
+Appointment link
+menu_urls
+JSONB
+NULLABLE
+[{label, url}]
+is_verified
+BOOLEAN
+DEFAULT false
+
+avg_rating
+DECIMAL(2,1)
+DEFAULT 0.0
+Computed
+review_count
+INT
+DEFAULT 0
+
+faq
+JSONB
+NULLABLE
+[{question, answer}]
+created_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+updated_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+2.2.8 business_reviews
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+page_id
+UUID
+FK → business_pages(id) ON DELETE CASCADE
+
+reviewer_profile_id
+UUID
+FK → profiles(id)
+
+rating
+SMALLINT
+NOT NULL, CHECK (1-5)
+1 to 5 stars
+review_text
+VARCHAR(1000)
+NULLABLE
+
+created_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+updated_at
+TIMESTAMPTZ
+NULLABLE
+If edited
+
+2.2.9 privacy_settings
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+profile_id
+UUID
+FK → profiles(id), UNIQUE
+One per user
+default_visibility
+ENUM
+DEFAULT 'public'
+public | followers | friends | only_me
+who_can_follow
+ENUM
+DEFAULT 'everyone'
+everyone | approved_only
+who_can_friend_request
+ENUM
+DEFAULT 'everyone'
+everyone | friends_of_friends | none
+who_can_message
+ENUM
+DEFAULT 'everyone'
+everyone | followers | friends | none
+show_friend_list
+BOOLEAN
+DEFAULT true
+
+discoverable_by_email
+BOOLEAN
+DEFAULT true
+
+discoverable_by_phone
+BOOLEAN
+DEFAULT false
+
+incognito_browsing
+BOOLEAN
+DEFAULT false
+Hide from profile views
+temp_hide_until
+TIMESTAMPTZ
+NULLABLE
+Temporary profile hide
+data_download_requested_at
+TIMESTAMPTZ
+NULLABLE
+GDPR export
+updated_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+2.2.10 custom_lists
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+profile_id
+UUID
+FK → profiles(id) ON DELETE CASCADE
+
+name
+VARCHAR(50)
+NOT NULL
+Close Friends, Work, Family
+created_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+2.2.11 custom_list_members
+Column
+Type
+Constraints
+Notes
+list_id
+UUID
+FK → custom_lists(id) ON DELETE CASCADE
+
+member_profile_id
+UUID
+FK → profiles(id) ON DELETE CASCADE
+
+added_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+PRIMARY KEY (list_id, member_profile_id)
+
+2.2.12 safety_records
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+profile_id
+UUID
+FK → profiles(id), UNIQUE
+
+report_count
+INT
+DEFAULT 0
+Internal counter
+warning_count
+INT
+DEFAULT 0
+Strikes
+content_restriction
+ENUM
+DEFAULT 'none'
+none | minor | adult_only
+sensitive_content_pref
+ENUM
+DEFAULT 'standard'
+standard | show_less | show_more
+self_certified_age
+ENUM
+NULLABLE
+under_16 | minor_16_17 | adult
+trusted_contacts
+JSONB
+NULLABLE
+[{profile_id, notify_days}]
+content_boundaries
+JSONB
+NULLABLE
+[politics, violence, ...]
+updated_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+2.2.13 user_reputation
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+profile_id
+UUID
+FK → profiles(id), UNIQUE
+
+trust_score
+DECIMAL(3,2)
+DEFAULT 0.50
+0.00–1.00; internal
+endorsement_count
+INT
+DEFAULT 0
+
+cross_platform_proofs
+JSONB
+NULLABLE
+[{platform, handle, verified_at}]
+updated_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+2.2.14 endorsements
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+from_profile_id
+UUID
+FK → profiles(id) ON DELETE CASCADE
+Endorser
+to_profile_id
+UUID
+FK → profiles(id) ON DELETE CASCADE
+Endorsed
+skill_tag
+VARCHAR(50)
+NULLABLE
+What they endorse
+message
+VARCHAR(200)
+NULLABLE
+Optional note
+created_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+UNIQUE(from_profile_id, to_profile_id, skill_tag)
+
+2.2.15 user_preferences
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+profile_id
+UUID
+FK → profiles(id), UNIQUE
+
+content_languages
+VARCHAR[]
+NULLABLE
+Feed language filter
+content_format_pref
+ENUM
+NULLABLE
+short_video | long_video | text | mixed
+captions_preferred
+BOOLEAN
+DEFAULT false
+Always show captions
+reduced_motion
+BOOLEAN
+DEFAULT false
+Less animation
+screen_reader_user
+BOOLEAN
+DEFAULT false
+Optimize for a11y
+communication_style
+ENUM
+DEFAULT 'casual'
+formal | casual
+updated_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+2.2.16 follows
+Stores follower/following relationships. Separate from friends (which require mutual approval).
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+follower_id
+UUID
+FK → profiles(id) ON DELETE CASCADE
+Who follows
+following_id
+UUID
+FK → profiles(id) ON DELETE CASCADE
+Who is followed
+status
+ENUM
+DEFAULT 'active'
+active | pending (for approved_only accounts)
+created_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+UNIQUE(follower_id, following_id)
+
+2.2.17 friendships
+Mutual friendships. Both users must approve. Store once (lower user_id first) to prevent duplicates.
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+requester_id
+UUID
+FK → profiles(id) ON DELETE CASCADE
+Who sent request
+addressee_id
+UUID
+FK → profiles(id) ON DELETE CASCADE
+Who received request
+status
+ENUM
+DEFAULT 'pending'
+pending | accepted | rejected | blocked
+created_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+updated_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+UNIQUE(requester_id, addressee_id)
+
+2.2.18 blocks
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+blocker_id
+UUID
+FK → profiles(id) ON DELETE CASCADE
+
+blocked_id
+UUID
+FK → profiles(id) ON DELETE CASCADE
+
+created_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+UNIQUE(blocker_id, blocked_id)
+
+3. Social Database (Chat + Notification Services)
+This database handles all real-time communication and notification delivery. The Chat Service owns conversations and messages; the Notification Service owns notification tables.
+
+ℹ️  NOTE: Chat and Notification services only store user_id (UUID) references. They do NOT store usernames, display names, or avatars. These are fetched from Profile Service via REST call (with Redis caching, TTL 5 min) when rendering UI.
+
+3.1 Chat Service Tables
+
+3.1.1 conversations
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+type
+ENUM
+NOT NULL
+dm | group | channel_chat
+name
+VARCHAR(100)
+NULLABLE
+Group name; NULL for DMs
+icon_url
+VARCHAR(500)
+NULLABLE
+Group icon
+created_by
+UUID
+NOT NULL
+Creator user_id
+is_archived
+BOOLEAN
+DEFAULT false
+
+last_message_at
+TIMESTAMPTZ
+NULLABLE
+For sort ordering
+last_message_preview
+VARCHAR(200)
+NULLABLE
+Snippet for list view
+created_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+updated_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+3.1.2 conversation_members
+Column
+Type
+Constraints
+Notes
+conversation_id
+UUID
+FK → conversations(id) ON DELETE CASCADE
+
+user_id
+UUID
+NOT NULL
+From auth; no FK cross-DB
+role
+ENUM
+DEFAULT 'member'
+admin | moderator | member
+nickname
+VARCHAR(50)
+NULLABLE
+Per-conversation nickname
+is_muted
+BOOLEAN
+DEFAULT false
+
+muted_until
+TIMESTAMPTZ
+NULLABLE
+Temporary mute
+last_read_message_id
+UUID
+NULLABLE
+For unread count
+joined_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+left_at
+TIMESTAMPTZ
+NULLABLE
+NULL = still in
+
+PRIMARY KEY (conversation_id, user_id)
+
+3.1.3 messages
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+conversation_id
+UUID
+FK → conversations(id) ON DELETE CASCADE
+
+sender_id
+UUID
+NOT NULL
+User ID from auth
+content
+TEXT
+NULLABLE
+Text content; NULL if media-only
+message_type
+ENUM
+DEFAULT 'text'
+text | image | video | audio | file | system | reply | forward
+media_url
+VARCHAR(500)
+NULLABLE
+Attachment CDN URL
+media_metadata
+JSONB
+NULLABLE
+{type, size, dimensions, duration}
+reply_to_id
+UUID
+FK → messages(id) NULLABLE
+Threaded reply
+forwarded_from_id
+UUID
+NULLABLE
+Original message ref
+is_edited
+BOOLEAN
+DEFAULT false
+
+edited_at
+TIMESTAMPTZ
+NULLABLE
+
+is_deleted
+BOOLEAN
+DEFAULT false
+Soft delete
+deleted_at
+TIMESTAMPTZ
+NULLABLE
+
+reactions
+JSONB
+DEFAULT '{}'
+{emoji: [user_ids]}
+created_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+INDEX on (conversation_id, created_at DESC) for pagination
+
+3.1.4 message_reads (Read Receipts)
+Column
+Type
+Constraints
+Notes
+message_id
+UUID
+FK → messages(id) ON DELETE CASCADE
+
+user_id
+UUID
+NOT NULL
+
+read_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+PRIMARY KEY (message_id, user_id)
+
+3.1.5 typing_indicators (Redis-only, not persisted)
+Typing indicators are ephemeral. Store in Redis with 3-second TTL:
+SET typing:{conversation_id}:{user_id} 1 EX 3
+
+3.2 Notification Service Tables
+
+3.2.1 notifications
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+recipient_id
+UUID
+NOT NULL
+User who receives it
+type
+ENUM
+NOT NULL
+follow | friend_request | like | comment | mention | message | milestone | payout | system
+title
+VARCHAR(200)
+NOT NULL
+Notification title
+body
+VARCHAR(500)
+NULLABLE
+Notification body text
+data
+JSONB
+NULLABLE
+{link, actor_id, target_type, target_id}
+is_read
+BOOLEAN
+DEFAULT false
+
+read_at
+TIMESTAMPTZ
+NULLABLE
+
+channel
+ENUM
+DEFAULT 'in_app'
+in_app | push | email | sms
+delivery_status
+ENUM
+DEFAULT 'pending'
+pending | sent | delivered | failed
+created_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+INDEX on (recipient_id, is_read, created_at DESC)
+
+3.2.2 notification_preferences
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+user_id
+UUID
+UNIQUE, NOT NULL
+
+email_enabled
+BOOLEAN
+DEFAULT true
+
+push_enabled
+BOOLEAN
+DEFAULT true
+
+sms_enabled
+BOOLEAN
+DEFAULT false
+
+quiet_hours_start
+TIME
+NULLABLE
+e.g. 22:00
+quiet_hours_end
+TIME
+NULLABLE
+e.g. 08:00
+muted_types
+JSONB
+DEFAULT '[]'
+Types to suppress
+updated_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+3.2.3 user_devices (Push Notification Tokens)
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+user_id
+UUID
+NOT NULL
+
+platform
+ENUM
+NOT NULL
+ios | android | web
+push_token
+VARCHAR(500)
+NOT NULL
+FCM/APNs token
+is_active
+BOOLEAN
+DEFAULT true
+
+created_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+updated_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+UNIQUE(user_id, push_token)
+
+4. Content Database (Content + Media Services)
+This database stores all user-generated content (posts, stories, videos, comments, reactions) and all media asset metadata. The actual media files live in a CDN (S3/Cloudflare R2); this DB only stores URLs and metadata.
+
+4.1 Content Service Tables
+
+4.1.1 posts
+Unified post model for Postbook (text+images), Postgram (images/reels), and PostTube (video posts/shorts).
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+author_id
+UUID
+NOT NULL
+Profile ID from identity_db
+post_type
+ENUM
+NOT NULL
+text | image | video | reel | short | story | article
+app_origin
+ENUM
+NOT NULL
+postbook | postgram | posttube
+content
+TEXT
+NULLABLE
+Text/caption
+media_ids
+UUID[]
+NULLABLE
+References to media_assets
+video_id
+UUID
+NULLABLE
+FK → videos(id) for video posts
+hashtags
+VARCHAR[]
+NULLABLE
+Extracted hashtags
+mentions
+UUID[]
+NULLABLE
+Mentioned user profile_ids
+location_name
+VARCHAR(200)
+NULLABLE
+Check-in location
+location_lat
+DECIMAL(10,7)
+NULLABLE
+
+location_lng
+DECIMAL(10,7)
+NULLABLE
+
+visibility
+ENUM
+DEFAULT 'public'
+public | followers | friends | only_me | custom
+custom_list_id
+UUID
+NULLABLE
+If visibility=custom
+is_pinned
+BOOLEAN
+DEFAULT false
+Pin to profile
+is_archived
+BOOLEAN
+DEFAULT false
+Hidden from profile
+like_count
+BIGINT
+DEFAULT 0
+Denormalized
+comment_count
+BIGINT
+DEFAULT 0
+Denormalized
+share_count
+BIGINT
+DEFAULT 0
+Denormalized
+view_count
+BIGINT
+DEFAULT 0
+Denormalized
+is_deleted
+BOOLEAN
+DEFAULT false
+Soft delete
+created_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+updated_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+INDEX on (author_id, created_at DESC) for profile feed
+INDEX on (app_origin, created_at DESC) for app-specific feeds
+INDEX USING gin(hashtags) for hashtag search
+
+4.1.2 videos
+Extended metadata for video content (PostTube primarily).
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+channel_id
+UUID
+NULLABLE
+Channel that owns this video
+author_id
+UUID
+NOT NULL
+Profile ID
+title
+VARCHAR(200)
+NOT NULL
+Video title
+description
+TEXT
+NULLABLE
+Long description
+thumbnail_url
+VARCHAR(500)
+NULLABLE
+
+duration_seconds
+INT
+NULLABLE
+Set after transcoding
+category
+VARCHAR(50)
+NULLABLE
+
+tags
+VARCHAR[]
+NULLABLE
+
+qualities_available
+JSONB
+NULLABLE
+[{quality, url, size}]
+transcript
+TEXT
+NULLABLE
+Auto-generated captions
+status
+ENUM
+DEFAULT 'processing'
+processing | ready | failed | removed
+age_restricted
+BOOLEAN
+DEFAULT false
+
+comments_enabled
+BOOLEAN
+DEFAULT true
+
+view_count
+BIGINT
+DEFAULT 0
+
+like_count
+BIGINT
+DEFAULT 0
+
+dislike_count
+BIGINT
+DEFAULT 0
+
+created_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+updated_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+4.1.3 playlists
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+channel_id
+UUID
+NULLABLE
+Channel owner
+author_id
+UUID
+NOT NULL
+Profile ID
+title
+VARCHAR(200)
+NOT NULL
+
+description
+TEXT
+NULLABLE
+
+thumbnail_url
+VARCHAR(500)
+NULLABLE
+
+visibility
+ENUM
+DEFAULT 'public'
+public | unlisted | private
+video_count
+INT
+DEFAULT 0
+
+created_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+updated_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+4.1.4 playlist_items
+Column
+Type
+Constraints
+Notes
+playlist_id
+UUID
+FK → playlists(id) ON DELETE CASCADE
+
+video_id
+UUID
+FK → videos(id) ON DELETE CASCADE
+
+sort_order
+INT
+DEFAULT 0
+
+added_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+PRIMARY KEY (playlist_id, video_id)
+
+4.1.5 comments
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+target_type
+ENUM
+NOT NULL
+post | video | reel
+target_id
+UUID
+NOT NULL
+Post or video ID
+author_id
+UUID
+NOT NULL
+Profile ID
+parent_id
+UUID
+NULLABLE
+FK → comments(id) for threads
+content
+TEXT
+NOT NULL
+
+like_count
+INT
+DEFAULT 0
+
+reply_count
+INT
+DEFAULT 0
+
+is_pinned
+BOOLEAN
+DEFAULT false
+
+is_deleted
+BOOLEAN
+DEFAULT false
+Soft delete
+created_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+updated_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+INDEX on (target_type, target_id, created_at) for comment threads
+
+4.1.6 reactions
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+target_type
+ENUM
+NOT NULL
+post | video | comment | story
+target_id
+UUID
+NOT NULL
+
+user_id
+UUID
+NOT NULL
+Profile ID
+reaction_type
+VARCHAR(30)
+NOT NULL
+like | love | haha | wow | sad | angry | custom_emoji
+created_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+UNIQUE(target_type, target_id, user_id)  -- One reaction per user per target
+
+4.1.7 stories
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+author_id
+UUID
+NOT NULL
+Profile ID
+media_url
+VARCHAR(500)
+NOT NULL
+Image/video CDN URL
+media_type
+ENUM
+NOT NULL
+image | video
+caption
+VARCHAR(250)
+NULLABLE
+
+stickers
+JSONB
+NULLABLE
+[{type, position, data}]
+music_track
+JSONB
+NULLABLE
+{title, artist, clip_url}
+visibility
+ENUM
+DEFAULT 'followers'
+public | followers | close_friends
+view_count
+INT
+DEFAULT 0
+
+expires_at
+TIMESTAMPTZ
+NOT NULL
+24h from creation
+is_highlight
+BOOLEAN
+DEFAULT false
+Saved to highlights
+highlight_group
+VARCHAR(50)
+NULLABLE
+Highlight category
+created_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+INDEX on (author_id, created_at DESC) WHERE expires_at > NOW()
+
+4.1.8 saved_items
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+user_id
+UUID
+NOT NULL
+Who saved it
+target_type
+ENUM
+NOT NULL
+post | video | reel
+target_id
+UUID
+NOT NULL
+
+collection_name
+VARCHAR(100)
+DEFAULT 'All Saved'
+
+created_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+UNIQUE(user_id, target_type, target_id)
+
+4.2 Media Service Tables
+
+4.2.1 media_assets
+Central registry for all uploaded media. The Media Service owns this table and provides CDN URLs to other services.
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+uploader_id
+UUID
+NOT NULL
+Profile ID
+file_type
+ENUM
+NOT NULL
+image | video | audio | document
+mime_type
+VARCHAR(100)
+NOT NULL
+image/jpeg, video/mp4, etc.
+original_url
+VARCHAR(500)
+NOT NULL
+Original upload CDN URL
+cdn_url
+VARCHAR(500)
+NOT NULL
+Optimized CDN URL
+thumbnail_url
+VARCHAR(500)
+NULLABLE
+Auto-generated thumbnail
+file_size_bytes
+BIGINT
+NOT NULL
+
+width
+INT
+NULLABLE
+Image/video width px
+height
+INT
+NULLABLE
+Image/video height px
+duration_seconds
+INT
+NULLABLE
+Audio/video duration
+blurhash
+VARCHAR(100)
+NULLABLE
+Placeholder hash
+alt_text
+VARCHAR(250)
+NULLABLE
+Accessibility
+processing_status
+ENUM
+DEFAULT 'uploaded'
+uploaded | processing | ready | failed
+storage_bucket
+VARCHAR(100)
+NOT NULL
+S3/R2 bucket name
+storage_key
+VARCHAR(500)
+NOT NULL
+Object key in bucket
+created_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+4.2.2 transcoding_jobs
+Tracks video/audio processing jobs.
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+media_asset_id
+UUID
+FK → media_assets(id)
+
+target_quality
+VARCHAR(20)
+NOT NULL
+360p | 480p | 720p | 1080p | 4k
+status
+ENUM
+DEFAULT 'queued'
+queued | processing | completed | failed
+output_url
+VARCHAR(500)
+NULLABLE
+Result CDN URL
+output_size_bytes
+BIGINT
+NULLABLE
+
+started_at
+TIMESTAMPTZ
+NULLABLE
+
+completed_at
+TIMESTAMPTZ
+NULLABLE
+
+error_message
+TEXT
+NULLABLE
+If failed
+created_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+5. Search Engine (Elasticsearch)
+The Search Service does NOT use PostgreSQL. It maintains Elasticsearch indices that are synced from other databases via the event bus. The Search Service is read-heavy and never the source of truth.
+
+5.1 Index: profiles
+Synced from identity_db on profile.updated and user.registered events.
+{ "username": "text + keyword", "display_name": "text",
+  "bio": "text", "category": "keyword",
+  "interests": "keyword[]", "location_city": "text",
+  "location_country": "keyword", "is_verified": "boolean",
+  "follower_count": "long", "account_type": "keyword",
+  "created_at": "date" }
+
+5.2 Index: posts
+Synced from content_db on post.created, post.updated, post.deleted events.
+{ "author_id": "keyword", "author_username": "keyword",
+  "content": "text", "hashtags": "keyword[]",
+  "app_origin": "keyword", "post_type": "keyword",
+  "like_count": "long", "comment_count": "long",
+  "visibility": "keyword", "created_at": "date" }
+
+5.3 Index: videos
+{ "title": "text", "description": "text",
+  "channel_handle": "keyword", "author_id": "keyword",
+  "category": "keyword", "tags": "keyword[]",
+  "view_count": "long", "like_count": "long",
+  "duration_seconds": "integer", "status": "keyword",
+  "created_at": "date" }
+
+5.4 Index: channels
+{ "handle": "keyword + text", "name": "text",
+  "description": "text", "category": "keyword",
+  "subscriber_count": "long", "country": "keyword",
+  "language": "keyword", "is_verified": "boolean" }
+
+5.5 Index: business_pages
+{ "page_handle": "keyword", "page_name": "text",
+  "category": "keyword", "description": "text",
+  "location": "geo_point", "avg_rating": "float",
+  "review_count": "integer", "is_verified": "boolean" }
+
+5.6 Sync Strategy
+Event-driven sync: each event triggers an index update in near-real-time (< 2 seconds).
+Full reindex: scheduled weekly to catch any missed events. Run during low-traffic hours.
+Delete sync: on user.deleted or post.deleted events, remove from index immediately.
+Bulk operations: use Elasticsearch bulk API for batch syncs (> 100 documents).
+
+6. Monetization Database
+Strictly isolated for security and compliance. Contains all financial data. This database has additional security: encrypted at rest, restricted access (only Monetization Service), full audit logging on every write.
+
+🔒  SECURITY: This database must have: encryption at rest (AES-256), column-level encryption for payout details and tax info, full audit trail on every INSERT/UPDATE/DELETE, separate database credentials from all other services, no direct access from any other service – only via Monetization Service API.
+
+6.1 wallets
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+user_id
+UUID
+UNIQUE, NOT NULL
+From auth
+balance
+DECIMAL(12,2)
+DEFAULT 0.00
+Current balance
+lifetime_earnings
+DECIMAL(12,2)
+DEFAULT 0.00
+All-time total
+pending_payout
+DECIMAL(12,2)
+DEFAULT 0.00
+Awaiting disbursement
+currency
+VARCHAR(3)
+DEFAULT 'INR'
+ISO 4217
+is_frozen
+BOOLEAN
+DEFAULT false
+Fraud hold
+created_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+updated_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+6.2 transactions
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+wallet_id
+UUID
+FK → wallets(id)
+
+type
+ENUM
+NOT NULL
+earning | payout | refund | adjustment | subscription_payment
+amount
+DECIMAL(12,2)
+NOT NULL
+Positive = credit, negative = debit
+currency
+VARCHAR(3)
+NOT NULL
+
+description
+VARCHAR(200)
+NULLABLE
+
+reference_type
+VARCHAR(50)
+NULLABLE
+post | video | subscription | tip
+reference_id
+UUID
+NULLABLE
+ID of related entity
+status
+ENUM
+DEFAULT 'completed'
+pending | completed | failed | reversed
+created_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+INDEX on (wallet_id, created_at DESC) for transaction history
+
+6.3 payout_methods
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+user_id
+UUID
+NOT NULL
+
+method_type
+ENUM
+NOT NULL
+upi | bank_transfer | paypal
+details_encrypted
+BYTEA
+NOT NULL
+AES-256 encrypted JSON
+is_primary
+BOOLEAN
+DEFAULT false
+
+is_verified
+BOOLEAN
+DEFAULT false
+
+created_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+6.4 subscriptions
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+subscriber_id
+UUID
+NOT NULL
+Who is paying
+creator_id
+UUID
+NOT NULL
+Who receives payment
+tier_name
+VARCHAR(50)
+NOT NULL
+Bronze, Silver, Gold
+price
+DECIMAL(8,2)
+NOT NULL
+
+currency
+VARCHAR(3)
+NOT NULL
+
+status
+ENUM
+DEFAULT 'active'
+active | cancelled | expired | paused
+current_period_start
+TIMESTAMPTZ
+NOT NULL
+
+current_period_end
+TIMESTAMPTZ
+NOT NULL
+
+cancelled_at
+TIMESTAMPTZ
+NULLABLE
+
+created_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+6.5 creator_tiers
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+creator_id
+UUID
+NOT NULL
+Profile ID
+name
+VARCHAR(50)
+NOT NULL
+Bronze, Silver, Gold
+price
+DECIMAL(8,2)
+NOT NULL
+Monthly price
+currency
+VARCHAR(3)
+DEFAULT 'INR'
+
+perks
+JSONB
+NOT NULL
+[{description}]
+is_active
+BOOLEAN
+DEFAULT true
+
+subscriber_count
+INT
+DEFAULT 0
+
+sort_order
+INT
+DEFAULT 0
+
+created_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+6.6 tax_info
+Column
+Type
+Constraints
+Notes
+id
+UUID
+PK
+
+user_id
+UUID
+UNIQUE, NOT NULL
+
+country
+VARCHAR(3)
+NOT NULL
+
+tax_data_encrypted
+BYTEA
+NOT NULL
+PAN, GSTIN, etc. – encrypted
+verification_status
+ENUM
+DEFAULT 'pending'
+pending | verified | rejected
+verified_at
+TIMESTAMPTZ
+NULLABLE
+
+created_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+updated_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+6.7 monetization_audit_log
+Every write to this database creates an audit record. This is non-negotiable for financial compliance.
+Column
+Type
+Constraints
+Notes
+id
+BIGSERIAL
+PK
+Auto-increment for ordering
+table_name
+VARCHAR(50)
+NOT NULL
+Which table was modified
+record_id
+UUID
+NOT NULL
+PK of modified record
+action
+ENUM
+NOT NULL
+insert | update | delete
+old_data
+JSONB
+NULLABLE
+Previous state
+new_data
+JSONB
+NULLABLE
+New state
+performed_by
+UUID
+NOT NULL
+Service or user ID
+ip_address
+INET
+NULLABLE
+
+created_at
+TIMESTAMPTZ
+DEFAULT NOW()
+
+
+7. Complete API Endpoints
+All endpoints are RESTful, return JSON, and follow the standard response envelope. Authentication is via Bearer JWT token. The gateway validates the token and passes user_id to downstream services.
+
+Standard Response Envelope
+{ "success": true|false, "data": T|null,
+  "error": { "code": "string", "message": "string" }|null,
+  "meta": { "page": 1, "limit": 20, "total": 100, "has_next": true }|null }
+
+7.1 Auth Service Endpoints
+Method
+Endpoint
+Auth
+Description
+POST
+/api/v1/auth/register
+No
+Register with email/phone + password/OTP
+POST
+/api/v1/auth/login
+No
+Login; returns access + refresh tokens
+POST
+/api/v1/auth/refresh
+Refresh
+Exchange refresh token for new access token
+POST
+/api/v1/auth/logout
+Yes
+Revoke current session
+POST
+/api/v1/auth/logout-all
+Yes
+Revoke all sessions
+POST
+/api/v1/auth/verify-email
+No
+Verify email with code
+POST
+/api/v1/auth/verify-phone
+No
+Verify phone with OTP
+POST
+/api/v1/auth/forgot-password
+No
+Send reset link/OTP
+POST
+/api/v1/auth/reset-password
+No
+Reset with token
+POST
+/api/v1/auth/2fa/enable
+Yes
+Enable TOTP 2FA
+POST
+/api/v1/auth/2fa/verify
+Yes
+Verify 2FA code
+POST
+/api/v1/auth/2fa/disable
+Yes
+Disable 2FA
+GET
+/api/v1/auth/sessions
+Yes
+List active sessions
+DELETE
+/api/v1/auth/sessions/:id
+Yes
+Revoke specific session
+POST
+/api/v1/auth/oauth/:provider
+No
+OAuth login (google/apple/github)
+DELETE
+/api/v1/auth/account
+Yes
+Request account deletion (30-day grace)
+
+7.2 Profile Service Endpoints
+Method
+Endpoint
+Auth
+Description
+GET
+/api/v1/profiles/:username
+Optional
+Public profile (privacy-filtered)
+GET
+/api/v1/profiles/me
+Yes
+Own full profile
+PATCH
+/api/v1/profiles/me
+Yes
+Update header fields
+POST
+/api/v1/profiles/me/avatar
+Yes
+Upload avatar
+POST
+/api/v1/profiles/me/cover
+Yes
+Upload cover photo
+POST
+/api/v1/profiles/me/intro
+Yes
+Upload 10s audio/video intro
+PATCH
+/api/v1/profiles/me/status
+Yes
+Update status/mood
+GET
+/api/v1/profiles/:username/about
+Optional
+About sections (filtered)
+POST
+/api/v1/profiles/me/about
+Yes
+Add about section entry
+PATCH
+/api/v1/profiles/me/about/:id
+Yes
+Update about entry
+DELETE
+/api/v1/profiles/me/about/:id
+Yes
+Delete about entry
+GET
+/api/v1/profiles/:username/links
+Optional
+User link tree
+POST
+/api/v1/profiles/me/links
+Yes
+Add link
+PATCH
+/api/v1/profiles/me/links/:id
+Yes
+Update link
+DELETE
+/api/v1/profiles/me/links/:id
+Yes
+Delete link
+PATCH
+/api/v1/profiles/me/links/reorder
+Yes
+Reorder links
+POST
+/api/v1/links/:id/click
+No
+Track click (fire-and-forget)
+GET
+/api/v1/profiles/me/links/analytics
+Yes
+Link click stats
+
+Method
+Endpoint
+Auth
+Description
+GET
+/api/v1/channels/:handle
+Optional
+Channel profile
+POST
+/api/v1/profiles/me/channels
+Yes
+Create channel
+PATCH
+/api/v1/channels/:id
+Yes
+Update channel
+DELETE
+/api/v1/channels/:id
+Yes
+Delete channel
+GET
+/api/v1/pages/:handle
+Optional
+Business page
+POST
+/api/v1/profiles/me/pages
+Yes
+Create business page
+PATCH
+/api/v1/pages/:id
+Yes
+Update page
+GET
+/api/v1/pages/:id/reviews
+Optional
+Page reviews
+POST
+/api/v1/pages/:id/reviews
+Yes
+Submit review
+GET
+/api/v1/profiles/me/privacy
+Yes
+Get privacy settings
+PATCH
+/api/v1/profiles/me/privacy
+Yes
+Update privacy
+POST
+/api/v1/profiles/me/lists
+Yes
+Create custom list
+POST
+/api/v1/profiles/me/temp-hide
+Yes
+Temp hide profile
+POST
+/api/v1/profiles/me/data-export
+Yes
+Request data download
+POST
+/api/v1/profiles/:username/endorse
+Yes
+Endorse user
+GET
+/api/v1/profiles/:username/compatibility
+Yes
+Taste compatibility
+POST
+/api/v1/profiles/:username/follow
+Yes
+Follow user
+DELETE
+/api/v1/profiles/:username/follow
+Yes
+Unfollow user
+POST
+/api/v1/profiles/:username/friend-request
+Yes
+Send friend request
+PATCH
+/api/v1/friend-requests/:id
+Yes
+Accept/reject request
+
+7.3 Chat Service Endpoints
+Method
+Endpoint
+Auth
+Description
+GET
+/api/v1/chat/conversations
+Yes
+List conversations (paginated)
+POST
+/api/v1/chat/conversations
+Yes
+Create DM or group
+GET
+/api/v1/chat/conversations/:id
+Yes
+Get conversation details
+PATCH
+/api/v1/chat/conversations/:id
+Yes
+Update group name/icon
+DELETE
+/api/v1/chat/conversations/:id
+Yes
+Leave conversation
+GET
+/api/v1/chat/conversations/:id/messages
+Yes
+Get messages (paginated)
+POST
+/api/v1/chat/conversations/:id/messages
+Yes
+Send message
+PATCH
+/api/v1/chat/messages/:id
+Yes
+Edit message
+DELETE
+/api/v1/chat/messages/:id
+Yes
+Delete message (soft)
+POST
+/api/v1/chat/messages/:id/react
+Yes
+React to message
+POST
+/api/v1/chat/conversations/:id/read
+Yes
+Mark as read
+POST
+/api/v1/chat/conversations/:id/members
+Yes
+Add member to group
+WS
+/api/v1/chat/ws
+Yes
+WebSocket for real-time messaging
+
+7.4 Notification Service Endpoints
+Method
+Endpoint
+Auth
+Description
+GET
+/api/v1/notifications
+Yes
+List notifications (paginated)
+GET
+/api/v1/notifications/unread-count
+Yes
+Unread count badge
+PATCH
+/api/v1/notifications/:id/read
+Yes
+Mark single as read
+PATCH
+/api/v1/notifications/read-all
+Yes
+Mark all as read
+DELETE
+/api/v1/notifications/:id
+Yes
+Delete notification
+GET
+/api/v1/notifications/preferences
+Yes
+Get notification preferences
+PATCH
+/api/v1/notifications/preferences
+Yes
+Update preferences
+POST
+/api/v1/notifications/devices
+Yes
+Register push token
+DELETE
+/api/v1/notifications/devices/:id
+Yes
+Unregister push token
+
+7.5 Content Service Endpoints
+Method
+Endpoint
+Auth
+Description
+GET
+/api/v1/posts/feed
+Yes
+Personalized feed (paginated)
+GET
+/api/v1/posts/:id
+Optional
+Get single post
+POST
+/api/v1/posts
+Yes
+Create post (any type)
+PATCH
+/api/v1/posts/:id
+Yes
+Edit post
+DELETE
+/api/v1/posts/:id
+Yes
+Delete post (soft)
+POST
+/api/v1/posts/:id/like
+Yes
+Like/react to post
+DELETE
+/api/v1/posts/:id/like
+Yes
+Unlike post
+GET
+/api/v1/posts/:id/comments
+Optional
+Get comments (paginated)
+POST
+/api/v1/posts/:id/comments
+Yes
+Add comment
+PATCH
+/api/v1/comments/:id
+Yes
+Edit comment
+DELETE
+/api/v1/comments/:id
+Yes
+Delete comment
+POST
+/api/v1/posts/:id/share
+Yes
+Share/repost
+POST
+/api/v1/posts/:id/save
+Yes
+Save to collection
+GET
+/api/v1/posts/saved
+Yes
+List saved items
+
+Method
+Endpoint
+Auth
+Description
+GET
+/api/v1/videos/:id
+Optional
+Get video details
+POST
+/api/v1/videos
+Yes
+Create video (metadata; upload via Media)
+PATCH
+/api/v1/videos/:id
+Yes
+Update video metadata
+DELETE
+/api/v1/videos/:id
+Yes
+Delete video
+GET
+/api/v1/stories/feed
+Yes
+Stories from followed users
+POST
+/api/v1/stories
+Yes
+Create story
+DELETE
+/api/v1/stories/:id
+Yes
+Delete story
+GET
+/api/v1/playlists/:id
+Optional
+Get playlist
+POST
+/api/v1/playlists
+Yes
+Create playlist
+POST
+/api/v1/playlists/:id/videos
+Yes
+Add video to playlist
+
+7.6 Media Service Endpoints
+Method
+Endpoint
+Auth
+Description
+POST
+/api/v1/media/upload
+Yes
+Upload file (multipart/form-data)
+POST
+/api/v1/media/upload/presigned
+Yes
+Get presigned URL for direct-to-S3 upload
+GET
+/api/v1/media/:id
+Yes
+Get media asset details
+DELETE
+/api/v1/media/:id
+Yes
+Delete media asset
+GET
+/api/v1/media/:id/status
+Yes
+Check transcoding status
+
+7.7 Search Service Endpoints
+Method
+Endpoint
+Auth
+Description
+GET
+/api/v1/search?q=&type=
+Optional
+Universal search (profiles, posts, videos, pages)
+GET
+/api/v1/search/profiles?q=
+Optional
+Search profiles only
+GET
+/api/v1/search/posts?q=&hashtag=
+Optional
+Search posts by text or hashtag
+GET
+/api/v1/search/videos?q=
+Optional
+Search videos
+GET
+/api/v1/search/pages?q=&near=
+Optional
+Search business pages (with geo)
+GET
+/api/v1/discover/trending
+Optional
+Trending hashtags, posts, creators
+GET
+/api/v1/discover/interests?tags=
+Optional
+Discover by shared interests
+GET
+/api/v1/discover/suggested
+Yes
+Personalized suggestions
+
+7.8 Monetization Service Endpoints
+Method
+Endpoint
+Auth
+Description
+GET
+/api/v1/monetization/wallet
+Yes
+Get wallet balance & summary
+GET
+/api/v1/monetization/transactions
+Yes
+Transaction history (paginated)
+POST
+/api/v1/monetization/payout-methods
+Yes
+Add payout method
+DELETE
+/api/v1/monetization/payout-methods/:id
+Yes
+Remove payout method
+POST
+/api/v1/monetization/request-payout
+Yes
+Request payout
+GET
+/api/v1/monetization/payouts
+Yes
+Payout history
+POST
+/api/v1/monetization/tax-info
+Yes
+Submit tax info
+GET
+/api/v1/monetization/tiers
+Yes
+Get creator subscription tiers
+POST
+/api/v1/monetization/tiers
+Yes
+Create subscription tier
+PATCH
+/api/v1/monetization/tiers/:id
+Yes
+Update tier
+POST
+/api/v1/monetization/subscribe/:creator_id
+Yes
+Subscribe to creator
+DELETE
+/api/v1/monetization/subscribe/:creator_id
+Yes
+Cancel subscription
+GET
+/api/v1/monetization/dashboard
+Yes
+Creator earnings dashboard
+
+8. JSONB Data Structures
+These are the exact JSON shapes expected in JSONB columns. The coding agent must validate these at the API layer using a schema validator (Zod, Joi, or AJV) before writing to the database.
+
+8.1 profile_about.data by section_type
+
+basic_info
+{ "full_name": "string|null", "date_of_birth": "YYYY-MM-DD|null",
+  "dob_visibility": "full|month_day|hide", "gender": "string|null",
+  "languages": ["string"], "nationality": "string|null" }
+
+contact
+{ "email": "string|null", "email_public": false,
+  "phone": "string|null", "phone_public": false,
+  "support_email": "string|null", "address": "string|null" }
+
+location
+{ "current_city": "string|null", "hometown": "string|null",
+  "country": "string|null", "location_display": "city|country|region|hidden",
+  "temporary_location": "string|null", "temp_location_expires": "ISO8601|null" }
+
+life_entry (Unified Work/Education/Achievement)
+{ "entry_type": "work|education|certification|achievement|milestone",
+  "title": "string", "subtitle": "string|null",
+  "description": "string|null", "industry": "string|null",
+  "employment_type": "full_time|part_time|self_employed|intern|null",
+  "field_of_study": "string|null",
+  "start_date": "YYYY-MM|null", "end_date": "YYYY-MM|null",
+  "is_current": false, "location": "string|null",
+  "media": [{"url":"string","type":"image|video|link","caption":"string|null"}] }
+
+interests
+{ "interests": ["string"], "hobbies": ["string"],
+  "currently_into": ["string"],
+  "favorites": { "music": ["string"], "movies": ["string"],
+    "books": ["string"], "games": ["string"], "sports_teams": ["string"] } }
+
+services
+{ "service_name": "string", "description": "string|null",
+  "price": "string|null", "currency": "INR|USD|null",
+  "booking_url": "string|null", "is_available": true }
+
+8.2 Per-Field Visibility Override
+{ "full_name": "public", "date_of_birth": "friends",
+  "phone": "only_me", "email": "followers" }
+Valid values: "public" | "followers" | "friends" | "only_me" | "list:<custom_list_id>"
+
+8.3 Business Hours
+{ "monday": { "open": "09:00", "close": "18:00" },
+  "tuesday": { "open": "09:00", "close": "18:00" },
+  "sunday": null }  // null = closed
+
+8.4 Message Media Metadata
+{ "type": "image|video|audio|file", "mime_type": "image/jpeg",
+  "size_bytes": 245000, "width": 1920, "height": 1080,
+  "duration_seconds": null, "thumbnail_url": "string|null" }
+
+8.5 Notification Data Payload
+{ "link": "/u/@username/post/uuid", "actor_id": "uuid",
+  "actor_name": "string", "actor_avatar": "url",
+  "target_type": "post|video|comment|profile",
+  "target_id": "uuid", "preview_text": "string|null" }
+
+9. Privacy Engine Logic
+The Privacy Engine is a shared middleware used by the Profile Service. Every API response returning profile data passes through it. Other services (Content, Chat) call Profile Service for privacy checks rather than implementing their own.
+
+9.1 Relationship Resolution
+Evaluate in order: (1) Owner? Return all. (2) Blocked? Return 404. (3) In custom list? Apply list visibility. (4) Friend? Apply friends and above. (5) Follower? Apply followers and above. (6) Otherwise? Public only.
+
+9.2 Implementation
+async function filterByPrivacy(profileData, viewerId, ownerId) {
+  if (viewerId === ownerId) return profileData;
+  if (await isBlocked(viewerId, ownerId)) throw NotFound();
+  const relationship = await getRelationship(viewerId, ownerId);
+  const privacySettings = await getPrivacySettings(ownerId);
+  if (privacySettings.temp_hide_until > NOW && relationship !== 'owner')
+    throw NotFound('Profile temporarily unavailable');
+  return filterFields(profileData, relationship, privacySettings);
+}
+
+9.3 Cross-Service Privacy Checks
+When the Content Service needs to check if User A can see User B's post, it calls:
+GET /api/v1/profiles/internal/can-view?viewer=uuid&target=uuid&level=friends
+This internal endpoint is not exposed through the API Gateway. It is service-to-service only, authenticated via internal API key.
+
+10. Unique / Differentiating Features
+
+10.1 Profile Audio/Video Intro
+What: 10-second clip pinned to profile header. Auto-plays muted on visit.
+Storage: intro_media_url in profiles table. Upload via Media Service. Max 10s, 5MB.
+Validation: Media Service runs ffprobe to verify duration ≤ 10s. Rejects longer clips.
+Frontend: Small play button on avatar. Tap to expand mini-player. Video: muted + captions. Audio: waveform animation.
+
+10.2 Built-in Link Tree with Analytics
+What: Unlimited categorized links with free click analytics. Kills Linktree dependency.
+Click Tracking: POST /api/v1/links/:id/click is fire-and-forget. Atomic: UPDATE profile_links SET click_count = click_count + 1. Rate limit: 10 clicks/link/min/IP.
+Analytics: Clicks per link, daily/weekly/monthly trends, top links. Cached in Redis with 1h TTL.
+
+10.3 Taste Compatibility Score
+What: 'You both like N things' shown when viewing another profile.
+Algorithm: Intersect interests, hobbies, favorites across both users. Display matches. Cache 24h in Redis.
+
+10.4 Flexible Life Timeline
+What: Unified work/education/achievement timeline instead of rigid LinkedIn-style sections.
+Display: Vertical timeline on Postbook. Compact cards on Postgram. About tab on PostTube.
+
+10.5 Living Status / Mood
+What: Ephemeral status on profile. Auto-expires. Examples: 'Currently into: Rust' / 'Available for: collabs'.
+Cleanup: Cron job every 5 min: UPDATE profiles SET status_text=NULL, status_emoji=NULL WHERE status_expires_at < NOW().
+
+10.6 Portable Reputation System
+Trust Score: 0–1.0 computed from: account age (0.2), verification (0.2), endorsements (0.2), behavior (0.2), content quality (0.2). Show as tier badge, not raw score.
+Cross-Platform Proof: Link external accounts. User posts verification code on other platform. We verify via API.
+
+10.7 Temporary Profile Mode
+What: Soft deactivation for 1–90 days. Profile returns 404 to others. All data persists. Early unhide available.
+
+11. Database Indexing Strategy
+
+11.1 Identity DB Indexes
+-- Users
+CREATE UNIQUE INDEX idx_users_email ON users(email) WHERE email IS NOT NULL;
+CREATE UNIQUE INDEX idx_users_phone ON users(phone) WHERE phone IS NOT NULL;
+-- Profiles
+CREATE UNIQUE INDEX idx_profiles_username ON profiles(username);
+CREATE UNIQUE INDEX idx_profiles_user_id ON profiles(user_id);
+CREATE INDEX idx_profiles_display_name_trgm ON profiles USING gin(display_name gin_trgm_ops);
+CREATE INDEX idx_profiles_username_trgm ON profiles USING gin(username gin_trgm_ops);
+-- About sections
+CREATE INDEX idx_profile_about_profile_section ON profile_about(profile_id, section_type);
+CREATE INDEX idx_profile_about_data ON profile_about USING gin(data jsonb_path_ops);
+-- Links
+CREATE INDEX idx_profile_links_profile ON profile_links(profile_id, sort_order);
+-- Channels
+CREATE UNIQUE INDEX idx_channels_handle ON channels(handle);
+-- Relationships
+CREATE INDEX idx_follows_follower ON follows(follower_id);
+CREATE INDEX idx_follows_following ON follows(following_id);
+CREATE INDEX idx_friendships_pair ON friendships(requester_id, addressee_id);
+-- Requires extension:
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+11.2 Social DB Indexes
+CREATE INDEX idx_messages_conversation_time ON messages(conversation_id, created_at DESC);
+CREATE INDEX idx_conv_members_user ON conversation_members(user_id);
+CREATE INDEX idx_notifications_recipient ON notifications(recipient_id, is_read, created_at DESC);
+
+11.3 Content DB Indexes
+CREATE INDEX idx_posts_author_time ON posts(author_id, created_at DESC);
+CREATE INDEX idx_posts_app_time ON posts(app_origin, created_at DESC);
+CREATE INDEX idx_posts_hashtags ON posts USING gin(hashtags);
+CREATE INDEX idx_comments_target ON comments(target_type, target_id, created_at);
+CREATE INDEX idx_reactions_target ON reactions(target_type, target_id);
+CREATE INDEX idx_stories_active ON stories(author_id, created_at DESC) WHERE expires_at > NOW();
+
+11.4 Monetization DB Indexes
+CREATE INDEX idx_transactions_wallet ON transactions(wallet_id, created_at DESC);
+CREATE INDEX idx_subscriptions_creator ON subscriptions(creator_id, status);
+CREATE INDEX idx_audit_table_record ON monetization_audit_log(table_name, record_id);
+
+12. Migration & Implementation Order
+Execute in this exact order. Each phase builds on the previous. Services within the same phase can be developed in parallel.
+
+Phase 1: Identity Foundation (Weeks 1–3)
+Database: identity_db
+Migration 001: Create all ENUM types for identity_db
+Migration 002: Create users table
+Migration 003: Create sessions, trusted_devices tables
+Migration 004: Create profiles table with all columns
+Migration 005: Create follows, friendships, blocks tables
+Services
+Auth Service: Full implementation (register, login, JWT, 2FA, OAuth, sessions)
+Profile Service: Profile CRUD, avatar/cover upload, basic follow/friend endpoints
+Infrastructure
+Set up Redis for session storage and caching
+Set up API Gateway with routing rules
+Set up CDN bucket for media (S3/Cloudflare R2)
+
+Phase 2: Profile Depth (Weeks 4–5)
+Database: identity_db continued
+Migration 006: Create profile_about, profile_links tables
+Migration 007: Create channels, channel_links, channel_milestones tables
+Migration 008: Create business_pages, business_reviews tables
+Migration 009: Create privacy_settings, custom_lists, custom_list_members tables
+Migration 010: Create safety_records, user_preferences tables
+Services
+Profile Service: About sections CRUD, link tree with analytics, channels, business pages, privacy engine, custom lists
+
+Phase 3: Social Layer (Weeks 6–8)
+Database: social_db
+Migration 011: Create conversations, conversation_members tables
+Migration 012: Create messages, message_reads tables
+Migration 013: Create notifications, notification_preferences, user_devices tables
+Services
+Chat Service: Conversations, messages, WebSocket, reactions, read receipts
+Notification Service: In-app notifications, push (FCM/APNs), email, preferences
+Infrastructure
+Set up event bus (Redis Streams or RabbitMQ)
+Connect Chat → Notification via events (message.sent → push notification)
+
+Phase 4: Content Engine (Weeks 9–12)
+Database: content_db
+Migration 014: Create posts table
+Migration 015: Create comments, reactions tables
+Migration 016: Create stories, saved_items tables
+Migration 017: Create videos, playlists, playlist_items tables
+Migration 018: Create media_assets, transcoding_jobs tables
+Services
+Content Service: Post CRUD, comments, reactions, stories, videos, playlists, feed generation
+Media Service: Upload (presigned URLs), thumbnail generation, video transcoding pipeline
+Event Integration
+post.created → Notification (notify followers) + Search (index post)
+video.uploaded → Media (transcode) + Content (update status)
+
+Phase 5: Search & Discovery (Weeks 13–14)
+Infrastructure
+Set up Elasticsearch cluster
+Build event consumers to sync from identity_db, content_db, social_db to ES indices
+Services
+Search Service: Universal search, profile search, post/hashtag search, video search, business page search (with geo), trending, discover, suggestions
+
+Phase 6: Monetization (Weeks 15–16)
+Database: monetization_db
+Migration 019: Create wallets, transactions tables
+Migration 020: Create payout_methods, tax_info tables (encrypted columns)
+Migration 021: Create subscriptions, creator_tiers tables
+Migration 022: Create monetization_audit_log table + triggers
+Services
+Monetization Service: Wallets, transactions, payouts, subscription tiers, creator dashboard
+
+Phase 7: Reputation & Polish (Weeks 17–18)
+Migration 023: Create user_reputation, endorsements tables
+Build: Trust score computation (background job)
+Build: Cross-platform verification flow
+Build: Profile audio/video intro upload + playback
+Build: Status/mood system with auto-expiry cron
+Build: Taste compatibility algorithm + Redis caching
+Build: Temporary profile mode
+Build: GDPR data export pipeline
+
+13. Critical Rules & Constraints
+The coding agent MUST follow every rule below. Violations cause bugs, security holes, or data corruption.
+
+13.1 PostgreSQL Naming
+ALL table names: lowercase snake_case (profile_about, NOT ProfileAbout)
+ALL column names: lowercase snake_case (user_id, NOT userId or UserId)
+NEVER use quoted identifiers. If you need quotes, the name is wrong.
+This rule prevents case-sensitivity bugs with foreign keys (previously encountered 'Id' vs 'id' issue).
+
+13.2 Cross-Database Rules
+NEVER create foreign keys across databases. Use UUIDs as references and validate at the app layer.
+Store only user_id (UUID) in social_db and content_db. Fetch profile data via REST call to Profile Service.
+Cache cross-service data in Redis: profile info (TTL 5 min), privacy checks (TTL 1 min).
+All inter-service REST calls use internal API keys, not user JWTs.
+Event bus messages must be idempotent. Consumers may receive duplicates.
+
+13.3 Security
+NEVER store raw passwords. Use bcrypt (cost 12+) or argon2id.
+NEVER return password_hash, two_factor_secret, details_encrypted, or tax_data_encrypted in any API response.
+Monetization DB: encrypted at rest, column-level encryption for payout details and tax info.
+Rate limits: login 5/min/IP, link clicks 10/min/IP, profile views 60/min/IP, uploads 10/min/user, search 30/min/user.
+JWT access tokens: 15 min expiry. Refresh tokens: 7 day expiry. Existing interceptor pattern applies.
+Validate all uploads server-side: file type whitelist, max sizes, image dimensions, video duration.
+WebSocket connections must authenticate on connect with valid JWT.
+
+13.4 Data Integrity
+Every FK within same DB: ON DELETE CASCADE or ON DELETE SET NULL (decide per relationship).
+Cross-DB references: handle cleanup via user.deleted event (all services consume it).
+Use CHECK constraints at database level for all ENUMs.
+All timestamps: TIMESTAMPTZ (with timezone), never TIMESTAMP.
+All primary keys: UUID via gen_random_uuid(), never auto-increment (except audit_log).
+Username uniqueness: DB-level UNIQUE index + app-level case-insensitive check (LOWER(username)).
+
+13.5 API Design
+Standard envelope: { success, data, error: {code, message}, meta: {page, limit, total, has_next} }
+HTTP status codes: 200 OK, 201 Created, 204 Deleted, 400 Validation, 401 Unauth, 403 Forbidden, 404 Not Found, 409 Conflict, 429 Rate Limit.
+Pagination default: page=1, limit=20, max=100. Cursor-based for messages (use created_at).
+PATCH = partial update. Only provided fields are modified.
+File uploads: multipart/form-data. Never base64 in JSON body.
+Internal service-to-service endpoints: prefix with /internal/, not exposed via gateway.
+
+13.6 Performance Targets
+Profile header: < 50ms (cached), < 200ms (uncached).
+Feed generation: < 300ms for first page.
+Search results: < 200ms.
+Message send: < 100ms to acknowledge, delivered via WebSocket within 500ms.
+Use Redis for: sessions, profile cache (5 min), compatibility scores (24h), rate limiting, typing indicators (3s), unread counts.
+Denormalize counters (follower_count, like_count, etc.). Update via background jobs, not inline.
+Link click counting: atomic UPDATE or Redis counter with periodic DB flush.
+
+14. App-Specific Rendering Map
+The API returns all data. Each frontend app filters and renders relevant sections.
+
+Section
+Postbook
+Postgram
+PostTube
+Profile Header
+Full: name, bio, avatar, cover, status, CTA
+Compact: avatar, name, bio, link count
+Full: name, avatar, banner, CTA, subs
+About Info
+Full About page with all sections
+Hidden (only bio shown)
+About tab (condensed)
+Life Timeline
+Full vertical timeline
+Top 2 pinned entries
+Relevant entries in About
+Interests
+Full page + compatibility score
+Tag cloud under bio
+Tags in About tab
+Links
+Link section on profile
+Link tree page (tap icon)
+Links in About + description
+Channel
+Card linking to PostTube
+Not shown
+Full channel page
+Business Page
+Full page with map + reviews
+Business badge + CTA only
+Not shown
+Reputation
+Trust badge + endorsements
+Verified badge only
+Trust badge + endorsements
+Status/Mood
+Under name on profile
+In stories ring area
+In About tab
+Posts
+Full feed with all post types
+Grid of images/reels
+Video list + shorts
+Stories
+Story ring at top of feed
+Story ring at top
+Not shown
+
+15. Entity Relationship Summary
+
+15.1 Identity DB (18 tables)
+users (1) ── (1) profiles
+  ├─ (N) sessions
+  └─ (N) trusted_devices
+profiles (1) ─┬─ (N) profile_about
+             ├─ (N) profile_links
+             ├─ (N) channels ─┬─ (N) channel_links
+             |                   └─ (N) channel_milestones
+             ├─ (N) business_pages ── (N) business_reviews
+             ├─ (1) privacy_settings
+             ├─ (N) custom_lists ── (N) custom_list_members
+             ├─ (1) safety_records
+             ├─ (1) user_reputation
+             ├─ (N) endorsements
+             ├─ (1) user_preferences
+             ├─ (N) follows
+             ├─ (N) friendships
+             └─ (N) blocks
+
+15.2 Social DB (6 tables)
+conversations (1) ─┬─ (N) conversation_members
+                   └─ (N) messages ── (N) message_reads
+notifications (standalone, linked by user_id)
+notification_preferences (standalone, linked by user_id)
+user_devices (standalone, linked by user_id)
+
+15.3 Content DB (10 tables)
+posts (standalone, linked by author_id)
+  ├─ (N) comments (self-referencing via parent_id)
+  ├─ (N) reactions
+  └─ (N) saved_items
+videos (standalone, linked by author_id + channel_id)
+playlists ── (N) playlist_items ── videos
+stories (standalone, linked by author_id)
+media_assets ── (N) transcoding_jobs
+
+15.4 Monetization DB (7 tables)
+wallets ── (N) transactions
+payout_methods (linked by user_id)
+creator_tiers (linked by creator_id)
+subscriptions (linked by subscriber_id + creator_id)
+tax_info (linked by user_id)
+monetization_audit_log (append-only)
+
+15.5 Total Count
+41 PostgreSQL tables + 5 Elasticsearch indices across 4 PostgreSQL databases + 1 Elasticsearch cluster.
+
+Appendix A: All Enum Definitions
+
+Identity DB ENUMs
+CREATE TYPE account_type AS ENUM ('personal', 'creator', 'business');
+CREATE TYPE account_status AS ENUM ('active', 'suspended', 'deleted', 'pending_deletion');
+CREATE TYPE age_verification AS ENUM ('unverified', 'under_16', 'minor', 'adult');
+CREATE TYPE profile_category AS ENUM ('personal', 'creator', 'business');
+CREATE TYPE verification_level AS ENUM ('email', 'phone', 'id', 'org');
+CREATE TYPE intro_media_type AS ENUM ('audio', 'video');
+CREATE TYPE profile_section_type AS ENUM ('basic_info', 'contact', 'location', 'life_entry', 'interests', 'services');
+CREATE TYPE visibility_level AS ENUM ('public', 'followers', 'friends', 'only_me');
+CREATE TYPE who_can AS ENUM ('everyone', 'followers', 'friends_of_friends', 'friends', 'approved_only', 'none');
+CREATE TYPE content_restriction AS ENUM ('none', 'minor', 'adult_only');
+CREATE TYPE sensitive_pref AS ENUM ('standard', 'show_less', 'show_more');
+CREATE TYPE self_cert_age AS ENUM ('under_16', 'minor_16_17', 'adult');
+CREATE TYPE collab_status AS ENUM ('open', 'closed', 'not_set');
+CREATE TYPE milestone_type AS ENUM ('subscriber_count', 'anniversary', 'content_count', 'custom');
+CREATE TYPE price_range_type AS ENUM ('$', '$$', '$$$', '$$$$');
+CREATE TYPE content_format_pref AS ENUM ('short_video', 'long_video', 'text', 'mixed');
+CREATE TYPE communication_style AS ENUM ('formal', 'casual');
+CREATE TYPE follow_status AS ENUM ('active', 'pending');
+CREATE TYPE friendship_status AS ENUM ('pending', 'accepted', 'rejected', 'blocked');
+
+Social DB ENUMs
+CREATE TYPE conversation_type AS ENUM ('dm', 'group', 'channel_chat');
+CREATE TYPE member_role AS ENUM ('admin', 'moderator', 'member');
+CREATE TYPE message_type AS ENUM ('text', 'image', 'video', 'audio', 'file', 'system', 'reply', 'forward');
+CREATE TYPE notification_type AS ENUM ('follow', 'friend_request', 'like', 'comment', 'mention', 'message', 'milestone', 'payout', 'system');
+CREATE TYPE notification_channel AS ENUM ('in_app', 'push', 'email', 'sms');
+CREATE TYPE delivery_status AS ENUM ('pending', 'sent', 'delivered', 'failed');
+CREATE TYPE device_platform AS ENUM ('ios', 'android', 'web');
+
+Content DB ENUMs
+CREATE TYPE post_type AS ENUM ('text', 'image', 'video', 'reel', 'short', 'story', 'article');
+CREATE TYPE app_origin AS ENUM ('postbook', 'postgram', 'posttube');
+CREATE TYPE post_visibility AS ENUM ('public', 'followers', 'friends', 'only_me', 'custom');
+CREATE TYPE target_type AS ENUM ('post', 'video', 'comment', 'story', 'reel');
+CREATE TYPE media_file_type AS ENUM ('image', 'video', 'audio', 'document');
+CREATE TYPE processing_status AS ENUM ('uploaded', 'processing', 'ready', 'failed');
+CREATE TYPE video_status AS ENUM ('processing', 'ready', 'failed', 'removed');
+CREATE TYPE playlist_visibility AS ENUM ('public', 'unlisted', 'private');
+CREATE TYPE transcode_status AS ENUM ('queued', 'processing', 'completed', 'failed');
+CREATE TYPE story_media_type AS ENUM ('image', 'video');
+CREATE TYPE story_visibility AS ENUM ('public', 'followers', 'close_friends');
+
+Monetization DB ENUMs
+CREATE TYPE transaction_type AS ENUM ('earning', 'payout', 'refund', 'adjustment', 'subscription_payment');
+CREATE TYPE transaction_status AS ENUM ('pending', 'completed', 'failed', 'reversed');
+CREATE TYPE payout_method_type AS ENUM ('upi', 'bank_transfer', 'paypal');
+CREATE TYPE subscription_status AS ENUM ('active', 'cancelled', 'expired', 'paused');
+CREATE TYPE verification_status AS ENUM ('pending', 'verified', 'rejected');
+CREATE TYPE audit_action AS ENUM ('insert', 'update', 'delete');

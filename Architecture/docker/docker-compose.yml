@@ -1,0 +1,487 @@
+name: atpost_stack
+
+services:
+  # ─── Shared Infrastructure ──────────────────────────────────
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_DB: app
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  scylla:
+    image: scylladb/scylla:5.4
+    command: ["--overprovisioned", "1", "--smp", "1", "--memory", "2048M"]
+    ports:
+      - "9042:9042"
+    volumes:
+      - scylladata:/var/lib/scylla
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'DESCRIBE KEYSPACES' $(hostname -i) 9042 || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 30
+
+  scylla-init:
+    image: scylladb/scylla:5.4
+    depends_on:
+      scylla:
+        condition: service_healthy
+    volumes:
+      - ./scylla/schema.cql:/schema.cql:ro
+    entrypoint: ["/bin/bash", "-lc"]
+    command: >
+      "cqlsh scylla 9042 -f /schema.cql && echo 'Scylla schema applied'"
+
+  redpanda:
+    image: redpandadata/redpanda:latest
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp
+      - "1"
+      - --memory
+      - "1G"
+      - --reserve-memory
+      - "0M"
+      - --node-id
+      - "0"
+      - --check=false
+      - --kafka-addr
+      - PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr
+      - PLAINTEXT://redpanda:9092
+    ports:
+      - "9092:9092"
+
+  redpanda-console:
+    image: redpandadata/console:latest
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      - "8085:8080"
+    depends_on:
+      - redpanda
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio12345
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - miniodata:/data
+
+  opensearch:
+    image: opensearchproject/opensearch:2
+    environment:
+      discovery.type: single-node
+      plugins.security.disabled: "true"
+      OPENSEARCH_INITIAL_ADMIN_PASSWORD: "S3cure@Dev#2026"
+      OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+
+  # ─── API Gateway ────────────────────────────────────────────
+
+  api-gateway:
+    build:
+      context: ..
+      dockerfile: services/api-gateway/Dockerfile
+    environment:
+      HTTP_PORT: "8080"
+      CORS_ORIGINS: "http://localhost:3000"
+      AUTH_SERVICE_URL: http://identity-auth:8081
+      USER_SERVICE_URL: http://user-service:8082
+      GRAPH_SERVICE_URL: http://graph-service:8083
+      POST_SERVICE_URL: http://post-service:8084
+      FEED_SERVICE_URL: http://feed-service:8086
+      MEDIA_SERVICE_URL: http://media-service:8087
+      NOTIFY_SERVICE_URL: http://notification-service:8088
+      SEARCH_SERVICE_URL: http://search-service:8089
+      TRUST_SAFETY_SERVICE_URL: http://trust-safety-service:8091
+      MESSAGE_SERVICE_URL: http://chat-message-service:8092
+      ANALYTICS_SERVICE_URL: http://analytics-service:8094
+      FLAGS_SERVICE_URL: http://feature-flag-service:8095
+      GROUP_SERVICE_URL: http://group-service:8090
+      ADMIN_SERVICE_URL: http://admin-service:8096
+      PROFILE_SERVICE_URL: http://identity-profile:8098
+    ports:
+      - "8080:8080"
+    depends_on:
+      - identity-auth
+      - user-service
+      - post-service
+
+  # ─── Identity Platform Services ─────────────────────────────
+
+  identity-auth:
+    build:
+      context: ../../identity-platform
+      dockerfile: services/auth-service/Dockerfile
+    environment:
+      HTTP_PORT: "8081"
+      POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/identity_db?sslmode=disable
+      REDIS_ADDR: redis:6379
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  identity-user:
+    build:
+      context: ../../identity-platform
+      dockerfile: services/user-service/Dockerfile
+    environment:
+      HTTP_PORT: "8097"
+      POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/identity_db?sslmode=disable
+      REDIS_ADDR: redis:6379
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      - "8097:8097"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  identity-profile:
+    build:
+      context: ../../identity-platform
+      dockerfile: services/profile-service/Dockerfile
+    environment:
+      HTTP_PORT: "8098"
+      POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/identity_db?sslmode=disable
+      REDIS_ADDR: redis:6379
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      - "8098:8098"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ─── Architecture Services ──────────────────────────────────
+
+  user-service:
+    build:
+      context: ..
+      dockerfile: services/user-service/Dockerfile
+    environment:
+      HTTP_PORT: "8082"
+      POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/app?sslmode=disable
+      REDIS_ADDR: redis:6379
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      - "8082:8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      redpanda:
+        condition: service_started
+
+  graph-service:
+    build:
+      context: ..
+      dockerfile: services/graph-service/Dockerfile
+    environment:
+      HTTP_PORT: "8083"
+      POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/app?sslmode=disable
+      REDIS_ADDR: redis:6379
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      - "8083:8083"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      redpanda:
+        condition: service_started
+
+  group-service:
+    build:
+      context: ..
+      dockerfile: services/group-service/Dockerfile
+    environment:
+      HTTP_PORT: "8090"
+      POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/app?sslmode=disable
+      REDIS_ADDR: redis:6379
+      MESSAGE_SERVICE_URL: http://chat-message-service:8092
+      POST_SERVICE_URL: http://post-service:8084
+    ports:
+      - "8090:8090"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  post-service:
+    build:
+      context: ..
+      dockerfile: services/post-service/Dockerfile
+    environment:
+      HTTP_PORT: "8084"
+      POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/app?sslmode=disable
+      SCYLLA_HOSTS: scylla
+      REDIS_ADDR: redis:6379
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      - "8084:8084"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      scylla-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      redpanda:
+        condition: service_started
+
+  feed-service:
+    build:
+      context: ..
+      dockerfile: services/feed-service/Dockerfile
+    environment:
+      HTTP_PORT: "8086"
+      POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/app?sslmode=disable
+      SCYLLA_HOSTS: scylla
+      REDIS_ADDR: redis:6379
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      - "8086:8086"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      scylla-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      redpanda:
+        condition: service_started
+
+  media-service:
+    build:
+      context: ..
+      dockerfile: services/media-service/Dockerfile
+    environment:
+      HTTP_PORT: "8087"
+      POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/app?sslmode=disable
+      JWT_SECRET: dev_secret_change_me
+      MINIO_ENDPOINT: minio:9000
+      MINIO_PUBLIC_ENDPOINT: http://localhost:9000
+      MINIO_ACCESS_KEY: minio
+      MINIO_SECRET_KEY: minio12345
+      MINIO_BUCKET: media
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      - "8087:8087"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      redpanda:
+        condition: service_started
+
+  media-worker:
+    build:
+      context: ..
+      dockerfile: services/media-service/Dockerfile.worker
+    environment:
+      POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/app?sslmode=disable
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minio
+      MINIO_SECRET_KEY: minio12345
+      MINIO_BUCKET: media
+      KAFKA_BROKERS: redpanda:9092
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      redpanda:
+        condition: service_started
+
+  notification-service:
+    build:
+      context: ..
+      dockerfile: services/notification-service/Dockerfile
+    environment:
+      HTTP_PORT: "8088"
+      SCYLLA_HOSTS: scylla
+      REDIS_ADDR: redis:6379
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      - "8088:8088"
+    depends_on:
+      scylla-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      redpanda:
+        condition: service_started
+
+  search-service:
+    build:
+      context: ..
+      dockerfile: services/search-service/Dockerfile
+    environment:
+      HTTP_PORT: "8089"
+      POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/app?sslmode=disable
+      OPENSEARCH_URL: http://opensearch:9200
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      - "8089:8089"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      opensearch:
+        condition: service_started
+      redpanda:
+        condition: service_started
+
+  trust-safety-service:
+    build:
+      context: ..
+      dockerfile: services/trust-safety-service/Dockerfile
+    environment:
+      HTTP_PORT: "8091"
+      POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/app?sslmode=disable
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      - "8091:8091"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_started
+
+  # ─── Chat Service (independent) ─────────────────────────────
+
+  chat-message-service:
+    build:
+      context: ../../chat-service
+      dockerfile: services/message-service/Dockerfile
+    environment:
+      HTTP_PORT: "8092"
+      POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/chat_db?sslmode=disable
+      SCYLLA_HOSTS: scylla
+      SCYLLA_KEYSPACE: chatservice
+      REDIS_ADDR: redis:6379
+      KAFKA_BROKERS: redpanda:9092
+      KAFKA_TOPIC: chat.events.v1
+      JWT_SECRET: dev_secret_change_me
+      IDENTITY_KAFKA_TOPIC: identity.events.v1
+      IDENTITY_KAFKA_GROUP_ID: chat-service-identity
+    ports:
+      - "8092:8092"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      scylla-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      redpanda:
+        condition: service_started
+
+  chat-ws-gateway:
+    build:
+      context: ../../chat-service
+      dockerfile: services/ws-gateway/Dockerfile
+    environment:
+      HTTP_PORT: "8093"
+      REDIS_ADDR: redis:6379
+      JWT_SECRET: dev_secret_change_me
+      ALLOWED_ORIGINS: "http://localhost:3000"
+    ports:
+      - "8093:8093"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  analytics-service:
+    build:
+      context: ..
+      dockerfile: services/analytics-service/Dockerfile
+    environment:
+      HTTP_PORT: "8094"
+      POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/app?sslmode=disable
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      - "8094:8094"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_started
+
+  feature-flag-service:
+    build:
+      context: ..
+      dockerfile: services/feature-flag-service/Dockerfile
+    environment:
+      HTTP_PORT: "8095"
+      POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/app?sslmode=disable
+      REDIS_ADDR: redis:6379
+    ports:
+      - "8095:8095"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  admin-service:
+    build:
+      context: ..
+      dockerfile: services/admin-service/Dockerfile
+    environment:
+      HTTP_PORT: "8096"
+      POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/app?sslmode=disable
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      - "8096:8096"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_started
+
+volumes:
+  pgdata:
+  miniodata:
+  scylladata:

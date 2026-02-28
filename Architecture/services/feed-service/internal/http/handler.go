@@ -1,0 +1,163 @@
+package http
+
+import (
+	"encoding/json"
+	"log"
+	"net/http"
+	"strconv"
+
+	"github.com/facebook-like/feed-service/internal/service"
+	"github.com/facebook-like/shared/api"
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+)
+
+type Handler struct {
+	svc *service.Service
+}
+
+func New(svc *service.Service) *Handler {
+	return &Handler{svc: svc}
+}
+
+func (h *Handler) RegisterRoutes(r *gin.Engine) {
+	v1 := r.Group("/v1/feed")
+	{
+		v1.GET("/home", h.GetHomeFeed)
+		v1.POST("/preference", h.SetPreference)
+		v1.POST("/signal", h.PostSignal)
+		v1.GET("/debug", h.DebugFeed)
+	}
+}
+
+func (h *Handler) GetHomeFeed(c *gin.Context) {
+	userIDStr := c.GetHeader("X-User-Id")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	limitStr := c.DefaultQuery("limit", "20")
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil || limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	feedMode := c.DefaultQuery("feed_mode", "")
+	if feedMode == "" {
+		// Check user's saved preference, default to chronological
+		feedMode = h.svc.GetUserFeedMode(c.Request.Context(), userID)
+	}
+	if feedMode != "ranked" && feedMode != "shadow" {
+		feedMode = "chronological"
+	}
+
+	excludeSelf := c.DefaultQuery("exclude_self", "") == "true"
+
+	feedItems, err := h.svc.GetHomeFeed(c.Request.Context(), userID, limit, feedMode, excludeSelf)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+
+	// Hydrate with full post details from post-service
+	hydrated, err := h.svc.HydratePosts(c.Request.Context(), feedItems, userID)
+	if err != nil {
+		// Log but don't fail — return raw feed items as fallback
+		log.Printf("Warning: post hydration failed: %v", err)
+		c.Writer.Header().Set("X-Feed-Mode", feedMode)
+		api.JSON(c.Writer, http.StatusOK, feedItems, nil)
+		return
+	}
+
+	c.Writer.Header().Set("X-Feed-Mode", feedMode)
+	api.JSON(c.Writer, http.StatusOK, hydrated, nil)
+}
+
+type preferenceRequest struct {
+	FeedMode string `json:"feed_mode" binding:"required"`
+}
+
+func (h *Handler) SetPreference(c *gin.Context) {
+	userIDStr := c.GetHeader("X-User-Id")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	var req preferenceRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	if req.FeedMode != "ranked" && req.FeedMode != "chronological" {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "feed_mode must be 'ranked' or 'chronological'", nil, nil)
+		return
+	}
+
+	if err := h.svc.SetUserFeedMode(c.Request.Context(), userID, req.FeedMode); err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"feed_mode": req.FeedMode}, nil)
+}
+
+type signalRequest struct {
+	PostID string `json:"post_id" binding:"required"`
+	Signal string `json:"signal" binding:"required"`
+}
+
+func (h *Handler) PostSignal(c *gin.Context) {
+	userIDStr := c.GetHeader("X-User-Id")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	var req signalRequest
+	if err := json.NewDecoder(c.Request.Body).Decode(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	if req.Signal != "see_less" && req.Signal != "see_more" {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "signal must be 'see_less' or 'see_more'", nil, nil)
+		return
+	}
+
+	postID, err := uuid.Parse(req.PostID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		return
+	}
+
+	if err := h.svc.RecordSignal(c.Request.Context(), userID, postID, req.Signal); err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "recorded"}, nil)
+}
+
+func (h *Handler) DebugFeed(c *gin.Context) {
+	userIDStr := c.GetHeader("X-User-Id")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	debug, err := h.svc.DebugFeed(c.Request.Context(), userID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, debug, nil)
+}

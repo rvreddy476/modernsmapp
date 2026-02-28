@@ -1,0 +1,118 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: chat_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./services/message-service/migrations/001_initial_schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  scylladb:
+    image: scylladb/scylla:5.4
+    command: --smp 1 --memory 512M --overprovisioned 1 --skip-wait-for-gossip-to-settle 0
+    ports:
+      - "9042:9042"
+    volumes:
+      - scylladata:/var/lib/scylla
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'DESCRIBE KEYSPACES' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+
+  scylla-init:
+    image: scylladb/scylla:5.4
+    depends_on:
+      scylladb:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: ["cqlsh", "scylladb", "-f", "/schema.cql"]
+    volumes:
+      - ./services/message-service/scylla/schema.cql:/schema.cql
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redpanda:
+    image: redpandadata/redpanda:v24.1.1
+    command:
+      - redpanda
+      - start
+      - --smp 1
+      - --memory 256M
+      - --overprovisioned
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+    ports:
+      - "19092:19092"
+      - "9644:9644"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9644/v1/status/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+
+  message-service:
+    build:
+      context: .
+      dockerfile: services/message-service/Dockerfile
+    ports:
+      - "8092:8092"
+    environment:
+      HTTP_PORT: "8092"
+      POSTGRES_DSN: "postgres://postgres:postgres@postgres:5432/chat_db?sslmode=disable"
+      SCYLLA_HOSTS: "scylladb"
+      SCYLLA_KEYSPACE: "chatservice"
+      REDIS_ADDR: "redis:6379"
+      KAFKA_BROKERS: "redpanda:9092"
+      KAFKA_TOPIC: "chat.events.v1"
+      JWT_SECRET: "dev_secret_change_me"
+      OUTBOX_POLL_INTERVAL: "1s"
+      CACHE_TTL: "5m"
+      GIN_MODE: "release"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      scylla-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+
+  ws-gateway:
+    build:
+      context: .
+      dockerfile: services/ws-gateway/Dockerfile
+    ports:
+      - "8093:8093"
+    environment:
+      HTTP_PORT: "8093"
+      REDIS_ADDR: "redis:6379"
+      JWT_SECRET: "dev_secret_change_me"
+      ALLOWED_ORIGINS: "*"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  scylladata:

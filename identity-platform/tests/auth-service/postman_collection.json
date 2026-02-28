@@ -1,0 +1,166 @@
+{
+  "info": {
+    "name": "Auth Service",
+    "_postman_id": "auth-service-collection",
+    "description": "Auth service endpoints",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://localhost:8081/v1/auth/health",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8081",
+          "path": [
+            "v1",
+            "auth",
+            "health"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Request OTP",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"phone\": \"+15555550123\",\n  \"purpose\": \"login\"\n}"
+        },
+        "url": {
+          "raw": "http://localhost:8081/v1/auth/request-otp",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8081",
+          "path": [
+            "v1",
+            "auth",
+            "request-otp"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Verify OTP",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"phone\": \"+15555550123\",\n  \"otp\": \"123456\",\n  \"device_id\": \"ios-device-1\",\n  \"platform\": \"ios\"\n}"
+        },
+        "url": {
+          "raw": "http://localhost:8081/v1/auth/verify-otp",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8081",
+          "path": [
+            "v1",
+            "auth",
+            "verify-otp"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Register (password)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"phone\": \"+15555550123\",\n  \"email\": \"user@example.com\",\n  \"password\": \"P@ssw0rd!\",\n  \"first_name\": \"Test\",\n  \"last_name\": \"User\",\n  \"dob\": \"1990-01-01\",\n  \"gender\": \"other\"\n}"
+        },
+        "url": {
+          "raw": "http://localhost:8081/v1/auth/register",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8081",
+          "path": [
+            "v1",
+            "auth",
+            "register"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Login (password)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"identifier\": \"user@example.com\",\n  \"password\": \"P@ssw0rd!\",\n  \"device_id\": \"web-1\",\n  \"platform\": \"web\"\n}"
+        },
+        "url": {
+          "raw": "http://localhost:8081/v1/auth/login",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8081",
+          "path": [
+            "v1",
+            "auth",
+            "login"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Docs (Scalar UI)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://localhost:8081/v1/auth/docs",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8081",
+          "path": [
+            "v1",
+            "auth",
+            "docs"
+          ]
+        }
+      }
+    }
+  ]
+}

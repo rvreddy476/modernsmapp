@@ -1,0 +1,9 @@
+.git
+.idea
+.vscode
+bin
+tmp
+frontend
+node_modules
+*.exe
+*.log

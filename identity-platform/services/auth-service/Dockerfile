@@ -1,0 +1,16 @@
+FROM golang:1.24-alpine AS builder
+RUN apk add --no-cache build-base
+WORKDIR /app
+ENV GOWORK=off
+COPY shared/ shared/
+COPY services/auth-service/ services/auth-service/
+WORKDIR /app/services/auth-service
+RUN go mod download
+RUN go build -o /server ./cmd/server/main.go
+
+FROM alpine:3.19
+RUN apk add --no-cache ca-certificates
+COPY --from=builder /server /server
+COPY services/auth-service/docs/ /docs/
+WORKDIR /
+CMD ["/server"]

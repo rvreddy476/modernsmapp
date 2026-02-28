@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bash -c 'diff /c/workspace/atpost/Architecture/services/message-service/internal/http/handler.go /c/workspace/atpost/chat-service/services/message-service/internal/http/handler.go | head -50')",
+      "Bash(bash -c 'grep -n \"\"type Service struct\\\\|Redis\\\\|redis\\\\|pubsub\\\\|PubSub\\\\|func.*Service.*\"\" /c/workspace/atpost/chat-service/services/message-service/internal/service/message.go | head -30')",
+      "Bash(bash -c 'grep -n \"\"redis\\\\|pubsub\\\\|Publish\\\\|rdb\\\\.\"\" /c/workspace/atpost/chat-service/services/message-service/internal/service/message.go | head -20')",
+      "Bash(bash -c 'grep -n \"\"channel\\\\|user:.*:messages\\\\|func.*broadcastTo\\\\|GetMembers\\\\|rdb.Publish\"\" /c/workspace/atpost/chat-service/services/message-service/internal/service/message.go | head -15')",
+      "Bash(bash -c 'grep -n \"\"CheckMembership\\\\|IsMember\\\\|membershipCheck\"\" /c/workspace/atpost/chat-service/services/message-service/internal/service/message.go | head -10')",
+      "Read(//c/workspace/**)",
+      "Bash(popd)"
+    ],
+    "additionalDirectories": [
+      "\\tmp",
+      "C:\\workspace\\postbook-ui\\src\\types",
+      "C:\\workspace\\postbook-ui\\src\\features\\postboek"
+    ]
+  }
+}

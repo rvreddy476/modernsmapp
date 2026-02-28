@@ -1,0 +1,83 @@
+### Health Check (Direct Backend)
+GET http://127.0.0.1:8081/v1/auth/health
+
+### Health Check (Via Proxy)
+GET http://localhost:3000/v1/auth/health
+
+### Register (Direct Backend)
+POST http://127.0.0.1:8081/v1/auth/register
+Content-Type: application/json
+
+{
+  "email": "test@example.com",
+  "password": "password123",
+  "phone": ""
+}
+
+### Register (Via Proxy)
+POST http://localhost:3000/v1/auth/register
+Content-Type: application/json
+
+{
+  "email": "testproxy@example.com",
+  "password": "password123",
+  "phone": ""
+}
+
+###############################################
+# Feed Service (v2.0 Ranked Feed)
+###############################################
+
+### Get Home Feed (Chronological)
+GET http://127.0.0.1:8086/v1/feed/home?limit=20&feed_mode=chronological
+X-User-Id: {{user_id}}
+
+### Get Home Feed (Ranked)
+GET http://127.0.0.1:8086/v1/feed/home?limit=20&feed_mode=ranked
+X-User-Id: {{user_id}}
+
+### Get Home Feed (Shadow Mode)
+GET http://127.0.0.1:8086/v1/feed/home?limit=20&feed_mode=shadow
+X-User-Id: {{user_id}}
+
+### Set Feed Preference
+POST http://127.0.0.1:8086/v1/feed/preference
+Content-Type: application/json
+X-User-Id: {{user_id}}
+
+{
+  "feed_mode": "ranked"
+}
+
+### Send Signal (See Less)
+POST http://127.0.0.1:8086/v1/feed/signal
+Content-Type: application/json
+X-User-Id: {{user_id}}
+
+{
+  "post_id": "{{post_id}}",
+  "signal": "see_less"
+}
+
+### Send Signal (See More)
+POST http://127.0.0.1:8086/v1/feed/signal
+Content-Type: application/json
+X-User-Id: {{user_id}}
+
+{
+  "post_id": "{{post_id}}",
+  "signal": "see_more"
+}
+
+### Debug Feed (Score Breakdown)
+GET http://127.0.0.1:8086/v1/feed/debug
+X-User-Id: {{user_id}}
+
+### Batch Get Posts
+POST http://127.0.0.1:8084/v1/posts/batch
+Content-Type: application/json
+X-User-Id: {{user_id}}
+
+{
+  "ids": ["{{post_id}}"]
+}

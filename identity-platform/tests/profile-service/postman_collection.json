@@ -1,0 +1,114 @@
+{
+  "info": {
+    "name": "Profile Service",
+    "_postman_id": "profile-service-collection",
+    "description": "Profile service endpoints",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://localhost:8083/v1/profiles/health",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8083",
+          "path": [
+            "v1",
+            "profiles",
+            "health"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Get Profile By ID",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://localhost:8083/v1/profiles/{{user_id}}",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8083",
+          "path": [
+            "v1",
+            "profiles",
+            "{{user_id}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Get My Profile",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "{{user_id}}"
+          }
+        ],
+        "url": {
+          "raw": "http://localhost:8083/v1/profiles/me",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8083",
+          "path": [
+            "v1",
+            "profiles",
+            "me"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Update My Profile",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-User-Id",
+            "value": "{{user_id}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"display_name\": \"Test User\",\n  \"bio\": \"Just testing\",\n  \"first_name\": \"Test\",\n  \"last_name\": \"User\",\n  \"gender\": \"other\"\n}"
+        },
+        "url": {
+          "raw": "http://localhost:8083/v1/profiles/me",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8083",
+          "path": [
+            "v1",
+            "profiles",
+            "me"
+          ]
+        }
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "user_id",
+      "value": "00000000-0000-0000-0000-000000000000"
+    }
+  ]
+}
