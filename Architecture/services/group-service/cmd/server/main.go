@@ -2,71 +2,129 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"os"
+	"time"
 
 	"github.com/facebook-like/group-service/internal/http"
 	"github.com/facebook-like/group-service/internal/service"
 	"github.com/facebook-like/group-service/internal/store"
+	"github.com/facebook-like/shared/health"
+	"github.com/facebook-like/shared/middleware"
+	"github.com/facebook-like/shared/o11y/logging"
+	"github.com/facebook-like/shared/o11y/metrics"
+	"github.com/facebook-like/shared/server"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
 
 func main() {
-	// 1. Config
-	port := os.Getenv("HTTP_PORT")
-	if port == "" {
-		port = "8090"
-	}
+	// 1. Structured logging
+	logging.Init(logging.Config{ServiceName: "group-service"})
+
+	// 2. Config
+	port := env("HTTP_PORT", "8090")
 	pgDSN := os.Getenv("POSTGRES_DSN")
 	redisAddr := os.Getenv("REDIS_ADDR")
-	msgURL := os.Getenv("MESSAGE_SERVICE_URL")
-	if msgURL == "" {
-		msgURL = "http://chat-message-service:8092"
-	}
-	postURL := os.Getenv("POST_SERVICE_URL")
-	if postURL == "" {
-		postURL = "http://post-service:8084"
-	}
-	jwtSecret := os.Getenv("JWT_SECRET")
-	if jwtSecret == "" {
-		jwtSecret = "dev_secret_change_me"
-	}
+	msgURL := env("MESSAGE_SERVICE_URL", "http://chat-message-service:8092")
+	postURL := env("POST_SERVICE_URL", "http://post-service:8084")
+	jwtSecret := env("JWT_SECRET", "dev_secret_change_me")
 
-	// 2. Database
+	// 3. Database
 	ctx := context.Background()
 	dbPool, err := pgxpool.New(ctx, pgDSN)
 	if err != nil {
-		log.Fatalf("Unable to connect to database: %v\n", err)
+		slog.Error("failed to connect to postgres", "error", err)
+		os.Exit(1)
 	}
 	defer dbPool.Close()
 
 	if err := dbPool.Ping(ctx); err != nil {
-		log.Fatalf("Database ping failed: %v\n", err)
+		slog.Error("postgres ping failed", "error", err)
+		os.Exit(1)
 	}
-	log.Println("Connected to Postgres")
+	slog.Info("connected to postgres")
 
-	// 3. Redis
+	// 4. Redis
 	rdb := redis.NewClient(&redis.Options{
 		Addr: redisAddr,
 	})
 	if err := rdb.Ping(ctx).Err(); err != nil {
-		log.Fatalf("Redis ping failed: %v", err)
+		slog.Error("redis ping failed", "error", err)
+		os.Exit(1)
 	}
-	log.Println("Connected to Redis")
+	defer rdb.Close()
+	slog.Info("connected to redis")
 
-	// 4. Dependencies
+	// 5. Prometheus metrics
+	httpMetrics := metrics.NewHTTPMetrics("group-service")
+	dbMetrics := metrics.NewDBPoolMetrics("group-service", "postgres")
+
+	go collectDBPoolStats(ctx, dbPool, dbMetrics)
+
+	// 6. Health checker
+	checker := health.New("group-service")
+	checker.Register("postgres", health.PingCheck(dbPool))
+	checker.Register("redis", health.RedisPingCheck(func(ctx context.Context) error {
+		return rdb.Ping(ctx).Err()
+	}))
+
+	// 7. Dependencies
 	groupStore := store.New(dbPool)
 	groupSvc := service.New(groupStore, rdb, msgURL, postURL, jwtSecret)
 	groupHandler := http.New(groupSvc)
 
-	// 5. Server
-	r := gin.Default()
+	// 8. Gin with middleware stack
+	gin.SetMode(gin.ReleaseMode)
+	r := gin.New()
+	r.Use(gin.Recovery())
+	r.Use(middleware.RequestID())
+	r.Use(middleware.Logger())
+	r.Use(middleware.Metrics(httpMetrics))
+
+	checker.RegisterRoutes(r)
+	r.GET("/metrics", metrics.Handler())
 	groupHandler.RegisterRoutes(r)
 
-	log.Printf("Starting group-service on port %s", port)
-	if err := r.Run(":" + port); err != nil {
-		log.Fatalf("Failed to run server: %v", err)
+	// 9. Graceful shutdown
+	if err := server.Run(r, server.Config{
+		Port:            port,
+		ShutdownTimeout: 10 * time.Second,
+		OnShutdown: func() {
+			rdb.Close()
+			dbPool.Close()
+			slog.Info("cleanup completed")
+		},
+	}); err != nil {
+		slog.Error("server error", "error", err)
+		os.Exit(1)
+	}
+}
+
+func env(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func collectDBPoolStats(ctx context.Context, pool *pgxpool.Pool, m *metrics.DBPoolMetrics) {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			stat := pool.Stat()
+			m.Update(metrics.PgxPoolStat{
+				AcquireCount:  stat.AcquireCount(),
+				AcquiredConns: stat.AcquiredConns(),
+				IdleConns:     stat.IdleConns(),
+				TotalConns:    stat.TotalConns(),
+				MaxConns:      stat.MaxConns(),
+			})
+		}
 	}
 }

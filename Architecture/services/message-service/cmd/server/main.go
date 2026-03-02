@@ -2,13 +2,9 @@ package main
 
 import (
 	"context"
-	"log"
 	"log/slog"
-	"net/http"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 
 	apihttp "github.com/facebook-like/message-service/internal/http"
@@ -17,6 +13,11 @@ import (
 	"github.com/facebook-like/message-service/internal/store/postgres"
 	"github.com/facebook-like/message-service/internal/store/scylla"
 	"github.com/facebook-like/message-service/internal/ws"
+	"github.com/facebook-like/shared/health"
+	"github.com/facebook-like/shared/middleware"
+	"github.com/facebook-like/shared/o11y/logging"
+	"github.com/facebook-like/shared/o11y/metrics"
+	"github.com/facebook-like/shared/server"
 	"github.com/gin-gonic/gin"
 	"github.com/gocql/gocql"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -24,58 +25,34 @@ import (
 )
 
 func main() {
-	// 1. Structured Logging
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	slog.SetDefault(logger)
+	// 1. Structured logging
+	logging.Init(logging.Config{ServiceName: "message-service"})
 
 	// 2. Config
-	port := os.Getenv("HTTP_PORT")
-	if port == "" {
-		port = "8092"
-	}
+	port := env("HTTP_PORT", "8092")
+	pgDSN := env("POSTGRES_DSN", "postgres://postgres:postgres@localhost:5432/identity_db?sslmode=disable")
+	scyllaHosts := env("SCYLLA_HOSTS", "scylla")
+	redisAddr := env("REDIS_ADDR", "redis:6379")
+	kafkaBrokers := env("KAFKA_BROKERS", "kafka:9092")
+	jwtSecret := env("JWT_SECRET", "dev_secret_change_me")
 
-	pgDSN := os.Getenv("POSTGRES_DSN")
-	if pgDSN == "" {
-		pgDSN = "postgres://postgres:postgres@localhost:5432/identity_db?sslmode=disable"
-	}
-
-	scyllaHosts := os.Getenv("SCYLLA_HOSTS")
-	if scyllaHosts == "" {
-		scyllaHosts = "scylla"
-	}
-
-	redisAddr := os.Getenv("REDIS_ADDR")
-	if redisAddr == "" {
-		redisAddr = "redis:6379"
-	}
-
-	kafkaBrokers := os.Getenv("KAFKA_BROKERS")
-	if kafkaBrokers == "" {
-		kafkaBrokers = "kafka:9092"
-	}
-
-	jwtSecret := os.Getenv("JWT_SECRET")
-	if jwtSecret == "" {
-		jwtSecret = "dev_secret_change_me"
-	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	ctx := context.Background()
 
 	// 3. Database (Postgres)
 	pgPool, err := pgxpool.New(ctx, pgDSN)
 	if err != nil {
-		slog.Error("failed to connect to Postgres", "error", err)
+		slog.Error("failed to connect to postgres", "error", err)
 		os.Exit(1)
 	}
 	defer pgPool.Close()
+
 	if err := pgPool.Ping(ctx); err != nil {
 		slog.Error("postgres ping failed", "error", err)
 		os.Exit(1)
 	}
-	slog.Info("connected to Postgres")
+	slog.Info("connected to postgres")
 
-	// 3b. Schema migration — pinned message columns (idempotent via ADD COLUMN IF NOT EXISTS)
+	// 3b. Schema migration -- pinned message columns (idempotent via ADD COLUMN IF NOT EXISTS)
 	_, err = pgPool.Exec(ctx, `
 		ALTER TABLE chat.conversations
 		    ADD COLUMN IF NOT EXISTS pinned_message_id TEXT,
@@ -95,26 +72,27 @@ func main() {
 	cluster.Timeout = 5 * time.Second
 	session, err := cluster.CreateSession()
 	if err != nil {
-		slog.Error("failed to connect to ScyllaDB", "error", err, "hosts", scyllaHosts)
+		slog.Error("failed to connect to scylladb", "error", err, "hosts", scyllaHosts)
 		os.Exit(1)
 	}
 	defer session.Close()
-	slog.Info("connected to ScyllaDB", "keyspace", "postbook")
+	slog.Info("connected to scylladb", "keyspace", "postbook")
 
 	// 5. Redis
 	rdb := redis.NewClient(&redis.Options{
 		Addr: redisAddr,
 	})
 	if err := rdb.Ping(ctx).Err(); err != nil {
-		slog.Error("failed to connect to Redis", "error", err, "addr", redisAddr)
+		slog.Error("failed to connect to redis", "error", err, "addr", redisAddr)
 		os.Exit(1)
 	}
-	slog.Info("connected to Redis")
+	defer rdb.Close()
+	slog.Info("connected to redis")
 
 	// 6. Kafka Producer
 	kp := kafka.NewProducer(strings.Split(kafkaBrokers, ","), "postbook-messages")
 	defer kp.Close()
-	slog.Info("connected to Kafka", "topic", "postbook-messages")
+	slog.Info("connected to kafka", "topic", "postbook-messages")
 
 	// 7. Dependencies
 	scyllaStore := scylla.New(session)
@@ -122,51 +100,78 @@ func main() {
 	msgSvc := service.New(scyllaStore, convStore, rdb, kp)
 	msgHandler := apihttp.New(msgSvc)
 
-	// 8. Server
+	// 8. Prometheus metrics
+	httpMetrics := metrics.NewHTTPMetrics("message-service")
+	dbMetrics := metrics.NewDBPoolMetrics("message-service", "postgres")
+
+	go collectDBPoolStats(ctx, pgPool, dbMetrics)
+
+	// 9. Health checker
+	checker := health.New("message-service")
+	checker.Register("postgres", health.PingCheck(pgPool))
+	checker.Register("redis", health.RedisPingCheck(func(ctx context.Context) error {
+		return rdb.Ping(ctx).Err()
+	}))
+	checker.Register("scylladb", health.ScyllaCheck(func(ctx context.Context) error {
+		return session.Query("SELECT now() FROM system.local").Exec()
+	}))
+
+	// 10. Gin with middleware stack
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
-	// Simple middleware for structured logging
-	r.Use(func(c *gin.Context) {
-		start := time.Now()
-		c.Next()
-		slog.Info("http request",
-			"method", c.Request.Method,
-			"path", c.Request.URL.Path,
-			"status", c.Writer.Status(),
-			"duration", time.Since(start),
-			"ip", c.ClientIP(),
-		)
-	})
+	r.Use(middleware.RequestID())
+	r.Use(middleware.Logger())
+	r.Use(middleware.Metrics(httpMetrics))
 
+	checker.RegisterRoutes(r)
+	r.GET("/metrics", metrics.Handler())
 	msgHandler.RegisterRoutes(r)
 
 	// WebSocket endpoint for real-time chat delivery
 	wsHub := ws.NewHub(rdb, jwtSecret)
 	r.GET("/v1/ws/connect", wsHub.HandleConnect)
 
-	srv := &http.Server{
-		Addr:    ":" + port,
-		Handler: r,
+	// 11. Graceful shutdown
+	if err := server.Run(r, server.Config{
+		Port:            port,
+		ShutdownTimeout: 10 * time.Second,
+		OnShutdown: func() {
+			kp.Close()
+			rdb.Close()
+			session.Close()
+			pgPool.Close()
+			slog.Info("cleanup completed")
+		},
+	}); err != nil {
+		slog.Error("server error", "error", err)
+		os.Exit(1)
 	}
+}
 
-	// 9. Graceful Shutdown
-	go func() {
-		slog.Info("starting message-service", "port", port)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("listen: %s\n", err)
+func env(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func collectDBPoolStats(ctx context.Context, pool *pgxpool.Pool, m *metrics.DBPoolMetrics) {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			stat := pool.Stat()
+			m.Update(metrics.PgxPoolStat{
+				AcquireCount:  stat.AcquireCount(),
+				AcquiredConns: stat.AcquiredConns(),
+				IdleConns:     stat.IdleConns(),
+				TotalConns:    stat.TotalConns(),
+				MaxConns:      stat.MaxConns(),
+			})
 		}
-	}()
-
-	<-ctx.Done()
-	slog.Info("shutting down gracefully...")
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		slog.Error("server forced to shutdown", "error", err)
 	}
-
-	slog.Info("server exited")
 }

@@ -9,12 +9,33 @@
       "Read(//c/workspace/**)",
       "Bash(popd)",
       "Bash(git reset HEAD -- .idea/ .claude/settings.local.json Architecture/server Architecture/server.exe identity-platform/.idea/ identity-platform/server.exe identity-platform/services/profile-service/profile-service.exe)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(test -d \"c:\\\\workspace\\\\atpost\\\\Architecture\\\\services\")",
+      "WebFetch(domain:)",
+      "Bash(chmod +x /c/workspace/atpost/Architecture/docker/run-local.sh)",
+      "Bash(source local.env)",
+      "Bash(bash run-local.sh list)",
+      "Bash(timeout 10 bash run-local.sh api-gateway)",
+      "Bash(chmod +x /c/workspace/atpost/Architecture/docker/database/setup-all.sh)",
+      "Bash(POSTGRES_DSN=\"postgres://postgres:postgres@localhost:5432/identity_db?sslmode=disable\" REDIS_ADDR=\"localhost:6379\" KAFKA_BROKERS=\"localhost:9092\" HTTP_PORT=\"8081\" timeout 10 go run identity-platform/services/auth-service/cmd/server/main.go)",
+      "Bash(POSTGRES_DSN=\"postgres://postgres:postgres@localhost:5432/identity_db?sslmode=disable\" REDIS_ADDR=\"localhost:6379\" KAFKA_BROKERS=\"localhost:9092\" HTTP_PORT=\"8181\" timeout 8 go run ./services/auth-service/cmd/server/main.go)",
+      "Bash(source ../Architecture/docker/local.env)",
+      "Bash(HTTP_PORT=8084 POSTGRES_DSN=\"postgres://postgres:postgres@localhost:5432/app?sslmode=disable\" REDIS_ADDR=\"localhost:6379\" KAFKA_BROKERS=\"localhost:9092\" SCYLLA_HOSTS=\"localhost:9042\" MEDIA_SERVICE_URL=\"http://localhost:8087\" go run ./services/post-service/cmd/server/main.go)",
+      "Bash(HTTP_PORT=8084 POSTGRES_DSN=\"postgres://postgres:postgres@localhost:5432/app?sslmode=disable\" SCYLLA_KEYSPACE=\"chatservice\" KAFKA_TOPIC=\"chat.events.v1\" ALLOWED_ORIGINS=\"http://localhost:3000\" REDIS_ADDR=\"localhost:6379\" KAFKA_BROKERS=\"localhost:9092\" SCYLLA_HOSTS=\"localhost:9042\" MEDIA_SERVICE_URL=\"http://localhost:8087\" go run ./services/post-service/cmd/server/main.go)",
+      "Bash(test -f \"C:/workspace/atpost/Architecture/services/group-service/cmd/server/main.go\")",
+      "Bash(test -f \"C:/workspace/atpost/Architecture/services/monetization-service/cmd/server/main.go\")",
+      "Bash(test -f \"C:/workspace/atpost/Architecture/services/feature-flag-service/cmd/server/main.go\")",
+      "Bash(test -f \"C:/workspace/atpost/Architecture/services/message-service/cmd/server/main.go\")"
     ],
     "additionalDirectories": [
       "\\tmp",
       "C:\\workspace\\postbook-ui\\src\\types",
-      "C:\\workspace\\postbook-ui\\src\\features\\postboek"
+      "C:\\workspace\\postbook-ui\\src\\features\\postboek",
+      "C:\\workspace\\postbook-ui\\src\\app\\groups\\[groupId]",
+      "C:\\workspace\\postbook-ui\\src\\app\\hashtag",
+      "C:\\workspace\\postbook-ui\\src\\lib",
+      "C:\\workspace\\postbook-ui\\src",
+      "C:\\workspace\\atpost\\.git"
     ]
   }
 }

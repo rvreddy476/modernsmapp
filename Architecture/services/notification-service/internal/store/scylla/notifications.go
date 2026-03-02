@@ -44,18 +44,66 @@ func (s *NotificationStore) CreateNotification(ctx context.Context, n *Notificat
 	`, gocql.UUID(n.UserID), bucket, gocql.UUIDFromTime(n.CreatedAt), gocql.UUID(n.NotificationID), n.Type, gocql.UUID(n.ActorUserID), n.EntityType, gocql.UUID(n.EntityID), n.DeepLink, n.IsRead, n.CreatedAt).Exec()
 }
 
-// GetNotifications
+// GetNotifications returns the latest notifications (no cursor).
 func (s *NotificationStore) GetNotifications(ctx context.Context, userID uuid.UUID, limit int) ([]Notification, error) {
-	// Better approach for MVP: query current date's bucket
 	currentBucket := time.Now().Year()*100 + int(time.Now().Month())
+	return s.queryBucket(userID, currentBucket, nil, limit)
+}
 
-	iter := s.session.Query(`
-		SELECT user_id, bucket, ts, notification_id, type, actor_user_id, entity_type, entity_id, deep_link, is_read, created_at
-		FROM notifications_by_user
-		WHERE user_id = ? AND bucket = ?
-		ORDER BY ts DESC
-		LIMIT ?
-	`, gocql.UUID(userID), currentBucket, limit).Iter()
+// GetNotificationsWithCursor returns notifications using cursor-based pagination.
+// If cursorBucket and cursorTS are provided, results start after that position.
+// It automatically crosses bucket boundaries when the current bucket is exhausted.
+func (s *NotificationStore) GetNotificationsWithCursor(ctx context.Context, userID uuid.UUID, cursorBucket int, cursorTS *gocql.UUID, limit int) ([]Notification, error) {
+	startBucket := cursorBucket
+	if startBucket == 0 {
+		startBucket = time.Now().Year()*100 + int(time.Now().Month())
+	}
+
+	var results []Notification
+	bucket := startBucket
+	remaining := limit
+
+	// Try up to 3 buckets back (current + 2 previous months)
+	for i := 0; i < 3 && remaining > 0; i++ {
+		var ts *gocql.UUID
+		if i == 0 {
+			ts = cursorTS // only apply cursor to the first bucket
+		}
+
+		notifs, err := s.queryBucket(userID, bucket, ts, remaining)
+		if err != nil {
+			return results, err
+		}
+		results = append(results, notifs...)
+		remaining -= len(notifs)
+
+		// Move to previous bucket
+		bucket = prevBucket(bucket)
+	}
+
+	return results, nil
+}
+
+// queryBucket queries a single bucket, optionally starting before a given TimeUUID.
+func (s *NotificationStore) queryBucket(userID uuid.UUID, bucket int, beforeTS *gocql.UUID, limit int) ([]Notification, error) {
+	var iter *gocql.Iter
+	if beforeTS != nil {
+		iter = s.session.Query(`
+			SELECT user_id, bucket, ts, notification_id, type, actor_user_id, entity_type, entity_id, deep_link, is_read, created_at
+			FROM notifications_by_user
+			WHERE user_id = ? AND bucket = ? AND ts < ?
+			ORDER BY ts DESC
+			LIMIT ?
+		`, gocql.UUID(userID), bucket, *beforeTS, limit).Iter()
+	} else {
+		iter = s.session.Query(`
+			SELECT user_id, bucket, ts, notification_id, type, actor_user_id, entity_type, entity_id, deep_link, is_read, created_at
+			FROM notifications_by_user
+			WHERE user_id = ? AND bucket = ?
+			ORDER BY ts DESC
+			LIMIT ?
+		`, gocql.UUID(userID), bucket, limit).Iter()
+	}
 
 	var notifications []Notification
 	var n Notification
@@ -71,6 +119,18 @@ func (s *NotificationStore) GetNotifications(ctx context.Context, userID uuid.UU
 		return nil, err
 	}
 	return notifications, nil
+}
+
+// prevBucket returns the YYYYMM bucket for the previous month.
+func prevBucket(bucket int) int {
+	year := bucket / 100
+	month := bucket % 100
+	month--
+	if month < 1 {
+		month = 12
+		year--
+	}
+	return year*100 + month
 }
 
 // MarkRead

@@ -4,6 +4,8 @@ package scoring
 type AggregateMetrics struct {
 	AvgPercentViewed   float64
 	Impressions        int64
+	Likes              int64
+	Comments           int64
 	Shares             int64
 	Saves              int64
 	FollowsFromContent int64
@@ -30,16 +32,32 @@ func ComputeCQS(m *AggregateMetrics) float64 {
 		imp1k = 0.001
 	}
 
+	likeRate := normalizeRate(float64(m.Likes) / imp1k)
+	commentRate := normalizeRate(float64(m.Comments) / imp1k)
 	shareRate := normalizeRate(float64(m.Shares) / imp1k)
 	saveRate := normalizeRate(float64(m.Saves) / imp1k)
 	followRate := normalizeRate(float64(m.FollowsFromContent) / imp1k)
 	negativeRate := normalizeRate(float64(m.Reports+m.NotInterested) / imp1k)
 
-	cqs := 0.55*avgPctNorm +
-		0.20*shareRate +
-		0.10*saveRate +
-		0.10*followRate -
-		0.05*negativeRate
+	var cqs float64
+	if avgPctNorm > 0 {
+		// Video/reel content: watch-time dominant formula
+		cqs = 0.45*avgPctNorm +
+			0.10*likeRate +
+			0.05*commentRate +
+			0.20*shareRate +
+			0.05*saveRate +
+			0.10*followRate -
+			0.05*negativeRate
+	} else {
+		// Non-video content: engagement-based formula
+		cqs = 0.35*likeRate +
+			0.25*commentRate +
+			0.20*shareRate +
+			0.10*saveRate +
+			0.10*followRate -
+			0.05*negativeRate
+	}
 
 	// Clamp to [0, 1]
 	if cqs < 0 {

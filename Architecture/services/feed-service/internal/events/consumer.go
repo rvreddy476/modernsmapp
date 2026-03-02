@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/facebook-like/feed-service/internal/service"
+	"github.com/facebook-like/feed-service/internal/store/scylla"
 	"github.com/facebook-like/shared/events"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -15,12 +16,13 @@ import (
 )
 
 type Consumer struct {
-	reader  *kafka.Reader
-	service *service.Service
-	rdb     *redis.Client
+	reader        *kafka.Reader
+	service       *service.Service
+	rdb           *redis.Client
+	timelineStore *scylla.TimelineStore
 }
 
-func NewConsumer(brokers []string, groupID string, topic string, svc *service.Service, rdb *redis.Client) *Consumer {
+func NewConsumer(brokers []string, groupID string, topic string, svc *service.Service, rdb *redis.Client, ts *scylla.TimelineStore) *Consumer {
 	reader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:  brokers,
 		GroupID:  groupID,
@@ -28,7 +30,7 @@ func NewConsumer(brokers []string, groupID string, topic string, svc *service.Se
 		MinBytes: 10e3, // 10KB
 		MaxBytes: 10e6, // 10MB
 	})
-	return &Consumer{reader: reader, service: svc, rdb: rdb}
+	return &Consumer{reader: reader, service: svc, rdb: rdb, timelineStore: ts}
 }
 
 func (c *Consumer) Start(ctx context.Context) {
@@ -82,8 +84,14 @@ func (c *Consumer) handlePostCreated(ctx context.Context, envelope events.EventE
 		return err
 	}
 
-	fmt.Printf("Processing PostCreated: %s by %s\n", event.PostID, event.AuthorID)
-	return c.service.FanoutPost(ctx, postID, authorID, event.CreatedAt)
+	// Normalize: empty content_type from old producers defaults to "post"
+	contentType := event.ContentType
+	if contentType == "" {
+		contentType = "post"
+	}
+
+	fmt.Printf("Processing PostCreated: %s by %s type=%s\n", event.PostID, event.AuthorID, contentType)
+	return c.service.FanoutPost(ctx, postID, authorID, event.CreatedAt, contentType)
 }
 
 func (c *Consumer) handlePostReacted(ctx context.Context, envelope events.EventEnvelope) error {
@@ -101,15 +109,23 @@ func (c *Consumer) handlePostReacted(ctx context.Context, envelope events.EventE
 	if err := c.rdb.Incr(ctx, counterKey).Err(); err != nil {
 		log.Printf("Failed to increment like counter for %s: %v", postID, err)
 	}
-	// Set TTL of 48h on counter (auto-cleanup old posts)
-	c.rdb.Expire(ctx, counterKey, 48*time.Hour) // 48 hours
+	c.rdb.Expire(ctx, counterKey, 7*24*time.Hour) // 7 days
 
 	// Add reactor to likers set (for already-interacted check)
 	likersKey := fmt.Sprintf("post:likers:%s", postID)
 	if err := c.rdb.SAdd(ctx, likersKey, reactorID).Err(); err != nil {
 		log.Printf("Failed to add reactor to likers set for %s: %v", postID, err)
 	}
-	c.rdb.Expire(ctx, likersKey, 48*time.Hour)
+	c.rdb.Expire(ctx, likersKey, 7*24*time.Hour) // 7 days
+
+	// Write to ScyllaDB as durable interaction record
+	if c.timelineStore != nil {
+		pid, _ := uuid.Parse(postID)
+		uid, _ := uuid.Parse(reactorID)
+		if err := c.timelineStore.RecordInteraction(ctx, uid, pid); err != nil {
+			log.Printf("Failed to record interaction in ScyllaDB for %s: %v", postID, err)
+		}
+	}
 
 	log.Printf("Processing PostReacted: post=%s reactor=%s type=%s", postID, reactorID, event.ReactType)
 	return nil
@@ -130,14 +146,23 @@ func (c *Consumer) handleCommentCreated(ctx context.Context, envelope events.Eve
 	if err := c.rdb.Incr(ctx, counterKey).Err(); err != nil {
 		log.Printf("Failed to increment comment counter for %s: %v", postID, err)
 	}
-	c.rdb.Expire(ctx, counterKey, 48*time.Hour)
+	c.rdb.Expire(ctx, counterKey, 7*24*time.Hour) // 7 days
 
-	// Add commenter to likers set (treat comments as interactions too)
+	// Add commenter to interaction set
 	likersKey := fmt.Sprintf("post:likers:%s", postID)
 	if err := c.rdb.SAdd(ctx, likersKey, authorID).Err(); err != nil {
 		log.Printf("Failed to add commenter to interaction set for %s: %v", postID, err)
 	}
-	c.rdb.Expire(ctx, likersKey, 48*time.Hour)
+	c.rdb.Expire(ctx, likersKey, 7*24*time.Hour) // 7 days
+
+	// Write to ScyllaDB as durable interaction record
+	if c.timelineStore != nil {
+		pid, _ := uuid.Parse(postID)
+		uid, _ := uuid.Parse(authorID)
+		if err := c.timelineStore.RecordInteraction(ctx, uid, pid); err != nil {
+			log.Printf("Failed to record interaction in ScyllaDB for %s: %v", postID, err)
+		}
+	}
 
 	log.Printf("Processing CommentCreated: post=%s commenter=%s", postID, authorID)
 	return nil

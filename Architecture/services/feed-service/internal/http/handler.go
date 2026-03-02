@@ -24,6 +24,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	v1 := r.Group("/v1/feed")
 	{
 		v1.GET("/home", h.GetHomeFeed)
+		v1.GET("/reels", h.GetReelFeed)
+		v1.GET("/watch", h.GetVideoFeed)
 		v1.POST("/preference", h.SetPreference)
 		v1.POST("/signal", h.PostSignal)
 		v1.GET("/debug", h.DebugFeed)
@@ -75,6 +77,76 @@ func (h *Handler) GetHomeFeed(c *gin.Context) {
 	}
 
 	c.Writer.Header().Set("X-Feed-Mode", feedMode)
+	api.JSON(c.Writer, http.StatusOK, hydrated, nil)
+}
+
+func (h *Handler) GetReelFeed(c *gin.Context) {
+	userIDStr := c.GetHeader("X-User-Id")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	limitStr := c.DefaultQuery("limit", "20")
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil || limit <= 0 {
+		limit = 20
+	}
+	if limit > 50 {
+		limit = 50
+	}
+
+	feedItems, err := h.svc.GetReelFeed(c.Request.Context(), userID, limit)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+
+	hydrated, err := h.svc.HydratePosts(c.Request.Context(), feedItems, userID)
+	if err != nil {
+		log.Printf("Warning: reel feed hydration failed: %v", err)
+		c.Writer.Header().Set("X-Feed-Surface", "reels")
+		api.JSON(c.Writer, http.StatusOK, feedItems, nil)
+		return
+	}
+
+	c.Writer.Header().Set("X-Feed-Surface", "reels")
+	api.JSON(c.Writer, http.StatusOK, hydrated, nil)
+}
+
+func (h *Handler) GetVideoFeed(c *gin.Context) {
+	userIDStr := c.GetHeader("X-User-Id")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	limitStr := c.DefaultQuery("limit", "20")
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil || limit <= 0 {
+		limit = 20
+	}
+	if limit > 50 {
+		limit = 50
+	}
+
+	feedItems, err := h.svc.GetVideoFeed(c.Request.Context(), userID, limit)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+
+	hydrated, err := h.svc.HydratePosts(c.Request.Context(), feedItems, userID)
+	if err != nil {
+		log.Printf("Warning: video feed hydration failed: %v", err)
+		c.Writer.Header().Set("X-Feed-Surface", "watch")
+		api.JSON(c.Writer, http.StatusOK, feedItems, nil)
+		return
+	}
+
+	c.Writer.Header().Set("X-Feed-Surface", "watch")
 	api.JSON(c.Writer, http.StatusOK, hydrated, nil)
 }
 

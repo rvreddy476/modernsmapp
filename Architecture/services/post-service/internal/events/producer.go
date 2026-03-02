@@ -24,13 +24,15 @@ func NewProducer(brokers []string, topic string) *Producer {
 	return &Producer{writer: w}
 }
 
-func (p *Producer) PublishPostCreated(ctx context.Context, postID, authorID uuid.UUID, text, visibility string) error {
+func (p *Producer) PublishPostCreated(ctx context.Context, postID, authorID uuid.UUID, text, visibility, contentType string, durationSeconds int) error {
 	payload := events.PostCreatedPayload{
-		PostID:     postID.String(),
-		AuthorID:   authorID.String(),
-		Text:       text,
-		Visibility: visibility,
-		CreatedAt:  time.Now(),
+		PostID:          postID.String(),
+		AuthorID:        authorID.String(),
+		Text:            text,
+		Visibility:      visibility,
+		ContentType:     contentType,
+		DurationSeconds: durationSeconds,
+		CreatedAt:       time.Now(),
 	}
 	return p.publish(ctx, events.PostCreated, &authorID, payload)
 }
@@ -92,13 +94,7 @@ func (p *Producer) publish(ctx context.Context, eventType string, actorID *uuid.
 		actorStr = &s
 	}
 
-	envelope := events.EventEnvelope{
-		EventID:     uuid.New().String(),
-		EventType:   eventType,
-		OccurredAt:  time.Now(),
-		ActorUserID: actorStr,
-		Payload:     payloadBytes,
-	}
+	envelope := events.NewEnvelope(ctx, eventType, actorStr, payloadBytes)
 
 	envelopeBytes, err := json.Marshal(envelope)
 	if err != nil {

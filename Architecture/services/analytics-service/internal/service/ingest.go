@@ -109,14 +109,9 @@ func (s *IngestService) publishVideoEvents(batch []postgres.Event) {
 		}
 
 		actorID := e.UserID.String()
-		envelope := events.EventEnvelope{
-			EventID:     e.ID.String(),
-			EventType:   eventType,
-			OccurredAt:  e.Timestamp,
-			TraceID:     uuid.New().String(),
-			ActorUserID: &actorID,
-			Payload:     e.Payload,
-		}
+		envelope := events.NewEnvelope(context.Background(), eventType, &actorID, e.Payload)
+		envelope.EventID = e.ID.String()
+		envelope.OccurredAt = e.Timestamp
 
 		data, err := json.Marshal(envelope)
 		if err != nil {

@@ -2,15 +2,21 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/facebook-like/notification-service/internal/events"
 	"github.com/facebook-like/notification-service/internal/http"
 	"github.com/facebook-like/notification-service/internal/service"
 	"github.com/facebook-like/notification-service/internal/store/postgres"
 	"github.com/facebook-like/notification-service/internal/store/scylla"
+	"github.com/facebook-like/shared/health"
+	"github.com/facebook-like/shared/middleware"
+	"github.com/facebook-like/shared/o11y/logging"
+	"github.com/facebook-like/shared/o11y/metrics"
+	"github.com/facebook-like/shared/server"
 	"github.com/gin-gonic/gin"
 	"github.com/gocql/gocql"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -18,68 +24,82 @@ import (
 )
 
 func main() {
-	// 1. Config
-	port := os.Getenv("HTTP_PORT")
-	if port == "" {
-		port = "8088"
-	}
+	// 1. Structured logging
+	logging.Init(logging.Config{ServiceName: "notification-service"})
 
-	scyllaHosts := os.Getenv("SCYLLA_HOSTS")
-	if scyllaHosts == "" {
-		scyllaHosts = "scylla"
-	}
+	// 2. Config
+	port := env("HTTP_PORT", "8088")
+	scyllaHosts := env("SCYLLA_HOSTS", "scylla")
+	redisAddr := env("REDIS_ADDR", "redis:6379")
+	kafkaBrokers := env("KAFKA_BROKERS", "redpanda:9092")
 
-	redisAddr := os.Getenv("REDIS_ADDR")
-	if redisAddr == "" {
-		redisAddr = "redis:6379"
-	}
+	ctx := context.Background()
 
-	kafkaBrokers := os.Getenv("KAFKA_BROKERS")
-	if kafkaBrokers == "" {
-		kafkaBrokers = "redpanda:9092"
-	}
-
-	// 2. Database (Scylla)
+	// 3. Database (Scylla)
 	cluster := gocql.NewCluster(strings.Split(scyllaHosts, ",")...)
 	cluster.Keyspace = "social_notify"
 	cluster.Consistency = gocql.Quorum
 	session, err := cluster.CreateSession()
 	if err != nil {
-		log.Fatalf("Unable to connect to Scylla: %v", err)
+		slog.Error("failed to connect to scylla", "error", err)
+		os.Exit(1)
 	}
 	defer session.Close()
-	log.Println("Connected to Scylla")
+	slog.Info("connected to scylla")
 
-	// 3. Redis
+	// 4. Redis
 	rdb := redis.NewClient(&redis.Options{
 		Addr: redisAddr,
 	})
-	if err := rdb.Ping(context.Background()).Err(); err != nil {
-		log.Fatalf("Unable to connect to Redis: %v", err)
+	if err := rdb.Ping(ctx).Err(); err != nil {
+		slog.Error("redis ping failed", "error", err)
+		os.Exit(1)
 	}
-	log.Println("Connected to Redis")
+	defer rdb.Close()
+	slog.Info("connected to redis")
 
-	// 3b. Database (Postgres — for preferences & devices)
+	// 5. Database (Postgres -- for preferences & devices)
 	pgDSN := os.Getenv("POSTGRES_DSN")
 	var pgStore *postgres.Store
+	var dbPool *pgxpool.Pool
 	if pgDSN != "" {
-		ctx := context.Background()
-		dbPool, err := pgxpool.New(ctx, pgDSN)
+		pool, err := pgxpool.New(ctx, pgDSN)
 		if err != nil {
-			log.Printf("Warning: Unable to connect to Postgres (preferences disabled): %v", err)
+			slog.Warn("unable to connect to postgres (preferences disabled)", "error", err)
 		} else {
+			dbPool = pool
 			defer dbPool.Close()
 			if err := dbPool.Ping(ctx); err != nil {
-				log.Printf("Warning: Postgres ping failed: %v", err)
+				slog.Warn("postgres ping failed", "error", err)
 			} else {
-				log.Println("Connected to Postgres")
+				slog.Info("connected to postgres")
 				pgStore = postgres.New(dbPool)
 				ensureNotifSchema(ctx, dbPool)
 			}
 		}
 	}
 
-	// 4. Dependencies
+	// 6. Prometheus metrics
+	httpMetrics := metrics.NewHTTPMetrics("notification-service")
+
+	if dbPool != nil {
+		dbMetrics := metrics.NewDBPoolMetrics("notification-service", "postgres")
+		go collectDBPoolStats(ctx, dbPool, dbMetrics)
+	}
+
+	// 7. Health checker
+	checker := health.New("notification-service")
+	checker.Register("scylladb", health.ScyllaCheck(func(ctx context.Context) error {
+		return session.Query("SELECT now() FROM system.local").Exec()
+	}))
+	checker.Register("redis", health.RedisPingCheck(func(ctx context.Context) error {
+		return rdb.Ping(ctx).Err()
+	}))
+	if dbPool != nil {
+		checker.Register("postgres", health.PingCheck(dbPool))
+	}
+
+	// 8. Dependencies
 	scyllaStore := scylla.New(session)
 	notifSvc := service.New(scyllaStore, rdb)
 	if pgStore != nil {
@@ -87,23 +107,70 @@ func main() {
 	}
 	notifHandler := http.New(notifSvc, rdb)
 
-	// 5. Kafka Consumer
+	// 9. Kafka Consumer
 	consumer := events.NewConsumer(
 		strings.Split(kafkaBrokers, ","),
 		"notification-service-group",
 		"social.events.v1",
 		notifSvc,
 	)
-	go consumer.Start(context.Background())
-	log.Println("Started Kafka Consumer")
+	go consumer.Start(ctx)
+	slog.Info("kafka consumer started")
 
-	// 6. Server
-	r := gin.Default()
+	// 10. HTTP Server
+	gin.SetMode(gin.ReleaseMode)
+	r := gin.New()
+	r.Use(gin.Recovery())
+	r.Use(middleware.RequestID())
+	r.Use(middleware.Logger())
+	r.Use(middleware.Metrics(httpMetrics))
+
+	checker.RegisterRoutes(r)
+	r.GET("/metrics", metrics.Handler())
 	notifHandler.RegisterRoutes(r)
 
-	log.Printf("Starting notification-service on port %s", port)
-	if err := r.Run(":" + port); err != nil {
-		log.Fatalf("Failed to run server: %v", err)
+	// 11. Graceful shutdown
+	if err := server.Run(r, server.Config{
+		Port:            port,
+		ShutdownTimeout: 10 * time.Second,
+		OnShutdown: func() {
+			rdb.Close()
+			session.Close()
+			if dbPool != nil {
+				dbPool.Close()
+			}
+			slog.Info("cleanup completed")
+		},
+	}); err != nil {
+		slog.Error("server error", "error", err)
+		os.Exit(1)
+	}
+}
+
+func env(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func collectDBPoolStats(ctx context.Context, pool *pgxpool.Pool, m *metrics.DBPoolMetrics) {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			stat := pool.Stat()
+			m.Update(metrics.PgxPoolStat{
+				AcquireCount:  stat.AcquireCount(),
+				AcquiredConns: stat.AcquiredConns(),
+				IdleConns:     stat.IdleConns(),
+				TotalConns:    stat.TotalConns(),
+				MaxConns:      stat.MaxConns(),
+			})
+		}
 	}
 }
 
@@ -134,8 +201,8 @@ func ensureNotifSchema(ctx context.Context, db *pgxpool.Pool) {
 	}
 	for _, stmt := range ddl {
 		if _, err := db.Exec(ctx, stmt); err != nil {
-			log.Printf("Warning: notification schema migration: %v", err)
+			slog.Warn("notification schema migration", "error", err)
 		}
 	}
-	log.Println("Notification preferences schema ensured")
+	slog.Info("notification preferences schema ensured")
 }

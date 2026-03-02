@@ -42,6 +42,34 @@ func (p *Producer) PublishFriendRequestAccepted(ctx context.Context, senderID, r
 	return p.publish(ctx, events.FriendRequestAccepted, &receiverID, payload)
 }
 
+func (p *Producer) PublishFriendRequestDeclined(ctx context.Context, senderID, receiverID uuid.UUID) error {
+	payload := events.FriendRequestDeclinedPayload{
+		SenderID:   senderID.String(),
+		ReceiverID: receiverID.String(),
+		DeclinedAt: time.Now(),
+	}
+	return p.publish(ctx, events.FriendRequestDeclined, &receiverID, payload)
+}
+
+func (p *Producer) PublishFriendRemoved(ctx context.Context, userA, userB, removedBy uuid.UUID) error {
+	payload := events.FriendRemovedPayload{
+		UserA:     userA.String(),
+		UserB:     userB.String(),
+		RemovedBy: removedBy.String(),
+		RemovedAt: time.Now(),
+	}
+	return p.publish(ctx, events.FriendRemoved, &removedBy, payload)
+}
+
+func (p *Producer) PublishUserBlocked(ctx context.Context, blockerID, blockedID uuid.UUID) error {
+	payload := events.UserBlockedPayload{
+		BlockerID: blockerID.String(),
+		BlockedID: blockedID.String(),
+		BlockedAt: time.Now(),
+	}
+	return p.publish(ctx, events.UserBlocked, &blockerID, payload)
+}
+
 func (p *Producer) publish(ctx context.Context, eventType string, actorID *uuid.UUID, payload interface{}) error {
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -54,13 +82,7 @@ func (p *Producer) publish(ctx context.Context, eventType string, actorID *uuid.
 		actorStr = &s
 	}
 
-	envelope := events.EventEnvelope{
-		EventID:     uuid.New().String(),
-		EventType:   eventType,
-		OccurredAt:  time.Now(),
-		ActorUserID: actorStr,
-		Payload:     payloadBytes,
-	}
+	envelope := events.NewEnvelope(ctx, eventType, actorStr, payloadBytes)
 
 	envelopeBytes, err := json.Marshal(envelope)
 	if err != nil {

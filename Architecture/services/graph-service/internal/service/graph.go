@@ -73,6 +73,12 @@ func (s *Service) Block(ctx context.Context, blockerID, blockedID uuid.UUID) err
 	s.invalidateRel(ctx, blockerID, blockedID)
 	s.invalidateRel(ctx, blockedID, blockerID)
 	s.invalidateCounts(ctx, blockerID, blockedID)
+
+	if s.producer != nil {
+		if err := s.producer.PublishUserBlocked(ctx, blockerID, blockedID); err != nil {
+			log.Printf("[graph] Failed to publish UserBlocked event: %v", err)
+		}
+	}
 	return nil
 }
 
@@ -235,6 +241,12 @@ func (s *Service) RejectFriendRequest(ctx context.Context, senderID, receiverID 
 
 	s.invalidateRel(ctx, senderID, receiverID)
 	s.invalidateRel(ctx, receiverID, senderID)
+
+	if s.producer != nil {
+		if err := s.producer.PublishFriendRequestDeclined(ctx, senderID, receiverID); err != nil {
+			log.Printf("[graph] Failed to publish FriendRequestDeclined event: %v", err)
+		}
+	}
 	return nil
 }
 
@@ -246,6 +258,12 @@ func (s *Service) RemoveFriend(ctx context.Context, userA, userB uuid.UUID) erro
 	s.invalidateRel(ctx, userA, userB)
 	s.invalidateRel(ctx, userB, userA)
 	s.invalidateCounts(ctx, userA, userB)
+
+	if s.producer != nil {
+		if err := s.producer.PublishFriendRemoved(ctx, userA, userB, userA); err != nil {
+			log.Printf("[graph] Failed to publish FriendRemoved event: %v", err)
+		}
+	}
 	return nil
 }
 

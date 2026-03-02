@@ -53,6 +53,8 @@ func main() {
 		{"/v1/admin", env("ADMIN_SERVICE_URL", "http://admin-service:8096")},
 		// Monetization service
 		{"/v1/monetization", env("MONETIZATION_SERVICE_URL", "http://monetization-service:8099")},
+		// Suggestion service
+		{"/v1/suggestions", env("SUGGESTION_SERVICE_URL", "http://suggestion-service:8100")},
 	}
 
 	var routes []route

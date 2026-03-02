@@ -2,10 +2,15 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"os"
 	"time"
 
+	"github.com/facebook-like/shared/health"
+	"github.com/facebook-like/shared/middleware"
+	"github.com/facebook-like/shared/o11y/logging"
+	"github.com/facebook-like/shared/o11y/metrics"
+	"github.com/facebook-like/shared/server"
 	"github.com/facebook-like/user-service/internal/events"
 	"github.com/facebook-like/user-service/internal/http"
 	"github.com/facebook-like/user-service/internal/service"
@@ -16,50 +21,63 @@ import (
 )
 
 func main() {
-	// 1. Config
-	port := os.Getenv("HTTP_PORT")
-	if port == "" {
-		port = "8082"
-	}
+	// 1. Structured logging
+	logging.Init(logging.Config{ServiceName: "user-service"})
+
+	// 2. Config
+	port := env("HTTP_PORT", "8082")
 	pgDSN := os.Getenv("POSTGRES_DSN")
 	redisAddr := os.Getenv("REDIS_ADDR")
-	kafkaBrokers := os.Getenv("KAFKA_BROKERS")
-	if kafkaBrokers == "" {
-		kafkaBrokers = "localhost:9092"
-	}
+	kafkaBrokers := env("KAFKA_BROKERS", "localhost:9092")
 
-	// 2. Database
+	// 3. Database
 	ctx := context.Background()
 	dbPool, err := pgxpool.New(ctx, pgDSN)
 	if err != nil {
-		log.Fatalf("Unable to connect to database: %v\n", err)
+		slog.Error("failed to connect to postgres", "error", err)
+		os.Exit(1)
 	}
 	defer dbPool.Close()
 
 	if err := dbPool.Ping(ctx); err != nil {
-		log.Fatalf("Database ping failed: %v\n", err)
+		slog.Error("postgres ping failed", "error", err)
+		os.Exit(1)
 	}
-	log.Println("Connected to Postgres")
+	slog.Info("connected to postgres")
 
-	// 3. Redis
+	// 4. Redis
 	rdb := redis.NewClient(&redis.Options{
 		Addr: redisAddr,
 	})
 	if err := rdb.Ping(ctx).Err(); err != nil {
-		log.Fatalf("Redis ping failed: %v", err)
+		slog.Error("redis ping failed", "error", err)
+		os.Exit(1)
 	}
-	log.Println("Connected to Redis")
+	defer rdb.Close()
+	slog.Info("connected to redis")
 
 	// Auto-migrate Phase 6 tables
 	ensurePhase6Schema(ctx, dbPool)
 
-	// 4. Dependencies
+	// 5. Prometheus metrics
+	httpMetrics := metrics.NewHTTPMetrics("user-service")
+	dbMetrics := metrics.NewDBPoolMetrics("user-service", "postgres")
+
+	go collectDBPoolStats(ctx, dbPool, dbMetrics)
+
+	// 6. Health checker
+	checker := health.New("user-service")
+	checker.Register("postgres", health.PingCheck(dbPool))
+	checker.Register("redis", health.RedisPingCheck(func(ctx context.Context) error {
+		return rdb.Ping(ctx).Err()
+	}))
+
+	// 7. Dependencies
 	userStore := store.New(dbPool)
 	userSvc := service.New(userStore, rdb)
 	userHandler := http.New(userSvc)
 
-	// 5. Kafka Consumer
-	// In prod, use split brokers string
+	// 8. Kafka Consumer
 	consumer := events.NewConsumer([]string{kafkaBrokers}, "social.events.v1", userSvc)
 	go consumer.Start(ctx)
 
@@ -74,21 +92,38 @@ func main() {
 			case <-ticker.C:
 				cleared, err := userSvc.ClearExpiredStatuses(ctx)
 				if err != nil {
-					log.Printf("Status cleanup error: %v", err)
+					slog.Error("status cleanup error", "error", err)
 				} else if cleared > 0 {
-					log.Printf("Cleared %d expired statuses", cleared)
+					slog.Info("cleared expired statuses", "count", cleared)
 				}
 			}
 		}
 	}()
 
-	// 6. Server
-	r := gin.Default()
+	// 9. Gin with middleware stack
+	gin.SetMode(gin.ReleaseMode)
+	r := gin.New()
+	r.Use(gin.Recovery())
+	r.Use(middleware.RequestID())
+	r.Use(middleware.Logger())
+	r.Use(middleware.Metrics(httpMetrics))
+
+	checker.RegisterRoutes(r)
+	r.GET("/metrics", metrics.Handler())
 	userHandler.RegisterRoutes(r)
 
-	log.Printf("Starting user-service on port %s", port)
-	if err := r.Run(":" + port); err != nil {
-		log.Fatalf("Failed to run server: %v", err)
+	// 10. Graceful shutdown
+	if err := server.Run(r, server.Config{
+		Port:            port,
+		ShutdownTimeout: 10 * time.Second,
+		OnShutdown: func() {
+			rdb.Close()
+			dbPool.Close()
+			slog.Info("cleanup completed")
+		},
+	}); err != nil {
+		slog.Error("server error", "error", err)
+		os.Exit(1)
 	}
 }
 
@@ -213,8 +248,35 @@ func ensurePhase6Schema(ctx context.Context, db *pgxpool.Pool) {
 
 	for _, stmt := range ddl {
 		if _, err := db.Exec(ctx, stmt); err != nil {
-			log.Printf("Warning: phase6 schema migration: %v", err)
+			slog.Warn("phase6 schema migration", "error", err)
 		}
 	}
-	log.Println("Phase 6 schema ensured (channels, business pages, reputation, endorsements, status)")
+	slog.Info("phase 6 schema ensured", "tables", "channels, business pages, reputation, endorsements, status")
+}
+
+func env(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func collectDBPoolStats(ctx context.Context, pool *pgxpool.Pool, m *metrics.DBPoolMetrics) {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			stat := pool.Stat()
+			m.Update(metrics.PgxPoolStat{
+				AcquireCount:  stat.AcquireCount(),
+				AcquiredConns: stat.AcquiredConns(),
+				IdleConns:     stat.IdleConns(),
+				TotalConns:    stat.TotalConns(),
+				MaxConns:      stat.MaxConns(),
+			})
+		}
+	}
 }

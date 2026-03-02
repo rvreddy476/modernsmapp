@@ -124,6 +124,20 @@ func (s *Store) ResolveMediaKind(ctx context.Context, mediaID uuid.UUID) string 
 	return fileType
 }
 
+// ResolveMediaDuration queries media_assets for the video duration in seconds.
+// Returns 0 if the media is not found, not a video, or duration is not yet set.
+func (s *Store) ResolveMediaDuration(ctx context.Context, mediaID uuid.UUID) int {
+	var dur *int
+	err := s.db.QueryRow(ctx,
+		`SELECT duration_seconds FROM media_assets WHERE id = $1 AND file_type = 'video'`,
+		mediaID,
+	).Scan(&dur)
+	if err != nil || dur == nil {
+		return 0
+	}
+	return *dur
+}
+
 // CreatePost inserts a post with optional media and poll in a single transaction.
 func (s *Store) CreatePost(ctx context.Context, p *Post) error {
 	tx, err := s.db.Begin(ctx)

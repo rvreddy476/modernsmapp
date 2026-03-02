@@ -123,7 +123,7 @@ func (s *Service) loginOrRegisterOAuth(ctx context.Context, provider string, inf
 	}
 
 	if user != nil {
-		return s.createSessionForUser(ctx, user.ID, "oauth", provider, "", "")
+		return s.createSessionForUser(ctx, user, "oauth", provider, "", "")
 	}
 
 	// Check if user exists with this email but different provider
@@ -137,7 +137,7 @@ func (s *Service) loginOrRegisterOAuth(ctx context.Context, provider string, inf
 		if err := s.store.LinkOAuthProvider(ctx, user.ID, provider); err != nil {
 			return nil, fmt.Errorf("failed to link OAuth provider: %w", err)
 		}
-		return s.createSessionForUser(ctx, user.ID, "oauth", provider, "", "")
+		return s.createSessionForUser(ctx, user, "oauth", provider, "", "")
 	}
 
 	// Create a new user with OAuth
@@ -181,7 +181,7 @@ func (s *Service) loginOrRegisterOAuth(ctx context.Context, provider string, inf
 	}
 
 	s.log.Info("user registered via OAuth", "user_id", user.ID, "provider", provider)
-	return s.createSessionForUser(ctx, user.ID, "oauth", provider, "", "")
+	return s.createSessionForUser(ctx, user, "oauth", provider, "", "")
 }
 
 // oauthConfig returns the oauth2.Config for the given provider.

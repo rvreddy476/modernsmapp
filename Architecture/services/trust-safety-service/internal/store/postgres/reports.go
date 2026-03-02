@@ -47,6 +47,18 @@ func (s *ReportStore) CreateReport(ctx context.Context, report *Report) error {
 	return err
 }
 
+// CheckDuplicate returns true if an open report already exists for this reporter+entity pair.
+func (s *ReportStore) CheckDuplicate(ctx context.Context, reporterID, entityID uuid.UUID) (bool, error) {
+	var exists bool
+	err := s.db.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM trust.reports
+			WHERE reporter_id = $1 AND entity_id = $2 AND status = 'open'
+		)
+	`, reporterID, entityID).Scan(&exists)
+	return exists, err
+}
+
 func (s *ReportStore) GetReports(ctx context.Context, limit int, offset int) ([]Report, error) {
 	query := `
 		SELECT id, reporter_id, entity_type, entity_id, reason, details, status, created_at, updated_at

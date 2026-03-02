@@ -132,6 +132,15 @@ func (h *Handler) Health(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
+// resolveTargetUser resolves the :username path parameter to a profile.
+// It first tries to parse it as a UUID (user_id lookup), then falls back to username lookup.
+func (h *Handler) resolveTargetUser(ctx context.Context, identifier string) (*store.Profile, error) {
+	if uid, err := uuid.Parse(identifier); err == nil {
+		return h.svc.GetProfile(ctx, uid)
+	}
+	return h.svc.GetProfileByUsername(ctx, identifier)
+}
+
 func (h *Handler) DiscoverProfiles(c *gin.Context) {
 	limit, offset := parsePagination(c)
 
@@ -709,10 +718,10 @@ func (h *Handler) FollowUser(c *gin.Context) {
 		return
 	}
 
-	username := c.Param("username")
-	target, err := h.svc.GetProfileByUsername(c.Request.Context(), username)
+	identifier := c.Param("username")
+	target, err := h.resolveTargetUser(c.Request.Context(), identifier)
 	if err != nil {
-		h.log.Error("failed to look up user", "err", err, "username", username, "request_id", RequestIDFromContext(c))
+		h.log.Error("failed to look up user", "err", err, "identifier", identifier, "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
 		return
 	}
@@ -738,10 +747,10 @@ func (h *Handler) UnfollowUser(c *gin.Context) {
 		return
 	}
 
-	username := c.Param("username")
-	target, err := h.svc.GetProfileByUsername(c.Request.Context(), username)
+	identifier := c.Param("username")
+	target, err := h.resolveTargetUser(c.Request.Context(), identifier)
 	if err != nil {
-		h.log.Error("failed to look up user", "err", err, "username", username, "request_id", RequestIDFromContext(c))
+		h.log.Error("failed to look up user", "err", err, "identifier", identifier, "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
 		return
 	}
@@ -770,10 +779,10 @@ func (h *Handler) SendFriendRequest(c *gin.Context) {
 		return
 	}
 
-	username := c.Param("username")
-	target, err := h.svc.GetProfileByUsername(c.Request.Context(), username)
+	identifier := c.Param("username")
+	target, err := h.resolveTargetUser(c.Request.Context(), identifier)
 	if err != nil {
-		h.log.Error("failed to look up user", "err", err, "username", username, "request_id", RequestIDFromContext(c))
+		h.log.Error("failed to look up user", "err", err, "identifier", identifier, "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
 		return
 	}
@@ -1043,10 +1052,10 @@ func (h *Handler) RemoveFriend(c *gin.Context) {
 		return
 	}
 
-	username := c.Param("username")
-	target, err := h.svc.GetProfileByUsername(c.Request.Context(), username)
+	identifier := c.Param("username")
+	target, err := h.resolveTargetUser(c.Request.Context(), identifier)
 	if err != nil {
-		h.log.Error("failed to look up user", "err", err, "username", username, "request_id", RequestIDFromContext(c))
+		h.log.Error("failed to look up user", "err", err, "identifier", identifier, "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
 		return
 	}
@@ -1106,10 +1115,10 @@ func (h *Handler) BlockUser(c *gin.Context) {
 		return
 	}
 
-	username := c.Param("username")
-	target, err := h.svc.GetProfileByUsername(c.Request.Context(), username)
+	identifier := c.Param("username")
+	target, err := h.resolveTargetUser(c.Request.Context(), identifier)
 	if err != nil {
-		h.log.Error("failed to look up user", "err", err, "username", username, "request_id", RequestIDFromContext(c))
+		h.log.Error("failed to look up user", "err", err, "identifier", identifier, "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
 		return
 	}
@@ -1134,10 +1143,10 @@ func (h *Handler) UnblockUser(c *gin.Context) {
 		return
 	}
 
-	username := c.Param("username")
-	target, err := h.svc.GetProfileByUsername(c.Request.Context(), username)
+	identifier := c.Param("username")
+	target, err := h.resolveTargetUser(c.Request.Context(), identifier)
 	if err != nil {
-		h.log.Error("failed to look up user", "err", err, "username", username, "request_id", RequestIDFromContext(c))
+		h.log.Error("failed to look up user", "err", err, "identifier", identifier, "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
 		return
 	}

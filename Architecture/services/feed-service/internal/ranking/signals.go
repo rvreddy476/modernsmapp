@@ -6,6 +6,7 @@ import (
 	"log"
 	"strconv"
 
+	"github.com/gocql/gocql"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
@@ -28,13 +29,17 @@ type MediaPrefs struct {
 }
 
 // SignalLoader fetches all scoring signals from Redis via pipelined calls.
+// An optional ScyllaDB session provides a durable fallback for interaction
+// checks when Redis data has expired.
 type SignalLoader struct {
-	rdb *redis.Client
+	rdb    *redis.Client
+	scylla *gocql.Session
 }
 
-// NewSignalLoader creates a SignalLoader backed by the given Redis client.
-func NewSignalLoader(rdb *redis.Client) *SignalLoader {
-	return &SignalLoader{rdb: rdb}
+// NewSignalLoader creates a SignalLoader backed by Redis with an optional
+// ScyllaDB session for durable interaction verification.
+func NewSignalLoader(rdb *redis.Client, scyllaSession *gocql.Session) *SignalLoader {
+	return &SignalLoader{rdb: rdb, scylla: scyllaSession}
 }
 
 // LoadSignals fetches viewer-specific scoring signals for the given candidates
@@ -144,10 +149,29 @@ func (sl *SignalLoader) LoadSignals(ctx context.Context, viewerID uuid.UUID, can
 		// redis.Nil means the member does not exist in the sorted set; treat as 0.
 	}
 
-	// --- Harvest 4: interactions
+	// --- Harvest 4: interactions (Redis primary)
 	for pid, cmd := range interactionCmds {
 		if v, err := cmd.Result(); err == nil {
 			vs.Interactions[pid] = v
+		}
+	}
+
+	// --- Harvest 4b: ScyllaDB fallback for posts where Redis returned false
+	if sl.scylla != nil {
+		var unchecked []uuid.UUID
+		for _, c := range candidates {
+			pid := c.PostID.String()
+			if !vs.Interactions[pid] {
+				unchecked = append(unchecked, c.PostID)
+			}
+		}
+		if len(unchecked) > 0 {
+			scyllaInteractions := sl.checkScyllaInteractions(ctx, viewerID, unchecked)
+			for pid, v := range scyllaInteractions {
+				if v {
+					vs.Interactions[pid] = true
+				}
+			}
 		}
 	}
 
@@ -175,4 +199,32 @@ func (sl *SignalLoader) LoadSignals(ctx context.Context, viewerID uuid.UUID, can
 	}
 
 	return vs, nil
+}
+
+// checkScyllaInteractions queries the user_post_interactions table in ScyllaDB
+// for posts where Redis had no interaction data. This provides a durable
+// fallback so that the interaction penalty is accurate even after Redis expiry.
+func (sl *SignalLoader) checkScyllaInteractions(ctx context.Context, viewerID uuid.UUID, postIDs []uuid.UUID) map[string]bool {
+	result := make(map[string]bool, len(postIDs))
+
+	gocqlIDs := make([]interface{}, len(postIDs))
+	for i, id := range postIDs {
+		gocqlIDs[i] = gocql.UUID(id)
+	}
+
+	iter := sl.scylla.Query(`
+		SELECT post_id FROM user_post_interactions
+		WHERE user_id = ? AND post_id IN ?`,
+		gocql.UUID(viewerID), gocqlIDs,
+	).WithContext(ctx).Iter()
+
+	var pid gocql.UUID
+	for iter.Scan(&pid) {
+		result[uuid.UUID(pid).String()] = true
+	}
+	if err := iter.Close(); err != nil {
+		log.Printf("ranking/signals: ScyllaDB interaction check error: %v", err)
+	}
+
+	return result
 }

@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/identity-platform/auth-service/internal/store"
 	"github.com/pquerna/otp/totp"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
@@ -217,8 +216,17 @@ func (s *Service) Verify2FA(ctx context.Context, userID uuid.UUID, code, pending
 	// Delete the pending session
 	s.rdb.Del(ctx, key)
 
+	// Look up the user for session creation
+	user, err := s.store.GetUserByID(ctx, parsedUserID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user: %w", err)
+	}
+	if user == nil {
+		return nil, errors.New("user not found")
+	}
+
 	// Create the real session
-	return s.createSessionForUser(ctx, parsedUserID, pending.DeviceID, pending.Platform, pending.IP, pending.UserAgent)
+	return s.createSessionForUser(ctx, user, pending.DeviceID, pending.Platform, pending.IP, pending.UserAgent)
 }
 
 // StorePending2FASession stores a pending 2FA session in Redis and returns a temporary token.
@@ -249,61 +257,6 @@ func (s *Service) StorePending2FASession(ctx context.Context, userID uuid.UUID, 
 	return token, nil
 }
 
-// createSessionForUser creates a full authenticated session (shared between login and 2FA verify).
-func (s *Service) createSessionForUser(ctx context.Context, userID uuid.UUID, deviceID, platform, ip, userAgent string) (*AuthResponse, error) {
-	user, err := s.store.GetUserByID(ctx, userID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get user: %w", err)
-	}
-	if user == nil {
-		return nil, errors.New("user not found")
-	}
-
-	sessionID := uuid.New()
-	refreshToken, err := generateOpaqueToken(32)
-	if err != nil {
-		return nil, err
-	}
-
-	sess := &store.Session{
-		ID:           sessionID,
-		UserID:       userID,
-		RefreshToken: hashToken(refreshToken),
-		DeviceID:     deviceID,
-		Platform:     platform,
-		IP:           ip,
-		UserAgent:    userAgent,
-		CreatedAt:    time.Now(),
-		ExpiresAt:    time.Now().Add(s.cfg.RefreshTokenTTL),
-	}
-
-	if err := s.store.CreateSession(ctx, sess); err != nil {
-		return nil, err
-	}
-
-	accessToken, err := s.generateAccessToken(userID, sessionID)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := s.store.UpdateLastLogin(ctx, userID); err != nil {
-		s.log.Warn("failed to update last_login_at", "err", err, "user_id", userID)
-	}
-
-	if err := s.producer.PublishUserLoggedIn(ctx, userID, sessionID, deviceID, platform, ip); err != nil {
-		s.log.Warn("failed to publish user logged in event", "err", err, "user_id", userID, "session_id", sessionID)
-	}
-
-	return &AuthResponse{
-		Tokens: TokenPair{
-			AccessToken:  accessToken,
-			RefreshToken: refreshToken,
-			ExpiresAt:    time.Now().Add(s.cfg.AccessTokenTTL),
-		},
-		User:      user,
-		SessionID: sessionID,
-	}, nil
-}
 
 // generateRecoveryCodes generates random hex recovery codes.
 func generateRecoveryCodes(count int) ([]string, error) {

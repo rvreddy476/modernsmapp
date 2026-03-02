@@ -2,70 +2,133 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/facebook-like/graph-service/internal/events"
-	"github.com/facebook-like/graph-service/internal/http"
+	graphHttp "github.com/facebook-like/graph-service/internal/http"
 	"github.com/facebook-like/graph-service/internal/service"
 	"github.com/facebook-like/graph-service/internal/store"
+	"github.com/facebook-like/shared/health"
+	"github.com/facebook-like/shared/middleware"
+	"github.com/facebook-like/shared/o11y/logging"
+	"github.com/facebook-like/shared/o11y/metrics"
+	"github.com/facebook-like/shared/server"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
 
 func main() {
-	// 1. Config
-	port := os.Getenv("HTTP_PORT")
-	if port == "" {
-		port = "8083"
-	}
+	// 1. Structured logging
+	logging.Init(logging.Config{ServiceName: "graph-service"})
+
+	// 2. Config
+	port := env("HTTP_PORT", "8083")
 	pgDSN := os.Getenv("POSTGRES_DSN")
 	redisAddr := os.Getenv("REDIS_ADDR")
-	kafkaBrokers := os.Getenv("KAFKA_BROKERS")
-	if kafkaBrokers == "" {
-		kafkaBrokers = "redpanda:9092"
-	}
+	kafkaBrokers := env("KAFKA_BROKERS", "redpanda:9092")
 
-	// 2. Database
+	// 3. Database
 	ctx := context.Background()
 	dbPool, err := pgxpool.New(ctx, pgDSN)
 	if err != nil {
-		log.Fatalf("Unable to connect to database: %v\n", err)
+		slog.Error("failed to connect to postgres", "error", err)
+		os.Exit(1)
 	}
 	defer dbPool.Close()
 
 	if err := dbPool.Ping(ctx); err != nil {
-		log.Fatalf("Database ping failed: %v\n", err)
+		slog.Error("postgres ping failed", "error", err)
+		os.Exit(1)
 	}
-	log.Println("Connected to Postgres")
+	slog.Info("connected to postgres")
 
-	// 3. Redis
-	rdb := redis.NewClient(&redis.Options{
-		Addr: redisAddr,
-	})
+	// 4. Redis
+	rdb := redis.NewClient(&redis.Options{Addr: redisAddr})
 	if err := rdb.Ping(ctx).Err(); err != nil {
-		log.Fatalf("Redis ping failed: %v", err)
+		slog.Error("redis ping failed", "error", err)
+		os.Exit(1)
 	}
-	log.Println("Connected to Redis")
+	defer rdb.Close()
+	slog.Info("connected to redis")
 
-	// 4. Kafka Producer
+	// 5. Kafka Producer
 	producer := events.NewProducer(strings.Split(kafkaBrokers, ","), "social.events.v1")
 	defer producer.Close()
-	log.Println("Kafka producer ready")
+	slog.Info("kafka producer ready")
 
-	// 5. Dependencies
+	// 6. Prometheus metrics
+	httpMetrics := metrics.NewHTTPMetrics("graph-service")
+	dbMetrics := metrics.NewDBPoolMetrics("graph-service", "postgres")
+
+	go collectDBPoolStats(ctx, dbPool, dbMetrics)
+
+	// 7. Health checker
+	checker := health.New("graph-service")
+	checker.Register("postgres", health.PingCheck(dbPool))
+	checker.Register("redis", health.RedisPingCheck(func(ctx context.Context) error {
+		return rdb.Ping(ctx).Err()
+	}))
+
+	// 8. Dependencies
 	graphStore := store.New(dbPool)
 	graphSvc := service.New(graphStore, rdb, producer)
-	graphHandler := http.New(graphSvc)
+	graphHandler := graphHttp.New(graphSvc)
 
-	// 6. Server
-	r := gin.Default()
+	// 9. Gin with middleware stack
+	gin.SetMode(gin.ReleaseMode)
+	r := gin.New()
+	r.Use(gin.Recovery())
+	r.Use(middleware.RequestID())
+	r.Use(middleware.Logger())
+	r.Use(middleware.Metrics(httpMetrics))
+
+	checker.RegisterRoutes(r)
+	r.GET("/metrics", metrics.Handler())
 	graphHandler.RegisterRoutes(r)
 
-	log.Printf("Starting graph-service on port %s", port)
-	if err := r.Run(":" + port); err != nil {
-		log.Fatalf("Failed to run server: %v", err)
+	// 10. Graceful shutdown
+	if err := server.Run(r, server.Config{
+		Port:            port,
+		ShutdownTimeout: 10 * time.Second,
+		OnShutdown: func() {
+			producer.Close()
+			rdb.Close()
+			dbPool.Close()
+			slog.Info("cleanup completed")
+		},
+	}); err != nil {
+		slog.Error("server error", "error", err)
+		os.Exit(1)
+	}
+}
+
+func env(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func collectDBPoolStats(ctx context.Context, pool *pgxpool.Pool, m *metrics.DBPoolMetrics) {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			stat := pool.Stat()
+			m.Update(metrics.PgxPoolStat{
+				AcquireCount:  stat.AcquireCount(),
+				AcquiredConns: stat.AcquiredConns(),
+				IdleConns:     stat.IdleConns(),
+				TotalConns:    stat.TotalConns(),
+				MaxConns:      stat.MaxConns(),
+			})
+		}
 	}
 }

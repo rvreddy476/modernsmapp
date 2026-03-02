@@ -2,12 +2,9 @@ package main
 
 import (
 	"context"
-	"log"
-	"net/http"
+	"log/slog"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 
 	mediaEvents "github.com/facebook-like/media-service/internal/events"
@@ -15,20 +12,26 @@ import (
 	"github.com/facebook-like/media-service/internal/service"
 	"github.com/facebook-like/media-service/internal/store/blob"
 	"github.com/facebook-like/media-service/internal/store/postgres"
+	"github.com/facebook-like/shared/health"
+	"github.com/facebook-like/shared/middleware"
+	"github.com/facebook-like/shared/o11y/logging"
+	"github.com/facebook-like/shared/o11y/metrics"
+	"github.com/facebook-like/shared/server"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func main() {
-	// 1. Config
-	port := os.Getenv("HTTP_PORT")
-	if port == "" {
-		port = "8087"
-	}
+	// 1. Structured logging
+	logging.Init(logging.Config{ServiceName: "media-service"})
+
+	// 2. Config
+	port := env("HTTP_PORT", "8087")
 	pgDSN := os.Getenv("POSTGRES_DSN")
 	jwtSecret := os.Getenv("JWT_SECRET")
 	if jwtSecret == "" {
-		log.Fatal("JWT_SECRET environment variable is required")
+		slog.Error("JWT_SECRET environment variable is required")
+		os.Exit(1)
 	}
 
 	minioEndpoint := os.Getenv("MINIO_ENDPOINT")
@@ -37,7 +40,7 @@ func main() {
 	minioBucket := os.Getenv("MINIO_BUCKET")
 	minioUseSSL := os.Getenv("MINIO_USE_SSL") == "true"
 	minioPublicEndpoint := os.Getenv("MINIO_PUBLIC_ENDPOINT") // e.g. http://localhost:9000
-	kafkaBrokers := os.Getenv("KAFKA_BROKERS")
+	kafkaBrokers := env("KAFKA_BROKERS", "kafka:9092")
 
 	if minioEndpoint == "" {
 		minioEndpoint = "minio:9000"
@@ -45,75 +48,105 @@ func main() {
 		minioSecretKey = "minioadmin"
 		minioBucket = "media"
 	}
-	if kafkaBrokers == "" {
-		kafkaBrokers = "kafka:9092"
-	}
 
-	// 2. Database (Postgres)
+	// 3. Database (Postgres)
 	ctx := context.Background()
 	dbPool, err := pgxpool.New(ctx, pgDSN)
 	if err != nil {
-		log.Fatalf("Unable to connect to Postgres: %v\n", err)
+		slog.Error("failed to connect to postgres", "error", err)
+		os.Exit(1)
 	}
 	defer dbPool.Close()
 
 	if err := dbPool.Ping(ctx); err != nil {
-		log.Fatalf("Postgres ping failed: %v\n", err)
+		slog.Error("postgres ping failed", "error", err)
+		os.Exit(1)
 	}
-	log.Println("Connected to Postgres")
+	slog.Info("connected to postgres")
 
-	// 3. Blob Store (MinIO)
+	// 4. Blob Store (MinIO)
 	blobStore, err := blob.NewWithPublicEndpoint(minioEndpoint, minioAccessKey, minioSecretKey, minioBucket, minioUseSSL, minioPublicEndpoint)
 	if err != nil {
-		log.Fatalf("Unable to connect to MinIO: %v\n", err)
+		slog.Error("failed to connect to minio", "error", err)
+		os.Exit(1)
 	}
-	log.Println("Connected to MinIO")
+	slog.Info("connected to minio")
 
-	// 4. Dependencies
+	// 5. Dependencies
 	pgStore := postgres.New(dbPool)
 	mediaSvc := service.New(pgStore, blobStore)
 
-	// 5. Kafka producer for video transcode events
+	// 6. Kafka producer for video transcode events
 	brokers := strings.Split(kafkaBrokers, ",")
 	producer := mediaEvents.NewProducer(brokers, "media.events")
 	defer producer.Close()
 	mediaSvc.SetProducer(producer)
-	log.Println("Kafka producer initialized")
+	slog.Info("kafka producer initialized")
 
-	// 6. HTTP Server with middleware
-	r := gin.New()
-	r.Use(gin.Recovery())
-	r.Use(mediaHttp.RequestLoggerMiddleware())
+	// 7. Prometheus metrics
+	httpMetrics := metrics.NewHTTPMetrics("media-service")
+	dbMetrics := metrics.NewDBPoolMetrics("media-service", "postgres")
 
+	go collectDBPoolStats(ctx, dbPool, dbMetrics)
+
+	// 8. Health checker
+	checker := health.New("media-service")
+	checker.Register("postgres", health.PingCheck(dbPool))
+
+	// 9. HTTP Server with middleware
 	authMW := mediaHttp.AuthMiddleware(jwtSecret)
 	optionalAuthMW := mediaHttp.OptionalAuthMiddleware(jwtSecret)
-
 	mediaHandler := mediaHttp.New(mediaSvc)
+
+	gin.SetMode(gin.ReleaseMode)
+	r := gin.New()
+	r.Use(gin.Recovery())
+	r.Use(middleware.RequestID())
+	r.Use(middleware.Logger())
+	r.Use(middleware.Metrics(httpMetrics))
+
+	checker.RegisterRoutes(r)
+	r.GET("/metrics", metrics.Handler())
 	mediaHandler.RegisterRoutes(r, authMW, optionalAuthMW)
 
-	srv := &http.Server{
-		Addr:    ":" + port,
-		Handler: r,
+	// 10. Graceful shutdown
+	if err := server.Run(r, server.Config{
+		Port:            port,
+		ShutdownTimeout: 10 * time.Second,
+		OnShutdown: func() {
+			producer.Close()
+			dbPool.Close()
+			slog.Info("cleanup completed")
+		},
+	}); err != nil {
+		slog.Error("server error", "error", err)
+		os.Exit(1)
 	}
+}
 
-	// 7. Start server in goroutine
-	go func() {
-		log.Printf("Starting media-service on port %s", port)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server error: %v", err)
+func env(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func collectDBPoolStats(ctx context.Context, pool *pgxpool.Pool, m *metrics.DBPoolMetrics) {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			stat := pool.Stat()
+			m.Update(metrics.PgxPoolStat{
+				AcquireCount:  stat.AcquireCount(),
+				AcquiredConns: stat.AcquiredConns(),
+				IdleConns:     stat.IdleConns(),
+				TotalConns:    stat.TotalConns(),
+				MaxConns:      stat.MaxConns(),
+			})
 		}
-	}()
-
-	// 8. Graceful shutdown
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-	log.Println("Shutting down media-service...")
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Fatalf("Server forced to shutdown: %v", err)
 	}
-	log.Println("Media-service stopped")
 }

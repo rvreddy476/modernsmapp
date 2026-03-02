@@ -24,9 +24,22 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/flags/me", h.EvaluateMe)
 
 		admin := v1.Group("/admin/flags")
-		// TODO: Add AdminAuthMiddleware
+		admin.Use(h.AdminAuthMiddleware())
 		admin.POST("", h.UpsertFlag)
 		admin.GET("", h.ListFlags)
+	}
+}
+
+// AdminAuthMiddleware protects admin endpoints with an API key check.
+func (h *Handler) AdminAuthMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		apiKey := c.GetHeader("ADMIN_API_KEY")
+		if apiKey != "admin-secret-123" {
+			api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid API Key", nil, nil)
+			c.Abort()
+			return
+		}
+		c.Next()
 	}
 }
 

@@ -9,7 +9,6 @@ import (
 	"strconv"
 
 	"github.com/facebook-like/notification-service/internal/service"
-	"github.com/facebook-like/notification-service/internal/store/postgres"
 	"github.com/facebook-like/shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -49,29 +48,26 @@ func (h *Handler) GetNotifications(c *gin.Context) {
 		return
 	}
 
-	limitStr := c.Query("limit")
 	limit := 20
-	if limitStr != "" {
-		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 && l <= 100 {
-			limit = l
-		}
+	if l, err := strconv.Atoi(c.Query("limit")); err == nil && l > 0 && l <= 100 {
+		limit = l
 	}
 
-	// Cursor logic would go here (parsing bucket/ts from query param)
-	// For MVP v1, we just return the latest from the hardcoded/current bucket
+	cursor := c.Query("cursor")
 
-	notifs, err := h.svc.GetNotifications(c.Request.Context(), userID, limit)
+	page, err := h.svc.GetNotificationsPage(c.Request.Context(), userID, limit, cursor)
 	if err != nil {
 		log.Printf("Failed to get notifications: %v", err)
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch notifications", nil, nil)
 		return
 	}
 
-	// Transform to response if needed, or return directly
-	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{
-		"items":       notifs,
-		"next_cursor": nil, // TODO: Implement cursor pagination
-	}, nil)
+	var meta *api.Meta
+	if page.NextCursor != "" {
+		meta = &api.Meta{NextCursor: page.NextCursor}
+	}
+
+	api.JSON(c.Writer, http.StatusOK, page.Items, meta)
 }
 
 type MarkReadRequest struct {

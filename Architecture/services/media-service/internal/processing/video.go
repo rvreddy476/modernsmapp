@@ -102,6 +102,81 @@ func ProbeVideo(ctx context.Context, inputPath string) (*VideoMeta, error) {
 	}, nil
 }
 
+// ReelMaxDurationSeconds is the maximum duration (inclusive) for a video to be
+// classified as a reel. Videos longer than this are considered long-form.
+const ReelMaxDurationSeconds = 90
+
+// TranscodeToMP4Fast transcodes with ultrafast preset for reels where encode
+// speed matters more than compression ratio.
+func TranscodeToMP4Fast(ctx context.Context, inputPath, outputPath string, maxHeight int) error {
+	vf := fmt.Sprintf("scale=-2:%d", maxHeight)
+	args := []string{
+		"-y", "-i", inputPath,
+		"-vf", vf,
+		"-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+		"-c:a", "aac", "-b:a", "128k",
+		"-movflags", "+faststart",
+		outputPath,
+	}
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// TranscodeReel runs a reel-optimized pipeline: no 1080p/4K, faster preset, 720p cap.
+func TranscodeReel(ctx context.Context, inputPath, tmpDir string) ([]TranscodeOutput, *VideoMeta, error) {
+	meta, err := ProbeVideo(ctx, inputPath)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var outputs []TranscodeOutput
+
+	// 1. Thumbnail
+	thumbPath := filepath.Join(tmpDir, "thumb_150.jpg")
+	if err := ExtractThumbnail(ctx, inputPath, thumbPath, 1, 150); err == nil {
+		outputs = append(outputs, TranscodeOutput{
+			Name: "thumb_150", FilePath: thumbPath,
+			Width: 150, Height: 150, Mime: "image/jpeg",
+		})
+	}
+
+	// 2. 360p
+	if meta.Height >= 360 {
+		path360 := filepath.Join(tmpDir, "360p.mp4")
+		if err := TranscodeToMP4Fast(ctx, inputPath, path360, 360); err == nil {
+			outputs = append(outputs, TranscodeOutput{
+				Name: "360p", FilePath: path360,
+				Width: 0, Height: 360, Mime: "video/mp4",
+			})
+		}
+	}
+
+	// 3. 480p
+	if meta.Height >= 480 {
+		path480 := filepath.Join(tmpDir, "480p.mp4")
+		if err := TranscodeToMP4Fast(ctx, inputPath, path480, 480); err == nil {
+			outputs = append(outputs, TranscodeOutput{
+				Name: "480p", FilePath: path480,
+				Width: 0, Height: 480, Mime: "video/mp4",
+			})
+		}
+	}
+
+	// 4. 720p — cap for reels (no 1080p, no 4K)
+	if meta.Height >= 720 {
+		path720 := filepath.Join(tmpDir, "720p.mp4")
+		if err := TranscodeToMP4Fast(ctx, inputPath, path720, 720); err == nil {
+			outputs = append(outputs, TranscodeOutput{
+				Name: "720p", FilePath: path720,
+				Width: 0, Height: 720, Mime: "video/mp4",
+			})
+		}
+	}
+
+	return outputs, meta, nil
+}
+
 // TranscodeVideo runs the full transcoding pipeline for a video file.
 // Returns output files that were created in tmpDir.
 func TranscodeVideo(ctx context.Context, inputPath, tmpDir string) ([]TranscodeOutput, *VideoMeta, error) {

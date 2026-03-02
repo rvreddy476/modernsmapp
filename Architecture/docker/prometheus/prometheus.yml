@@ -1,0 +1,63 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - "alerts.yml"
+
+scrape_configs:
+  # One job per service, using their known ports
+  - job_name: 'post-service'
+    static_configs:
+      - targets: ['post-service:8084']
+  - job_name: 'feed-service'
+    static_configs:
+      - targets: ['feed-service:8086']
+  - job_name: 'media-service'
+    static_configs:
+      - targets: ['media-service:8087']
+  - job_name: 'notification-service'
+    static_configs:
+      - targets: ['notification-service:8088']
+  - job_name: 'search-service'
+    static_configs:
+      - targets: ['search-service:8089']
+  - job_name: 'graph-service'
+    static_configs:
+      - targets: ['graph-service:8083']
+  - job_name: 'analytics-service'
+    static_configs:
+      - targets: ['analytics-service:8094']
+  - job_name: 'group-service'
+    static_configs:
+      - targets: ['group-service:8090']
+  - job_name: 'trust-safety-service'
+    static_configs:
+      - targets: ['trust-safety-service:8091']
+  - job_name: 'message-service'
+    static_configs:
+      - targets: ['message-service:8092']
+  - job_name: 'monetization-service'
+    static_configs:
+      - targets: ['monetization-service:8099']
+  - job_name: 'feature-flag-service'
+    static_configs:
+      - targets: ['feature-flag-service:8095']
+  - job_name: 'admin-service'
+    static_configs:
+      - targets: ['admin-service:8096']
+  - job_name: 'shop-service'
+    static_configs:
+      - targets: ['shop-service:8097']
+  - job_name: 'memories-service'
+    static_configs:
+      - targets: ['memories-service:8098']
+  - job_name: 'live-service'
+    static_configs:
+      - targets: ['live-service:8099']
+  - job_name: 'suggestion-service'
+    static_configs:
+      - targets: ['suggestion-service:8100']
+  - job_name: 'user-service'
+    static_configs:
+      - targets: ['user-service:8082']

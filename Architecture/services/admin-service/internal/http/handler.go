@@ -3,6 +3,7 @@ package http
 import (
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/facebook-like/admin-service/internal/service"
@@ -23,8 +24,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	v1 := r.Group("/v1/admin")
 	v1.Use(h.AdminAuthMiddleware())
 	{
+		v1.GET("/dashboard", h.GetDashboard)
+		v1.GET("/audit-log", h.GetAuditLog)
+		v1.GET("/reports", h.ListReports)
+		v1.GET("/suspensions", h.ListSuspensions)
 		v1.POST("/takedown", h.TakedownContent)
 		v1.POST("/users/:userId/suspend", h.SuspendUser)
+		v1.DELETE("/users/:userId/suspend", h.UnsuspendUser)
 	}
 }
 
@@ -95,4 +101,106 @@ func (h *Handler) SuspendUser(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "suspended"}, nil)
+}
+
+// GetDashboard returns aggregate platform stats.
+func (h *Handler) GetDashboard(c *gin.Context) {
+	stats, err := h.svc.GetDashboard(c.Request.Context())
+	if err != nil {
+		log.Printf("Dashboard error: %v", err)
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to load dashboard", nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, stats, nil)
+}
+
+// GetAuditLog returns paginated audit log entries.
+func (h *Handler) GetAuditLog(c *gin.Context) {
+	limit, offset := parsePagination(c)
+
+	logs, total, err := h.svc.GetAuditLogs(c.Request.Context(), limit, offset)
+	if err != nil {
+		log.Printf("Audit log error: %v", err)
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to load audit log", nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{
+		"items": logs,
+		"total": total,
+		"limit": limit,
+		"offset": offset,
+	}, nil)
+}
+
+// ListReports returns paginated reports, optionally filtered by status.
+func (h *Handler) ListReports(c *gin.Context) {
+	limit, offset := parsePagination(c)
+	status := c.Query("status")
+
+	reports, total, err := h.svc.ListReports(c.Request.Context(), status, limit, offset)
+	if err != nil {
+		log.Printf("List reports error: %v", err)
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to load reports", nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{
+		"items": reports,
+		"total": total,
+		"limit": limit,
+		"offset": offset,
+	}, nil)
+}
+
+// ListSuspensions returns paginated active suspensions.
+func (h *Handler) ListSuspensions(c *gin.Context) {
+	limit, offset := parsePagination(c)
+
+	suspensions, total, err := h.svc.ListSuspensions(c.Request.Context(), limit, offset)
+	if err != nil {
+		log.Printf("List suspensions error: %v", err)
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to load suspensions", nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{
+		"items": suspensions,
+		"total": total,
+		"limit": limit,
+		"offset": offset,
+	}, nil)
+}
+
+// UnsuspendUser removes a user's suspension.
+func (h *Handler) UnsuspendUser(c *gin.Context) {
+	userIDStr := c.Param("userId")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid User ID", nil, nil)
+		return
+	}
+
+	adminActor := "system-admin"
+
+	if err := h.svc.UnsuspendUser(c.Request.Context(), adminActor, userID); err != nil {
+		log.Printf("Unsuspend error: %v", err)
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Unsuspend failed", nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "unsuspended"}, nil)
+}
+
+// parsePagination extracts limit and offset query params with defaults.
+func parsePagination(c *gin.Context) (int, int) {
+	limit := 20
+	if l, err := strconv.Atoi(c.Query("limit")); err == nil && l > 0 && l <= 100 {
+		limit = l
+	}
+	offset := 0
+	if o, err := strconv.Atoi(c.Query("offset")); err == nil && o >= 0 {
+		offset = o
+	}
+	return limit, offset
 }

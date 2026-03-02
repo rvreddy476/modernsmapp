@@ -1,0 +1,99 @@
+groups:
+  - name: atpost_service_alerts
+    rules:
+      # ── HTTP Error Rate ────────────────────────────────────────────────
+      - alert: HighErrorRate
+        expr: >
+          (
+            sum by (job) (rate(atpost_http_requests_total{status=~"5.."}[5m]))
+            /
+            sum by (job) (rate(atpost_http_requests_total[5m]))
+          ) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High HTTP 5xx error rate on {{ $labels.job }}"
+          description: >
+            Service {{ $labels.job }} is returning more than 5% HTTP 5xx
+            responses over the last 5 minutes (current: {{ $value | humanizePercentage }}).
+
+      # ── Latency P99 ───────────────────────────────────────────────────
+      - alert: HighLatencyP99
+        expr: >
+          histogram_quantile(0.99,
+            sum by (job, le) (rate(atpost_http_request_duration_seconds_bucket[5m]))
+          ) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High p99 latency on {{ $labels.job }}"
+          description: >
+            Service {{ $labels.job }} p99 latency has exceeded 2 seconds
+            for 5 minutes (current: {{ $value | humanizeDuration }}).
+
+      # ── Service Down ───────────────────────────────────────────────────
+      - alert: ServiceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service {{ $labels.job }} is down"
+          description: >
+            Prometheus target {{ $labels.instance }} (job {{ $labels.job }})
+            has been unreachable for more than 1 minute.
+
+  - name: atpost_kafka_alerts
+    rules:
+      # ── Kafka Consumer Lag ─────────────────────────────────────────────
+      - alert: KafkaConsumerLagHigh
+        expr: >
+          sum by (job, consumer_group, topic) (
+            atpost_kafka_consumer_lag
+          ) > 10000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High Kafka consumer lag on {{ $labels.job }}"
+          description: >
+            Consumer group {{ $labels.consumer_group }} on topic
+            {{ $labels.topic }} in service {{ $labels.job }} has a lag
+            exceeding 10 000 messages (current: {{ $value }}).
+
+      # ── Dead-Letter Queue Messages ────────────────────────────────────
+      - alert: KafkaDLQMessages
+        expr: >
+          sum by (job, consumer_group) (
+            increase(atpost_kafka_dlq_messages_total[5m])
+          ) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "DLQ messages detected in {{ $labels.job }}"
+          description: >
+            Consumer group {{ $labels.consumer_group }} in service
+            {{ $labels.job }} has produced dead-letter queue messages
+            in the last 5 minutes (count: {{ $value }}).
+
+  - name: atpost_infra_alerts
+    rules:
+      # ── Database Pool Exhaustion ───────────────────────────────────────
+      - alert: DBPoolExhausted
+        expr: >
+          (
+            atpost_db_pool_acquired_connections
+            /
+            atpost_db_pool_max_connections
+          ) > 0.9
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "DB connection pool near exhaustion on {{ $labels.job }}"
+          description: >
+            Service {{ $labels.job }} database pool utilization has
+            exceeded 90% for 2 minutes
+            (current: {{ $value | humanizePercentage }}).

@@ -64,6 +64,8 @@ func ScoreCandidates(candidates []Candidate, signals *ViewerSignals) []Candidate
 		switch c.ContentType {
 		case "image":
 			mediaBoost = 1.2
+		case "reel":
+			mediaBoost = 1.3
 		case "video":
 			switch {
 			case signals.MediaPrefs.VideoP95Dwell > 60:
@@ -75,11 +77,17 @@ func ScoreCandidates(candidates []Candidate, signals *ViewerSignals) []Candidate
 			}
 		}
 
-		// 4. engagement_momentum (0.0-0.3)
+		// 4. engagement_momentum (0.0-0.3) with time-decay
+		// Raw momentum is normalized to [0, 0.3], then multiplied by an
+		// exponential decay factor so that newer posts benefit more from
+		// high velocity. Decay constant -0.03/h gives ~0.97 at 1h, ~0.86
+		// at 5h, ~0.70 at 12h, ~0.49 at 24h.
 		momentum := 0.0
 		if maxVelocity > 0 {
 			if v, ok := signals.Velocities[pid]; ok {
-				momentum = 0.3 * (v / maxVelocity)
+				raw := 0.3 * (v / maxVelocity)
+				ageDecay := math.Exp(-0.03 * ageHours)
+				momentum = raw * ageDecay
 			}
 		}
 

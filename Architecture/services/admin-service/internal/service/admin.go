@@ -68,14 +68,49 @@ func (s *Service) SuspendUser(ctx context.Context, actor string, userID uuid.UUI
 	return s.emitEvent(ctx, events.UserSuspended, userID.String(), payload)
 }
 
+// GetDashboard returns aggregate stats for the admin dashboard.
+func (s *Service) GetDashboard(ctx context.Context) (*postgres.DashboardStats, error) {
+	return s.store.GetDashboardStats(ctx)
+}
+
+// GetAuditLogs returns paginated audit log entries.
+func (s *Service) GetAuditLogs(ctx context.Context, limit, offset int) ([]postgres.AuditLog, int, error) {
+	return s.store.GetAuditLogs(ctx, limit, offset)
+}
+
+// ListSuspensions returns paginated active suspensions.
+func (s *Service) ListSuspensions(ctx context.Context, limit, offset int) ([]postgres.Suspension, int, error) {
+	return s.store.GetSuspensions(ctx, limit, offset)
+}
+
+// UnsuspendUser removes a user's suspension and logs the action.
+func (s *Service) UnsuspendUser(ctx context.Context, actor string, userID uuid.UUID) error {
+	if err := s.store.UnsuspendUser(ctx, userID); err != nil {
+		return fmt.Errorf("unsuspend failed: %w", err)
+	}
+
+	// Audit log
+	if err := s.store.LogAction(ctx, actor, "UNSUSPEND_USER", "user", userID.String(), nil); err != nil {
+		fmt.Printf("Audit log failed: %v\n", err)
+	}
+
+	// Emit UserUnsuspended event
+	payload := events.UserUnsuspendedPayload{
+		UserID:        userID.String(),
+		AdminID:       actor,
+		UnsuspendedAt: time.Now(),
+	}
+	return s.emitEvent(ctx, events.UserUnsuspended, userID.String(), payload)
+}
+
+// ListReports returns paginated reports, optionally filtered by status.
+func (s *Service) ListReports(ctx context.Context, status string, limit, offset int) ([]postgres.Report, int, error) {
+	return s.store.GetReports(ctx, status, limit, offset)
+}
+
 func (s *Service) emitEvent(ctx context.Context, eventType, key string, payload interface{}) error {
 	pBytes, _ := json.Marshal(payload)
-	envelope := events.EventEnvelope{
-		EventID:    uuid.New().String(),
-		EventType:  eventType,
-		Payload:    pBytes,
-		OccurredAt: time.Now(),
-	}
+	envelope := events.NewEnvelope(ctx, eventType, nil, pBytes)
 	eBytes, _ := json.Marshal(envelope)
 
 	return s.kafkaWriter.WriteMessages(ctx, kafka.Message{

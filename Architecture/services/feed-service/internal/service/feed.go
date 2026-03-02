@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"time"
 
 	"github.com/facebook-like/feed-service/internal/ranking"
@@ -57,10 +58,11 @@ func (s *Service) SetRanker(r *ranking.Ranker) {
 
 // FeedItem is the API response model
 type FeedItem struct {
-	PostID    uuid.UUID `json:"post_id"`
-	AuthorID  uuid.UUID `json:"author_id"`
-	CreatedAt time.Time `json:"created_at"`
-	Score     float64   `json:"score,omitempty"`
+	PostID      uuid.UUID `json:"post_id"`
+	AuthorID    uuid.UUID `json:"author_id"`
+	CreatedAt   time.Time `json:"created_at"`
+	Score       float64   `json:"score,omitempty"`
+	ContentType string    `json:"content_type,omitempty"`
 }
 
 func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, feedMode string, excludeSelf bool) ([]FeedItem, error) {
@@ -89,9 +91,10 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 			continue
 		}
 		candidates = append(candidates, FeedItem{
-			PostID:    item.PostID,
-			AuthorID:  item.AuthorID,
-			CreatedAt: item.CreatedAt,
+			PostID:      item.PostID,
+			AuthorID:    item.AuthorID,
+			CreatedAt:   item.CreatedAt,
+			ContentType: item.ContentType,
 		})
 	}
 
@@ -117,6 +120,84 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 	}
 
 	return candidates, nil
+}
+
+// GetReelFeed returns the user's reel-only timeline, scored by recency.
+func (s *Service) GetReelFeed(ctx context.Context, userID uuid.UUID, limit int) ([]FeedItem, error) {
+	items, err := s.scyllaStore.GetHomeTimelineByContentType(ctx, userID, "reel", limit*3)
+	if err != nil {
+		return nil, err
+	}
+
+	candidates := make([]FeedItem, 0, len(items))
+	for _, item := range items {
+		candidates = append(candidates, FeedItem{
+			PostID:      item.PostID,
+			AuthorID:    item.AuthorID,
+			CreatedAt:   item.CreatedAt,
+			ContentType: item.ContentType,
+		})
+	}
+
+	// Reels use recency-biased scoring
+	scored := scoreReels(candidates)
+
+	if len(scored) > limit {
+		scored = scored[:limit]
+	}
+	return scored, nil
+}
+
+// GetVideoFeed returns the user's long-video-only timeline.
+func (s *Service) GetVideoFeed(ctx context.Context, userID uuid.UUID, limit int) ([]FeedItem, error) {
+	items, err := s.scyllaStore.GetHomeTimelineByContentType(ctx, userID, "video", limit*3)
+	if err != nil {
+		return nil, err
+	}
+
+	candidates := make([]FeedItem, 0, len(items))
+	for _, item := range items {
+		candidates = append(candidates, FeedItem{
+			PostID:      item.PostID,
+			AuthorID:    item.AuthorID,
+			CreatedAt:   item.CreatedAt,
+			ContentType: item.ContentType,
+		})
+	}
+
+	// Long-video feed uses the main ranker with full signals
+	if s.ranker != nil && len(candidates) > 0 {
+		rc := feedItemsToCandidates(candidates)
+		ranked, err := s.ranker.Rank(ctx, userID, rc, limit)
+		if err != nil {
+			log.Printf("Video feed ranking failed, fallback to chronological: %v", err)
+		} else {
+			candidates = candidatesToFeedItems(ranked)
+		}
+	}
+
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	return candidates, nil
+}
+
+// scoreReels applies a pure recency score to reel candidates.
+// score = 1.0 / (1.0 + ageMinutes * 0.01)
+// This gives strong preference to content < 2 hours old without
+// completely suppressing older content.
+func scoreReels(items []FeedItem) []FeedItem {
+	now := time.Now()
+	scored := make([]FeedItem, len(items))
+	copy(scored, items)
+	for i := range scored {
+		ageMin := now.Sub(scored[i].CreatedAt).Minutes()
+		scored[i].Score = 1.0 / (1.0 + ageMin*0.01)
+	}
+	sort.Slice(scored, func(i, j int) bool {
+		return scored[i].Score > scored[j].Score
+	})
+	return scored
 }
 
 // GetUserFeedMode returns the user's saved feed mode preference.
@@ -163,9 +244,10 @@ func (s *Service) DebugFeed(ctx context.Context, userID uuid.UUID) (interface{},
 	candidates := make([]FeedItem, len(items))
 	for i, item := range items {
 		candidates[i] = FeedItem{
-			PostID:    item.PostID,
-			AuthorID:  item.AuthorID,
-			CreatedAt: item.CreatedAt,
+			PostID:      item.PostID,
+			AuthorID:    item.AuthorID,
+			CreatedAt:   item.CreatedAt,
+			ContentType: item.ContentType,
 		}
 	}
 
@@ -188,14 +270,14 @@ func (s *Service) DebugFeed(ctx context.Context, userID uuid.UUID) (interface{},
 	}, nil
 }
 
-func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, createdAt time.Time) error {
+func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, createdAt time.Time, contentType string) error {
 	// 1. Always add to Author Timeline
-	if err := s.scyllaStore.AddToAuthorTimeline(ctx, authorID, postID, createdAt); err != nil {
+	if err := s.scyllaStore.AddToAuthorTimeline(ctx, authorID, postID, createdAt, contentType); err != nil {
 		return err
 	}
 
 	// 2. Also add to Author's own Home Timeline (so they see their own posts)
-	if err := s.scyllaStore.AddToHomeTimeline(ctx, authorID, postID, authorID, createdAt); err != nil {
+	if err := s.scyllaStore.AddToHomeTimeline(ctx, authorID, postID, authorID, createdAt, contentType); err != nil {
 		log.Printf("Failed to push to author's own home timeline: %v", err)
 	}
 
@@ -238,7 +320,7 @@ func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, cr
 		if recipientID == authorID {
 			continue // already pushed above
 		}
-		if err := s.scyllaStore.AddToHomeTimeline(ctx, recipientID, postID, authorID, createdAt); err != nil {
+		if err := s.scyllaStore.AddToHomeTimeline(ctx, recipientID, postID, authorID, createdAt, contentType); err != nil {
 			log.Printf("Failed to push to timeline for user %s: %v", recipientID, err)
 		}
 	}
@@ -360,10 +442,11 @@ func feedItemsToCandidates(items []FeedItem) []ranking.Candidate {
 	out := make([]ranking.Candidate, len(items))
 	for i, item := range items {
 		out[i] = ranking.Candidate{
-			PostID:    item.PostID,
-			AuthorID:  item.AuthorID,
-			CreatedAt: item.CreatedAt,
-			Score:     item.Score,
+			PostID:      item.PostID,
+			AuthorID:    item.AuthorID,
+			CreatedAt:   item.CreatedAt,
+			Score:       item.Score,
+			ContentType: item.ContentType,
 		}
 	}
 	return out
@@ -374,10 +457,11 @@ func candidatesToFeedItems(candidates []ranking.Candidate) []FeedItem {
 	out := make([]FeedItem, len(candidates))
 	for i, c := range candidates {
 		out[i] = FeedItem{
-			PostID:    c.PostID,
-			AuthorID:  c.AuthorID,
-			CreatedAt: c.CreatedAt,
-			Score:     c.Score,
+			PostID:      c.PostID,
+			AuthorID:    c.AuthorID,
+			CreatedAt:   c.CreatedAt,
+			Score:       c.Score,
+			ContentType: c.ContentType,
 		}
 	}
 	return out

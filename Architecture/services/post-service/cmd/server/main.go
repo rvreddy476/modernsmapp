@@ -2,11 +2,9 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/facebook-like/post-service/internal/engagement"
@@ -16,6 +14,11 @@ import (
 	"github.com/facebook-like/post-service/internal/service"
 	"github.com/facebook-like/post-service/internal/store/postgres"
 	"github.com/facebook-like/post-service/internal/store/scylla"
+	"github.com/facebook-like/shared/health"
+	"github.com/facebook-like/shared/middleware"
+	"github.com/facebook-like/shared/o11y/logging"
+	"github.com/facebook-like/shared/o11y/metrics"
+	"github.com/facebook-like/shared/server"
 	"github.com/gin-gonic/gin"
 	"github.com/gocql/gocql"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -23,64 +26,63 @@ import (
 )
 
 func main() {
-	// 1. Config
-	port := os.Getenv("HTTP_PORT")
-	if port == "" {
-		port = "8084"
-	}
+	// 1. Structured logging
+	logging.Init(logging.Config{ServiceName: "post-service"})
+
+	// 2. Config
+	port := env("HTTP_PORT", "8084")
 	pgDSN := os.Getenv("POSTGRES_DSN")
 	redisAddr := os.Getenv("REDIS_ADDR")
-	scyllaHosts := os.Getenv("SCYLLA_HOSTS") // e.g., "scylla:9042"
-	if scyllaHosts == "" {
-		scyllaHosts = "localhost"
-	}
+	scyllaHosts := env("SCYLLA_HOSTS", "localhost")
+	kafkaBrokers := env("KAFKA_BROKERS", "kafka:9092")
 
-	// 2. Database (Postgres)
+	// 3. Database (Postgres)
 	ctx := context.Background()
 	dbPool, err := pgxpool.New(ctx, pgDSN)
 	if err != nil {
-		log.Fatalf("Unable to connect to Postgres: %v\n", err)
+		slog.Error("failed to connect to postgres", "error", err)
+		os.Exit(1)
 	}
 	defer dbPool.Close()
 
 	if err := dbPool.Ping(ctx); err != nil {
-		log.Fatalf("Postgres ping failed: %v\n", err)
+		slog.Error("postgres ping failed", "error", err)
+		os.Exit(1)
 	}
-	log.Println("Connected to Postgres")
+	slog.Info("connected to postgres")
 
-	// Auto-migrate engagement tables (idempotent — uses IF NOT EXISTS)
+	// Auto-migrate engagement tables (idempotent -- uses IF NOT EXISTS)
 	ensureSchema(ctx, dbPool)
 
-	// 3. Database (ScyllaDB)
+	// 4. Database (ScyllaDB)
 	cluster := gocql.NewCluster(scyllaHosts)
 	cluster.Keyspace = "social_engagement"
 	cluster.Consistency = gocql.Quorum
 	scyllaSession, err := cluster.CreateSession()
 	if err != nil {
-		log.Fatalf("Unable to connect to ScyllaDB: %v\n", err)
+		slog.Error("failed to connect to scylladb", "error", err)
+		os.Exit(1)
 	}
 	defer scyllaSession.Close()
-	log.Println("Connected to ScyllaDB")
+	slog.Info("connected to scylladb")
 
-	// 4. Redis
+	// 5. Redis
 	rdb := redis.NewClient(&redis.Options{
 		Addr: redisAddr,
 	})
 	if err := rdb.Ping(ctx).Err(); err != nil {
-		log.Fatalf("Redis ping failed: %v", err)
+		slog.Error("redis ping failed", "error", err)
+		os.Exit(1)
 	}
-	log.Println("Connected to Redis")
+	defer rdb.Close()
+	slog.Info("connected to redis")
 
-	// 5. Dependencies
+	// 6. Dependencies
 	pgStore := postgres.New(dbPool)
 	scyllaInteractionStore := scylla.New(scyllaSession)
 	postSvc := service.New(pgStore, scyllaInteractionStore, rdb)
 
-	// 6. Kafka producer for engagement events
-	kafkaBrokers := os.Getenv("KAFKA_BROKERS")
-	if kafkaBrokers == "" {
-		kafkaBrokers = "kafka:9092"
-	}
+	// 7. Kafka producers
 	brokers := strings.Split(kafkaBrokers, ",")
 	legacyProducer := postEvents.NewProducer(brokers, "social.events.v1")
 	defer legacyProducer.Close()
@@ -90,10 +92,27 @@ func main() {
 	defer engProducer.Close()
 	postSvc.SetEngagementProducer(engProducer)
 	postSvc.SetScyllaSession(scyllaSession)
-	log.Println("Kafka producers initialized")
+	slog.Info("kafka producers initialized")
 
-	// 7. Start engagement consumers (async Kafka → ScyllaDB / PG / WS)
+	// 8. Prometheus metrics
+	httpMetrics := metrics.NewHTTPMetrics("post-service")
+	dbMetrics := metrics.NewDBPoolMetrics("post-service", "postgres")
+
+	go collectDBPoolStats(ctx, dbPool, dbMetrics)
+
+	// 9. Health checker
+	checker := health.New("post-service")
+	checker.Register("postgres", health.PingCheck(dbPool))
+	checker.Register("redis", health.RedisPingCheck(func(ctx context.Context) error {
+		return rdb.Ping(ctx).Err()
+	}))
+	checker.Register("scylladb", health.ScyllaCheck(func(ctx context.Context) error {
+		return scyllaSession.Query("SELECT now() FROM system.local").Exec()
+	}))
+
+	// 10. Start engagement consumers (async Kafka -> ScyllaDB / PG / WS)
 	consumerCtx, consumerCancel := context.WithCancel(ctx)
+	defer consumerCancel()
 	engTopic := "social.events.v1"
 
 	scyllaConsumer := consumers.NewScyllaLikeConsumer(scyllaSession, rdb)
@@ -105,9 +124,9 @@ func main() {
 	wsBroadcaster := consumers.NewWSBroadcasterConsumer(rdb)
 	go wsBroadcaster.Start(consumerCtx, brokers, engTopic)
 
-	log.Println("Engagement consumers started")
+	slog.Info("engagement consumers started")
 
-	// 8. Reconciliation worker (every 5 min)
+	// 11. Reconciliation worker (every 5 min)
 	reconciler := engagement.NewReconciler(rdb, scyllaSession, dbPool)
 	go reconciler.Start(consumerCtx, 5*time.Minute)
 
@@ -122,9 +141,9 @@ func main() {
 			case <-ticker.C:
 				deleted, err := postSvc.CleanupExpiredStories(consumerCtx)
 				if err != nil {
-					log.Printf("Story cleanup error: %v", err)
+					slog.Error("story cleanup error", "error", err)
 				} else if deleted > 0 {
-					log.Printf("Cleaned up %d expired stories", deleted)
+					slog.Info("cleaned up expired stories", "count", deleted)
 				}
 			}
 		}
@@ -143,30 +162,70 @@ func main() {
 			}
 		}
 	}()
-	log.Println("Reconciler and cleanup workers started")
+	slog.Info("reconciler and cleanup workers started")
 
-	// 9. HTTP Server
+	// 12. HTTP Server
 	postHandler := http.New(postSvc, rdb)
-	r := gin.Default()
+
+	gin.SetMode(gin.ReleaseMode)
+	r := gin.New()
+	r.Use(gin.Recovery())
+	r.Use(middleware.RequestID())
+	r.Use(middleware.Logger())
+	r.Use(middleware.Metrics(httpMetrics))
+
+	checker.RegisterRoutes(r)
+	r.GET("/metrics", metrics.Handler())
 	postHandler.RegisterRoutes(r)
 
-	// Graceful shutdown
-	go func() {
-		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-		<-sigCh
-		log.Println("Shutting down...")
-		consumerCancel()
-	}()
+	// 13. Graceful shutdown
+	if err := server.Run(r, server.Config{
+		Port:            port,
+		ShutdownTimeout: 10 * time.Second,
+		OnShutdown: func() {
+			consumerCancel()
+			legacyProducer.Close()
+			engProducer.Close()
+			rdb.Close()
+			scyllaSession.Close()
+			dbPool.Close()
+			slog.Info("cleanup completed")
+		},
+	}); err != nil {
+		slog.Error("server error", "error", err)
+		os.Exit(1)
+	}
+}
 
-	log.Printf("Starting post-service on port %s", port)
-	if err := r.Run(":" + port); err != nil {
-		log.Fatalf("Failed to run server: %v", err)
+func env(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func collectDBPoolStats(ctx context.Context, pool *pgxpool.Pool, m *metrics.DBPoolMetrics) {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			stat := pool.Stat()
+			m.Update(metrics.PgxPoolStat{
+				AcquireCount:  stat.AcquireCount(),
+				AcquiredConns: stat.AcquiredConns(),
+				IdleConns:     stat.IdleConns(),
+				TotalConns:    stat.TotalConns(),
+				MaxConns:      stat.MaxConns(),
+			})
+		}
 	}
 }
 
 // ensureSchema creates engagement-related tables if they don't exist.
-// Idempotent — safe to run on every startup.
+// Idempotent -- safe to run on every startup.
 func ensureSchema(ctx context.Context, db *pgxpool.Pool) {
 	ddl := []string{
 		`CREATE TABLE IF NOT EXISTS comments (
@@ -176,6 +235,7 @@ func ensureSchema(ctx context.Context, db *pgxpool.Pool) {
 			parent_id      UUID REFERENCES comments(id),
 			body           TEXT NOT NULL CHECK (char_length(body) BETWEEN 1 AND 2000),
 			like_count     INTEGER NOT NULL DEFAULT 0,
+			dislike_count  INTEGER NOT NULL DEFAULT 0,
 			reply_count    INTEGER NOT NULL DEFAULT 0,
 			is_reply       BOOLEAN NOT NULL DEFAULT FALSE,
 			is_deleted     BOOLEAN NOT NULL DEFAULT FALSE,
@@ -204,7 +264,7 @@ func ensureSchema(ctx context.Context, db *pgxpool.Pool) {
 
 	for _, stmt := range ddl {
 		if _, err := db.Exec(ctx, stmt); err != nil {
-			log.Printf("Warning: schema migration: %v", err)
+			slog.Warn("schema migration", "error", err)
 		}
 	}
 
@@ -249,7 +309,7 @@ func ensureSchema(ctx context.Context, db *pgxpool.Pool) {
 	}
 	for _, stmt := range storyDDL {
 		if _, err := db.Exec(ctx, stmt); err != nil {
-			log.Printf("Warning: stories schema: %v", err)
+			slog.Warn("stories schema", "error", err)
 		}
 	}
 
@@ -269,7 +329,7 @@ func ensureSchema(ctx context.Context, db *pgxpool.Pool) {
 	}
 	for _, stmt := range reactionDDL {
 		if _, err := db.Exec(ctx, stmt); err != nil {
-			log.Printf("Warning: reactions schema: %v", err)
+			slog.Warn("reactions schema", "error", err)
 		}
 	}
 
@@ -289,11 +349,11 @@ func ensureSchema(ctx context.Context, db *pgxpool.Pool) {
 	}
 	for _, stmt := range savedDDL {
 		if _, err := db.Exec(ctx, stmt); err != nil {
-			log.Printf("Warning: saved_items schema: %v", err)
+			slog.Warn("saved_items schema", "error", err)
 		}
 	}
 
-	// Alter posts table to add new columns (safe — ADD COLUMN IF NOT EXISTS)
+	// Alter posts table to add new columns (safe -- ADD COLUMN IF NOT EXISTS)
 	alterPostsDDL := []string{
 		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS hashtags TEXT[] DEFAULT '{}'`,
 		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS mentions UUID[] DEFAULT '{}'`,
@@ -306,9 +366,9 @@ func ensureSchema(ctx context.Context, db *pgxpool.Pool) {
 	}
 	for _, stmt := range alterPostsDDL {
 		if _, err := db.Exec(ctx, stmt); err != nil {
-			log.Printf("Warning: alter posts schema: %v", err)
+			slog.Warn("alter posts schema", "error", err)
 		}
 	}
 
-	log.Println("Engagement schema ensured")
+	slog.Info("engagement schema ensured")
 }

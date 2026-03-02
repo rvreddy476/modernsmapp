@@ -82,9 +82,12 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	pages := r.Group("/v1/pages")
 	{
 		pages.GET("/:handle", h.GetBusinessPage)
-		pages.PATCH("/:id", h.UpdateBusinessPage)
-		pages.GET("/:id/reviews", h.GetPageReviews)
-		pages.POST("/:id/reviews", h.SubmitReview)
+		pages.PATCH("/:handle", h.UpdateBusinessPage)
+	}
+	pageReviews := r.Group("/v1/pages/:handle/reviews")
+	{
+		pageReviews.GET("", h.GetPageReviews)
+		pageReviews.POST("", h.SubmitReview)
 	}
 	myPages := r.Group("/v1/users/me/pages")
 	{
@@ -859,7 +862,7 @@ func (h *Handler) UpdateBusinessPage(c *gin.Context) {
 		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
 		return
 	}
-	pageID, err := uuid.Parse(c.Param("id"))
+	pageID, err := uuid.Parse(c.Param("handle"))
 	if err != nil {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid page ID", nil, nil)
 		return
@@ -903,7 +906,7 @@ func (h *Handler) UpdateBusinessPage(c *gin.Context) {
 }
 
 func (h *Handler) GetPageReviews(c *gin.Context) {
-	pageID, err := uuid.Parse(c.Param("id"))
+	pageID, err := uuid.Parse(c.Param("handle"))
 	if err != nil {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid page ID", nil, nil)
 		return
@@ -950,7 +953,7 @@ func (h *Handler) SubmitReview(c *gin.Context) {
 		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
 		return
 	}
-	pageID, err := uuid.Parse(c.Param("id"))
+	pageID, err := uuid.Parse(c.Param("handle"))
 	if err != nil {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid page ID", nil, nil)
 		return

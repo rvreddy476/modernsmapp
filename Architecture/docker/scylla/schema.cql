@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS social_feed.home_timeline_by_user (
     post_id uuid,
     author_id uuid,
     created_at timestamp,
+    content_type text,
     PRIMARY KEY ((user_id, bucket), ts)
 ) WITH CLUSTERING ORDER BY (ts DESC);
 
@@ -17,8 +18,17 @@ CREATE TABLE IF NOT EXISTS social_feed.author_timeline_by_author (
     ts timeuuid,
     post_id uuid,
     created_at timestamp,
+    content_type text,
     PRIMARY KEY ((author_id, bucket), ts)
 ) WITH CLUSTERING ORDER BY (ts DESC);
+
+-- User-post interactions for ranking penalty (source of truth behind Redis cache)
+-- 7-day TTL matches the interaction penalty relevance window.
+CREATE TABLE IF NOT EXISTS social_feed.user_post_interactions (
+    user_id  uuid,
+    post_id  uuid,
+    PRIMARY KEY (user_id, post_id)
+) WITH default_time_to_live = 604800;
 
 
 -- Notification Service Keyspace
@@ -105,6 +115,34 @@ CREATE TABLE IF NOT EXISTS social_engagement.bookmark_check (
     PRIMARY KEY ((user_id), post_id)
 );
 
+-- Reactions by post (used by post-service interactions)
+CREATE TABLE IF NOT EXISTS social_engagement.reactions_by_post (
+    post_id     text,
+    user_id     text,
+    reaction    text,
+    created_at  timestamp,
+    PRIMARY KEY ((post_id), user_id)
+);
+
+-- Comments by post (bucketed by month for time-series queries)
+CREATE TABLE IF NOT EXISTS social_engagement.comments_by_post (
+    post_id     text,
+    bucket      int,
+    ts          timeuuid,
+    comment_id  text,
+    author_id   text,
+    text        text,
+    is_deleted  boolean,
+    PRIMARY KEY ((post_id, bucket), ts)
+) WITH CLUSTERING ORDER BY (ts DESC);
+
+-- Post counters (ScyllaDB counter table for like/comment counts)
+CREATE TABLE IF NOT EXISTS social_engagement.post_counters (
+    post_id        text PRIMARY KEY,
+    like_count     counter,
+    comment_count  counter
+);
+
 -- Engagement Counters (regular BIGINT with LWT, NOT native counter type)
 -- Authority for likes/shares/bookmarks. Updated by ScyllaDB consumer via read-then-CAS.
 CREATE TABLE IF NOT EXISTS social_engagement.engagement_counters (
@@ -189,4 +227,26 @@ CREATE TABLE IF NOT EXISTS social_analytics.viewer_history (
     view_count INT,
     PRIMARY KEY ((viewer_id), content_id)
 ) WITH default_time_to_live = 7776000;
+
+-- User Pair Signals (used by suggestion-service for scoring)
+-- Precomputed pair-level signals refreshed by batch jobs
+CREATE TABLE IF NOT EXISTS social_analytics.user_pair_signals (
+    viewer_id               UUID,
+    candidate_id            UUID,
+    mutual_friend_count     SMALLINT,
+    mutual_strong_count     SMALLINT,
+    common_group_count      SMALLINT,
+    same_city               BOOLEAN,
+    same_school             BOOLEAN,
+    same_company            BOOLEAN,
+    mutual_follow           BOOLEAN,
+    profile_view_7d         SMALLINT,
+    reverse_view_7d         SMALLINT,
+    chat_interaction_30d    SMALLINT,
+    content_coengagement_7d SMALLINT,
+    triadic_closure_score   FLOAT,
+    interest_similarity     FLOAT,
+    last_updated_at         TIMESTAMP,
+    PRIMARY KEY (viewer_id, candidate_id)
+) WITH default_time_to_live = 604800;
 

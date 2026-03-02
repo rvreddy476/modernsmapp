@@ -123,10 +123,32 @@ func extractMentions(text string) []string {
 	return usernames
 }
 
+// reelMaxDurationSeconds is the maximum duration (inclusive) for a video to
+// be auto-classified as a reel. Matches analytics-service threshold (90s).
+const reelMaxDurationSeconds = 90
+
+// validContentTypes is the allowed set for content_type.
+var validContentTypes = map[string]bool{
+	"post": true, "poll": true, "reel": true, "video": true,
+}
+
+// classifyVideoContentType returns "reel" or "video" based on duration.
+func classifyVideoContentType(durationSeconds int) string {
+	if durationSeconds > 0 && durationSeconds <= reelMaxDurationSeconds {
+		return "reel"
+	}
+	return "video"
+}
+
 func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*postgres.Post, error) {
 	contentType := input.ContentType
 	if contentType == "" {
 		contentType = "post"
+	}
+
+	// Validate content_type
+	if !validContentTypes[contentType] {
+		return nil, fmt.Errorf("invalid content_type %q: must be post, poll, reel, or video", contentType)
 	}
 
 	postType := input.PostType
@@ -165,13 +187,26 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		CreatedAt:      time.Now(),
 	}
 
-	// Attach media (resolve kind from media_assets table)
+	// Attach media (resolve kind and duration from media_assets table)
+	var maxDuration int
 	for _, mediaID := range input.MediaIDs {
 		kind := s.pgStore.ResolveMediaKind(ctx, mediaID)
 		p.Media = append(p.Media, postgres.PostMedia{
 			MediaID: mediaID,
 			Kind:    kind,
 		})
+		if kind == "video" {
+			dur := s.pgStore.ResolveMediaDuration(ctx, mediaID)
+			if dur > maxDuration {
+				maxDuration = dur
+			}
+		}
+	}
+
+	// Auto-classify: if caller sent default content_type but attached video,
+	// derive reel vs video from duration
+	if maxDuration > 0 && contentType == "post" {
+		p.ContentType = classifyVideoContentType(maxDuration)
 	}
 
 	// Attach poll
@@ -205,7 +240,7 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		bgCtx := context.Background()
 
 		if s.producer != nil {
-			if err := s.producer.PublishPostCreated(bgCtx, p.ID, p.AuthorID, p.Text, p.Visibility); err != nil {
+			if err := s.producer.PublishPostCreated(bgCtx, p.ID, p.AuthorID, p.Text, p.Visibility, p.ContentType, maxDuration); err != nil {
 				log.Printf("Warning: failed to publish PostCreated event: %v", err)
 			}
 		}

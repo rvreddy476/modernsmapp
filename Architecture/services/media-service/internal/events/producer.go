@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"time"
 
 	"github.com/facebook-like/shared/events"
 	"github.com/google/uuid"
@@ -54,13 +53,7 @@ func (p *Producer) publish(ctx context.Context, eventType string, actorID *uuid.
 		actorStr = &s
 	}
 
-	envelope := events.EventEnvelope{
-		EventID:     uuid.New().String(),
-		EventType:   eventType,
-		OccurredAt:  time.Now(),
-		ActorUserID: actorStr,
-		Payload:     payloadBytes,
-	}
+	envelope := events.NewEnvelope(ctx, eventType, actorStr, payloadBytes)
 
 	envelopeBytes, err := json.Marshal(envelope)
 	if err != nil {

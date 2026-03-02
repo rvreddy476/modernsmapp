@@ -2,9 +2,10 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/facebook-like/analytics-service/internal/aggregation"
 	"github.com/facebook-like/analytics-service/internal/consumers"
@@ -14,6 +15,11 @@ import (
 	"github.com/facebook-like/analytics-service/internal/service"
 	"github.com/facebook-like/analytics-service/internal/store/postgres"
 	scyllaStore "github.com/facebook-like/analytics-service/internal/store/scylla"
+	"github.com/facebook-like/shared/health"
+	"github.com/facebook-like/shared/middleware"
+	"github.com/facebook-like/shared/o11y/logging"
+	"github.com/facebook-like/shared/o11y/metrics"
+	"github.com/facebook-like/shared/server"
 	"github.com/gin-gonic/gin"
 	"github.com/gocql/gocql"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -22,11 +28,11 @@ import (
 )
 
 func main() {
-	// 1. Config
-	port := os.Getenv("HTTP_PORT")
-	if port == "" {
-		port = "8094"
-	}
+	// 1. Structured logging
+	logging.Init(logging.Config{ServiceName: "analytics-service"})
+
+	// 2. Config
+	port := env("HTTP_PORT", "8094")
 	pgDSN := os.Getenv("POSTGRES_DSN")
 	redisAddr := os.Getenv("REDIS_ADDR")
 	scyllaHosts := os.Getenv("SCYLLA_HOSTS")
@@ -35,23 +41,24 @@ func main() {
 
 	ctx := context.Background()
 
-	// 2. PostgreSQL
+	// 3. PostgreSQL
 	dbPool, err := pgxpool.New(ctx, pgDSN)
 	if err != nil {
-		log.Fatalf("Unable to connect to Postgres: %v", err)
+		slog.Error("failed to connect to postgres", "error", err)
+		os.Exit(1)
 	}
 	defer dbPool.Close()
 
 	ensureSchema(ctx, dbPool)
 
-	// 3. Redis
+	// 4. Redis
 	rdb := redis.NewClient(&redis.Options{Addr: redisAddr})
 	if err := rdb.Ping(ctx).Err(); err != nil {
-		log.Printf("Warning: Redis not reachable: %v (continuing without real-time counters)", err)
+		slog.Warn("redis not reachable (continuing without real-time counters)", "error", err)
 	}
 	defer rdb.Close()
 
-	// 4. ScyllaDB
+	// 5. ScyllaDB
 	var watchStore *scyllaStore.WatchStore
 	var scyllaSession *gocql.Session
 	if scyllaHosts != "" {
@@ -62,7 +69,7 @@ func main() {
 		cluster.Timeout = 5_000_000_000         // 5s
 		sess, err := cluster.CreateSession()
 		if err != nil {
-			log.Printf("Warning: ScyllaDB not reachable: %v (continuing without watch sessions)", err)
+			slog.Warn("scylladb not reachable (continuing without watch sessions)", "error", err)
 		} else {
 			scyllaSession = sess
 			defer scyllaSession.Close()
@@ -70,7 +77,7 @@ func main() {
 		}
 	}
 
-	// 5. Kafka producer (for publishing video events to downstream consumers)
+	// 6. Kafka producer (for publishing video events to downstream consumers)
 	var kafkaWriter *kafka.Writer
 	if kafkaBrokers != "" {
 		kafkaWriter = &kafka.Writer{
@@ -81,7 +88,25 @@ func main() {
 		defer kafkaWriter.Close()
 	}
 
-	// 6. Dependencies
+	// 7. Prometheus metrics
+	httpMetrics := metrics.NewHTTPMetrics("analytics-service")
+	dbMetrics := metrics.NewDBPoolMetrics("analytics-service", "postgres")
+
+	go collectDBPoolStats(ctx, dbPool, dbMetrics)
+
+	// 8. Health checker
+	checker := health.New("analytics-service")
+	checker.Register("postgres", health.PingCheck(dbPool))
+	checker.Register("redis", health.RedisPingCheck(func(ctx context.Context) error {
+		return rdb.Ping(ctx).Err()
+	}))
+	if scyllaSession != nil {
+		checker.Register("scylladb", health.ScyllaCheck(func(ctx context.Context) error {
+			return scyllaSession.Query("SELECT now() FROM system.local").Exec()
+		}))
+	}
+
+	// 9. Dependencies
 	store := postgres.New(dbPool)
 	aggStore := postgres.NewAggregateStore(dbPool)
 	svc := service.New(store, kafkaWriter)
@@ -91,43 +116,101 @@ func main() {
 	workerCtx, workerCancel := context.WithCancel(ctx)
 	defer workerCancel()
 
-	// 7. Start Kafka consumer for real-time video view counting
+	// 10. Start Kafka consumer for real-time video view counting
 	if kafkaBrokers != "" && watchStore != nil {
 		videoConsumer := consumers.NewVideoViewConsumer(watchStore, rdb)
 		go videoConsumer.Start(workerCtx, strings.Split(kafkaBrokers, ","), kafkaTopic)
-		log.Println("Video view consumer started")
+		slog.Info("video view consumer started")
 	}
 
-	// 8. Start TrustFactor worker (10-min interval)
+	// 10b. Start engagement consumer for CQS recalculation on likes/comments
+	if kafkaBrokers != "" {
+		engagementConsumer := consumers.NewEngagementConsumer(dbPool, rdb)
+		go engagementConsumer.Start(workerCtx, strings.Split(kafkaBrokers, ","), kafkaTopic)
+		slog.Info("engagement analytics consumer started")
+	}
+
+	// 11. Start TrustFactor worker (10-min interval)
 	trustWorker := scoring.NewTrustFactorWorker(rdb, scyllaSession)
 	go trustWorker.Start(workerCtx)
-	log.Println("TrustFactor worker started")
+	slog.Info("trust factor worker started")
 
-	// 9. Start hourly aggregator
+	// 12. Start hourly aggregator
 	hourlyAgg := aggregation.NewHourlyAggregator(dbPool, rdb)
 	go hourlyAgg.Start(workerCtx)
-	log.Println("Hourly aggregator started")
+	slog.Info("hourly aggregator started")
 
-	// 10. Start daily rollup
+	// 13. Start daily rollup
 	dailyRollup := aggregation.NewDailyRollup(dbPool, rdb)
 	go dailyRollup.Start(workerCtx)
-	log.Println("Daily rollup started")
+	slog.Info("daily rollup started")
 
-	// 11. Start view reconciler (5-min interval)
+	// 14. Start view reconciler (5-min interval)
 	if scyllaSession != nil {
 		viewReconciler := reconcile.NewViewReconciler(rdb, scyllaSession)
 		go viewReconciler.Start(workerCtx)
-		log.Println("View reconciler started")
+		slog.Info("view reconciler started")
 	}
 
-	// 12. HTTP Server
-	r := gin.Default()
+	// 15. HTTP Server
+	gin.SetMode(gin.ReleaseMode)
+	r := gin.New()
+	r.Use(gin.Recovery())
+	r.Use(middleware.RequestID())
+	r.Use(middleware.Logger())
+	r.Use(middleware.Metrics(httpMetrics))
+
+	checker.RegisterRoutes(r)
+	r.GET("/metrics", metrics.Handler())
 	handler.RegisterRoutes(r)
 	dashHandler.RegisterRoutes(r.Group("/v1/analytics"))
 
-	log.Printf("Starting analytics-service on port %s", port)
-	if err := r.Run(":" + port); err != nil {
-		log.Fatalf("Failed to run server: %v", err)
+	// 16. Graceful shutdown
+	if err := server.Run(r, server.Config{
+		Port:            port,
+		ShutdownTimeout: 10 * time.Second,
+		OnShutdown: func() {
+			workerCancel()
+			if kafkaWriter != nil {
+				kafkaWriter.Close()
+			}
+			rdb.Close()
+			if scyllaSession != nil {
+				scyllaSession.Close()
+			}
+			dbPool.Close()
+			slog.Info("cleanup completed")
+		},
+	}); err != nil {
+		slog.Error("server error", "error", err)
+		os.Exit(1)
+	}
+}
+
+func env(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func collectDBPoolStats(ctx context.Context, pool *pgxpool.Pool, m *metrics.DBPoolMetrics) {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			stat := pool.Stat()
+			m.Update(metrics.PgxPoolStat{
+				AcquireCount:  stat.AcquireCount(),
+				AcquiredConns: stat.AcquiredConns(),
+				IdleConns:     stat.IdleConns(),
+				TotalConns:    stat.TotalConns(),
+				MaxConns:      stat.MaxConns(),
+			})
+		}
 	}
 }
 
@@ -233,6 +316,6 @@ func ensureSchema(ctx context.Context, db *pgxpool.Pool) {
 			ON analytics.content_daily_summary (creator_id, day_bucket DESC);
 	`
 	if _, err := db.Exec(ctx, ddl); err != nil {
-		log.Printf("Warning: Schema ensure error (may be partial): %v", err)
+		slog.Warn("schema ensure error (may be partial)", "error", err)
 	}
 }

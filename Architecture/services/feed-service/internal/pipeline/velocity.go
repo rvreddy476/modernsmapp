@@ -47,31 +47,40 @@ func (v *VelocityTracker) Start(ctx context.Context) {
 	}
 }
 
-// computeVelocities scans all post engagement counters in Redis, computes
-// the rate of change (likes per minute) since the last snapshot, and stores
+// computeVelocities scans all post engagement counters in Redis (likes and
+// comments), computes a weighted rate of change per minute, and stores
 // velocities in a sorted set for the ranking layer.
 func (v *VelocityTracker) computeVelocities(ctx context.Context) error {
-	var cursor uint64
-	var processedCount int
+	// Collect unique postIDs from both like and comment counters.
+	postIDs := make(map[string]struct{})
 
-	for {
-		keys, nextCursor, err := v.rdb.Scan(ctx, cursor, "post:counters:*:likes", 100).Result()
-		if err != nil {
-			return fmt.Errorf("SCAN post counters: %w", err)
-		}
-
-		for _, key := range keys {
-			if err := v.processPostVelocity(ctx, key); err != nil {
-				log.Printf("VelocityTracker: failed to process %s: %v", key, err)
-				continue
+	for _, pattern := range []string{"post:counters:*:likes", "post:counters:*:comments"} {
+		var cursor uint64
+		for {
+			keys, nextCursor, err := v.rdb.Scan(ctx, cursor, pattern, 100).Result()
+			if err != nil {
+				return fmt.Errorf("SCAN %s: %w", pattern, err)
 			}
-			processedCount++
+			for _, key := range keys {
+				pid := extractPostID(key)
+				if pid != "" {
+					postIDs[pid] = struct{}{}
+				}
+			}
+			cursor = nextCursor
+			if cursor == 0 {
+				break
+			}
 		}
+	}
 
-		cursor = nextCursor
-		if cursor == 0 {
-			break
+	processedCount := 0
+	for postID := range postIDs {
+		if err := v.processPostVelocity(ctx, postID); err != nil {
+			log.Printf("VelocityTracker: failed to process %s: %v", postID, err)
+			continue
 		}
+		processedCount++
 	}
 
 	// Clean up stale entries older than 24 hours
@@ -83,29 +92,16 @@ func (v *VelocityTracker) computeVelocities(ctx context.Context) error {
 	return nil
 }
 
-// processPostVelocity computes the velocity for a single post given its
-// likes counter key. The key format is "post:counters:{postID}:likes".
-func (v *VelocityTracker) processPostVelocity(ctx context.Context, counterKey string) error {
-	// Extract postID from key: post:counters:{postID}:likes
-	// Key format has 4 parts separated by ':'
-	postID := extractPostID(counterKey)
-	if postID == "" {
-		return fmt.Errorf("invalid counter key format: %s", counterKey)
-	}
+// processPostVelocity computes the combined engagement velocity for a single
+// post. It reads both like and comment counters, weights comments 1.5x (deeper
+// engagement), and stores the combined velocity in the sorted set.
+func (v *VelocityTracker) processPostVelocity(ctx context.Context, postID string) error {
+	// Read current engagement counters
+	likeCount := v.getCounter(ctx, fmt.Sprintf("post:counters:%s:likes", postID))
+	commentCount := v.getCounter(ctx, fmt.Sprintf("post:counters:%s:comments", postID))
 
-	// Get current like count
-	currentStr, err := v.rdb.Get(ctx, counterKey).Result()
-	if err == redis.Nil {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("GET %s: %w", counterKey, err)
-	}
-
-	current, err := strconv.ParseFloat(currentStr, 64)
-	if err != nil {
-		return fmt.Errorf("parse current count for %s: %w", counterKey, err)
-	}
+	// Weighted combined: likes * 1.0 + comments * 1.5
+	current := likeCount + commentCount*1.5
 
 	// Get previous snapshot
 	previousStr, err := v.rdb.HGet(ctx, "post:velocity:snapshot", postID).Result()
@@ -125,7 +121,7 @@ func (v *VelocityTracker) processPostVelocity(ctx context.Context, counterKey st
 		return fmt.Errorf("parse previous snapshot for %s: %w", postID, err)
 	}
 
-	// Compute velocity: likes per minute over the 5-minute interval
+	// Compute velocity: weighted engagement per minute over the 5-minute interval
 	velocity := (current - previous) / 5.0
 
 	// Store new snapshot
@@ -142,6 +138,20 @@ func (v *VelocityTracker) processPostVelocity(ctx context.Context, counterKey st
 	}
 
 	return nil
+}
+
+// getCounter reads a Redis counter and returns its value as float64.
+// Returns 0 on any error (key missing, parse failure, etc.).
+func (v *VelocityTracker) getCounter(ctx context.Context, key string) float64 {
+	val, err := v.rdb.Get(ctx, key).Result()
+	if err != nil {
+		return 0
+	}
+	f, err := strconv.ParseFloat(val, 64)
+	if err != nil {
+		return 0
+	}
+	return f
 }
 
 // cleanupStaleEntries removes posts from the velocity sorted set that have

@@ -1,8 +1,12 @@
 package events
 
 import (
+	"context"
 	"encoding/json"
 	"time"
+
+	"github.com/facebook-like/shared/o11y/trace"
+	"github.com/google/uuid"
 )
 
 // EventType constants for known domain events.
@@ -21,12 +25,16 @@ const (
 	UserProfileUpdated = "UserProfileUpdated" // payload: UserProfileUpdatedPayload
 	ContentTakenDown   = "ContentTakenDown"   // payload: ContentTakenDownPayload
 	UserSuspended      = "UserSuspended"      // payload: UserSuspendedPayload
+	UserUnsuspended    = "UserUnsuspended"    // payload: UserUnsuspendedPayload
 
 	MediaTranscodeRequested = "MediaTranscodeRequested" // payload: MediaTranscodeRequestedPayload
 	MediaTranscodeCompleted = "MediaTranscodeCompleted" // payload: MediaTranscodeCompletedPayload
 
 	FriendRequestSent     = "FriendRequestSent"     // payload: FriendRequestSentPayload
 	FriendRequestAccepted = "FriendRequestAccepted" // payload: FriendRequestAcceptedPayload
+	FriendRequestDeclined = "FriendRequestDeclined" // payload: FriendRequestDeclinedPayload
+	FriendRemoved         = "FriendRemoved"         // payload: FriendRemovedPayload
+	UserBlocked           = "UserBlocked"            // payload: UserBlockedPayload
 
 	GroupCreated      = "GroupCreated"      // payload: GroupCreatedPayload
 	GroupMemberJoined = "GroupMemberJoined" // payload: GroupMemberJoinedPayload
@@ -57,6 +65,18 @@ const (
 	VideoNotInterested     = "VideoNotInterested"     // payload: VideoEngagementPayload
 	VideoReport            = "VideoReport"            // payload: VideoEngagementPayload
 	VideoBlockCreator      = "VideoBlockCreator"      // payload: VideoEngagementPayload
+
+	// Trust & Safety
+	ReportFiled = "ReportFiled" // payload: ReportFiledPayload
+
+	// Shop / E-Commerce
+	ProductListed      = "ProductListed"      // payload: ProductListedPayload
+	OrderCreated       = "OrderCreated"       // payload: OrderCreatedPayload
+	OrderStatusUpdated = "OrderStatusUpdated" // payload: OrderStatusUpdatedPayload
+
+	// Live Streaming
+	LiveStarted = "LiveStarted" // payload: LiveStartedPayload
+	LiveEnded   = "LiveEnded"   // payload: LiveEndedPayload
 )
 
 // EventEnvelope is the CloudEvents-ish structure we use on Kafka.
@@ -92,11 +112,13 @@ type UserLoggedInPayload struct {
 }
 
 type PostCreatedPayload struct {
-	PostID     string    `json:"post_id"`
-	AuthorID   string    `json:"author_id"` // Simplified to string for JSON, usually UUID
-	Text       string    `json:"text"`
-	Visibility string    `json:"visibility"`
-	CreatedAt  time.Time `json:"created_at"`
+	PostID          string    `json:"post_id"`
+	AuthorID        string    `json:"author_id"`
+	Text            string    `json:"text"`
+	Visibility      string    `json:"visibility"`
+	ContentType     string    `json:"content_type"`     // "post", "poll", "reel", "video"
+	DurationSeconds int       `json:"duration_seconds"` // 0 for non-video
+	CreatedAt       time.Time `json:"created_at"`
 }
 
 type UserFollowedPayload struct {
@@ -157,6 +179,12 @@ type UserSuspendedPayload struct {
 	SuspendedAt time.Time `json:"suspended_at"`
 }
 
+type UserUnsuspendedPayload struct {
+	UserID        string    `json:"user_id"`
+	AdminID       string    `json:"admin_id,omitempty"`
+	UnsuspendedAt time.Time `json:"unsuspended_at"`
+}
+
 type MediaTranscodeRequestedPayload struct {
 	MediaAssetID string `json:"media_id"`
 	UploaderID   string `json:"uploader_id"`
@@ -179,6 +207,25 @@ type FriendRequestAcceptedPayload struct {
 	SenderID   string    `json:"sender_id"`
 	ReceiverID string    `json:"receiver_id"`
 	AcceptedAt time.Time `json:"accepted_at"`
+}
+
+type FriendRequestDeclinedPayload struct {
+	SenderID   string    `json:"sender_id"`
+	ReceiverID string    `json:"receiver_id"`
+	DeclinedAt time.Time `json:"declined_at"`
+}
+
+type FriendRemovedPayload struct {
+	UserA     string    `json:"user_a"`
+	UserB     string    `json:"user_b"`
+	RemovedBy string    `json:"removed_by"`
+	RemovedAt time.Time `json:"removed_at"`
+}
+
+type UserBlockedPayload struct {
+	BlockerID string    `json:"blocker_id"`
+	BlockedID string    `json:"blocked_id"`
+	BlockedAt time.Time `json:"blocked_at"`
 }
 
 type GroupCreatedPayload struct {
@@ -339,4 +386,79 @@ type VideoEngagementPayload struct {
 	SessionID string `json:"session_id"`
 	Surface   string `json:"surface"`
 	Action    string `json:"action"` // like, share, save, follow, not_interested, report, block
+}
+
+// --- Trust & Safety Payloads ---
+
+type ReportFiledPayload struct {
+	ReportID   string    `json:"report_id"`
+	ReporterID string    `json:"reporter_id"`
+	EntityType string    `json:"entity_type"`
+	EntityID   string    `json:"entity_id"`
+	Reason     string    `json:"reason"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// --- Shop / E-Commerce Payloads ---
+
+type ProductListedPayload struct {
+	ProductID string    `json:"product_id"`
+	SellerID  string    `json:"seller_id"`
+	Title     string    `json:"title"`
+	Price     float64   `json:"price"`
+	Currency  string    `json:"currency"`
+	Category  string    `json:"category"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type OrderCreatedPayload struct {
+	OrderID   string    `json:"order_id"`
+	BuyerID   string    `json:"buyer_id"`
+	SellerID  string    `json:"seller_id"`
+	Total     float64   `json:"total"`
+	Currency  string    `json:"currency"`
+	ItemCount int       `json:"item_count"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type OrderStatusUpdatedPayload struct {
+	OrderID   string    `json:"order_id"`
+	BuyerID   string    `json:"buyer_id"`
+	SellerID  string    `json:"seller_id"`
+	OldStatus string    `json:"old_status"`
+	NewStatus string    `json:"new_status"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// --- Live Streaming Payloads ---
+
+type LiveStartedPayload struct {
+	StreamID  string    `json:"stream_id"`
+	HostID    string    `json:"host_id"`
+	Title     string    `json:"title"`
+	StartedAt time.Time `json:"started_at"`
+}
+
+type LiveEndedPayload struct {
+	StreamID     string    `json:"stream_id"`
+	HostID       string    `json:"host_id"`
+	DurationSecs int       `json:"duration_secs"`
+	PeakViewers  int       `json:"peak_viewers"`
+	TotalViewers int       `json:"total_viewers"`
+	EndedAt      time.Time `json:"ended_at"`
+}
+
+// NewEnvelope creates an EventEnvelope with a new EventID and
+// propagated TraceID from context.
+func NewEnvelope(ctx context.Context, eventType string, actorUserID *string, payload json.RawMessage) EventEnvelope {
+	traceID := trace.TraceIDFrom(ctx)
+
+	return EventEnvelope{
+		EventID:     uuid.New().String(),
+		EventType:   eventType,
+		OccurredAt:  time.Now(),
+		TraceID:     traceID,
+		ActorUserID: actorUserID,
+		Payload:     payload,
+	}
 }

@@ -1,8 +1,11 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+
+	"github.com/facebook-like/shared/o11y/trace"
 )
 
 // Response is the standard envelope for all API responses.
@@ -49,4 +52,20 @@ func Error(w http.ResponseWriter, status int, code string, message string, detai
 		},
 		Meta: meta,
 	})
+}
+
+// JSONWithContext is like JSON but automatically populates Meta.RequestID from context.
+func JSONWithContext(ctx context.Context, w http.ResponseWriter, status int, data interface{}) {
+	meta := &Meta{
+		RequestID: trace.RequestIDFrom(ctx),
+	}
+	JSON(w, status, data, meta)
+}
+
+// ErrorWithContext is like Error but automatically populates Meta.RequestID from context.
+func ErrorWithContext(ctx context.Context, w http.ResponseWriter, status int, code, message string, details interface{}) {
+	meta := &Meta{
+		RequestID: trace.RequestIDFrom(ctx),
+	}
+	Error(w, status, code, message, details, meta)
 }

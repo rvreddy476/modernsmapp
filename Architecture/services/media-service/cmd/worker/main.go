@@ -177,6 +177,9 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload events.
 		return fmt.Errorf("probe video: %w", err)
 	}
 
+	// Determine if this is a reel (short-form video)
+	isReel := meta.DurationSeconds > 0 && meta.DurationSeconds <= processing.ReelMaxDurationSeconds
+
 	qualityHeights := []struct {
 		name   string
 		height int
@@ -185,6 +188,10 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload events.
 	}
 	for _, q := range qualityHeights {
 		if q.height > 0 && meta.Height < q.height {
+			continue
+		}
+		// Skip 1080p and 4K for reels — cap at 720p
+		if isReel && (q.name == "1080p" || q.name == "4k") {
 			continue
 		}
 		jobID := uuid.New()
@@ -202,8 +209,13 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload events.
 		jobEntries = append(jobEntries, jobEntry{name: q.name, jobID: jobID})
 	}
 
-	// 4. Run FFmpeg transcode pipeline
-	outputs, _, err := processing.TranscodeVideo(ctx, inputPath, tmpDir)
+	// 4. Run FFmpeg transcode pipeline (reel-optimized or standard)
+	var outputs []processing.TranscodeOutput
+	if isReel {
+		outputs, _, err = processing.TranscodeReel(ctx, inputPath, tmpDir)
+	} else {
+		outputs, _, err = processing.TranscodeVideo(ctx, inputPath, tmpDir)
+	}
 	if err != nil {
 		// Mark all jobs as failed
 		errMsg := err.Error()
@@ -281,6 +293,12 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload events.
 	durationSeconds := meta.DurationSeconds
 	if err := pgStore.UpdateMediaMeta(ctx, mediaAssetID, meta.Width, meta.Height, videoBlurHash, &durationSeconds); err != nil {
 		return fmt.Errorf("update meta: %w", err)
+	}
+
+	// 8b. Update orientation flag
+	isVertical := meta.Height > meta.Width
+	if err := pgStore.UpdateMediaOrientation(ctx, mediaAssetID, isVertical); err != nil {
+		log.Printf("Warning: failed to update media orientation for %s: %v", mediaAssetID, err)
 	}
 
 	// 9. Populate URL fields

@@ -2,75 +2,107 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/facebook-like/search-service/internal/events"
 	"github.com/facebook-like/search-service/internal/http"
 	"github.com/facebook-like/search-service/internal/store/search"
+	"github.com/facebook-like/shared/health"
+	"github.com/facebook-like/shared/middleware"
+	"github.com/facebook-like/shared/o11y/logging"
+	"github.com/facebook-like/shared/o11y/metrics"
+	"github.com/facebook-like/shared/server"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 )
 
 func main() {
-	// 1. Config
-	port := os.Getenv("HTTP_PORT")
-	if port == "" {
-		port = "8089"
-	}
+	// 1. Structured logging
+	logging.Init(logging.Config{ServiceName: "search-service"})
 
-	opensearchURL := os.Getenv("OPENSEARCH_URL")
-	if opensearchURL == "" {
-		opensearchURL = "http://opensearch:9200"
-	}
+	// 2. Config
+	port := env("HTTP_PORT", "8089")
+	opensearchURL := env("OPENSEARCH_URL", "http://opensearch:9200")
+	kafkaBrokers := env("KAFKA_BROKERS", "redpanda:9092")
+	redisAddr := env("REDIS_ADDR", "redis:6379")
 
-	kafkaBrokers := os.Getenv("KAFKA_BROKERS")
-	if kafkaBrokers == "" {
-		kafkaBrokers = "redpanda:9092"
-	}
-
-	redisAddr := os.Getenv("REDIS_ADDR")
-	if redisAddr == "" {
-		redisAddr = "redis:6379"
-	}
-
-	// 2. OpenSearch Store
+	// 3. OpenSearch Store
 	searchStore, err := search.New(opensearchURL)
 	if err != nil {
-		log.Fatalf("Failed to initialize OpenSearch store: %v", err)
+		slog.Error("failed to initialize opensearch store", "error", err)
+		os.Exit(1)
 	}
-	log.Println("Connected to OpenSearch")
+	slog.Info("connected to opensearch")
 
-	// 3. Redis
+	// 4. Redis
 	ctx := context.Background()
 	rdb := redis.NewClient(&redis.Options{
 		Addr: redisAddr,
 	})
 	if err := rdb.Ping(ctx).Err(); err != nil {
-		log.Fatalf("Redis ping failed: %v", err)
+		slog.Error("redis ping failed", "error", err)
+		os.Exit(1)
 	}
-	log.Println("Connected to Redis")
+	defer rdb.Close()
+	slog.Info("connected to redis")
 
-	// 4. Kafka Consumer
+	// 5. Kafka Consumer
 	consumer := events.NewConsumer(
 		strings.Split(kafkaBrokers, ","),
 		"search-service-group",
 		"social.events.v1",
 		searchStore,
 	)
-	go consumer.Start(ctx)
-	log.Println("Started Kafka Consumer")
+	consumerCtx, consumerCancel := context.WithCancel(ctx)
+	defer consumerCancel()
+	go consumer.Start(consumerCtx)
+	slog.Info("started kafka consumer")
 
-	// 5. HTTP Handlers
+	// 6. Prometheus metrics
+	httpMetrics := metrics.NewHTTPMetrics("search-service")
+
+	// 7. Health checker
+	checker := health.New("search-service")
+	checker.Register("redis", health.RedisPingCheck(func(ctx context.Context) error {
+		return rdb.Ping(ctx).Err()
+	}))
+
+	// 8. HTTP Handlers
 	handler := http.New(searchStore, rdb)
 
-	// 6. Server
-	r := gin.Default()
+	// 9. Gin with middleware stack
+	gin.SetMode(gin.ReleaseMode)
+	r := gin.New()
+	r.Use(gin.Recovery())
+	r.Use(middleware.RequestID())
+	r.Use(middleware.Logger())
+	r.Use(middleware.Metrics(httpMetrics))
+
+	checker.RegisterRoutes(r)
+	r.GET("/metrics", metrics.Handler())
 	handler.RegisterRoutes(r)
 
-	log.Printf("Starting search-service on port %s", port)
-	if err := r.Run(":" + port); err != nil {
-		log.Fatalf("Failed to run server: %v", err)
+	// 10. Graceful shutdown
+	if err := server.Run(r, server.Config{
+		Port:            port,
+		ShutdownTimeout: 10 * time.Second,
+		OnShutdown: func() {
+			consumerCancel()
+			rdb.Close()
+			slog.Info("cleanup completed")
+		},
+	}); err != nil {
+		slog.Error("server error", "error", err)
+		os.Exit(1)
 	}
+}
+
+func env(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }

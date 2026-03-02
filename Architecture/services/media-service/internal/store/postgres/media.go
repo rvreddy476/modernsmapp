@@ -36,6 +36,7 @@ type MediaAsset struct {
 	OriginalURL      *string        `json:"original_url,omitempty"`
 	CdnURL           *string        `json:"cdn_url,omitempty"`
 	ThumbnailURL     *string        `json:"thumbnail_url,omitempty"`
+	IsVertical       bool           `json:"is_vertical"`
 	CreatedAt        time.Time      `json:"created_at"`
 	UpdatedAt        time.Time      `json:"updated_at"`
 	Variants         []MediaVariant `json:"variants,omitempty"`
@@ -78,16 +79,24 @@ func (s *MediaAssetStore) UpdateMediaMeta(ctx context.Context, id uuid.UUID, wid
 	return err
 }
 
+// UpdateMediaOrientation sets the is_vertical flag for a media asset.
+func (s *MediaAssetStore) UpdateMediaOrientation(ctx context.Context, id uuid.UUID, isVertical bool) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE media_assets SET is_vertical = $1, updated_at = NOW() WHERE id = $2
+	`, isVertical, id)
+	return err
+}
+
 // GetMedia fetches a single media asset record by ID.
 func (s *MediaAssetStore) GetMedia(ctx context.Context, id uuid.UUID) (*MediaAsset, error) {
 	var m MediaAsset
 	err := s.db.QueryRow(ctx, `
 		SELECT id, uploader_id, file_type, media_subtype, mime_type, file_size_bytes, storage_bucket, storage_key, processing_status,
-		       width, height, duration_seconds, blurhash, alt_text, original_url, cdn_url, thumbnail_url, created_at, updated_at
+		       width, height, duration_seconds, blurhash, alt_text, original_url, cdn_url, thumbnail_url, is_vertical, created_at, updated_at
 		FROM media_assets WHERE id = $1
 	`, id).Scan(
 		&m.ID, &m.UploaderID, &m.FileType, &m.MediaSubtype, &m.MimeType, &m.FileSizeBytes, &m.StorageBucket, &m.StorageKey, &m.ProcessingStatus,
-		&m.Width, &m.Height, &m.DurationSeconds, &m.Blurhash, &m.AltText, &m.OriginalURL, &m.CdnURL, &m.ThumbnailURL, &m.CreatedAt, &m.UpdatedAt,
+		&m.Width, &m.Height, &m.DurationSeconds, &m.Blurhash, &m.AltText, &m.OriginalURL, &m.CdnURL, &m.ThumbnailURL, &m.IsVertical, &m.CreatedAt, &m.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -165,7 +174,7 @@ func (s *MediaAssetStore) GetMediaBatch(ctx context.Context, ids []uuid.UUID) ([
 
 	rows, err := s.db.Query(ctx, `
 		SELECT id, uploader_id, file_type, media_subtype, mime_type, file_size_bytes, storage_bucket, storage_key, processing_status,
-		       width, height, duration_seconds, blurhash, alt_text, original_url, cdn_url, thumbnail_url, created_at, updated_at
+		       width, height, duration_seconds, blurhash, alt_text, original_url, cdn_url, thumbnail_url, is_vertical, created_at, updated_at
 		FROM media_assets WHERE id = ANY($1)
 	`, ids)
 	if err != nil {
@@ -179,7 +188,7 @@ func (s *MediaAssetStore) GetMediaBatch(ctx context.Context, ids []uuid.UUID) ([
 		var m MediaAsset
 		if err := rows.Scan(
 			&m.ID, &m.UploaderID, &m.FileType, &m.MediaSubtype, &m.MimeType, &m.FileSizeBytes, &m.StorageBucket, &m.StorageKey, &m.ProcessingStatus,
-			&m.Width, &m.Height, &m.DurationSeconds, &m.Blurhash, &m.AltText, &m.OriginalURL, &m.CdnURL, &m.ThumbnailURL, &m.CreatedAt, &m.UpdatedAt,
+			&m.Width, &m.Height, &m.DurationSeconds, &m.Blurhash, &m.AltText, &m.OriginalURL, &m.CdnURL, &m.ThumbnailURL, &m.IsVertical, &m.CreatedAt, &m.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}

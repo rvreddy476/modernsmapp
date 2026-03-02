@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/gocql/gocql"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
@@ -18,11 +19,12 @@ type Ranker struct {
 	timeout time.Duration // circuit breaker timeout (typically 20ms)
 }
 
-// NewRanker creates a Ranker backed by the given Redis client. The timeout
-// parameter configures the circuit-breaker deadline for a single Rank call.
-func NewRanker(rdb *redis.Client, timeout time.Duration) *Ranker {
+// NewRanker creates a Ranker backed by Redis and an optional ScyllaDB session
+// for durable interaction verification. The timeout parameter configures the
+// circuit-breaker deadline for a single Rank call.
+func NewRanker(rdb *redis.Client, scyllaSession *gocql.Session, timeout time.Duration) *Ranker {
 	return &Ranker{
-		signals: NewSignalLoader(rdb),
+		signals: NewSignalLoader(rdb, scyllaSession),
 		timeout: timeout,
 	}
 }

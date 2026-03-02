@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
 	"time"
 
 	"github.com/facebook-like/notification-service/internal/store/postgres"
@@ -68,9 +69,65 @@ func (s *Service) CreateNotification(ctx context.Context, userID, actorID uuid.U
 	return nil
 }
 
-// GetNotifications
+// NotificationsPage holds a page of notifications with a cursor for the next page.
+type NotificationsPage struct {
+	Items      []scylla.Notification `json:"items"`
+	NextCursor string                `json:"next_cursor,omitempty"`
+}
+
+// GetNotifications returns notifications without cursor (legacy).
 func (s *Service) GetNotifications(ctx context.Context, userID uuid.UUID, limit int) ([]scylla.Notification, error) {
 	return s.scyllaStore.GetNotifications(ctx, userID, limit)
+}
+
+// GetNotificationsPage returns a cursor-paginated page of notifications.
+// Cursor format: "bucket:timeuuid" (e.g. "202603:550e8400-e29b-41d4-a716-446655440000").
+func (s *Service) GetNotificationsPage(ctx context.Context, userID uuid.UUID, limit int, cursor string) (*NotificationsPage, error) {
+	var cursorBucket int
+	var cursorTS *gocql.UUID
+
+	if cursor != "" {
+		parts := splitCursor(cursor)
+		if len(parts) == 2 {
+			if b, err := strconv.Atoi(parts[0]); err == nil {
+				cursorBucket = b
+			}
+			if ts, err := gocql.ParseUUID(parts[1]); err == nil {
+				cursorTS = &ts
+			}
+		}
+	}
+
+	notifs, err := s.scyllaStore.GetNotificationsWithCursor(ctx, userID, cursorBucket, cursorTS, limit+1)
+	if err != nil {
+		return nil, err
+	}
+
+	page := &NotificationsPage{}
+	if len(notifs) > limit {
+		page.Items = notifs[:limit]
+		last := notifs[limit-1]
+		page.NextCursor = fmt.Sprintf("%d:%s", last.Bucket, last.TS.String())
+	} else {
+		page.Items = notifs
+	}
+
+	return page, nil
+}
+
+// splitCursor splits "bucket:timeuuid" on the first colon.
+func splitCursor(cursor string) []string {
+	idx := -1
+	for i, c := range cursor {
+		if c == ':' {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return nil
+	}
+	return []string{cursor[:idx], cursor[idx+1:]}
 }
 
 // MarkRead marks a single notification as read and decrements the unread counter.
