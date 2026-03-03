@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"log"
@@ -136,77 +138,104 @@ func main() {
 		slog.Warn("INTERNAL_SERVICE_KEY not set — internal service authentication disabled")
 	}
 
-	handler := rateLimitMiddleware(injectInternalKeyMiddleware(internalKey, jwtExtractMiddleware(coreHandler)))
+	handler := rateLimitMiddleware(injectInternalKeyMiddleware(internalKey, jwtExtractMiddleware(jwtSecret, coreHandler)))
 
 	log.Printf("API Gateway listening on :%s", port)
 	log.Fatal(http.ListenAndServe(":"+port, handler))
 }
 
 // jwtExtractMiddleware inspects the Authorization: Bearer <token> header,
-// extracts claims from the JWT payload segment (without signature verification —
-// downstream services are responsible for full validation), and propagates the
-// trusted identity headers X-User-Id, X-Scopes, and X-Device-Id to the proxied
-// request. Requests without a valid Bearer token are passed through unchanged so
-// that unauthenticated endpoints continue to work normally.
-func jwtExtractMiddleware(next http.Handler) http.Handler {
+// verifies the JWT signature using jwtSecret (HMAC-SHA256), and propagates the
+// trusted identity headers X-User-Id, X-Verified-User-Id, X-Scopes, and
+// X-Device-Id to the proxied request.
+// Requests without a Bearer token are passed through unchanged so that
+// unauthenticated (public) endpoints continue to work normally.
+// Requests with an invalid or expired token receive HTTP 401.
+func jwtExtractMiddleware(jwtSecret string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
-		if strings.HasPrefix(authHeader, "Bearer ") {
-			token := strings.TrimPrefix(authHeader, "Bearer ")
-			userID, scopes, deviceID := extractJWTClaims(token)
-			if userID != "" {
-				r.Header.Set("X-User-Id", userID)
-			}
-			if scopes != "" {
-				r.Header.Set("X-Scopes", scopes)
-			}
-			if deviceID != "" {
-				r.Header.Set("X-Device-Id", deviceID)
-			}
+		if !strings.HasPrefix(authHeader, "Bearer ") {
+			// No token present — pass through for public endpoints.
+			next.ServeHTTP(w, r)
+			return
+		}
+		token := strings.TrimPrefix(authHeader, "Bearer ")
+		userID, scopes, deviceID, err := verifyJWT(token, jwtSecret)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"error":{"code":"UNAUTHORIZED","message":"Invalid or expired token"}}`))
+			return
+		}
+		if userID != "" {
+			r.Header.Set("X-User-Id", userID)
+			r.Header.Set("X-Verified-User-Id", userID)
+		}
+		if scopes != "" {
+			r.Header.Set("X-Scopes", scopes)
+		}
+		if deviceID != "" {
+			r.Header.Set("X-Device-Id", deviceID)
 		}
 		next.ServeHTTP(w, r)
 	})
 }
 
-// extractJWTClaims decodes the payload segment of a JWT (base64url, no padding)
-// and returns the user ID, scopes, and device ID embedded in the claims.
-// It does NOT verify the signature; signature verification is the responsibility
-// of individual downstream services which hold the authoritative JWT_SECRET.
-func extractJWTClaims(tokenStr string) (userID, scopes, deviceID string) {
+// verifyJWT validates an HS256 JWT against secret, checks expiry, and returns
+// the user ID, scopes, and device ID from the claims.
+func verifyJWT(tokenStr, secret string) (userID, scopes, deviceID string, err error) {
 	parts := strings.Split(tokenStr, ".")
 	if len(parts) != 3 {
-		return
+		return "", "", "", &jwtError{"malformed token"}
 	}
-	// Decode payload (base64url, no padding)
-	payload := parts[1]
-	// Add padding if needed
-	switch len(payload) % 4 {
-	case 2:
-		payload += "=="
-	case 3:
-		payload += "="
+
+	// Verify HMAC-SHA256 signature.
+	signingInput := parts[0] + "." + parts[1]
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(signingInput))
+	expectedSig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+
+	actualSig, decErr := base64.RawURLEncoding.DecodeString(parts[2])
+	if decErr != nil {
+		return "", "", "", &jwtError{"invalid signature encoding"}
 	}
-	data, err := base64.URLEncoding.DecodeString(payload)
-	if err != nil {
-		return
+	if !hmac.Equal([]byte(expectedSig), []byte(base64.RawURLEncoding.EncodeToString(actualSig))) {
+		return "", "", "", &jwtError{"signature verification failed"}
 	}
+
+	// Decode payload.
+	data, decErr := base64.RawURLEncoding.DecodeString(parts[1])
+	if decErr != nil {
+		return "", "", "", &jwtError{"invalid payload encoding"}
+	}
+
 	var claims struct {
 		Sub      string `json:"sub"`
 		UserID   string `json:"user_id"`
+		Exp      int64  `json:"exp"`
 		Scopes   string `json:"scopes"`
 		DeviceID string `json:"device_id"`
 	}
-	if err := json.Unmarshal(data, &claims); err != nil {
-		return
+	if jsonErr := json.Unmarshal(data, &claims); jsonErr != nil {
+		return "", "", "", &jwtError{"invalid payload JSON"}
 	}
+
+	// Check expiry when exp claim is present.
+	if claims.Exp != 0 && time.Now().Unix() > claims.Exp {
+		return "", "", "", &jwtError{"token expired"}
+	}
+
 	userID = claims.UserID
 	if userID == "" {
 		userID = claims.Sub
 	}
-	scopes = claims.Scopes
-	deviceID = claims.DeviceID
-	return
+	return userID, claims.Scopes, claims.DeviceID, nil
 }
+
+// jwtError is a simple error type for JWT validation failures.
+type jwtError struct{ msg string }
+
+func (e *jwtError) Error() string { return "jwt: " + e.msg }
 
 func isAllowedOrigin(origin string, allowed []string) bool {
 	for _, a := range allowed {

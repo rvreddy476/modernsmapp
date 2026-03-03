@@ -4,6 +4,7 @@ global:
 
 rule_files:
   - "alerts.yml"
+  - "/etc/prometheus/alerts/slo_rules.yaml"
 
 scrape_configs:
   # One job per service, using their known ports

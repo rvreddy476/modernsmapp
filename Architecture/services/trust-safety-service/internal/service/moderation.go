@@ -18,6 +18,13 @@ var validEntityTypes = map[string]bool{
 	"comment": true,
 }
 
+var validTransitions = map[string][]string{
+	"open":      {"reviewing"},
+	"reviewing": {"resolved", "dismissed"},
+	"resolved":  {"dismissed"},
+	"dismissed": {},
+}
+
 type Service struct {
 	store       *postgres.ReportStore
 	kafkaWriter *kafka.Writer
@@ -87,4 +94,66 @@ func (s *Service) FileReport(ctx context.Context, reporterID, entityID uuid.UUID
 
 func (s *Service) ListReports(ctx context.Context, limit, offset int) ([]postgres.Report, error) {
 	return s.store.GetReports(ctx, limit, offset)
+}
+
+func (s *Service) GetReport(ctx context.Context, reportIDStr string) (*postgres.Report, error) {
+	reportID, err := uuid.Parse(reportIDStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid report ID")
+	}
+	return s.store.GetReport(ctx, reportID)
+}
+
+func (s *Service) UpdateReport(ctx context.Context, actorID, reportIDStr, newStatus string, assignedTo *uuid.UUID, resolutionNotes string) (*postgres.Report, error) {
+	reportID, err := uuid.Parse(reportIDStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid report ID")
+	}
+
+	current, err := s.store.GetReport(ctx, reportID)
+	if err != nil {
+		return nil, fmt.Errorf("report not found: %w", err)
+	}
+
+	allowed := validTransitions[current.Status]
+	valid := false
+	for _, st := range allowed {
+		if st == newStatus {
+			valid = true
+			break
+		}
+	}
+	if !valid {
+		return nil, fmt.Errorf("invalid transition from %s to %s", current.Status, newStatus)
+	}
+
+	report, err := s.store.UpdateReport(ctx, reportID, newStatus, assignedTo, resolutionNotes)
+	if err != nil {
+		return nil, err
+	}
+
+	// Publish event for terminal statuses
+	if (newStatus == "resolved" || newStatus == "dismissed") && s.kafkaWriter != nil {
+		eventType := events.ReportResolved
+		if newStatus == "dismissed" {
+			eventType = events.ReportDismissed
+		}
+		payload := map[string]interface{}{
+			"report_id":   report.ID.String(),
+			"entity_type": report.EntityType,
+			"entity_id":   report.EntityID.String(),
+			"status":      newStatus,
+			"actor_id":    actorID,
+		}
+		pBytes, _ := json.Marshal(payload)
+		actor := actorID
+		envelope := events.NewEnvelope(ctx, eventType, &actor, pBytes)
+		eBytes, _ := json.Marshal(envelope)
+		_ = s.kafkaWriter.WriteMessages(ctx, kafka.Message{
+			Key:   []byte(report.ID.String()),
+			Value: eBytes,
+		})
+	}
+
+	return report, nil
 }

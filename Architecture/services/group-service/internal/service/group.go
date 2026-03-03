@@ -459,7 +459,7 @@ func (s *Service) CreateGroupPost(ctx context.Context, actorID, groupID uuid.UUI
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-User-Id", actorID.String())
 
-	resp, err := httpclient.New(5 * time.Second).Do(req)
+	resp, err := httpclient.NewWithBreaker(5*time.Second, "group->post").Do(req)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("failed to reach post-service: %w", err)
 	}
@@ -531,7 +531,7 @@ func (s *Service) createGroupChat(creatorID uuid.UUID, groupID uuid.UUID, groupN
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+s.signServiceToken(creatorID.String()))
 
-	resp, err := httpclient.New(5 * time.Second).Do(req)
+	resp, err := httpclient.NewWithBreaker(5*time.Second, "group->chat").Do(req)
 	if err != nil {
 		return uuid.Nil, err
 	}
@@ -580,7 +580,7 @@ func (s *Service) syncMemberToChat(ctx context.Context, conversationID, userID u
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+s.signServiceToken(userID.String()))
 
-		resp, err := httpclient.New(5 * time.Second).Do(req)
+		resp, err := httpclient.NewWithBreaker(5*time.Second, "group->notification").Do(req)
 		if err != nil {
 			log.Printf("WARNING: failed to sync member to chat: %v", err)
 			return

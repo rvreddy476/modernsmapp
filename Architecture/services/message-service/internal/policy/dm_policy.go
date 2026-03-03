@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/atpost/shared/httpclient"
 )
 
 // DMPolicy checks whether two users are allowed to exchange DMs.
@@ -18,7 +20,7 @@ type DMPolicy struct {
 func NewDMPolicy(graphServiceURL string) *DMPolicy {
 	return &DMPolicy{
 		graphServiceURL: graphServiceURL,
-		httpClient:      &http.Client{Timeout: 2 * time.Second},
+		httpClient:      httpclient.NewWithBreaker(5*time.Second, "message->graph"),
 	}
 }
 

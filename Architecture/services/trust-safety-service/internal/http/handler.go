@@ -4,6 +4,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/atpost/shared/api"
 	"github.com/atpost/trust-safety-service/internal/service"
@@ -24,6 +25,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	{
 		v1.POST("", h.FileReport)
 		v1.GET("", h.ListReports)
+		v1.GET("/:id", h.GetReport)
+		v1.PATCH("/:id", h.UpdateReport)
 	}
 }
 
@@ -65,8 +68,11 @@ func (h *Handler) FileReport(c *gin.Context) {
 }
 
 func (h *Handler) ListReports(c *gin.Context) {
-	// In a real app, check for ADMIN role here.
-	// For V1, we assume internal network or basic auth handled by gateway/setup.
+	scopes := c.GetHeader("X-Scopes")
+	if !strings.Contains(scopes, "admin") {
+		api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil, nil)
+		return
+	}
 
 	limit := 20
 	if l := c.Query("limit"); l != "" {
@@ -90,4 +96,67 @@ func (h *Handler) ListReports(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": reports}, nil)
+}
+
+func (h *Handler) GetReport(c *gin.Context) {
+	scopes := c.GetHeader("X-Scopes")
+	if !strings.Contains(scopes, "admin") {
+		api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil, nil)
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid report ID", nil, nil)
+		return
+	}
+	// We need to call store directly or add GetReport to service
+	// Call through service
+	report, err := h.svc.GetReport(c.Request.Context(), id.String())
+	if err != nil {
+		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Report not found", nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, report, nil)
+}
+
+type UpdateReportRequest struct {
+	Status          string  `json:"status" binding:"required,oneof=reviewing resolved dismissed"`
+	AssignedTo      *string `json:"assigned_to,omitempty"`
+	ResolutionNotes string  `json:"resolution_notes"`
+}
+
+func (h *Handler) UpdateReport(c *gin.Context) {
+	scopes := c.GetHeader("X-Scopes")
+	if !strings.Contains(scopes, "admin") {
+		api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil, nil)
+		return
+	}
+	actorID := c.GetHeader("X-User-Id")
+	if actorID == "" {
+		actorID = "system-admin"
+	}
+	reportID := c.Param("id")
+	if _, err := uuid.Parse(reportID); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid report ID", nil, nil)
+		return
+	}
+	var req UpdateReportRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	var assignedTo *uuid.UUID
+	if req.AssignedTo != nil {
+		id, err := uuid.Parse(*req.AssignedTo)
+		if err == nil {
+			assignedTo = &id
+		}
+	}
+	report, err := h.svc.UpdateReport(c.Request.Context(), actorID, reportID, req.Status, assignedTo, req.ResolutionNotes)
+	if err != nil {
+		log.Printf("UpdateReport error: %v", err)
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, report, nil)
 }

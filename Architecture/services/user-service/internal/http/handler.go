@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/atpost/shared/api"
+	"github.com/atpost/shared/httpclient"
 	"github.com/atpost/user-service/internal/presence"
 	"github.com/atpost/user-service/internal/service"
 	"github.com/atpost/user-service/internal/store"
@@ -1053,7 +1054,8 @@ func (h *Handler) GetOnlineStatus(c *gin.Context) {
 		// Check mutual friendship (circle membership) via graph-service.
 		// Fail-closed: if graph-service is unreachable, treat as not in circle.
 		url := fmt.Sprintf("%s/v1/graph/relationship?user_id=%s&other_id=%s", h.graphURL, requesterID, targetID)
-		resp, err := http.Get(url) //nolint:noctx
+		graphReq, _ := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, url, nil)
+		resp, err := httpclient.NewWithBreaker(5*time.Second, "user->graph").Do(graphReq)
 		if err == nil {
 			defer resp.Body.Close()
 			var body struct {

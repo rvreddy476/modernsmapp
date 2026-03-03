@@ -67,7 +67,9 @@ const (
 	VideoBlockCreator      = "VideoBlockCreator"      // payload: VideoEngagementPayload
 
 	// Trust & Safety
-	ReportFiled = "ReportFiled" // payload: ReportFiledPayload
+	ReportFiled     = "ReportFiled"     // payload: ReportFiledPayload
+	ReportResolved  = "ReportResolved"  // payload: ReportFiledPayload
+	ReportDismissed = "ReportDismissed" // payload: ReportFiledPayload
 
 	// Shop / E-Commerce
 	ProductListed      = "ProductListed"      // payload: ProductListedPayload
@@ -97,6 +99,9 @@ const (
 	EventPaymentRefunded         = "payment.refunded"
 	EventDisputeOpened           = "dispute.opened"
 	EventDisputeResolved         = "dispute.resolved"
+
+	// Feature Flags
+	EventFlagEvaluated = "flag.evaluated" // payload: FlagEvaluatedPayload
 )
 
 // EventEnvelope is the CloudEvents-ish structure we use on Kafka.
@@ -417,6 +422,30 @@ type ReportFiledPayload struct {
 	EntityID   string    `json:"entity_id"`
 	Reason     string    `json:"reason"`
 	CreatedAt  time.Time `json:"created_at"`
+}
+
+type ReportResolvedPayload struct {
+	ReportID   string    `json:"report_id"`
+	EntityType string    `json:"entity_type"`
+	EntityID   string    `json:"entity_id"`
+	ActorID    string    `json:"actor_id"`
+	ResolvedAt time.Time `json:"resolved_at"`
+}
+
+type ReportDismissedPayload struct {
+	ReportID    string    `json:"report_id"`
+	EntityType  string    `json:"entity_type"`
+	EntityID    string    `json:"entity_id"`
+	ActorID     string    `json:"actor_id"`
+	DismissedAt time.Time `json:"dismissed_at"`
+}
+
+// --- Feature Flag Payloads ---
+
+type FlagEvaluatedPayload struct {
+	FlagKey string `json:"flag_key"`
+	UserID  string `json:"user_id"`
+	Enabled bool   `json:"enabled"`
 }
 
 // --- Shop / E-Commerce Payloads ---

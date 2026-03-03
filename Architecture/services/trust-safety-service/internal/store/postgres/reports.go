@@ -9,15 +9,18 @@ import (
 )
 
 type Report struct {
-	ID         uuid.UUID `json:"id"`
-	ReporterID uuid.UUID `json:"reporter_id"`
-	EntityType string    `json:"entity_type"`
-	EntityID   uuid.UUID `json:"entity_id"`
-	Reason     string    `json:"reason"`
-	Details    string    `json:"details"`
-	Status     string    `json:"status"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	ID              uuid.UUID  `json:"id"`
+	ReporterID      uuid.UUID  `json:"reporter_id"`
+	EntityType      string     `json:"entity_type"`
+	EntityID        uuid.UUID  `json:"entity_id"`
+	Reason          string     `json:"reason"`
+	Details         string     `json:"details"`
+	Status          string     `json:"status"`
+	AssignedTo      *uuid.UUID `json:"assigned_to,omitempty"`
+	ResolvedAt      *time.Time `json:"resolved_at,omitempty"`
+	ResolutionNotes string     `json:"resolution_notes,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
 type ReportStore struct {
@@ -61,7 +64,8 @@ func (s *ReportStore) CheckDuplicate(ctx context.Context, reporterID, entityID u
 
 func (s *ReportStore) GetReports(ctx context.Context, limit int, offset int) ([]Report, error) {
 	query := `
-		SELECT id, reporter_id, entity_type, entity_id, reason, details, status, created_at, updated_at
+		SELECT id, reporter_id, entity_type, entity_id, reason, details, status,
+		       assigned_to, resolved_at, resolution_notes, created_at, updated_at
 		FROM trust.reports
 		ORDER BY created_at DESC
 		LIMIT $1 OFFSET $2
@@ -76,11 +80,52 @@ func (s *ReportStore) GetReports(ctx context.Context, limit int, offset int) ([]
 	for rows.Next() {
 		var r Report
 		if err := rows.Scan(
-			&r.ID, &r.ReporterID, &r.EntityType, &r.EntityID, &r.Reason, &r.Details, &r.Status, &r.CreatedAt, &r.UpdatedAt,
+			&r.ID, &r.ReporterID, &r.EntityType, &r.EntityID, &r.Reason, &r.Details, &r.Status,
+			&r.AssignedTo, &r.ResolvedAt, &r.ResolutionNotes, &r.CreatedAt, &r.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
 		reports = append(reports, r)
 	}
 	return reports, nil
+}
+
+func (s *ReportStore) GetReport(ctx context.Context, reportID uuid.UUID) (*Report, error) {
+	query := `
+        SELECT id, reporter_id, entity_type, entity_id, reason, details, status,
+               assigned_to, resolved_at, resolution_notes, created_at, updated_at
+        FROM trust.reports WHERE id = $1
+    `
+	var r Report
+	err := s.db.QueryRow(ctx, query, reportID).Scan(
+		&r.ID, &r.ReporterID, &r.EntityType, &r.EntityID, &r.Reason, &r.Details, &r.Status,
+		&r.AssignedTo, &r.ResolvedAt, &r.ResolutionNotes, &r.CreatedAt, &r.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
+func (s *ReportStore) UpdateReport(ctx context.Context, reportID uuid.UUID, status string, assignedTo *uuid.UUID, resolutionNotes string) (*Report, error) {
+	query := `
+        UPDATE trust.reports
+        SET status = $2,
+            assigned_to = $3,
+            resolved_at = CASE WHEN $2 IN ('resolved', 'dismissed') THEN NOW() ELSE resolved_at END,
+            resolution_notes = $4,
+            updated_at = NOW()
+        WHERE id = $1
+        RETURNING id, reporter_id, entity_type, entity_id, reason, details, status,
+                  assigned_to, resolved_at, resolution_notes, created_at, updated_at
+    `
+	var r Report
+	err := s.db.QueryRow(ctx, query, reportID, status, assignedTo, resolutionNotes).Scan(
+		&r.ID, &r.ReporterID, &r.EntityType, &r.EntityID, &r.Reason, &r.Details, &r.Status,
+		&r.AssignedTo, &r.ResolvedAt, &r.ResolutionNotes, &r.CreatedAt, &r.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
 }
