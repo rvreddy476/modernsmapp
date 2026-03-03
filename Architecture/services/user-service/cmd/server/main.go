@@ -13,6 +13,7 @@ import (
 	"github.com/atpost/shared/server"
 	"github.com/atpost/user-service/internal/events"
 	"github.com/atpost/user-service/internal/http"
+	"github.com/atpost/user-service/internal/presence"
 	"github.com/atpost/user-service/internal/service"
 	"github.com/atpost/user-service/internal/store"
 	"github.com/gin-gonic/gin"
@@ -75,7 +76,8 @@ func main() {
 	// 7. Dependencies
 	userStore := store.New(dbPool)
 	userSvc := service.New(userStore, rdb)
-	userHandler := http.New(userSvc)
+	presenceStore := presence.New(rdb)
+	userHandler := http.New(userSvc, presenceStore)
 
 	// 8. Kafka Consumer
 	consumer := events.NewConsumer([]string{kafkaBrokers}, "social.events.v1", userSvc)

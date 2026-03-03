@@ -9,6 +9,7 @@ import (
 
 	apihttp "github.com/atpost/message-service/internal/http"
 	"github.com/atpost/message-service/internal/kafka"
+	"github.com/atpost/message-service/internal/policy"
 	"github.com/atpost/message-service/internal/service"
 	"github.com/atpost/message-service/internal/store/postgres"
 	"github.com/atpost/message-service/internal/store/scylla"
@@ -35,6 +36,7 @@ func main() {
 	redisAddr := env("REDIS_ADDR", "redis:6379")
 	kafkaBrokers := env("KAFKA_BROKERS", "kafka:9092")
 	jwtSecret := env("JWT_SECRET", "dev_secret_change_me")
+	graphServiceURL := env("GRAPH_SERVICE_URL", "http://localhost:8083")
 
 	ctx := context.Background()
 
@@ -97,7 +99,8 @@ func main() {
 	// 7. Dependencies
 	scyllaStore := scylla.New(session)
 	convStore := postgres.New(pgPool)
-	msgSvc := service.New(scyllaStore, convStore, rdb, kp)
+	dmPol := policy.NewDMPolicy(graphServiceURL)
+	msgSvc := service.New(scyllaStore, convStore, rdb, kp, dmPol)
 	msgHandler := apihttp.New(msgSvc, pgPool)
 
 	// 8. Prometheus metrics

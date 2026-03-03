@@ -409,6 +409,7 @@ services:
       JWT_SECRET: dev_secret_change_me
       IDENTITY_KAFKA_TOPIC: identity.events.v1
       IDENTITY_KAFKA_GROUP_ID: chat-service-identity
+      GRAPH_SERVICE_URL: http://graph-service:8083
     ports:
       - "8092:8092"
     depends_on:
@@ -419,6 +420,8 @@ services:
       redis:
         condition: service_healthy
       redpanda:
+        condition: service_started
+      graph-service:
         condition: service_started
 
   chat-ws-gateway:
