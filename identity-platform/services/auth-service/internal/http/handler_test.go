@@ -94,6 +94,9 @@ func (s *stubAuthService) HandleOAuthToken(_ context.Context, _, _ string) (*ser
 	return nil, nil
 }
 
+//func (s *stubAuthService) ForgotPassword(_ context.Context, _ string) error      { return nil }
+//func (s *stubAuthService) ResetPassword(_ context.Context, _, _, _ string) error { return nil }
+
 // Password reset stubs
 func (s *stubAuthService) ForgotPassword(_ context.Context, _ string) error { return nil }
 func (s *stubAuthService) ResetPassword(_ context.Context, _, _, _ string) error { return nil }
