@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/facebook-like/post-service/internal/engagement"
+	"github.com/atpost/post-service/internal/engagement"
 	"github.com/redis/go-redis/v9"
 )
 

@@ -4,10 +4,11 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
-	"github.com/facebook-like/admin-service/internal/service"
-	"github.com/facebook-like/shared/api"
+	"github.com/atpost/admin-service/internal/service"
+	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -36,11 +37,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 func (h *Handler) AdminAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		apiKey := c.GetHeader("ADMIN_API_KEY")
-		// In a real system, this would be a secure secret or IAM check.
-		// For V1 MVP, we hardcode a "secret" or check env var.
-		if apiKey != "admin-secret-123" {
-			api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid API Key", nil, nil)
+		scopes := c.GetHeader("X-Scopes")
+		if !strings.Contains(scopes, "admin") {
+			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil, nil)
 			c.Abort()
 			return
 		}

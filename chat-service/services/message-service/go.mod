@@ -1,9 +1,9 @@
-module github.com/chat-service/message-service
+module github.com/atpost/chat-message-service
 
 go 1.24.0
 
 require (
-	github.com/chat-service/shared v0.0.0
+	github.com/atpost/chat-shared v0.0.0
 	github.com/gin-gonic/gin v1.9.1
 	github.com/gocql/gocql v1.7.0
 	github.com/google/uuid v1.6.0
@@ -51,4 +51,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/chat-service/shared => ../../shared
+replace github.com/atpost/chat-shared => ../../shared

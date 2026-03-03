@@ -7,8 +7,8 @@ import (
 	"log"
 	"time"
 
-	"github.com/facebook-like/analytics-service/internal/scoring"
-	"github.com/facebook-like/shared/events"
+	"github.com/atpost/analytics-service/internal/scoring"
+	"github.com/atpost/shared/events"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 	"github.com/segmentio/kafka-go"

@@ -244,3 +244,12 @@ func (s *Store) UpdateSettings(ctx context.Context, settings *UserSettings) (*Us
 	}
 	return &us, nil
 }
+
+// SoftDeleteUser marks the app-level user record as deleted.
+func (s *Store) SoftDeleteUser(ctx context.Context, id uuid.UUID) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE users SET deleted_at = NOW() WHERE id = $1`,
+		id,
+	)
+	return err
+}

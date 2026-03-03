@@ -764,6 +764,68 @@ CREATE TABLE IF NOT EXISTS analytics.content_daily_summary (
 CREATE INDEX IF NOT EXISTS idx_daily_summary_creator ON analytics.content_daily_summary (creator_id, day_bucket DESC);
 
 -- ============================================================
+-- visibility_policy (v2.1) — owned by post-service, shared ref by feed/stories
+-- ============================================================
+CREATE SCHEMA IF NOT EXISTS visibility;
+CREATE TABLE IF NOT EXISTS visibility.policies (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    owner_id    UUID NOT NULL,
+    mode        TEXT NOT NULL DEFAULT 'public'
+        CHECK (mode IN ('public', 'followers', 'friends', 'circles', 'only_me')),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_visibility_policies_owner ON visibility.policies (owner_id);
+
+CREATE TABLE IF NOT EXISTS visibility.policy_allow_lists (
+    policy_id   UUID NOT NULL REFERENCES visibility.policies(id) ON DELETE CASCADE,
+    list_id     UUID NOT NULL,
+    PRIMARY KEY (policy_id, list_id)
+);
+
+CREATE TABLE IF NOT EXISTS visibility.policy_allow_users (
+    policy_id   UUID NOT NULL REFERENCES visibility.policies(id) ON DELETE CASCADE,
+    user_id     UUID NOT NULL,
+    PRIMARY KEY (policy_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS visibility.policy_deny_users (
+    policy_id   UUID NOT NULL REFERENCES visibility.policies(id) ON DELETE CASCADE,
+    user_id     UUID NOT NULL,
+    PRIMARY KEY (policy_id, user_id)
+);
+
+-- Add visibility_policy_id to posts and stories (nullable for backward compat)
+ALTER TABLE posts ADD COLUMN IF NOT EXISTS visibility_policy_id UUID REFERENCES visibility.policies(id);
+ALTER TABLE stories ADD COLUMN IF NOT EXISTS visibility_policy_id UUID REFERENCES visibility.policies(id);
+
+-- ============================================================
+-- outbox_events — transactional event publishing (v2.1)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS outbox_events (
+    id            BIGSERIAL PRIMARY KEY,
+    schema_name   TEXT NOT NULL,
+    event_type    TEXT NOT NULL,
+    partition_key TEXT NOT NULL DEFAULT '',
+    payload       JSONB NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    published_at  TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_outbox_unpublished ON outbox_events(id) WHERE published_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_outbox_schema_type ON outbox_events(schema_name, event_type) WHERE published_at IS NULL;
+
+-- ============================================================
+-- inbox_events — persistent consumer dedup (v2.1)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS inbox_events (
+    consumer_name TEXT NOT NULL,
+    event_id      UUID NOT NULL,
+    processed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (consumer_name, event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_inbox_cleanup ON inbox_events (processed_at);
+
+-- ============================================================
 -- SEED DATA for app db
 -- ============================================================
 INSERT INTO users (id, username, display_name, first_name, last_name, bio, dob, gender, avatar_media_id, cover_media_id, category, profession, website, location, badge_flags, is_verified, created_at, updated_at) VALUES

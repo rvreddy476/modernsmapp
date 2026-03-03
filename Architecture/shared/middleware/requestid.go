@@ -3,8 +3,8 @@ package middleware
 import (
 	"log/slog"
 
-	"github.com/facebook-like/shared/o11y/logging"
-	"github.com/facebook-like/shared/o11y/trace"
+	"github.com/atpost/shared/o11y/logging"
+	"github.com/atpost/shared/o11y/trace"
 	"github.com/gin-gonic/gin"
 )
 

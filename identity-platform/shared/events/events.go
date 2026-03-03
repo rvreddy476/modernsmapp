@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// EventType constants for identity-platform domain events.
+// EventType constants for atpost identity domain events.
 const (
 	UserRegistered     = "UserRegistered"     // payload: UserRegisteredPayload
 	UserLoggedIn       = "UserLoggedIn"       // payload: UserLoggedInPayload

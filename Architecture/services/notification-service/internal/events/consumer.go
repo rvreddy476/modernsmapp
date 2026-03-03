@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/facebook-like/notification-service/internal/service"
-	"github.com/facebook-like/shared/events"
+	"github.com/atpost/notification-service/internal/service"
+	"github.com/atpost/shared/events"
 	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
 )

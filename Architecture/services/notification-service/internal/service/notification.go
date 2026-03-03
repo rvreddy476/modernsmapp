@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/facebook-like/notification-service/internal/store/postgres"
-	"github.com/facebook-like/notification-service/internal/store/scylla"
+	"github.com/atpost/notification-service/internal/store/postgres"
+	"github.com/atpost/notification-service/internal/store/scylla"
 	"github.com/gocql/gocql"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"

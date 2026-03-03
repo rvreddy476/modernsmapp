@@ -93,6 +93,18 @@ func (s *Server) handleWS(w nethttp.ResponseWriter, r *nethttp.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
+	// Mark user as online (presence TTL 90s; client heartbeat keeps it alive).
+	if err := s.rdb.Set(ctx, "presence:"+userID.String(), "1", 90*time.Second).Err(); err != nil {
+		s.log.Warn("failed to set presence on connect", "err", err, "user_id", userID)
+	}
+	// Clear presence when the connection closes.
+	defer func() {
+		delCtx := context.Background()
+		if err := s.rdb.Del(delCtx, "presence:"+userID.String()).Err(); err != nil {
+			s.log.Warn("failed to clear presence on disconnect", "err", err, "user_id", userID)
+		}
+	}()
+
 	// Subscribe to chat messages, new posts, and post interaction updates
 	pubsub := s.rdb.Subscribe(ctx, chatChannel, "feed:new_post", "feed:post_update")
 	defer func() {

@@ -4,19 +4,21 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
-	"github.com/facebook-like/feature-flag-service/internal/http"
-	"github.com/facebook-like/feature-flag-service/internal/service"
-	"github.com/facebook-like/feature-flag-service/internal/store/postgres"
-	"github.com/facebook-like/shared/health"
-	"github.com/facebook-like/shared/middleware"
-	"github.com/facebook-like/shared/o11y/logging"
-	"github.com/facebook-like/shared/o11y/metrics"
-	"github.com/facebook-like/shared/server"
+	"github.com/atpost/feature-flag-service/internal/http"
+	"github.com/atpost/feature-flag-service/internal/service"
+	"github.com/atpost/feature-flag-service/internal/store/postgres"
+	"github.com/atpost/shared/health"
+	"github.com/atpost/shared/middleware"
+	"github.com/atpost/shared/o11y/logging"
+	"github.com/atpost/shared/o11y/metrics"
+	"github.com/atpost/shared/server"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+	"github.com/segmentio/kafka-go"
 )
 
 func main() {
@@ -66,9 +68,18 @@ func main() {
 		return rdb.Ping(ctx).Err()
 	}))
 
-	// 7. Dependencies
+	// 7. Kafka writer
+	kafkaBrokers := env("KAFKA_BROKERS", "localhost:9092")
+	kafkaWriter := &kafka.Writer{
+		Addr:     kafka.TCP(strings.Split(kafkaBrokers, ",")...),
+		Topic:    "social.events.v1",
+		Balancer: &kafka.LeastBytes{},
+	}
+	defer kafkaWriter.Close()
+
+	// 8. Dependencies
 	store := postgres.New(dbPool)
-	svc := service.New(store, rdb)
+	svc := service.New(store, rdb, kafkaWriter)
 	handler := http.New(svc)
 
 	// 8. Gin with middleware stack

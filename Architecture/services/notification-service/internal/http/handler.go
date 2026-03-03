@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/facebook-like/notification-service/internal/service"
-	"github.com/facebook-like/shared/api"
+	"github.com/atpost/notification-service/internal/service"
+	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"

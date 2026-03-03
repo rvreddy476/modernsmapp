@@ -1,3 +1,5 @@
-module github.com/facebook-like/api-gateway
+module github.com/atpost/api-gateway
 
-go 1.23
+go 1.24.0
+
+require golang.org/x/time v0.14.0 // indirect

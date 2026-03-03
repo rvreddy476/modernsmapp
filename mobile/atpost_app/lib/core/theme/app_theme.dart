@@ -49,5 +49,49 @@ class AppTheme {
       ),
     ),
   );
-}
 
+  static ThemeData lightTheme = ThemeData(
+    useMaterial3: true,
+    brightness: Brightness.light,
+    scaffoldBackgroundColor: Colors.white,
+    canvasColor: Colors.white,
+    colorScheme: const ColorScheme.light(
+      primary: AppColors.postbookPrimary,
+      secondary: AppColors.postgramPrimary,
+      surface: Colors.white,
+      onSurface: Color(0xFF1A1A1A),
+      error: Colors.redAccent,
+    ),
+    textTheme: GoogleFonts.outfitTextTheme().apply(
+      bodyColor: const Color(0xFF1A1A1A),
+      displayColor: const Color(0xFF111111),
+    ),
+    appBarTheme: const AppBarTheme(
+      backgroundColor: Colors.transparent,
+      elevation: 0,
+      centerTitle: false,
+      foregroundColor: Color(0xFF111111),
+    ),
+    dividerTheme: const DividerThemeData(
+      color: Color(0x14000000),
+      thickness: 1,
+    ),
+    inputDecorationTheme: InputDecorationTheme(
+      filled: true,
+      fillColor: const Color(0xFFF6F6F6),
+      hintStyle: const TextStyle(color: Color(0x88000000)),
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(16),
+        borderSide: const BorderSide(color: Color(0x22000000)),
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(16),
+        borderSide: const BorderSide(color: Color(0x22000000)),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(16),
+        borderSide: const BorderSide(color: AppColors.postbookPrimary),
+      ),
+    ),
+  );
+}

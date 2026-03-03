@@ -7,8 +7,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/facebook-like/search-service/internal/store/search"
-	"github.com/facebook-like/shared/events"
+	"github.com/atpost/search-service/internal/store/search"
+	"github.com/atpost/shared/events"
 	"github.com/segmentio/kafka-go"
 )
 

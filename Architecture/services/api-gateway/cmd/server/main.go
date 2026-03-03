@@ -1,12 +1,21 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
+	"time"
+
+	"golang.org/x/time/rate"
 )
 
 type route struct {
@@ -18,6 +27,17 @@ type route struct {
 func main() {
 	port := env("HTTP_PORT", "8080")
 	allowedOrigins := strings.Split(env("CORS_ORIGINS", "http://localhost:3000"), ",")
+
+	// Validate JWT_SECRET at startup; downstream services rely on it for full
+	// signature verification so the gateway must ensure it is configured.
+	jwtSecret := env("JWT_SECRET", "")
+	if jwtSecret == "" {
+		slog.Error("JWT_SECRET env var is required")
+		os.Exit(1)
+	}
+	if jwtSecret == "dev_secret_change_me" {
+		slog.Warn("JWT_SECRET is set to the development default — do not use in production")
+	}
 
 	routeDefs := []struct {
 		prefix string
@@ -53,6 +73,17 @@ func main() {
 		{"/v1/admin", env("ADMIN_SERVICE_URL", "http://admin-service:8096")},
 		// Monetization service
 		{"/v1/monetization", env("MONETIZATION_SERVICE_URL", "http://monetization-service:8099")},
+		// Suggestion service
+		{"/v1/suggestions", env("SUGGESTION_SERVICE_URL", "http://suggestion-service:8100")},
+		// Orders / Bookings service (v2.1)
+		{"/v1/orders", env("ORDERS_SERVICE_URL", "http://localhost:8101")},
+		{"/v1/bookings", env("ORDERS_SERVICE_URL", "http://localhost:8101")},
+		// Payments service (v2.1)
+		{"/v1/payments", env("PAYMENTS_SERVICE_URL", "http://localhost:8102")},
+		// Shop / Live / Memories services
+		{"/v1/shop",     env("SHOP_SERVICE_URL",     "http://localhost:8105")},
+		{"/v1/live",     env("LIVE_SERVICE_URL",      "http://localhost:8103")},
+		{"/v1/memories", env("MEMORIES_SERVICE_URL",  "http://localhost:8104")},
 	}
 
 	var routes []route
@@ -69,7 +100,7 @@ func main() {
 		log.Printf("  %s -> %s", rd.prefix, rd.target)
 	}
 
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	coreHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// CORS
 		origin := r.Header.Get("Origin")
 		if origin != "" && isAllowedOrigin(origin, allowedOrigins) {
@@ -102,9 +133,109 @@ func main() {
 		http.NotFound(w, r)
 	})
 
+	internalKey := env("INTERNAL_SERVICE_KEY", "")
+	if internalKey == "" {
+		slog.Warn("INTERNAL_SERVICE_KEY not set — internal service authentication disabled")
+	}
+
+	handler := rateLimitMiddleware(injectInternalKeyMiddleware(internalKey, jwtExtractMiddleware(jwtSecret, coreHandler)))
+
 	log.Printf("API Gateway listening on :%s", port)
 	log.Fatal(http.ListenAndServe(":"+port, handler))
 }
+
+// jwtExtractMiddleware inspects the Authorization: Bearer <token> header,
+// verifies the JWT signature using jwtSecret (HMAC-SHA256), and propagates the
+// trusted identity headers X-User-Id, X-Verified-User-Id, X-Scopes, and
+// X-Device-Id to the proxied request.
+// Requests without a Bearer token are passed through unchanged so that
+// unauthenticated (public) endpoints continue to work normally.
+// Requests with an invalid or expired token receive HTTP 401.
+func jwtExtractMiddleware(jwtSecret string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeader := r.Header.Get("Authorization")
+		if !strings.HasPrefix(authHeader, "Bearer ") {
+			// No token present — pass through for public endpoints.
+			next.ServeHTTP(w, r)
+			return
+		}
+		token := strings.TrimPrefix(authHeader, "Bearer ")
+		userID, scopes, deviceID, err := verifyJWT(token, jwtSecret)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"error":{"code":"UNAUTHORIZED","message":"Invalid or expired token"}}`))
+			return
+		}
+		if userID != "" {
+			r.Header.Set("X-User-Id", userID)
+			r.Header.Set("X-Verified-User-Id", userID)
+		}
+		if scopes != "" {
+			r.Header.Set("X-Scopes", scopes)
+		}
+		if deviceID != "" {
+			r.Header.Set("X-Device-Id", deviceID)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// verifyJWT validates an HS256 JWT against secret, checks expiry, and returns
+// the user ID, scopes, and device ID from the claims.
+func verifyJWT(tokenStr, secret string) (userID, scopes, deviceID string, err error) {
+	parts := strings.Split(tokenStr, ".")
+	if len(parts) != 3 {
+		return "", "", "", &jwtError{"malformed token"}
+	}
+
+	// Verify HMAC-SHA256 signature.
+	signingInput := parts[0] + "." + parts[1]
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(signingInput))
+	expectedSig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+
+	actualSig, decErr := base64.RawURLEncoding.DecodeString(parts[2])
+	if decErr != nil {
+		return "", "", "", &jwtError{"invalid signature encoding"}
+	}
+	if !hmac.Equal([]byte(expectedSig), []byte(base64.RawURLEncoding.EncodeToString(actualSig))) {
+		return "", "", "", &jwtError{"signature verification failed"}
+	}
+
+	// Decode payload.
+	data, decErr := base64.RawURLEncoding.DecodeString(parts[1])
+	if decErr != nil {
+		return "", "", "", &jwtError{"invalid payload encoding"}
+	}
+
+	var claims struct {
+		Sub      string `json:"sub"`
+		UserID   string `json:"user_id"`
+		Exp      int64  `json:"exp"`
+		Scopes   string `json:"scopes"`
+		DeviceID string `json:"device_id"`
+	}
+	if jsonErr := json.Unmarshal(data, &claims); jsonErr != nil {
+		return "", "", "", &jwtError{"invalid payload JSON"}
+	}
+
+	// Check expiry when exp claim is present.
+	if claims.Exp != 0 && time.Now().Unix() > claims.Exp {
+		return "", "", "", &jwtError{"token expired"}
+	}
+
+	userID = claims.UserID
+	if userID == "" {
+		userID = claims.Sub
+	}
+	return userID, claims.Scopes, claims.DeviceID, nil
+}
+
+// jwtError is a simple error type for JWT validation failures.
+type jwtError struct{ msg string }
+
+func (e *jwtError) Error() string { return "jwt: " + e.msg }
 
 func isAllowedOrigin(origin string, allowed []string) bool {
 	for _, a := range allowed {
@@ -113,6 +244,101 @@ func isAllowedOrigin(origin string, allowed []string) bool {
 		}
 	}
 	return false
+}
+
+// rateLimiterEntry tracks a token-bucket limiter and the last time it was used.
+type rateLimiterEntry struct {
+	limiter  *rate.Limiter
+	lastSeen time.Time
+}
+
+// rateLimiterStore is a thread-safe store of per-key token-bucket limiters.
+type rateLimiterStore struct {
+	mu       sync.Mutex
+	limiters map[string]*rateLimiterEntry
+	r        float64
+	b        int
+}
+
+func newRateLimiterStore(r float64, b int) *rateLimiterStore {
+	s := &rateLimiterStore{
+		limiters: make(map[string]*rateLimiterEntry),
+		r:        r,
+		b:        b,
+	}
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			s.mu.Lock()
+			threshold := time.Now().Add(-10 * time.Minute)
+			for k, e := range s.limiters {
+				if e.lastSeen.Before(threshold) {
+					delete(s.limiters, k)
+				}
+			}
+			s.mu.Unlock()
+		}
+	}()
+	return s
+}
+
+func (s *rateLimiterStore) get(key string) *rate.Limiter {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if e, ok := s.limiters[key]; ok {
+		e.lastSeen = time.Now()
+		return e.limiter
+	}
+	l := rate.NewLimiter(rate.Limit(s.r), s.b)
+	s.limiters[key] = &rateLimiterEntry{limiter: l, lastSeen: time.Now()}
+	return l
+}
+
+// rateLimitMiddleware enforces per-IP (100 rps, burst 200) and per-user
+// (60 rps, burst 120) rate limits. Returns HTTP 429 when a limit is exceeded.
+func rateLimitMiddleware(next http.Handler) http.Handler {
+	ipStore := newRateLimiterStore(100, 200)
+	userStore := newRateLimiterStore(60, 120)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ip := r.RemoteAddr
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			if idx := strings.Index(xff, ","); idx != -1 {
+				ip = strings.TrimSpace(xff[:idx])
+			} else {
+				ip = strings.TrimSpace(xff)
+			}
+		}
+		if !ipStore.get(ip).Allow() {
+			w.Header().Set("Retry-After", "1")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			w.Write([]byte(`{"error":{"code":"RATE_LIMITED","message":"too many requests"}}`))
+			return
+		}
+		if userID := r.Header.Get("X-User-Id"); userID != "" {
+			if !userStore.get(userID).Allow() {
+				w.Header().Set("Retry-After", "1")
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusTooManyRequests)
+				w.Write([]byte(`{"error":{"code":"RATE_LIMITED","message":"too many requests"}}`))
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// injectInternalKeyMiddleware sets the X-Internal-Service-Key header on every
+// proxied request so that backend services can verify the request came from
+// the gateway. When secret is empty, the header is not set.
+func injectInternalKeyMiddleware(secret string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if secret != "" {
+			r.Header.Set("X-Internal-Service-Key", secret)
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func env(key, fallback string) string {

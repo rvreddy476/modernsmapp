@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/facebook-like/user-service/internal/store"
+	"github.com/atpost/user-service/internal/store"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
@@ -18,6 +18,11 @@ type Service struct {
 
 func New(s *store.Store, rdb *redis.Client) *Service {
 	return &Service{store: s, rdb: rdb}
+}
+
+// SoftDeleteUser marks the app-level user record as deleted.
+func (s *Service) SoftDeleteUser(ctx context.Context, id uuid.UUID) error {
+	return s.store.SoftDeleteUser(ctx, id)
 }
 
 // CreateUser handles user creation from event.

@@ -4,7 +4,7 @@ import (
 	"context"
 	"log"
 
-	"github.com/facebook-like/post-service/internal/engagement"
+	"github.com/atpost/post-service/internal/engagement"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )

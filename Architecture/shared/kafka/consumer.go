@@ -7,10 +7,10 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/facebook-like/shared/events"
-	"github.com/facebook-like/shared/o11y/logging"
-	"github.com/facebook-like/shared/o11y/metrics"
-	"github.com/facebook-like/shared/o11y/trace"
+	"github.com/atpost/shared/events"
+	"github.com/atpost/shared/o11y/logging"
+	"github.com/atpost/shared/o11y/metrics"
+	"github.com/atpost/shared/o11y/trace"
 	"github.com/redis/go-redis/v9"
 	kafkago "github.com/segmentio/kafka-go"
 )

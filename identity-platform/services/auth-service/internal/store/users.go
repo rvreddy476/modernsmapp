@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -248,7 +249,13 @@ func (s *Store) UpdateLastLogin(ctx context.Context, userID uuid.UUID) error {
 }
 
 func (s *Store) SoftDeleteUser(ctx context.Context, userID uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	_, err = tx.Exec(ctx, `
 		UPDATE auth.users
 		SET account_status = 'pending_deletion',
 		    deletion_requested_at = NOW(),
@@ -256,7 +263,20 @@ func (s *Store) SoftDeleteUser(ctx context.Context, userID uuid.UUID) error {
 		    updated_at = NOW()
 		WHERE user_id = $1
 	`, userID)
-	return err
+	if err != nil {
+		return err
+	}
+
+	payload := fmt.Sprintf(`{"user_id":"%s","requested_at":"%s"}`, userID.String(), time.Now().UTC().Format(time.RFC3339))
+	_, err = tx.Exec(ctx,
+		`INSERT INTO auth.outbox_events (event_type, partition_key, payload) VALUES ($1, $2, $3::jsonb)`,
+		"user.deletion_requested", userID.String(), payload,
+	)
+	if err != nil {
+		return fmt.Errorf("outbox insert failed: %w", err)
+	}
+
+	return tx.Commit(ctx)
 }
 
 // --- auth.otp_codes ---

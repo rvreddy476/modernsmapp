@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/facebook-like/feed-service/internal/service"
-	"github.com/facebook-like/shared/api"
+	"github.com/atpost/feed-service/internal/service"
+	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )

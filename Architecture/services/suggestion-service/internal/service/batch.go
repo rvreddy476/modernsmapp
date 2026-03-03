@@ -6,7 +6,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/facebook-like/suggestion-service/internal/store"
+	"github.com/atpost/suggestion-service/internal/store"
 	"github.com/google/uuid"
 )
 

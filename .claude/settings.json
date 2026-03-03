@@ -25,7 +25,10 @@
       "Bash(test -f \"C:/workspace/atpost/Architecture/services/group-service/cmd/server/main.go\")",
       "Bash(test -f \"C:/workspace/atpost/Architecture/services/monetization-service/cmd/server/main.go\")",
       "Bash(test -f \"C:/workspace/atpost/Architecture/services/feature-flag-service/cmd/server/main.go\")",
-      "Bash(test -f \"C:/workspace/atpost/Architecture/services/message-service/cmd/server/main.go\")"
+      "Bash(test -f \"C:/workspace/atpost/Architecture/services/message-service/cmd/server/main.go\")",
+      "Bash(flutter --version)",
+      "Bash(pip3 install python-docx -q)",
+      "Bash(where python)"
     ],
     "additionalDirectories": [
       "\\tmp",

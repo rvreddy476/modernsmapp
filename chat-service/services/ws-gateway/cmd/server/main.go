@@ -9,9 +9,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/chat-service/shared/logging"
-	"github.com/chat-service/ws-gateway/internal/config"
-	httpapi "github.com/chat-service/ws-gateway/internal/http"
+	"github.com/atpost/chat-shared/logging"
+	"github.com/atpost/chat-ws-gateway/internal/config"
+	httpapi "github.com/atpost/chat-ws-gateway/internal/http"
 	"github.com/redis/go-redis/v9"
 )
 

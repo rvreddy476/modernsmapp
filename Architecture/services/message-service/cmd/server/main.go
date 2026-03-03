@@ -7,17 +7,18 @@ import (
 	"strings"
 	"time"
 
-	apihttp "github.com/facebook-like/message-service/internal/http"
-	"github.com/facebook-like/message-service/internal/kafka"
-	"github.com/facebook-like/message-service/internal/service"
-	"github.com/facebook-like/message-service/internal/store/postgres"
-	"github.com/facebook-like/message-service/internal/store/scylla"
-	"github.com/facebook-like/message-service/internal/ws"
-	"github.com/facebook-like/shared/health"
-	"github.com/facebook-like/shared/middleware"
-	"github.com/facebook-like/shared/o11y/logging"
-	"github.com/facebook-like/shared/o11y/metrics"
-	"github.com/facebook-like/shared/server"
+	apihttp "github.com/atpost/message-service/internal/http"
+	"github.com/atpost/message-service/internal/kafka"
+	"github.com/atpost/message-service/internal/policy"
+	"github.com/atpost/message-service/internal/service"
+	"github.com/atpost/message-service/internal/store/postgres"
+	"github.com/atpost/message-service/internal/store/scylla"
+	"github.com/atpost/message-service/internal/ws"
+	"github.com/atpost/shared/health"
+	"github.com/atpost/shared/middleware"
+	"github.com/atpost/shared/o11y/logging"
+	"github.com/atpost/shared/o11y/metrics"
+	"github.com/atpost/shared/server"
 	"github.com/gin-gonic/gin"
 	"github.com/gocql/gocql"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -35,6 +36,7 @@ func main() {
 	redisAddr := env("REDIS_ADDR", "redis:6379")
 	kafkaBrokers := env("KAFKA_BROKERS", "kafka:9092")
 	jwtSecret := env("JWT_SECRET", "dev_secret_change_me")
+	graphServiceURL := env("GRAPH_SERVICE_URL", "http://localhost:8083")
 
 	ctx := context.Background()
 
@@ -97,8 +99,9 @@ func main() {
 	// 7. Dependencies
 	scyllaStore := scylla.New(session)
 	convStore := postgres.New(pgPool)
-	msgSvc := service.New(scyllaStore, convStore, rdb, kp)
-	msgHandler := apihttp.New(msgSvc)
+	dmPol := policy.NewDMPolicy(graphServiceURL)
+	msgSvc := service.New(scyllaStore, convStore, rdb, kp, dmPol)
+	msgHandler := apihttp.New(msgSvc, pgPool)
 
 	// 8. Prometheus metrics
 	httpMetrics := metrics.NewHTTPMetrics("message-service")

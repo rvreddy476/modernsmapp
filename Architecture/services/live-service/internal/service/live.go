@@ -9,8 +9,8 @@ import (
 	"log"
 	"time"
 
-	"github.com/facebook-like/live-service/internal/store/postgres"
-	"github.com/facebook-like/shared/events"
+	"github.com/atpost/live-service/internal/store/postgres"
+	"github.com/atpost/shared/events"
 	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
 )

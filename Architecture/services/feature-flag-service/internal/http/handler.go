@@ -3,10 +3,11 @@ package http
 import (
 	"log"
 	"net/http"
+	"strings"
 
-	"github.com/facebook-like/feature-flag-service/internal/service"
-	"github.com/facebook-like/feature-flag-service/internal/store/postgres"
-	"github.com/facebook-like/shared/api"
+	"github.com/atpost/feature-flag-service/internal/service"
+	"github.com/atpost/feature-flag-service/internal/store/postgres"
+	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
 )
 
@@ -30,12 +31,12 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	}
 }
 
-// AdminAuthMiddleware protects admin endpoints with an API key check.
+// AdminAuthMiddleware protects admin endpoints with a scope check.
 func (h *Handler) AdminAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		apiKey := c.GetHeader("ADMIN_API_KEY")
-		if apiKey != "admin-secret-123" {
-			api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid API Key", nil, nil)
+		scopes := c.GetHeader("X-Scopes")
+		if !strings.Contains(scopes, "admin") {
+			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil, nil)
 			c.Abort()
 			return
 		}

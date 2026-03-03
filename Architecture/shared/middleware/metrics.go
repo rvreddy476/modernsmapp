@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/facebook-like/shared/o11y/metrics"
+	"github.com/atpost/shared/o11y/metrics"
 	"github.com/gin-gonic/gin"
 )
 

@@ -5,7 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/identity-platform/shared/api"
+	"github.com/atpost/identity-shared/api"
 )
 
 type Setup2FARequest struct{}

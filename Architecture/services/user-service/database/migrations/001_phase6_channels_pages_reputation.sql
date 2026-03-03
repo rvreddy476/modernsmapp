@@ -10,7 +10,7 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS status_expires_at TIMESTAMPTZ;
 -- Extend user_links table
 ALTER TABLE user_links ADD COLUMN IF NOT EXISTS click_count INTEGER NOT NULL DEFAULT 0;
 
--- Channels (creator channels similar to YouTube channels)
+-- Channels (creator video channels)
 CREATE TABLE IF NOT EXISTS channels (
     id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id          UUID NOT NULL REFERENCES users(id),

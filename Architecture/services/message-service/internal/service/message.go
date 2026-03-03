@@ -8,9 +8,10 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/facebook-like/message-service/internal/kafka"
-	"github.com/facebook-like/message-service/internal/store/postgres"
-	"github.com/facebook-like/message-service/internal/store/scylla"
+	"github.com/atpost/message-service/internal/kafka"
+	"github.com/atpost/message-service/internal/policy"
+	"github.com/atpost/message-service/internal/store/postgres"
+	"github.com/atpost/message-service/internal/store/scylla"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
@@ -20,14 +21,16 @@ type Service struct {
 	convStore   *postgres.ConversationStore
 	rdb         *redis.Client
 	kafka       *kafka.Producer
+	dmPolicy    *policy.DMPolicy
 }
 
-func New(scyllaS *scylla.MessageStore, conv *postgres.ConversationStore, rdb *redis.Client, kp *kafka.Producer) *Service {
+func New(scyllaS *scylla.MessageStore, conv *postgres.ConversationStore, rdb *redis.Client, kp *kafka.Producer, dmPol *policy.DMPolicy) *Service {
 	return &Service{
 		scyllaStore: scyllaS,
 		convStore:   conv,
 		rdb:         rdb,
 		kafka:       kp,
+		dmPolicy:    dmPol,
 	}
 }
 
@@ -143,6 +146,16 @@ func messagePreview(input SendMessageInput) string {
 func (s *Service) SendMessage(ctx context.Context, senderID, receiverID uuid.UUID, input SendMessageInput) (*scylla.Message, error) {
 	if input.MessageType == "" {
 		input.MessageType = "text"
+	}
+
+	// Circle-gate: DMs are only allowed between mutual circle members (friends or mutual follows).
+	if s.dmPolicy != nil {
+		allowed, err := s.dmPolicy.CanDM(ctx, senderID.String(), receiverID.String())
+		if err != nil {
+			slog.Warn("dm policy check failed, allowing by default", "error", err)
+		} else if !allowed {
+			return nil, errors.New("direct messages require mutual circle membership")
+		}
 	}
 
 	// Ensure conversation exists + update timestamp for list ordering.
@@ -274,6 +287,17 @@ func (s *Service) CreateDirectConversation(ctx context.Context, userID, otherID 
 	if s.convStore == nil {
 		return nil, errors.New("conversation store not configured")
 	}
+
+	// Circle-gate: DMs are only allowed between mutual circle members (friends or mutual follows).
+	if s.dmPolicy != nil {
+		allowed, err := s.dmPolicy.CanDM(ctx, userID.String(), otherID.String())
+		if err != nil {
+			slog.Warn("dm policy check failed, allowing by default", "error", err)
+		} else if !allowed {
+			return nil, errors.New("direct messages require mutual circle membership")
+		}
+	}
+
 	convID, err := s.convStore.CreateDirectConversation(ctx, userID, otherID)
 	if err != nil {
 		return nil, err

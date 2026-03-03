@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	sharedEvents "github.com/identity-platform/shared/events"
+	sharedEvents "github.com/atpost/identity-shared/events"
 	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
 )

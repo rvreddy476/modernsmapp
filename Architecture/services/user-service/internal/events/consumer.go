@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"log"
 
-	"github.com/facebook-like/shared/events"
-	"github.com/facebook-like/user-service/internal/service"
+	"github.com/atpost/shared/events"
+	"github.com/atpost/user-service/internal/service"
 	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
 )
@@ -45,6 +45,8 @@ func (c *Consumer) Start(ctx context.Context) {
 			c.handleUserRegistered(ctx, envelope.Payload)
 		case events.UserEndorsed:
 			c.handleUserEndorsed(ctx, envelope.Payload)
+		case events.EventUserDeletionRequested:
+			c.handleUserDeletionRequested(ctx, envelope.Payload)
 		default:
 			// Ignore other events
 		}
@@ -73,6 +75,29 @@ func (c *Consumer) handleUserRegistered(ctx context.Context, payload json.RawMes
 		log.Printf("Failed to create user profile for %s: %v\n", userID, err)
 	} else {
 		log.Printf("Created user profile for %s\n", userID)
+	}
+}
+
+func (c *Consumer) handleUserDeletionRequested(ctx context.Context, payload json.RawMessage) {
+	var p struct {
+		UserID string `json:"user_id"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		log.Printf("Error unmarshalling user.deletion_requested payload: %v\n", err)
+		return
+	}
+
+	userID, err := uuid.Parse(p.UserID)
+	if err != nil {
+		log.Printf("Invalid user ID in user.deletion_requested event: %s\n", p.UserID)
+		return
+	}
+
+	// Mark the app-level user record as deleted
+	if err := c.svc.SoftDeleteUser(ctx, userID); err != nil {
+		log.Printf("Failed to soft-delete user %s: %v\n", userID, err)
+	} else {
+		log.Printf("Soft-deleted user record for %s\n", userID)
 	}
 }
 

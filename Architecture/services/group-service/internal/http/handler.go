@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/facebook-like/group-service/internal/service"
-	"github.com/facebook-like/group-service/internal/store"
-	"github.com/facebook-like/shared/api"
+	"github.com/atpost/group-service/internal/service"
+	"github.com/atpost/group-service/internal/store"
+	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )

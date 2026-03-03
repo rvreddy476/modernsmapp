@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/identity-platform/auth-service/internal/store"
+	"github.com/atpost/identity-auth-service/internal/store"
 )
 
 // OutboxRelay polls the outbox table and publishes events to Kafka.

@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	mediaEvents "github.com/facebook-like/media-service/internal/events"
-	"github.com/facebook-like/media-service/internal/processing"
-	"github.com/facebook-like/media-service/internal/store/blob"
-	"github.com/facebook-like/media-service/internal/store/postgres"
+	mediaEvents "github.com/atpost/media-service/internal/events"
+	"github.com/atpost/media-service/internal/processing"
+	"github.com/atpost/media-service/internal/store/blob"
+	"github.com/atpost/media-service/internal/store/postgres"
 	"github.com/google/uuid"
 )
 

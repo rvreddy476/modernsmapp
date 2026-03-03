@@ -7,9 +7,9 @@ import (
 	"log"
 	"time"
 
-	"github.com/facebook-like/feed-service/internal/service"
-	"github.com/facebook-like/feed-service/internal/store/scylla"
-	"github.com/facebook-like/shared/events"
+	"github.com/atpost/feed-service/internal/service"
+	"github.com/atpost/feed-service/internal/store/scylla"
+	"github.com/atpost/shared/events"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/segmentio/kafka-go"

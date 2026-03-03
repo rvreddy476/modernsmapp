@@ -6,10 +6,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/facebook-like/post-service/internal/http/middleware"
-	"github.com/facebook-like/post-service/internal/service"
-	"github.com/facebook-like/post-service/internal/store/postgres"
-	"github.com/facebook-like/shared/api"
+	"github.com/atpost/post-service/internal/http/middleware"
+	"github.com/atpost/post-service/internal/service"
+	"github.com/atpost/post-service/internal/store/postgres"
+	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -102,6 +102,12 @@ type CreatePollRequest struct {
 type CreatePostRequest struct {
 	Text           string          `json:"text"`
 	Visibility     string          `json:"visibility" binding:"required,oneof=public followers private"`
+	VisibilityPolicy *struct {
+		Mode       string   `json:"mode"`
+		AllowLists []string `json:"allow_lists,omitempty"`
+		AllowUsers []string `json:"allow_users,omitempty"`
+		DenyUsers  []string `json:"deny_users,omitempty"`
+	} `json:"visibility_policy,omitempty"`
 	ContentType    string          `json:"content_type"`
 	MediaIDs       []string        `json:"media_ids"`
 	Feeling        *string         `json:"feeling"`

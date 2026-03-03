@@ -6,17 +6,20 @@ import (
 	"hash/fnv"
 	"time"
 
-	"github.com/facebook-like/feature-flag-service/internal/store/postgres"
+	"github.com/atpost/feature-flag-service/internal/store/postgres"
+	"github.com/atpost/shared/events"
 	"github.com/redis/go-redis/v9"
+	"github.com/segmentio/kafka-go"
 )
 
 type Evaluator struct {
-	store *postgres.Store
-	redis *redis.Client
+	store       *postgres.Store
+	redis       *redis.Client
+	kafkaWriter *kafka.Writer
 }
 
-func New(store *postgres.Store, rdb *redis.Client) *Evaluator {
-	return &Evaluator{store: store, redis: rdb}
+func New(store *postgres.Store, rdb *redis.Client, kafkaWriter *kafka.Writer) *Evaluator {
+	return &Evaluator{store: store, redis: rdb, kafkaWriter: kafkaWriter}
 }
 
 type EvalResult struct {
@@ -25,6 +28,32 @@ type EvalResult struct {
 }
 
 func (e *Evaluator) Evaluate(ctx context.Context, key string, userID string) (*EvalResult, error) {
+	result, err := e.evaluate(ctx, key, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Emit flag.evaluated event non-blocking, errors suppressed.
+	if e.kafkaWriter != nil {
+		payload := events.FlagEvaluatedPayload{
+			FlagKey: key,
+			UserID:  userID,
+			Enabled: result.Enabled,
+		}
+		pBytes, _ := json.Marshal(payload)
+		actor := userID
+		envelope := events.NewEnvelope(ctx, events.EventFlagEvaluated, &actor, pBytes)
+		eBytes, _ := json.Marshal(envelope)
+		_ = e.kafkaWriter.WriteMessages(ctx, kafka.Message{
+			Key:   []byte(key + ":" + userID),
+			Value: eBytes,
+		})
+	}
+
+	return result, nil
+}
+
+func (e *Evaluator) evaluate(ctx context.Context, key string, userID string) (*EvalResult, error) {
 	// 1. Try Redis
 	cacheKey := "flag:" + key
 	val, err := e.redis.Get(ctx, cacheKey).Result()

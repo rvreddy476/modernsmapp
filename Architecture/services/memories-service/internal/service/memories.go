@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/facebook-like/memories-service/internal/store/postgres"
+	"github.com/atpost/memories-service/internal/store/postgres"
 	"github.com/google/uuid"
 )
 

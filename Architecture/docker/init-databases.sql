@@ -6,3 +6,9 @@ WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'identity_db')\gexec
 
 SELECT 'CREATE DATABASE chat_db'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'chat_db')\gexec
+
+SELECT 'CREATE DATABASE commerce_db'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'commerce_db')\gexec
+
+SELECT 'CREATE DATABASE feed_db'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'feed_db')\gexec

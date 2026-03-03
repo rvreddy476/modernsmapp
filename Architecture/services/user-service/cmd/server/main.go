@@ -6,15 +6,16 @@ import (
 	"os"
 	"time"
 
-	"github.com/facebook-like/shared/health"
-	"github.com/facebook-like/shared/middleware"
-	"github.com/facebook-like/shared/o11y/logging"
-	"github.com/facebook-like/shared/o11y/metrics"
-	"github.com/facebook-like/shared/server"
-	"github.com/facebook-like/user-service/internal/events"
-	"github.com/facebook-like/user-service/internal/http"
-	"github.com/facebook-like/user-service/internal/service"
-	"github.com/facebook-like/user-service/internal/store"
+	"github.com/atpost/shared/health"
+	"github.com/atpost/shared/middleware"
+	"github.com/atpost/shared/o11y/logging"
+	"github.com/atpost/shared/o11y/metrics"
+	"github.com/atpost/shared/server"
+	"github.com/atpost/user-service/internal/events"
+	"github.com/atpost/user-service/internal/http"
+	"github.com/atpost/user-service/internal/presence"
+	"github.com/atpost/user-service/internal/service"
+	"github.com/atpost/user-service/internal/store"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
@@ -75,7 +76,8 @@ func main() {
 	// 7. Dependencies
 	userStore := store.New(dbPool)
 	userSvc := service.New(userStore, rdb)
-	userHandler := http.New(userSvc)
+	presenceStore := presence.New(rdb)
+	userHandler := http.New(userSvc, presenceStore)
 
 	// 8. Kafka Consumer
 	consumer := events.NewConsumer([]string{kafkaBrokers}, "social.events.v1", userSvc)

@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/facebook-like/admin-service/internal/store/postgres"
-	"github.com/facebook-like/shared/events"
+	"github.com/atpost/admin-service/internal/store/postgres"
+	"github.com/atpost/shared/events"
 	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
 )

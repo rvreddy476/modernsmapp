@@ -98,7 +98,7 @@ VALUES
     ('b2e06bd7-fa13-4f05-94cc-8973bcafe892', 'twitter',  'https://x.com/johndoe',         '@johndoe',  1),
     ('b2e06bd7-fa13-4f05-94cc-8973bcafe892', 'linkedin', 'https://linkedin.com/in/johndoe','LinkedIn',  2),
     ('a1b2c3d4-e5f6-7890-abcd-ef1234567890', 'dribbble', 'https://dribbble.com/janedoe',   'Dribbble',  0),
-    ('a1b2c3d4-e5f6-7890-abcd-ef1234567890', 'instagram','https://instagram.com/janedoe',  '@janedoe',  1)
+    ('a1b2c3d4-e5f6-7890-abcd-ef1234567890', 'website',  'https://janedoe.dev',            'Portfolio',  1)
 ON CONFLICT DO NOTHING;
 
 

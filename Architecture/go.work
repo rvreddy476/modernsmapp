@@ -14,6 +14,8 @@ use (
 	./services/message-service
 	./services/monetization-service
 	./services/notification-service
+	./services/orders-service
+	./services/payments-service
 	./services/post-service
 	./services/search-service
 	./services/shop-service

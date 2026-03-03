@@ -7,8 +7,8 @@ import (
 	"log/slog"
 
 	"github.com/google/uuid"
-	"github.com/identity-platform/user-service/internal/config"
-	"github.com/identity-platform/user-service/internal/store"
+	"github.com/atpost/identity-user-service/internal/config"
+	"github.com/atpost/identity-user-service/internal/store"
 	"github.com/redis/go-redis/v9"
 )
 

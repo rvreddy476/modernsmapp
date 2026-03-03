@@ -8,24 +8,27 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/facebook-like/shared/api"
-	"github.com/facebook-like/user-service/internal/service"
-	"github.com/facebook-like/user-service/internal/store"
+	"github.com/atpost/shared/api"
+	"github.com/atpost/shared/httpclient"
+	"github.com/atpost/user-service/internal/presence"
+	"github.com/atpost/user-service/internal/service"
+	"github.com/atpost/user-service/internal/store"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
 type Handler struct {
-	svc      *service.Service
-	graphURL string
+	svc          *service.Service
+	graphURL     string
+	presenceStore *presence.Store
 }
 
-func New(svc *service.Service) *Handler {
+func New(svc *service.Service, presenceStore *presence.Store) *Handler {
 	graphURL := os.Getenv("GRAPH_SERVICE_URL")
 	if graphURL == "" {
 		graphURL = "http://graph-service:8083"
 	}
-	return &Handler{svc: svc, graphURL: graphURL}
+	return &Handler{svc: svc, graphURL: graphURL, presenceStore: presenceStore}
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
@@ -60,6 +63,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// Link Analytics
 		v1.POST("/links/:platform/click", h.TrackLinkClick)
 		v1.GET("/me/links/analytics", h.GetLinkAnalytics)
+
+		// Presence
+		v1.POST("/me/heartbeat", h.Heartbeat)
+		v1.GET("/:userId/online", h.GetOnlineStatus)
 	}
 
 	// Channels
@@ -1000,4 +1007,80 @@ func (h *Handler) ListMyBusinessPages(c *gin.Context) {
 		pages = []store.BusinessPage{}
 	}
 	api.JSON(c.Writer, http.StatusOK, pages, nil)
+}
+
+// --- Presence ---
+
+// Heartbeat sets the calling user as online with a 90-second TTL.
+// Clients should call this every 30 seconds to maintain online status.
+func (h *Handler) Heartbeat(c *gin.Context) {
+	userIDStr := c.GetHeader("X-User-Id")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	if err := h.presenceStore.SetOnline(c.Request.Context(), userID.String()); err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to update presence", nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "ok"}, nil)
+}
+
+// GetOnlineStatus returns whether the target user is online.
+// Due to privacy rules, only circle members (mutual friends) receive a truthful answer.
+// All other callers receive {"online": false} regardless of actual status (fail-closed).
+func (h *Handler) GetOnlineStatus(c *gin.Context) {
+	requesterIDStr := c.GetHeader("X-User-Id")
+	requesterID, err := uuid.Parse(requesterIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	targetIDStr := c.Param("userId")
+	targetID, err := uuid.Parse(targetIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil, nil)
+		return
+	}
+
+	// Self-check: always truthful
+	inCircle := requesterID == targetID
+
+	if !inCircle {
+		// Check mutual friendship (circle membership) via graph-service.
+		// Fail-closed: if graph-service is unreachable, treat as not in circle.
+		url := fmt.Sprintf("%s/v1/graph/relationship?user_id=%s&other_id=%s", h.graphURL, requesterID, targetID)
+		graphReq, _ := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, url, nil)
+		resp, err := httpclient.NewWithBreaker(5*time.Second, "user->graph").Do(graphReq)
+		if err == nil {
+			defer resp.Body.Close()
+			var body struct {
+				Data struct {
+					IsFriend bool `json:"is_friend"`
+				} `json:"data"`
+			}
+			if json.NewDecoder(resp.Body).Decode(&body) == nil {
+				inCircle = body.Data.IsFriend
+			}
+		}
+		// If err != nil, inCircle stays false (fail-closed for privacy)
+	}
+
+	if !inCircle {
+		api.JSON(c.Writer, http.StatusOK, map[string]bool{"online": false}, nil)
+		return
+	}
+
+	online, err := h.presenceStore.IsOnline(c.Request.Context(), targetID.String())
+	if err != nil {
+		// Fail-closed: on Redis error, report offline rather than leaking status
+		api.JSON(c.Writer, http.StatusOK, map[string]bool{"online": false}, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, map[string]bool{"online": online}, nil)
 }

@@ -1,6 +1,6 @@
 package service
 
-import "github.com/facebook-like/suggestion-service/internal/store"
+import "github.com/atpost/suggestion-service/internal/store"
 
 // DiversityConfig controls the diversity algorithm limits.
 type DiversityConfig struct {

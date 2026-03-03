@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/facebook-like/analytics-service/internal/service"
-	"github.com/facebook-like/shared/api"
+	"github.com/atpost/analytics-service/internal/service"
+	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 )

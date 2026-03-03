@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// Channel represents a creator channel (like a YouTube channel).
+// Channel represents a creator video channel on Posttube.
 type Channel struct {
 	ID              uuid.UUID       `json:"id"`
 	UserID          uuid.UUID       `json:"user_id"`

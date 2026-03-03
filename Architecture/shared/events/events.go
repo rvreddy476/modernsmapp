@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/facebook-like/shared/o11y/trace"
+	"github.com/atpost/shared/o11y/trace"
 	"github.com/google/uuid"
 )
 
@@ -67,7 +67,9 @@ const (
 	VideoBlockCreator      = "VideoBlockCreator"      // payload: VideoEngagementPayload
 
 	// Trust & Safety
-	ReportFiled = "ReportFiled" // payload: ReportFiledPayload
+	ReportFiled     = "ReportFiled"     // payload: ReportFiledPayload
+	ReportResolved  = "ReportResolved"  // payload: ReportFiledPayload
+	ReportDismissed = "ReportDismissed" // payload: ReportFiledPayload
 
 	// Shop / E-Commerce
 	ProductListed      = "ProductListed"      // payload: ProductListedPayload
@@ -77,6 +79,29 @@ const (
 	// Live Streaming
 	LiveStarted = "LiveStarted" // payload: LiveStartedPayload
 	LiveEnded   = "LiveEnded"   // payload: LiveEndedPayload
+)
+
+// v2.1 new event types
+const (
+	EventUserDeletionRequested   = "user.deletion_requested"
+	EventVisibilityPolicyCreated = "visibility_policy.created"
+	EventVisibilityPolicyUpdated = "visibility_policy.updated"
+	EventVisibilityPolicyDeleted = "visibility_policy.deleted"
+	EventPostVisibilityChanged   = "post.visibility_changed"
+	EventListingCreated          = "listing.created"
+	EventListingUpdated          = "listing.updated"
+	EventOrderCreated            = "order.created"
+	EventOrderStatusChanged      = "order.status_changed"
+	EventBookingCreated          = "booking.created"
+	EventBookingStatusChanged    = "booking.status_changed"
+	EventPaymentSucceeded        = "payment.succeeded"
+	EventPaymentFailed           = "payment.failed"
+	EventPaymentRefunded         = "payment.refunded"
+	EventDisputeOpened           = "dispute.opened"
+	EventDisputeResolved         = "dispute.resolved"
+
+	// Feature Flags
+	EventFlagEvaluated = "flag.evaluated" // payload: FlagEvaluatedPayload
 )
 
 // EventEnvelope is the CloudEvents-ish structure we use on Kafka.
@@ -397,6 +422,30 @@ type ReportFiledPayload struct {
 	EntityID   string    `json:"entity_id"`
 	Reason     string    `json:"reason"`
 	CreatedAt  time.Time `json:"created_at"`
+}
+
+type ReportResolvedPayload struct {
+	ReportID   string    `json:"report_id"`
+	EntityType string    `json:"entity_type"`
+	EntityID   string    `json:"entity_id"`
+	ActorID    string    `json:"actor_id"`
+	ResolvedAt time.Time `json:"resolved_at"`
+}
+
+type ReportDismissedPayload struct {
+	ReportID    string    `json:"report_id"`
+	EntityType  string    `json:"entity_type"`
+	EntityID    string    `json:"entity_id"`
+	ActorID     string    `json:"actor_id"`
+	DismissedAt time.Time `json:"dismissed_at"`
+}
+
+// --- Feature Flag Payloads ---
+
+type FlagEvaluatedPayload struct {
+	FlagKey string `json:"flag_key"`
+	UserID  string `json:"user_id"`
+	Enabled bool   `json:"enabled"`
 }
 
 // --- Shop / E-Commerce Payloads ---

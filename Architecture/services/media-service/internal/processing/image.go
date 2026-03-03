@@ -11,7 +11,7 @@ import (
 
 	"github.com/buckket/go-blurhash"
 	"github.com/disintegration/imaging"
-	"github.com/facebook-like/media-service/internal/store/blob"
+	"github.com/atpost/media-service/internal/store/blob"
 )
 
 // VariantSpec defines a target image variant.
