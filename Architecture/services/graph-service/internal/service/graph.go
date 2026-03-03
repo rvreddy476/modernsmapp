@@ -7,8 +7,8 @@ import (
 	"log"
 	"time"
 
-	"github.com/facebook-like/graph-service/internal/events"
-	"github.com/facebook-like/graph-service/internal/store"
+	"github.com/atpost/graph-service/internal/events"
+	"github.com/atpost/graph-service/internal/store"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )

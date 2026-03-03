@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/facebook-like/analytics-service/internal/store/postgres"
-	"github.com/facebook-like/shared/api"
+	"github.com/atpost/analytics-service/internal/store/postgres"
+	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/facebook-like/shared/api"
+	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
 )
 

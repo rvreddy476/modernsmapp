@@ -1,9 +1,9 @@
-module github.com/facebook-like/search-service
+module github.com/atpost/search-service
 
 go 1.22
 
 require (
-	github.com/facebook-like/shared v0.0.0
+	github.com/atpost/shared v0.0.0
 	github.com/gin-gonic/gin v1.9.1
 	github.com/opensearch-project/opensearch-go/v2 v2.3.0
 	github.com/redis/go-redis/v9 v9.5.1
@@ -43,4 +43,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/facebook-like/shared => ../../shared
+replace github.com/atpost/shared => ../../shared

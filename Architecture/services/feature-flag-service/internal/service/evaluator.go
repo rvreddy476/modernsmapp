@@ -6,7 +6,7 @@ import (
 	"hash/fnv"
 	"time"
 
-	"github.com/facebook-like/feature-flag-service/internal/store/postgres"
+	"github.com/atpost/feature-flag-service/internal/store/postgres"
 	"github.com/redis/go-redis/v9"
 )
 

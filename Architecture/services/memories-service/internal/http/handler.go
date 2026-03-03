@@ -4,9 +4,9 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/facebook-like/memories-service/internal/service"
-	"github.com/facebook-like/memories-service/internal/store/postgres"
-	"github.com/facebook-like/shared/api"
+	"github.com/atpost/memories-service/internal/service"
+	"github.com/atpost/memories-service/internal/store/postgres"
+	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )

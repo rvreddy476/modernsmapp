@@ -4,9 +4,9 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/facebook-like/feature-flag-service/internal/service"
-	"github.com/facebook-like/feature-flag-service/internal/store/postgres"
-	"github.com/facebook-like/shared/api"
+	"github.com/atpost/feature-flag-service/internal/service"
+	"github.com/atpost/feature-flag-service/internal/store/postgres"
+	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
 )
 

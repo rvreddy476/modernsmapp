@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/facebook-like/search-service/internal/store/search"
-	"github.com/facebook-like/shared/api"
+	"github.com/atpost/search-service/internal/store/search"
+	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 )

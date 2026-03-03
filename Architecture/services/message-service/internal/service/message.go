@@ -8,9 +8,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/facebook-like/message-service/internal/kafka"
-	"github.com/facebook-like/message-service/internal/store/postgres"
-	"github.com/facebook-like/message-service/internal/store/scylla"
+	"github.com/atpost/message-service/internal/kafka"
+	"github.com/atpost/message-service/internal/store/postgres"
+	"github.com/atpost/message-service/internal/store/scylla"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )

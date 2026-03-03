@@ -11,9 +11,9 @@ import (
 	"sort"
 	"time"
 
-	"github.com/facebook-like/feed-service/internal/ranking"
-	"github.com/facebook-like/feed-service/internal/store/postgres"
-	"github.com/facebook-like/feed-service/internal/store/scylla"
+	"github.com/atpost/feed-service/internal/ranking"
+	"github.com/atpost/feed-service/internal/store/postgres"
+	"github.com/atpost/feed-service/internal/store/scylla"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )

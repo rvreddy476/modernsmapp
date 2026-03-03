@@ -7,8 +7,8 @@ import (
 	"log"
 	"time"
 
-	"github.com/facebook-like/shared/events"
-	"github.com/facebook-like/shop-service/internal/store/postgres"
+	"github.com/atpost/shared/events"
+	"github.com/atpost/shop-service/internal/store/postgres"
 	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
 )

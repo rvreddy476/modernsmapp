@@ -3,7 +3,7 @@ package middleware
 import (
 	"time"
 
-	"github.com/facebook-like/shared/o11y/logging"
+	"github.com/atpost/shared/o11y/logging"
 	"github.com/gin-gonic/gin"
 )
 

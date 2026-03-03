@@ -1,4 +1,4 @@
-module github.com/facebook-like/shared
+module github.com/atpost/shared
 
 go 1.22
 

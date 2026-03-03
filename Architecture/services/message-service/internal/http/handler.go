@@ -8,9 +8,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/facebook-like/message-service/internal/service"
-	pgstore "github.com/facebook-like/message-service/internal/store/postgres"
-	"github.com/facebook-like/shared/api"
+	"github.com/atpost/message-service/internal/service"
+	pgstore "github.com/atpost/message-service/internal/store/postgres"
+	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"

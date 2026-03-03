@@ -13,7 +13,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/facebook-like/group-service/internal/store"
+	"github.com/atpost/group-service/internal/store"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )

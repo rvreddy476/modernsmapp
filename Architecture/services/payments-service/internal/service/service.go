@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/facebook-like/payments-service/internal/store/postgres"
+	"github.com/atpost/payments-service/internal/store/postgres"
 	"github.com/google/uuid"
 	kafka "github.com/segmentio/kafka-go"
 )

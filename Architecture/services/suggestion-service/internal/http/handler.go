@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/facebook-like/suggestion-service/internal/service"
+	"github.com/atpost/suggestion-service/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )

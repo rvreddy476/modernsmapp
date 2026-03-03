@@ -6,7 +6,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/facebook-like/post-service/internal/engagement"
+	"github.com/atpost/post-service/internal/engagement"
 	"github.com/gocql/gocql"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"

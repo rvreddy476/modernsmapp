@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/facebook-like/shared/events"
+	"github.com/atpost/shared/events"
 	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
 )

@@ -6,9 +6,9 @@ import (
 	"log"
 	"time"
 
-	"github.com/facebook-like/analytics-service/internal/model"
-	"github.com/facebook-like/analytics-service/internal/store/postgres"
-	"github.com/facebook-like/shared/events"
+	"github.com/atpost/analytics-service/internal/model"
+	"github.com/atpost/analytics-service/internal/store/postgres"
+	"github.com/atpost/shared/events"
 	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
 )

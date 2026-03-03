@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/facebook-like/shared/events"
-	"github.com/facebook-like/suggestion-service/internal/service"
-	"github.com/facebook-like/suggestion-service/internal/store"
+	"github.com/atpost/shared/events"
+	"github.com/atpost/suggestion-service/internal/service"
+	"github.com/atpost/suggestion-service/internal/store"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/segmentio/kafka-go"

@@ -1,3 +1,3 @@
-module github.com/facebook-like/api-gateway
+module github.com/atpost/api-gateway
 
 go 1.23

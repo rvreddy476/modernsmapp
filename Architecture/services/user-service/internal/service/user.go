@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/facebook-like/user-service/internal/store"
+	"github.com/atpost/user-service/internal/store"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )

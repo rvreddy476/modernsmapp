@@ -1,9 +1,9 @@
-module github.com/facebook-like/feature-flag-service
+module github.com/atpost/feature-flag-service
 
 go 1.23
 
 require (
-	github.com/facebook-like/shared v0.0.0
+	github.com/atpost/shared v0.0.0
 	github.com/gin-gonic/gin v1.9.1
 	github.com/jackc/pgx/v5 v5.5.3
 	github.com/redis/go-redis/v9 v9.5.1
@@ -44,4 +44,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/facebook-like/shared => ../../shared
+replace github.com/atpost/shared => ../../shared

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/facebook-like/shared/o11y/trace"
+	"github.com/atpost/shared/o11y/trace"
 )
 
 // Response is the standard envelope for all API responses.

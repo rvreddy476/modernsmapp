@@ -1,9 +1,9 @@
-module github.com/facebook-like/shop-service
+module github.com/atpost/shop-service
 
 go 1.23
 
 require (
-	github.com/facebook-like/shared v0.0.0
+	github.com/atpost/shared v0.0.0
 	github.com/gin-gonic/gin v1.9.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.5.3
@@ -45,4 +45,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/facebook-like/shared => ../../shared
+replace github.com/atpost/shared => ../../shared

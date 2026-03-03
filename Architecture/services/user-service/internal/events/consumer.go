@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"log"
 
-	"github.com/facebook-like/shared/events"
-	"github.com/facebook-like/user-service/internal/service"
+	"github.com/atpost/shared/events"
+	"github.com/atpost/user-service/internal/service"
 	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
 )

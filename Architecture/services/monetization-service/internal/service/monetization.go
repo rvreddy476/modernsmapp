@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/facebook-like/monetization-service/internal/store/postgres"
+	"github.com/atpost/monetization-service/internal/store/postgres"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )

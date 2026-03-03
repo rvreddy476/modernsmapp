@@ -5,9 +5,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/facebook-like/orders-service/internal/service"
-	"github.com/facebook-like/orders-service/internal/store/postgres"
-	"github.com/facebook-like/shared/api"
+	"github.com/atpost/orders-service/internal/service"
+	"github.com/atpost/orders-service/internal/store/postgres"
+	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
