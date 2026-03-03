@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chat-service/shared/api"
+	"github.com/atpost/chat-shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )

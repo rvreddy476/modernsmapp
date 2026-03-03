@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chat-service/message-service/internal/store/postgres"
+	"github.com/atpost/chat-message-service/internal/store/postgres"
 	"github.com/google/uuid"
 )
 

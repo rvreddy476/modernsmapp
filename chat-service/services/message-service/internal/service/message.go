@@ -9,9 +9,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/chat-service/message-service/internal/store/postgres"
-	"github.com/chat-service/message-service/internal/store/scylla"
-	sharedEvents "github.com/chat-service/shared/events"
+	"github.com/atpost/chat-message-service/internal/store/postgres"
+	"github.com/atpost/chat-message-service/internal/store/scylla"
+	sharedEvents "github.com/atpost/chat-shared/events"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )

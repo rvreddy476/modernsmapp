@@ -10,9 +10,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/chat-service/message-service/internal/service"
-	"github.com/chat-service/message-service/internal/store/scylla"
-	"github.com/chat-service/shared/api"
+	"github.com/atpost/chat-message-service/internal/service"
+	"github.com/atpost/chat-message-service/internal/store/scylla"
+	"github.com/atpost/chat-shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
