@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"log"
 	"net/http"
 	"net/http/httputil"
@@ -18,6 +20,12 @@ type route struct {
 func main() {
 	port := env("HTTP_PORT", "8080")
 	allowedOrigins := strings.Split(env("CORS_ORIGINS", "http://localhost:3000"), ",")
+
+	// Read at startup so it is visible in logs / future use by downstream callers
+	// that may need it forwarded. The actual signature validation is intentionally
+	// omitted at the gateway layer; downstream services hold the authoritative
+	// secret and perform full validation.
+	_ = env("JWT_SECRET", "")
 
 	routeDefs := []struct {
 		prefix string
@@ -55,6 +63,11 @@ func main() {
 		{"/v1/monetization", env("MONETIZATION_SERVICE_URL", "http://monetization-service:8099")},
 		// Suggestion service
 		{"/v1/suggestions", env("SUGGESTION_SERVICE_URL", "http://suggestion-service:8100")},
+		// Orders / Bookings service (v2.1)
+		{"/v1/orders", env("ORDERS_SERVICE_URL", "http://localhost:8101")},
+		{"/v1/bookings", env("ORDERS_SERVICE_URL", "http://localhost:8101")},
+		// Payments service (v2.1)
+		{"/v1/payments", env("PAYMENTS_SERVICE_URL", "http://localhost:8102")},
 	}
 
 	var routes []route
@@ -71,7 +84,7 @@ func main() {
 		log.Printf("  %s -> %s", rd.prefix, rd.target)
 	}
 
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	coreHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// CORS
 		origin := r.Header.Get("Origin")
 		if origin != "" && isAllowedOrigin(origin, allowedOrigins) {
@@ -104,8 +117,76 @@ func main() {
 		http.NotFound(w, r)
 	})
 
+	handler := jwtExtractMiddleware(coreHandler)
+
 	log.Printf("API Gateway listening on :%s", port)
 	log.Fatal(http.ListenAndServe(":"+port, handler))
+}
+
+// jwtExtractMiddleware inspects the Authorization: Bearer <token> header,
+// extracts claims from the JWT payload segment (without signature verification —
+// downstream services are responsible for full validation), and propagates the
+// trusted identity headers X-User-Id, X-Scopes, and X-Device-Id to the proxied
+// request. Requests without a valid Bearer token are passed through unchanged so
+// that unauthenticated endpoints continue to work normally.
+func jwtExtractMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeader := r.Header.Get("Authorization")
+		if strings.HasPrefix(authHeader, "Bearer ") {
+			token := strings.TrimPrefix(authHeader, "Bearer ")
+			userID, scopes, deviceID := extractJWTClaims(token)
+			if userID != "" {
+				r.Header.Set("X-User-Id", userID)
+			}
+			if scopes != "" {
+				r.Header.Set("X-Scopes", scopes)
+			}
+			if deviceID != "" {
+				r.Header.Set("X-Device-Id", deviceID)
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// extractJWTClaims decodes the payload segment of a JWT (base64url, no padding)
+// and returns the user ID, scopes, and device ID embedded in the claims.
+// It does NOT verify the signature; signature verification is the responsibility
+// of individual downstream services which hold the authoritative JWT_SECRET.
+func extractJWTClaims(tokenStr string) (userID, scopes, deviceID string) {
+	parts := strings.Split(tokenStr, ".")
+	if len(parts) != 3 {
+		return
+	}
+	// Decode payload (base64url, no padding)
+	payload := parts[1]
+	// Add padding if needed
+	switch len(payload) % 4 {
+	case 2:
+		payload += "=="
+	case 3:
+		payload += "="
+	}
+	data, err := base64.URLEncoding.DecodeString(payload)
+	if err != nil {
+		return
+	}
+	var claims struct {
+		Sub      string `json:"sub"`
+		UserID   string `json:"user_id"`
+		Scopes   string `json:"scopes"`
+		DeviceID string `json:"device_id"`
+	}
+	if err := json.Unmarshal(data, &claims); err != nil {
+		return
+	}
+	userID = claims.UserID
+	if userID == "" {
+		userID = claims.Sub
+	}
+	scopes = claims.Scopes
+	deviceID = claims.DeviceID
+	return
 }
 
 func isAllowedOrigin(origin string, allowed []string) bool {

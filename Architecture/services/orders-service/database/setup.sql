@@ -1,0 +1,3 @@
+-- Orders service uses commerce_db.
+-- Schema is defined in Architecture/docker/database/04-commerce-db.sql
+-- Run: docker/database/setup-all.sh to initialize all databases.

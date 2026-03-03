@@ -1,0 +1,335 @@
+package http
+
+import (
+	"net/http"
+	"strconv"
+	"time"
+
+	"github.com/facebook-like/orders-service/internal/service"
+	"github.com/facebook-like/orders-service/internal/store/postgres"
+	"github.com/facebook-like/shared/api"
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+)
+
+type Handler struct {
+	svc *service.Service
+}
+
+func New(svc *service.Service) *Handler {
+	return &Handler{svc: svc}
+}
+
+func (h *Handler) RegisterRoutes(r *gin.Engine) {
+	v1 := r.Group("/v1")
+	{
+		// Orders
+		orders := v1.Group("/orders")
+		orders.POST("", h.CreateOrder)
+		orders.GET("", h.ListOrders)
+		orders.GET("/:orderId", h.GetOrder)
+		orders.PATCH("/:orderId/status", h.UpdateOrderStatus)
+		orders.POST("/:orderId/disputes", h.OpenDispute)
+
+		// Bookings
+		bookings := v1.Group("/bookings")
+		bookings.POST("", h.CreateBooking)
+		bookings.GET("", h.ListBookings)
+		bookings.GET("/:bookingId", h.GetBooking)
+		bookings.PATCH("/:bookingId/status", h.UpdateBookingStatus)
+	}
+}
+
+func getUserID(c *gin.Context) (uuid.UUID, bool) {
+	str := c.GetHeader("X-User-Id")
+	if str == "" {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil, nil)
+		return uuid.Nil, false
+	}
+	id, err := uuid.Parse(str)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "invalid user id", nil, nil)
+		return uuid.Nil, false
+	}
+	return id, true
+}
+
+func parsePagination(c *gin.Context) (int, int) {
+	limit, offset := 20, 0
+	if v := c.Query("limit"); v != "" {
+		if l, err := strconv.Atoi(v); err == nil && l > 0 && l <= 100 {
+			limit = l
+		}
+	}
+	if v := c.Query("offset"); v != "" {
+		if o, err := strconv.Atoi(v); err == nil && o >= 0 {
+			offset = o
+		}
+	}
+	return limit, offset
+}
+
+// CreateOrder POST /v1/orders
+func (h *Handler) CreateOrder(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	var body struct {
+		SellerID        string      `json:"seller_id" binding:"required"`
+		ListingID       *string     `json:"listing_id"`
+		Items           []itemInput `json:"items" binding:"required"`
+		Total           float64     `json:"total" binding:"required"`
+		Currency        string      `json:"currency"`
+		ShippingAddress any         `json:"shipping_address"`
+		Notes           string      `json:"notes"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		return
+	}
+	sellerID, err := uuid.Parse(body.SellerID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_SELLER_ID", "invalid seller_id", nil, nil)
+		return
+	}
+
+	in := service.CreateOrderInput{
+		BuyerID:         userID,
+		SellerID:        sellerID,
+		Total:           body.Total,
+		Currency:        body.Currency,
+		ShippingAddress: body.ShippingAddress,
+		Notes:           body.Notes,
+	}
+	if body.ListingID != nil {
+		id, err := uuid.Parse(*body.ListingID)
+		if err == nil {
+			in.ListingID = &id
+		}
+	}
+	for _, it := range body.Items {
+		lid, _ := uuid.Parse(it.ListingID)
+		in.Items = append(in.Items, service.OrderItemInput{
+			ListingID:       lid,
+			Title:           it.Title,
+			Quantity:        it.Quantity,
+			PriceAtPurchase: it.Price,
+			Currency:        it.Currency,
+		})
+	}
+
+	order, err := h.svc.CreateOrder(c.Request.Context(), in)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "CREATE_FAILED", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusCreated, order, nil)
+}
+
+type itemInput struct {
+	ListingID string  `json:"listing_id"`
+	Title     string  `json:"title"`
+	Quantity  int     `json:"quantity"`
+	Price     float64 `json:"price"`
+	Currency  string  `json:"currency"`
+}
+
+// GetOrder GET /v1/orders/:orderId
+func (h *Handler) GetOrder(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	orderID, err := uuid.Parse(c.Param("orderId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid order id", nil, nil)
+		return
+	}
+	order, err := h.svc.GetOrder(c.Request.Context(), orderID, userID)
+	if err != nil {
+		if err.Error() == "forbidden" {
+			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "access denied", nil, nil)
+		} else {
+			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "order not found", nil, nil)
+		}
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, order, nil)
+}
+
+// ListOrders GET /v1/orders
+func (h *Handler) ListOrders(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	role := c.DefaultQuery("role", "buyer")
+	limit, offset := parsePagination(c)
+	orders, err := h.svc.ListOrders(c.Request.Context(), userID, role, limit, offset)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "FETCH_FAILED", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, orders, nil)
+}
+
+// UpdateOrderStatus PATCH /v1/orders/:orderId/status
+func (h *Handler) UpdateOrderStatus(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	orderID, err := uuid.Parse(c.Param("orderId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid order id", nil, nil)
+		return
+	}
+	var body struct {
+		Status string `json:"status" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		return
+	}
+	order, err := h.svc.UpdateOrderStatus(c.Request.Context(), orderID, userID, body.Status)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "UPDATE_FAILED", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, order, nil)
+}
+
+// OpenDispute POST /v1/orders/:orderId/disputes
+func (h *Handler) OpenDispute(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	orderID, err := uuid.Parse(c.Param("orderId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid order id", nil, nil)
+		return
+	}
+	var body struct {
+		Reason       string   `json:"reason" binding:"required"`
+		EvidenceURLs []string `json:"evidence_urls"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		return
+	}
+	dispute, err := h.svc.OpenDispute(c.Request.Context(), orderID, userID, body.Reason, body.EvidenceURLs)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "DISPUTE_FAILED", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusCreated, dispute, nil)
+}
+
+// CreateBooking POST /v1/bookings
+func (h *Handler) CreateBooking(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	var body struct {
+		ProviderID       string `json:"provider_id" binding:"required"`
+		ServiceListingID string `json:"service_listing_id" binding:"required"`
+		SlotStart        string `json:"slot_start" binding:"required"`
+		SlotEnd          string `json:"slot_end" binding:"required"`
+		Notes            string `json:"notes"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		return
+	}
+	providerID, _ := uuid.Parse(body.ProviderID)
+	listingID, _ := uuid.Parse(body.ServiceListingID)
+
+	slotStart, err := time.Parse(time.RFC3339, body.SlotStart)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_SLOT_START", "use RFC3339 format", nil, nil)
+		return
+	}
+	slotEnd, err := time.Parse(time.RFC3339, body.SlotEnd)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_SLOT_END", "use RFC3339 format", nil, nil)
+		return
+	}
+
+	booking, err := h.svc.CreateBooking(c.Request.Context(), postgres.Booking{
+		CustomerID:       userID,
+		ProviderID:       providerID,
+		ServiceListingID: listingID,
+		SlotStart:        slotStart,
+		SlotEnd:          slotEnd,
+		Notes:            body.Notes,
+	})
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "CREATE_FAILED", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusCreated, booking, nil)
+}
+
+// GetBooking GET /v1/bookings/:bookingId
+func (h *Handler) GetBooking(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	bookingID, err := uuid.Parse(c.Param("bookingId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid booking id", nil, nil)
+		return
+	}
+	b, err := h.svc.GetBooking(c.Request.Context(), bookingID, userID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "booking not found", nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, b, nil)
+}
+
+// ListBookings GET /v1/bookings
+func (h *Handler) ListBookings(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	role := c.DefaultQuery("role", "customer")
+	limit, offset := parsePagination(c)
+	bookings, err := h.svc.ListBookings(c.Request.Context(), userID, role, limit, offset)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "FETCH_FAILED", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, bookings, nil)
+}
+
+// UpdateBookingStatus PATCH /v1/bookings/:bookingId/status
+func (h *Handler) UpdateBookingStatus(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	bookingID, err := uuid.Parse(c.Param("bookingId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid booking id", nil, nil)
+		return
+	}
+	var body struct {
+		Status string `json:"status" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		return
+	}
+	b, err := h.svc.UpdateBookingStatus(c.Request.Context(), bookingID, userID, body.Status)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "UPDATE_FAILED", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, b, nil)
+}

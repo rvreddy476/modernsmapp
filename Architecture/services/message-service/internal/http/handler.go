@@ -9,17 +9,20 @@ import (
 	"time"
 
 	"github.com/facebook-like/message-service/internal/service"
+	pgstore "github.com/facebook-like/message-service/internal/store/postgres"
 	"github.com/facebook-like/shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type Handler struct {
 	svc *service.Service
+	db  *pgxpool.Pool
 }
 
-func New(svc *service.Service) *Handler {
-	return &Handler{svc: svc}
+func New(svc *service.Service, db *pgxpool.Pool) *Handler {
+	return &Handler{svc: svc, db: db}
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
@@ -42,8 +45,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.PATCH("/conversations/:conversationId/messages/:messageId", h.EditMessage)
 		v1.DELETE("/conversations/:conversationId/messages/:messageId", h.DeleteMessage)
 
-		// Reactions
+		// Reactions (Scylla-backed toggle, conversation-scoped)
 		v1.PUT("/conversations/:conversationId/messages/:messageId/reactions", h.ToggleReaction)
+
+		// Reactions (Postgres-backed, message-scoped)
+		v1.POST("/messages/:messageId/reactions", h.ReactToMessage)
+		v1.DELETE("/messages/:messageId/reactions", h.UnreactToMessage)
+		v1.GET("/messages/:messageId/reactions", h.GetMessageReactions)
 
 		// Read receipts & typing
 		v1.POST("/conversations/:conversationId/read", h.MarkRead)
@@ -721,6 +729,59 @@ func (h *Handler) GetPinnedMessage(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, gin.H{"pinned_message": pm}, nil)
+}
+
+// ---------------------------------------------------------------------------
+// Postgres-backed message reactions
+// ---------------------------------------------------------------------------
+
+// ReactToMessage POST /v1/chat/messages/:messageId/reactions
+func (h *Handler) ReactToMessage(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	messageID := c.Param("messageId")
+
+	var body struct {
+		ReactionType string `json:"reaction_type" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", "reaction_type required", nil, nil)
+		return
+	}
+
+	reaction, err := pgstore.AddReaction(c.Request.Context(), h.db, messageID, userID, body.ReactionType)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "REACT_FAILED", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, reaction, nil)
+}
+
+// UnreactToMessage DELETE /v1/chat/messages/:messageId/reactions
+func (h *Handler) UnreactToMessage(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	messageID := c.Param("messageId")
+	if err := pgstore.RemoveReaction(c.Request.Context(), h.db, messageID, userID); err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "UNREACT_FAILED", err.Error(), nil, nil)
+		return
+	}
+	c.Writer.WriteHeader(http.StatusNoContent)
+}
+
+// GetMessageReactions GET /v1/chat/messages/:messageId/reactions
+func (h *Handler) GetMessageReactions(c *gin.Context) {
+	messageID := c.Param("messageId")
+	summaries, err := pgstore.GetReactions(c.Request.Context(), h.db, messageID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "FETCH_FAILED", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, summaries, nil)
 }
 
 // ---------------------------------------------------------------------------

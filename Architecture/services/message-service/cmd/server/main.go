@@ -98,7 +98,7 @@ func main() {
 	scyllaStore := scylla.New(session)
 	convStore := postgres.New(pgPool)
 	msgSvc := service.New(scyllaStore, convStore, rdb, kp)
-	msgHandler := apihttp.New(msgSvc)
+	msgHandler := apihttp.New(msgSvc, pgPool)
 
 	// 8. Prometheus metrics
 	httpMetrics := metrics.NewHTTPMetrics("message-service")

@@ -102,6 +102,12 @@ type CreatePollRequest struct {
 type CreatePostRequest struct {
 	Text           string          `json:"text"`
 	Visibility     string          `json:"visibility" binding:"required,oneof=public followers private"`
+	VisibilityPolicy *struct {
+		Mode       string   `json:"mode"`
+		AllowLists []string `json:"allow_lists,omitempty"`
+		AllowUsers []string `json:"allow_users,omitempty"`
+		DenyUsers  []string `json:"deny_users,omitempty"`
+	} `json:"visibility_policy,omitempty"`
 	ContentType    string          `json:"content_type"`
 	MediaIDs       []string        `json:"media_ids"`
 	Feeling        *string         `json:"feeling"`

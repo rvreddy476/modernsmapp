@@ -25,25 +25,37 @@ if ! docker exec "$CONTAINER" pg_isready -U postgres > /dev/null 2>&1; then
 fi
 
 # Create databases if they don't exist
-echo "[1/4] Creating databases..."
+echo "[1/6] Creating databases..."
 docker exec "$CONTAINER" psql -U postgres -c "SELECT 'CREATE DATABASE identity_db' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='identity_db')\gexec" 2>/dev/null || true
 docker exec "$CONTAINER" psql -U postgres -c "SELECT 'CREATE DATABASE chat_db' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='chat_db')\gexec" 2>/dev/null || true
-echo "  Databases: app, identity_db, chat_db"
+docker exec "$CONTAINER" psql -U postgres -c "SELECT 'CREATE DATABASE commerce_db' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='commerce_db')\gexec" 2>/dev/null || true
+docker exec "$CONTAINER" psql -U postgres -c "SELECT 'CREATE DATABASE feed_db' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='feed_db')\gexec" 2>/dev/null || true
+echo "  Databases: app, identity_db, chat_db, commerce_db, feed_db"
 
 # Run identity_db schema
-echo "[2/4] Setting up identity_db..."
+echo "[2/6] Setting up identity_db..."
 docker exec -i "$CONTAINER" psql -U postgres -f- < "$SCRIPT_DIR/01-identity-db.sql"
 echo "  identity_db ready."
 
 # Run app db schema
-echo "[3/4] Setting up app db..."
+echo "[3/6] Setting up app db..."
 docker exec -i "$CONTAINER" psql -U postgres -f- < "$SCRIPT_DIR/02-app-db.sql"
 echo "  app db ready."
 
 # Run chat_db schema
-echo "[4/4] Setting up chat_db..."
+echo "[4/6] Setting up chat_db..."
 docker exec -i "$CONTAINER" psql -U postgres -f- < "$SCRIPT_DIR/03-chat-db.sql"
 echo "  chat_db ready."
+
+# Run commerce_db schema
+echo "[5/6] Setting up commerce_db..."
+docker exec -i "$CONTAINER" psql -U postgres -f- < "$SCRIPT_DIR/04-commerce-db.sql"
+echo "  commerce_db ready."
+
+# Run feed_db schema
+echo "[6/6] Setting up feed_db..."
+docker exec -i "$CONTAINER" psql -U postgres -f- < "$SCRIPT_DIR/05-feed-db.sql"
+echo "  feed_db ready."
 
 echo ""
 echo "=== All databases set up successfully ==="

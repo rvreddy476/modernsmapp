@@ -79,6 +79,25 @@ const (
 	LiveEnded   = "LiveEnded"   // payload: LiveEndedPayload
 )
 
+// v2.1 new event types
+const (
+	EventVisibilityPolicyCreated = "visibility_policy.created"
+	EventVisibilityPolicyUpdated = "visibility_policy.updated"
+	EventVisibilityPolicyDeleted = "visibility_policy.deleted"
+	EventPostVisibilityChanged   = "post.visibility_changed"
+	EventListingCreated          = "listing.created"
+	EventListingUpdated          = "listing.updated"
+	EventOrderCreated            = "order.created"
+	EventOrderStatusChanged      = "order.status_changed"
+	EventBookingCreated          = "booking.created"
+	EventBookingStatusChanged    = "booking.status_changed"
+	EventPaymentSucceeded        = "payment.succeeded"
+	EventPaymentFailed           = "payment.failed"
+	EventPaymentRefunded         = "payment.refunded"
+	EventDisputeOpened           = "dispute.opened"
+	EventDisputeResolved         = "dispute.resolved"
+)
+
 // EventEnvelope is the CloudEvents-ish structure we use on Kafka.
 type EventEnvelope struct {
 	EventID     string          `json:"event_id"`

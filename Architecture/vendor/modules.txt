@@ -111,6 +111,8 @@ github.com/jackc/pgpassfile
 github.com/jackc/pgservicefile
 # github.com/jackc/pgx/v5 v5.5.3
 ## explicit; go 1.19
+# github.com/jackc/pgx/v5 v5.5.5
+## explicit; go 1.19
 github.com/jackc/pgx/v5
 github.com/jackc/pgx/v5/internal/anynil
 github.com/jackc/pgx/v5/internal/iobufpool

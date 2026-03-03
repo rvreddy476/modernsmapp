@@ -131,6 +131,8 @@ services:
       GROUP_SERVICE_URL: http://group-service:8090
       ADMIN_SERVICE_URL: http://admin-service:8096
       PROFILE_SERVICE_URL: http://identity-profile:8098
+      ORDERS_SERVICE_URL: http://orders-service:8101
+      PAYMENTS_SERVICE_URL: http://payments-service:8102
     ports:
       - "8080:8080"
     depends_on:
@@ -498,6 +500,40 @@ services:
       KAFKA_BROKERS: redpanda:9092
     ports:
       - "8096:8096"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_started
+
+  # ─── Commerce Services (v2.1) ────────────────────────────────
+
+  orders-service:
+    build:
+      context: ..
+      dockerfile: services/orders-service/Dockerfile
+    environment:
+      HTTP_PORT: "8101"
+      POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/commerce_db?sslmode=disable
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      - "8101:8101"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_started
+
+  payments-service:
+    build:
+      context: ..
+      dockerfile: services/payments-service/Dockerfile
+    environment:
+      HTTP_PORT: "8102"
+      POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/commerce_db?sslmode=disable
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      - "8102:8102"
     depends_on:
       postgres:
         condition: service_healthy

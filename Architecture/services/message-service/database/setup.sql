@@ -51,3 +51,17 @@ ALTER TABLE chat.conversations
     ADD COLUMN IF NOT EXISTS pinned_message_id TEXT,
     ADD COLUMN IF NOT EXISTS pinned_at         TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS pinned_by         UUID;
+
+-- ============================================================
+-- message_reactions — normalized reactions (v2.1, replaces JSONB)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS chat.message_reactions (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    message_id    TEXT NOT NULL,
+    user_id       UUID NOT NULL,
+    reaction_type TEXT NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(message_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_msg_reactions_message ON chat.message_reactions (message_id);
+CREATE INDEX IF NOT EXISTS idx_msg_reactions_user ON chat.message_reactions (user_id, created_at DESC);
