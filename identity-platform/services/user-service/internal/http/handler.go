@@ -8,8 +8,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/identity-platform/shared/api"
-	"github.com/identity-platform/user-service/internal/store"
+	"github.com/atpost/identity-shared/api"
+	"github.com/atpost/identity-user-service/internal/store"
 )
 
 type Handler struct {

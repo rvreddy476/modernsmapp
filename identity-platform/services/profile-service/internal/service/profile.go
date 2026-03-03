@@ -9,9 +9,9 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/identity-platform/profile-service/internal/config"
-	"github.com/identity-platform/profile-service/internal/events"
-	"github.com/identity-platform/profile-service/internal/store"
+	"github.com/atpost/identity-profile-service/internal/config"
+	"github.com/atpost/identity-profile-service/internal/events"
+	"github.com/atpost/identity-profile-service/internal/store"
 	"github.com/redis/go-redis/v9"
 )
 

@@ -8,11 +8,12 @@ import (
 	"syscall"
 
 	"github.com/gin-gonic/gin"
-	"github.com/identity-platform/shared/logging"
-	"github.com/identity-platform/user-service/internal/config"
-	"github.com/identity-platform/user-service/internal/http"
-	"github.com/identity-platform/user-service/internal/service"
-	"github.com/identity-platform/user-service/internal/store"
+	"github.com/atpost/identity-shared/logging"
+	"github.com/atpost/identity-user-service/internal/config"
+	"github.com/atpost/identity-user-service/internal/events"
+	"github.com/atpost/identity-user-service/internal/http"
+	"github.com/atpost/identity-user-service/internal/service"
+	"github.com/atpost/identity-user-service/internal/store"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
@@ -57,6 +58,15 @@ func main() {
 	userStore := store.New(dbPool)
 	userSvc := service.New(userStore, rdb, cfg, logger)
 	userHandler := http.New(userSvc, logger)
+
+	// 3b. Kafka consumer (inbox-dedup enabled)
+	consumer := events.NewConsumer(cfg.KafkaBrokers, cfg.KafkaTopic, cfg.KafkaGroupID, dbPool, userSvc, logger)
+	defer func() {
+		if err := consumer.Close(); err != nil {
+			logger.Warn("failed to close kafka consumer", "err", err)
+		}
+	}()
+	go consumer.Start(ctx)
 
 	// 4. Server
 	r := gin.New()

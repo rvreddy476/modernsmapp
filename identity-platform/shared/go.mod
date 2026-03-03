@@ -1,3 +1,3 @@
-module github.com/identity-platform/shared
+module github.com/atpost/identity-shared
 
 go 1.24.0

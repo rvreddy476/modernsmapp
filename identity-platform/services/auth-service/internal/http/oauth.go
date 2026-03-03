@@ -5,7 +5,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/identity-platform/shared/api"
+	"github.com/atpost/identity-shared/api"
 )
 
 func (h *Handler) OAuthRedirect(c *gin.Context) {

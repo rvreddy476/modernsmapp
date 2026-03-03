@@ -10,9 +10,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/identity-platform/auth-service/internal/config"
-	"github.com/identity-platform/auth-service/internal/service"
-	"github.com/identity-platform/auth-service/internal/store"
+	"github.com/atpost/identity-auth-service/internal/config"
+	"github.com/atpost/identity-auth-service/internal/service"
+	"github.com/atpost/identity-auth-service/internal/store"
 )
 
 type stubAuthService struct {

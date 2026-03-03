@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/identity-platform/shared/events"
+	"github.com/atpost/identity-shared/events"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/oauth2"
 	oauth2github "golang.org/x/oauth2/github"

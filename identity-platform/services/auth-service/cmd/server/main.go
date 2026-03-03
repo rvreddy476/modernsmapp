@@ -9,12 +9,12 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/identity-platform/auth-service/internal/config"
-	"github.com/identity-platform/auth-service/internal/events"
-	"github.com/identity-platform/auth-service/internal/http"
-	"github.com/identity-platform/auth-service/internal/service"
-	"github.com/identity-platform/auth-service/internal/store"
-	"github.com/identity-platform/shared/logging"
+	"github.com/atpost/identity-auth-service/internal/config"
+	"github.com/atpost/identity-auth-service/internal/events"
+	"github.com/atpost/identity-auth-service/internal/http"
+	"github.com/atpost/identity-auth-service/internal/service"
+	"github.com/atpost/identity-auth-service/internal/store"
+	"github.com/atpost/identity-shared/logging"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )

@@ -16,9 +16,9 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
-	"github.com/identity-platform/auth-service/internal/config"
-	"github.com/identity-platform/auth-service/internal/store"
-	"github.com/identity-platform/shared/events"
+	"github.com/atpost/identity-auth-service/internal/config"
+	"github.com/atpost/identity-auth-service/internal/store"
+	"github.com/atpost/identity-shared/events"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
