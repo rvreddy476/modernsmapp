@@ -63,6 +63,18 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 	case events.CommentCreated:
 		return c.handleCommentCreated(ctx, envelope)
 
+	case events.EventUserDeletionRequested:
+		var p events.UserDeletionRequestedPayload
+		payloadBytes, _ := json.Marshal(envelope.Payload)
+		if err := json.Unmarshal(payloadBytes, &p); err != nil {
+			return err
+		}
+		authorID, _ := uuid.Parse(p.UserID)
+		if c.timelineStore != nil {
+			return c.timelineStore.DeleteTimelineEntriesByAuthor(ctx, authorID)
+		}
+		return nil
+
 	default:
 		return nil
 	}

@@ -222,6 +222,34 @@ func (s *AggregateStore) UpsertHourlyAgg(ctx context.Context, contentID, creator
 	return err
 }
 
+// CreatorAggStats holds aggregated analytics totals for a creator.
+type CreatorAggStats struct {
+	TotalViews    int64
+	TotalLikes    int64
+	TotalComments int64
+	TotalShares   int64
+}
+
+// GetCreatorAggStats returns aggregated analytics for a creator since a given time.
+func (s *AggregateStore) GetCreatorAggStats(ctx context.Context, creatorID uuid.UUID, since time.Time) (*CreatorAggStats, error) {
+	stats := &CreatorAggStats{}
+	err := s.db.QueryRow(ctx, `
+		SELECT
+			COALESCE(SUM(views_display), 0),
+			COALESCE(SUM(likes), 0),
+			COALESCE(SUM(comments), 0),
+			COALESCE(SUM(shares), 0)
+		FROM analytics.content_daily_summary
+		WHERE creator_id = $1 AND day_bucket >= $2
+	`, creatorID, since).Scan(
+		&stats.TotalViews, &stats.TotalLikes, &stats.TotalComments, &stats.TotalShares,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return stats, nil
+}
+
 // UpsertDailySummary upserts a daily summary row.
 func (s *AggregateStore) UpsertDailySummary(ctx context.Context, contentID, creatorID uuid.UUID, dayBucket time.Time, contentType string,
 	impressions, plays, viewsDisplay, uniqueViewers, watchTimeMS, likes, comments, shares, saves int64,

@@ -70,6 +70,24 @@ func (p *Producer) PublishUserBlocked(ctx context.Context, blockerID, blockedID 
 	return p.publish(ctx, events.UserBlocked, &blockerID, payload)
 }
 
+func (p *Producer) PublishUserFollowed(ctx context.Context, followerID, followeeID uuid.UUID) error {
+	payload := events.UserFollowedPayload{
+		FollowerID: followerID.String(),
+		FolloweeID: followeeID.String(),
+		CreatedAt:  time.Now(),
+	}
+	return p.publish(ctx, events.UserFollowed, &followerID, payload)
+}
+
+func (p *Producer) PublishUserUnfollowed(ctx context.Context, followerID, followeeID uuid.UUID) error {
+	payload := events.UserUnfollowedPayload{
+		FollowerID: followerID.String(),
+		FolloweeID: followeeID.String(),
+		OccurredAt: time.Now(),
+	}
+	return p.publish(ctx, events.UserUnfollowed, &followerID, payload)
+}
+
 func (p *Producer) publish(ctx context.Context, eventType string, actorID *uuid.UUID, payload interface{}) error {
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {

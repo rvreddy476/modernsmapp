@@ -10,22 +10,37 @@ import (
 	"github.com/atpost/post-service/internal/service"
 	"github.com/atpost/post-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
+	sharedmiddleware "github.com/atpost/shared/middleware"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
 type Handler struct {
-	svc *service.Service
-	rdb *redis.Client
+	svc         *service.Service
+	rdb         *redis.Client
+	internalKey string
 }
 
 func New(svc *service.Service, rdb *redis.Client) *Handler {
 	return &Handler{svc: svc, rdb: rdb}
 }
 
+// WithInternalKey sets the internal service key used to authenticate
+// service-to-service requests via the X-Internal-Service-Key header.
+func (h *Handler) WithInternalKey(key string) *Handler {
+	h.internalKey = key
+	return h
+}
+
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	idempotent := middleware.Idempotency(h.rdb)
+
+	// Apply internal service key enforcement to all /v1 routes.
+	// Health and metrics endpoints registered outside this group remain public.
+	if h.internalKey != "" {
+		r.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
+	}
 
 	v1 := r.Group("/v1/posts")
 	{

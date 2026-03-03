@@ -27,6 +27,7 @@ type Relationship struct {
 	Follows      bool   `json:"follows"`
 	FollowedBy   bool   `json:"followed_by"`
 	Blocked      bool   `json:"blocked"`
+	IsMuted      bool   `json:"is_muted"`
 	IsFriend     bool   `json:"is_friend"`
 	FriendStatus string `json:"friend_status"` // none, pending_sent, pending_received, accepted
 }
@@ -48,6 +49,13 @@ func (s *Service) Follow(ctx context.Context, followerID, followeeID uuid.UUID) 
 
 	s.invalidateRel(ctx, followerID, followeeID)
 	s.invalidateCounts(ctx, followerID, followeeID)
+
+	// Publish UserFollowed event for notification-service
+	if s.producer != nil {
+		if err := s.producer.PublishUserFollowed(ctx, followerID, followeeID); err != nil {
+			log.Printf("[graph] Failed to publish UserFollowed event: %v", err)
+		}
+	}
 	return nil
 }
 
@@ -57,6 +65,13 @@ func (s *Service) Unfollow(ctx context.Context, followerID, followeeID uuid.UUID
 	}
 	s.invalidateRel(ctx, followerID, followeeID)
 	s.invalidateCounts(ctx, followerID, followeeID)
+
+	// Publish UserUnfollowed event for notification-service
+	if s.producer != nil {
+		if err := s.producer.PublishUserUnfollowed(ctx, followerID, followeeID); err != nil {
+			log.Printf("[graph] Failed to publish UserUnfollowed event: %v", err)
+		}
+	}
 	return nil
 }
 
@@ -273,6 +288,32 @@ func (s *Service) GetFriends(ctx context.Context, userID uuid.UUID, limit, offse
 
 func (s *Service) GetPendingRequests(ctx context.Context, userID uuid.UUID) ([]store.FriendRequest, error) {
 	return s.store.GetPendingRequests(ctx, userID)
+}
+
+// --- Mutes ---
+
+func (s *Service) Mute(ctx context.Context, muterID, mutedID uuid.UUID) error {
+	err := s.store.Mute(ctx, muterID, mutedID)
+	// Invalidate relationship cache
+	s.invalidateRel(ctx, muterID, mutedID)
+	return err
+}
+
+func (s *Service) Unmute(ctx context.Context, muterID, mutedID uuid.UUID) error {
+	err := s.store.Unmute(ctx, muterID, mutedID)
+	s.invalidateRel(ctx, muterID, mutedID)
+	return err
+}
+
+func (s *Service) GetBlockedAndMuted(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	return s.store.GetBlockedAndMuted(ctx, userID)
+}
+
+func (s *Service) GetRelationshipBatch(ctx context.Context, viewerID uuid.UUID, targetIDs []uuid.UUID) (map[uuid.UUID]store.Relationship, error) {
+	if len(targetIDs) > 100 {
+		targetIDs = targetIDs[:100]
+	}
+	return s.store.GetRelationshipBatch(ctx, viewerID, targetIDs)
 }
 
 // --- Cache Invalidation ---

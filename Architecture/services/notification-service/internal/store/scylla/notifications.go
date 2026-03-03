@@ -133,6 +133,23 @@ func prevBucket(bucket int) int {
 	return year*100 + month
 }
 
+// DeleteNotificationsForUser removes all notification rows for a given user_id
+// across a rolling window of the current and previous two months.
+func (s *NotificationStore) DeleteNotificationsForUser(ctx context.Context, userID uuid.UUID) error {
+	now := time.Now()
+	for i := 0; i < 3; i++ {
+		t := now.AddDate(0, -i, 0)
+		b := t.Year()*100 + int(t.Month())
+		if err := s.session.Query(`
+			DELETE FROM notifications_by_user
+			WHERE user_id = ? AND bucket = ?
+		`, gocql.UUID(userID), b).WithContext(ctx).Exec(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // MarkRead
 func (s *NotificationStore) MarkRead(ctx context.Context, userID uuid.UUID, bucket int, ts gocql.UUID) error {
 	return s.session.Query(`

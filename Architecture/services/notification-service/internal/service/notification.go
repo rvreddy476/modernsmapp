@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"strconv"
 	"time"
 
+	"github.com/atpost/notification-service/internal/push"
 	"github.com/atpost/notification-service/internal/store/postgres"
 	"github.com/atpost/notification-service/internal/store/scylla"
 	"github.com/gocql/gocql"
@@ -19,6 +21,7 @@ type Service struct {
 	scyllaStore *scylla.NotificationStore
 	pgStore     *postgres.Store
 	rdb         *redis.Client
+	pusher      push.Pusher
 }
 
 func New(scyllaStore *scylla.NotificationStore, rdb *redis.Client) *Service {
@@ -30,6 +33,11 @@ func New(scyllaStore *scylla.NotificationStore, rdb *redis.Client) *Service {
 
 func (s *Service) SetPGStore(pg *postgres.Store) {
 	s.pgStore = pg
+}
+
+// SetPusher sets the push notification dispatcher.
+func (s *Service) SetPusher(p push.Pusher) {
+	s.pusher = p
 }
 
 // CreateNotification
@@ -66,7 +74,71 @@ func (s *Service) CreateNotification(ctx context.Context, userID, actorID uuid.U
 		fmt.Printf("failed to publish to redis: %v\n", err)
 	}
 
+	// 3. Send push notification if pusher is configured
+	if s.pusher != nil && s.pgStore != nil {
+		tokens, err := s.pgStore.GetUserDevices(ctx, userID)
+		if err == nil && len(tokens) > 0 {
+			prefs, _ := s.pgStore.GetPreferences(ctx, userID)
+			quietStart := ""
+			quietEnd := ""
+			if prefs != nil {
+				if prefs.QuietHoursStart != nil {
+					quietStart = *prefs.QuietHoursStart
+				}
+				if prefs.QuietHoursEnd != nil {
+					quietEnd = *prefs.QuietHoursEnd
+				}
+				if prefs.PushEnabled && !isQuietHours(quietStart, quietEnd) {
+					title, body := notifTitleBody(notifType)
+					for _, t := range tokens {
+						if err := s.pusher.Send(ctx, t.PushToken, t.Platform, title, body,
+							map[string]string{"type": notifType}); err != nil {
+							slog.Warn("push: send failed", "error", err, "platform", t.Platform)
+						}
+					}
+				}
+			}
+		}
+	}
+
 	return nil
+}
+
+// notifTitleBody returns a human-readable title and body for a notification type.
+func notifTitleBody(notifType string) (string, string) {
+	switch notifType {
+	case "follow":
+		return "New Follower", "Someone followed you"
+	case "reaction":
+		return "New Reaction", "Someone reacted to your post"
+	case "comment":
+		return "New Comment", "Someone commented on your post"
+	case "comment_reaction":
+		return "New Reaction", "Someone reacted to your comment"
+	case "friend_request":
+		return "Friend Request", "You have a new friend request"
+	case "friend_accepted":
+		return "Friend Request Accepted", "Your friend request was accepted"
+	case "endorsement":
+		return "New Endorsement", "Someone endorsed you"
+	case "business_review":
+		return "New Review", "Your business page has a new review"
+	case "new_subscriber":
+		return "New Subscriber", "Someone subscribed to your content"
+	case "mention":
+		return "You were mentioned", "Someone mentioned you in a post"
+	default:
+		return "New Notification", "You have a new notification"
+	}
+}
+
+// isQuietHours returns true if the current time is within the quiet hours range.
+func isQuietHours(start, end string) bool {
+	if start == "" || end == "" {
+		return false
+	}
+	// TODO: implement proper quiet hours check using HH:MM format
+	return false
 }
 
 // NotificationsPage holds a page of notifications with a cursor for the next page.
@@ -228,4 +300,17 @@ func (s *Service) UnregisterDevice(ctx context.Context, deviceID, userID uuid.UU
 		return fmt.Errorf("PG store not configured")
 	}
 	return s.pgStore.UnregisterDevice(ctx, deviceID, userID)
+}
+
+// DeleteNotificationsForUser removes all notifications for the given user (GDPR erasure).
+func (s *Service) DeleteNotificationsForUser(ctx context.Context, userID uuid.UUID) error {
+	return s.scyllaStore.DeleteNotificationsForUser(ctx, userID)
+}
+
+// DeactivateDeviceTokens deactivates all push-notification device tokens for the given user (GDPR erasure).
+func (s *Service) DeactivateDeviceTokens(ctx context.Context, userID uuid.UUID) error {
+	if s.pgStore == nil {
+		return fmt.Errorf("PG store not configured")
+	}
+	return s.pgStore.DeactivateDeviceTokens(ctx, userID)
 }

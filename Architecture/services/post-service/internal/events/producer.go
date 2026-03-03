@@ -72,6 +72,15 @@ func (p *Producer) PublishCommentCreated(ctx context.Context, commentID, postID,
 	return p.publish(ctx, events.CommentCreated, &authorID, payload)
 }
 
+func (p *Producer) PublishSpamDetected(ctx context.Context, userID uuid.UUID, reason string, score float64) error {
+	payload := events.SpamDetectedPayload{
+		UserID: userID.String(),
+		Reason: reason,
+		Score:  score,
+	}
+	return p.publish(ctx, events.EventSpamDetected, &userID, payload)
+}
+
 func (p *Producer) PublishStoryCreated(ctx context.Context, storyID, authorID uuid.UUID, mediaType string) error {
 	payload := events.StoryCreatedPayload{
 		StoryID:   storyID.String(),
@@ -80,6 +89,17 @@ func (p *Producer) PublishStoryCreated(ctx context.Context, storyID, authorID uu
 		CreatedAt: time.Now(),
 	}
 	return p.publish(ctx, events.StoryCreated, &authorID, payload)
+}
+
+// PublishUserMentioned emits a user.mentioned event for a @mention in a post.
+func (p *Producer) PublishUserMentioned(ctx context.Context, mentionedUserID, authorID uuid.UUID, postID string) error {
+	payload := events.UserMentionedPayload{
+		MentionedUserID: mentionedUserID.String(),
+		AuthorID:        authorID.String(),
+		PostID:          postID,
+		OccurredAt:      time.Now(),
+	}
+	return p.publish(ctx, events.EventUserMentioned, &authorID, payload)
 }
 
 func (p *Producer) publish(ctx context.Context, eventType string, actorID *uuid.UUID, payload interface{}) error {

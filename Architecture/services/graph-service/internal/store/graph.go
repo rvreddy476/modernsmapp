@@ -17,6 +17,13 @@ type Follow struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
+type Relationship struct {
+	Follows    bool `json:"follows"`
+	FollowedBy bool `json:"followed_by"`
+	Blocked    bool `json:"blocked"`
+	IsMuted    bool `json:"is_muted"`
+}
+
 type Block struct {
 	BlockerID uuid.UUID `json:"blocker_id"`
 	BlockedID uuid.UUID `json:"blocked_id"`
@@ -456,4 +463,114 @@ func (s *Store) GetPendingRequests(ctx context.Context, userID uuid.UUID) ([]Fri
 		reqs = append(reqs, r)
 	}
 	return reqs, rows.Err()
+}
+
+// --- Mutes ---
+
+// Mute adds a mute entry (muter_id mutes muted_id)
+func (s *Store) Mute(ctx context.Context, muterID, mutedID uuid.UUID) error {
+	_, err := s.db.Exec(ctx,
+		`INSERT INTO graph.mutes (muter_id, muted_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+		muterID, mutedID)
+	return err
+}
+
+// Unmute removes a mute entry
+func (s *Store) Unmute(ctx context.Context, muterID, mutedID uuid.UUID) error {
+	_, err := s.db.Exec(ctx,
+		`DELETE FROM graph.mutes WHERE muter_id = $1 AND muted_id = $2`,
+		muterID, mutedID)
+	return err
+}
+
+// GetBlockedAndMuted returns all user IDs that the given user has blocked OR muted
+func (s *Store) GetBlockedAndMuted(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT blocked_id FROM blocks WHERE blocker_id = $1
+		UNION
+		SELECT muted_id FROM graph.mutes WHERE muter_id = $1
+	`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+// GetRelationshipBatch returns relationships from viewerID to each of targetIDs (up to 100)
+func (s *Store) GetRelationshipBatch(ctx context.Context, viewerID uuid.UUID, targetIDs []uuid.UUID) (map[uuid.UUID]Relationship, error) {
+	result := make(map[uuid.UUID]Relationship, len(targetIDs))
+	for _, id := range targetIDs {
+		result[id] = Relationship{}
+	}
+
+	// Follows: viewer → targets
+	rows, _ := s.db.Query(ctx,
+		`SELECT followee_id FROM follows WHERE follower_id = $1 AND followee_id = ANY($2)`,
+		viewerID, targetIDs)
+	if rows != nil {
+		for rows.Next() {
+			var id uuid.UUID
+			rows.Scan(&id)
+			r := result[id]
+			r.Follows = true
+			result[id] = r
+		}
+		rows.Close()
+	}
+
+	// Followed by: targets → viewer
+	rows, _ = s.db.Query(ctx,
+		`SELECT follower_id FROM follows WHERE followee_id = $1 AND follower_id = ANY($2)`,
+		viewerID, targetIDs)
+	if rows != nil {
+		for rows.Next() {
+			var id uuid.UUID
+			rows.Scan(&id)
+			r := result[id]
+			r.FollowedBy = true
+			result[id] = r
+		}
+		rows.Close()
+	}
+
+	// Blocks: viewer → targets
+	rows, _ = s.db.Query(ctx,
+		`SELECT blocked_id FROM blocks WHERE blocker_id = $1 AND blocked_id = ANY($2)`,
+		viewerID, targetIDs)
+	if rows != nil {
+		for rows.Next() {
+			var id uuid.UUID
+			rows.Scan(&id)
+			r := result[id]
+			r.Blocked = true
+			result[id] = r
+		}
+		rows.Close()
+	}
+
+	// Mutes: viewer → targets
+	rows, _ = s.db.Query(ctx,
+		`SELECT muted_id FROM graph.mutes WHERE muter_id = $1 AND muted_id = ANY($2)`,
+		viewerID, targetIDs)
+	if rows != nil {
+		for rows.Next() {
+			var id uuid.UUID
+			rows.Scan(&id)
+			r := result[id]
+			r.IsMuted = true
+			result[id] = r
+		}
+		rows.Close()
+	}
+
+	return result, nil
 }

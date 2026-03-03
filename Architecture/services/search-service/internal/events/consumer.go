@@ -123,6 +123,23 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 			CreatedAt:  p.CreatedAt,
 		})
 
+	case events.PostDeleted:
+		var p events.PostDeletedPayload
+		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
+			return err
+		}
+		return c.store.DeletePost(ctx, p.PostID)
+
+	case events.EventUserDeletionRequested:
+		var p events.UserDeletionRequestedPayload
+		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
+			return err
+		}
+		if err := c.store.DeletePostsByAuthor(ctx, p.UserID); err != nil {
+			slog.Error("search: failed to delete posts by author", "user_id", p.UserID, "error", err)
+		}
+		return c.store.DeleteUser(ctx, p.UserID)
+
 	default:
 		return nil
 	}

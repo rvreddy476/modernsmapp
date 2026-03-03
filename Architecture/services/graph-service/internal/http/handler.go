@@ -7,19 +7,33 @@ import (
 	"github.com/atpost/graph-service/internal/service"
 	"github.com/atpost/graph-service/internal/store"
 	"github.com/atpost/shared/api"
+	sharedmiddleware "github.com/atpost/shared/middleware"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
 type Handler struct {
-	svc *service.Service
+	svc         *service.Service
+	internalKey string
 }
 
 func New(svc *service.Service) *Handler {
 	return &Handler{svc: svc}
 }
 
+// WithInternalKey sets the internal service key used to authenticate
+// service-to-service requests via the X-Internal-Service-Key header.
+func (h *Handler) WithInternalKey(key string) *Handler {
+	h.internalKey = key
+	return h
+}
+
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
+	// Apply internal service key enforcement to all /v1 routes.
+	if h.internalKey != "" {
+		r.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
+	}
+
 	v1 := r.Group("/v1/graph")
 	{
 		v1.POST("/follow", h.Follow)
@@ -30,6 +44,14 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/followers/:userId", h.GetFollowers)
 		v1.GET("/following/:userId", h.GetFollowing)
 		v1.GET("/mutuals", h.GetMutualFollowers)
+
+		// Mute
+		v1.POST("/mute", h.Mute)
+		v1.DELETE("/mute", h.Unmute)
+		// Internal: blocked + muted union
+		v1.GET("/blocked-and-muted", h.GetBlockedAndMuted)
+		// Batch relationship lookup
+		v1.POST("/relationships/batch", h.GetRelationshipBatch)
 
 		// Friends
 		v1.POST("/friend-request", h.SendFriendRequest)
@@ -315,4 +337,99 @@ func (h *Handler) GetPendingRequests(c *gin.Context) {
 		reqs = []store.FriendRequest{}
 	}
 	api.JSON(c.Writer, http.StatusOK, reqs, nil)
+}
+
+// --- Mutes ---
+
+func (h *Handler) Mute(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+	var req struct {
+		UserID string `json:"user_id"`
+	}
+	if err := c.BindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	mutedID, err := uuid.Parse(req.UserID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid target user ID", nil, nil)
+		return
+	}
+	if err := h.svc.Mute(c.Request.Context(), userID, mutedID); err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (h *Handler) Unmute(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+	var req struct {
+		UserID string `json:"user_id"`
+	}
+	if err := c.BindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	mutedID, err := uuid.Parse(req.UserID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid target user ID", nil, nil)
+		return
+	}
+	h.svc.Unmute(c.Request.Context(), userID, mutedID)
+	c.Status(http.StatusNoContent)
+}
+
+func (h *Handler) GetBlockedAndMuted(c *gin.Context) {
+	userIDStr := c.Query("user_id")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user_id", nil, nil)
+		return
+	}
+	ids, err := h.svc.GetBlockedAndMuted(c.Request.Context(), userID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	if ids == nil {
+		ids = []uuid.UUID{}
+	}
+	c.JSON(http.StatusOK, gin.H{"user_ids": ids})
+}
+
+func (h *Handler) GetRelationshipBatch(c *gin.Context) {
+	var req struct {
+		ViewerID  string   `json:"viewer_id"`
+		TargetIDs []string `json:"target_ids"`
+	}
+	if err := c.BindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	viewerID, err := uuid.Parse(req.ViewerID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid viewer_id", nil, nil)
+		return
+	}
+	targetIDs := make([]uuid.UUID, 0, len(req.TargetIDs))
+	for _, id := range req.TargetIDs {
+		if uid, err := uuid.Parse(id); err == nil {
+			targetIDs = append(targetIDs, uid)
+		}
+	}
+	result, err := h.svc.GetRelationshipBatch(c.Request.Context(), viewerID, targetIDs)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	c.JSON(http.StatusOK, result)
 }

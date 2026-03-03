@@ -169,6 +169,26 @@ func (s *TimelineStore) GetAuthorTimeline(ctx context.Context, authorID uuid.UUI
 	return items, nil
 }
 
+// DeleteTimelineEntriesByAuthor removes all author-timeline entries for the given
+// author (GDPR right-to-erasure). It deletes across a rolling window of the
+// current and previous two months from author_timeline_by_author.
+// Note: home_timeline entries authored by this user will be naturally pruned
+// as they expire or as the feed service skips soft-deleted post references.
+func (s *TimelineStore) DeleteTimelineEntriesByAuthor(ctx context.Context, authorID uuid.UUID) error {
+	now := time.Now().UTC()
+	for i := 0; i < 3; i++ {
+		t := now.AddDate(0, -i, 0)
+		b := bucket(t)
+		if err := s.session.Query(`
+			DELETE FROM author_timeline_by_author
+			WHERE author_id = ? AND bucket = ?
+		`, toGocql(authorID), b).WithContext(ctx).Exec(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // RecordInteraction stores a user-post interaction in ScyllaDB as the
 // durable source of truth for the already-interacted ranking penalty.
 func (s *TimelineStore) RecordInteraction(ctx context.Context, userID, postID uuid.UUID) error {

@@ -202,6 +202,22 @@ func (s *Service) cacheProfile(key string, p *store.Profile) {
 	}()
 }
 
+// GetProfilesBatch returns profiles for up to 100 user IDs as a map keyed by user ID.
+func (s *Service) GetProfilesBatch(ctx context.Context, userIDs []uuid.UUID) (map[uuid.UUID]*store.Profile, error) {
+	if len(userIDs) > 100 {
+		userIDs = userIDs[:100]
+	}
+	profiles, err := s.store.GetProfilesByIDs(ctx, userIDs)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[uuid.UUID]*store.Profile, len(profiles))
+	for i := range profiles {
+		result[profiles[i].UserID] = &profiles[i]
+	}
+	return result, nil
+}
+
 // ---------------------------------------------------------------
 // Profile Links (new table)
 // ---------------------------------------------------------------

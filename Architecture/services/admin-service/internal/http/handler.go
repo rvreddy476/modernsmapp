@@ -23,6 +23,22 @@ func hasScope(scopes, target string) bool {
 	return false
 }
 
+// requireAnyScope returns true and continues if the user has any of the given scopes.
+// It writes a 403 and returns false otherwise.
+func requireAnyScope(c *gin.Context, scopes ...string) bool {
+	userScopes := c.GetHeader("X-Scopes")
+	for _, scope := range scopes {
+		if hasScope(userScopes, scope) {
+			return true
+		}
+	}
+	c.JSON(http.StatusForbidden, gin.H{"error": gin.H{
+		"code":    "FORBIDDEN",
+		"message": "Insufficient scope. Required: " + strings.Join(scopes, " or "),
+	}})
+	return false
+}
+
 type Handler struct {
 	svc *service.Service
 }
@@ -33,7 +49,6 @@ func New(svc *service.Service) *Handler {
 
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	v1 := r.Group("/v1/admin")
-	v1.Use(h.AdminAuthMiddleware())
 	{
 		v1.GET("/dashboard", h.GetDashboard)
 		v1.GET("/audit-log", h.GetAuditLog)
@@ -45,18 +60,6 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	}
 }
 
-func (h *Handler) AdminAuthMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		scopes := c.GetHeader("X-Scopes")
-		if !hasScope(scopes, "admin") {
-			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil, nil)
-			c.Abort()
-			return
-		}
-		c.Next()
-	}
-}
-
 type TakedownRequest struct {
 	EntityType string `json:"entity_type" binding:"required,oneof=post comment user message"`
 	EntityID   string `json:"entity_id" binding:"required"`
@@ -64,6 +67,10 @@ type TakedownRequest struct {
 }
 
 func (h *Handler) TakedownContent(c *gin.Context) {
+	if !requireAnyScope(c, "admin", "superadmin") {
+		return
+	}
+
 	var req TakedownRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
@@ -88,6 +95,10 @@ type SuspendRequest struct {
 }
 
 func (h *Handler) SuspendUser(c *gin.Context) {
+	if !requireAnyScope(c, "admin", "superadmin") {
+		return
+	}
+
 	userIDStr := c.Param("userId")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
@@ -114,6 +125,10 @@ func (h *Handler) SuspendUser(c *gin.Context) {
 
 // GetDashboard returns aggregate platform stats.
 func (h *Handler) GetDashboard(c *gin.Context) {
+	if !requireAnyScope(c, "admin", "superadmin") {
+		return
+	}
+
 	stats, err := h.svc.GetDashboard(c.Request.Context())
 	if err != nil {
 		log.Printf("Dashboard error: %v", err)
@@ -125,6 +140,10 @@ func (h *Handler) GetDashboard(c *gin.Context) {
 
 // GetAuditLog returns paginated audit log entries.
 func (h *Handler) GetAuditLog(c *gin.Context) {
+	if !requireAnyScope(c, "admin", "superadmin") {
+		return
+	}
+
 	limit, offset := parsePagination(c)
 
 	logs, total, err := h.svc.GetAuditLogs(c.Request.Context(), limit, offset)
@@ -135,15 +154,19 @@ func (h *Handler) GetAuditLog(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{
-		"items": logs,
-		"total": total,
-		"limit": limit,
+		"items":  logs,
+		"total":  total,
+		"limit":  limit,
 		"offset": offset,
 	}, nil)
 }
 
 // ListReports returns paginated reports, optionally filtered by status.
 func (h *Handler) ListReports(c *gin.Context) {
+	if !requireAnyScope(c, "moderator", "admin", "superadmin") {
+		return
+	}
+
 	limit, offset := parsePagination(c)
 	status := c.Query("status")
 
@@ -155,15 +178,19 @@ func (h *Handler) ListReports(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{
-		"items": reports,
-		"total": total,
-		"limit": limit,
+		"items":  reports,
+		"total":  total,
+		"limit":  limit,
 		"offset": offset,
 	}, nil)
 }
 
 // ListSuspensions returns paginated active suspensions.
 func (h *Handler) ListSuspensions(c *gin.Context) {
+	if !requireAnyScope(c, "admin", "superadmin") {
+		return
+	}
+
 	limit, offset := parsePagination(c)
 
 	suspensions, total, err := h.svc.ListSuspensions(c.Request.Context(), limit, offset)
@@ -174,15 +201,19 @@ func (h *Handler) ListSuspensions(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{
-		"items": suspensions,
-		"total": total,
-		"limit": limit,
+		"items":  suspensions,
+		"total":  total,
+		"limit":  limit,
 		"offset": offset,
 	}, nil)
 }
 
 // UnsuspendUser removes a user's suspension.
 func (h *Handler) UnsuspendUser(c *gin.Context) {
+	if !requireAnyScope(c, "admin", "superadmin") {
+		return
+	}
+
 	userIDStr := c.Param("userId")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {

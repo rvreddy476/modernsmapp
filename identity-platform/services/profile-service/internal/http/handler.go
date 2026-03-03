@@ -61,6 +61,8 @@ type ProfileService interface {
 	UnblockUser(ctx context.Context, blockerID, blockedID uuid.UUID) error
 	// Relationship
 	GetRelationship(ctx context.Context, viewerID, targetID uuid.UUID) (*store.RelationshipStatus, error)
+	// Batch
+	GetProfilesBatch(ctx context.Context, userIDs []uuid.UUID) (map[uuid.UUID]*store.Profile, error)
 }
 
 func New(svc ProfileService, logger *slog.Logger) *Handler {
@@ -76,6 +78,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, auth gin.HandlerFunc, csrf gin.H
 		v1.GET("/health", h.Health)
 		v1.GET("/discover", h.DiscoverProfiles)
 		v1.GET("/by-username/:username", h.GetProfileByUsername)
+		v1.POST("/batch", h.GetProfilesBatch)
 		v1.GET("/:userId", h.GetProfile)
 		v1.GET("/:userId/links", h.GetUserLinks)
 		v1.GET("/:userId/about", h.GetAllAbout)
@@ -1211,4 +1214,31 @@ func (h *Handler) GetRelationship(c *gin.Context) {
 
 func parseUserHeader(c *gin.Context) (uuid.UUID, error) {
 	return uuid.Parse(c.GetHeader("X-User-Id"))
+}
+
+// ---------------------------------------------------------------
+// Batch profiles
+// ---------------------------------------------------------------
+
+func (h *Handler) GetProfilesBatch(c *gin.Context) {
+	var req struct {
+		UserIDs []string `json:"user_ids"`
+	}
+	if err := c.BindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "invalid body", nil, nil)
+		return
+	}
+	ids := make([]uuid.UUID, 0, len(req.UserIDs))
+	for _, id := range req.UserIDs {
+		if uid, err := uuid.Parse(id); err == nil {
+			ids = append(ids, uid)
+		}
+	}
+	profiles, err := h.svc.GetProfilesBatch(c.Request.Context(), ids)
+	if err != nil {
+		h.log.Error("failed to get profiles batch", "err", err)
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
+		return
+	}
+	c.JSON(http.StatusOK, profiles)
 }

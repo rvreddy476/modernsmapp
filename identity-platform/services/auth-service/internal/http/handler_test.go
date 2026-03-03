@@ -116,6 +116,11 @@ func (s *stubAuthService) TrustDevice(_ context.Context, _ uuid.UUID, _ string, 
 }
 func (s *stubAuthService) RemoveTrustedDevice(_ context.Context, _, _ uuid.UUID) error { return nil }
 
+// GDPR stub
+func (s *stubAuthService) ExportUserData(_ context.Context, _ string) (*service.DataExport, error) {
+	return &service.DataExport{}, nil
+}
+
 func noopMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) { c.Next() }
 }
@@ -123,7 +128,7 @@ func noopMiddleware() gin.HandlerFunc {
 func TestRequestOTPInvalidBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	h := New(&stubAuthService{}, &config.Config{}, nil)
+	h := New(&stubAuthService{}, &config.Config{}, nil, nil)
 	h.RegisterRoutes(r, noopMiddleware(), noopMiddleware())
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/auth/request-otp", bytes.NewBufferString("{bad-json"))
@@ -139,7 +144,7 @@ func TestRequestOTPInvalidBody(t *testing.T) {
 func TestLoginMissingIdentifier(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	h := New(&stubAuthService{}, &config.Config{}, nil)
+	h := New(&stubAuthService{}, &config.Config{}, nil, nil)
 	h.RegisterRoutes(r, noopMiddleware(), noopMiddleware())
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/auth/login", bytes.NewBufferString(`{"password":"secret"}`))
@@ -155,7 +160,7 @@ func TestLoginMissingIdentifier(t *testing.T) {
 func TestForgotPasswordMissingIdentifier(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	h := New(&stubAuthService{}, &config.Config{}, nil)
+	h := New(&stubAuthService{}, &config.Config{}, nil, nil)
 	h.RegisterRoutes(r, noopMiddleware(), noopMiddleware())
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/auth/forgot-password", bytes.NewBufferString(`{}`))
@@ -187,7 +192,7 @@ func TestRegisterSetsCookies(t *testing.T) {
 				},
 			}, nil
 		},
-	}, cfg, nil)
+	}, cfg, nil, nil)
 	h.RegisterRoutes(r, noopMiddleware(), noopMiddleware())
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", bytes.NewBufferString(`{"email":"a@b.com","password":"secret"}`))

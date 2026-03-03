@@ -25,6 +25,7 @@ func New(store *postgres.Store, rdb *redis.Client, kafkaWriter *kafka.Writer) *E
 type EvalResult struct {
 	Enabled bool            `json:"enabled"`
 	Payload json.RawMessage `json:"payload,omitempty"`
+	Variant string          `json:"variant,omitempty"`
 }
 
 func (e *Evaluator) Evaluate(ctx context.Context, key string, userID string) (*EvalResult, error) {
@@ -85,20 +86,41 @@ func (e *Evaluator) evaluate(ctx context.Context, key string, userID string) (*E
 		return &EvalResult{Enabled: false}, nil
 	}
 
-	// 4. White list check
+	// 4. Check experiment dates
+	now := time.Now()
+	if flag.StartDate != nil && now.Before(*flag.StartDate) {
+		return &EvalResult{Enabled: false}, nil // experiment not started
+	}
+	if flag.EndDate != nil && now.After(*flag.EndDate) {
+		return &EvalResult{Enabled: false}, nil // experiment ended
+	}
+
+	// 5. White list check
 	for _, target := range flag.TargetUserIDs {
 		if target == userID {
 			return &EvalResult{Enabled: true, Payload: flag.Payload}, nil
 		}
 	}
 
-	// 5. Rollout check (only if not specifically targeted)
+	// 6. Rollout check (only if not specifically targeted)
 	if flag.RolloutPct > 0 {
 		hash := fnv.New32a()
 		hash.Write([]byte(userID + key))
 		score := hash.Sum32() % 100
 		if score < uint32(flag.RolloutPct) {
-			return &EvalResult{Enabled: true, Payload: flag.Payload}, nil
+			// 7. Assign variant deterministically using hash
+			variant := ""
+			if flag.ControlGroupPct > 0 || flag.TreatmentGroupPct > 0 {
+				h := fnv.New32a()
+				h.Write([]byte(userID + ":" + flag.Key + ":variant"))
+				bucket := int(h.Sum32() % 100)
+				if bucket < flag.ControlGroupPct {
+					variant = "control"
+				} else if bucket < flag.ControlGroupPct+flag.TreatmentGroupPct {
+					variant = "treatment"
+				}
+			}
+			return &EvalResult{Enabled: true, Payload: flag.Payload, Variant: variant}, nil
 		}
 	}
 
@@ -106,14 +128,63 @@ func (e *Evaluator) evaluate(ctx context.Context, key string, userID string) (*E
 }
 
 func (e *Evaluator) UpsertFlag(ctx context.Context, flag *postgres.Flag) error {
+	// Get current value for audit log
+	oldFlag, _ := e.store.GetFlag(ctx, flag.Key)
+
+	// Existing upsert logic
 	if err := e.store.UpsertFlag(ctx, flag); err != nil {
 		return err
 	}
-	// Invalidate cache
+
+	// Invalidate Redis cache
 	e.redis.Del(ctx, "flag:"+flag.Key)
+
+	// Insert audit log entry
+	actor := ctx.Value("actor_user_id") // may be empty; fallback to "system"
+	actorStr, _ := actor.(string)
+	if actorStr == "" {
+		actorStr = "system"
+	}
+	action := "updated"
+	if oldFlag == nil {
+		action = "created"
+	}
+
+	oldJSON, _ := json.Marshal(oldFlag)
+	newJSON, _ := json.Marshal(flag)
+	// Best-effort; ignore error so upsert success is not affected by audit log failure
+	_ = e.store.InsertAuditLog(ctx, postgres.FlagAuditEntry{
+		FlagKey:  flag.Key,
+		Actor:    actorStr,
+		Action:   action,
+		OldValue: oldJSON,
+		NewValue: newJSON,
+	})
+
 	return nil
 }
 
 func (e *Evaluator) ListFlags(ctx context.Context) ([]postgres.Flag, error) {
 	return e.store.ListFlags(ctx)
+}
+
+// GetAuditLog returns paginated audit log entries for the given flag key.
+func (e *Evaluator) GetAuditLog(ctx context.Context, flagKey string, limit, offset int) ([]postgres.FlagAuditEntry, error) {
+	return e.store.GetAuditLog(ctx, flagKey, limit, offset)
+}
+
+// RecordConversion records an A/B experiment conversion event.
+func (e *Evaluator) RecordConversion(ctx context.Context, flagKey, userID, variant, eventType string) error {
+	return e.store.InsertConversion(ctx, flagKey, userID, variant, eventType)
+}
+
+// GetExperimentResults returns aggregated A/B experiment results for a given flag.
+func (e *Evaluator) GetExperimentResults(ctx context.Context, flagKey string) (map[string]interface{}, error) {
+	evalCount, _ := e.store.CountEvaluations(ctx, flagKey)
+	conversionsByVariant, _ := e.store.CountConversionsByVariant(ctx, flagKey)
+	return map[string]interface{}{
+		"flag_key":               flagKey,
+		"total_evaluations":      evalCount,
+		"conversions_by_variant": conversionsByVariant,
+	}, nil
 }

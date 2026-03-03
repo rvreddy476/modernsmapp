@@ -98,6 +98,24 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 		})
 	}
 
+	// Filter out blocked/muted authors
+	if len(candidates) > 0 {
+		blockedMuted, err := s.getBlockedAndMuted(ctx, userID)
+		if err == nil && len(blockedMuted) > 0 {
+			blockedSet := make(map[uuid.UUID]struct{}, len(blockedMuted))
+			for _, id := range blockedMuted {
+				blockedSet[id] = struct{}{}
+			}
+			filtered := candidates[:0]
+			for _, c := range candidates {
+				if _, blocked := blockedSet[c.AuthorID]; !blocked {
+					filtered = append(filtered, c)
+				}
+			}
+			candidates = filtered
+		}
+	}
+
 	// 2. Apply ranking if enabled
 	if (feedMode == "ranked" || feedMode == "shadow") && s.ranker != nil && len(candidates) > 0 {
 		rc := feedItemsToCandidates(candidates)
@@ -326,6 +344,25 @@ func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, cr
 	}
 
 	return nil
+}
+
+// getBlockedAndMuted calls graph-service to get the union of blocked and muted user IDs for userID.
+func (s *Service) getBlockedAndMuted(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	url := fmt.Sprintf("%s/v1/graph/blocked-and-muted?user_id=%s", s.graphURL, userID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var result struct {
+		UserIDs []uuid.UUID `json:"user_ids"`
+	}
+	json.NewDecoder(resp.Body).Decode(&result)
+	return result.UserIDs, nil
 }
 
 // fetchFollowers calls graph-service to get the follower list for a user.

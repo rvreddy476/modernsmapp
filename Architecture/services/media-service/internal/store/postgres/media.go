@@ -36,6 +36,7 @@ type MediaAsset struct {
 	OriginalURL      *string        `json:"original_url,omitempty"`
 	CdnURL           *string        `json:"cdn_url,omitempty"`
 	ThumbnailURL     *string        `json:"thumbnail_url,omitempty"`
+	HLSMasterKey     string         `json:"hls_master_key,omitempty"`
 	IsVertical       bool           `json:"is_vertical"`
 	CreatedAt        time.Time      `json:"created_at"`
 	UpdatedAt        time.Time      `json:"updated_at"`
@@ -92,16 +93,26 @@ func (s *MediaAssetStore) GetMedia(ctx context.Context, id uuid.UUID) (*MediaAss
 	var m MediaAsset
 	err := s.db.QueryRow(ctx, `
 		SELECT id, uploader_id, file_type, media_subtype, mime_type, file_size_bytes, storage_bucket, storage_key, processing_status,
-		       width, height, duration_seconds, blurhash, alt_text, original_url, cdn_url, thumbnail_url, is_vertical, created_at, updated_at
+		       width, height, duration_seconds, blurhash, alt_text, original_url, cdn_url, thumbnail_url,
+		       COALESCE(hls_master_key, ''), is_vertical, created_at, updated_at
 		FROM media_assets WHERE id = $1
 	`, id).Scan(
 		&m.ID, &m.UploaderID, &m.FileType, &m.MediaSubtype, &m.MimeType, &m.FileSizeBytes, &m.StorageBucket, &m.StorageKey, &m.ProcessingStatus,
-		&m.Width, &m.Height, &m.DurationSeconds, &m.Blurhash, &m.AltText, &m.OriginalURL, &m.CdnURL, &m.ThumbnailURL, &m.IsVertical, &m.CreatedAt, &m.UpdatedAt,
+		&m.Width, &m.Height, &m.DurationSeconds, &m.Blurhash, &m.AltText, &m.OriginalURL, &m.CdnURL, &m.ThumbnailURL,
+		&m.HLSMasterKey, &m.IsVertical, &m.CreatedAt, &m.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
 	}
 	return &m, nil
+}
+
+// UpdateHLSMasterKey sets the hls_master_key for a media asset.
+func (s *MediaAssetStore) UpdateHLSMasterKey(ctx context.Context, id uuid.UUID, key string) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE media_assets SET hls_master_key = $1, updated_at = NOW() WHERE id = $2
+	`, key, id)
+	return err
 }
 
 // GetMediaWithVariants fetches media and all its variants.
@@ -174,7 +185,8 @@ func (s *MediaAssetStore) GetMediaBatch(ctx context.Context, ids []uuid.UUID) ([
 
 	rows, err := s.db.Query(ctx, `
 		SELECT id, uploader_id, file_type, media_subtype, mime_type, file_size_bytes, storage_bucket, storage_key, processing_status,
-		       width, height, duration_seconds, blurhash, alt_text, original_url, cdn_url, thumbnail_url, is_vertical, created_at, updated_at
+		       width, height, duration_seconds, blurhash, alt_text, original_url, cdn_url, thumbnail_url,
+		       COALESCE(hls_master_key, ''), is_vertical, created_at, updated_at
 		FROM media_assets WHERE id = ANY($1)
 	`, ids)
 	if err != nil {
@@ -188,7 +200,8 @@ func (s *MediaAssetStore) GetMediaBatch(ctx context.Context, ids []uuid.UUID) ([
 		var m MediaAsset
 		if err := rows.Scan(
 			&m.ID, &m.UploaderID, &m.FileType, &m.MediaSubtype, &m.MimeType, &m.FileSizeBytes, &m.StorageBucket, &m.StorageKey, &m.ProcessingStatus,
-			&m.Width, &m.Height, &m.DurationSeconds, &m.Blurhash, &m.AltText, &m.OriginalURL, &m.CdnURL, &m.ThumbnailURL, &m.IsVertical, &m.CreatedAt, &m.UpdatedAt,
+			&m.Width, &m.Height, &m.DurationSeconds, &m.Blurhash, &m.AltText, &m.OriginalURL, &m.CdnURL, &m.ThumbnailURL,
+			&m.HLSMasterKey, &m.IsVertical, &m.CreatedAt, &m.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -347,6 +360,17 @@ func (s *MediaAssetStore) DeleteMedia(ctx context.Context, id uuid.UUID) ([]stri
 	}
 
 	return objectKeys, nil
+}
+
+// SoftDeleteMediaByUploader marks all media assets belonging to the given uploader
+// as deleted (GDPR right-to-erasure). The actual blob objects are not removed here;
+// a separate background job should purge them using the stored object keys.
+func (s *MediaAssetStore) SoftDeleteMediaByUploader(ctx context.Context, uploaderID string) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE media_assets SET processing_status = 'deleted', updated_at = NOW()
+		 WHERE uploader_id = $1::uuid`,
+		uploaderID)
+	return err
 }
 
 // ─── URL Population ────────────────────────────────────────────────

@@ -10,6 +10,65 @@ import (
 	"strings"
 )
 
+// HLSVariant describes a single HLS quality level.
+type HLSVariant struct {
+	Quality      string // "360p", "720p", "1080p"
+	Height       int
+	VideoBitrate string // e.g. "800k"
+	AudioBitrate string // e.g. "96k"
+}
+
+var defaultHLSVariants = []HLSVariant{
+	{"360p", 360, "800k", "96k"},
+	{"720p", 720, "2500k", "128k"},
+	{"1080p", 1080, "5000k", "192k"},
+}
+
+// GenerateHLSVariants transcodes the video at inputPath into HLS adaptive bitrate segments.
+// Returns paths to the generated files (local temp paths) and the master playlist path.
+func GenerateHLSVariants(ctx context.Context, inputPath, outputDir string) (masterPlaylistPath string, variantPaths []string, err error) {
+	for _, v := range defaultHLSVariants {
+		outputM3U8 := filepath.Join(outputDir, v.Quality+".m3u8")
+		segmentPattern := filepath.Join(outputDir, v.Quality+"_%03d.ts")
+
+		args := []string{
+			"-i", inputPath,
+			"-vf", fmt.Sprintf("scale=-2:%d", v.Height),
+			"-c:v", "libx264", "-preset", "fast",
+			"-b:v", v.VideoBitrate,
+			"-c:a", "aac", "-b:a", v.AudioBitrate,
+			"-hls_time", "6",
+			"-hls_playlist_type", "vod",
+			"-hls_segment_filename", segmentPattern,
+			outputM3U8,
+			"-y",
+		}
+
+		cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+		out, cmdErr := cmd.CombinedOutput()
+		if cmdErr != nil {
+			return "", nil, fmt.Errorf("ffmpeg HLS %s failed: %w\n%s", v.Quality, cmdErr, out)
+		}
+		variantPaths = append(variantPaths, outputM3U8)
+		// Also collect .ts segment paths
+		tsFiles, _ := filepath.Glob(filepath.Join(outputDir, v.Quality+"_*.ts"))
+		variantPaths = append(variantPaths, tsFiles...)
+	}
+
+	// Generate master playlist
+	masterPlaylistPath = filepath.Join(outputDir, "master.m3u8")
+	master := "#EXTM3U\n#EXT-X-VERSION:3\n"
+	bandwidths := map[string]int{"360p": 800000, "720p": 2500000, "1080p": 5000000}
+	resolutions := map[string]string{"360p": "640x360", "720p": "1280x720", "1080p": "1920x1080"}
+	for _, v := range defaultHLSVariants {
+		master += fmt.Sprintf("#EXT-X-STREAM-INF:BANDWIDTH=%d,RESOLUTION=%s\n%s.m3u8\n",
+			bandwidths[v.Quality], resolutions[v.Quality], v.Quality)
+	}
+	os.WriteFile(masterPlaylistPath, []byte(master), 0644) //nolint:errcheck
+
+	return masterPlaylistPath, variantPaths, nil
+}
+
 // TranscodeOutput holds the result of a single transcode operation.
 type TranscodeOutput struct {
 	Name      string

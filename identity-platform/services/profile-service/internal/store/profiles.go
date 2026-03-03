@@ -1121,6 +1121,36 @@ func (s *Store) GetRelationship(ctx context.Context, viewerID, targetID uuid.UUI
 	return rel, nil
 }
 
+// GetProfilesByIDs returns profiles for the given list of user IDs.
+func (s *Store) GetProfilesByIDs(ctx context.Context, ids []uuid.UUID) ([]Profile, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT `+allProfileCols+` FROM profile.profiles WHERE user_id = ANY($1)`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var profiles []Profile
+	for rows.Next() {
+		var p Profile
+		err := rows.Scan(
+			&p.UserID, &p.Username, &p.DisplayName, &p.FirstName, &p.LastName,
+			&p.PreferredName, &p.Pronouns, &p.Bio, &p.DoB, &p.Gender,
+			&p.AvatarMediaID, &p.CoverMediaID, &p.Category, &p.Profession, &p.Website, &p.Location, &p.BadgeFlags,
+			&p.IsVerified, &p.VerificationLevel, &p.StatusText, &p.StatusEmoji, &p.StatusExpiresAt,
+			&p.ProfileThemeColor, &p.IntroMediaURL, &p.IntroMediaType, &p.CTALabel, &p.CTAURL,
+			&p.MemberSinceBadge, &p.Timezone,
+			&p.FollowerCount, &p.FollowingCount, &p.FriendCount, &p.PostCount,
+			&p.CreatedAt, &p.UpdatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		profiles = append(profiles, p)
+	}
+	return profiles, rows.Err()
+}
+
 // CountMutualFriends counts how many accepted friends viewerID and targetID have in common.
 func (s *Store) CountMutualFriends(ctx context.Context, userA, userB uuid.UUID) (int, error) {
 	var count int

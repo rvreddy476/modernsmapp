@@ -76,7 +76,7 @@ func main() {
 	}()
 
 	authSvc := service.New(authStore, authProducer, cfg, logger, rdb)
-	authHandler := internalhttp.New(authSvc, cfg, logger)
+	authHandler := internalhttp.New(authSvc, cfg, logger, rdb)
 
 	// 4. Outbox Relay
 	relay := events.NewOutboxRelay(authStore, authProducer, logger, 1*time.Second)

@@ -82,7 +82,8 @@ func (c *EngagementConsumer) Start(ctx context.Context, brokers []string, topic 
 
 func isEngagementEvent(eventType string) bool {
 	switch eventType {
-	case events.PostReacted, events.CommentCreated, events.CommentReacted:
+	case events.PostReacted, events.CommentCreated, events.CommentReacted,
+		events.EventUserDeletionRequested:
 		return true
 	}
 	return false
@@ -97,8 +98,23 @@ func (c *EngagementConsumer) processEvent(ctx context.Context, env *events.Event
 	case events.CommentReacted:
 		// Comment reactions don't affect post-level CQS directly
 		return nil
+	case events.EventUserDeletionRequested:
+		return c.handleUserDeletionRequested(ctx, env)
 	}
 	return nil
+}
+
+func (c *EngagementConsumer) handleUserDeletionRequested(ctx context.Context, env *events.EventEnvelope) error {
+	var p events.UserDeletionRequestedPayload
+	if err := json.Unmarshal(env.Payload, &p); err != nil {
+		return err
+	}
+	_, err := c.pg.Exec(ctx,
+		`DELETE FROM analytics.events_raw WHERE user_id = $1::uuid`, p.UserID)
+	if err != nil {
+		log.Printf("[EngagementConsumer] failed to delete analytics events for user %s: %v", p.UserID, err)
+	}
+	return err
 }
 
 func (c *EngagementConsumer) handlePostReacted(ctx context.Context, env *events.EventEnvelope) error {

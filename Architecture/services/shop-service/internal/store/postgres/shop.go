@@ -2,11 +2,15 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// ErrInsufficientStock is returned when a product does not have enough stock.
+var ErrInsufficientStock = errors.New("insufficient stock")
 
 type Product struct {
 	ID          uuid.UUID `json:"id"`
@@ -219,10 +223,16 @@ func (s *Store) CreateOrder(ctx context.Context, order *Order, items []OrderItem
 		if err != nil {
 			return err
 		}
-		// Decrement stock
-		_, err = tx.Exec(ctx, `UPDATE shop.products SET stock = stock - $1 WHERE id = $2`, item.Quantity, item.ProductID)
+		// Atomic stock decrement — returns ErrInsufficientStock if stock < quantity
+		stockResult, err := tx.Exec(ctx, `
+			UPDATE shop.products SET stock = stock - $1
+			WHERE id = $2 AND stock >= $1
+		`, item.Quantity, item.ProductID)
 		if err != nil {
 			return err
+		}
+		if stockResult.RowsAffected() == 0 {
+			return ErrInsufficientStock
 		}
 	}
 

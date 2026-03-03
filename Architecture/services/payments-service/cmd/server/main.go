@@ -7,6 +7,7 @@ import (
 	"time"
 
 	nethttp "github.com/atpost/payments-service/internal/http"
+	"github.com/atpost/payments-service/internal/gateway"
 	"github.com/atpost/payments-service/internal/service"
 	"github.com/atpost/payments-service/internal/store/postgres"
 	"github.com/atpost/shared/health"
@@ -73,7 +74,18 @@ func main() {
 	checker.Register("postgres", health.PingCheck(dbPool))
 
 	store := postgres.New(dbPool)
-	svc := service.New(store, kafkaBrokers)
+
+	// Select payment gateway: use Razorpay if credentials are set, otherwise stub.
+	var gw gateway.PaymentGateway
+	if keyID := os.Getenv("RAZORPAY_KEY_ID"); keyID != "" {
+		gw = gateway.NewRazorpayGateway(keyID, os.Getenv("RAZORPAY_KEY_SECRET"))
+		slog.Info("using Razorpay payment gateway")
+	} else {
+		gw = &gateway.StubGateway{}
+		slog.Info("using stub payment gateway")
+	}
+
+	svc := service.New(store, kafkaBrokers, gw)
 	handler := nethttp.New(svc)
 
 	gin.SetMode(gin.ReleaseMode)

@@ -7,25 +7,88 @@ import (
 
 	"github.com/atpost/analytics-service/internal/service"
 	"github.com/atpost/shared/api"
+	sharedmiddleware "github.com/atpost/shared/middleware"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
 type Handler struct {
-	svc *service.IngestService
-	rdb *redis.Client
+	svc            *service.IngestService
+	creatorService *service.CreatorService
+	rdb            *redis.Client
+	internalKey    string
 }
 
 func New(svc *service.IngestService, rdb *redis.Client) *Handler {
 	return &Handler{svc: svc, rdb: rdb}
 }
 
+// WithCreatorService sets the creator analytics service.
+func (h *Handler) WithCreatorService(cs *service.CreatorService) *Handler {
+	h.creatorService = cs
+	return h
+}
+
+// WithInternalKey sets the internal service key used to authenticate
+// service-to-service requests via the X-Internal-Service-Key header.
+func (h *Handler) WithInternalKey(key string) *Handler {
+	h.internalKey = key
+	return h
+}
+
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
+	// Apply internal service key enforcement to all /v1 routes.
+	if h.internalKey != "" {
+		r.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
+	}
+
 	v1 := r.Group("/v1/analytics")
 	{
 		v1.POST("/events", h.IngestEvents)
 		v1.GET("/content/:contentId/views", h.GetContentViews)
+		v1.GET("/creator/me", h.GetMyCreatorStats)
+		v1.GET("/creator/:userId", h.GetCreatorStats)
 	}
+}
+
+func (h *Handler) GetMyCreatorStats(c *gin.Context) {
+	userIDStr := c.GetHeader("X-User-Id")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{"code": "UNAUTHORIZED"}})
+		return
+	}
+	if h.creatorService == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "SERVICE_UNAVAILABLE"}})
+		return
+	}
+	period := c.DefaultQuery("period", "30d")
+	stats, err := h.creatorService.GetStats(c.Request.Context(), userID, period)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL_ERROR", "message": err.Error()}})
+		return
+	}
+	c.JSON(http.StatusOK, stats)
+}
+
+func (h *Handler) GetCreatorStats(c *gin.Context) {
+	userID, err := uuid.Parse(c.Param("userId"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "BAD_REQUEST"}})
+		return
+	}
+	if h.creatorService == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "SERVICE_UNAVAILABLE"}})
+		return
+	}
+	period := c.DefaultQuery("period", "30d")
+	stats, err := h.creatorService.GetStats(c.Request.Context(), userID, period)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL_ERROR", "message": err.Error()}})
+		return
+	}
+	c.JSON(http.StatusOK, stats)
 }
 
 type IngestRequest struct {

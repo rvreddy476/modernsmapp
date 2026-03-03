@@ -9,17 +9,26 @@ import (
 
 	"github.com/atpost/search-service/internal/store/search"
 	"github.com/atpost/shared/api"
+	sharedmiddleware "github.com/atpost/shared/middleware"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 )
 
 type Handler struct {
-	store *search.Store
-	rdb   *redis.Client
+	store       *search.Store
+	rdb         *redis.Client
+	internalKey string
 }
 
 func New(store *search.Store, rdb *redis.Client) *Handler {
 	return &Handler{store: store, rdb: rdb}
+}
+
+// WithInternalKey sets the internal service key used to authenticate
+// service-to-service requests via the X-Internal-Service-Key header.
+func (h *Handler) WithInternalKey(key string) *Handler {
+	h.internalKey = key
+	return h
 }
 
 // validateSearchQuery checks that a query string is non-empty (after trimming)
@@ -36,6 +45,11 @@ func validateSearchQuery(query string) string {
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
+	// Apply internal service key enforcement to all /v1 routes.
+	if h.internalKey != "" {
+		r.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
+	}
+
 	v1 := r.Group("/v1/search")
 	{
 		v1.GET("", h.UniversalSearch)
@@ -43,6 +57,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/posts", h.SearchPosts)
 		v1.POST("/users/bulk-sync", h.BulkSyncUsers)
 		v1.GET("/hashtags", h.SearchHashtags)
+		v1.GET("/autocomplete", h.Autocomplete)
 	}
 
 	discover := r.Group("/v1/discover")
@@ -209,6 +224,35 @@ func (h *Handler) GetTrending(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"trending": items}, nil)
+}
+
+// Autocomplete handles GET /v1/search/autocomplete
+// Query params: q (required), limit (default: 10, max: 20)
+// Returns username/display_name suggestions for the given prefix.
+func (h *Handler) Autocomplete(c *gin.Context) {
+	query := c.Query("q")
+	if query == "" {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "q is required", nil, nil)
+		return
+	}
+	if len(query) > 100 {
+		query = query[:100]
+	}
+
+	limit := 10
+	if l := c.Query("limit"); l != "" {
+		if val, err := strconv.Atoi(l); err == nil && val > 0 && val <= 20 {
+			limit = val
+		}
+	}
+
+	results, err := h.store.Autocomplete(c.Request.Context(), query, limit)
+	if err != nil {
+		slog.Error("autocomplete: search failed", "error", err)
+		api.Error(c.Writer, http.StatusInternalServerError, "SEARCH_ERROR", "search failed", nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"results": results}, nil)
 }
 
 // GetSuggested handles GET /v1/discover/suggested

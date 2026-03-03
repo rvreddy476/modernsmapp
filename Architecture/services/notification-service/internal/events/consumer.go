@@ -219,6 +219,31 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		// Group join notifications are handled by the group service itself
 		return nil
 
+	case events.EventUserDeletionRequested:
+		var e events.UserDeletionRequestedPayload
+		if err := unmarshalPayload(envelope.Payload, &e); err != nil {
+			return err
+		}
+		userID, _ := uuid.Parse(e.UserID)
+		// Delete all notifications for this user
+		if err := c.service.DeleteNotificationsForUser(ctx, userID); err != nil {
+			log.Printf("notification: failed to delete notifications for user %s: %v\n", e.UserID, err)
+		}
+		// Deactivate all device tokens
+		return c.service.DeactivateDeviceTokens(ctx, userID)
+
+	case events.EventUserMentioned:
+		var e events.UserMentionedPayload
+		if err := unmarshalPayload(envelope.Payload, &e); err != nil {
+			return err
+		}
+
+		mentionedID, _ := uuid.Parse(e.MentionedUserID)
+		authorID, _ := uuid.Parse(e.AuthorID)
+		postID, _ := uuid.Parse(e.PostID)
+		deepLink := fmt.Sprintf("/post/%s", e.PostID)
+		return c.service.CreateNotification(ctx, mentionedID, authorID, "mention", "post", postID, deepLink, e.OccurredAt)
+
 	default:
 		return nil
 	}

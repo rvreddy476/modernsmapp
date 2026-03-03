@@ -1,11 +1,14 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"time"
 
 	"github.com/atpost/orders-service/internal/store/postgres"
 	"github.com/google/uuid"
@@ -15,9 +18,15 @@ import (
 // ErrDisputeAlreadyOpen is returned when a dispute is already open for an order.
 var ErrDisputeAlreadyOpen = errors.New("a dispute is already open for this order")
 
+// ErrDisputeNotFound is returned when a dispute cannot be located.
+var ErrDisputeNotFound = errors.New("dispute not found")
+
 type Service struct {
-	store  *postgres.Store
-	writer *kafka.Writer
+	store              *postgres.Store
+	writer             *kafka.Writer
+	httpClient         *http.Client
+	paymentsServiceURL string
+	internalKey        string
 }
 
 func New(store *postgres.Store, kafkaBrokers string) *Service {
@@ -28,7 +37,15 @@ func New(store *postgres.Store, kafkaBrokers string) *Service {
 			Topic:    "social.events.v1",
 			Balancer: &kafka.LeastBytes{},
 		},
+		httpClient: &http.Client{Timeout: 10 * time.Second},
 	}
+}
+
+// WithPaymentsService sets the payments service URL and internal key for cross-service calls.
+func (s *Service) WithPaymentsService(url, internalKey string) *Service {
+	s.paymentsServiceURL = url
+	s.internalKey = internalKey
+	return s
 }
 
 type CreateOrderInput struct {
@@ -215,6 +232,49 @@ func (s *Service) OpenDispute(ctx context.Context, orderID, openedBy uuid.UUID, 
 	}
 	s.publishEvent(ctx, "dispute.opened", openedBy.String(), d)
 	return d, nil
+}
+
+func (s *Service) ResolveDispute(ctx context.Context, disputeID uuid.UUID, resolution string, refundAmount int64) error {
+	dispute, err := s.store.GetDispute(ctx, disputeID)
+	if err != nil {
+		return ErrDisputeNotFound
+	}
+
+	// Update dispute status
+	if err := s.store.UpdateDisputeStatus(ctx, disputeID, "resolved", resolution); err != nil {
+		return err
+	}
+
+	// Trigger refund if requested
+	if refundAmount > 0 && dispute.PaymentIntentID != "" {
+		refundURL := fmt.Sprintf("%s/v1/payments/intents/%s/refund",
+			s.paymentsServiceURL, dispute.PaymentIntentID)
+		body, _ := json.Marshal(map[string]interface{}{"amount": refundAmount})
+		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, refundURL, bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Internal-Service-Key", s.internalKey)
+		resp, err := s.httpClient.Do(req)
+		if err != nil {
+			slog.Error("orders: failed to trigger refund", "dispute_id", disputeID, "error", err)
+		} else {
+			resp.Body.Close()
+		}
+	}
+
+	// Publish dispute.resolved event
+	s.publishEvent(ctx, "dispute.resolved", disputeID.String(), map[string]interface{}{
+		"dispute_id":    disputeID,
+		"resolution":    resolution,
+		"refund_amount": refundAmount,
+		"occurred_at":   time.Now(),
+	})
+
+	return nil
+}
+
+// UpdateDisputeStatus transitions a dispute to a new status.
+func (s *Service) UpdateDisputeStatus(ctx context.Context, disputeID uuid.UUID, status, notes string) error {
+	return s.store.UpdateDisputeStatus(ctx, disputeID, status, notes)
 }
 
 func (s *Service) publishEvent(ctx context.Context, eventType, key string, payload any) {

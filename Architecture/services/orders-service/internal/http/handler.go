@@ -31,6 +31,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		orders.PATCH("/:orderId/status", h.UpdateOrderStatus)
 		orders.POST("/:orderId/disputes", h.OpenDispute)
 
+		// Disputes
+		disputes := v1.Group("/orders/disputes")
+		disputes.PATCH("/:id/resolve", h.ResolveDispute)
+		disputes.PATCH("/:id/status", h.UpdateDisputeStatus)
+
 		// Bookings
 		bookings := v1.Group("/bookings")
 		bookings.POST("", h.CreateBooking)
@@ -225,6 +230,49 @@ func (h *Handler) OpenDispute(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, dispute, nil)
+}
+
+// ResolveDispute PATCH /v1/orders/disputes/:id/resolve
+func (h *Handler) ResolveDispute(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid dispute id", nil, nil)
+		return
+	}
+	var req struct {
+		Resolution   string `json:"resolution"`
+		RefundAmount int64  `json:"refund_amount"`
+	}
+	c.ShouldBindJSON(&req) //nolint:errcheck
+	if err := h.svc.ResolveDispute(c.Request.Context(), id, req.Resolution, req.RefundAmount); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "RESOLVE_FAILED", err.Error(), nil, nil)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// UpdateDisputeStatus PATCH /v1/orders/disputes/:id/status
+func (h *Handler) UpdateDisputeStatus(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid dispute id", nil, nil)
+		return
+	}
+	var req struct {
+		Status string `json:"status"`
+		Notes  string `json:"notes"`
+	}
+	c.ShouldBindJSON(&req) //nolint:errcheck
+	validStatuses := map[string]bool{"under_review": true, "resolved": true, "closed": true}
+	if !validStatuses[req.Status] {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_STATUS", "invalid dispute status", nil, nil)
+		return
+	}
+	if err := h.svc.UpdateDisputeStatus(c.Request.Context(), id, req.Status, req.Notes); err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 
 // CreateBooking POST /v1/bookings

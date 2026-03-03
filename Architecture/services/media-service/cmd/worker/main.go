@@ -314,6 +314,52 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload events.
 	}
 	_ = pgStore.UpdateMediaURLs(ctx, mediaAssetID, &originalURL, &cdnURL, thumbnailURL)
 
-	// 10. Set status to ready
+	// 10. Generate HLS adaptive bitrate variants
+	hlsDir, err := os.MkdirTemp("", "hls-"+payload.MediaAssetID)
+	if err != nil {
+		log.Printf("Warning: failed to create HLS temp dir for %s: %v", payload.MediaAssetID, err)
+	} else {
+		defer os.RemoveAll(hlsDir)
+		masterPath, variantFiles, hlsErr := processing.GenerateHLSVariants(ctx, inputPath, hlsDir)
+		if hlsErr != nil {
+			log.Printf("Warning: HLS generation failed for %s (non-fatal): %v", payload.MediaAssetID, hlsErr)
+		} else {
+			// Upload master playlist
+			masterKey := fmt.Sprintf("%s/hls/master.m3u8", strings.TrimSuffix(payload.StorageKey, "/original"))
+			masterData, readErr := os.ReadFile(masterPath)
+			if readErr == nil {
+				if uploadErr := blobStore.UploadObject(ctx, masterKey, masterData, "application/x-mpegURL"); uploadErr != nil {
+					log.Printf("Warning: failed to upload HLS master playlist for %s: %v", payload.MediaAssetID, uploadErr)
+				} else {
+					// Upload variant playlists and segments
+					for _, f := range variantFiles {
+						rel := strings.TrimPrefix(f, hlsDir)
+						rel = strings.TrimPrefix(rel, "/")
+						rel = strings.TrimPrefix(rel, "\\")
+						key := fmt.Sprintf("%s/hls/%s", strings.TrimSuffix(payload.StorageKey, "/original"), rel)
+						contentType := "video/MP2T"
+						if strings.HasSuffix(f, ".m3u8") {
+							contentType = "application/x-mpegURL"
+						}
+						fData, fErr := os.ReadFile(f)
+						if fErr != nil {
+							log.Printf("Warning: failed to read HLS file %s: %v", f, fErr)
+							continue
+						}
+						if uploadErr := blobStore.UploadObject(ctx, key, fData, contentType); uploadErr != nil {
+							log.Printf("Warning: failed to upload HLS file %s: %v", key, uploadErr)
+						}
+					}
+					// Store master key in DB
+					if dbErr := pgStore.UpdateHLSMasterKey(ctx, mediaAssetID, masterKey); dbErr != nil {
+						log.Printf("Warning: failed to store HLS master key for %s: %v", payload.MediaAssetID, dbErr)
+					}
+					log.Printf("HLS generation completed for media %s", payload.MediaAssetID)
+				}
+			}
+		}
+	}
+
+	// 11. Set status to ready
 	return pgStore.UpdateStatus(ctx, mediaAssetID, "ready")
 }

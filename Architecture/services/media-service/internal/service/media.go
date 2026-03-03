@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"strings"
 	"time"
 
+	"github.com/atpost/media-service/internal/config"
 	mediaEvents "github.com/atpost/media-service/internal/events"
 	"github.com/atpost/media-service/internal/processing"
 	"github.com/atpost/media-service/internal/store/blob"
@@ -27,12 +29,29 @@ type Service struct {
 	pgStore   *postgres.MediaAssetStore
 	blobStore *blob.Store
 	producer  *mediaEvents.Producer // optional, nil = skip Kafka
+	cfg       *config.Config
+	scanner   processing.Scanner
 }
 
-func New(pg *postgres.MediaAssetStore, blob *blob.Store) *Service {
+func New(pg *postgres.MediaAssetStore, blobStore *blob.Store) *Service {
 	return &Service{
 		pgStore:   pg,
-		blobStore: blob,
+		blobStore: blobStore,
+		cfg:       config.Load(),
+		scanner:   &processing.StubScanner{},
+	}
+}
+
+// NewWithConfig creates a Service with an explicit config and scanner.
+func NewWithConfig(pg *postgres.MediaAssetStore, blobStore *blob.Store, cfg *config.Config, scanner processing.Scanner) *Service {
+	if scanner == nil {
+		scanner = &processing.StubScanner{}
+	}
+	return &Service{
+		pgStore:   pg,
+		blobStore: blobStore,
+		cfg:       cfg,
+		scanner:   scanner,
 	}
 }
 
@@ -193,6 +212,25 @@ func (s *Service) ConfirmUpload(ctx context.Context, mediaID uuid.UUID, userID u
 
 // processImage handles synchronous image processing (resize + upload variants).
 func (s *Service) processImage(ctx context.Context, media *postgres.MediaAsset) error {
+	// Content safety scan for images
+	if s.cfg.ScannerEnabled && isImage(media.MimeType) {
+		imageData, err := s.blobStore.DownloadObject(ctx, media.StorageKey)
+		if err != nil {
+			slog.Warn("media: failed to download image for scanning, skipping scan",
+				"media_id", media.ID, "error", err)
+		} else {
+			result, err := s.scanner.ScanImage(ctx, imageData)
+			if err != nil {
+				slog.Warn("media: scanner error, skipping scan", "media_id", media.ID, "error", err)
+			} else if !result.IsSafe {
+				slog.Warn("media: content rejected by scanner",
+					"media_id", media.ID, "reason", result.Reason, "score", result.Score)
+				_ = s.pgStore.UpdateStatus(ctx, media.ID, "rejected")
+				return fmt.Errorf("media rejected: %s", result.Reason)
+			}
+		}
+	}
+
 	outputs, meta, err := processing.ProcessImage(
 		ctx, s.blobStore, media.StorageKey,
 		media.ID.String(), media.UploaderID.String(),
@@ -234,6 +272,11 @@ func (s *Service) processImage(ctx context.Context, media *postgres.MediaAsset) 
 	return s.pgStore.UpdateStatus(ctx, media.ID, "ready")
 }
 
+// isImage returns true when contentType is an image MIME type.
+func isImage(contentType string) bool {
+	return strings.HasPrefix(contentType, "image/")
+}
+
 func (s *Service) GetMedia(ctx context.Context, mediaID uuid.UUID) (*postgres.MediaAsset, error) {
 	return s.pgStore.GetMediaWithVariants(ctx, mediaID)
 }
@@ -247,6 +290,7 @@ type MediaURLResponse struct {
 	Height   *int              `json:"height,omitempty"`
 	Blurhash *string           `json:"blurhash,omitempty"`
 	Variants map[string]string `json:"variants"`
+	HLSURL   string            `json:"hls_url,omitempty"`
 }
 
 // GetMediaURL generates presigned GET URLs for a media item and all its variants.
@@ -273,7 +317,7 @@ func (s *Service) GetMediaURL(ctx context.Context, mediaID uuid.UUID) (*MediaURL
 		}
 	}
 
-	return &MediaURLResponse{
+	response := &MediaURLResponse{
 		MediaID:  media.ID,
 		FileType: media.FileType,
 		Status:   media.ProcessingStatus,
@@ -281,7 +325,17 @@ func (s *Service) GetMediaURL(ctx context.Context, mediaID uuid.UUID) (*MediaURL
 		Height:   media.Height,
 		Blurhash: media.Blurhash,
 		Variants: variants,
-	}, nil
+	}
+
+	// Include HLS URL when available
+	if media.HLSMasterKey != "" {
+		hlsURL, err := s.blobStore.GeneratePresignedGetURL(ctx, media.HLSMasterKey, expiry)
+		if err == nil {
+			response.HLSURL = hlsURL.String()
+		}
+	}
+
+	return response, nil
 }
 
 // GetMediaVariantURL generates a presigned GET URL for a specific variant.
@@ -340,7 +394,7 @@ func (s *Service) BatchMediaURLs(ctx context.Context, ids []uuid.UUID) (map[uuid
 				variants[v.Name] = vURL.String()
 			}
 		}
-		result[m.ID] = &MediaURLResponse{
+		resp := &MediaURLResponse{
 			MediaID:  m.ID,
 			FileType: m.FileType,
 			Status:   m.ProcessingStatus,
@@ -349,6 +403,13 @@ func (s *Service) BatchMediaURLs(ctx context.Context, ids []uuid.UUID) (map[uuid
 			Blurhash: m.Blurhash,
 			Variants: variants,
 		}
+		if m.HLSMasterKey != "" {
+			hlsURL, err := s.blobStore.GeneratePresignedGetURL(ctx, m.HLSMasterKey, expiry)
+			if err == nil {
+				resp.HLSURL = hlsURL.String()
+			}
+		}
+		result[m.ID] = resp
 	}
 
 	return result, nil
@@ -387,12 +448,12 @@ func (s *Service) DeleteMedia(ctx context.Context, mediaID uuid.UUID, userID uui
 
 // MediaStatusResponse is the response for the status endpoint.
 type MediaStatusResponse struct {
-	MediaID          uuid.UUID                `json:"media_id"`
-	ProcessingStatus string                   `json:"processing_status"`
-	FileType         string                   `json:"file_type"`
-	Width            *int                     `json:"width,omitempty"`
-	Height           *int                     `json:"height,omitempty"`
-	DurationSeconds  *int                     `json:"duration_seconds,omitempty"`
+	MediaID          uuid.UUID                 `json:"media_id"`
+	ProcessingStatus string                    `json:"processing_status"`
+	FileType         string                    `json:"file_type"`
+	Width            *int                      `json:"width,omitempty"`
+	Height           *int                      `json:"height,omitempty"`
+	DurationSeconds  *int                      `json:"duration_seconds,omitempty"`
 	TranscodingJobs  []postgres.TranscodingJob `json:"transcoding_jobs,omitempty"`
 }
 

@@ -24,9 +24,10 @@ type Config struct {
 	CookieDomain    string
 	CookieSecure    bool
 	TrustedProxies  []string
-	TwoFAIssuer     string
-	FrontendURL     string
-	OAuth           *OAuthConfig
+	TwoFAIssuer        string
+	FrontendURL        string
+	OAuth              *OAuthConfig
+	RateLimitEnabled   bool
 }
 
 // Load reads configuration from environment variables and applies sensible defaults for local development.
@@ -47,9 +48,10 @@ func Load() *Config {
 		CookieDomain:    getEnv("COOKIE_DOMAIN", ""),
 		CookieSecure:    getEnvBool("COOKIE_SECURE", false),
 		TrustedProxies:  splitAndClean(getEnv("TRUSTED_PROXIES", "")),
-		TwoFAIssuer:     getEnv("TWOFA_ISSUER", "AtPost"),
-		FrontendURL:     getEnv("FRONTEND_URL", "http://localhost:3000"),
-		OAuth:           LoadOAuth(),
+		TwoFAIssuer:      getEnv("TWOFA_ISSUER", "AtPost"),
+		FrontendURL:      getEnv("FRONTEND_URL", "http://localhost:3000"),
+		OAuth:            LoadOAuth(),
+		RateLimitEnabled: getEnvBool("RATE_LIMIT_ENABLED", true),
 	}
 	return cfg
 }

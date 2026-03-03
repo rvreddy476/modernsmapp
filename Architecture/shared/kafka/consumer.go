@@ -15,6 +15,9 @@ import (
 	kafkago "github.com/segmentio/kafka-go"
 )
 
+// traceContextKey is an unexported context key for the W3C traceparent header value.
+type traceContextKey struct{}
+
 // HandlerFunc processes a single event envelope. Return nil on success.
 type HandlerFunc func(ctx context.Context, envelope *events.EventEnvelope) error
 
@@ -103,7 +106,16 @@ func (c *Consumer) Start(ctx context.Context) {
 			continue
 		}
 
-		c.processWithRetry(ctx, logger, msg)
+		// Extract W3C traceparent header from Kafka message headers and inject
+		// it into the context so downstream handlers can propagate trace context.
+		msgCtx := ctx
+		for _, header := range msg.Headers {
+			if header.Key == "traceparent" {
+				msgCtx = context.WithValue(msgCtx, traceContextKey{}, string(header.Value))
+				break
+			}
+		}
+		c.processWithRetry(msgCtx, logger, msg)
 	}
 }
 

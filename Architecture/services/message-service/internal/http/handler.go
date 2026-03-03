@@ -65,6 +65,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.POST("/conversations/:id/pin/:msgId", h.PinMessage)
 		v1.DELETE("/conversations/:id/pin", h.UnpinMessage)
 		v1.GET("/conversations/:id/pin", h.GetPinnedMessage)
+
+		// E2E key bundles (Signal Protocol X3DH)
+		v1.POST("/keys", h.PublishKeyBundle)
+		v1.GET("/keys/:userId", h.GetKeyBundle)
 	}
 }
 
@@ -843,4 +847,57 @@ func decodeCursor(raw string) (*service.ConversationCursor, error) {
 		return nil, err
 	}
 	return &service.ConversationCursor{UpdatedAt: payload.Ts, ID: id}, nil
+}
+
+// ---------------------------------------------------------------------------
+// E2E key bundle endpoints (Signal Protocol X3DH)
+// ---------------------------------------------------------------------------
+
+// PublishKeyBundle handles POST /v1/chat/keys.
+// Stores the caller's public key bundle for E2E session establishment.
+// Private keys are never sent to or stored by the server.
+func (h *Handler) PublishKeyBundle(c *gin.Context) {
+	userID := c.GetHeader("X-User-Id")
+	if userID == "" {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing user authentication", nil, nil)
+		return
+	}
+
+	var bundle struct {
+		IdentityKey     []byte   `json:"identity_key"`
+		SignedPreKey    []byte   `json:"signed_pre_key"`
+		PreKeySignature []byte   `json:"pre_key_signature"`
+		OneTimePreKeys  [][]byte `json:"one_time_pre_keys"`
+	}
+	if err := c.ShouldBindJSON(&bundle); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "BAD_REQUEST"}})
+		return
+	}
+
+	if err := pgstore.UpsertKeyBundle(c.Request.Context(), h.db, userID,
+		bundle.IdentityKey, bundle.SignedPreKey, bundle.PreKeySignature, bundle.OneTimePreKeys); err != nil {
+		slog.Error("failed to upsert key bundle", "error", err, "user_id", userID)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL_ERROR"}})
+		return
+	}
+
+	c.Status(http.StatusCreated)
+}
+
+// GetKeyBundle handles GET /v1/chat/keys/:userId.
+// Returns a user's public key bundle for E2E session establishment.
+func (h *Handler) GetKeyBundle(c *gin.Context) {
+	targetUserID := c.Param("userId")
+	if targetUserID == "" {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Missing user ID", nil, nil)
+		return
+	}
+
+	bundle, err := pgstore.GetKeyBundle(c.Request.Context(), h.db, targetUserID)
+	if err != nil || bundle == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "NOT_FOUND"}})
+		return
+	}
+
+	c.JSON(http.StatusOK, bundle)
 }

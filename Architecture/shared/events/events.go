@@ -83,6 +83,10 @@ const (
 
 // v2.1 new event types
 const (
+	EventUserFollowed   = "user.followed"
+	EventUserUnfollowed = "user.unfollowed"
+	EventUserMuted      = "user.muted"
+
 	EventUserDeletionRequested   = "user.deletion_requested"
 	EventVisibilityPolicyCreated = "visibility_policy.created"
 	EventVisibilityPolicyUpdated = "visibility_policy.updated"
@@ -102,6 +106,15 @@ const (
 
 	// Feature Flags
 	EventFlagEvaluated = "flag.evaluated" // payload: FlagEvaluatedPayload
+
+	// Security
+	EventUserLoginAnomaly = "user.login_anomaly" // payload: UserLoginAnomalyPayload
+
+	// Spam / Content Safety
+	EventSpamDetected = "content.spam_detected" // payload: SpamDetectedPayload
+
+	// Mentions
+	EventUserMentioned = "user.mentioned" // payload: UserMentionedPayload
 )
 
 // EventEnvelope is the CloudEvents-ish structure we use on Kafka.
@@ -150,6 +163,23 @@ type UserFollowedPayload struct {
 	FollowerID string    `json:"follower_id"`
 	FolloweeID string    `json:"followee_id"`
 	CreatedAt  time.Time `json:"created_at"`
+}
+
+type UserUnfollowedPayload struct {
+	FollowerID string    `json:"follower_id"`
+	FolloweeID string    `json:"followee_id"`
+	OccurredAt time.Time `json:"occurred_at"`
+}
+
+type PostDeletedPayload struct {
+	PostID    string    `json:"post_id"`
+	AuthorID  string    `json:"author_id"`
+	DeletedAt time.Time `json:"deleted_at"`
+}
+
+type UserDeletionRequestedPayload struct {
+	UserID      string    `json:"user_id"`
+	RequestedAt time.Time `json:"requested_at"`
 }
 
 type PostReactedPayload struct {
@@ -495,6 +525,37 @@ type LiveEndedPayload struct {
 	PeakViewers  int       `json:"peak_viewers"`
 	TotalViewers int       `json:"total_viewers"`
 	EndedAt      time.Time `json:"ended_at"`
+}
+
+// --- Security Payloads ---
+
+type UserLoginAnomalyPayload struct {
+	UserID      string    `json:"user_id"`
+	IP          string    `json:"ip"`
+	DeviceID    string    `json:"device_id"`
+	Platform    string    `json:"platform"`
+	IsNewIP     bool      `json:"is_new_ip"`
+	IsNewDevice bool      `json:"is_new_device"`
+	OccurredAt  time.Time `json:"occurred_at"`
+}
+
+// --- Spam / Content Safety Payloads ---
+
+type SpamDetectedPayload struct {
+	UserID string  `json:"user_id"`
+	PostID string  `json:"post_id,omitempty"`
+	Reason string  `json:"reason"`
+	Score  float64 `json:"score"`
+}
+
+// --- Mention Payloads ---
+
+type UserMentionedPayload struct {
+	MentionedUserID string    `json:"mentioned_user_id"`
+	AuthorID        string    `json:"author_id"`
+	PostID          string    `json:"post_id"`
+	CommentID       string    `json:"comment_id,omitempty"`
+	OccurredAt      time.Time `json:"occurred_at"`
 }
 
 // NewEnvelope creates an EventEnvelope with a new EventID and

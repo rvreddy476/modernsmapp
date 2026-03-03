@@ -57,15 +57,16 @@ type Booking struct {
 }
 
 type Dispute struct {
-	ID           uuid.UUID  `json:"id"`
-	OrderID      uuid.UUID  `json:"order_id"`
-	OpenedBy     uuid.UUID  `json:"opened_by"`
-	Reason       string     `json:"reason"`
-	Status       string     `json:"status"`
-	Resolution   string     `json:"resolution,omitempty"`
-	EvidenceURLs []string   `json:"evidence_urls"`
-	CreatedAt    time.Time  `json:"created_at"`
-	ResolvedAt   *time.Time `json:"resolved_at,omitempty"`
+	ID              uuid.UUID  `json:"id"`
+	OrderID         uuid.UUID  `json:"order_id"`
+	OpenedBy        uuid.UUID  `json:"opened_by"`
+	Reason          string     `json:"reason"`
+	Status          string     `json:"status"`
+	Resolution      string     `json:"resolution,omitempty"`
+	EvidenceURLs    []string   `json:"evidence_urls"`
+	PaymentIntentID string     `json:"payment_intent_id,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	ResolvedAt      *time.Time `json:"resolved_at,omitempty"`
 }
 
 // CreateOrder inserts a new order with items in a single transaction.
@@ -243,4 +244,31 @@ func (s *Store) CreateDispute(ctx context.Context, d Dispute) (*Dispute, error) 
 		d.ID, d.OrderID, d.OpenedBy, d.Reason, d.EvidenceURLs,
 	).Scan(&d.ID, &d.OrderID, &d.OpenedBy, &d.Reason, &d.Status, &d.EvidenceURLs, &d.CreatedAt)
 	return &d, err
+}
+
+// GetDispute fetches a dispute by ID.
+func (s *Store) GetDispute(ctx context.Context, disputeID uuid.UUID) (*Dispute, error) {
+	var d Dispute
+	err := s.db.QueryRow(ctx,
+		`SELECT id, order_id, opened_by, reason, status, COALESCE(resolution,''), evidence_urls, created_at
+		 FROM orders.disputes WHERE id = $1`,
+		disputeID,
+	).Scan(&d.ID, &d.OrderID, &d.OpenedBy, &d.Reason, &d.Status, &d.Resolution, &d.EvidenceURLs, &d.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &d, nil
+}
+
+// UpdateDisputeStatus transitions a dispute to a new status with optional resolution notes.
+func (s *Store) UpdateDisputeStatus(ctx context.Context, disputeID uuid.UUID, status, notes string) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE orders.disputes
+		 SET status = $1,
+		     resolution = COALESCE(NULLIF($2,''), resolution),
+		     resolved_at = CASE WHEN $1 IN ('resolved','closed') THEN NOW() ELSE resolved_at END
+		 WHERE id = $3`,
+		status, notes, disputeID,
+	)
+	return err
 }

@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -192,6 +193,43 @@ func (s *Store) ListByReference(ctx context.Context, refType string, refID uuid.
 		intents = append(intents, p)
 	}
 	return intents, rows.Err()
+}
+
+// UpdateStatusByProviderRef updates the status of an intent matched by its provider_ref (gateway order ID).
+func (s *Store) UpdateStatusByProviderRef(ctx context.Context, providerRef, newStatus, paymentID string) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE payments.payment_intents
+		SET status = $1,
+		    provider_ref = CASE WHEN $2 <> '' THEN $2 ELSE provider_ref END,
+		    updated_at = NOW()
+		WHERE provider_ref = $3
+	`, newStatus, paymentID, providerRef)
+	return err
+}
+
+// CreateHold creates a payment hold record for an escrow payment.
+func (s *Store) CreateHold(ctx context.Context, intentID uuid.UUID, amount int64, currency, condition string) error {
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO payments.payment_holds (payment_intent_id, hold_amount, currency, release_condition)
+		VALUES ($1, $2, $3, $4)
+	`, intentID, amount, currency, condition)
+	return err
+}
+
+// ReleaseHold marks a payment hold as released.
+func (s *Store) ReleaseHold(ctx context.Context, intentID uuid.UUID, releasedBy string) error {
+	result, err := s.db.Exec(ctx, `
+		UPDATE payments.payment_holds
+		SET released_at = NOW(), released_by = $2
+		WHERE payment_intent_id = $1 AND released_at IS NULL
+	`, intentID, releasedBy)
+	if err != nil {
+		return err
+	}
+	if n := result.RowsAffected(); n == 0 {
+		return fmt.Errorf("no active hold found for intent %s", intentID)
+	}
+	return nil
 }
 
 // ensure pgx import is used

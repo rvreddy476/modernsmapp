@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/atpost/post-service/internal/engagement"
 	postEvents "github.com/atpost/post-service/internal/events"
+	"github.com/atpost/post-service/internal/spam"
 	"github.com/atpost/post-service/internal/store/postgres"
 	"github.com/atpost/post-service/internal/store/scylla"
 	"github.com/gocql/gocql"
@@ -24,13 +26,16 @@ var (
 )
 
 type Service struct {
-	pgStore       *postgres.Store
-	scyllaStore   *scylla.InteractionStore
-	scyllaSession *gocql.Session
-	rdb           *redis.Client
-	producer      *postEvents.Producer  // legacy producer, optional
-	engProducer   *engagement.Producer  // new engagement event producer
-	rateLimiter   *engagement.RateLimiter
+	pgStore        *postgres.Store
+	scyllaStore    *scylla.InteractionStore
+	scyllaSession  *gocql.Session
+	rdb            *redis.Client
+	producer       *postEvents.Producer  // legacy producer, optional
+	engProducer    *engagement.Producer  // new engagement event producer
+	rateLimiter    *engagement.RateLimiter
+	spam           *spam.Detector
+	userServiceURL string
+	httpClient     *http.Client
 }
 
 func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client) *Service {
@@ -39,7 +44,14 @@ func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client)
 		scyllaStore: scylla,
 		rdb:         rdb,
 		rateLimiter: engagement.NewRateLimiter(rdb),
+		spam:        spam.New(rdb),
+		httpClient:  &http.Client{Timeout: 5 * time.Second},
 	}
+}
+
+// SetUserServiceURL configures the user-service base URL for mention resolution.
+func (s *Service) SetUserServiceURL(url string) {
+	s.userServiceURL = url
 }
 
 // SetProducer sets the legacy Kafka producer for engagement events.
@@ -163,8 +175,8 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	// Extract hashtags from text
 	hashtags := extractHashtags(input.Text)
 
-	// Extract @mentions from text (stored as usernames for now; could resolve to UUIDs)
-	_ = extractMentions(input.Text)
+	// Extract @mentions from text
+	mentions := extractMentions(input.Text)
 
 	p := &postgres.Post{
 		ID:             uuid.New(),
@@ -228,8 +240,46 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		}
 	}
 
+	// Spam detection
+	spamResult := s.spam.Check(ctx, input.AuthorID.String(), input.Text, len(input.MediaIDs))
+	if spamResult.Score > 0.95 {
+		return nil, fmt.Errorf("content rejected: %s", spamResult.Reason)
+	}
+	reviewStatus := "approved"
+	if spamResult.Score > 0.7 {
+		reviewStatus = "flagged"
+		// Emit spam detection event (best-effort)
+		if s.producer != nil {
+			go s.producer.PublishSpamDetected(context.Background(), input.AuthorID, spamResult.Reason, spamResult.Score)
+		}
+	}
+	p.ReviewStatus = reviewStatus
+
 	if err := s.pgStore.CreatePost(ctx, p); err != nil {
 		return nil, err
+	}
+
+	// Resolve @mentions and emit user.mentioned events (fire and forget)
+	if s.producer != nil && len(mentions) > 0 {
+		postID := p.ID
+		authorID := p.AuthorID
+		for _, uname := range mentions {
+			go func(username string) {
+				ctx2, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				userID, err := s.lookupUserByUsername(ctx2, username)
+				if err != nil || userID == "" {
+					return
+				}
+				mentionedID, err := uuid.Parse(userID)
+				if err != nil || mentionedID == authorID {
+					return // skip self-mentions
+				}
+				if err := s.producer.PublishUserMentioned(ctx2, mentionedID, authorID, postID.String()); err != nil {
+					log.Printf("Warning: failed to publish UserMentioned event for @%s: %v", username, err)
+				}
+			}(uname)
+		}
 	}
 
 	// Invalidate author content counts cache
@@ -1258,4 +1308,26 @@ func (s *Service) GetPostsByHashtag(ctx context.Context, hashtag string, limit i
 	}
 
 	return details, nextCursor, nil
+}
+
+// lookupUserByUsername resolves a username to a user ID via user-service.
+func (s *Service) lookupUserByUsername(ctx context.Context, username string) (string, error) {
+	if s.userServiceURL == "" {
+		return "", nil
+	}
+	url := fmt.Sprintf("%s/v1/users/by-username/%s", s.userServiceURL, username)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	var result struct {
+		UserID string `json:"user_id"`
+	}
+	json.NewDecoder(resp.Body).Decode(&result) //nolint:errcheck
+	return result.UserID, nil
 }

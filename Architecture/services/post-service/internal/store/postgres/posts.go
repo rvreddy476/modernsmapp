@@ -32,6 +32,7 @@ type Post struct {
 	LocationLng    *float64        `json:"location_lng,omitempty"`
 	PostType       string          `json:"post_type"`
 	AppOrigin      string          `json:"app_origin"`
+	ReviewStatus   string          `json:"review_status"` // "approved", "flagged", "rejected"
 	CreatedAt      time.Time       `json:"created_at"`
 	UpdatedAt      time.Time       `json:"updated_at"`
 	Media          []PostMedia     `json:"media,omitempty"`
@@ -146,20 +147,24 @@ func (s *Store) CreatePost(ctx context.Context, p *Post) error {
 	}
 	defer tx.Rollback(ctx)
 
+	reviewStatus := p.ReviewStatus
+	if reviewStatus == "" {
+		reviewStatus = "approved"
+	}
 	_, err = tx.Exec(ctx, `
 		INSERT INTO posts (id, author_id, text, visibility, content_type,
 			feeling, activity, activity_detail, rich_text,
 			no_comments, no_likes,
 			hashtags, mentions, location_name, location_lat, location_lng,
-			post_type, app_origin,
+			post_type, app_origin, review_status,
 			created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-			$12, $13, $14, $15, $16, $17, $18, $19, $19)
+			$12, $13, $14, $15, $16, $17, $18, $19, $20, $20)
 	`, p.ID, p.AuthorID, p.Text, p.Visibility, p.ContentType,
 		p.Feeling, p.Activity, p.ActivityDetail, p.RichText,
 		p.NoComments, p.NoLikes,
 		p.Hashtags, p.Mentions, p.LocationName, p.LocationLat, p.LocationLng,
-		p.PostType, p.AppOrigin,
+		p.PostType, p.AppOrigin, reviewStatus,
 		p.CreatedAt)
 	if err != nil {
 		return err

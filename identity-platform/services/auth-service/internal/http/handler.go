@@ -12,7 +12,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 	"github.com/atpost/identity-auth-service/internal/config"
+	"github.com/atpost/identity-auth-service/internal/middleware"
 	"github.com/atpost/identity-auth-service/internal/store"
 	"github.com/atpost/identity-auth-service/internal/service"
 	"github.com/atpost/identity-shared/api"
@@ -28,6 +30,7 @@ type Handler struct {
 	svc AuthService
 	cfg *config.Config
 	log *slog.Logger
+	rdb *redis.Client
 }
 
 type AuthService interface {
@@ -62,23 +65,25 @@ type AuthService interface {
 	ListTrustedDevices(ctx context.Context, userID uuid.UUID) ([]store.TrustedDevice, error)
 	TrustDevice(ctx context.Context, userID uuid.UUID, fingerprint string, deviceName *string) error
 	RemoveTrustedDevice(ctx context.Context, userID, deviceID uuid.UUID) error
+	// GDPR
+	ExportUserData(ctx context.Context, userID string) (*service.DataExport, error)
 }
 
-func New(svc AuthService, cfg *config.Config, logger *slog.Logger) *Handler {
+func New(svc AuthService, cfg *config.Config, logger *slog.Logger, rdb *redis.Client) *Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Handler{svc: svc, cfg: cfg, log: logger}
+	return &Handler{svc: svc, cfg: cfg, log: logger, rdb: rdb}
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) {
 	v1 := r.Group("/v1/auth")
 	{
 		// Public routes
-		v1.POST("/request-otp", h.RequestOTP)
-		v1.POST("/verify-otp", h.VerifyOTP)
+		v1.POST("/request-otp", middleware.OTPRateLimit(h.rdb), h.RequestOTP)
+		v1.POST("/verify-otp", middleware.LoginRateLimit(h.rdb), h.VerifyOTP)
 		v1.POST("/register", h.Register)
-		v1.POST("/login", h.Login)
+		v1.POST("/login", middleware.LoginRateLimit(h.rdb), h.Login)
 		v1.POST("/refresh", h.Refresh)
 		v1.POST("/logout", h.Logout)
 		v1.GET("/health", h.Health)
@@ -117,6 +122,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 			protected.GET("/trusted-devices", h.ListTrustedDevices)
 			protected.DELETE("/trusted-devices/:id", h.RemoveTrustedDevice)
 			protected.POST("/trust-device", h.TrustDevice)
+
+			// GDPR data portability
+			protected.GET("/data-export", h.ExportUserData)
 		}
 	}
 }
@@ -220,6 +228,8 @@ func (h *Handler) Register(c *gin.Context) {
 		h.log.Error("registration failed", "err", err, "phone", maskPhone(req.Phone), "email", maskEmail(req.Email), "request_id", RequestIDFromContext(c))
 		if errors.Is(err, store.ErrUserExists) {
 			api.Error(c.Writer, http.StatusConflict, "USER_EXISTS", "User already exists", nil, nil)
+		} else if errors.Is(err, service.ErrPasswordTooShort) || errors.Is(err, service.ErrPasswordTooWeak) {
+			api.Error(c.Writer, http.StatusUnprocessableEntity, "WEAK_PASSWORD", err.Error(), nil, nil)
 		} else {
 			api.Error(c.Writer, http.StatusBadRequest, "REGISTRATION_FAILED", "Registration failed", nil, nil)
 		}
@@ -442,7 +452,11 @@ func (h *Handler) ResetPassword(c *gin.Context) {
 
 	if err := h.svc.ResetPassword(c.Request.Context(), req.Identifier, req.Code, req.NewPassword); err != nil {
 		h.log.Warn("reset-password failed", "err", err, "identifier", maskIdentifier(req.Identifier), "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "RESET_FAILED", "Password reset failed", nil, nil)
+		if errors.Is(err, service.ErrPasswordTooShort) || errors.Is(err, service.ErrPasswordTooWeak) {
+			api.Error(c.Writer, http.StatusUnprocessableEntity, "WEAK_PASSWORD", err.Error(), nil, nil)
+		} else {
+			api.Error(c.Writer, http.StatusBadRequest, "RESET_FAILED", "Password reset failed", nil, nil)
+		}
 		return
 	}
 
@@ -607,6 +621,24 @@ func (h *Handler) TrustDevice(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "ok", "message": "Device trusted"}, nil)
+}
+
+// ExportUserData returns all personal data held by the auth service for the
+// requesting user as a downloadable JSON file (GDPR data portability).
+func (h *Handler) ExportUserData(c *gin.Context) {
+	userID := c.GetHeader("X-User-Id")
+	if userID == "" {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": gin.H{"code": "UNAUTHORIZED"}})
+		return
+	}
+	export, err := h.svc.ExportUserData(c.Request.Context(), userID)
+	if err != nil {
+		h.log.Error("export user data failed", "err", err, "user_id", userID, "request_id", RequestIDFromContext(c))
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL_ERROR", "message": err.Error()}})
+		return
+	}
+	c.Header("Content-Disposition", "attachment; filename=data-export.json")
+	c.JSON(http.StatusOK, export)
 }
 
 // Docs Routes

@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"strings"
@@ -34,10 +35,15 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	{
 		v1.GET("/flags/me", h.EvaluateMe)
 
+		// A/B conversion tracking (no auth required — called by client)
+		v1.POST("/flags/conversions", h.RecordConversion)
+
 		admin := v1.Group("/admin/flags")
 		admin.Use(h.AdminAuthMiddleware())
 		admin.POST("", h.UpsertFlag)
 		admin.GET("", h.ListFlags)
+		admin.GET("/:key/audit", h.GetFlagAuditLog)
+		admin.GET("/:key/results", h.GetExperimentResults)
 	}
 }
 
@@ -45,7 +51,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 func (h *Handler) AdminAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		scopes := c.GetHeader("X-Scopes")
-		if !hasScope(scopes, "admin") {
+		if !hasScope(scopes, "admin") && !hasScope(scopes, "superadmin") {
 			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil, nil)
 			c.Abort()
 			return
@@ -86,7 +92,14 @@ func (h *Handler) UpsertFlag(c *gin.Context) {
 		return
 	}
 
-	if err := h.svc.UpsertFlag(c.Request.Context(), &flag); err != nil {
+	// Embed actor in context for audit log
+	actor := c.GetHeader("X-User-Id")
+	if actor == "" {
+		actor = "system"
+	}
+	ctx := context.WithValue(c.Request.Context(), "actor_user_id", actor) //nolint:staticcheck
+
+	if err := h.svc.UpsertFlag(ctx, &flag); err != nil {
 		log.Printf("Upsert error: %v", err)
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to upsert flag", nil, nil)
 		return
@@ -102,4 +115,57 @@ func (h *Handler) ListFlags(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": flags}, nil)
+}
+
+// GetFlagAuditLog returns the audit log for a specific flag (admin only).
+func (h *Handler) GetFlagAuditLog(c *gin.Context) {
+	scopes := c.GetHeader("X-Scopes")
+	if !hasScope(scopes, "admin") && !hasScope(scopes, "superadmin") {
+		c.JSON(http.StatusForbidden, gin.H{"error": gin.H{"code": "FORBIDDEN"}})
+		return
+	}
+	key := c.Param("key")
+	limit := 50
+	offset := 0
+	entries, err := h.svc.GetAuditLog(c.Request.Context(), key, limit, offset)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL_ERROR"}})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"entries": entries})
+}
+
+// RecordConversion records an A/B experiment conversion event.
+func (h *Handler) RecordConversion(c *gin.Context) {
+	userID := c.GetHeader("X-User-Id")
+	var req struct {
+		FlagKey   string `json:"flag_key" binding:"required"`
+		Variant   string `json:"variant" binding:"required"`
+		EventType string `json:"event_type" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "BAD_REQUEST"}})
+		return
+	}
+	if err := h.svc.RecordConversion(c.Request.Context(), req.FlagKey, userID, req.Variant, req.EventType); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL_ERROR"}})
+		return
+	}
+	c.Status(http.StatusCreated)
+}
+
+// GetExperimentResults returns aggregated A/B results for a flag (admin only).
+func (h *Handler) GetExperimentResults(c *gin.Context) {
+	scopes := c.GetHeader("X-Scopes")
+	if !hasScope(scopes, "admin") && !hasScope(scopes, "superadmin") {
+		c.JSON(http.StatusForbidden, gin.H{"error": gin.H{"code": "FORBIDDEN"}})
+		return
+	}
+	key := c.Param("key")
+	results, err := h.svc.GetExperimentResults(c.Request.Context(), key)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL_ERROR"}})
+		return
+	}
+	c.JSON(http.StatusOK, results)
 }

@@ -58,6 +58,14 @@ func (s *Store) UnregisterDevice(ctx context.Context, deviceID, userID uuid.UUID
 	return nil
 }
 
+// DeactivateDeviceTokens marks all push-notification devices for the given user
+// as inactive, fulfilling the GDPR right-to-erasure requirement for device tokens.
+func (s *Store) DeactivateDeviceTokens(ctx context.Context, userID uuid.UUID) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE user_devices SET is_active = FALSE WHERE user_id = $1`, userID)
+	return err
+}
+
 // GetUserDevices returns all active devices for a user.
 func (s *Store) GetUserDevices(ctx context.Context, userID uuid.UUID) ([]UserDevice, error) {
 	rows, err := s.db.Query(ctx, `

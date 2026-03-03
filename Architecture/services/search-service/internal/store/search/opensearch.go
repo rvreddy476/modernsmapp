@@ -444,6 +444,147 @@ func (s *Store) UniversalSearch(ctx context.Context, query string, searchType st
 	return result, nil
 }
 
+// DeletePost removes a post document from the OpenSearch index.
+func (s *Store) DeletePost(ctx context.Context, postID string) error {
+	req := opensearchapi.DeleteRequest{
+		Index:      "posts_v1",
+		DocumentID: postID,
+	}
+	res, err := req.Do(ctx, s.client)
+	if err != nil {
+		slog.Error("opensearch: failed to delete post", "post_id", postID, "error", err)
+		return err
+	}
+	defer res.Body.Close()
+	if res.IsError() && res.StatusCode != 404 {
+		err = fmt.Errorf("opensearch delete post error: %s", res.String())
+		slog.Error("opensearch: failed to delete post", "post_id", postID, "error", err)
+		return err
+	}
+	return nil
+}
+
+// DeletePostsByAuthor removes all post documents by a given author.
+func (s *Store) DeletePostsByAuthor(ctx context.Context, authorID string) error {
+	query := map[string]interface{}{
+		"query": map[string]interface{}{
+			"term": map[string]interface{}{"author_id": authorID},
+		},
+	}
+	body, _ := json.Marshal(query)
+	res, err := s.client.DeleteByQuery(
+		[]string{"posts_v1"},
+		bytes.NewReader(body),
+		s.client.DeleteByQuery.WithContext(ctx),
+	)
+	if err != nil {
+		slog.Error("opensearch: failed to delete posts by author", "author_id", authorID, "error", err)
+		return err
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		err = fmt.Errorf("opensearch delete by query error: %s", res.String())
+		slog.Error("opensearch: failed to delete posts by author", "author_id", authorID, "error", err)
+		return err
+	}
+	return nil
+}
+
+// DeleteUser removes a user document from the OpenSearch index.
+func (s *Store) DeleteUser(ctx context.Context, userID string) error {
+	req := opensearchapi.DeleteRequest{
+		Index:      "users_v1",
+		DocumentID: userID,
+	}
+	res, err := req.Do(ctx, s.client)
+	if err != nil {
+		slog.Error("opensearch: failed to delete user", "user_id", userID, "error", err)
+		return err
+	}
+	defer res.Body.Close()
+	if res.IsError() && res.StatusCode != 404 {
+		err = fmt.Errorf("opensearch delete user error: %s", res.String())
+		slog.Error("opensearch: failed to delete user", "user_id", userID, "error", err)
+		return err
+	}
+	return nil
+}
+
+// AutocompleteResult represents a single autocomplete suggestion.
+type AutocompleteResult struct {
+	UserID      string `json:"user_id"`
+	Username    string `json:"username"`
+	DisplayName string `json:"display_name"`
+}
+
+// Autocomplete returns username suggestions for the given prefix.
+func (s *Store) Autocomplete(ctx context.Context, prefix string, limit int) ([]AutocompleteResult, error) {
+	if limit <= 0 || limit > 20 {
+		limit = 10
+	}
+
+	query := map[string]interface{}{
+		"size": limit,
+		"query": map[string]interface{}{
+			"bool": map[string]interface{}{
+				"should": []interface{}{
+					map[string]interface{}{
+						"prefix": map[string]interface{}{
+							"username": map[string]interface{}{
+								"value": strings.ToLower(prefix),
+								"boost": 2.0,
+							},
+						},
+					},
+					map[string]interface{}{
+						"match_phrase_prefix": map[string]interface{}{
+							"display_name": prefix,
+						},
+					},
+				},
+				"minimum_should_match": 1,
+			},
+		},
+		"_source": []string{"user_id", "username", "display_name"},
+	}
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(query); err != nil {
+		return nil, err
+	}
+
+	res, err := s.client.Search(
+		s.client.Search.WithContext(ctx),
+		s.client.Search.WithIndex("users_v1"),
+		s.client.Search.WithBody(&buf),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+
+	if res.IsError() {
+		return nil, fmt.Errorf("autocomplete search error: %s", res.String())
+	}
+
+	var searchResp struct {
+		Hits struct {
+			Hits []struct {
+				Source AutocompleteResult `json:"_source"`
+			} `json:"hits"`
+		} `json:"hits"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&searchResp); err != nil {
+		return nil, err
+	}
+
+	results := make([]AutocompleteResult, 0, len(searchResp.Hits.Hits))
+	for _, h := range searchResp.Hits.Hits {
+		results = append(results, h.Source)
+	}
+	return results, nil
+}
+
 // GetPopularPosts returns posts sorted by like_count descending (for discovery).
 func (s *Store) GetPopularPosts(ctx context.Context, limit int) ([]PostDoc, error) {
 	q := map[string]interface{}{

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
+	"regexp"
 	"strings"
 	"time"
 
@@ -247,6 +248,9 @@ func (s *Service) VerifyOTP(ctx context.Context, phone, code, purpose, deviceID,
 		s.log.Warn("failed to publish user logged in event", "err", err, "user_id", user.ID, "session_id", sessionID)
 	}
 
+	// Anomaly detection: check if IP or device changed
+	s.detectLoginAnomaly(ctx, user.ID.String(), ip, deviceID, platform)
+
 	return &AuthResponse{
 		Tokens: TokenPair{
 			AccessToken:  accessToken,
@@ -258,7 +262,32 @@ func (s *Service) VerifyOTP(ctx context.Context, phone, code, purpose, deviceID,
 	}, nil
 }
 
+var (
+	ErrPasswordTooShort = errors.New("password must be at least 8 characters")
+	ErrPasswordTooWeak  = errors.New("password must contain at least one uppercase letter, one digit, and one special character")
+)
+
+var (
+	hasUppercase = regexp.MustCompile(`[A-Z]`)
+	hasDigit     = regexp.MustCompile(`[0-9]`)
+	hasSpecial   = regexp.MustCompile(`[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]`)
+)
+
+func validatePassword(pw string) error {
+	if len(pw) < 8 {
+		return ErrPasswordTooShort
+	}
+	if !hasUppercase.MatchString(pw) || !hasDigit.MatchString(pw) || !hasSpecial.MatchString(pw) {
+		return ErrPasswordTooWeak
+	}
+	return nil
+}
+
 func (s *Service) RegisterWithPassword(ctx context.Context, phone, email, password, firstName, lastName, dob, gender string) (*AuthResponse, error) {
+	if err := validatePassword(password); err != nil {
+		return nil, err
+	}
+
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		return nil, err
@@ -425,6 +454,9 @@ func (s *Service) LoginWithPassword(ctx context.Context, identifier, password, d
 	if err := s.producer.PublishUserLoggedIn(ctx, user.ID, sessionID, deviceID, platform, ip); err != nil {
 		s.log.Warn("failed to publish user logged in event", "err", err, "user_id", user.ID, "session_id", sessionID)
 	}
+
+	// Anomaly detection: check if IP or device changed
+	s.detectLoginAnomaly(ctx, user.ID.String(), ip, deviceID, platform)
 
 	return &AuthResponse{
 		Tokens: TokenPair{
@@ -593,6 +625,43 @@ func (s *Service) DeleteAccount(ctx context.Context, userID uuid.UUID) error {
 	return nil
 }
 
+// DataExport holds all personal data for a user, for GDPR data portability.
+type DataExport struct {
+	UserID     string      `json:"user_id"`
+	User       interface{} `json:"user"`
+	Sessions   interface{} `json:"sessions"`
+	Devices    interface{} `json:"devices"`
+	ExportedAt time.Time   `json:"exported_at"`
+}
+
+// ExportUserData collects a user's personal data from the auth store for GDPR portability.
+func (s *Service) ExportUserData(ctx context.Context, userID string) (*DataExport, error) {
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Fetch user record
+	user, err := s.store.GetUserByID(ctx, uid)
+	if err != nil {
+		return nil, err
+	}
+
+	// Fetch active sessions
+	sessions, _ := s.store.ListActiveSessions(ctx, uid)
+
+	// Fetch trusted devices
+	devices, _ := s.store.ListTrustedDevices(ctx, uid)
+
+	return &DataExport{
+		UserID:     userID,
+		User:       user,
+		Sessions:   sessions,
+		Devices:    devices,
+		ExportedAt: time.Now(),
+	}, nil
+}
+
 func maskPhone(phone string) string {
 	trimmed := strings.TrimSpace(phone)
 	if trimmed == "" {
@@ -682,6 +751,11 @@ func (s *Service) ResetPassword(ctx context.Context, identifier, code, newPasswo
 	}
 
 	_ = s.store.DeleteOTP(ctx, otp.ID)
+
+	// Validate new password policy
+	if err := validatePassword(newPassword); err != nil {
+		return err
+	}
 
 	// Hash new password and update
 	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
@@ -871,4 +945,32 @@ func (s *Service) createSessionForUser(ctx context.Context, user *store.User, de
 		User:      user,
 		SessionID: sessionID,
 	}, nil
+}
+
+// detectLoginAnomaly checks for a changed IP and emits a best-effort anomaly event via the producer.
+func (s *Service) detectLoginAnomaly(ctx context.Context, userID, ip, deviceID, platform string) {
+	lastIPKey := fmt.Sprintf("last_ip:%s", userID)
+	lastIP, _ := s.rdb.Get(ctx, lastIPKey).Result()
+	isNewIP := lastIP != "" && lastIP != ip
+	isNewDevice := false // device history check not yet implemented
+
+	// Store new last IP (30-day TTL)
+	s.rdb.Set(ctx, lastIPKey, ip, 30*24*time.Hour)
+
+	if isNewIP || isNewDevice {
+		payload := map[string]interface{}{
+			"user_id":       userID,
+			"ip":            ip,
+			"device_id":     deviceID,
+			"platform":      platform,
+			"is_new_ip":     isNewIP,
+			"is_new_device": isNewDevice,
+			"occurred_at":   time.Now(),
+		}
+		payloadBytes, err := json.Marshal(payload)
+		if err == nil {
+			// Best-effort: do not fail auth if anomaly event emission fails
+			_ = s.producer.PublishRaw(ctx, "user.login_anomaly", userID, json.RawMessage(payloadBytes))
+		}
+	}
 }

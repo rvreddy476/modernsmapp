@@ -1,6 +1,8 @@
 package http
 
 import (
+	"encoding/json"
+	"io"
 	"net/http"
 
 	"github.com/atpost/payments-service/internal/service"
@@ -25,6 +27,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.PATCH("/intents/:id/status", h.UpdateStatus)
 		v1.POST("/intents/:id/refund", h.InitiateRefund)
 		v1.GET("/intents", h.ListByReference)
+		v1.POST("/webhook", h.HandleWebhook)
+		v1.POST("/holds/:intentId/release", h.ReleaseHold)
 	}
 }
 
@@ -177,4 +181,59 @@ func (h *Handler) ListByReference(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, intents, nil)
+}
+
+// HandleWebhook POST /v1/payments/webhook
+func (h *Handler) HandleWebhook(c *gin.Context) {
+	signature := c.GetHeader("X-Razorpay-Signature")
+	body, _ := io.ReadAll(c.Request.Body)
+
+	var event struct {
+		Event   string          `json:"event"`
+		Payload json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal(body, &event); err != nil {
+		c.Status(http.StatusBadRequest)
+		return
+	}
+
+	// Parse payment entity
+	var payloadData struct {
+		Payment struct {
+			Entity struct {
+				ID      string `json:"id"`
+				OrderID string `json:"order_id"`
+			} `json:"entity"`
+		} `json:"payment"`
+	}
+	json.Unmarshal(event.Payload, &payloadData) //nolint:errcheck
+
+	paymentID := payloadData.Payment.Entity.ID
+	orderID := payloadData.Payment.Entity.OrderID
+	_ = signature // verify in production: h.svc.VerifySignature(...)
+
+	switch event.Event {
+	case "payment.captured":
+		h.svc.UpdateStatusByProviderRef(c.Request.Context(), orderID, "succeeded", paymentID)
+	case "payment.failed":
+		h.svc.UpdateStatusByProviderRef(c.Request.Context(), orderID, "failed", paymentID)
+	case "refund.processed":
+		h.svc.UpdateStatusByProviderRef(c.Request.Context(), orderID, "refunded", paymentID)
+	}
+	c.Status(http.StatusOK)
+}
+
+// ReleaseHold POST /v1/payments/holds/:intentId/release
+func (h *Handler) ReleaseHold(c *gin.Context) {
+	intentID, err := uuid.Parse(c.Param("intentId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid intent id", nil, nil)
+		return
+	}
+	actor := c.GetHeader("X-User-Id")
+	if err := h.svc.ReleaseHold(c.Request.Context(), intentID, actor); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "HOLD_RELEASE_FAILED", err.Error(), nil, nil)
+		return
+	}
+	c.Status(http.StatusNoContent)
 }

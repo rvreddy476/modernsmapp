@@ -173,6 +173,47 @@ func (s *MessageStore) GetReactions(ctx context.Context, chatID, msgID string) (
 	return reactions, nil
 }
 
+// AnonymizeMessagesFromUser replaces the text of all messages sent by the given
+// sender with "[deleted]" and marks them as deleted (GDPR right-to-erasure).
+// Note: This requires an allow-filtering scan across partitions. For large
+// deployments, a separate sender_id index table should be maintained.
+func (s *MessageStore) AnonymizeMessagesFromUser(ctx context.Context, senderID string) error {
+	now := time.Now()
+	// Collect (chat_id, timestamp, msg_id) tuples for the sender
+	type msgKey struct {
+		chatID    string
+		timestamp time.Time
+		msgID     string
+	}
+
+	iter := s.session.Query(`
+		SELECT chat_id, timestamp, msg_id
+		FROM postbook.messages
+		WHERE sender_id = ?
+		ALLOW FILTERING
+	`, senderID).WithContext(ctx).Iter()
+
+	var keys []msgKey
+	var mk msgKey
+	for iter.Scan(&mk.chatID, &mk.timestamp, &mk.msgID) {
+		keys = append(keys, mk)
+	}
+	if err := iter.Close(); err != nil {
+		return err
+	}
+
+	for _, k := range keys {
+		if err := s.session.Query(`
+			UPDATE postbook.messages
+			SET text = '[deleted]', is_deleted = true, deleted_at = ?
+			WHERE chat_id = ? AND timestamp = ? AND msg_id = ?
+		`, now, k.chatID, k.timestamp, k.msgID).WithContext(ctx).Exec(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // GetReactionsBatch retrieves reactions for multiple messages in a chat.
 func (s *MessageStore) GetReactionsBatch(ctx context.Context, chatID string, msgIDs []string) (map[string][]Reaction, error) {
 	result := make(map[string][]Reaction)
