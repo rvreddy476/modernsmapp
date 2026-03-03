@@ -68,6 +68,16 @@ SERVICE_PORT[admin-service]=8096
 SERVICE_DIR[suggestion-service]="Architecture/services/suggestion-service"
 SERVICE_PORT[suggestion-service]=8100
 
+SERVICE_DIR[shop-service]="Architecture/services/shop-service"
+SERVICE_PORT[shop-service]=8105
+SERVICE_DSN[shop-service]="$COMMERCE_POSTGRES_DSN"
+
+SERVICE_DIR[live-service]="Architecture/services/live-service"
+SERVICE_PORT[live-service]=8103
+
+SERVICE_DIR[memories-service]="Architecture/services/memories-service"
+SERVICE_PORT[memories-service]=8104
+
 # Commerce services (v2.1)
 SERVICE_DIR[orders-service]="Architecture/services/orders-service"
 SERVICE_PORT[orders-service]=8101

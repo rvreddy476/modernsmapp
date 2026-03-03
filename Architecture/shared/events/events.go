@@ -81,6 +81,7 @@ const (
 
 // v2.1 new event types
 const (
+	EventUserDeletionRequested   = "user.deletion_requested"
 	EventVisibilityPolicyCreated = "visibility_policy.created"
 	EventVisibilityPolicyUpdated = "visibility_policy.updated"
 	EventVisibilityPolicyDeleted = "visibility_policy.deleted"

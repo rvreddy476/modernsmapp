@@ -1,6 +1,7 @@
 package config
 
 import (
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -31,7 +32,7 @@ type Config struct {
 
 // Load reads configuration from environment variables and applies sensible defaults for local development.
 func Load() *Config {
-	return &Config{
+	cfg := &Config{
 		HTTPPort:        getEnv("HTTP_PORT", "8081"),
 		PostgresDSN:     getEnv("POSTGRES_DSN", "postgres://postgres:PRvr%4019910830@localhost:5432/identity_db?sslmode=disable"),
 		RedisAddr:       getEnv("REDIS_ADDR", "localhost:6379"),
@@ -51,6 +52,13 @@ func Load() *Config {
 		FrontendURL:     getEnv("FRONTEND_URL", "http://localhost:3000"),
 		OAuth:           LoadOAuth(),
 	}
+	if cfg.JWTSecret == "" {
+		log.Fatal("JWT_SECRET env var is required")
+	}
+	if cfg.JWTSecret == "dev_secret_change_me" {
+		log.Println("WARNING: JWT_SECRET is set to the development default — do not use in production")
+	}
+	return cfg
 }
 
 func getEnv(key, def string) string {

@@ -20,6 +20,11 @@ func New(s *store.Store, rdb *redis.Client) *Service {
 	return &Service{store: s, rdb: rdb}
 }
 
+// SoftDeleteUser marks the app-level user record as deleted.
+func (s *Service) SoftDeleteUser(ctx context.Context, id uuid.UUID) error {
+	return s.store.SoftDeleteUser(ctx, id)
+}
+
 // CreateUser handles user creation from event.
 func (s *Service) CreateUser(ctx context.Context, id uuid.UUID, phone, email, firstName, lastName, dob, gender string) error {
 	displayName := firstName + " " + lastName

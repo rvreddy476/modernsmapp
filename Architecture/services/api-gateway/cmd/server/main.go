@@ -4,11 +4,16 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
+	"time"
+
+	"golang.org/x/time/rate"
 )
 
 type route struct {
@@ -21,11 +26,16 @@ func main() {
 	port := env("HTTP_PORT", "8080")
 	allowedOrigins := strings.Split(env("CORS_ORIGINS", "http://localhost:3000"), ",")
 
-	// Read at startup so it is visible in logs / future use by downstream callers
-	// that may need it forwarded. The actual signature validation is intentionally
-	// omitted at the gateway layer; downstream services hold the authoritative
-	// secret and perform full validation.
-	_ = env("JWT_SECRET", "")
+	// Validate JWT_SECRET at startup; downstream services rely on it for full
+	// signature verification so the gateway must ensure it is configured.
+	jwtSecret := env("JWT_SECRET", "")
+	if jwtSecret == "" {
+		slog.Error("JWT_SECRET env var is required")
+		os.Exit(1)
+	}
+	if jwtSecret == "dev_secret_change_me" {
+		slog.Warn("JWT_SECRET is set to the development default — do not use in production")
+	}
 
 	routeDefs := []struct {
 		prefix string
@@ -56,7 +66,7 @@ func main() {
 		{"/v1/groups", env("GROUP_SERVICE_URL", "http://group-service:8090")},
 		{"/v1/reports", env("TRUST_SAFETY_SERVICE_URL", "http://trust-safety-service:8091")},
 		{"/v1/chat", env("MESSAGE_SERVICE_URL", "http://message-service:8092")},
-		{"/v1/analytics", env("ANALYTICS_SERVICE_URL", "http://analytics-service:8093")},
+		{"/v1/analytics", env("ANALYTICS_SERVICE_URL", "http://analytics-service:8094")},
 		{"/v1/flags", env("FLAGS_SERVICE_URL", "http://feature-flag-service:8095")},
 		{"/v1/admin", env("ADMIN_SERVICE_URL", "http://admin-service:8096")},
 		// Monetization service
@@ -68,6 +78,10 @@ func main() {
 		{"/v1/bookings", env("ORDERS_SERVICE_URL", "http://localhost:8101")},
 		// Payments service (v2.1)
 		{"/v1/payments", env("PAYMENTS_SERVICE_URL", "http://localhost:8102")},
+		// Shop / Live / Memories services
+		{"/v1/shop",     env("SHOP_SERVICE_URL",     "http://localhost:8105")},
+		{"/v1/live",     env("LIVE_SERVICE_URL",      "http://localhost:8103")},
+		{"/v1/memories", env("MEMORIES_SERVICE_URL",  "http://localhost:8104")},
 	}
 
 	var routes []route
@@ -117,7 +131,12 @@ func main() {
 		http.NotFound(w, r)
 	})
 
-	handler := jwtExtractMiddleware(coreHandler)
+	internalKey := env("INTERNAL_SERVICE_KEY", "")
+	if internalKey == "" {
+		slog.Warn("INTERNAL_SERVICE_KEY not set — internal service authentication disabled")
+	}
+
+	handler := rateLimitMiddleware(injectInternalKeyMiddleware(internalKey, jwtExtractMiddleware(coreHandler)))
 
 	log.Printf("API Gateway listening on :%s", port)
 	log.Fatal(http.ListenAndServe(":"+port, handler))
@@ -196,6 +215,101 @@ func isAllowedOrigin(origin string, allowed []string) bool {
 		}
 	}
 	return false
+}
+
+// rateLimiterEntry tracks a token-bucket limiter and the last time it was used.
+type rateLimiterEntry struct {
+	limiter  *rate.Limiter
+	lastSeen time.Time
+}
+
+// rateLimiterStore is a thread-safe store of per-key token-bucket limiters.
+type rateLimiterStore struct {
+	mu       sync.Mutex
+	limiters map[string]*rateLimiterEntry
+	r        float64
+	b        int
+}
+
+func newRateLimiterStore(r float64, b int) *rateLimiterStore {
+	s := &rateLimiterStore{
+		limiters: make(map[string]*rateLimiterEntry),
+		r:        r,
+		b:        b,
+	}
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			s.mu.Lock()
+			threshold := time.Now().Add(-10 * time.Minute)
+			for k, e := range s.limiters {
+				if e.lastSeen.Before(threshold) {
+					delete(s.limiters, k)
+				}
+			}
+			s.mu.Unlock()
+		}
+	}()
+	return s
+}
+
+func (s *rateLimiterStore) get(key string) *rate.Limiter {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if e, ok := s.limiters[key]; ok {
+		e.lastSeen = time.Now()
+		return e.limiter
+	}
+	l := rate.NewLimiter(rate.Limit(s.r), s.b)
+	s.limiters[key] = &rateLimiterEntry{limiter: l, lastSeen: time.Now()}
+	return l
+}
+
+// rateLimitMiddleware enforces per-IP (100 rps, burst 200) and per-user
+// (60 rps, burst 120) rate limits. Returns HTTP 429 when a limit is exceeded.
+func rateLimitMiddleware(next http.Handler) http.Handler {
+	ipStore := newRateLimiterStore(100, 200)
+	userStore := newRateLimiterStore(60, 120)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ip := r.RemoteAddr
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			if idx := strings.Index(xff, ","); idx != -1 {
+				ip = strings.TrimSpace(xff[:idx])
+			} else {
+				ip = strings.TrimSpace(xff)
+			}
+		}
+		if !ipStore.get(ip).Allow() {
+			w.Header().Set("Retry-After", "1")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			w.Write([]byte(`{"error":{"code":"RATE_LIMITED","message":"too many requests"}}`))
+			return
+		}
+		if userID := r.Header.Get("X-User-Id"); userID != "" {
+			if !userStore.get(userID).Allow() {
+				w.Header().Set("Retry-After", "1")
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusTooManyRequests)
+				w.Write([]byte(`{"error":{"code":"RATE_LIMITED","message":"too many requests"}}`))
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// injectInternalKeyMiddleware sets the X-Internal-Service-Key header on every
+// proxied request so that backend services can verify the request came from
+// the gateway. When secret is empty, the header is not set.
+func injectInternalKeyMiddleware(secret string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if secret != "" {
+			r.Header.Set("X-Internal-Service-Key", secret)
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func env(key, fallback string) string {

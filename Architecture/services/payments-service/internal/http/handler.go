@@ -61,6 +61,9 @@ func (h *Handler) InitiatePayment(c *gin.Context) {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
 		return
 	}
+	if body.IdempotencyKey == "" {
+		body.IdempotencyKey = uuid.New().String()
+	}
 	payeeID, _ := uuid.Parse(body.PayeeID)
 	refID, _ := uuid.Parse(body.ReferenceID)
 

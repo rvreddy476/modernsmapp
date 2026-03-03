@@ -133,6 +133,9 @@ services:
       PROFILE_SERVICE_URL: http://identity-profile:8098
       ORDERS_SERVICE_URL: http://orders-service:8101
       PAYMENTS_SERVICE_URL: http://payments-service:8102
+      SHOP_SERVICE_URL: http://shop-service:8105
+      LIVE_SERVICE_URL: http://live-service:8103
+      MEMORIES_SERVICE_URL: http://memories-service:8104
     ports:
       - "8080:8080"
     depends_on:
@@ -542,6 +545,74 @@ services:
         condition: service_healthy
       redpanda:
         condition: service_started
+
+  suggestion-service:
+    build:
+      context: ..
+      dockerfile: services/suggestion-service/Dockerfile
+    environment:
+      HTTP_PORT: "8100"
+      POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/app?sslmode=disable
+      IDENTITY_POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/identity_db?sslmode=disable
+      REDIS_ADDR: redis:6379
+      KAFKA_BROKERS: redpanda:9092
+      SCYLLA_HOSTS: scylla
+    ports:
+      - "8100:8100"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      redpanda:
+        condition: service_started
+      scylla-init:
+        condition: service_completed_successfully
+
+  shop-service:
+    build:
+      context: ..
+      dockerfile: services/shop-service/Dockerfile
+    environment:
+      HTTP_PORT: "8105"
+      POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/commerce_db?sslmode=disable
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      - "8105:8105"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_started
+
+  live-service:
+    build:
+      context: ..
+      dockerfile: services/live-service/Dockerfile
+    environment:
+      HTTP_PORT: "8103"
+      POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/app?sslmode=disable
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      - "8103:8103"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_started
+
+  memories-service:
+    build:
+      context: ..
+      dockerfile: services/memories-service/Dockerfile
+    environment:
+      HTTP_PORT: "8104"
+      POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/app?sslmode=disable
+    ports:
+      - "8104:8104"
+    depends_on:
+      postgres:
+        condition: service_healthy
 
 volumes:
   pgdata:

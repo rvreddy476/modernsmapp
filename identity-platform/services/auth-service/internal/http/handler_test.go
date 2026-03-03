@@ -94,6 +94,25 @@ func (s *stubAuthService) HandleOAuthToken(_ context.Context, _, _ string) (*ser
 	return nil, nil
 }
 
+// Password reset stubs
+func (s *stubAuthService) ForgotPassword(_ context.Context, _ string) error { return nil }
+func (s *stubAuthService) ResetPassword(_ context.Context, _, _, _ string) error { return nil }
+
+// Email/Phone verification stubs
+func (s *stubAuthService) RequestEmailVerification(_ context.Context, _ uuid.UUID) error { return nil }
+func (s *stubAuthService) VerifyEmail(_ context.Context, _ uuid.UUID, _ string) error    { return nil }
+func (s *stubAuthService) RequestPhoneVerification(_ context.Context, _ uuid.UUID) error { return nil }
+func (s *stubAuthService) VerifyPhone(_ context.Context, _ uuid.UUID, _ string) error    { return nil }
+
+// Trusted device stubs
+func (s *stubAuthService) ListTrustedDevices(_ context.Context, _ uuid.UUID) ([]store.TrustedDevice, error) {
+	return nil, nil
+}
+func (s *stubAuthService) TrustDevice(_ context.Context, _ uuid.UUID, _ string, _ *string) error {
+	return nil
+}
+func (s *stubAuthService) RemoveTrustedDevice(_ context.Context, _, _ uuid.UUID) error { return nil }
+
 func noopMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) { c.Next() }
 }
@@ -127,6 +146,23 @@ func TestLoginMissingIdentifier(t *testing.T) {
 
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, resp.Code)
+	}
+}
+
+func TestForgotPasswordMissingIdentifier(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	h := New(&stubAuthService{}, &config.Config{}, nil)
+	h.RegisterRoutes(r, noopMiddleware(), noopMiddleware())
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/forgot-password", bytes.NewBufferString(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// Should return 400 if identifier is required, or 200 (privacy-safe no-op)
+	if w.Code != http.StatusOK && w.Code != http.StatusBadRequest {
+		t.Errorf("unexpected status %d", w.Code)
 	}
 }
 

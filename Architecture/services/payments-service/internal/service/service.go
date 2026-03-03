@@ -50,7 +50,7 @@ func (s *Service) InitiatePayment(ctx context.Context, in InitiateInput) (*postg
 		in.IdempotencyKey = uuid.New().String()
 	}
 
-	intent, err := s.store.CreateIntent(ctx, postgres.PaymentIntent{
+	res, err := s.store.CreateIntent(ctx, postgres.PaymentIntent{
 		PayerID:        in.PayerID,
 		PayeeID:        in.PayeeID,
 		ReferenceType:  in.ReferenceType,
@@ -63,7 +63,15 @@ func (s *Service) InitiatePayment(ctx context.Context, in InitiateInput) (*postg
 	if err != nil {
 		return nil, err
 	}
-	return intent, nil
+
+	// Idempotent replay: the intent already existed; skip event publishing.
+	if res.WasExisting {
+		return res.Intent, nil
+	}
+
+	// New intent: publish event to Kafka.
+	s.publishEvent(ctx, "payment.initiated", res.Intent.PayerID.String(), res.Intent)
+	return res.Intent, nil
 }
 
 func (s *Service) GetIntent(ctx context.Context, id uuid.UUID) (*postgres.PaymentIntent, error) {

@@ -44,40 +44,56 @@ type AuditEntry struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// CreateIntentResult is returned by CreateIntent, carrying the intent and
+// a flag indicating whether the record already existed (idempotent replay).
+type CreateIntentResult struct {
+	Intent      *PaymentIntent
+	WasExisting bool // true if idempotency_key already existed
+}
+
 // CreateIntent creates a new payment intent. Idempotent on idempotency_key.
-func (s *Store) CreateIntent(ctx context.Context, in PaymentIntent) (*PaymentIntent, error) {
+// If the key already exists the existing row is returned and WasExisting is set to true.
+func (s *Store) CreateIntent(ctx context.Context, in PaymentIntent) (*CreateIntentResult, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
-	in.ID = uuid.New()
 	err = tx.QueryRow(ctx,
 		`INSERT INTO payments.payment_intents
-		 (id, payer_id, payee_id, reference_type, reference_id, amount, currency, method, status, idempotency_key)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9)
-		 ON CONFLICT (idempotency_key) DO UPDATE SET updated_at = NOW()
-		 RETURNING id, payer_id, payee_id, reference_type, reference_id, amount, currency, method, status, idempotency_key, created_at, updated_at`,
-		in.ID, in.PayerID, in.PayeeID, in.ReferenceType, in.ReferenceID,
-		in.Amount, in.Currency, in.Method, in.IdempotencyKey,
+		    (payer_id, payee_id, reference_type, reference_id, amount, currency, method, status, idempotency_key, metadata)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8, $9)
+		 ON CONFLICT (idempotency_key)
+		 DO UPDATE SET updated_at = payments.payment_intents.updated_at
+		 RETURNING id, payer_id, payee_id, reference_type, reference_id, amount, currency, method, status,
+		           idempotency_key, COALESCE(provider_ref,''), created_at, updated_at`,
+		in.PayerID, in.PayeeID, in.ReferenceType, in.ReferenceID,
+		in.Amount, in.Currency, in.Method, in.IdempotencyKey, "{}",
 	).Scan(&in.ID, &in.PayerID, &in.PayeeID, &in.ReferenceType, &in.ReferenceID,
 		&in.Amount, &in.Currency, &in.Method, &in.Status, &in.IdempotencyKey,
-		&in.CreatedAt, &in.UpdatedAt)
+		&in.ProviderRef, &in.CreatedAt, &in.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
 
-	// Write audit entry in same transaction
-	_, err = tx.Exec(ctx,
-		`INSERT INTO payments.payment_audit_log (intent_id, event, new_status, actor_id) VALUES ($1,'initiated','pending',$2)`,
-		in.ID, in.PayerID,
-	)
-	if err != nil {
-		return nil, err
+	result := &CreateIntentResult{
+		Intent:      &in,
+		WasExisting: time.Since(in.CreatedAt) > time.Second,
 	}
 
-	return &in, tx.Commit(ctx)
+	// Only write audit entry for genuinely new intents
+	if !result.WasExisting {
+		_, err = tx.Exec(ctx,
+			`INSERT INTO payments.payment_audit_log (intent_id, event, new_status, actor_id) VALUES ($1,'initiated','pending',$2)`,
+			in.ID, in.PayerID,
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return result, tx.Commit(ctx)
 }
 
 // GetIntent fetches a payment intent by ID.

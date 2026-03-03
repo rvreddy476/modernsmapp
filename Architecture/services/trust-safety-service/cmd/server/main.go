@@ -73,6 +73,7 @@ func main() {
 	r.Use(middleware.RequestID())
 	r.Use(middleware.Logger())
 	r.Use(middleware.Metrics(httpMetrics))
+	r.Use(middleware.RequireInternalKey(env("INTERNAL_SERVICE_KEY", "")))
 
 	checker.RegisterRoutes(r)
 	r.GET("/metrics", metrics.Handler())
