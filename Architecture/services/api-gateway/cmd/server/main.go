@@ -30,6 +30,11 @@ type route struct {
 func main() {
 	port := env("HTTP_PORT", "8080")
 	allowedOrigins := strings.Split(env("CORS_ORIGINS", "http://localhost:3000"), ",")
+	for _, o := range allowedOrigins {
+		if strings.TrimSpace(o) == "*" {
+			slog.Warn("CORS_ORIGINS contains wildcard '*' — this allows any origin and must not be used in production")
+		}
+	}
 
 	// Validate JWT_SECRET at startup; downstream services rely on it for full
 	// signature verification so the gateway must ensure it is configured.
@@ -242,7 +247,7 @@ func (e *jwtError) Error() string { return "jwt: " + e.msg }
 
 func isAllowedOrigin(origin string, allowed []string) bool {
 	for _, a := range allowed {
-		if a == "*" || a == origin {
+		if a == origin {
 			return true
 		}
 	}
