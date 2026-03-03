@@ -12,6 +12,16 @@ import (
 	"github.com/google/uuid"
 )
 
+// hasScope reports whether the space-separated scopes string contains the exact target scope.
+func hasScope(scopes, target string) bool {
+	for _, s := range strings.Fields(scopes) {
+		if s == target {
+			return true
+		}
+	}
+	return false
+}
+
 type Handler struct {
 	svc *service.Service
 }
@@ -69,7 +79,7 @@ func (h *Handler) FileReport(c *gin.Context) {
 
 func (h *Handler) ListReports(c *gin.Context) {
 	scopes := c.GetHeader("X-Scopes")
-	if !strings.Contains(scopes, "admin") {
+	if !hasScope(scopes, "admin") {
 		api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil, nil)
 		return
 	}
@@ -100,7 +110,7 @@ func (h *Handler) ListReports(c *gin.Context) {
 
 func (h *Handler) GetReport(c *gin.Context) {
 	scopes := c.GetHeader("X-Scopes")
-	if !strings.Contains(scopes, "admin") {
+	if !hasScope(scopes, "admin") {
 		api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil, nil)
 		return
 	}
@@ -127,7 +137,7 @@ type UpdateReportRequest struct {
 
 func (h *Handler) UpdateReport(c *gin.Context) {
 	scopes := c.GetHeader("X-Scopes")
-	if !strings.Contains(scopes, "admin") {
+	if !hasScope(scopes, "admin") {
 		api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil, nil)
 		return
 	}

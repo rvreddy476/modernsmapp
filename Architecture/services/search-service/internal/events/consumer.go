@@ -3,7 +3,7 @@ package events
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"regexp"
 	"strings"
 
@@ -55,12 +55,12 @@ func (c *Consumer) Start(ctx context.Context) {
 	for {
 		m, err := c.reader.ReadMessage(ctx)
 		if err != nil {
-			log.Printf("Consumer error: %v\n", err)
+			slog.Error("kafka consumer error", "error", err)
 			break
 		}
 
 		if err := c.processMessage(ctx, m); err != nil {
-			log.Printf("Failed to process message: %v\n", err)
+			slog.Error("failed to process message", "topic", m.Topic, "offset", m.Offset, "error", err)
 		}
 	}
 }

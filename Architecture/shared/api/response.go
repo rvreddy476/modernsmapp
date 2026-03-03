@@ -69,3 +69,17 @@ func ErrorWithContext(ctx context.Context, w http.ResponseWriter, status int, co
 	}
 	Error(w, status, code, message, details, meta)
 }
+
+// ErrorWithRequestID writes a JSON error response including the request ID for tracing.
+// It extracts X-Request-Id from the incoming request and adds it to the error response meta.
+func ErrorWithRequestID(w http.ResponseWriter, r *http.Request, status int, code, message string, detail interface{}, meta map[string]interface{}) {
+	if meta == nil {
+		meta = make(map[string]interface{})
+	}
+	responseMeta := &Meta{}
+	if reqID := r.Header.Get("X-Request-Id"); reqID != "" {
+		meta["request_id"] = reqID
+		responseMeta.RequestID = reqID
+	}
+	Error(w, status, code, message, detail, responseMeta)
+}

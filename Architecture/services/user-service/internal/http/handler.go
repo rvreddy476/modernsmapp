@@ -18,9 +18,10 @@ import (
 )
 
 type Handler struct {
-	svc          *service.Service
-	graphURL     string
+	svc           *service.Service
+	graphURL      string
 	presenceStore *presence.Store
+	graphClient   *http.Client
 }
 
 func New(svc *service.Service, presenceStore *presence.Store) *Handler {
@@ -28,7 +29,9 @@ func New(svc *service.Service, presenceStore *presence.Store) *Handler {
 	if graphURL == "" {
 		graphURL = "http://graph-service:8083"
 	}
-	return &Handler{svc: svc, graphURL: graphURL, presenceStore: presenceStore}
+	h := &Handler{svc: svc, graphURL: graphURL, presenceStore: presenceStore}
+	h.graphClient = httpclient.NewWithBreaker(5*time.Second, "user->graph")
+	return h
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
@@ -321,7 +324,11 @@ func (h *Handler) resolveViewerAccess(ctx *gin.Context, ownerID uuid.UUID) servi
 	}
 
 	url := fmt.Sprintf("%s/v1/graph/relationship?user_id=%s&other_id=%s", h.graphURL, viewerID, ownerID)
-	resp, err := http.Get(url)
+	graphReq, err := http.NewRequestWithContext(ctx.Request.Context(), http.MethodGet, url, nil)
+	if err != nil {
+		return service.ViewerAccess{}
+	}
+	resp, err := h.graphClient.Do(graphReq)
 	if err != nil {
 		return service.ViewerAccess{}
 	}
@@ -1055,7 +1062,7 @@ func (h *Handler) GetOnlineStatus(c *gin.Context) {
 		// Fail-closed: if graph-service is unreachable, treat as not in circle.
 		url := fmt.Sprintf("%s/v1/graph/relationship?user_id=%s&other_id=%s", h.graphURL, requesterID, targetID)
 		graphReq, _ := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, url, nil)
-		resp, err := httpclient.NewWithBreaker(5*time.Second, "user->graph").Do(graphReq)
+		resp, err := h.graphClient.Do(graphReq)
 		if err == nil {
 			defer resp.Body.Close()
 			var body struct {

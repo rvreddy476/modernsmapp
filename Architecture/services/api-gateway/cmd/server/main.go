@@ -5,8 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log"
 	"log/slog"
+	"math/rand"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -76,14 +79,14 @@ func main() {
 		// Suggestion service
 		{"/v1/suggestions", env("SUGGESTION_SERVICE_URL", "http://suggestion-service:8100")},
 		// Orders / Bookings service (v2.1)
-		{"/v1/orders", env("ORDERS_SERVICE_URL", "http://localhost:8101")},
-		{"/v1/bookings", env("ORDERS_SERVICE_URL", "http://localhost:8101")},
+		{"/v1/orders", env("ORDERS_SERVICE_URL", "http://orders-service:8101")},
+		{"/v1/bookings", env("ORDERS_SERVICE_URL", "http://orders-service:8101")},
 		// Payments service (v2.1)
-		{"/v1/payments", env("PAYMENTS_SERVICE_URL", "http://localhost:8102")},
+		{"/v1/payments", env("PAYMENTS_SERVICE_URL", "http://payments-service:8102")},
 		// Shop / Live / Memories services
-		{"/v1/shop",     env("SHOP_SERVICE_URL",     "http://localhost:8105")},
-		{"/v1/live",     env("LIVE_SERVICE_URL",      "http://localhost:8103")},
-		{"/v1/memories", env("MEMORIES_SERVICE_URL",  "http://localhost:8104")},
+		{"/v1/shop",     env("SHOP_SERVICE_URL",     "http://shop-service:8105")},
+		{"/v1/live",     env("LIVE_SERVICE_URL",      "http://live-service:8103")},
+		{"/v1/memories", env("MEMORIES_SERVICE_URL",  "http://memories-service:8104")},
 	}
 
 	var routes []route
@@ -138,7 +141,7 @@ func main() {
 		slog.Warn("INTERNAL_SERVICE_KEY not set — internal service authentication disabled")
 	}
 
-	handler := rateLimitMiddleware(injectInternalKeyMiddleware(internalKey, jwtExtractMiddleware(jwtSecret, coreHandler)))
+	handler := requestIDMiddleware(jwtExtractMiddleware(jwtSecret, rateLimitMiddleware(injectInternalKeyMiddleware(internalKey, coreHandler))))
 
 	log.Printf("API Gateway listening on :%s", port)
 	log.Fatal(http.ListenAndServe(":"+port, handler))
@@ -302,12 +305,18 @@ func rateLimitMiddleware(next http.Handler) http.Handler {
 	userStore := newRateLimiterStore(60, 120)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ip := r.RemoteAddr
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if realIP := r.Header.Get("X-Real-IP"); realIP != "" {
+			ip = strings.TrimSpace(realIP)
+		} else if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 			if idx := strings.Index(xff, ","); idx != -1 {
 				ip = strings.TrimSpace(xff[:idx])
 			} else {
 				ip = strings.TrimSpace(xff)
 			}
+		}
+		// Strip port if present (RemoteAddr includes port)
+		if host, _, err := net.SplitHostPort(ip); err == nil {
+			ip = host
 		}
 		if !ipStore.get(ip).Allow() {
 			w.Header().Set("Retry-After", "1")
@@ -337,6 +346,22 @@ func injectInternalKeyMiddleware(secret string, next http.Handler) http.Handler 
 		if secret != "" {
 			r.Header.Set("X-Internal-Service-Key", secret)
 		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// requestIDMiddleware ensures every request has an X-Request-Id header for
+// end-to-end tracing. It honours an existing X-Request-Id set by an upstream
+// load balancer; otherwise it generates one. The ID is also echoed back on the
+// response so clients can correlate logs.
+func requestIDMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqID := r.Header.Get("X-Request-Id")
+		if reqID == "" {
+			reqID = fmt.Sprintf("%d-%d", time.Now().UnixNano(), rand.Int63())
+		}
+		r.Header.Set("X-Request-Id", reqID)
+		w.Header().Set("X-Request-Id", reqID)
 		next.ServeHTTP(w, r)
 	})
 }

@@ -79,6 +79,10 @@ type Store interface {
 	InsertOutboxEventTx(ctx context.Context, tx pgx.Tx, eventType, partitionKey string, payload interface{}) error
 	FetchUnpublishedOutboxEvents(ctx context.Context, limit int) ([]store.OutboxEvent, error)
 	MarkOutboxEventPublished(ctx context.Context, id int64) error
+	// Recovery codes
+	StoreRecoveryCodes(ctx context.Context, userID uuid.UUID, codeHashes []string) error
+	GetUnusedRecoveryCodes(ctx context.Context, userID uuid.UUID) ([]store.RecoveryCode, error)
+	MarkRecoveryCodeUsed(ctx context.Context, id uuid.UUID) error
 }
 
 type Producer interface {
@@ -194,6 +198,19 @@ func (s *Service) VerifyOTP(ctx context.Context, phone, code, purpose, deviceID,
 			return nil, fmt.Errorf("failed to commit transaction: %w", err)
 		}
 		created = true
+	}
+
+	// Guard: if 2FA is enabled, do not issue a full session — require second factor
+	if user.TwoFactorEnabled {
+		pendingToken, err := s.StorePending2FASession(ctx, user.ID, deviceID, platform, ip, userAgent)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create pending 2FA session: %w", err)
+		}
+		return &AuthResponse{
+			Requires2FA:  true,
+			PendingToken: pendingToken,
+			User:         user,
+		}, nil
 	}
 
 	sessionID := uuid.New()

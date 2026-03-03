@@ -32,8 +32,8 @@ func Metrics(m *metrics.HTTPMetrics) gin.HandlerFunc {
 		}
 
 		method := c.Request.Method
-		m.RequestsTotal.WithLabelValues(method, path, status).Inc()
-		m.RequestDuration.WithLabelValues(method, path, status).Observe(duration)
-		m.ResponseSize.WithLabelValues(method, path, status).Observe(float64(c.Writer.Size()))
+		m.RequestsTotal.WithLabelValues(method, path, status, m.ServiceName).Inc()
+		m.RequestDuration.WithLabelValues(method, path, status, m.ServiceName).Observe(duration)
+		m.ResponseSize.WithLabelValues(method, path, status, m.ServiceName).Observe(float64(c.Writer.Size()))
 	}
 }

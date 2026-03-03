@@ -109,7 +109,7 @@ func main() {
 	// 9. Dependencies
 	store := postgres.New(dbPool)
 	aggStore := postgres.NewAggregateStore(dbPool)
-	svc := service.New(store, kafkaWriter)
+	svc := service.New(ctx, store, kafkaWriter)
 	handler := httpHandler.New(svc, rdb)
 	dashHandler := httpHandler.NewDashboardHandler(aggStore)
 
@@ -170,6 +170,7 @@ func main() {
 		Port:            port,
 		ShutdownTimeout: 10 * time.Second,
 		OnShutdown: func() {
+			svc.Stop()
 			workerCancel()
 			if kafkaWriter != nil {
 				kafkaWriter.Close()

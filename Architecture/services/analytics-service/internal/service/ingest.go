@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/atpost/analytics-service/internal/model"
@@ -25,18 +26,28 @@ type IngestService struct {
 	eventChan     chan postgres.Event
 	batchSize     int
 	flushInterval time.Duration
+	stopCh        chan struct{}
+	wg            sync.WaitGroup
 }
 
-func New(store *postgres.Store, kafkaWriter *kafka.Writer) *IngestService {
+func New(ctx context.Context, store *postgres.Store, kafkaWriter *kafka.Writer) *IngestService {
 	svc := &IngestService{
 		store:         store,
 		kafkaWriter:   kafkaWriter,
 		eventChan:     make(chan postgres.Event, 10000), // Buffer for burst
 		batchSize:     100,                              // Configurable
 		flushInterval: 2 * time.Second,
+		stopCh:        make(chan struct{}),
 	}
-	go svc.processLoop()
+	svc.wg.Add(1)
+	go svc.processLoop(ctx)
 	return svc
+}
+
+// Stop signals the processLoop to stop and waits for it to drain remaining events.
+func (s *IngestService) Stop() {
+	close(s.stopCh)
+	s.wg.Wait()
 }
 
 func (s *IngestService) IngestEvents(ctx context.Context, userID, sessionID string, dtos []EventDTO) error {
@@ -60,14 +71,16 @@ func (s *IngestService) IngestEvents(ctx context.Context, userID, sessionID stri
 	return nil
 }
 
-func (s *IngestService) processLoop() {
+func (s *IngestService) processLoop(ctx context.Context) {
+	defer s.wg.Done()
+
 	var batch []postgres.Event
 	ticker := time.NewTicker(s.flushInterval)
 	defer ticker.Stop()
 
 	flush := func() {
 		if len(batch) > 0 {
-			if err := s.store.InsertBatch(context.Background(), batch); err != nil {
+			if err := s.store.InsertBatch(ctx, batch); err != nil {
 				log.Printf("Error inserting batch: %v", err)
 			}
 
@@ -82,8 +95,22 @@ func (s *IngestService) processLoop() {
 
 	for {
 		select {
-		case event := <-s.eventChan:
-			batch = append(batch, event)
+		case <-s.stopCh:
+			// Drain remaining events
+			for {
+				select {
+				case e := <-s.eventChan:
+					batch = append(batch, e)
+					if len(batch) >= s.batchSize {
+						flush()
+					}
+				default:
+					flush()
+					return
+				}
+			}
+		case e := <-s.eventChan:
+			batch = append(batch, e)
 			if len(batch) >= s.batchSize {
 				flush()
 			}

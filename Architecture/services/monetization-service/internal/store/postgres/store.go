@@ -4,12 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// ErrInsufficientFunds is returned when a wallet has insufficient balance for a debit.
+var ErrInsufficientFunds = errors.New("insufficient funds")
 
 // ---------------------------------------------------------------------------
 // Models
@@ -66,6 +70,7 @@ type Subscription struct {
 	CurrentPeriodStart time.Time `json:"current_period_start"`
 	CurrentPeriodEnd   time.Time `json:"current_period_end"`
 	CreatedAt          time.Time `json:"created_at"`
+	IdempotencyKey     string    `json:"idempotency_key,omitempty"`
 }
 
 // CreatorTier represents a creator's subscription tier.
@@ -464,7 +469,8 @@ func (s *Store) UpdateTier(ctx context.Context, t *CreatorTier) error {
 
 // Subscribe creates a subscription, charges the subscriber wallet, and credits the creator wallet.
 // All operations are performed within a single DB transaction.
-func (s *Store) Subscribe(ctx context.Context, subscriberID, creatorID, tierID uuid.UUID, tierName string, price float64, currency string) (*Subscription, error) {
+// idempotencyKey is optional; if non-empty it is stored on the subscription row.
+func (s *Store) Subscribe(ctx context.Context, subscriberID, creatorID, tierID uuid.UUID, tierName string, price float64, currency string, idempotencyKey string) (*Subscription, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -496,6 +502,10 @@ func (s *Store) Subscribe(ctx context.Context, subscriberID, creatorID, tierID u
 	}
 
 	// Create subscription record
+	var iKey *string
+	if idempotencyKey != "" {
+		iKey = &idempotencyKey
+	}
 	sub := &Subscription{
 		ID:                 uuid.New(),
 		SubscriberID:       subscriberID,
@@ -508,12 +518,13 @@ func (s *Store) Subscribe(ctx context.Context, subscriberID, creatorID, tierID u
 		CurrentPeriodStart: now,
 		CurrentPeriodEnd:   periodEnd,
 		CreatedAt:          now,
+		IdempotencyKey:     idempotencyKey,
 	}
 	_, err = tx.Exec(ctx, `
-		INSERT INTO subscriptions (id, subscriber_id, creator_id, tier_id, tier_name, price, currency, status, current_period_start, current_period_end, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		INSERT INTO subscriptions (id, subscriber_id, creator_id, tier_id, tier_name, price, currency, status, current_period_start, current_period_end, created_at, idempotency_key)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 	`, sub.ID, sub.SubscriberID, sub.CreatorID, sub.TierID, sub.TierName,
-		sub.Price, sub.Currency, sub.Status, sub.CurrentPeriodStart, sub.CurrentPeriodEnd, sub.CreatedAt)
+		sub.Price, sub.Currency, sub.Status, sub.CurrentPeriodStart, sub.CurrentPeriodEnd, sub.CreatedAt, iKey)
 	if err != nil {
 		return nil, err
 	}
@@ -606,6 +617,82 @@ func (s *Store) GetSubscription(ctx context.Context, subscriberID, creatorID uui
 		return nil, err
 	}
 	return &sub, nil
+}
+
+// GetSubscriptionByIdempotencyKey returns a subscription matching the given idempotency key,
+// or nil if no matching subscription exists.
+func (s *Store) GetSubscriptionByIdempotencyKey(ctx context.Context, key string) (*Subscription, error) {
+	var sub Subscription
+	err := s.db.QueryRow(ctx, `
+		SELECT id, subscriber_id, creator_id, tier_id, tier_name, price, currency, status, current_period_start, current_period_end, created_at
+		FROM subscriptions
+		WHERE idempotency_key = $1
+	`, key).Scan(
+		&sub.ID, &sub.SubscriberID, &sub.CreatorID, &sub.TierID, &sub.TierName,
+		&sub.Price, &sub.Currency, &sub.Status, &sub.CurrentPeriodStart, &sub.CurrentPeriodEnd, &sub.CreatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	sub.IdempotencyKey = key
+	return &sub, nil
+}
+
+// ChargeAndCredit atomically debits fromUserID and credits toUserID in a single transaction.
+// Returns ErrInsufficientFunds if fromUserID has insufficient balance.
+func (s *Store) ChargeAndCredit(ctx context.Context, fromUserID, toUserID string, amount float64, description string) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	// Atomic debit: only succeeds if balance is sufficient
+	var newBalance float64
+	err = tx.QueryRow(ctx,
+		`UPDATE wallets SET balance = balance - $2, updated_at = NOW() WHERE user_id = $1 AND balance >= $2 AND is_frozen = false RETURNING balance`,
+		fromUserID, amount,
+	).Scan(&newBalance)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrInsufficientFunds
+		}
+		return err
+	}
+
+	// Credit
+	_, err = tx.Exec(ctx,
+		`UPDATE wallets SET balance = balance + $2, lifetime_earnings = lifetime_earnings + $2, updated_at = NOW() WHERE user_id = $1`,
+		toUserID, amount,
+	)
+	if err != nil {
+		return err
+	}
+
+	// Record debit transaction
+	_, err = tx.Exec(ctx,
+		`INSERT INTO transactions (id, wallet_id, type, amount, currency, status, description, created_at)
+		 SELECT $1, id, 'subscription_payment', $3, currency, 'completed', $4, NOW() FROM wallets WHERE user_id = $2`,
+		uuid.New(), fromUserID, amount, description,
+	)
+	if err != nil {
+		return fmt.Errorf("debit transaction record: %w", err)
+	}
+
+	// Record credit transaction
+	_, err = tx.Exec(ctx,
+		`INSERT INTO transactions (id, wallet_id, type, amount, currency, status, description, created_at)
+		 SELECT $1, id, 'earning', $3, currency, 'completed', $4, NOW() FROM wallets WHERE user_id = $2`,
+		uuid.New(), toUserID, amount, description,
+	)
+	if err != nil {
+		return fmt.Errorf("credit transaction record: %w", err)
+	}
+
+	return tx.Commit(ctx)
 }
 
 // ---------------------------------------------------------------------------

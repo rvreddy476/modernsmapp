@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -10,6 +11,9 @@ import (
 	"github.com/google/uuid"
 	kafka "github.com/segmentio/kafka-go"
 )
+
+// ErrDisputeAlreadyOpen is returned when a dispute is already open for an order.
+var ErrDisputeAlreadyOpen = errors.New("a dispute is already open for this order")
 
 type Service struct {
 	store  *postgres.Store
@@ -186,10 +190,20 @@ func (s *Service) UpdateBookingStatus(ctx context.Context, bookingID, actorID uu
 }
 
 func (s *Service) OpenDispute(ctx context.Context, orderID, openedBy uuid.UUID, reason string, evidenceURLs []string) (*postgres.Dispute, error) {
-	// Mark order as disputed
+	// Atomically mark order as having a dispute; prevents double-disputes.
+	opened, err := s.store.MarkDisputeOpened(ctx, orderID)
+	if err != nil {
+		return nil, err
+	}
+	if !opened {
+		return nil, ErrDisputeAlreadyOpen
+	}
+
+	// Transition order status to disputed
 	if err := s.store.UpdateOrderStatus(ctx, orderID, openedBy, "disputed"); err != nil {
 		return nil, err
 	}
+
 	d, err := s.store.CreateDispute(ctx, postgres.Dispute{
 		OrderID:      orderID,
 		OpenedBy:     openedBy,

@@ -116,9 +116,10 @@ func (c *Consumer) processWithRetry(ctx context.Context, logger *slog.Logger, ms
 		return
 	}
 
-	// Dedup check
+	// Dedup check — key includes topic so the same event ID on different topics
+	// is treated as distinct and not incorrectly de-duplicated.
 	if c.rdb != nil {
-		dedupKey := fmt.Sprintf("consumed:%s:%s", c.cfg.GroupID, envelope.EventID)
+		dedupKey := fmt.Sprintf("consumed:%s:%s:%s", c.cfg.GroupID, msg.Topic, envelope.EventID)
 		set, err := c.rdb.SetNX(ctx, dedupKey, "1", c.cfg.DedupTTL).Result()
 		if err == nil && !set {
 			if c.metrics != nil {
@@ -156,6 +157,12 @@ func (c *Consumer) processWithRetry(ctx context.Context, logger *slog.Logger, ms
 					c.cfg.Topic, c.cfg.GroupID, envelope.EventType,
 				).Observe(duration.Seconds())
 			}
+			// Log processed message details for consumer lag awareness.
+			slog.Debug("kafka message processed",
+				"topic", msg.Topic,
+				"partition", msg.Partition,
+				"offset", msg.Offset,
+			)
 			c.commitMessage(ctx, logger, msg)
 			return
 		}

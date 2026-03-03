@@ -221,6 +221,18 @@ func (s *Store) UpdateBookingStatus(ctx context.Context, bookingID uuid.UUID, ne
 	return err
 }
 
+// MarkDisputeOpened atomically sets has_dispute=true on the order and returns false if already open.
+func (s *Store) MarkDisputeOpened(ctx context.Context, orderID uuid.UUID) (bool, error) {
+	result, err := s.db.Exec(ctx,
+		`UPDATE orders.orders SET has_dispute = TRUE WHERE id = $1 AND has_dispute = FALSE`,
+		orderID,
+	)
+	if err != nil {
+		return false, err
+	}
+	return result.RowsAffected() > 0, nil
+}
+
 // CreateDispute opens a dispute for an order.
 func (s *Store) CreateDispute(ctx context.Context, d Dispute) (*Dispute, error) {
 	d.ID = uuid.New()

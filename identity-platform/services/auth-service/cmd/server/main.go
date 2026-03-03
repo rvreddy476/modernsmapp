@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -11,7 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/atpost/identity-auth-service/internal/config"
 	"github.com/atpost/identity-auth-service/internal/events"
-	"github.com/atpost/identity-auth-service/internal/http"
+	internalhttp "github.com/atpost/identity-auth-service/internal/http"
 	"github.com/atpost/identity-auth-service/internal/service"
 	"github.com/atpost/identity-auth-service/internal/store"
 	"github.com/atpost/identity-shared/logging"
@@ -23,6 +24,16 @@ func main() {
 	cfg := config.Load()
 	logger := logging.New("auth-service")
 	slog.SetDefault(logger)
+
+	if cfg.PostgresDSN == "" {
+		slog.Error("DATABASE_URL is required")
+		os.Exit(1)
+	}
+	if cfg.JWTSecret == "" {
+		slog.Error("JWT_SECRET is required")
+		os.Exit(1)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -65,7 +76,7 @@ func main() {
 	}()
 
 	authSvc := service.New(authStore, authProducer, cfg, logger, rdb)
-	authHandler := http.New(authSvc, cfg, logger)
+	authHandler := internalhttp.New(authSvc, cfg, logger)
 
 	// 4. Outbox Relay
 	relay := events.NewOutboxRelay(authStore, authProducer, logger, 1*time.Second)
@@ -73,10 +84,10 @@ func main() {
 
 	// 5. Server
 	r := gin.New()
-	r.Use(http.RequestIDMiddleware())
-	r.Use(http.LoggerMiddleware(logger))
-	r.Use(http.RecoveryMiddleware(logger))
-	r.Use(http.CORSMiddleware())
+	r.Use(internalhttp.RequestIDMiddleware())
+	r.Use(internalhttp.LoggerMiddleware(logger))
+	r.Use(internalhttp.RecoveryMiddleware(logger))
+	r.Use(internalhttp.CORSMiddleware())
 	proxies := cfg.TrustedProxies
 	if len(proxies) == 0 {
 		proxies = nil
@@ -85,14 +96,32 @@ func main() {
 		logger.Error("failed to set trusted proxies", "err", err)
 		os.Exit(1)
 	}
-	authMW := http.AuthMiddleware(cfg.JWTSecret)
-	csrfMW := http.RequireCSRFMiddleware()
+	authMW := internalhttp.AuthMiddleware(cfg.JWTSecret)
+	csrfMW := internalhttp.RequireCSRFMiddleware()
 	authHandler.RegisterRoutes(r, authMW, csrfMW)
 	authHandler.RegisterDocsRoutes(r)
 
-	logger.Info("starting auth-service", "port", cfg.HTTPPort)
-	if err := r.Run(":" + cfg.HTTPPort); err != nil {
-		logger.Error("failed to run server", "err", err)
-		os.Exit(1)
+	srv := &http.Server{
+		Addr:    ":" + cfg.HTTPPort,
+		Handler: r,
 	}
+
+	go func() {
+		logger.Info("starting auth-service", "port", cfg.HTTPPort)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("server error", "error", err)
+			os.Exit(1)
+		}
+	}()
+
+	// Wait for interrupt signal via the existing NotifyContext
+	<-ctx.Done()
+
+	slog.Info("shutting down auth service...")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		slog.Error("shutdown error", "error", err)
+	}
+	slog.Info("auth service stopped")
 }

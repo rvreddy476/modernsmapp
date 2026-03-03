@@ -77,6 +77,12 @@ type OutboxEvent struct {
 	CreatedAt time.Time
 }
 
+// RecoveryCode represents a row in auth.recovery_codes.
+type RecoveryCode struct {
+	ID       uuid.UUID
+	CodeHash string
+}
+
 type Store struct {
 	db *pgxpool.Pool
 }
@@ -665,6 +671,68 @@ func (s *Store) MarkOutboxEventPublished(ctx context.Context, id int64) error {
 	_, err := s.db.Exec(ctx, `
 		UPDATE auth.outbox_events SET published_at = NOW() WHERE id = $1
 	`, id)
+	return err
+}
+
+// --- auth.recovery_codes ---
+
+// StoreRecoveryCodes inserts hashed recovery codes into Postgres for the given user,
+// replacing any existing unused codes.
+func (s *Store) StoreRecoveryCodes(ctx context.Context, userID uuid.UUID, codeHashes []string) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// Remove existing unused codes
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM auth.recovery_codes WHERE user_id = $1 AND used_at IS NULL`,
+		userID,
+	); err != nil {
+		return fmt.Errorf("delete old recovery codes: %w", err)
+	}
+
+	for _, h := range codeHashes {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO auth.recovery_codes (user_id, code_hash) VALUES ($1, $2)`,
+			userID, h,
+		); err != nil {
+			return fmt.Errorf("insert recovery code: %w", err)
+		}
+	}
+
+	return tx.Commit(ctx)
+}
+
+// GetUnusedRecoveryCodes returns all unused recovery code hashes for a user.
+func (s *Store) GetUnusedRecoveryCodes(ctx context.Context, userID uuid.UUID) ([]RecoveryCode, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT id, code_hash FROM auth.recovery_codes WHERE user_id = $1 AND used_at IS NULL`,
+		userID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []RecoveryCode
+	for rows.Next() {
+		var r RecoveryCode
+		if err := rows.Scan(&r.ID, &r.CodeHash); err != nil {
+			return nil, err
+		}
+		result = append(result, r)
+	}
+	return result, rows.Err()
+}
+
+// MarkRecoveryCodeUsed sets used_at = NOW() for a specific recovery code row.
+func (s *Store) MarkRecoveryCodeUsed(ctx context.Context, id uuid.UUID) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE auth.recovery_codes SET used_at = NOW() WHERE id = $1`,
+		id,
+	)
 	return err
 }
 

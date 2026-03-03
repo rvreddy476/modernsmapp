@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -88,8 +89,8 @@ func (s *Service) RemovePayoutMethod(ctx context.Context, userID, methodID uuid.
 // RequestPayout validates the request and creates a payout transaction.
 // Validates: wallet exists, not frozen, sufficient balance.
 func (s *Service) RequestPayout(ctx context.Context, userID uuid.UUID, amount float64, payoutMethodID uuid.UUID) (*postgres.Transaction, error) {
-	if amount <= 0 {
-		return nil, fmt.Errorf("INVALID_AMOUNT")
+	if amount <= 0 || amount > maxAmountMinorUnits {
+		return nil, fmt.Errorf("amount out of valid range: %w", ErrInvalidAmount)
 	}
 
 	// Ensure wallet exists
@@ -133,11 +134,25 @@ func (s *Service) UpdateTier(ctx context.Context, t *postgres.CreatorTier) error
 // Subscriptions
 // ---------------------------------------------------------------------------
 
+// ErrInvalidAmount is returned when an amount is out of valid range.
+var ErrInvalidAmount = errors.New("invalid amount")
+
+const maxAmountMinorUnits = 100_000_000 // 1,000,000.00 in minor units
+
 // Subscribe validates the tier exists and is active, then creates the subscription.
 // Charges the subscriber wallet and credits the creator wallet.
-func (s *Service) Subscribe(ctx context.Context, subscriberID, creatorID uuid.UUID, tierID uuid.UUID) (*postgres.Subscription, error) {
+// idempotencyKey is optional; if non-empty, a duplicate call with the same key returns the existing subscription.
+func (s *Service) Subscribe(ctx context.Context, subscriberID, creatorID uuid.UUID, tierID uuid.UUID, idempotencyKey string) (*postgres.Subscription, error) {
 	if subscriberID == creatorID {
 		return nil, fmt.Errorf("CANNOT_SUBSCRIBE_TO_SELF")
+	}
+
+	// Idempotency check: return cached result if key already used
+	if idempotencyKey != "" {
+		existing, err := s.store.GetSubscriptionByIdempotencyKey(ctx, idempotencyKey)
+		if err == nil && existing != nil {
+			return existing, nil
+		}
 	}
 
 	// Validate tier exists and is active
@@ -153,6 +168,11 @@ func (s *Service) Subscribe(ctx context.Context, subscriberID, creatorID uuid.UU
 	}
 	if tier.CreatorID != creatorID {
 		return nil, fmt.Errorf("TIER_CREATOR_MISMATCH")
+	}
+
+	// Amount bounds validation
+	if tier.Price <= 0 || tier.Price > maxAmountMinorUnits {
+		return nil, fmt.Errorf("amount out of valid range: %w", ErrInvalidAmount)
 	}
 
 	// Check for existing active subscription
@@ -174,7 +194,7 @@ func (s *Service) Subscribe(ctx context.Context, subscriberID, creatorID uuid.UU
 		return nil, err
 	}
 
-	return s.store.Subscribe(ctx, subscriberID, creatorID, tier.ID, tier.Name, tier.Price, tier.Currency)
+	return s.store.Subscribe(ctx, subscriberID, creatorID, tier.ID, tier.Name, tier.Price, tier.Currency, idempotencyKey)
 }
 
 // Unsubscribe cancels an active subscription.

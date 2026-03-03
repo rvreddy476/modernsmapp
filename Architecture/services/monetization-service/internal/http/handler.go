@@ -469,7 +469,9 @@ func (h *Handler) Subscribe(c *gin.Context) {
 		return
 	}
 
-	sub, err := h.svc.Subscribe(c.Request.Context(), userID, creatorID, tierID)
+	idempotencyKey := c.GetHeader("X-Idempotency-Key")
+
+	sub, err := h.svc.Subscribe(c.Request.Context(), userID, creatorID, tierID, idempotencyKey)
 	if err != nil {
 		switch err.Error() {
 		case "CANNOT_SUBSCRIBE_TO_SELF":

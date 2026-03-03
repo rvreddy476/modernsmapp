@@ -3,6 +3,7 @@ package httpclient
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -98,13 +99,21 @@ func (b *BreakerTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		n := b.failures.Add(1)
 		if n >= b.threshold {
 			b.openUntil.Store(time.Now().Add(b.timeout).UnixNano())
+			slog.Warn("circuit breaker opened", "name", b.name)
 			b.failures.Store(0)
+		}
+		// Re-open the breaker when a half-open probe fails
+		if b.halfOpen.Load() {
+			b.openUntil.Store(time.Now().Add(b.timeout).UnixNano())
 		}
 		b.halfOpen.Store(false)
 		return resp, err
 	}
 	// success — reset state
 	b.failures.Store(0)
+	if b.openUntil.Load() > 0 {
+		slog.Info("circuit breaker closed", "name", b.name)
+	}
 	b.openUntil.Store(0)
 	b.halfOpen.Store(false)
 	return resp, nil

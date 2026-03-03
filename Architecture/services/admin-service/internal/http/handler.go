@@ -13,6 +13,16 @@ import (
 	"github.com/google/uuid"
 )
 
+// hasScope reports whether the space-separated scopes string contains the exact target scope.
+func hasScope(scopes, target string) bool {
+	for _, s := range strings.Fields(scopes) {
+		if s == target {
+			return true
+		}
+	}
+	return false
+}
+
 type Handler struct {
 	svc *service.Service
 }
@@ -38,7 +48,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 func (h *Handler) AdminAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		scopes := c.GetHeader("X-Scopes")
-		if !strings.Contains(scopes, "admin") {
+		if !hasScope(scopes, "admin") {
 			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil, nil)
 			c.Abort()
 			return

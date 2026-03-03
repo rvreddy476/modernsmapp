@@ -2,12 +2,19 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// ErrNotRefundable is returned when a payment intent is not in a refundable state.
+var ErrNotRefundable = errors.New("payment intent is not in a refundable state")
+
+// ErrPaymentNotFound is returned when a payment intent does not exist.
+var ErrPaymentNotFound = errors.New("payment intent not found")
 
 type Store struct {
 	db *pgxpool.Pool
@@ -118,7 +125,7 @@ func (s *Store) UpdateStatus(ctx context.Context, id uuid.UUID, oldStatus, newSt
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
-	_, err = tx.Exec(ctx,
+	result, err := tx.Exec(ctx,
 		`UPDATE payments.payment_intents
 		 SET status = $1, provider_ref = COALESCE(NULLIF($2,''), provider_ref), updated_at = NOW()
 		 WHERE id = $3 AND status = $4`,
@@ -126,6 +133,9 @@ func (s *Store) UpdateStatus(ctx context.Context, id uuid.UUID, oldStatus, newSt
 	)
 	if err != nil {
 		return err
+	}
+	if result.RowsAffected() == 0 {
+		return ErrPaymentNotFound
 	}
 
 	_, err = tx.Exec(ctx,
@@ -137,6 +147,24 @@ func (s *Store) UpdateStatus(ctx context.Context, id uuid.UUID, oldStatus, newSt
 	}
 
 	return tx.Commit(ctx)
+}
+
+// InitiateRefund atomically transitions a payment intent from 'succeeded' to 'refunded'.
+// Returns ErrNotRefundable if the intent is not found or not in 'succeeded' status.
+func (s *Store) InitiateRefund(ctx context.Context, intentID uuid.UUID) error {
+	result, err := s.db.Exec(ctx,
+		`UPDATE payments.payment_intents
+		 SET status = 'refunded', updated_at = NOW()
+		 WHERE id = $1 AND status = 'succeeded'`,
+		intentID,
+	)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return ErrNotRefundable
+	}
+	return nil
 }
 
 // ListByReference returns payment intents for a given reference.

@@ -9,6 +9,7 @@ import (
 
 // HTTPMetrics holds Prometheus metrics for HTTP request instrumentation.
 type HTTPMetrics struct {
+	ServiceName     string
 	RequestsTotal   *prometheus.CounterVec
 	RequestDuration *prometheus.HistogramVec
 	ResponseSize    *prometheus.HistogramVec
@@ -16,9 +17,17 @@ type HTTPMetrics struct {
 }
 
 // NewHTTPMetrics creates and registers HTTP metrics with standard labels.
-func NewHTTPMetrics(serviceName string) *HTTPMetrics {
+// The serviceName is used both as the Prometheus subsystem (for metric naming)
+// and as the value of the "service" label (for alert rule filtering).
+// Pass an empty string or omit to use "unknown" as the service name.
+func NewHTTPMetrics(opts ...string) *HTTPMetrics {
+	serviceName := "unknown"
+	if len(opts) > 0 && opts[0] != "" {
+		serviceName = opts[0]
+	}
 	sub := sanitize(serviceName)
 	return &HTTPMetrics{
+		ServiceName: serviceName,
 		RequestsTotal: promauto.NewCounterVec(
 			prometheus.CounterOpts{
 				Namespace: "atpost",
@@ -26,7 +35,7 @@ func NewHTTPMetrics(serviceName string) *HTTPMetrics {
 				Name:      "http_requests_total",
 				Help:      "Total number of HTTP requests.",
 			},
-			[]string{"method", "path", "status"},
+			[]string{"method", "path", "status", "service"},
 		),
 		RequestDuration: promauto.NewHistogramVec(
 			prometheus.HistogramOpts{
@@ -36,7 +45,7 @@ func NewHTTPMetrics(serviceName string) *HTTPMetrics {
 				Help:      "HTTP request duration in seconds.",
 				Buckets:   []float64{.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10},
 			},
-			[]string{"method", "path", "status"},
+			[]string{"method", "path", "status", "service"},
 		),
 		ResponseSize: promauto.NewHistogramVec(
 			prometheus.HistogramOpts{
@@ -46,7 +55,7 @@ func NewHTTPMetrics(serviceName string) *HTTPMetrics {
 				Help:      "HTTP response size in bytes.",
 				Buckets:   prometheus.ExponentialBuckets(100, 10, 7),
 			},
-			[]string{"method", "path", "status"},
+			[]string{"method", "path", "status", "service"},
 		),
 		InFlight: promauto.NewGauge(
 			prometheus.GaugeOpts{

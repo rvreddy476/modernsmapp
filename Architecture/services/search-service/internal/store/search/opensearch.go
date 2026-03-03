@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -76,7 +76,7 @@ func (s *Store) createIndexIfNotExists(ctx context.Context, index, body string) 
 	}.Do(ctx, s.client)
 
 	if err != nil {
-		log.Printf("Error checking index %s: %v", index, err)
+		slog.Error("error checking search index", "index", index, "error", err)
 		return
 	}
 	defer exists.Body.Close()
@@ -87,11 +87,11 @@ func (s *Store) createIndexIfNotExists(ctx context.Context, index, body string) 
 			Body:  strings.NewReader(body),
 		}.Do(ctx, s.client)
 		if err != nil {
-			log.Printf("Error creating index %s: %v", index, err)
+			slog.Error("error creating search index", "index", index, "error", err)
 			return
 		}
 		defer create.Body.Close()
-		log.Printf("Created index: %s", index)
+		slog.Info("created search index", "index", index)
 	}
 }
 
@@ -428,14 +428,14 @@ func (s *Store) UniversalSearch(ctx context.Context, query string, searchType st
 
 		users, err := s.SearchUsers(ctx, query, halfLimit)
 		if err != nil {
-			log.Printf("UniversalSearch users error: %v", err)
+			slog.Error("universal search users error", "error", err)
 		} else if users != nil {
 			result.Users = users
 		}
 
 		posts, err := s.SearchPosts(ctx, query, halfLimit)
 		if err != nil {
-			log.Printf("UniversalSearch posts error: %v", err)
+			slog.Error("universal search posts error", "error", err)
 		} else if posts != nil {
 			result.Posts = posts
 		}

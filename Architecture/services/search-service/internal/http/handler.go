@@ -1,9 +1,10 @@
 package http
 
 import (
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/atpost/search-service/internal/store/search"
@@ -19,6 +20,19 @@ type Handler struct {
 
 func New(store *search.Store, rdb *redis.Client) *Handler {
 	return &Handler{store: store, rdb: rdb}
+}
+
+// validateSearchQuery checks that a query string is non-empty (after trimming)
+// and does not exceed 500 characters. Returns an error message suitable for
+// returning directly to the caller, or an empty string if valid.
+func validateSearchQuery(query string) string {
+	if len(strings.TrimSpace(query)) == 0 {
+		return "query cannot be empty"
+	}
+	if len(query) > 500 {
+		return "query too long: maximum 500 characters"
+	}
+	return ""
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
@@ -40,8 +54,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 func (h *Handler) SearchUsers(c *gin.Context) {
 	query := c.Query("q")
-	if query == "" {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Query parameter 'q' is required", nil, nil)
+	if errMsg := validateSearchQuery(query); errMsg != "" {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", errMsg, nil, nil)
 		return
 	}
 
@@ -54,7 +68,7 @@ func (h *Handler) SearchUsers(c *gin.Context) {
 
 	results, err := h.store.SearchUsers(c.Request.Context(), query, limit)
 	if err != nil {
-		log.Printf("SearchUsers error: %v", err)
+		slog.Error("SearchUsers error", "error", err)
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Search failed", nil, nil)
 		return
 	}
@@ -73,7 +87,7 @@ func (h *Handler) BulkSyncUsers(c *gin.Context) {
 
 	count, err := h.store.BulkIndexUsers(c.Request.Context(), req.Users)
 	if err != nil {
-		log.Printf("BulkSyncUsers error: %v", err)
+		slog.Error("BulkSyncUsers error", "error", err)
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Bulk sync failed", nil, nil)
 		return
 	}
@@ -83,8 +97,8 @@ func (h *Handler) BulkSyncUsers(c *gin.Context) {
 
 func (h *Handler) SearchPosts(c *gin.Context) {
 	query := c.Query("q")
-	if query == "" {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Query parameter 'q' is required", nil, nil)
+	if errMsg := validateSearchQuery(query); errMsg != "" {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", errMsg, nil, nil)
 		return
 	}
 
@@ -97,7 +111,7 @@ func (h *Handler) SearchPosts(c *gin.Context) {
 
 	results, err := h.store.SearchPosts(c.Request.Context(), query, limit)
 	if err != nil {
-		log.Printf("SearchPosts error: %v", err)
+		slog.Error("SearchPosts error", "error", err)
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Search failed", nil, nil)
 		return
 	}
@@ -109,8 +123,8 @@ func (h *Handler) SearchPosts(c *gin.Context) {
 // Query params: q (required), type (all|profiles|posts, default: all), limit (default: 20)
 func (h *Handler) UniversalSearch(c *gin.Context) {
 	query := c.Query("q")
-	if query == "" {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Query parameter 'q' is required", nil, nil)
+	if errMsg := validateSearchQuery(query); errMsg != "" {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", errMsg, nil, nil)
 		return
 	}
 
@@ -132,7 +146,7 @@ func (h *Handler) UniversalSearch(c *gin.Context) {
 
 	results, err := h.store.UniversalSearch(c.Request.Context(), query, searchType, limit)
 	if err != nil {
-		log.Printf("UniversalSearch error: %v", err)
+		slog.Error("UniversalSearch error", "error", err)
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Search failed", nil, nil)
 		return
 	}
@@ -145,8 +159,8 @@ func (h *Handler) UniversalSearch(c *gin.Context) {
 // Returns autocomplete suggestions for hashtags.
 func (h *Handler) SearchHashtags(c *gin.Context) {
 	query := c.Query("q")
-	if query == "" {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Query parameter 'q' is required", nil, nil)
+	if errMsg := validateSearchQuery(query); errMsg != "" {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", errMsg, nil, nil)
 		return
 	}
 
@@ -159,7 +173,7 @@ func (h *Handler) SearchHashtags(c *gin.Context) {
 
 	hashtags, err := h.store.SearchHashtags(c.Request.Context(), query, limit)
 	if err != nil {
-		log.Printf("SearchHashtags error: %v", err)
+		slog.Error("SearchHashtags error", "error", err)
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Hashtag search failed", nil, nil)
 		return
 	}
@@ -176,7 +190,7 @@ func (h *Handler) GetTrending(c *gin.Context) {
 	// ZRevRangeWithScores returns top members by score descending
 	results, err := h.rdb.ZRevRangeWithScores(c.Request.Context(), key, 0, 19).Result()
 	if err != nil {
-		log.Printf("GetTrending Redis error: %v", err)
+		slog.Error("GetTrending Redis error", "error", err)
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch trending hashtags", nil, nil)
 		return
 	}
@@ -209,7 +223,7 @@ func (h *Handler) GetSuggested(c *gin.Context) {
 
 	posts, err := h.store.GetPopularPosts(c.Request.Context(), limit)
 	if err != nil {
-		log.Printf("GetSuggested error: %v", err)
+		slog.Error("GetSuggested error", "error", err)
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch suggested posts", nil, nil)
 		return
 	}

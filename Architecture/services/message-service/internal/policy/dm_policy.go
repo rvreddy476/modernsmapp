@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -25,21 +26,24 @@ func NewDMPolicy(graphServiceURL string) *DMPolicy {
 }
 
 // CanDM returns true if userA and userB are mutual circle members (friends or mutual followers).
-// Falls back to ALLOW if graph-service is unreachable (fail-open to avoid blocking legitimate users).
+// Falls back to DENY if graph-service is unreachable (fail-closed for security).
 func (p *DMPolicy) CanDM(ctx context.Context, userAID, userBID string) (bool, error) {
 	url := fmt.Sprintf("%s/v1/graph/relationship?user_id=%s&other_id=%s", p.graphServiceURL, userAID, userBID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return true, nil // fail-open
+		slog.Warn("dm_policy: graph service unreachable, rejecting DM", "error", err)
+		return false, nil
 	}
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
-		return true, nil // fail-open: graph-service unreachable
+		slog.Warn("dm_policy: graph service unreachable, rejecting DM", "error", err)
+		return false, nil
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return true, nil // fail-open
+		slog.Warn("dm_policy: graph service unreachable, rejecting DM", "error", fmt.Errorf("status %d", resp.StatusCode))
+		return false, nil
 	}
 
 	var result struct {
@@ -48,7 +52,8 @@ func (p *DMPolicy) CanDM(ctx context.Context, userAID, userBID string) (bool, er
 		FollowedBy bool `json:"followed_by"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return true, nil // fail-open
+		slog.Warn("dm_policy: graph service unreachable, rejecting DM", "error", err)
+		return false, nil
 	}
 
 	// Circle membership = friends OR mutual follow (both follow each other)

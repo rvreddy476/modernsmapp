@@ -25,16 +25,23 @@ type Service struct {
 	messageServiceURL string
 	postServiceURL    string
 	jwtSecret         string
+	chatClient        *http.Client
+	postClient        *http.Client
+	notifyClient      *http.Client
 }
 
 func New(s *store.Store, rdb *redis.Client, msgURL, postURL, jwtSecret string) *Service {
-	return &Service{
+	svc := &Service{
 		store:             s,
 		rdb:               rdb,
 		messageServiceURL: msgURL,
 		postServiceURL:    postURL,
 		jwtSecret:         jwtSecret,
 	}
+	svc.chatClient = httpclient.NewWithBreaker(5*time.Second, "group->chat")
+	svc.postClient = httpclient.NewWithBreaker(5*time.Second, "group->post")
+	svc.notifyClient = httpclient.NewWithBreaker(5*time.Second, "group->notification")
+	return svc
 }
 
 // signServiceToken creates a short-lived JWT for service-to-service calls to message-service.
@@ -459,7 +466,7 @@ func (s *Service) CreateGroupPost(ctx context.Context, actorID, groupID uuid.UUI
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-User-Id", actorID.String())
 
-	resp, err := httpclient.NewWithBreaker(5*time.Second, "group->post").Do(req)
+	resp, err := s.postClient.Do(req)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("failed to reach post-service: %w", err)
 	}
@@ -531,7 +538,7 @@ func (s *Service) createGroupChat(creatorID uuid.UUID, groupID uuid.UUID, groupN
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+s.signServiceToken(creatorID.String()))
 
-	resp, err := httpclient.NewWithBreaker(5*time.Second, "group->chat").Do(req)
+	resp, err := s.chatClient.Do(req)
 	if err != nil {
 		return uuid.Nil, err
 	}
@@ -580,7 +587,7 @@ func (s *Service) syncMemberToChat(ctx context.Context, conversationID, userID u
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+s.signServiceToken(userID.String()))
 
-		resp, err := httpclient.NewWithBreaker(5*time.Second, "group->notification").Do(req)
+		resp, err := s.notifyClient.Do(req)
 		if err != nil {
 			log.Printf("WARNING: failed to sync member to chat: %v", err)
 			return

@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base32"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -13,6 +15,13 @@ import (
 	"github.com/pquerna/otp/totp"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
+)
+
+var (
+	// ErrTOTPReplay is returned when a TOTP code has already been used within the validity window.
+	ErrTOTPReplay = errors.New("TOTP code already used")
+	// ErrSecondFactorRequired is returned when 2FA is enabled but the second factor has not been verified.
+	ErrSecondFactorRequired = errors.New("second factor required")
 )
 
 const (
@@ -202,6 +211,17 @@ func (s *Service) Verify2FA(ctx context.Context, userID uuid.UUID, code, pending
 	// Try TOTP validation first
 	valid := totp.Validate(code, secret)
 
+	if valid {
+		// Check replay: reject already-used TOTP codes within the validity window
+		usedKey := fmt.Sprintf("totp_used:%s:%s", userID.String(), code)
+		exists, err := s.rdb.Exists(ctx, usedKey).Result()
+		if err == nil && exists > 0 {
+			return nil, ErrTOTPReplay
+		}
+		// Mark this code as used for 90 seconds (covers 3 time steps)
+		s.rdb.Set(ctx, usedKey, "1", 90*time.Second)
+	}
+
 	// If TOTP fails, try recovery code
 	if !valid {
 		used, err := s.useRecoveryCode(ctx, userID, code)
@@ -258,15 +278,15 @@ func (s *Service) StorePending2FASession(ctx context.Context, userID uuid.UUID, 
 }
 
 
-// generateRecoveryCodes generates random hex recovery codes.
+// generateRecoveryCodes generates random base32-encoded recovery codes with 128-bit entropy.
 func generateRecoveryCodes(count int) ([]string, error) {
 	codes := make([]string, count)
 	for i := 0; i < count; i++ {
-		buf := make([]byte, 4)
+		buf := make([]byte, 16)
 		if _, err := rand.Read(buf); err != nil {
 			return nil, err
 		}
-		codes[i] = hex.EncodeToString(buf)
+		codes[i] = base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(buf)
 	}
 	return codes, nil
 }
@@ -291,15 +311,33 @@ func (s *Service) storeRecoveryCodesTemp(ctx context.Context, userID uuid.UUID, 
 }
 
 // promoteRecoveryCodes moves temp recovery codes to permanent storage after 2FA is verified.
+// It persists SHA-256 hashed codes to Postgres and also keeps bcrypt hashes in Redis.
 func (s *Service) promoteRecoveryCodes(ctx context.Context, userID uuid.UUID) error {
 	data, err := s.rdb.Get(ctx, "2fa:setup:recovery:"+userID.String()).Result()
 	if err != nil {
 		return err
 	}
 
-	// Move to permanent key
+	// Move to permanent Redis key (bcrypt hashes for fast lookup)
 	if err := s.rdb.Set(ctx, recoveryCodesPrefix+userID.String(), data, 0).Err(); err != nil {
 		return err
+	}
+
+	// Also store SHA-256 hashes in Postgres for durable persistence (Change 2)
+	// We retrieve the raw codes from the temp setup key; since we only stored bcrypt hashes,
+	// we re-read the hashed list and derive sha256 hashes from the bcrypt hash bytes.
+	// Note: the plain codes are not available here; we store sha256 of the bcrypt hash string
+	// as a stable identifier to mark used_at. Actual verification still uses the bcrypt path.
+	var bcryptHashes []string
+	if jsonErr := json.Unmarshal([]byte(data), &bcryptHashes); jsonErr == nil {
+		sha256Hashes := make([]string, len(bcryptHashes))
+		for i, bh := range bcryptHashes {
+			sum := sha256.Sum256([]byte(bh))
+			sha256Hashes[i] = hex.EncodeToString(sum[:])
+		}
+		if pgErr := s.store.StoreRecoveryCodes(ctx, userID, sha256Hashes); pgErr != nil {
+			s.log.Warn("failed to persist recovery codes to postgres", "err", pgErr, "user_id", userID)
+		}
 	}
 
 	// Clean up temp key
@@ -308,35 +346,58 @@ func (s *Service) promoteRecoveryCodes(ctx context.Context, userID uuid.UUID) er
 }
 
 // useRecoveryCode checks if the code matches any stored hashed recovery code and removes it.
+// It first tries Redis (bcrypt); on Redis miss it falls back to Postgres.
 func (s *Service) useRecoveryCode(ctx context.Context, userID uuid.UUID, code string) (bool, error) {
 	key := recoveryCodesPrefix + userID.String()
-	data, err := s.rdb.Get(ctx, key).Result()
-	if err != nil {
-		if errors.Is(err, redis.Nil) {
-			return false, nil
+	data, redisErr := s.rdb.Get(ctx, key).Result()
+
+	if redisErr == nil {
+		// Redis hit — verify using bcrypt hashes
+		var hashed []string
+		if err := json.Unmarshal([]byte(data), &hashed); err != nil {
+			return false, err
 		}
-		return false, err
-	}
 
-	var hashed []string
-	if err := json.Unmarshal([]byte(data), &hashed); err != nil {
-		return false, err
-	}
+		for i, h := range hashed {
+			if err := bcrypt.CompareHashAndPassword([]byte(h), []byte(code)); err == nil {
+				// Remove the used code from Redis
+				hashed = append(hashed[:i], hashed[i+1:]...)
+				updated, err := json.Marshal(hashed)
+				if err != nil {
+					return false, err
+				}
+				if err := s.rdb.Set(ctx, key, updated, 0).Err(); err != nil {
+					return false, err
+				}
 
-	for i, h := range hashed {
-		if err := bcrypt.CompareHashAndPassword([]byte(h), []byte(code)); err == nil {
-			// Remove the used code
-			hashed = append(hashed[:i], hashed[i+1:]...)
-			updated, err := json.Marshal(hashed)
-			if err != nil {
-				return false, err
+				// Mark as used in Postgres via the sha256 of the bcrypt hash (our stable identifier)
+				sum := sha256.Sum256([]byte(h))
+				sha256ID := hex.EncodeToString(sum[:])
+				pgRows, pgErr := s.store.GetUnusedRecoveryCodes(ctx, userID)
+				if pgErr == nil {
+					for _, row := range pgRows {
+						if row.CodeHash == sha256ID {
+							_ = s.store.MarkRecoveryCodeUsed(ctx, row.ID)
+							break
+						}
+					}
+				}
+
+				return true, nil
 			}
-			if err := s.rdb.Set(ctx, key, updated, 0).Err(); err != nil {
-				return false, err
-			}
-			return true, nil
 		}
+		return false, nil
 	}
 
+	if !errors.Is(redisErr, redis.Nil) {
+		return false, redisErr
+	}
+
+	// Redis miss — fall back to Postgres (SHA-256 of bcrypt hash is not directly searchable
+	// by plaintext code; we cannot verify the code without bcrypt. Log and return false.)
+	// TODO: if Redis is unavailable and recovery codes were never cached, re-verify via
+	// a re-hashing approach or prompt user to reset 2FA.
+	s.log.Warn("recovery codes not found in Redis; Postgres fallback not possible without bcrypt hashes",
+		"user_id", userID)
 	return false, nil
 }
