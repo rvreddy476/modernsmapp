@@ -1,11 +1,42 @@
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_app/data/repositories/user_repository.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-class ExploreScreen extends StatelessWidget {
+class ExploreScreen extends ConsumerStatefulWidget {
   const ExploreScreen({super.key});
+
+  @override
+  ConsumerState<ExploreScreen> createState() => _ExploreScreenState();
+}
+
+class _ExploreScreenState extends ConsumerState<ExploreScreen> {
+  final TextEditingController _searchController = TextEditingController();
+  List<Map<String, dynamic>> _autocompleteResults = [];
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _onSearchChanged(String value) async {
+    if (value.isEmpty) {
+      setState(() => _autocompleteResults = []);
+      return;
+    }
+    if (value.isNotEmpty) {
+      final results = await ref
+          .read(userRepositoryProvider)
+          .searchAutocomplete(value);
+      if (mounted) {
+        setState(() => _autocompleteResults = results);
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -18,9 +49,9 @@ class ExploreScreen extends StatelessWidget {
             Text('Explore', style: AppTextStyles.h1),
             const SizedBox(height: 16),
 
-            // Search bar placeholder
+            // Search bar
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
               decoration: BoxDecoration(
                 color: AppColors.bgCard,
                 borderRadius: BorderRadius.circular(AppSpacing.radiusXL),
@@ -30,10 +61,143 @@ class ExploreScreen extends StatelessWidget {
                 children: [
                   const Icon(Icons.search, color: AppColors.textDim, size: 20),
                   const SizedBox(width: 10),
-                  Text('Search people, posts, tags...', style: AppTextStyles.body.copyWith(color: AppColors.textDim)),
+                  Expanded(
+                    child: TextField(
+                      controller: _searchController,
+                      onChanged: _onSearchChanged,
+                      style: AppTextStyles.body,
+                      decoration: InputDecoration(
+                        hintText: 'Search people, posts, tags...',
+                        hintStyle: AppTextStyles.body.copyWith(
+                          color: AppColors.textDim,
+                        ),
+                        border: InputBorder.none,
+                        isDense: true,
+                        contentPadding: const EdgeInsets.symmetric(vertical: 10),
+                      ),
+                      cursorColor: AppColors.postbookPrimary,
+                    ),
+                  ),
+                  if (_searchController.text.isNotEmpty)
+                    GestureDetector(
+                      onTap: () {
+                        _searchController.clear();
+                        setState(() => _autocompleteResults = []);
+                      },
+                      child: const Icon(
+                        Icons.close,
+                        color: AppColors.textDim,
+                        size: 18,
+                      ),
+                    ),
                 ],
               ),
             ),
+
+            // Autocomplete results
+            if (_autocompleteResults.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Container(
+                decoration: BoxDecoration(
+                  color: AppColors.bgCard,
+                  borderRadius: BorderRadius.circular(AppSpacing.radiusXL),
+                  border: Border.all(color: AppColors.borderSubtle),
+                ),
+                child: Column(
+                  children: _autocompleteResults.asMap().entries.map((entry) {
+                    final index = entry.key;
+                    final item = entry.value;
+                    final username = item['username'] as String? ?? '';
+                    final displayName = item['display_name'] as String? ?? username;
+                    final initials = displayName.isNotEmpty
+                        ? displayName[0].toUpperCase()
+                        : '?';
+                    final isLast = index == _autocompleteResults.length - 1;
+
+                    return Column(
+                      children: [
+                        InkWell(
+                          borderRadius: BorderRadius.vertical(
+                            top: index == 0
+                                ? Radius.circular(AppSpacing.radiusXL)
+                                : Radius.zero,
+                            bottom: isLast
+                                ? Radius.circular(AppSpacing.radiusXL)
+                                : Radius.zero,
+                          ),
+                          onTap: () {
+                            final userId = item['user_id'] as String?;
+                            if (userId != null && userId.isNotEmpty) {
+                              context.push('/profile/$userId');
+                            } else {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text('@$username'),
+                                  backgroundColor: AppColors.bgCard,
+                                  behavior: SnackBarBehavior.floating,
+                                ),
+                              );
+                            }
+                          },
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 10,
+                            ),
+                            child: Row(
+                              children: [
+                                CircleAvatar(
+                                  radius: 18,
+                                  backgroundColor:
+                                      AppColors.postbookPrimary.withValues(alpha: 0.25),
+                                  child: Text(
+                                    initials,
+                                    style: AppTextStyles.label.copyWith(
+                                      color: AppColors.postbookPrimary,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        displayName,
+                                        style: AppTextStyles.h3,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      Text(
+                                        '@$username',
+                                        style: AppTextStyles.bodySmall.copyWith(
+                                          color: AppColors.textDim,
+                                        ),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        if (!isLast)
+                          Divider(
+                            height: 1,
+                            thickness: 1,
+                            color: AppColors.borderSubtle,
+                            indent: 16,
+                            endIndent: 16,
+                          ),
+                      ],
+                    );
+                  }).toList(),
+                ),
+              ),
+            ],
+
             const SizedBox(height: 24),
 
             // Feature tiles

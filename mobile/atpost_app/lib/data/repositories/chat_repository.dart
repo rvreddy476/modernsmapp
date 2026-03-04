@@ -53,6 +53,28 @@ class ChatRepository {
     final response = await _api.get('${Environment.chatPath}/unread-count');
     return (response.data['data']?['count'] as int?) ?? 0;
   }
+
+  /// Upload this device's E2E public key bundle.
+  /// [identityKey], [signedPreKey] are base64-encoded public keys.
+  Future<void> uploadKeyBundle({
+    required String userId,
+    required String identityKey,
+    required String signedPreKey,
+    List<String> oneTimePreKeys = const [],
+  }) async {
+    await _api.post('/v1/chat/keys', data: {
+      'user_id': userId,
+      'identity_key': identityKey,
+      'signed_pre_key': signedPreKey,
+      'one_time_pre_keys': oneTimePreKeys,
+    });
+  }
+
+  /// Retrieve another user's public key bundle for E2E encryption.
+  Future<Map<String, dynamic>> getKeyBundle(String userId) async {
+    final response = await _api.get('/v1/chat/keys/$userId');
+    return Map<String, dynamic>.from(response.data);
+  }
 }
 
 final chatRepositoryProvider = Provider<ChatRepository>((ref) {

@@ -69,6 +69,60 @@ class UserRepository {
     final items = (response.data['data']?['items'] as List<dynamic>?) ?? [];
     return items.map((e) => User.fromJson(e as Map<String, dynamic>)).toList();
   }
+
+  /// Batch fetch up to 100 profiles at once.
+  Future<List<User>> getUsersBatch(List<String> userIds) async {
+    final response = await _api.post(
+      '${Environment.profilesPath}/batch',
+      data: {'user_ids': userIds},
+    );
+    final profiles = (response.data['profiles'] as List<dynamic>?) ?? [];
+    return profiles.map((e) => User.fromJson(e as Map<String, dynamic>)).toList();
+  }
+
+  /// Batch fetch relationship status for multiple target users at once.
+  /// Returns map of targetUserId -> relationship data map.
+  Future<Map<String, dynamic>> getRelationshipsBatch(
+    String viewerId,
+    List<String> targetIds,
+  ) async {
+    final response = await _api.post(
+      '${Environment.graphPath}/relationships/batch',
+      data: {'viewer_id': viewerId, 'target_ids': targetIds},
+    );
+    return (response.data['relationships'] as Map<String, dynamic>?) ?? {};
+  }
+
+  /// Mute a user (hides their posts from feed).
+  Future<void> muteUser(String mutedId) async {
+    await _api.post(
+      '${Environment.graphPath}/mute',
+      data: {'muted_id': mutedId},
+    );
+  }
+
+  /// Unmute a user.
+  Future<void> unmuteUser(String mutedId) async {
+    await _api.deleteWithData(
+      '${Environment.graphPath}/mute',
+      data: {'muted_id': mutedId},
+    );
+  }
+
+  /// Autocomplete search: returns list of maps with user_id, username, display_name.
+  Future<List<Map<String, dynamic>>> searchAutocomplete(
+    String query, {
+    int limit = 8,
+  }) async {
+    final response = await _api.get(
+      '${Environment.searchPath}/autocomplete',
+      queryParameters: {'q': query, 'limit': limit},
+    );
+    final raw = response.data['data'] ?? response.data;
+    return (raw as List<dynamic>)
+        .map((e) => e as Map<String, dynamic>)
+        .toList();
+  }
 }
 
 final userRepositoryProvider = Provider<UserRepository>((ref) {

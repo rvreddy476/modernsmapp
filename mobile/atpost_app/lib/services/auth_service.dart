@@ -89,6 +89,18 @@ class AuthService {
     _stateController.add(_state);
   }
 
+  /// Export all user data for GDPR portability.
+  /// Returns the raw response data as a map.
+  Future<Map<String, dynamic>> exportUserData() async {
+    final response = await _dio.get(
+      '${Environment.authPath}/data-export',
+      options: Options(headers: {
+        if (_state.token != null) 'Authorization': 'Bearer ${_state.token}',
+      }),
+    );
+    return Map<String, dynamic>.from(response.data);
+  }
+
   /// Clear session.
   void logout() {
     _state = const AuthState();
