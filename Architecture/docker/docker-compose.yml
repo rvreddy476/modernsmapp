@@ -154,6 +154,9 @@ services:
       POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/identity_db?sslmode=disable
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
+      RATE_LIMIT_ENABLED: "true"
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-dev_internal_key_change_me}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
     ports:
       - "8081:8081"
     depends_on:
@@ -226,6 +229,8 @@ services:
       POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/app?sslmode=disable
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-dev_internal_key_change_me}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
     ports:
       - "8083:8083"
     depends_on:
@@ -264,6 +269,9 @@ services:
       SCYLLA_HOSTS: scylla
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
+      USER_SERVICE_URL: http://identity-user:8097
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-dev_internal_key_change_me}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
     ports:
       - "8084:8084"
     depends_on:
@@ -286,6 +294,9 @@ services:
       SCYLLA_HOSTS: scylla
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
+      GRAPH_SERVICE_URL: http://graph-service:8083
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-dev_internal_key_change_me}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
     ports:
       - "8086:8086"
     depends_on:
@@ -312,6 +323,9 @@ services:
       MINIO_SECRET_KEY: minio12345
       MINIO_BUCKET: media
       KAFKA_BROKERS: redpanda:9092
+      MEDIA_SCANNER_ENABLED: ${MEDIA_SCANNER_ENABLED:-false}
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-dev_internal_key_change_me}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
     ports:
       - "8087:8087"
     depends_on:
@@ -333,6 +347,7 @@ services:
       MINIO_SECRET_KEY: minio12345
       MINIO_BUCKET: media
       KAFKA_BROKERS: redpanda:9092
+      MEDIA_SCANNER_ENABLED: ${MEDIA_SCANNER_ENABLED:-false}
     depends_on:
       postgres:
         condition: service_healthy
@@ -350,6 +365,16 @@ services:
       SCYLLA_HOSTS: scylla
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
+      # FCM push (Firebase HTTP v1) — leave blank to disable push in dev
+      FCM_PROJECT_ID: ${FCM_PROJECT_ID:-}
+      FCM_SERVICE_ACCOUNT_KEY: ${FCM_SERVICE_ACCOUNT_KEY:-}
+      # APNs push (iOS) — leave blank to disable push in dev
+      APNS_TEAM_ID: ${APNS_TEAM_ID:-}
+      APNS_KEY_ID: ${APNS_KEY_ID:-}
+      APNS_PRIVATE_KEY_PATH: ${APNS_PRIVATE_KEY_PATH:-}
+      APNS_BUNDLE_ID: ${APNS_BUNDLE_ID:-}
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-dev_internal_key_change_me}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
     ports:
       - "8088:8088"
     depends_on:
@@ -369,6 +394,8 @@ services:
       POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/app?sslmode=disable
       OPENSEARCH_URL: http://opensearch:9200
       KAFKA_BROKERS: redpanda:9092
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-dev_internal_key_change_me}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
     ports:
       - "8089:8089"
     depends_on:
@@ -468,6 +495,8 @@ services:
       REDIS_ADDR: redis:6379
       SCYLLA_HOSTS: scylla
       KAFKA_BROKERS: redpanda:9092
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-dev_internal_key_change_me}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
     ports:
       - "8094:8094"
     depends_on:
@@ -522,6 +551,8 @@ services:
       HTTP_PORT: "8101"
       POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/commerce_db?sslmode=disable
       KAFKA_BROKERS: redpanda:9092
+      PAYMENTS_SERVICE_URL: http://payments-service:8102
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-dev_internal_key_change_me}
     ports:
       - "8101:8101"
     depends_on:
@@ -538,6 +569,10 @@ services:
       HTTP_PORT: "8102"
       POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/commerce_db?sslmode=disable
       KAFKA_BROKERS: redpanda:9092
+      # Razorpay credentials — omit to use StubGateway in dev
+      RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
+      RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-dev_internal_key_change_me}
     ports:
       - "8102:8102"
     depends_on:
