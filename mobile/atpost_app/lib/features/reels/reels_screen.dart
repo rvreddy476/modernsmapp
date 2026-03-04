@@ -1,20 +1,23 @@
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_app/data/models/post.dart';
+import 'package:atpost_app/providers/feed_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-class ReelsScreen extends StatefulWidget {
+class ReelsScreen extends ConsumerStatefulWidget {
   const ReelsScreen({super.key, this.fullscreenRoute = false});
 
   final bool fullscreenRoute;
 
   @override
-  State<ReelsScreen> createState() => _ReelsScreenState();
+  ConsumerState<ReelsScreen> createState() => _ReelsScreenState();
 }
 
-class _ReelsScreenState extends State<ReelsScreen> {
+class _ReelsScreenState extends ConsumerState<ReelsScreen> {
   late final PageController _pageController;
   int _currentIndex = 0;
   bool _muted = false;
@@ -23,44 +26,57 @@ class _ReelsScreenState extends State<ReelsScreen> {
   bool _showHeartBurst = false;
   final Set<int> _likedIndexes = <int>{};
 
-  static const List<_ReelData> _reels = [
+  static const List<List<Color>> _gradientPalette = [
+    [Color(0xFF2A1020), Color(0xFF0E0E18)],
+    [Color(0xFF1C1031), Color(0xFF0A1222)],
+    [Color(0xFF2A1F0F), Color(0xFF111220)],
+    [Color(0xFF0F2A1E), Color(0xFF0A0E22)],
+    [Color(0xFF2A2010), Color(0xFF1E110A)],
+  ];
+
+  static const List<String> _emojiPalette = ['🎬', '⚡', '✨', '🎵', '🔥'];
+
+  static const List<_ReelData> _fallbackReels = [
     _ReelData(
-      id: 'r1',
-      user: '@neha.motion',
-      title: 'Motion pass for feed transitions',
-      tags: '#motion #ux #flutter',
-      song: 'Aurora Loop - Night Drive',
+      id: 'loading',
+      user: '@atpost',
+      title: 'Loading reels...',
+      tags: '',
+      song: '',
       emoji: '🎬',
-      likes: '128K',
-      comments: '2.8K',
-      shares: '4.1K',
+      likes: '0',
+      comments: '0',
+      shares: '0',
       gradientColors: [Color(0xFF2A1020), Color(0xFF0E0E18)],
     ),
-    _ReelData(
-      id: 'r2',
-      user: '@aarav.dev',
-      title: 'Realtime event bus visualized in 30 seconds',
-      tags: '#golang #backend #architecture',
-      song: 'Pulseform - Run Stream',
-      emoji: '⚡',
-      likes: '94K',
-      comments: '1.9K',
-      shares: '3.4K',
-      gradientColors: [Color(0xFF1C1031), Color(0xFF0A1222)],
-    ),
-    _ReelData(
-      id: 'r3',
-      user: '@meera.design',
-      title: 'Dark theme spacing system breakdown',
-      tags: '#ui #design-system #atpost',
-      song: 'Kite Arc - Quiet Mode',
-      emoji: '✨',
-      likes: '77K',
-      comments: '1.2K',
-      shares: '2.6K',
-      gradientColors: [Color(0xFF2A1F0F), Color(0xFF111220)],
-    ),
   ];
+
+  List<_ReelData> _reels = _fallbackReels;
+
+  List<_ReelData> _postsToReels(List<Post> posts) {
+    return posts.asMap().entries.map((entry) {
+      final i = entry.key;
+      final post = entry.value;
+      return _ReelData(
+        id: post.id,
+        user: '@${(post.authorName ?? 'user').toLowerCase().replaceAll(' ', '.')}',
+        title: post.content.length > 80 ? '${post.content.substring(0, 80)}...' : post.content,
+        tags: post.tags.join(' '),
+        song: '',
+        emoji: _emojiPalette[i % _emojiPalette.length],
+        likes: _formatCount(post.likeCount),
+        comments: _formatCount(post.commentCount),
+        shares: _formatCount(post.shareCount),
+        gradientColors: _gradientPalette[i % _gradientPalette.length],
+      );
+    }).toList();
+  }
+
+  String _formatCount(int count) {
+    if (count >= 1000000) return '${(count / 1000000).toStringAsFixed(1)}M';
+    if (count >= 1000) return '${(count / 1000).toStringAsFixed(1)}K';
+    return count.toString();
+  }
 
   @override
   void initState() {
@@ -76,7 +92,19 @@ class _ReelsScreenState extends State<ReelsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final active = _reels[_currentIndex];
+    ref.listen<AsyncValue<List<Post>>>(reelFeedProvider, (_, next) {
+      next.whenData((posts) {
+        if (mounted && posts.isNotEmpty) {
+          setState(() {
+            _reels = _postsToReels(posts);
+            _currentIndex = 0;
+          });
+        }
+      });
+    });
+
+    final safeIndex = _currentIndex.clamp(0, _reels.length - 1);
+    final active = _reels[safeIndex];
 
     return Scaffold(
       backgroundColor: AppColors.bgPrimary,

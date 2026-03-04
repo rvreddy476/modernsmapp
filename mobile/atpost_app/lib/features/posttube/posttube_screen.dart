@@ -1,23 +1,41 @@
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_app/data/models/post.dart';
+import 'package:atpost_app/providers/feed_provider.dart';
 import 'package:atpost_app/shared/widgets/content_cards.dart';
 import 'package:atpost_app/shared/widgets/glass_icon_button.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-class PosttubeScreen extends StatefulWidget {
+class PosttubeScreen extends ConsumerStatefulWidget {
   const PosttubeScreen({super.key});
 
   @override
-  State<PosttubeScreen> createState() => _PosttubeScreenState();
+  ConsumerState<PosttubeScreen> createState() => _PosttubeScreenState();
 }
 
-class _PosttubeScreenState extends State<PosttubeScreen> {
+class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
   double _progress = 0.38;
   bool _playing = true;
   bool _subscribed = false;
   bool _descriptionExpanded = false;
   int _contentTab = 0;
+  List<Post> _videos = const [];
+  int _currentVideoIndex = 0;
+
+  String _formatCount(int count) {
+    if (count >= 1000000) return '${(count / 1000000).toStringAsFixed(1)}M';
+    if (count >= 1000) return '${(count / 1000).toStringAsFixed(1)}K';
+    return count.toString();
+  }
+
+  String _timeAgo(DateTime dt) {
+    final diff = DateTime.now().difference(dt);
+    if (diff.inDays > 0) return '${diff.inDays}d ago';
+    if (diff.inHours > 0) return '${diff.inHours}h ago';
+    return '${diff.inMinutes}m ago';
+  }
 
   static const List<_Chapter> _chapters = [
     _Chapter(time: '00:00', label: 'Intro'),
@@ -29,6 +47,19 @@ class _PosttubeScreenState extends State<PosttubeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    ref.listen<AsyncValue<List<Post>>>(videoFeedProvider, (_, next) {
+      next.whenData((posts) {
+        if (mounted && posts.isNotEmpty) {
+          setState(() {
+            _videos = posts;
+            _currentVideoIndex = 0;
+          });
+        }
+      });
+    });
+
+    final currentVideo = _videos.isNotEmpty ? _videos[_currentVideoIndex] : null;
+
     return Scaffold(
       body: SafeArea(
         child: CustomScrollView(
@@ -47,12 +78,14 @@ class _PosttubeScreenState extends State<PosttubeScreen> {
                     ),
                     const SizedBox(height: 14),
                     Text(
-                      'Building a scalable feed with event-driven architecture',
+                      currentVideo?.content ?? 'Building a scalable feed with event-driven architecture',
                       style: AppTextStyles.h2.copyWith(fontSize: 19),
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      '45.2K views  •  3h ago  •  4.9',
+                      currentVideo != null
+                          ? '${_formatCount(currentVideo.likeCount)} views  •  ${_timeAgo(currentVideo.createdAt)}'
+                          : '45.2K views  •  3h ago  •  4.9',
                       style: AppTextStyles.bodySmall.copyWith(color: AppColors.textDim),
                     ),
                     const SizedBox(height: 14),
@@ -123,7 +156,12 @@ class _PosttubeScreenState extends State<PosttubeScreen> {
                       onChanged: (value) => setState(() => _contentTab = value),
                     ),
                     const SizedBox(height: 12),
-                    if (_contentTab == 0) const _CommentsSection() else const _UpNextSection(),
+                    if (_contentTab == 0)
+                      const _CommentsSection()
+                    else
+                      _UpNextSection(
+                        videos: _videos.length > 1 ? _videos.sublist(1) : const [],
+                      ),
                     const SizedBox(height: 100),
                   ],
                 ),
@@ -593,28 +631,60 @@ class _CommentTile extends StatelessWidget {
 }
 
 class _UpNextSection extends StatelessWidget {
-  const _UpNextSection();
+  const _UpNextSection({this.videos = const []});
+
+  final List<Post> videos;
 
   @override
   Widget build(BuildContext context) {
+    if (videos.isEmpty) {
+      return Column(
+        children: const [
+          _RelatedVideoTile(
+            title: 'Realtime notifications at scale',
+            stats: '11K views • 5h ago',
+          ),
+          SizedBox(height: 10),
+          _RelatedVideoTile(
+            title: 'From monolith to service mesh',
+            stats: '29K views • 1d ago',
+          ),
+          SizedBox(height: 10),
+          _RelatedVideoTile(
+            title: 'Optimizing write fanout and storage',
+            stats: '8.2K views • 2d ago',
+          ),
+        ],
+      );
+    }
     return Column(
-      children: const [
-        _RelatedVideoTile(
-          title: 'Realtime notifications at scale',
-          stats: '11K views • 5h ago',
-        ),
-        SizedBox(height: 10),
-        _RelatedVideoTile(
-          title: 'From monolith to service mesh',
-          stats: '29K views • 1d ago',
-        ),
-        SizedBox(height: 10),
-        _RelatedVideoTile(
-          title: 'Optimizing write fanout and storage',
-          stats: '8.2K views • 2d ago',
-        ),
-      ],
+      children: videos
+          .map(
+            (v) => Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: _RelatedVideoTile(
+                title: v.content.length > 60
+                    ? '${v.content.substring(0, 60)}...'
+                    : v.content,
+                stats: '${_formatCount(v.likeCount)} views • ${_timeAgo(v.createdAt)}',
+              ),
+            ),
+          )
+          .toList(),
     );
+  }
+
+  String _formatCount(int count) {
+    if (count >= 1000000) return '${(count / 1000000).toStringAsFixed(1)}M';
+    if (count >= 1000) return '${(count / 1000).toStringAsFixed(1)}K';
+    return count.toString();
+  }
+
+  String _timeAgo(DateTime dt) {
+    final diff = DateTime.now().difference(dt);
+    if (diff.inDays > 0) return '${diff.inDays}d ago';
+    if (diff.inHours > 0) return '${diff.inHours}h ago';
+    return '${diff.inMinutes}m ago';
   }
 }
 

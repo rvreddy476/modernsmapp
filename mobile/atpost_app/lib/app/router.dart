@@ -2,6 +2,7 @@ import 'package:atpost_app/features/chat/chat_detail_screen.dart';
 import 'package:atpost_app/features/chat/chat_list_screen.dart';
 import 'package:atpost_app/features/live/live_screen.dart';
 import 'package:atpost_app/features/memories/memories_screen.dart';
+import 'package:atpost_app/features/profile/profile_detail_screen.dart';
 import 'package:atpost_app/features/posttube/posttube_screen.dart';
 import 'package:atpost_app/features/reels/reels_screen.dart';
 import 'package:atpost_app/features/shell/shell_scaffold.dart';
@@ -46,6 +47,12 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/live',
         builder: (context, state) => const LiveScreen(),
+      ),
+      GoRoute(
+        path: '/profile/:userId',
+        builder: (context, state) => ProfileDetailScreen(
+          userId: state.pathParameters['userId'] ?? '',
+        ),
       ),
     ],
   );

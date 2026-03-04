@@ -21,8 +21,28 @@ class HomeFeedScreen extends ConsumerStatefulWidget {
 class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
   int feedTab = 0;
 
+  String _formatCount(int count) {
+    if (count >= 1000000) return '${(count / 1000000).toStringAsFixed(1)}M';
+    if (count >= 1000) return '${(count / 1000).toStringAsFixed(1)}K';
+    return count.toString();
+  }
+
+  String _timeAgo(DateTime dt) {
+    final diff = DateTime.now().difference(dt);
+    if (diff.inDays > 0) return '${diff.inDays}d ago';
+    if (diff.inHours > 0) return '${diff.inHours}h ago';
+    return '${diff.inMinutes}m ago';
+  }
+
+  String _formatDuration(int seconds) {
+    final m = seconds ~/ 60;
+    final s = seconds % 60;
+    return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
+  }
+
   @override
   Widget build(BuildContext context) {
+    final feedAsync = ref.watch(homeFeedProvider);
     return SafeArea(
       child: CustomScrollView(
         slivers: [
@@ -112,39 +132,58 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
               ),
             ),
           ),
-          SliverPadding(
-            padding: AppSpacing.pagePadding.copyWith(bottom: 130),
-            sliver: SliverList(
-              delegate: SliverChildListDelegate(
-                [
-                  const PostCard(
-                    name: 'Aarav Singh',
-                    handle: '@aarav',
-                    content:
-                        'Launching atpost design alpha tonight. Blending social feed, reels, and long-form video in one app shell.',
-                    tags: ['#design', '#flutter', '#atpost'],
-                  ),
-                  ReelCard(
-                    title: 'Quick UI motion pass for the new feed transitions',
-                    creator: 'By neha.motion',
-                    duration: '00:35',
-                    onTap: () => context.push('/reels'),
-                  ),
-                  VideoCard(
-                    title: 'Building scalable feed ranking with event-driven architecture',
-                    stats: '45.2K views  -  3h ago  -  4.9 rating',
-                    onTap: () => context.push('/posttube'),
-                  ),
-                  const PostCard(
-                    name: 'Meera Das',
-                    handle: '@meera',
-                    content:
-                        'Prototype feels much smoother after tuning spacing, corner radii, and subtle glass surfaces.',
-                    tags: ['#product', '#ux'],
-                  ),
-                ],
+          ...feedAsync.when(
+            loading: () => [
+              const SliverToBoxAdapter(
+                child: Padding(
+                  padding: EdgeInsets.symmetric(vertical: 40),
+                  child: Center(child: CircularProgressIndicator()),
+                ),
               ),
-            ),
+            ],
+            error: (_, _) => [
+              const SliverToBoxAdapter(
+                child: Padding(
+                  padding: EdgeInsets.symmetric(vertical: 40),
+                  child: Center(child: Text('Could not load feed')),
+                ),
+              ),
+            ],
+            data: (posts) => [
+              SliverPadding(
+                padding: AppSpacing.pagePadding.copyWith(bottom: 130),
+                sliver: SliverList(
+                  delegate: SliverChildBuilderDelegate(
+                    (context, index) {
+                      final post = posts[index];
+                      if (post.isReel) {
+                        return ReelCard(
+                          title: post.content,
+                          creator: 'By ${post.authorName ?? 'unknown'}',
+                          duration: _formatDuration(post.durationSeconds ?? 0),
+                          onTap: () => context.push('/reels'),
+                        );
+                      }
+                      if (post.isVideo) {
+                        return VideoCard(
+                          title: post.content,
+                          stats: '${_formatCount(post.likeCount)} views  -  ${_timeAgo(post.createdAt)}',
+                          onTap: () => context.push('/posttube'),
+                        );
+                      }
+                      return PostCard(
+                        name: post.authorName ?? 'Anonymous',
+                        handle: '@${(post.authorName ?? 'user').toLowerCase().replaceAll(' ', '_')}',
+                        content: post.content,
+                        tags: post.tags,
+                        liked: post.isLiked,
+                      );
+                    },
+                    childCount: posts.length,
+                  ),
+                ),
+              ),
+            ],
           ),
         ],
       ),

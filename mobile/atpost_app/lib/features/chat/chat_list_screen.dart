@@ -1,20 +1,23 @@
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_app/data/models/conversation.dart';
+import 'package:atpost_app/providers/chat_provider.dart';
 import 'package:atpost_app/shared/widgets/filter_pills.dart';
 import 'package:atpost_app/shared/widgets/glass_icon_button.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-class ChatListScreen extends StatefulWidget {
+class ChatListScreen extends ConsumerStatefulWidget {
   const ChatListScreen({super.key});
 
   @override
-  State<ChatListScreen> createState() => _ChatListScreenState();
+  ConsumerState<ChatListScreen> createState() => _ChatListScreenState();
 }
 
-class _ChatListScreenState extends State<ChatListScreen> {
+class _ChatListScreenState extends ConsumerState<ChatListScreen> {
   final TextEditingController _searchController = TextEditingController();
   int _activeFilter = 0;
   bool _showSearch = false;
@@ -87,7 +90,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final conversations = _filteredConversations();
+    final conversationsAsync = ref.watch(chatConversationsProvider);
 
     return Scaffold(
       floatingActionButton: GestureDetector(
@@ -234,15 +237,38 @@ class _ChatListScreenState extends State<ChatListScreen> {
               ),
               const SizedBox(height: 14),
               Expanded(
-                child: ListView.separated(
-                  itemCount: conversations.length,
-                  separatorBuilder: (_, _) => const SizedBox(height: 10),
-                  padding: const EdgeInsets.only(bottom: 90),
-                  itemBuilder: (context, index) {
-                    final convo = conversations[index];
-                    return _ConversationTile(
-                      conversation: convo,
-                      onTap: () => context.push('/chat/${convo.id}'),
+                child: conversationsAsync.when(
+                  loading: () => const Center(child: CircularProgressIndicator()),
+                  error: (_, _) {
+                    final conversations = _filteredConversations();
+                    return ListView.separated(
+                      itemCount: conversations.length,
+                      separatorBuilder: (_, _) => const SizedBox(height: 10),
+                      padding: const EdgeInsets.only(bottom: 90),
+                      itemBuilder: (context, index) {
+                        final convo = conversations[index];
+                        return _ConversationTile(
+                          conversation: convo,
+                          onTap: () => context.push('/chat/${convo.id}'),
+                        );
+                      },
+                    );
+                  },
+                  data: (apiConversations) {
+                    final conversations = apiConversations.isEmpty
+                        ? _filteredConversations()
+                        : _filterApiConversations(apiConversations);
+                    return ListView.separated(
+                      itemCount: conversations.length,
+                      separatorBuilder: (_, _) => const SizedBox(height: 10),
+                      padding: const EdgeInsets.only(bottom: 90),
+                      itemBuilder: (context, index) {
+                        final convo = conversations[index];
+                        return _ConversationTile(
+                          conversation: convo,
+                          onTap: () => context.push('/chat/${convo.id}'),
+                        );
+                      },
                     );
                   },
                 ),
@@ -252,6 +278,42 @@ class _ChatListScreenState extends State<ChatListScreen> {
         ),
       ),
     );
+  }
+
+  List<_Conversation> _filterApiConversations(List<Conversation> apiList) {
+    final query = _searchController.text.trim().toLowerCase();
+    return apiList
+        .map(
+          (c) => _Conversation(
+            id: c.id,
+            name: c.name ?? 'Direct Message',
+            subtitle: c.lastMessage ?? '',
+            time: c.lastMessageAt != null ? _formatConvoTime(c.lastMessageAt!) : '',
+            unreadCount: c.unreadCount,
+            isGroup: c.type == 'group',
+          ),
+        )
+        .where((c) {
+          final byFilter = switch (_activeFilter) {
+            0 => true,
+            1 => c.unreadCount > 0,
+            2 => c.isGroup,
+            3 => c.isArchived,
+            _ => true,
+          };
+          if (!byFilter) return false;
+          if (query.isEmpty) return true;
+          return c.name.toLowerCase().contains(query) ||
+              c.subtitle.toLowerCase().contains(query);
+        })
+        .toList();
+  }
+
+  String _formatConvoTime(DateTime dt) {
+    final now = DateTime.now();
+    final diff = now.difference(dt);
+    if (diff.inDays >= 1) return 'Yesterday';
+    return '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
   }
 
   List<_Conversation> _filteredConversations() {
