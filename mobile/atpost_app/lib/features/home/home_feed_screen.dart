@@ -73,7 +73,7 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
                       const Spacer(),
                       BadgeIconButton(
                         icon: Icons.search,
-                        onPressed: () {},
+                        onPressed: () => context.push('/discover'),
                       ),
                       const SizedBox(width: 8),
                       BadgeIconButton(
@@ -97,22 +97,31 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
                       separatorBuilder: (context, index) => const SizedBox(width: 10),
                       itemBuilder: (context, index) {
                         if (index == 0) {
-                          return const StoryRing(
-                            initials: 'Y',
-                            label: 'Your Story',
-                            isOwn: true,
+                          return GestureDetector(
+                            onTap: () => context.push('/stories/create'),
+                            child: const StoryRing(
+                              initials: 'Y',
+                              label: 'Your Story',
+                              isOwn: true,
+                            ),
                           );
                         }
                         if (index == 1) {
-                          return const StoryRing(
-                            initials: 'L',
-                            label: 'Live',
-                            isLive: true,
+                          return GestureDetector(
+                            onTap: () => context.push('/live'),
+                            child: const StoryRing(
+                              initials: 'L',
+                              label: 'Live',
+                              isLive: true,
+                            ),
                           );
                         }
-                        return StoryRing(
-                          initials: String.fromCharCode(65 + index),
-                          label: 'user_$index',
+                        return GestureDetector(
+                          onTap: () => context.push('/stories/user_$index'),
+                          child: StoryRing(
+                            initials: String.fromCharCode(65 + index),
+                            label: 'user_$index',
+                          ),
                         );
                       },
                     ),

@@ -71,6 +71,10 @@ class ApiClient {
   Future<Response<T>> delete<T>(String path) {
     return _dio.delete<T>(path);
   }
+
+  Future<Response<T>> deleteWithData<T>(String path, {Object? data}) {
+    return _dio.delete<T>(path, data: data);
+  }
 }
 
 /// Global API client provider.

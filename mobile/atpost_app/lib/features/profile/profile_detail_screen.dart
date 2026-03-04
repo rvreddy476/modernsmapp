@@ -1,6 +1,7 @@
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_app/data/repositories/user_repository.dart';
 import 'package:atpost_app/providers/user_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -139,7 +140,24 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
                         children: [
                           Expanded(
                             child: GestureDetector(
-                              onTap: () => setState(() => _following = !_following),
+                              onTap: () async {
+                              final repo = ref.read(userRepositoryProvider);
+                              final messenger = ScaffoldMessenger.of(context);
+                              try {
+                                if (_following) {
+                                  await repo.unfollowUser(widget.userId);
+                                } else {
+                                  await repo.followUser(widget.userId);
+                                }
+                                if (mounted) setState(() => _following = !_following);
+                              } catch (_) {
+                                messenger.showSnackBar(
+                                  const SnackBar(
+                                    content: Text('Could not update follow status.'),
+                                  ),
+                                );
+                              }
+                            },
                               child: AnimatedContainer(
                                 duration: const Duration(milliseconds: 200),
                                 padding: const EdgeInsets.symmetric(vertical: 12),

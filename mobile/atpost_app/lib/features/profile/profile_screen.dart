@@ -1,9 +1,22 @@
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_app/data/models/post.dart';
 import 'package:atpost_app/providers/user_provider.dart';
+import 'package:atpost_app/services/api_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+
+final _myPostsProvider = FutureProvider.autoDispose<List<Post>>((ref) async {
+  final api = ref.watch(apiClientProvider);
+  final response = await api.get(
+    '/v1/posts',
+    queryParameters: {'author_id': 'me', 'limit': 30},
+  );
+  final items = (response.data['data']?['items'] as List<dynamic>?) ?? [];
+  return items.map((e) => Post.fromJson(e as Map<String, dynamic>)).toList();
+});
 
 class ProfileScreen extends ConsumerWidget {
   const ProfileScreen({super.key});
@@ -61,14 +74,23 @@ class ProfileScreen extends ConsumerWidget {
                       ],
                     ),
                   ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: AppColors.bgCard,
-                      borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
-                      border: Border.all(color: AppColors.borderSubtle),
+                  GestureDetector(
+                    onTap: () => context.push('/settings/profile'),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: AppColors.bgCard,
+                        borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
+                        border: Border.all(color: AppColors.borderSubtle),
+                      ),
+                      child: Text('Edit Profile', style: AppTextStyles.label),
                     ),
-                    child: Text('Edit Profile', style: AppTextStyles.label),
+                  ),
+                  const SizedBox(width: 4),
+                  IconButton(
+                    icon: const Icon(Icons.settings_outlined, color: AppColors.textSecondary),
+                    onPressed: () => context.push('/settings'),
+                    tooltip: 'Settings',
                   ),
                 ],
               ),
@@ -89,31 +111,68 @@ class ProfileScreen extends ConsumerWidget {
                   _StatBadge(label: 'Friends', count: user.friendCount),
                 ],
               ),
-              const SizedBox(height: 20),
-              Expanded(
+              const SizedBox(height: 12),
+              GestureDetector(
+                onTap: () => context.push('/bookmarks'),
                 child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                   decoration: BoxDecoration(
                     color: AppColors.bgCard,
-                    borderRadius: BorderRadius.circular(AppSpacing.radiusXL),
+                    borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
                     border: Border.all(color: AppColors.borderSubtle),
                   ),
-                  child: Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Icon(
-                          Icons.grid_on_outlined,
-                          color: AppColors.textMuted,
-                          size: 32,
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          'Your posts will appear here',
-                          style: AppTextStyles.bodySmall,
-                        ),
-                      ],
-                    ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.bookmark_outline, color: AppColors.textSecondary, size: 16),
+                      const SizedBox(width: 6),
+                      Text('Bookmarks', style: AppTextStyles.label),
+                    ],
                   ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Expanded(
+                child: ref.watch(_myPostsProvider).when(
+                  loading: () => const Center(child: CircularProgressIndicator()),
+                  error: (_, _) => Center(
+                    child: Text('Could not load posts', style: AppTextStyles.bodySmall),
+                  ),
+                  data: (posts) => posts.isEmpty
+                      ? Center(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(Icons.grid_on_outlined, color: AppColors.textMuted, size: 32),
+                              const SizedBox(height: 8),
+                              Text('Share your first post!', style: AppTextStyles.bodySmall),
+                            ],
+                          ),
+                        )
+                      : GridView.builder(
+                          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: 3,
+                            mainAxisSpacing: 2,
+                            crossAxisSpacing: 2,
+                          ),
+                          itemCount: posts.length,
+                          itemBuilder: (_, i) {
+                            final post = posts[i];
+                            return Container(
+                              color: AppColors.bgCard,
+                              child: Center(
+                                child: Icon(
+                                  post.isReel
+                                      ? Icons.play_circle_outline
+                                      : post.isVideo
+                                          ? Icons.videocam_outlined
+                                          : Icons.image_outlined,
+                                  color: AppColors.textMuted,
+                                ),
+                              ),
+                            );
+                          },
+                        ),
                 ),
               ),
             ],
