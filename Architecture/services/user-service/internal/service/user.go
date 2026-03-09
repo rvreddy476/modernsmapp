@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/atpost/user-service/internal/handle"
 	"github.com/atpost/user-service/internal/store"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -26,12 +27,23 @@ func (s *Service) SoftDeleteUser(ctx context.Context, id uuid.UUID) error {
 }
 
 // CreateUser handles user creation from event.
+// After creating the user record it auto-provisions a handle and default
+// channel so the user is ready to publish content immediately.
 func (s *Service) CreateUser(ctx context.Context, id uuid.UUID, phone, email, firstName, lastName, dob, gender string) error {
 	displayName := firstName + " " + lastName
 	if displayName == " " {
 		displayName = "User " + id.String()[:8]
 	}
-	return s.store.CreateUser(ctx, id, displayName, firstName, lastName, dob, gender)
+	if err := s.store.CreateUser(ctx, id, displayName, firstName, lastName, dob, gender); err != nil {
+		return err
+	}
+
+	// Auto-create handle + default channel for the new user.
+	if _, err := s.store.EnsurePublisher(ctx, id, handle.Generate); err != nil {
+		// Log but don't fail user creation — channel can be provisioned later.
+		fmt.Printf("warn: auto-provision publisher for %s failed: %v\n", id, err)
+	}
+	return nil
 }
 
 // GetUser returns user profile, trying cache first.
@@ -249,6 +261,12 @@ func (s *Service) DeleteChannel(ctx context.Context, id, userID uuid.UUID) error
 // GetUserChannels returns all channels for a user.
 func (s *Service) GetUserChannels(ctx context.Context, userID uuid.UUID) ([]store.Channel, error) {
 	return s.store.GetUserChannels(ctx, userID)
+}
+
+// EnsurePublisher atomically ensures the user has a handle and a default channel.
+// If both already exist, it returns them without modification.
+func (s *Service) EnsurePublisher(ctx context.Context, userID uuid.UUID) (*store.EnsurePublisherResult, error) {
+	return s.store.EnsurePublisher(ctx, userID, handle.Generate)
 }
 
 // --- Business Pages ---

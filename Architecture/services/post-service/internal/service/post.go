@@ -95,6 +95,26 @@ type CreatePostInput struct {
 	LocationLng    *float64
 	PostType       string
 	AppOrigin      string
+	// Reel metadata
+	Title              string
+	Tags               []string
+	Category           string
+	Language           string
+	SEOTitle           string
+	PaidPromotion      bool
+	AlteredContent     bool
+	IsMadeForKids      bool
+	License            string
+	AllowEmbedding     bool
+	PublishToFeed      bool
+	RemixSetting       string
+	CommentModeration  string
+	CommentAccess      string
+	RecordingDate      *time.Time
+	RecordingLocation  string
+	CoverMediaID       *uuid.UUID
+	OriginalAudioVol   float32
+	OverlayAudioVol    float32
 }
 
 // CreatePollInput holds poll creation data.
@@ -178,6 +198,36 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	// Extract @mentions from text
 	mentions := extractMentions(input.Text)
 
+	// Default reel metadata values
+	lang := input.Language
+	if lang == "" {
+		lang = "en"
+	}
+	license := input.License
+	if license == "" {
+		license = "standard"
+	}
+	remixSetting := input.RemixSetting
+	if remixSetting == "" {
+		remixSetting = "allow"
+	}
+	commentMod := input.CommentModeration
+	if commentMod == "" {
+		commentMod = "none"
+	}
+	commentAcc := input.CommentAccess
+	if commentAcc == "" {
+		commentAcc = "everyone"
+	}
+	origVol := input.OriginalAudioVol
+	if origVol == 0 {
+		origVol = 1.0
+	}
+	overlayVol := input.OverlayAudioVol
+	if overlayVol == 0 {
+		overlayVol = 1.0
+	}
+
 	p := &postgres.Post{
 		ID:             uuid.New(),
 		AuthorID:       input.AuthorID,
@@ -196,6 +246,25 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		LocationLng:    input.LocationLng,
 		PostType:       postType,
 		AppOrigin:      appOrigin,
+		Title:              input.Title,
+		Tags:               input.Tags,
+		Category:           input.Category,
+		Language:           lang,
+		SEOTitle:           input.SEOTitle,
+		PaidPromotion:      input.PaidPromotion,
+		AlteredContent:     input.AlteredContent,
+		IsMadeForKids:      input.IsMadeForKids,
+		License:            license,
+		AllowEmbedding:     input.AllowEmbedding,
+		PublishToFeed:      input.PublishToFeed,
+		RemixSetting:       remixSetting,
+		CommentModeration:  commentMod,
+		CommentAccess:      commentAcc,
+		RecordingDate:      input.RecordingDate,
+		RecordingLocation:  input.RecordingLocation,
+		CoverMediaID:       input.CoverMediaID,
+		OriginalAudioVol:   origVol,
+		OverlayAudioVol:    overlayVol,
 		CreatedAt:      time.Now(),
 	}
 

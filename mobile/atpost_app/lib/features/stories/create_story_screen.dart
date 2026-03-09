@@ -2,6 +2,8 @@ import 'dart:io';
 
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_app/data/repositories/stories_repository.dart';
+import 'package:atpost_app/services/api_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -18,6 +20,7 @@ class _CreateStoryScreenState extends ConsumerState<CreateStoryScreen> {
   final ImagePicker _picker = ImagePicker();
   XFile? _picked;
   bool _isVideo = false;
+  bool _uploading = false;
   final TextEditingController _textController = TextEditingController();
 
   @override
@@ -46,11 +49,31 @@ class _CreateStoryScreenState extends ConsumerState<CreateStoryScreen> {
     }
   }
 
-  void _share() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Story posted!')),
-    );
-    context.pop();
+  Future<void> _share() async {
+    if (_picked == null || _uploading) return;
+    setState(() => _uploading = true);
+    try {
+      final api = ref.read(apiClientProvider);
+      final storiesRepo = ref.read(storiesRepositoryProvider);
+      final mediaId =
+          await api.uploadFile(_picked!, type: _isVideo ? 'video' : 'image');
+      final text = _textController.text.trim();
+      await storiesRepo.createStory(
+        mediaId: mediaId,
+        mediaType: _isVideo ? 'video' : 'image',
+        text: text.isEmpty ? null : text,
+      );
+      if (mounted) context.pop();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text('Failed to share story. Please try again.')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _uploading = false);
+    }
   }
 
   @override
@@ -68,15 +91,29 @@ class _CreateStoryScreenState extends ConsumerState<CreateStoryScreen> {
         title: Text('New Story', style: AppTextStyles.h3),
         centerTitle: true,
         actions: [
-          TextButton(
-            onPressed: hasPicked ? _share : null,
-            child: Text(
-              'Share',
-              style: AppTextStyles.label.copyWith(
-                color: hasPicked ? AppColors.postbookPrimary : AppColors.textMuted,
-              ),
-            ),
-          ),
+          _uploading
+              ? const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 16),
+                  child: SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: AppColors.postbookPrimary,
+                    ),
+                  ),
+                )
+              : TextButton(
+                  onPressed: hasPicked ? _share : null,
+                  child: Text(
+                    'Share',
+                    style: AppTextStyles.label.copyWith(
+                      color: hasPicked
+                          ? AppColors.postbookPrimary
+                          : AppColors.textMuted,
+                    ),
+                  ),
+                ),
         ],
       ),
       body: Column(

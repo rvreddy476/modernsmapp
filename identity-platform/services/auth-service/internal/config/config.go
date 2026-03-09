@@ -34,7 +34,7 @@ type Config struct {
 func Load() *Config {
 	cfg := &Config{
 		HTTPPort:        getEnv("HTTP_PORT", "8081"),
-		PostgresDSN:     getEnv("DATABASE_URL", ""),
+		PostgresDSN:     getEnv("DATABASE_URL", getEnv("POSTGRES_DSN", "")),
 		RedisAddr:       getEnv("REDIS_ADDR", "localhost:6379"),
 		KafkaBrokers:    splitAndClean(getEnv("KAFKA_BROKERS", "localhost:9092")),
 		KafkaTopic:      getEnv("KAFKA_TOPIC", "identity.events.v1"),

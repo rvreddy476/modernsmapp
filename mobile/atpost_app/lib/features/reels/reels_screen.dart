@@ -1,10 +1,13 @@
+import 'dart:math' as math;
+
+import 'package:atpost_app/core/config/environment.dart';
 import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/models/post.dart';
-import 'package:atpost_app/providers/feed_provider.dart';
+import 'package:atpost_app/data/repositories/feed_repository.dart';
+import 'package:atpost_app/data/repositories/post_repository.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_animate/flutter_animate.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -18,440 +21,584 @@ class ReelsScreen extends ConsumerStatefulWidget {
 }
 
 class _ReelsScreenState extends ConsumerState<ReelsScreen> {
+  static const List<List<Color>> _palette = [
+    [Color(0xFF1D102D), Color(0xFF090913)],
+    [Color(0xFF20140D), Color(0xFF0D111B)],
+    [Color(0xFF0E2330), Color(0xFF0A0F1E)],
+    [Color(0xFF22111B), Color(0xFF0D0D18)],
+    [Color(0xFF10251F), Color(0xFF0A101A)],
+  ];
+
   late final PageController _pageController;
-  int _currentIndex = 0;
+
+  final List<Post> _reels = <Post>[];
+  final Map<String, _ReelEngagement> _engagementByPostId =
+      <String, _ReelEngagement>{};
+
+  bool _loadingInitial = true;
+  bool _loadingMore = false;
   bool _muted = false;
-  bool _paused = false;
-  bool _showPlayIndicator = false;
-  bool _showHeartBurst = false;
-  final Set<int> _likedIndexes = <int>{};
 
-  static const List<List<Color>> _gradientPalette = [
-    [Color(0xFF2A1020), Color(0xFF0E0E18)],
-    [Color(0xFF1C1031), Color(0xFF0A1222)],
-    [Color(0xFF2A1F0F), Color(0xFF111220)],
-    [Color(0xFF0F2A1E), Color(0xFF0A0E22)],
-    [Color(0xFF2A2010), Color(0xFF1E110A)],
-  ];
-
-  static const List<String> _emojiPalette = ['🎬', '⚡', '✨', '🎵', '🔥'];
-
-  static const List<_ReelData> _fallbackReels = [
-    _ReelData(
-      id: 'loading',
-      user: '@atpost',
-      title: 'Loading reels...',
-      tags: '',
-      song: '',
-      emoji: '🎬',
-      likes: '0',
-      comments: '0',
-      shares: '0',
-      gradientColors: [Color(0xFF2A1020), Color(0xFF0E0E18)],
-    ),
-  ];
-
-  List<_ReelData> _reels = _fallbackReels;
-
-  List<_ReelData> _postsToReels(List<Post> posts) {
-    return posts.asMap().entries.map((entry) {
-      final i = entry.key;
-      final post = entry.value;
-      return _ReelData(
-        id: post.id,
-        user: '@${(post.authorName ?? 'user').toLowerCase().replaceAll(' ', '.')}',
-        title: post.content.length > 80 ? '${post.content.substring(0, 80)}...' : post.content,
-        tags: post.tags.join(' '),
-        song: '',
-        emoji: _emojiPalette[i % _emojiPalette.length],
-        likes: _formatCount(post.likeCount),
-        comments: _formatCount(post.commentCount),
-        shares: _formatCount(post.shareCount),
-        gradientColors: _gradientPalette[i % _gradientPalette.length],
-      );
-    }).toList();
-  }
-
-  String _formatCount(int count) {
-    if (count >= 1000000) return '${(count / 1000000).toStringAsFixed(1)}M';
-    if (count >= 1000) return '${(count / 1000).toStringAsFixed(1)}K';
-    return count.toString();
-  }
+  String? _nextCursor;
+  bool _hasMoreFromApi = true;
+  String? _error;
 
   @override
   void initState() {
     super.initState();
     _pageController = PageController();
+    _pageController.addListener(_maybeLoadMoreOnScroll);
+    _loadInitial();
   }
 
   @override
   void dispose() {
-    _pageController.dispose();
+    _pageController
+      ..removeListener(_maybeLoadMoreOnScroll)
+      ..dispose();
     super.dispose();
   }
 
-  @override
-  Widget build(BuildContext context) {
-    ref.listen<AsyncValue<List<Post>>>(reelFeedProvider, (_, next) {
-      next.whenData((posts) {
-        if (mounted && posts.isNotEmpty) {
-          setState(() {
-            _reels = _postsToReels(posts);
-            _currentIndex = 0;
-          });
-        }
-      });
+  Future<void> _loadInitial() async {
+    setState(() {
+      _loadingInitial = true;
+      _error = null;
     });
 
-    final safeIndex = _currentIndex.clamp(0, _reels.length - 1);
-    final active = _reels[safeIndex];
+    try {
+      final page = await ref
+          .read(feedRepositoryProvider)
+          .getReelFeedPage(limit: 10);
+      final items = page.items.where((post) => post.id.isNotEmpty).toList();
+
+      for (final post in items) {
+        _ensureEngagement(post);
+      }
+
+      setState(() {
+        _reels
+          ..clear()
+          ..addAll(items);
+        _nextCursor = page.nextCursor;
+        _hasMoreFromApi =
+            page.nextCursor != null && page.nextCursor!.isNotEmpty;
+      });
+
+      if (_reels.isNotEmpty && !_hasMoreFromApi) {
+        _appendLoopBatch();
+      }
+    } catch (e) {
+      setState(() {
+        _error = 'Could not load reels: $e';
+      });
+    } finally {
+      if (mounted) {
+        setState(() => _loadingInitial = false);
+      }
+    }
+  }
+
+  Future<void> _loadMore() async {
+    if (_loadingMore || _loadingInitial) return;
+
+    if (_hasMoreFromApi) {
+      setState(() => _loadingMore = true);
+      try {
+        final page = await ref
+            .read(feedRepositoryProvider)
+            .getReelFeedPage(limit: 10, cursor: _nextCursor);
+
+        final seen = _reels.map((post) => post.id).toSet();
+        final newItems = page.items
+            .where((post) => !seen.contains(post.id))
+            .toList();
+
+        for (final post in page.items) {
+          _ensureEngagement(post);
+        }
+
+        if (newItems.isNotEmpty) {
+          setState(() {
+            _reels.addAll(newItems);
+          });
+        }
+
+        final hasCursor =
+            page.nextCursor != null && page.nextCursor!.isNotEmpty;
+        final cursorChanged = page.nextCursor != _nextCursor;
+
+        setState(() {
+          _nextCursor = page.nextCursor;
+          _hasMoreFromApi = hasCursor && cursorChanged;
+        });
+
+        if (!_hasMoreFromApi) {
+          _appendLoopBatch();
+        }
+      } catch (_) {
+        _appendLoopBatch();
+      } finally {
+        if (mounted) {
+          setState(() => _loadingMore = false);
+        }
+      }
+      return;
+    }
+
+    _appendLoopBatch();
+  }
+
+  void _appendLoopBatch() {
+    if (_reels.isEmpty) return;
+
+    final takeCount = math.min(6, _reels.length);
+    final batch = _reels.take(takeCount).toList();
+
+    setState(() {
+      _reels.addAll(batch);
+    });
+  }
+
+  void _maybeLoadMoreOnScroll() {
+    final page = _pageController.page;
+    if (page == null) return;
+
+    if (page >= _reels.length - 3) {
+      _loadMore();
+    }
+  }
+
+  _ReelEngagement _ensureEngagement(Post post) {
+    return _engagementByPostId.putIfAbsent(
+      post.id,
+      () => _ReelEngagement(
+        likeCount: post.likeCount,
+        dislikeCount: 0,
+        commentCount: post.commentCount,
+        shareCount: post.shareCount,
+        liked: post.isLiked,
+        disliked: false,
+        saved: post.isBookmarked,
+      ),
+    );
+  }
+
+  String _countLabel(int count) {
+    if (count >= 1000000) return '${(count / 1000000).toStringAsFixed(1)}M';
+    if (count >= 1000) return '${(count / 1000).toStringAsFixed(1)}K';
+    return count.toString();
+  }
+
+  Future<void> _toggleLike(Post post) async {
+    final engagement = _ensureEngagement(post);
+    final prevLiked = engagement.liked;
+    final prevDisliked = engagement.disliked;
+    final prevLikeCount = engagement.likeCount;
+    final prevDislikeCount = engagement.dislikeCount;
+
+    setState(() {
+      if (engagement.liked) {
+        engagement.liked = false;
+        engagement.likeCount = math.max(0, engagement.likeCount - 1);
+      } else {
+        engagement.liked = true;
+        engagement.likeCount += 1;
+        if (engagement.disliked) {
+          engagement.disliked = false;
+          engagement.dislikeCount = math.max(0, engagement.dislikeCount - 1);
+        }
+      }
+    });
+
+    try {
+      await ref.read(postRepositoryProvider).toggleLike(post.id);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        engagement.liked = prevLiked;
+        engagement.disliked = prevDisliked;
+        engagement.likeCount = prevLikeCount;
+        engagement.dislikeCount = prevDislikeCount;
+      });
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Could not update like.')));
+    }
+  }
+
+  Future<void> _toggleDislike(Post post) async {
+    final engagement = _ensureEngagement(post);
+    final prevLiked = engagement.liked;
+    final prevDisliked = engagement.disliked;
+    final prevLikeCount = engagement.likeCount;
+    final prevDislikeCount = engagement.dislikeCount;
+
+    final shouldEnableDislike = !engagement.disliked;
+
+    setState(() {
+      if (engagement.disliked) {
+        engagement.disliked = false;
+        engagement.dislikeCount = math.max(0, engagement.dislikeCount - 1);
+      } else {
+        engagement.disliked = true;
+        engagement.dislikeCount += 1;
+        if (engagement.liked) {
+          engagement.liked = false;
+          engagement.likeCount = math.max(0, engagement.likeCount - 1);
+        }
+      }
+    });
+
+    if (!shouldEnableDislike) {
+      return;
+    }
+
+    try {
+      await ref.read(postRepositoryProvider).react(post.id, 'dislike');
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        engagement.liked = prevLiked;
+        engagement.disliked = prevDisliked;
+        engagement.likeCount = prevLikeCount;
+        engagement.dislikeCount = prevDislikeCount;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not update dislike.')),
+      );
+    }
+  }
+
+  Future<void> _toggleSave(Post post) async {
+    final engagement = _ensureEngagement(post);
+    final prevSaved = engagement.saved;
+
+    setState(() => engagement.saved = !engagement.saved);
+
+    try {
+      await ref.read(postRepositoryProvider).toggleBookmark(post.id);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => engagement.saved = prevSaved);
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Could not update save.')));
+    }
+  }
+
+  Future<void> _shareReel(Post post) async {
+    final engagement = _ensureEngagement(post);
+
+    final link = '${Environment.apiBaseUrl}/posts/${post.id}';
+    await Clipboard.setData(ClipboardData(text: link));
+
+    if (!mounted) return;
+    setState(() => engagement.shareCount += 1);
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Reel link copied to clipboard.')),
+    );
+  }
+
+  Future<void> _openComments(Post post) async {
+    await context.push('/comments/${post.id}');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loadingInitial) {
+      return const Scaffold(
+        backgroundColor: AppColors.bgPrimary,
+        body: Center(
+          child: CircularProgressIndicator(color: AppColors.postgramPrimary),
+        ),
+      );
+    }
+
+    if (_error != null && _reels.isEmpty) {
+      return Scaffold(
+        backgroundColor: AppColors.bgPrimary,
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  _error!,
+                  textAlign: TextAlign.center,
+                  style: AppTextStyles.body,
+                ),
+                const SizedBox(height: 12),
+                ElevatedButton(
+                  onPressed: _loadInitial,
+                  child: const Text('Retry'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    if (_reels.isEmpty) {
+      return Scaffold(
+        backgroundColor: AppColors.bgPrimary,
+        body: Center(
+          child: Text(
+            'No reels available right now.',
+            style: AppTextStyles.body,
+          ),
+        ),
+      );
+    }
 
     return Scaffold(
       backgroundColor: AppColors.bgPrimary,
-      body: GestureDetector(
-        onTap: _togglePause,
-        onDoubleTap: _doubleTapLike,
-        child: Stack(
-          children: [
-            PageView.builder(
-              controller: _pageController,
-              scrollDirection: Axis.vertical,
-              onPageChanged: (index) => setState(() {
-                _currentIndex = index;
-                _paused = false;
-              }),
-              itemCount: _reels.length,
-              itemBuilder: (context, index) {
-                final reel = _reels[index];
-                return _ReelBackground(
-                  reel: reel,
-                  isActive: index == _currentIndex,
-                  paused: _paused,
-                );
-              },
-            ),
-            Positioned.fill(
-              child: IgnorePointer(
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [
-                        Colors.black.withValues(alpha: 0.36),
-                        Colors.transparent,
-                        Colors.black.withValues(alpha: 0.5),
-                      ],
-                    ),
-                  ),
+      body: Stack(
+        children: [
+          PageView.builder(
+            controller: _pageController,
+            scrollDirection: Axis.vertical,
+            itemCount: _reels.length,
+            onPageChanged: (_) => _loadMore(),
+            itemBuilder: (context, index) {
+              final post = _reels[index];
+              final engagement = _ensureEngagement(post);
+              final colors = _palette[index % _palette.length];
+
+              return GestureDetector(
+                onDoubleTap: () => _toggleLike(post),
+                child: _ReelPage(
+                  post: post,
+                  engagement: engagement,
+                  colors: colors,
+                  fullscreenRoute: widget.fullscreenRoute,
+                  muted: _muted,
+                  onBack: () => context.pop(),
+                  onToggleMute: () => setState(() => _muted = !_muted),
+                  onLike: () => _toggleLike(post),
+                  onDislike: () => _toggleDislike(post),
+                  onComment: () => _openComments(post),
+                  onShare: () => _shareReel(post),
+                  onSave: () => _toggleSave(post),
+                  countLabel: _countLabel,
                 ),
-              ),
-            ),
-            SafeArea(
-              bottom: false,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-                child: Column(
-                  children: [
-                    Row(
-                      children: List.generate(_reels.length, (index) {
-                        final isCompleted = index < _currentIndex;
-                        final isActive = index == _currentIndex;
-                        return Expanded(
-                          child: Container(
-                            margin: EdgeInsets.only(right: index == _reels.length - 1 ? 0 : 5),
-                            height: 3,
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(999),
-                              color: isCompleted
-                                  ? Colors.white
-                                  : isActive
-                                      ? AppColors.postgramPrimary
-                                      : Colors.white.withValues(alpha: 0.24),
-                            ),
-                          ),
-                        );
-                      }),
-                    ),
-                    const SizedBox(height: 10),
-                    Row(
-                      children: [
-                        if (widget.fullscreenRoute)
-                          Padding(
-                            padding: const EdgeInsets.only(right: 8),
-                            child: _OverlayIconButton(
-                              icon: Icons.arrow_back,
-                              onTap: () => context.pop(),
-                            ),
-                          ),
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                          decoration: BoxDecoration(
-                            color: AppColors.postgramPrimary.withValues(alpha: 0.2),
-                            borderRadius: BorderRadius.circular(999),
-                            border: Border.all(
-                              color: AppColors.postgramPrimary.withValues(alpha: 0.3),
-                            ),
-                          ),
-                          child: Row(
-                            children: [
-                              Text(
-                                'POSTGRAM',
-                                style: AppTextStyles.labelTiny.copyWith(
-                                  color: AppColors.postgramPrimary,
-                                ),
-                              ),
-                              const SizedBox(width: 6),
-                              Container(
-                                width: 6,
-                                height: 6,
-                                decoration: const BoxDecoration(
-                                  color: AppColors.postgramPrimary,
-                                  shape: BoxShape.circle,
-                                ),
-                              )
-                                  .animate(onPlay: (controller) => controller.repeat())
-                                  .fade(begin: 0.45, end: 1, duration: 900.ms),
-                            ],
-                          ),
-                        ),
-                        const Spacer(),
-                        _OverlayIconButton(
-                          icon: _muted ? Icons.volume_off_outlined : Icons.volume_up_outlined,
-                          onTap: () => setState(() => _muted = !_muted),
-                        ),
-                        const SizedBox(width: 8),
-                        const _OverlayIconButton(icon: Icons.more_horiz),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            Positioned(
-              right: 12,
-              bottom: widget.fullscreenRoute ? 148 : 230,
-              child: _ActionRail(
-                liked: _likedIndexes.contains(_currentIndex),
-                likes: active.likes,
-                comments: active.comments,
-                shares: active.shares,
-                onLike: _toggleLike,
-                onComment: _openComments,
-                onShare: () {},
-              ),
-            ),
-            Positioned(
-              left: 12,
-              right: 70,
-              bottom: widget.fullscreenRoute ? 20 : 104,
-              child: _BottomInfo(
-                reel: active,
-                onFollowTap: () {},
-              ),
-            ),
+              );
+            },
+          ),
+          if (_loadingMore)
             Positioned(
               left: 0,
               right: 0,
-              bottom: widget.fullscreenRoute ? 6 : 88,
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: List.generate(_reels.length, (index) {
-                  final activeDot = index == _currentIndex;
-                  return AnimatedContainer(
-                    duration: const Duration(milliseconds: 200),
-                    margin: const EdgeInsets.symmetric(horizontal: 3),
-                    width: activeDot ? 18 : 6,
-                    height: 6,
-                    decoration: BoxDecoration(
-                      color: activeDot
-                          ? AppColors.postgramPrimary
-                          : Colors.white.withValues(alpha: 0.35),
-                      borderRadius: BorderRadius.circular(999),
-                    ),
-                  );
-                }),
-              ),
-            ),
-            if (_showPlayIndicator)
-              Center(
-                child: Container(
-                  width: 76,
-                  height: 76,
-                  decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.45),
-                    shape: BoxShape.circle,
-                    border: Border.all(color: Colors.white.withValues(alpha: 0.2)),
-                  ),
-                  child: Icon(
-                    _paused ? Icons.play_arrow : Icons.pause,
-                    size: 34,
-                    color: Colors.white,
+              bottom: widget.fullscreenRoute ? 18 : 100,
+              child: const Center(
+                child: SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: AppColors.postgramPrimary,
                   ),
                 ),
               ),
-            if (_showHeartBurst)
-              Center(
-                child: Text(
-                  '❤',
-                  style: AppTextStyles.h1.copyWith(
-                    fontSize: 100,
-                    color: AppColors.postgramPrimary,
-                  ),
-                )
-                    .animate()
-                    .scale(begin: const Offset(0.4, 0.4), end: const Offset(1.15, 1.15), duration: 180.ms)
-                    .fadeOut(delay: 280.ms, duration: 220.ms),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _togglePause() {
-    setState(() {
-      _paused = !_paused;
-      _showPlayIndicator = true;
-    });
-    Future<void>.delayed(const Duration(milliseconds: 620), () {
-      if (!mounted) {
-        return;
-      }
-      setState(() => _showPlayIndicator = false);
-    });
-  }
-
-  void _toggleLike() {
-    setState(() {
-      if (_likedIndexes.contains(_currentIndex)) {
-        _likedIndexes.remove(_currentIndex);
-      } else {
-        _likedIndexes.add(_currentIndex);
-      }
-    });
-  }
-
-  void _doubleTapLike() {
-    setState(() {
-      _likedIndexes.add(_currentIndex);
-      _showHeartBurst = true;
-    });
-    Future<void>.delayed(const Duration(milliseconds: 520), () {
-      if (!mounted) {
-        return;
-      }
-      setState(() => _showHeartBurst = false);
-    });
-  }
-
-  Future<void> _openComments() async {
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => const _CommentsSheet(),
-    );
-  }
-}
-
-class _ReelBackground extends StatelessWidget {
-  const _ReelBackground({
-    required this.reel,
-    required this.isActive,
-    required this.paused,
-  });
-
-  final _ReelData reel;
-  final bool isActive;
-  final bool paused;
-
-  @override
-  Widget build(BuildContext context) {
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: reel.gradientColors,
-        ),
-      ),
-      child: Stack(
-        children: [
-          const _ParticleLayer(),
-          Center(
-            child: Text(
-              reel.emoji,
-              style: AppTextStyles.h1.copyWith(fontSize: 120),
-            )
-                .animate(
-                  target: isActive && !paused ? 1 : 0,
-                  onPlay: (controller) => controller.repeat(reverse: true),
-                )
-                .moveY(begin: 0, end: -10, duration: 1600.ms, curve: Curves.easeInOut)
-                .scale(begin: const Offset(1, 1), end: const Offset(1.03, 1.03), duration: 1600.ms),
-          ),
+            ),
         ],
       ),
     );
   }
 }
 
-class _ParticleLayer extends StatelessWidget {
-  const _ParticleLayer();
+class _ReelPage extends StatelessWidget {
+  const _ReelPage({
+    required this.post,
+    required this.engagement,
+    required this.colors,
+    required this.fullscreenRoute,
+    required this.muted,
+    required this.onBack,
+    required this.onToggleMute,
+    required this.onLike,
+    required this.onDislike,
+    required this.onComment,
+    required this.onShare,
+    required this.onSave,
+    required this.countLabel,
+  });
+
+  final Post post;
+  final _ReelEngagement engagement;
+  final List<Color> colors;
+  final bool fullscreenRoute;
+  final bool muted;
+  final VoidCallback onBack;
+  final VoidCallback onToggleMute;
+  final VoidCallback onLike;
+  final VoidCallback onDislike;
+  final VoidCallback onComment;
+  final VoidCallback onShare;
+  final VoidCallback onSave;
+  final String Function(int value) countLabel;
+
+  String get _title {
+    final text = post.content.trim();
+    if (text.isNotEmpty) return text;
+    return 'New reel from ${post.authorName ?? 'creator'}';
+  }
+
+  String get _authorHandle {
+    final raw = (post.authorName ?? 'creator').toLowerCase().replaceAll(
+      ' ',
+      '.',
+    );
+    return '@$raw';
+  }
+
+  String get _tags {
+    if (post.tags.isEmpty) return '#reels #atpost';
+    return post.tags.take(4).map((tag) => '#$tag').join(' ');
+  }
 
   @override
   Widget build(BuildContext context) {
     return Stack(
       children: [
-        _Particle(left: 26, top: 180, size: 72, color: AppColors.postgramPrimary.withValues(alpha: 0.18)),
-        _Particle(left: 220, top: 270, size: 58, color: AppColors.accentPurple.withValues(alpha: 0.2)),
-        _Particle(left: 140, top: 480, size: 62, color: AppColors.postbookPrimary.withValues(alpha: 0.14)),
-        _Particle(left: 290, top: 620, size: 54, color: AppColors.postgramSecondary.withValues(alpha: 0.16)),
-        _Particle(left: 54, top: 700, size: 48, color: AppColors.posttubePrimary.withValues(alpha: 0.14)),
+        Positioned.fill(
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: colors,
+              ),
+            ),
+          ),
+        ),
+        Positioned.fill(
+          child: IgnorePointer(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Colors.black.withValues(alpha: 0.35),
+                    Colors.transparent,
+                    Colors.black.withValues(alpha: 0.55),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+        Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 110,
+                height: 110,
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.14),
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.2),
+                  ),
+                ),
+                child: const Icon(
+                  Icons.play_arrow_rounded,
+                  size: 52,
+                  color: Colors.white,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                post.contentType.toUpperCase(),
+                style: AppTextStyles.label.copyWith(color: Colors.white70),
+              ),
+            ],
+          ),
+        ),
+        SafeArea(
+          bottom: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
+            child: Row(
+              children: [
+                if (fullscreenRoute)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: _OverlayIconButton(
+                      icon: Icons.arrow_back,
+                      onTap: onBack,
+                    ),
+                  ),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: AppColors.postgramPrimary.withValues(alpha: 0.2),
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(
+                      color: AppColors.postgramPrimary.withValues(alpha: 0.35),
+                    ),
+                  ),
+                  child: Text(
+                    'POSTGRAM REELS',
+                    style: AppTextStyles.labelTiny.copyWith(
+                      color: AppColors.postgramPrimary,
+                    ),
+                  ),
+                ),
+                const Spacer(),
+                _OverlayIconButton(
+                  icon: muted
+                      ? Icons.volume_off_outlined
+                      : Icons.volume_up_outlined,
+                  onTap: onToggleMute,
+                ),
+              ],
+            ),
+          ),
+        ),
+        Positioned(
+          right: 12,
+          bottom: fullscreenRoute ? 132 : 214,
+          child: _ActionRail(
+            liked: engagement.liked,
+            disliked: engagement.disliked,
+            saved: engagement.saved,
+            likes: countLabel(engagement.likeCount),
+            dislikes: countLabel(engagement.dislikeCount),
+            comments: countLabel(engagement.commentCount),
+            shares: countLabel(engagement.shareCount),
+            onLike: onLike,
+            onDislike: onDislike,
+            onComment: onComment,
+            onShare: onShare,
+            onSave: onSave,
+          ),
+        ),
+        Positioned(
+          left: 12,
+          right: 78,
+          bottom: fullscreenRoute ? 24 : 98,
+          child: _BottomInfo(
+            authorHandle: _authorHandle,
+            title: _title,
+            tags: _tags,
+            mediaCount: post.mediaIds.length,
+          ),
+        ),
       ],
     );
   }
 }
 
-class _Particle extends StatelessWidget {
-  const _Particle({
-    required this.left,
-    required this.top,
-    required this.size,
-    required this.color,
-  });
-
-  final double left;
-  final double top;
-  final double size;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) {
-    return Positioned(
-      left: left,
-      top: top,
-      child: Container(
-        width: size,
-        height: size,
-        decoration: BoxDecoration(
-          color: color,
-          shape: BoxShape.circle,
-        ),
-      )
-          .animate(onPlay: (controller) => controller.repeat(reverse: true))
-          .moveY(begin: -8, end: 8, duration: 2600.ms, curve: Curves.easeInOut)
-          .scale(begin: const Offset(0.92, 0.92), end: const Offset(1.05, 1.05), duration: 2600.ms),
-    );
-  }
-}
-
 class _OverlayIconButton extends StatelessWidget {
-  const _OverlayIconButton({
-    required this.icon,
-    this.onTap,
-  });
+  const _OverlayIconButton({required this.icon, this.onTap});
 
   final IconData icon;
   final VoidCallback? onTap;
@@ -466,9 +613,9 @@ class _OverlayIconButton extends StatelessWidget {
         decoration: BoxDecoration(
           color: Colors.white.withValues(alpha: 0.1),
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
         ),
-        child: Icon(icon, color: Colors.white, size: 19),
+        child: Icon(icon, color: Colors.white, size: 20),
       ),
     );
   }
@@ -477,70 +624,72 @@ class _OverlayIconButton extends StatelessWidget {
 class _ActionRail extends StatelessWidget {
   const _ActionRail({
     required this.liked,
+    required this.disliked,
+    required this.saved,
     required this.likes,
+    required this.dislikes,
     required this.comments,
     required this.shares,
     required this.onLike,
+    required this.onDislike,
     required this.onComment,
     required this.onShare,
+    required this.onSave,
   });
 
   final bool liked;
+  final bool disliked;
+  final bool saved;
   final String likes;
+  final String dislikes;
   final String comments;
   final String shares;
   final VoidCallback onLike;
+  final VoidCallback onDislike;
   final VoidCallback onComment;
   final VoidCallback onShare;
+  final VoidCallback onSave;
 
   @override
   Widget build(BuildContext context) {
     return Column(
       children: [
-        _RailItem(
-          icon: liked ? Icons.favorite : Icons.favorite_border,
+        _RailButton(
+          icon: liked ? Icons.favorite_rounded : Icons.favorite_border_rounded,
           label: likes,
           iconColor: liked ? AppColors.postgramPrimary : Colors.white,
           glow: liked,
           onTap: onLike,
         ),
-        const SizedBox(height: 14),
-        _RailItem(
-          icon: Icons.chat_bubble_outline,
+        const SizedBox(height: 12),
+        _RailButton(
+          icon: disliked ? Icons.thumb_down_rounded : Icons.thumb_down_outlined,
+          label: dislikes,
+          iconColor: disliked ? AppColors.postbookPrimary : Colors.white,
+          onTap: onDislike,
+        ),
+        const SizedBox(height: 12),
+        _RailButton(
+          icon: Icons.chat_bubble_outline_rounded,
           label: comments,
           onTap: onComment,
         ),
-        const SizedBox(height: 14),
-        _RailItem(
-          icon: Icons.share_outlined,
-          label: shares,
-          onTap: onShare,
-        ),
-        const SizedBox(height: 14),
-        const _RailItem(
-          icon: Icons.bookmark_border,
+        const SizedBox(height: 12),
+        _RailButton(icon: Icons.share_outlined, label: shares, onTap: onShare),
+        const SizedBox(height: 12),
+        _RailButton(
+          icon: saved ? Icons.bookmark_rounded : Icons.bookmark_border_rounded,
           label: 'Save',
+          iconColor: saved ? AppColors.posttubePrimary : Colors.white,
+          onTap: onSave,
         ),
-        const SizedBox(height: 16),
-        Container(
-          width: 42,
-          height: 42,
-          decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: 0.12),
-            shape: BoxShape.circle,
-            border: Border.all(color: Colors.white.withValues(alpha: 0.18)),
-          ),
-          child: const Icon(Icons.music_note, color: Colors.white),
-        )
-            .animate(onPlay: (controller) => controller.repeat())
-            .rotate(duration: 3000.ms),
       ],
     );
   }
 }
 
-class _RailItem extends StatelessWidget {
-  const _RailItem({
+class _RailButton extends StatelessWidget {
+  const _RailButton({
     required this.icon,
     required this.label,
     this.iconColor = Colors.white,
@@ -579,7 +728,7 @@ class _RailItem extends StatelessWidget {
             ),
             child: Icon(icon, color: iconColor, size: 22),
           ),
-          const SizedBox(height: 5),
+          const SizedBox(height: 4),
           Text(
             label,
             style: AppTextStyles.labelSmall.copyWith(color: Colors.white),
@@ -592,12 +741,16 @@ class _RailItem extends StatelessWidget {
 
 class _BottomInfo extends StatelessWidget {
   const _BottomInfo({
-    required this.reel,
-    required this.onFollowTap,
+    required this.authorHandle,
+    required this.title,
+    required this.tags,
+    required this.mediaCount,
   });
 
-  final _ReelData reel;
-  final VoidCallback onFollowTap;
+  final String authorHandle;
+  final String title;
+  final String tags;
+  final int mediaCount;
 
   @override
   Widget build(BuildContext context) {
@@ -616,7 +769,10 @@ class _BottomInfo extends StatelessWidget {
               ),
               child: Center(
                 child: Text(
-                  reel.user.substring(1, 2).toUpperCase(),
+                  authorHandle
+                      .replaceFirst('@', '')
+                      .substring(0, 1)
+                      .toUpperCase(),
                   style: AppTextStyles.h3.copyWith(color: Colors.white),
                 ),
               ),
@@ -624,54 +780,35 @@ class _BottomInfo extends StatelessWidget {
             const SizedBox(width: 8),
             Expanded(
               child: Text(
-                reel.user,
+                authorHandle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: AppTextStyles.h3.copyWith(color: Colors.white),
-              ),
-            ),
-            GestureDetector(
-              onTap: onFollowTap,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-                decoration: BoxDecoration(
-                  color: AppColors.postgramPrimary,
-                  borderRadius: BorderRadius.circular(999),
-                ),
-                child: Text(
-                  'Follow',
-                  style: AppTextStyles.label.copyWith(color: Colors.white),
-                ),
               ),
             ),
           ],
         ),
         const SizedBox(height: 8),
         Text(
-          reel.title,
-          style: AppTextStyles.body.copyWith(color: Colors.white),
+          title,
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
+          style: AppTextStyles.body.copyWith(color: Colors.white),
         ),
         const SizedBox(height: 5),
         Text(
-          reel.tags,
-          style: AppTextStyles.monoSmall.copyWith(color: Colors.white.withValues(alpha: 0.68)),
+          tags,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: AppTextStyles.labelSmall.copyWith(
+            color: Colors.white.withValues(alpha: 0.78),
+          ),
         ),
-        const SizedBox(height: 8),
-        ClipRect(
-          child: SizedBox(
-            height: 16,
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              physics: const NeverScrollableScrollPhysics(),
-              child: Text(
-                'Music  ${reel.song}  •  Music  ${reel.song}  •',
-                style: AppTextStyles.labelSmall.copyWith(
-                  color: Colors.white.withValues(alpha: 0.82),
-                ),
-              )
-                  .animate(onPlay: (controller) => controller.repeat())
-                  .moveX(begin: 0, end: -120, duration: 7000.ms, curve: Curves.linear),
-            ),
+        const SizedBox(height: 6),
+        Text(
+          '$mediaCount media item(s) in this reel',
+          style: AppTextStyles.monoSmall.copyWith(
+            color: Colors.white.withValues(alpha: 0.7),
           ),
         ),
       ],
@@ -679,237 +816,22 @@ class _BottomInfo extends StatelessWidget {
   }
 }
 
-class _CommentsSheet extends StatefulWidget {
-  const _CommentsSheet();
-
-  @override
-  State<_CommentsSheet> createState() => _CommentsSheetState();
-}
-
-class _CommentsSheetState extends State<_CommentsSheet> {
-  final TextEditingController _commentController = TextEditingController();
-
-  bool get _hasText => _commentController.text.trim().isNotEmpty;
-
-  static const List<_Comment> _comments = [
-    _Comment(
-      user: 'aarav',
-      text: 'The transition timing is so smooth.',
-      time: '1h',
-      likes: 118,
-    ),
-    _Comment(
-      user: 'meera',
-      text: 'Can you share the typography scale too?',
-      time: '52m',
-      likes: 72,
-    ),
-    _Comment(
-      user: 'tara',
-      text: 'Gradient balance is exactly right.',
-      time: '37m',
-      likes: 44,
-    ),
-  ];
-
-  @override
-  void initState() {
-    super.initState();
-    _commentController.addListener(_update);
-  }
-
-  @override
-  void dispose() {
-    _commentController
-      ..removeListener(_update)
-      ..dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return FractionallySizedBox(
-      heightFactor: 0.6,
-      child: Container(
-        decoration: const BoxDecoration(
-          color: AppColors.bgSecondary,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-        ),
-        child: Column(
-          children: [
-            const SizedBox(height: 10),
-            Container(
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.2),
-                borderRadius: BorderRadius.circular(999),
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-              child: Row(
-                children: [
-                  Text('Comments', style: AppTextStyles.h2),
-                  const Spacer(),
-                  IconButton(
-                    onPressed: () => context.pop(),
-                    icon: const Icon(Icons.close, color: AppColors.textSecondary),
-                  ),
-                ],
-              ),
-            ),
-            Expanded(
-              child: ListView.separated(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                itemCount: _comments.length,
-                separatorBuilder: (_, _) => const SizedBox(height: 12),
-                itemBuilder: (context, index) {
-                  final comment = _comments[index];
-                  return Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Container(
-                        width: 34,
-                        height: 34,
-                        decoration: BoxDecoration(
-                          color: AppColors.bgTertiary,
-                          borderRadius: BorderRadius.circular(11),
-                        ),
-                        child: Center(
-                          child: Text(
-                            comment.user.substring(0, 1).toUpperCase(),
-                            style: AppTextStyles.label,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                Text(comment.user, style: AppTextStyles.h3),
-                                const SizedBox(width: 8),
-                                Text(
-                                  comment.time,
-                                  style: AppTextStyles.monoSmall.copyWith(color: AppColors.textDim),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 3),
-                            Text(
-                              comment.text,
-                              style: AppTextStyles.bodySmall.copyWith(color: AppColors.textSecondary),
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              '❤ ${comment.likes}   Reply',
-                              style: AppTextStyles.labelSmall.copyWith(
-                                color: AppColors.textMuted,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  );
-                },
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 14),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: AppColors.bgCard,
-                        borderRadius: BorderRadius.circular(AppSpacing.radiusXL),
-                        border: Border.all(color: AppColors.borderSubtle),
-                      ),
-                      child: TextField(
-                        controller: _commentController,
-                        style: AppTextStyles.bodySmall,
-                        decoration: InputDecoration(
-                          border: InputBorder.none,
-                          hintText: 'Add a comment',
-                          hintStyle: AppTextStyles.bodySmall.copyWith(color: AppColors.textGhost),
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Container(
-                    width: 40,
-                    height: 40,
-                    decoration: BoxDecoration(
-                      gradient: _hasText ? AppColors.ctaGradient : null,
-                      color: _hasText ? null : AppColors.bgCard,
-                      shape: BoxShape.circle,
-                      border: Border.all(color: AppColors.borderSubtle),
-                    ),
-                    child: Icon(
-                      Icons.send,
-                      size: 18,
-                      color: _hasText ? Colors.white : AppColors.textMuted,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _update() {
-    if (!mounted) {
-      return;
-    }
-    setState(() {});
-  }
-}
-
-class _ReelData {
-  const _ReelData({
-    required this.id,
-    required this.user,
-    required this.title,
-    required this.tags,
-    required this.song,
-    required this.emoji,
-    required this.likes,
-    required this.comments,
-    required this.shares,
-    required this.gradientColors,
+class _ReelEngagement {
+  _ReelEngagement({
+    required this.likeCount,
+    required this.dislikeCount,
+    required this.commentCount,
+    required this.shareCount,
+    required this.liked,
+    required this.disliked,
+    required this.saved,
   });
 
-  final String id;
-  final String user;
-  final String title;
-  final String tags;
-  final String song;
-  final String emoji;
-  final String likes;
-  final String comments;
-  final String shares;
-  final List<Color> gradientColors;
-}
-
-class _Comment {
-  const _Comment({
-    required this.user,
-    required this.text,
-    required this.time,
-    required this.likes,
-  });
-
-  final String user;
-  final String text;
-  final String time;
-  final int likes;
+  int likeCount;
+  int dislikeCount;
+  int commentCount;
+  int shareCount;
+  bool liked;
+  bool disliked;
+  bool saved;
 }

@@ -246,6 +246,42 @@ func ensurePhase6Schema(ctx context.Context, db *pgxpool.Pool) {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_endorsements_to ON endorsements (to_user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_endorsements_from ON endorsements (from_user_id)`,
+
+		// --- Ensure-Publisher: handle + channel auto-creation ---
+
+		// Account-level handle on users table
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS handle TEXT UNIQUE`,
+
+		// is_default flag on channels
+		`ALTER TABLE channels ADD COLUMN IF NOT EXISTS is_default BOOLEAN NOT NULL DEFAULT FALSE`,
+
+		// Global handles registry (source of truth for uniqueness across accounts, channels, pages)
+		`CREATE TABLE IF NOT EXISTS handles (
+			handle     TEXT PRIMARY KEY,
+			owner_type TEXT NOT NULL,
+			owner_id   UUID NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_handles_owner ON handles (owner_id, owner_type)`,
+
+		// Handle history for redirects after renames
+		`CREATE TABLE IF NOT EXISTS handle_history (
+			id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			handle     TEXT NOT NULL,
+			owner_type TEXT NOT NULL,
+			owner_id   UUID NOT NULL,
+			changed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_handle_history_handle ON handle_history (handle)`,
+
+		// Channel members (multi-role support)
+		`CREATE TABLE IF NOT EXISTS channel_members (
+			channel_id UUID NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+			user_id    UUID NOT NULL,
+			role       TEXT NOT NULL DEFAULT 'owner',
+			joined_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+			PRIMARY KEY (channel_id, user_id)
+		)`,
 	}
 
 	for _, stmt := range ddl {

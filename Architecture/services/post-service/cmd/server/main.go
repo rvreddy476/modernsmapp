@@ -66,6 +66,11 @@ func main() {
 	defer scyllaSession.Close()
 	slog.Info("connected to scylladb")
 
+	// 4b. Ensure reel engagement Scylla tables (Gold Spec §5.6)
+	if err := scylla.EnsureReelEngagementSchema(scyllaSession); err != nil {
+		slog.Warn("reel engagement schema", "error", err)
+	}
+
 	// 5. Redis
 	rdb := redis.NewClient(&redis.Options{
 		Addr: redisAddr,
@@ -124,6 +129,9 @@ func main() {
 	wsBroadcaster := consumers.NewWSBroadcasterConsumer(rdb)
 	go wsBroadcaster.Start(consumerCtx, brokers, engTopic)
 
+	reelAnalytics := consumers.NewReelAnalyticsConsumer(dbPool, rdb)
+	go reelAnalytics.Start(consumerCtx, brokers, engTopic)
+
 	slog.Info("engagement consumers started")
 
 	// 11. Reconciliation worker (every 5 min)
@@ -162,7 +170,11 @@ func main() {
 			}
 		}
 	}()
-	slog.Info("reconciler and cleanup workers started")
+	// Outbox worker — publishes pending events to Kafka (Gold Spec §5.8)
+	postSvc.StartOutboxWorker(consumerCtx)
+	postSvc.StartCrossPostWorker(consumerCtx)
+
+	slog.Info("reconciler, outbox, and cleanup workers started")
 
 	// 12. HTTP Server
 	postHandler := http.New(postSvc, rdb)
@@ -177,6 +189,30 @@ func main() {
 	checker.RegisterRoutes(r)
 	r.GET("/metrics", metrics.Handler())
 	postHandler.RegisterRoutes(r)
+	postHandler.RegisterDraftRoutes(r)
+	postHandler.RegisterReelDiscoveryRoutes(r)
+	postHandler.RegisterReelEngagementRoutes(r)
+	postHandler.RegisterReelFeedRoutes(r)
+	postHandler.RegisterReportRoutes(r)
+
+	// 12b. Scheduled draft publish worker (every 60 seconds)
+	go func() {
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-consumerCtx.Done():
+				return
+			case <-ticker.C:
+				n, err := postSvc.PublishScheduledDrafts(consumerCtx)
+				if err != nil {
+					slog.Error("scheduled draft publish error", "error", err)
+				} else if n > 0 {
+					slog.Info("published scheduled drafts", "count", n)
+				}
+			}
+		}
+	}()
 
 	// 13. Graceful shutdown
 	if err := server.Run(r, server.Config{
@@ -369,6 +405,225 @@ func ensureSchema(ctx context.Context, db *pgxpool.Pool) {
 			slog.Warn("alter posts schema", "error", err)
 		}
 	}
+
+	// Reel metadata columns on posts (migration 006)
+	reelMetaDDL := []string{
+		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS title TEXT DEFAULT ''`,
+		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS tags TEXT[] DEFAULT '{}'`,
+		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS category TEXT DEFAULT ''`,
+		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS language TEXT DEFAULT 'en'`,
+		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS seo_title TEXT DEFAULT ''`,
+		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS paid_promotion BOOLEAN DEFAULT FALSE`,
+		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS altered_content BOOLEAN DEFAULT FALSE`,
+		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS is_made_for_kids BOOLEAN DEFAULT FALSE`,
+		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS license TEXT DEFAULT 'standard'`,
+		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS allow_embedding BOOLEAN DEFAULT TRUE`,
+		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS publish_to_feed BOOLEAN DEFAULT TRUE`,
+		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS remix_setting TEXT DEFAULT 'allow'`,
+		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS comment_moderation TEXT DEFAULT 'none'`,
+		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS comment_access TEXT DEFAULT 'everyone'`,
+		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS recording_date DATE`,
+		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS recording_location TEXT DEFAULT ''`,
+		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS cover_media_id UUID`,
+		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS original_audio_volume REAL DEFAULT 1.0`,
+		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS overlay_audio_volume REAL DEFAULT 1.0`,
+	}
+	for _, stmt := range reelMetaDDL {
+		if _, err := db.Exec(ctx, stmt); err != nil {
+			slog.Warn("reel meta schema", "error", err)
+		}
+	}
+
+	// Reel drafts table
+	reelDraftsDDL := []string{
+		`CREATE TABLE IF NOT EXISTS reel_drafts (
+			id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			author_id           UUID NOT NULL,
+			media_id            UUID,
+			title               TEXT NOT NULL DEFAULT '',
+			caption             TEXT NOT NULL DEFAULT '',
+			hashtags            TEXT[] DEFAULT '{}',
+			tags                TEXT[] DEFAULT '{}',
+			visibility          TEXT NOT NULL DEFAULT 'public',
+			topic_id            INT,
+			category            TEXT DEFAULT '',
+			language            TEXT DEFAULT 'en',
+			seo_title           TEXT DEFAULT '',
+			cross_post_postbook BOOLEAN DEFAULT TRUE,
+			cross_post_posttube BOOLEAN DEFAULT FALSE,
+			publish_to_feed     BOOLEAN DEFAULT TRUE,
+			is_made_for_kids    BOOLEAN DEFAULT FALSE,
+			paid_promotion      BOOLEAN DEFAULT FALSE,
+			altered_content     BOOLEAN DEFAULT FALSE,
+			auto_chapters       BOOLEAN DEFAULT TRUE,
+			featured_places     BOOLEAN DEFAULT TRUE,
+			auto_concepts       BOOLEAN DEFAULT TRUE,
+			license             TEXT DEFAULT 'standard',
+			allow_embedding     BOOLEAN DEFAULT TRUE,
+			remix_setting       TEXT DEFAULT 'allow',
+			likes_enabled       BOOLEAN DEFAULT TRUE,
+			comments_enabled    BOOLEAN DEFAULT TRUE,
+			comment_moderation  TEXT DEFAULT 'basic',
+			comment_access      TEXT DEFAULT 'everyone',
+			recording_date      DATE,
+			recording_location  TEXT DEFAULT '',
+			audio_track_id      TEXT,
+			audio_start_ms      INT DEFAULT 0,
+			original_audio_volume REAL DEFAULT 1.0,
+			overlay_audio_volume  REAL DEFAULT 1.0,
+			cover_media_id      UUID,
+			schedule_at         TIMESTAMPTZ,
+			status              TEXT NOT NULL DEFAULT 'draft',
+			moderation_status   TEXT DEFAULT 'pending',
+			published_post_id   UUID,
+			created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_reel_drafts_author ON reel_drafts (author_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_reel_drafts_schedule ON reel_drafts (schedule_at)
+			WHERE schedule_at IS NOT NULL AND status = 'draft'`,
+	}
+	for _, stmt := range reelDraftsDDL {
+		if _, err := db.Exec(ctx, stmt); err != nil {
+			slog.Warn("reel drafts schema", "error", err)
+		}
+	}
+
+	// Gold Spec tables (migration 007): reel_crosspost, outbox_events, idempotency_keys, etc.
+	goldSpecDDL := []string{
+		`CREATE TABLE IF NOT EXISTS reel_hashtags (
+			reel_id     UUID NOT NULL,
+			hashtag     TEXT NOT NULL,
+			position    INT NOT NULL DEFAULT 0,
+			created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (reel_id, hashtag)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_reel_hashtags_tag ON reel_hashtags(hashtag)`,
+		`CREATE INDEX IF NOT EXISTS idx_reel_hashtags_tag_recent ON reel_hashtags(hashtag, created_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS reel_crosspost (
+			id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			source_reel_id  UUID NOT NULL,
+			target_type     TEXT NOT NULL,
+			target_id       TEXT,
+			status          TEXT NOT NULL DEFAULT 'pending',
+			idempotency_key TEXT,
+			error_message   TEXT,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			published_at    TIMESTAMPTZ,
+			UNIQUE (source_reel_id, target_type, target_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_reel_crosspost_source ON reel_crosspost(source_reel_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_reel_crosspost_status ON reel_crosspost(status) WHERE status = 'pending'`,
+		`CREATE TABLE IF NOT EXISTS slug_history (
+			id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			reel_id     UUID NOT NULL,
+			old_slug    TEXT NOT NULL,
+			new_slug    TEXT NOT NULL,
+			changed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_slug_history_old ON slug_history(old_slug)`,
+		`CREATE INDEX IF NOT EXISTS idx_slug_history_reel ON slug_history(reel_id)`,
+		`CREATE TABLE IF NOT EXISTS moderation_reviews (
+			id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			reel_id         UUID NOT NULL,
+			reviewer_type   TEXT NOT NULL,
+			reviewer_id     TEXT,
+			decision        TEXT NOT NULL,
+			reason          TEXT,
+			confidence      FLOAT,
+			policy_violated TEXT,
+			metadata        JSONB,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_moderation_reviews_reel ON moderation_reviews(reel_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_moderation_reviews_decision ON moderation_reviews(decision) WHERE decision IN ('flagged', 'pending_review')`,
+		`CREATE TABLE IF NOT EXISTS outbox_events (
+			id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			event_type      TEXT NOT NULL,
+			aggregate_type  TEXT NOT NULL,
+			aggregate_id    UUID NOT NULL,
+			payload         JSONB NOT NULL,
+			published       BOOLEAN NOT NULL DEFAULT FALSE,
+			published_at    TIMESTAMPTZ,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_outbox_unpublished ON outbox_events(created_at ASC) WHERE published = FALSE`,
+		`CREATE INDEX IF NOT EXISTS idx_outbox_aggregate ON outbox_events(aggregate_type, aggregate_id)`,
+		`CREATE TABLE IF NOT EXISTS idempotency_keys (
+			key             TEXT PRIMARY KEY,
+			result_status   INT NOT NULL,
+			result_body     JSONB,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			expires_at      TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '24 hours')
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_idempotency_expiry ON idempotency_keys(expires_at)`,
+		// Additional Gold Spec columns on posts and reel_drafts
+		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS original_reel_id UUID`,
+		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS is_branded BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`,
+		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS topic_id UUID`,
+		`CREATE INDEX IF NOT EXISTS idx_posts_not_deleted ON posts(created_at DESC) WHERE deleted_at IS NULL`,
+		`ALTER TABLE reel_drafts ADD COLUMN IF NOT EXISTS original_reel_id UUID`,
+		`ALTER TABLE reel_drafts ADD COLUMN IF NOT EXISTS is_branded BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE reel_drafts ADD COLUMN IF NOT EXISTS topic_id UUID`,
+	}
+	for _, stmt := range goldSpecDDL {
+		if _, err := db.Exec(ctx, stmt); err != nil {
+			slog.Warn("gold spec schema", "error", err)
+		}
+	}
+
+	// Content reports table (user-submitted reports → admin dashboard)
+	reportsDDL := []string{
+		`CREATE TABLE IF NOT EXISTS content_reports (
+			id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			reporter_id   UUID NOT NULL,
+			target_type   TEXT NOT NULL,
+			target_id     UUID NOT NULL,
+			reason        TEXT NOT NULL,
+			description   TEXT NOT NULL DEFAULT '',
+			status        TEXT NOT NULL DEFAULT 'pending',
+			reviewer_id   TEXT,
+			review_note   TEXT,
+			created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			reviewed_at   TIMESTAMPTZ
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_content_reports_status ON content_reports(status, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_content_reports_target ON content_reports(target_type, target_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_content_reports_reporter ON content_reports(reporter_id)`,
+	}
+	for _, stmt := range reportsDDL {
+		if _, err := db.Exec(ctx, stmt); err != nil {
+			slog.Warn("content reports schema", "error", err)
+		}
+	}
+
+	// Topics seed data
+	db.Exec(ctx, `CREATE TABLE IF NOT EXISTS topics (
+		id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		name        TEXT NOT NULL UNIQUE,
+		slug        TEXT NOT NULL UNIQUE,
+		parent_id   UUID REFERENCES topics(id),
+		is_active   BOOLEAN NOT NULL DEFAULT TRUE,
+		created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	)`)
+	db.Exec(ctx, `INSERT INTO topics (name, slug) VALUES
+		('Entertainment', 'entertainment'),
+		('Music', 'music'),
+		('Sports', 'sports'),
+		('Gaming', 'gaming'),
+		('News & Politics', 'news-politics'),
+		('Education', 'education'),
+		('Science & Technology', 'science-technology'),
+		('Comedy', 'comedy'),
+		('Fashion & Beauty', 'fashion-beauty'),
+		('Food & Cooking', 'food-cooking'),
+		('Travel', 'travel'),
+		('Fitness & Health', 'fitness-health'),
+		('Art & Creativity', 'art-creativity'),
+		('Pets & Animals', 'pets-animals'),
+		('Business & Finance', 'business-finance')
+	ON CONFLICT (name) DO NOTHING`)
 
 	slog.Info("engagement schema ensured")
 }

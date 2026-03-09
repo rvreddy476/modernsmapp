@@ -115,6 +115,24 @@ const (
 
 	// Mentions
 	EventUserMentioned = "user.mentioned" // payload: UserMentionedPayload
+
+	// Reel Lifecycle (Gold Spec)
+	ReelDraftCreated        = "reel.draft.created"
+	ReelDraftUpdated        = "reel.draft.updated"
+	ReelPublishRequested    = "reel.publish.requested"
+	ReelPublished           = "reel.published"
+	ReelDeleted             = "reel.deleted"
+	ReelViewed              = "reel.viewed"
+	ReelBoostSet            = "reel.boost.set"
+	ReelCommentCreated      = "reel.comment.created"
+	ReelShared              = "reel.shared"
+	ReelSaved               = "reel.saved"
+	AudioTrackCreated       = "audio.track.created"
+	AudioUsageIncremented   = "audio.usage.incremented"
+	MediaProcessingProgress = "media.processing.progress"
+	MediaProcessingCompleted = "media.processing.completed"
+	CrossPostCreated        = "crosspost.created"
+	CrossPostCompleted      = "crosspost.completed"
 )
 
 // EventEnvelope is the CloudEvents-ish structure we use on Kafka.
@@ -556,6 +574,123 @@ type UserMentionedPayload struct {
 	PostID          string    `json:"post_id"`
 	CommentID       string    `json:"comment_id,omitempty"`
 	OccurredAt      time.Time `json:"occurred_at"`
+}
+
+// --- Reel Lifecycle Payloads (Gold Spec) ---
+
+type ReelDraftCreatedPayload struct {
+	DraftID   string    `json:"draft_id"`
+	AuthorID  string    `json:"author_id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type ReelDraftUpdatedPayload struct {
+	DraftID   string    `json:"draft_id"`
+	AuthorID  string    `json:"author_id"`
+	Fields    []string  `json:"fields"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type ReelPublishRequestedPayload struct {
+	ReelID      string    `json:"reel_id"`
+	AuthorID    string    `json:"author_id"`
+	RequestedAt time.Time `json:"requested_at"`
+}
+
+type ReelPublishedPayload struct {
+	ReelID      string    `json:"reel_id"`
+	AuthorID    string    `json:"author_id"`
+	Caption     string    `json:"caption"`
+	Hashtags    []string  `json:"hashtags"`
+	PublishedAt time.Time `json:"published_at"`
+}
+
+type ReelDeletedPayload struct {
+	ReelID    string    `json:"reel_id"`
+	AuthorID  string    `json:"author_id"`
+	DeletedAt time.Time `json:"deleted_at"`
+}
+
+type ReelViewedPayload struct {
+	ReelID    string `json:"reel_id"`
+	ViewerID  string `json:"viewer_id"`
+	SessionID string `json:"session_id"`
+	WatchedMs int64  `json:"watched_ms"`
+	Surface   string `json:"surface"`
+}
+
+type ReelBoostSetPayload struct {
+	ReelID     string    `json:"reel_id"`
+	BoostType  string    `json:"boost_type"`
+	Multiplier float64   `json:"multiplier"`
+	SetBy      string    `json:"set_by"`
+	SetAt      time.Time `json:"set_at"`
+}
+
+type ReelCommentCreatedPayload struct {
+	CommentID string    `json:"comment_id"`
+	ReelID    string    `json:"reel_id"`
+	AuthorID  string    `json:"author_id"`
+	Text      string    `json:"text"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type ReelSharedPayload struct {
+	ReelID    string    `json:"reel_id"`
+	UserID    string    `json:"user_id"`
+	ShareType string    `json:"share_type"`
+	SharedAt  time.Time `json:"shared_at"`
+}
+
+type ReelSavedPayload struct {
+	ReelID  string    `json:"reel_id"`
+	UserID  string    `json:"user_id"`
+	SavedAt time.Time `json:"saved_at"`
+}
+
+type AudioTrackCreatedPayload struct {
+	AudioID       string    `json:"audio_id"`
+	SourceMediaID string    `json:"source_media_id"`
+	Title         string    `json:"title"`
+	DurationMs    int64     `json:"duration_ms"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+type AudioUsageIncrementedPayload struct {
+	AudioID    string    `json:"audio_id"`
+	UserID     string    `json:"user_id"`
+	ReelID     string    `json:"reel_id"`
+	UsageCount int       `json:"usage_count"`
+	OccurredAt time.Time `json:"occurred_at"`
+}
+
+type MediaProcessingProgressPayload struct {
+	MediaID    string    `json:"media_id"`
+	Stage      string    `json:"stage"`
+	Progress   float64   `json:"progress"`
+	OccurredAt time.Time `json:"occurred_at"`
+}
+
+type MediaProcessingCompletedPayload struct {
+	MediaID      string    `json:"media_id"`
+	Status       string    `json:"status"`
+	RenditionIDs []string  `json:"rendition_ids,omitempty"`
+	CompletedAt  time.Time `json:"completed_at"`
+}
+
+type CrossPostCreatedPayload struct {
+	CrossPostID  string    `json:"crosspost_id"`
+	SourceReelID string    `json:"source_reel_id"`
+	TargetType   string    `json:"target_type"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+type CrossPostCompletedPayload struct {
+	CrossPostID  string    `json:"crosspost_id"`
+	SourceReelID string    `json:"source_reel_id"`
+	TargetType   string    `json:"target_type"`
+	Status       string    `json:"status"`
+	CompletedAt  time.Time `json:"completed_at"`
 }
 
 // NewEnvelope creates an EventEnvelope with a new EventID and

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/atpost/post-service/internal/http/middleware"
 	"github.com/atpost/post-service/internal/service"
@@ -116,7 +117,7 @@ type CreatePollRequest struct {
 
 type CreatePostRequest struct {
 	Text           string          `json:"text"`
-	Visibility     string          `json:"visibility" binding:"required,oneof=public followers private"`
+	Visibility     string          `json:"visibility" binding:"required,oneof=public followers private unlisted"`
 	VisibilityPolicy *struct {
 		Mode       string   `json:"mode"`
 		AllowLists []string `json:"allow_lists,omitempty"`
@@ -137,6 +138,26 @@ type CreatePostRequest struct {
 	LocationLng    *float64        `json:"location_lng"`
 	PostType       string          `json:"post_type"`
 	AppOrigin      string          `json:"app_origin"`
+	// Reel metadata
+	Title              string   `json:"title"`
+	Tags               []string `json:"tags"`
+	Category           string   `json:"category"`
+	Language           string   `json:"language"`
+	SEOTitle           string   `json:"seo_title"`
+	PaidPromotion      bool     `json:"paid_promotion"`
+	AlteredContent     bool     `json:"altered_content"`
+	IsMadeForKids      bool     `json:"is_made_for_kids"`
+	License            string   `json:"license"`
+	AllowEmbedding     *bool    `json:"allow_embedding"`
+	PublishToFeed      *bool    `json:"publish_to_feed"`
+	RemixSetting       string   `json:"remix_setting"`
+	CommentModeration  string   `json:"comment_moderation"`
+	CommentAccess      string   `json:"comment_access"`
+	RecordingDate      *string  `json:"recording_date"`
+	RecordingLocation  string   `json:"recording_location"`
+	CoverMediaID       *string  `json:"cover_media_id"`
+	OriginalAudioVol   float32  `json:"original_audio_volume"`
+	OverlayAudioVol    float32  `json:"overlay_audio_volume"`
 }
 
 func (h *Handler) CreatePost(c *gin.Context) {
@@ -169,6 +190,32 @@ func (h *Handler) CreatePost(c *gin.Context) {
 		mediaIDs = append(mediaIDs, id)
 	}
 
+	// Parse optional recording date
+	var recordingDate *time.Time
+	if req.RecordingDate != nil && *req.RecordingDate != "" {
+		if t, err := time.Parse("2006-01-02", *req.RecordingDate); err == nil {
+			recordingDate = &t
+		}
+	}
+
+	// Parse optional cover media ID
+	var coverMediaID *uuid.UUID
+	if req.CoverMediaID != nil {
+		if id, err := uuid.Parse(*req.CoverMediaID); err == nil {
+			coverMediaID = &id
+		}
+	}
+
+	// Default booleans for optional pointer fields
+	allowEmbedding := true
+	if req.AllowEmbedding != nil {
+		allowEmbedding = *req.AllowEmbedding
+	}
+	publishToFeed := true
+	if req.PublishToFeed != nil {
+		publishToFeed = *req.PublishToFeed
+	}
+
 	input := &service.CreatePostInput{
 		AuthorID:       authorID,
 		Text:           req.Text,
@@ -186,6 +233,25 @@ func (h *Handler) CreatePost(c *gin.Context) {
 		LocationLng:    req.LocationLng,
 		PostType:       req.PostType,
 		AppOrigin:      req.AppOrigin,
+		Title:              req.Title,
+		Tags:               req.Tags,
+		Category:           req.Category,
+		Language:           req.Language,
+		SEOTitle:           req.SEOTitle,
+		PaidPromotion:      req.PaidPromotion,
+		AlteredContent:     req.AlteredContent,
+		IsMadeForKids:      req.IsMadeForKids,
+		License:            req.License,
+		AllowEmbedding:     allowEmbedding,
+		PublishToFeed:      publishToFeed,
+		RemixSetting:       req.RemixSetting,
+		CommentModeration:  req.CommentModeration,
+		CommentAccess:      req.CommentAccess,
+		RecordingDate:      recordingDate,
+		RecordingLocation:  req.RecordingLocation,
+		CoverMediaID:       coverMediaID,
+		OriginalAudioVol:   req.OriginalAudioVol,
+		OverlayAudioVol:    req.OverlayAudioVol,
 	}
 
 	if req.Poll != nil {

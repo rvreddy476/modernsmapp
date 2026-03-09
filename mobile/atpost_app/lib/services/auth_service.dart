@@ -1,8 +1,10 @@
 import 'dart:async';
 
 import 'package:atpost_app/core/config/environment.dart';
+import 'package:atpost_app/core/utils/app_logger.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 /// Lightweight auth state.
 class AuthState {
@@ -35,46 +37,131 @@ class AuthState {
 
 /// Manages authentication tokens and user session.
 class AuthService {
+  static const _keyUserId = 'auth_user_id';
+  static const _keyToken = 'auth_token';
+  static const _keyRefreshToken = 'auth_refresh_token';
+  static const _tag = 'AuthService';
+
   final _stateController = StreamController<AuthState>.broadcast();
+  final _storage = const FlutterSecureStorage();
   AuthState _state = const AuthState();
+  late final Future<void> sessionReady;
 
   Stream<AuthState> get stateStream => _stateController.stream;
   AuthState get state => _state;
   String? get token => _state.token;
+  String? get refreshToken => _state.refreshToken;
   String? get userId => _state.userId;
   bool get isAuthenticated => _state.isAuthenticated;
 
   final Dio _dio = Dio(BaseOptions(
     baseUrl: Environment.apiBaseUrl,
     connectTimeout: const Duration(seconds: 10),
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Requested-With': 'XMLHttpRequest',
+    },
   ));
+
+  /// Restore session from secure storage on app startup.
+  Future<void> restoreSession() async {
+    try {
+      final userId = await _storage.read(key: _keyUserId);
+      final token = await _storage.read(key: _keyToken);
+      if (userId != null && token != null) {
+        final refreshToken = await _storage.read(key: _keyRefreshToken);
+        _state = AuthState(
+          userId: userId,
+          token: token,
+          refreshToken: refreshToken,
+          isAuthenticated: true,
+        );
+        _stateController.add(_state);
+        AppLogger.info('Session restored for user: $userId', tag: _tag);
+      } else {
+        AppLogger.info('No existing session found', tag: _tag);
+      }
+    } catch (e, stack) {
+      AppLogger.error('Failed to restore session', tag: _tag, error: e, stackTrace: stack);
+    }
+  }
 
   /// Login with phone/email and password.
   Future<bool> login(String identifier, String password) async {
     try {
+      AppLogger.info('Attempting login for: $identifier', tag: _tag);
       final response = await _dio.post('${Environment.authPath}/login', data: {
         'identifier': identifier,
         'password': password,
       });
 
-      final data = response.data['data'] as Map<String, dynamic>?;
+      final data = response.data['data'] as Map<String, dynamic>? ?? response.data;
       if (data != null) {
-        _state = AuthState(
-          userId: data['user_id'] as String?,
-          token: data['access_token'] as String?,
-          refreshToken: data['refresh_token'] as String?,
-          isAuthenticated: true,
-        );
-        _stateController.add(_state);
-        return true;
+        final tokens = data['tokens'] as Map<String, dynamic>? ?? data;
+        final user = data['user'] as Map<String, dynamic>?;
+
+        final userId = user?['id'] as String? ?? data['user_id'] as String?;
+        final accessToken = tokens['access_token'] as String? ?? tokens['accessToken'];
+        final refreshToken = tokens['refresh_token'] as String? ?? tokens['refreshToken'];
+
+        if (accessToken != null && userId != null) {
+          _state = AuthState(
+            userId: userId,
+            token: accessToken,
+            refreshToken: refreshToken,
+            isAuthenticated: true,
+          );
+          _stateController.add(_state);
+          await _persistSession();
+          AppLogger.info('Login successful for user: $userId', tag: _tag);
+          return true;
+        }
       }
-    } catch (_) {
-      // Login failed
+      AppLogger.warn('Login failed: Invalid response structure', tag: _tag);
+    } catch (e, stack) {
+      AppLogger.error('Login request failed', tag: _tag, error: e, stackTrace: stack);
     }
     return false;
   }
 
-  /// Set auth state directly (e.g. from stored credentials).
+  /// Refresh the access token using the stored refresh token.
+  Future<bool> refreshAccessToken() async {
+    final currentRefreshToken = _state.refreshToken;
+    if (currentRefreshToken == null) {
+      AppLogger.warn('Token refresh aborted: No refresh token available', tag: _tag);
+      return false;
+    }
+
+    try {
+      AppLogger.info('Refreshing access token...', tag: _tag);
+      final response = await _dio.post('${Environment.authPath}/refresh', data: {
+        'refresh_token': currentRefreshToken,
+      });
+
+      final data = response.data['data'] as Map<String, dynamic>? ?? response.data;
+      final tokens = data['tokens'] as Map<String, dynamic>? ?? data;
+
+      final newAccessToken = tokens['access_token'] as String? ?? tokens['accessToken'];
+      final newRefreshToken = tokens['refresh_token'] as String? ?? tokens['refreshToken'];
+
+      if (newAccessToken != null) {
+        _state = _state.copyWith(
+          token: newAccessToken,
+          refreshToken: newRefreshToken ?? currentRefreshToken,
+        );
+        _stateController.add(_state);
+        await _persistSession();
+        AppLogger.info('Access token refreshed successfully', tag: _tag);
+        return true;
+      }
+      AppLogger.warn('Refresh failed: No new access token in response', tag: _tag);
+    } catch (e, stack) {
+      AppLogger.error('Token refresh request failed', tag: _tag, error: e, stackTrace: stack);
+    }
+    return false;
+  }
+
+  /// Set auth state directly (e.g. from register).
   void setSession({
     required String userId,
     required String token,
@@ -87,24 +174,32 @@ class AuthService {
       isAuthenticated: true,
     );
     _stateController.add(_state);
+    _persistSession();
+    AppLogger.info('Direct session set for user: $userId', tag: _tag);
   }
 
-  /// Export all user data for GDPR portability.
-  /// Returns the raw response data as a map.
-  Future<Map<String, dynamic>> exportUserData() async {
-    final response = await _dio.get(
-      '${Environment.authPath}/data-export',
-      options: Options(headers: {
-        if (_state.token != null) 'Authorization': 'Bearer ${_state.token}',
-      }),
-    );
-    return Map<String, dynamic>.from(response.data);
-  }
-
-  /// Clear session.
+  /// Clear session and remove persisted tokens.
   void logout() {
+    AppLogger.info('Logging out user: ${_state.userId}', tag: _tag);
     _state = const AuthState();
     _stateController.add(_state);
+    _storage.deleteAll();
+  }
+
+  Future<void> _persistSession() async {
+    try {
+      if (_state.userId != null) {
+        await _storage.write(key: _keyUserId, value: _state.userId);
+      }
+      if (_state.token != null) {
+        await _storage.write(key: _keyToken, value: _state.token);
+      }
+      if (_state.refreshToken != null) {
+        await _storage.write(key: _keyRefreshToken, value: _state.refreshToken);
+      }
+    } catch (e, stack) {
+      AppLogger.error('Failed to persist session tokens', tag: _tag, error: e, stackTrace: stack);
+    }
   }
 
   void dispose() {
@@ -116,6 +211,7 @@ class AuthService {
 final authServiceProvider = Provider<AuthService>((ref) {
   final service = AuthService();
   ref.onDispose(service.dispose);
+  service.sessionReady = service.restoreSession();
   return service;
 });
 

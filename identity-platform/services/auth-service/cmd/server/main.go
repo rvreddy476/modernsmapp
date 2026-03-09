@@ -87,7 +87,7 @@ func main() {
 	r.Use(internalhttp.RequestIDMiddleware())
 	r.Use(internalhttp.LoggerMiddleware(logger))
 	r.Use(internalhttp.RecoveryMiddleware(logger))
-	r.Use(internalhttp.CORSMiddleware())
+	// CORS is handled by the API Gateway — do not add duplicate headers here.
 	proxies := cfg.TrustedProxies
 	if len(proxies) == 0 {
 		proxies = nil

@@ -6,6 +6,7 @@ import 'package:atpost_app/providers/stories_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:video_player/video_player.dart';
 
 class StoryViewerScreen extends ConsumerStatefulWidget {
   const StoryViewerScreen({super.key, required this.userId});
@@ -22,6 +23,8 @@ class _StoryViewerScreenState extends ConsumerState<StoryViewerScreen> {
   Timer? _timer;
   double _progress = 0;
   bool _storyLoaded = false;
+  VideoPlayerController? _videoController;
+  bool _videoReady = false;
 
   @override
   void initState() {
@@ -34,6 +37,7 @@ class _StoryViewerScreenState extends ConsumerState<StoryViewerScreen> {
   @override
   void dispose() {
     _timer?.cancel();
+    _disposeVideo();
     super.dispose();
   }
 
@@ -42,6 +46,7 @@ class _StoryViewerScreenState extends ConsumerState<StoryViewerScreen> {
       _storyLoaded = true;
       _items = story.items;
       if (_items.isNotEmpty) {
+        _initMediaForItem(_items[_currentIndex]);
         _startTimer();
       }
     }
@@ -60,12 +65,37 @@ class _StoryViewerScreenState extends ConsumerState<StoryViewerScreen> {
     });
   }
 
+  Future<void> _initMediaForItem(StoryItem item) async {
+    _disposeVideo();
+    if (item.mediaType == 'video') {
+      final controller =
+          VideoPlayerController.networkUrl(Uri.parse(item.mediaId));
+      _videoController = controller;
+      try {
+        await controller.initialize();
+        if (mounted) {
+          setState(() => _videoReady = true);
+          controller.play();
+        }
+      } catch (_) {
+        // Video failed to load — show fallback
+      }
+    }
+  }
+
+  void _disposeVideo() {
+    _videoController?.dispose();
+    _videoController = null;
+    _videoReady = false;
+  }
+
   void _nextStory() {
     if (_currentIndex < _items.length - 1) {
       setState(() {
         _currentIndex++;
         _progress = 0;
       });
+      _initMediaForItem(_items[_currentIndex]);
       _startTimer();
     } else {
       context.pop();
@@ -78,6 +108,7 @@ class _StoryViewerScreenState extends ConsumerState<StoryViewerScreen> {
         _currentIndex--;
         _progress = 0;
       });
+      _initMediaForItem(_items[_currentIndex]);
       _startTimer();
     }
   }
@@ -87,6 +118,40 @@ class _StoryViewerScreenState extends ConsumerState<StoryViewerScreen> {
     if (diff.inDays > 0) return '${diff.inDays}d ago';
     if (diff.inHours > 0) return '${diff.inHours}h ago';
     return '${diff.inMinutes}m ago';
+  }
+
+  Widget _buildMediaContent(StoryItem item) {
+    if (item.mediaType == 'video') {
+      if (_videoReady && _videoController != null) {
+        return SizedBox.expand(
+          child: FittedBox(
+            fit: BoxFit.cover,
+            child: SizedBox(
+              width: _videoController!.value.size.width,
+              height: _videoController!.value.size.height,
+              child: VideoPlayer(_videoController!),
+            ),
+          ),
+        );
+      }
+      return Container(
+        color: const Color(0xFF14141F),
+        child: const Center(
+          child: CircularProgressIndicator(color: Colors.white54),
+        ),
+      );
+    }
+    return Image.network(
+      item.mediaId,
+      fit: BoxFit.cover,
+      errorBuilder: (_, _, _) => Container(
+        color: const Color(0xFF14141F),
+        child: const Center(
+          child:
+              Icon(Icons.image_not_supported, color: Colors.white38, size: 64),
+        ),
+      ),
+    );
   }
 
   @override
@@ -111,7 +176,8 @@ class _StoryViewerScreenState extends ConsumerState<StoryViewerScreen> {
               const SizedBox(height: 16),
               TextButton(
                 onPressed: () => context.pop(),
-                child: const Text('Go back', style: TextStyle(color: Colors.white)),
+                child:
+                    const Text('Go back', style: TextStyle(color: Colors.white)),
               ),
             ],
           ),
@@ -137,7 +203,8 @@ class _StoryViewerScreenState extends ConsumerState<StoryViewerScreen> {
                   const SizedBox(height: 16),
                   TextButton(
                     onPressed: () => context.pop(),
-                    child: const Text('Go back', style: TextStyle(color: Colors.white)),
+                    child: const Text('Go back',
+                        style: TextStyle(color: Colors.white)),
                   ),
                 ],
               ),
@@ -145,7 +212,8 @@ class _StoryViewerScreenState extends ConsumerState<StoryViewerScreen> {
           );
         }
 
-        final item = _items.isNotEmpty ? _items[_currentIndex] : story.items[0];
+        final item =
+            _items.isNotEmpty ? _items[_currentIndex] : story.items[0];
         final size = MediaQuery.of(context).size;
 
         return Scaffold(
@@ -168,24 +236,7 @@ class _StoryViewerScreenState extends ConsumerState<StoryViewerScreen> {
               fit: StackFit.expand,
               children: [
                 // Background / media
-                if (item.mediaType == 'image')
-                  Image.network(
-                    item.mediaId,
-                    fit: BoxFit.cover,
-                    errorBuilder: (_, _, _) => Container(
-                      color: const Color(0xFF14141F),
-                      child: const Center(
-                        child: Icon(Icons.image_not_supported, color: Colors.white38, size: 64),
-                      ),
-                    ),
-                  )
-                else
-                  Container(
-                    color: const Color(0xFF14141F),
-                    child: const Center(
-                      child: Icon(Icons.play_circle_outline, color: Colors.white54, size: 80),
-                    ),
-                  ),
+                _buildMediaContent(item),
 
                 // Dark gradient overlay at top and bottom
                 DecoratedBox(
@@ -193,7 +244,10 @@ class _StoryViewerScreenState extends ConsumerState<StoryViewerScreen> {
                     gradient: LinearGradient(
                       begin: Alignment.topCenter,
                       end: Alignment.center,
-                      colors: [Colors.black.withAlpha(160), Colors.transparent],
+                      colors: [
+                        Colors.black.withAlpha(160),
+                        Colors.transparent
+                      ],
                     ),
                   ),
                 ),
@@ -202,7 +256,10 @@ class _StoryViewerScreenState extends ConsumerState<StoryViewerScreen> {
                     gradient: LinearGradient(
                       begin: Alignment.bottomCenter,
                       end: Alignment.center,
-                      colors: [Colors.black.withAlpha(180), Colors.transparent],
+                      colors: [
+                        Colors.black.withAlpha(180),
+                        Colors.transparent
+                      ],
                     ),
                   ),
                 ),
@@ -213,13 +270,17 @@ class _StoryViewerScreenState extends ConsumerState<StoryViewerScreen> {
                     children: [
                       // Progress bars
                       Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 8),
                         child: Row(
                           children: List.generate(
-                            _items.isNotEmpty ? _items.length : story.items.length,
+                            _items.isNotEmpty
+                                ? _items.length
+                                : story.items.length,
                             (i) => Expanded(
                               child: Padding(
-                                padding: const EdgeInsets.symmetric(horizontal: 2),
+                                padding:
+                                    const EdgeInsets.symmetric(horizontal: 2),
                                 child: LinearProgressIndicator(
                                   value: i < _currentIndex
                                       ? 1.0
@@ -227,7 +288,9 @@ class _StoryViewerScreenState extends ConsumerState<StoryViewerScreen> {
                                           ? _progress
                                           : 0.0,
                                   backgroundColor: Colors.white30,
-                                  valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
+                                  valueColor:
+                                      const AlwaysStoppedAnimation<Color>(
+                                          Colors.white),
                                   minHeight: 2,
                                 ),
                               ),
@@ -238,7 +301,8 @@ class _StoryViewerScreenState extends ConsumerState<StoryViewerScreen> {
 
                       // Author row
                       Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 4),
                         child: Row(
                           children: [
                             CircleAvatar(
@@ -248,7 +312,8 @@ class _StoryViewerScreenState extends ConsumerState<StoryViewerScreen> {
                                 story.authorName.isNotEmpty
                                     ? story.authorName[0].toUpperCase()
                                     : '?',
-                                style: AppTextStyles.label.copyWith(color: Colors.white),
+                                style: AppTextStyles.label
+                                    .copyWith(color: Colors.white),
                               ),
                             ),
                             const SizedBox(width: 10),
@@ -258,7 +323,8 @@ class _StoryViewerScreenState extends ConsumerState<StoryViewerScreen> {
                                 children: [
                                   Text(
                                     story.authorName,
-                                    style: AppTextStyles.label.copyWith(color: Colors.white),
+                                    style: AppTextStyles.label
+                                        .copyWith(color: Colors.white),
                                   ),
                                   Text(
                                     _timeAgo(story.createdAt),
@@ -281,10 +347,12 @@ class _StoryViewerScreenState extends ConsumerState<StoryViewerScreen> {
                       // Text overlay
                       if (item.text != null && item.text!.isNotEmpty)
                         Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 20, vertical: 24),
                           child: Center(
                             child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 16, vertical: 10),
                               decoration: BoxDecoration(
                                 color: Colors.black54,
                                 borderRadius: BorderRadius.circular(12),
@@ -292,7 +360,8 @@ class _StoryViewerScreenState extends ConsumerState<StoryViewerScreen> {
                               child: Text(
                                 item.text!,
                                 textAlign: TextAlign.center,
-                                style: AppTextStyles.body.copyWith(color: Colors.white),
+                                style: AppTextStyles.body
+                                    .copyWith(color: Colors.white),
                               ),
                             ),
                           ),

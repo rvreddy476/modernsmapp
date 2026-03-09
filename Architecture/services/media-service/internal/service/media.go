@@ -23,6 +23,8 @@ const (
 	MaxAvatarSize int64 = 10 * 1024 * 1024  // 10 MB
 	MaxCoverSize  int64 = 10 * 1024 * 1024  // 10 MB
 	MaxGIFSize    int64 = 15 * 1024 * 1024  // 15 MB
+
+	defaultURLExpiry = 15 * time.Minute
 )
 
 type Service struct {
@@ -168,6 +170,23 @@ func (s *Service) ConfirmUpload(ctx context.Context, mediaID uuid.UUID, userID u
 	}
 	if media.UploaderID != userID {
 		return nil, fmt.Errorf("forbidden: you do not own this media")
+	}
+
+	// Magic-bytes validation: download first 16 bytes and verify file signature
+	headerData, err := s.blobStore.DownloadObject(ctx, media.StorageKey)
+	if err == nil && len(headerData) >= 16 {
+		switch media.FileType {
+		case "video":
+			if _, valid := processing.ValidateVideoMagicBytes(headerData[:min(len(headerData), 64)]); !valid {
+				_ = s.pgStore.UpdateStatus(ctx, mediaID, "rejected")
+				return nil, fmt.Errorf("invalid video file: magic bytes do not match declared MIME type")
+			}
+		case "image":
+			if _, valid := processing.ValidateImageMagicBytes(headerData[:min(len(headerData), 64)]); !valid {
+				_ = s.pgStore.UpdateStatus(ctx, mediaID, "rejected")
+				return nil, fmt.Errorf("invalid image file: magic bytes do not match declared MIME type")
+			}
+		}
 	}
 
 	// 2. Update status to 'uploaded'

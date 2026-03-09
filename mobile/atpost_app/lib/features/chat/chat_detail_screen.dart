@@ -1,6 +1,10 @@
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_app/data/models/conversation.dart';
+import 'package:atpost_app/data/repositories/chat_repository.dart';
+import 'package:atpost_app/providers/notification_provider.dart';
+import 'package:atpost_app/services/auth_service.dart';
 import 'package:atpost_app/services/call_service.dart';
 import 'package:atpost_app/shared/widgets/glass_icon_button.dart';
 import 'package:flutter/material.dart';
@@ -9,10 +13,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 class ChatDetailScreen extends ConsumerStatefulWidget {
-  const ChatDetailScreen({
-    super.key,
-    required this.conversationId,
-  });
+  const ChatDetailScreen({super.key, required this.conversationId});
 
   final String conversationId;
 
@@ -23,17 +24,22 @@ class ChatDetailScreen extends ConsumerStatefulWidget {
 class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
   final TextEditingController _composerController = TextEditingController();
   bool _attachmentOpen = false;
-  bool _otherUserTyping = true;
-  late List<_ChatMessage> _messages;
+  bool _otherUserTyping = false;
+  bool _loadingMessages = true;
+  bool _sendingMessage = false;
+  String? _loadError;
+  List<_ChatMessage> _messages = [];
 
   bool get _hasText => _composerController.text.trim().isNotEmpty;
-  bool get _isGroupChat => widget.conversationId.contains('group') || widget.conversationId.contains('room');
+  bool get _isGroupChat =>
+      widget.conversationId.contains('group') ||
+      widget.conversationId.contains('room');
 
   @override
   void initState() {
     super.initState();
     _composerController.addListener(_composerListener);
-    _messages = _seedMessages(_isGroupChat);
+    _loadMessages();
   }
 
   @override
@@ -73,7 +79,9 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
                     child: Center(
                       child: Text(
                         _initials(title),
-                        style: AppTextStyles.label.copyWith(color: Colors.white),
+                        style: AppTextStyles.label.copyWith(
+                          color: Colors.white,
+                        ),
                       ),
                     ),
                   ),
@@ -85,9 +93,9 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
                         Text(title, style: AppTextStyles.h2),
                         const SizedBox(height: 2),
                         Text(
-                          _isGroupChat ? '5 members online' : 'online',
+                          _isGroupChat ? 'Group chat' : 'Chat',
                           style: AppTextStyles.bodySmall.copyWith(
-                            color: AppColors.posttubePrimary,
+                            color: AppColors.textSecondary,
                           ),
                         ),
                       ],
@@ -123,23 +131,53 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
               child: const _DateDivider(label: 'Today'),
             ),
             Expanded(
-              child: ListView.builder(
-                padding: AppSpacing.pagePadding.copyWith(bottom: 14),
-                itemCount: _messages.length + (_otherUserTyping ? 1 : 0),
-                itemBuilder: (context, index) {
-                  if (_otherUserTyping && index == _messages.length) {
-                    return const Padding(
-                      padding: EdgeInsets.only(top: 6, bottom: 6),
-                      child: _TypingBubble(),
-                    );
-                  }
-                  final message = _messages[index];
-                  return Padding(
-                    padding: const EdgeInsets.only(bottom: 10),
-                    child: _MessageBubble(message: message),
-                  );
-                },
-              ),
+              child: _loadingMessages
+                  ? const Center(child: CircularProgressIndicator())
+                  : _loadError != null
+                  ? Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            _loadError!,
+                            style: AppTextStyles.bodySmall.copyWith(
+                              color: AppColors.textSecondary,
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          TextButton(
+                            onPressed: _loadMessages,
+                            child: const Text('Retry'),
+                          ),
+                        ],
+                      ),
+                    )
+                  : _messages.isEmpty
+                  ? Center(
+                      child: Text(
+                        'No messages yet',
+                        style: AppTextStyles.bodySmall.copyWith(
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
+                    )
+                  : ListView.builder(
+                      padding: AppSpacing.pagePadding.copyWith(bottom: 14),
+                      itemCount: _messages.length + (_otherUserTyping ? 1 : 0),
+                      itemBuilder: (context, index) {
+                        if (_otherUserTyping && index == _messages.length) {
+                          return const Padding(
+                            padding: EdgeInsets.only(top: 6, bottom: 6),
+                            child: _TypingBubble(),
+                          );
+                        }
+                        final message = _messages[index];
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: _MessageBubble(message: message),
+                        );
+                      },
+                    ),
             ),
             AnimatedCrossFade(
               firstChild: const SizedBox(height: 0),
@@ -158,14 +196,17 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
                 children: [
                   _ComposerActionButton(
                     icon: Icons.add,
-                    onTap: () => setState(() => _attachmentOpen = !_attachmentOpen),
+                    onTap: () =>
+                        setState(() => _attachmentOpen = !_attachmentOpen),
                   ),
                   const SizedBox(width: 10),
                   Expanded(
                     child: Container(
                       decoration: BoxDecoration(
                         color: AppColors.bgCard,
-                        borderRadius: BorderRadius.circular(AppSpacing.radiusXL),
+                        borderRadius: BorderRadius.circular(
+                          AppSpacing.radiusXL,
+                        ),
                         border: Border.all(color: AppColors.borderSubtle),
                       ),
                       child: TextField(
@@ -195,8 +236,10 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
                   const SizedBox(width: 10),
                   _ComposerActionButton(
                     icon: _hasText ? Icons.send : Icons.mic_none,
-                    active: _hasText,
-                    onTap: _hasText ? _sendCurrentMessage : null,
+                    active: _hasText && !_sendingMessage,
+                    onTap: _hasText && !_sendingMessage
+                        ? _sendCurrentMessage
+                        : null,
                   ),
                 ],
               ),
@@ -208,12 +251,14 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
   }
 
   void _startCall(CallType type, String contactName) {
-    ref.read(callProvider.notifier).initiateCall(
-      contactId: widget.conversationId,
-      contactName: contactName,
-      contactAvatar: '',
-      type: type,
-    );
+    ref
+        .read(callProvider.notifier)
+        .initiateCall(
+          contactId: widget.conversationId,
+          contactName: contactName,
+          contactAvatar: '',
+          type: type,
+        );
   }
 
   void _composerListener() {
@@ -223,25 +268,96 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
     setState(() {});
   }
 
-  void _sendCurrentMessage() {
+  Future<void> _loadMessages() async {
+    setState(() {
+      _loadingMessages = true;
+      _loadError = null;
+    });
+    try {
+      final repo = ref.read(chatRepositoryProvider);
+      final apiMessages = await repo.getMessages(widget.conversationId);
+      if (!mounted) return;
+
+      final currentUserId = ref.read(authServiceProvider).userId;
+      final sorted = [...apiMessages]
+        ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+
+      setState(() {
+        _messages = sorted
+            .map((message) => _fromApiMessage(message, currentUserId))
+            .toList();
+        _loadingMessages = false;
+      });
+      ref.invalidate(unreadChatCountProvider);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _loadingMessages = false;
+        _loadError = 'Could not load messages';
+      });
+    }
+  }
+
+  void _sendCurrentMessage() async {
     final text = _composerController.text.trim();
-    if (text.isEmpty) {
+    if (text.isEmpty || _sendingMessage) {
       return;
     }
+
+    _composerController.clear();
     setState(() {
-      _messages = [
-        ..._messages,
-        _ChatMessage(
-          kind: _MessageKind.text,
-          text: text,
-          time: 'now',
-          isMine: true,
-        ),
-      ];
-      _composerController.clear();
+      _sendingMessage = true;
       _attachmentOpen = false;
       _otherUserTyping = false;
     });
+
+    try {
+      final repo = ref.read(chatRepositoryProvider);
+      final sent = await repo.sendMessage(widget.conversationId, text);
+      if (!mounted) return;
+
+      final currentUserId = ref.read(authServiceProvider).userId;
+      setState(() {
+        _messages = [..._messages, _fromApiMessage(sent, currentUserId)];
+      });
+      ref.invalidate(unreadChatCountProvider);
+    } catch (_) {
+      if (!mounted) return;
+      _composerController
+        ..text = text
+        ..selection = TextSelection.collapsed(offset: text.length);
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Failed to send message')));
+    } finally {
+      if (mounted) {
+        setState(() => _sendingMessage = false);
+      }
+    }
+  }
+
+  _ChatMessage _fromApiMessage(Message message, String? currentUserId) {
+    final kind = switch (message.contentType) {
+      'image' || 'video' => _MessageKind.media,
+      'file' => _MessageKind.file,
+      _ => _MessageKind.text,
+    };
+
+    return _ChatMessage(
+      kind: kind,
+      text: message.content,
+      time: _formatMessageTime(message.createdAt),
+      isMine: message.senderId == currentUserId,
+      senderName: message.senderName,
+      mediaCaption: kind == _MessageKind.media ? message.content : null,
+      fileSize: kind == _MessageKind.file ? 'Attachment' : null,
+    );
+  }
+
+  String _formatMessageTime(DateTime dateTime) {
+    final hh = dateTime.hour.toString().padLeft(2, '0');
+    final mm = dateTime.minute.toString().padLeft(2, '0');
+    return '$hh:$mm';
   }
 
   String _titleFromConversationId(String rawId) {
@@ -253,45 +369,14 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
   }
 
   String _initials(String value) {
-    final parts = value.split(' ').where((segment) => segment.isNotEmpty).toList();
+    final parts = value
+        .split(' ')
+        .where((segment) => segment.isNotEmpty)
+        .toList();
     if (parts.length == 1) {
       return parts.first.substring(0, 1).toUpperCase();
     }
     return '${parts[0][0]}${parts[1][0]}'.toUpperCase();
-  }
-
-  List<_ChatMessage> _seedMessages(bool isGroup) {
-    return [
-      _ChatMessage(
-        kind: _MessageKind.text,
-        text: 'Can we lock the home feed interaction spec today?',
-        time: '10:02',
-        isMine: false,
-        senderName: isGroup ? 'Neha' : null,
-      ),
-      _ChatMessage(
-        kind: _MessageKind.text,
-        text: 'Yes. Shell, stories, and cards are already aligned.',
-        time: '10:03',
-        isMine: true,
-      ),
-      _ChatMessage(
-        kind: _MessageKind.media,
-        text: 'Reels prototype frame',
-        mediaCaption: 'Motion pass for swipe transition',
-        time: '10:05',
-        isMine: false,
-        senderName: isGroup ? 'Aarav' : null,
-      ),
-      _ChatMessage(
-        kind: _MessageKind.file,
-        text: 'atpost-player-notes.pdf',
-        fileSize: '2.3 MB',
-        time: '10:08',
-        isMine: false,
-        senderName: isGroup ? 'Meera' : null,
-      ),
-    ];
   }
 }
 
@@ -325,7 +410,9 @@ class _MessageBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final alignment = message.isMine ? Alignment.centerRight : Alignment.centerLeft;
+    final alignment = message.isMine
+        ? Alignment.centerRight
+        : Alignment.centerLeft;
     final radius = BorderRadius.only(
       topLeft: const Radius.circular(18),
       topRight: const Radius.circular(18),
@@ -336,9 +423,13 @@ class _MessageBubble extends StatelessWidget {
     return Align(
       alignment: alignment,
       child: ConstrainedBox(
-        constraints: BoxConstraints(maxWidth: MediaQuery.sizeOf(context).width * 0.76),
+        constraints: BoxConstraints(
+          maxWidth: MediaQuery.sizeOf(context).width * 0.76,
+        ),
         child: Column(
-          crossAxisAlignment: message.isMine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+          crossAxisAlignment: message.isMine
+              ? CrossAxisAlignment.end
+              : CrossAxisAlignment.start,
           children: [
             if (!message.isMine && message.senderName != null) ...[
               Padding(
@@ -354,7 +445,9 @@ class _MessageBubble extends StatelessWidget {
             Container(
               decoration: BoxDecoration(
                 gradient: message.isMine ? AppColors.postbookGradient : null,
-                color: message.isMine ? null : Colors.white.withValues(alpha: 0.06),
+                color: message.isMine
+                    ? null
+                    : Colors.white.withValues(alpha: 0.06),
                 borderRadius: radius,
                 border: message.isMine
                     ? null
@@ -368,7 +461,9 @@ class _MessageBubble extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 6),
               child: Text(
                 message.time,
-                style: AppTextStyles.monoSmall.copyWith(color: AppColors.textDim),
+                style: AppTextStyles.monoSmall.copyWith(
+                  color: AppColors.textDim,
+                ),
               ),
             ),
           ],
@@ -388,73 +483,79 @@ class _MessageContent extends StatelessWidget {
     final textColor = message.isMine ? Colors.white : AppColors.textSecondary;
     return switch (message.kind) {
       _MessageKind.text => Text(
-          message.text,
-          style: AppTextStyles.body.copyWith(color: textColor),
-        ),
+        message.text,
+        style: AppTextStyles.body.copyWith(color: textColor),
+      ),
       _MessageKind.media => Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Container(
-              height: 124,
-              width: double.infinity,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(14),
-                gradient: const LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [Color(0xFF2A1E3D), Color(0xFF1A1A26)],
-                ),
-              ),
-              child: const Center(
-                child: Icon(
-                  Icons.image_outlined,
-                  color: Colors.white70,
-                  size: 30,
-                ),
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            height: 124,
+            width: double.infinity,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(14),
+              gradient: const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Color(0xFF2A1E3D), Color(0xFF1A1A26)],
               ),
             ),
-            const SizedBox(height: 8),
-            Text(
-              message.mediaCaption ?? '',
-              style: AppTextStyles.bodySmall.copyWith(color: textColor),
+            child: const Center(
+              child: Icon(
+                Icons.image_outlined,
+                color: Colors.white70,
+                size: 30,
+              ),
             ),
-          ],
-        ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            message.mediaCaption ?? '',
+            style: AppTextStyles.bodySmall.copyWith(color: textColor),
+          ),
+        ],
+      ),
       _MessageKind.file => Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 32,
-              height: 32,
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: message.isMine ? 0.15 : 0.08),
-                borderRadius: BorderRadius.circular(10),
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 32,
+            height: 32,
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(
+                alpha: message.isMine ? 0.15 : 0.08,
               ),
-              child: const Icon(Icons.insert_drive_file_outlined, size: 18, color: Colors.white),
+              borderRadius: BorderRadius.circular(10),
             ),
-            const SizedBox(width: 8),
-            Flexible(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    message.text,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: AppTextStyles.bodySmall.copyWith(color: textColor),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    message.fileSize ?? '',
-                    style: AppTextStyles.monoSmall.copyWith(
-                      color: textColor.withValues(alpha: 0.78),
-                    ),
-                  ),
-                ],
-              ),
+            child: const Icon(
+              Icons.insert_drive_file_outlined,
+              size: 18,
+              color: Colors.white,
             ),
-          ],
-        ),
+          ),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  message.text,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppTextStyles.bodySmall.copyWith(color: textColor),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  message.fileSize ?? '',
+                  style: AppTextStyles.monoSmall.copyWith(
+                    color: textColor.withValues(alpha: 0.78),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     };
   }
 }
@@ -496,28 +597,29 @@ class _TypingDots extends StatelessWidget {
       children: List.generate(3, (index) {
         return Padding(
           padding: const EdgeInsets.only(right: 3),
-          child: Container(
-            width: size,
-            height: size,
-            decoration: const BoxDecoration(
-              color: AppColors.onlineGreen,
-              shape: BoxShape.circle,
-            ),
-          )
-              .animate(onPlay: (controller) => controller.repeat())
-              .moveY(
-                begin: 0,
-                end: -4,
-                duration: 420.ms,
-                delay: (index * 150).ms,
-                curve: Curves.easeOut,
-              )
-              .moveY(
-                begin: -4,
-                end: 0,
-                duration: 420.ms,
-                curve: Curves.easeIn,
-              ),
+          child:
+              Container(
+                    width: size,
+                    height: size,
+                    decoration: const BoxDecoration(
+                      color: AppColors.onlineGreen,
+                      shape: BoxShape.circle,
+                    ),
+                  )
+                  .animate(onPlay: (controller) => controller.repeat())
+                  .moveY(
+                    begin: 0,
+                    end: -4,
+                    duration: 420.ms,
+                    delay: (index * 150).ms,
+                    curve: Curves.easeOut,
+                  )
+                  .moveY(
+                    begin: -4,
+                    end: 0,
+                    duration: 420.ms,
+                    curve: Curves.easeIn,
+                  ),
         );
       }),
     );
@@ -571,14 +673,46 @@ class _AttachmentMenu extends StatelessWidget {
   const _AttachmentMenu();
 
   static const List<_AttachmentOption> _options = [
-    _AttachmentOption(label: 'Camera', icon: Icons.camera_alt, color: AppColors.postbookPrimary),
-    _AttachmentOption(label: 'Gallery', icon: Icons.image, color: AppColors.postgramPrimary),
-    _AttachmentOption(label: 'File', icon: Icons.description, color: AppColors.posttubePrimary),
-    _AttachmentOption(label: 'Location', icon: Icons.location_on, color: AppColors.accentPurple),
-    _AttachmentOption(label: 'Contact', icon: Icons.person, color: AppColors.postbookSecondary),
-    _AttachmentOption(label: 'Poll', icon: Icons.poll, color: AppColors.postgramSecondary),
-    _AttachmentOption(label: 'Audio', icon: Icons.music_note, color: AppColors.posttubeSecondary),
-    _AttachmentOption(label: 'Reel', icon: Icons.movie, color: AppColors.liveRed),
+    _AttachmentOption(
+      label: 'Camera',
+      icon: Icons.camera_alt,
+      color: AppColors.postbookPrimary,
+    ),
+    _AttachmentOption(
+      label: 'Gallery',
+      icon: Icons.image,
+      color: AppColors.postgramPrimary,
+    ),
+    _AttachmentOption(
+      label: 'File',
+      icon: Icons.description,
+      color: AppColors.posttubePrimary,
+    ),
+    _AttachmentOption(
+      label: 'Location',
+      icon: Icons.location_on,
+      color: AppColors.accentPurple,
+    ),
+    _AttachmentOption(
+      label: 'Contact',
+      icon: Icons.person,
+      color: AppColors.postbookSecondary,
+    ),
+    _AttachmentOption(
+      label: 'Poll',
+      icon: Icons.poll,
+      color: AppColors.postgramSecondary,
+    ),
+    _AttachmentOption(
+      label: 'Audio',
+      icon: Icons.music_note,
+      color: AppColors.posttubeSecondary,
+    ),
+    _AttachmentOption(
+      label: 'Reel',
+      icon: Icons.movie,
+      color: AppColors.liveRed,
+    ),
   ];
 
   @override
@@ -597,7 +731,9 @@ class _AttachmentMenu extends StatelessWidget {
         physics: const NeverScrollableScrollPhysics(),
         crossAxisSpacing: 10,
         mainAxisSpacing: 12,
-        children: _options.map((option) => _AttachmentTile(option: option)).toList(),
+        children: _options
+            .map((option) => _AttachmentTile(option: option))
+            .toList(),
       ),
     );
   }
@@ -625,7 +761,9 @@ class _AttachmentTile extends StatelessWidget {
         const SizedBox(height: 5),
         Text(
           option.label,
-          style: AppTextStyles.labelTiny.copyWith(color: AppColors.textSecondary),
+          style: AppTextStyles.labelTiny.copyWith(
+            color: AppColors.textSecondary,
+          ),
         ),
       ],
     );
@@ -644,11 +782,7 @@ class _AttachmentOption {
   final Color color;
 }
 
-enum _MessageKind {
-  text,
-  media,
-  file,
-}
+enum _MessageKind { text, media, file }
 
 class _ChatMessage {
   const _ChatMessage({

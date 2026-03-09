@@ -8,6 +8,41 @@ class FeedRepository {
 
   FeedRepository(this._api);
 
+  /// Parse feed response — handles both {"data": [...]} and {"data": {"items": [...]}}
+  List<Post> _parsePosts(dynamic responseData) {
+    final raw = responseData['data'];
+    final List<dynamic> items;
+    if (raw is List) {
+      items = raw;
+    } else if (raw is Map) {
+      items = (raw['items'] as List<dynamic>?) ?? [];
+    } else {
+      items = [];
+    }
+    return items.map((e) => Post.fromJson(e as Map<String, dynamic>)).toList();
+  }
+
+  String? _parseNextCursor(dynamic responseData) {
+    final rootMeta = responseData['meta'];
+    if (rootMeta is Map<String, dynamic>) {
+      final cursor = rootMeta['next_cursor'];
+      if (cursor is String && cursor.isNotEmpty) return cursor;
+    }
+
+    final data = responseData['data'];
+    if (data is Map<String, dynamic>) {
+      final nestedMeta = data['meta'];
+      if (nestedMeta is Map<String, dynamic>) {
+        final cursor = nestedMeta['next_cursor'];
+        if (cursor is String && cursor.isNotEmpty) return cursor;
+      }
+      final cursor = data['next_cursor'];
+      if (cursor is String && cursor.isNotEmpty) return cursor;
+    }
+
+    return null;
+  }
+
   /// Fetch home feed with pagination.
   Future<List<Post>> getHomeFeed({
     int limit = 20,
@@ -17,7 +52,7 @@ class FeedRepository {
     final params = <String, dynamic>{
       'limit': limit,
       'feed_mode': feedMode,
-      'exclude_self': true,
+      'exclude_self': false,
     };
     if (cursor != null) params['cursor'] = cursor;
 
@@ -25,14 +60,17 @@ class FeedRepository {
       '${Environment.feedPath}/home',
       queryParameters: params,
     );
-    final items = (response.data['data']?['items'] as List<dynamic>?) ?? [];
-    return items
-        .map((e) => Post.fromJson(e as Map<String, dynamic>))
-        .toList();
+    return _parsePosts(response.data);
   }
 
   /// Fetch reel feed.
   Future<List<Post>> getReelFeed({int limit = 20, String? cursor}) async {
+    final page = await getReelFeedPage(limit: limit, cursor: cursor);
+    return page.items;
+  }
+
+  /// Fetch reel feed with pagination metadata.
+  Future<FeedPage> getReelFeedPage({int limit = 20, String? cursor}) async {
     final params = <String, dynamic>{'limit': limit};
     if (cursor != null) params['cursor'] = cursor;
 
@@ -40,10 +78,10 @@ class FeedRepository {
       '${Environment.feedPath}/reels',
       queryParameters: params,
     );
-    final items = (response.data['data']?['items'] as List<dynamic>?) ?? [];
-    return items
-        .map((e) => Post.fromJson(e as Map<String, dynamic>))
-        .toList();
+    return FeedPage(
+      items: _parsePosts(response.data),
+      nextCursor: _parseNextCursor(response.data),
+    );
   }
 
   /// Fetch video (PostTube) feed.
@@ -55,11 +93,15 @@ class FeedRepository {
       '${Environment.feedPath}/watch',
       queryParameters: params,
     );
-    final items = (response.data['data']?['items'] as List<dynamic>?) ?? [];
-    return items
-        .map((e) => Post.fromJson(e as Map<String, dynamic>))
-        .toList();
+    return _parsePosts(response.data);
   }
+}
+
+class FeedPage {
+  const FeedPage({required this.items, this.nextCursor});
+
+  final List<Post> items;
+  final String? nextCursor;
 }
 
 final feedRepositoryProvider = Provider<FeedRepository>((ref) {

@@ -1,8 +1,9 @@
 import 'dart:io';
+
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
-import 'package:atpost_app/data/repositories/post_repository.dart';
+import 'package:atpost_app/features/create/providers/creation_provider.dart';
 import 'package:atpost_app/providers/user_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -18,10 +19,16 @@ class CreatePostScreen extends ConsumerStatefulWidget {
 
 class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
   final TextEditingController _textController = TextEditingController();
-  final List<XFile> _selectedMedia = [];
-  String _visibility = 'public';
-  String _postType = 'post';
-  bool _posting = false;
+  String? _activePanel;
+
+  @override
+  void initState() {
+    super.initState();
+    // Sync local controller with provider state if needed
+    _textController.addListener(() {
+      ref.read(creationProvider.notifier).setText(_textController.text);
+    });
+  }
 
   @override
   void dispose() {
@@ -30,414 +37,270 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
   }
 
   Future<void> _pickImages() async {
-    final picker = ImagePicker();
-    final images = await picker.pickMultiImage();
-    if (images.isNotEmpty) setState(() => _selectedMedia.addAll(images));
-  }
-
-  Future<void> _pickVideo() async {
-    final picker = ImagePicker();
-    final video = await picker.pickVideo(source: ImageSource.gallery);
-    if (video != null) setState(() => _selectedMedia.add(video));
-  }
-
-  Future<void> _pickFromCamera() async {
-    final picker = ImagePicker();
-    final photo = await picker.pickImage(source: ImageSource.camera);
-    if (photo != null) setState(() => _selectedMedia.add(photo));
-  }
-
-  Future<void> _submitPost() async {
-    setState(() => _posting = true);
-    try {
-      // NOTE: Media upload requires multipart/form-data Dio setup beyond the
-      // typed ApiClient. Media picker UI is fully wired; actual file upload
-      // is a future improvement. Posts are created with text content only.
-      await ref.read(postRepositoryProvider).createPost(
-            content: _textController.text.trim(),
-            contentType: _postType,
-            visibility: _visibility,
-          );
-      if (mounted) context.pop();
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Failed to create post. Please try again.'),
-          ),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _posting = false);
+    final images = await ImagePicker().pickMultiImage();
+    if (images.isNotEmpty) {
+      ref.read(creationProvider.notifier).addFiles(images);
+      ref.read(creationProvider.notifier).setType(PostType.photo);
     }
   }
 
-  void _removeMedia(int index) {
-    setState(() => _selectedMedia.removeAt(index));
+  Future<void> _pickVideo() async {
+    final video = await ImagePicker().pickVideo(source: ImageSource.gallery);
+    if (video != null) {
+      ref.read(creationProvider.notifier).addFiles([video]);
+      ref.read(creationProvider.notifier).setType(PostType.video);
+    }
   }
 
-  Widget _buildPostTypeChip(String label, String value) {
-    final isSelected = _postType == value;
-    return GestureDetector(
-      onTap: () => setState(() => _postType = value),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        margin: const EdgeInsets.only(right: AppSpacing.m),
-        padding: const EdgeInsets.symmetric(
-          horizontal: AppSpacing.l,
-          vertical: AppSpacing.s,
-        ),
-        decoration: BoxDecoration(
-          gradient: isSelected ? AppColors.ctaGradient : null,
-          color: isSelected ? null : AppColors.bgTertiary,
-          borderRadius: BorderRadius.circular(AppSpacing.radiusFull),
-          border: Border.all(
-            color: isSelected
-                ? Colors.transparent
-                : AppColors.borderMedium,
+  void _handlePost() async {
+    final success = await ref.read(creationProvider.notifier).submit();
+    if (success && mounted) {
+      context.pop();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final state = ref.watch(creationProvider);
+    final notifier = ref.read(creationProvider.notifier);
+    final user = ref.watch(currentUserProvider).valueOrNull;
+
+    // Sync external changes (like AI enhancement) back to text controller
+    if (_textController.text != state.text) {
+      _textController.text = state.text;
+    }
+
+    return Scaffold(
+      backgroundColor: AppColors.bgPrimary,
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            colors: [Color(0xFF090A14), Color(0xFF08080F), Color(0xFF0B0D18)],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
           ),
         ),
-        child: Text(
-          label,
-          style: AppTextStyles.label.copyWith(
-            color: isSelected ? Colors.white : AppColors.textSecondary,
+        child: SafeArea(
+          child: Column(
+            children: [
+              _buildHeader(state),
+              _buildTypeSelector(state, notifier),
+              Expanded(
+                child: SingleChildScrollView(
+                  padding: AppSpacing.pagePadding,
+                  child: Column(
+                    children: [
+                      _buildComposerCard(state, user),
+                      if (state.type == PostType.poll) _buildPollEditor(state, notifier),
+                      if (state.files.isNotEmpty) _buildMediaPreview(state, notifier),
+                      if (state.error != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 12),
+                          child: Text(state.error!, style: const TextStyle(color: Colors.redAccent)),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+              _buildBottomToolbar(state, notifier),
+            ],
           ),
         ),
       ),
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final currentUserAsync = ref.watch(currentUserProvider);
-    final user = currentUserAsync.valueOrNull;
-    final canPost = !_posting && _textController.text.trim().isNotEmpty;
-
-    return Scaffold(
-      backgroundColor: AppColors.bgPrimary,
-      appBar: AppBar(
-        backgroundColor: AppColors.bgSecondary,
-        elevation: 0,
-        leading: TextButton(
-          onPressed: () => context.pop(),
-          child: Text(
-            'Cancel',
-            style: AppTextStyles.body.copyWith(color: AppColors.textSecondary),
-          ),
-        ),
-        leadingWidth: 80,
-        title: Text('Create Post', style: AppTextStyles.h3),
-        centerTitle: true,
-        actions: [
-          Padding(
-            padding: const EdgeInsets.symmetric(
-              horizontal: AppSpacing.xxl,
-              vertical: AppSpacing.m,
-            ),
-            child: _posting
-                ? const SizedBox(
-                    width: 24,
-                    height: 24,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      valueColor: AlwaysStoppedAnimation<Color>(
-                        AppColors.postbookPrimary,
-                      ),
-                    ),
-                  )
-                : GestureDetector(
-                    onTap: canPost ? _submitPost : null,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: AppSpacing.l,
-                        vertical: AppSpacing.s,
-                      ),
-                      decoration: BoxDecoration(
-                        gradient: canPost ? AppColors.ctaGradient : null,
-                        color: canPost ? null : AppColors.bgTertiary,
-                        borderRadius:
-                            BorderRadius.circular(AppSpacing.radiusFull),
-                      ),
-                      child: Text(
-                        'Post',
-                        style: AppTextStyles.label.copyWith(
-                          color: canPost
-                              ? Colors.white
-                              : AppColors.textMuted,
-                        ),
-                      ),
-                    ),
-                  ),
-          ),
-        ],
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(1),
-          child: Container(
-            height: 1,
-            color: AppColors.borderSubtle,
-          ),
-        ),
-      ),
-      body: Column(
+  Widget _buildHeader(CreationState state) {
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Row(
         children: [
-          Expanded(
-            child: SingleChildScrollView(
-              padding: AppSpacing.pagePadding.copyWith(
-                top: AppSpacing.xxl,
-                bottom: AppSpacing.xxl,
+          IconButton(
+            icon: const Icon(Icons.close, color: Colors.white),
+            onPressed: () => context.pop(),
+          ),
+          const Spacer(),
+          if (state.isSubmitting)
+            const CircularProgressIndicator(strokeWidth: 2)
+          else
+            ElevatedButton(
+              onPressed: (state.text.isNotEmpty || state.files.isNotEmpty) ? _handlePost : null,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.postbookPrimary,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
               ),
-              child: Column(
+              child: const Text('Post', style: TextStyle(color: Colors.white)),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTypeSelector(CreationState state, CreationNotifier notifier) {
+    return SizedBox(
+      height: 50,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        children: PostType.values.map((type) {
+          final isSelected = state.type == type;
+          return Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: ChoiceChip(
+              label: Text(type.name.toUpperCase()),
+              selected: isSelected,
+              onSelected: (_) => notifier.setType(type),
+              selectedColor: AppColors.postbookPrimary.withOpacity(0.2),
+              labelStyle: TextStyle(
+                color: isSelected ? AppColors.postbookPrimary : Colors.grey,
+                fontWeight: FontWeight.bold,
+                fontSize: 12,
+              ),
+            ),
+          );
+        }).toList(),
+      ),
+    );
+  }
+
+  Widget _buildComposerCard(CreationState state, dynamic user) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.bgCard,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: AppColors.borderSubtle),
+      ),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              CircleAvatar(radius: 20, backgroundImage: user?.avatarUrl != null ? NetworkImage(user!.avatarUrl) : null),
+              const SizedBox(width: 12),
+              Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // User avatar + display name row
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: [
-                      CircleAvatar(
-                        radius: 22,
-                        backgroundColor: AppColors.bgTertiary,
-                        backgroundImage: user?.avatarMediaId != null
-                            ? NetworkImage(user!.avatarUrl)
-                            : null,
-                        child: user?.avatarMediaId == null
-                            ? Text(
-                                (user?.displayName.isNotEmpty == true)
-                                    ? user!.displayName[0].toUpperCase()
-                                    : '?',
-                                style: AppTextStyles.h3.copyWith(
-                                  color: AppColors.postbookPrimary,
-                                ),
-                              )
-                            : null,
-                      ),
-                      const SizedBox(width: AppSpacing.l),
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            user?.displayName ?? 'You',
-                            style: AppTextStyles.h3,
-                          ),
-                          const SizedBox(height: AppSpacing.xs),
-                          // Visibility dropdown
-                          Container(
-                            height: 28,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: AppSpacing.m,
-                            ),
-                            decoration: BoxDecoration(
-                              color: AppColors.bgTertiary,
-                              borderRadius: BorderRadius.circular(
-                                AppSpacing.radiusFull,
-                              ),
-                              border: Border.all(color: AppColors.borderMedium),
-                            ),
-                            child: DropdownButtonHideUnderline(
-                              child: DropdownButton<String>(
-                                value: _visibility,
-                                isDense: true,
-                                dropdownColor: AppColors.bgTertiary,
-                                icon: const Icon(
-                                  Icons.keyboard_arrow_down_rounded,
-                                  size: 16,
-                                  color: AppColors.textMuted,
-                                ),
-                                style: AppTextStyles.labelSmall,
-                                onChanged: (v) {
-                                  if (v != null) {
-                                    setState(() => _visibility = v);
-                                  }
-                                },
-                                items: const [
-                                  DropdownMenuItem(
-                                    value: 'public',
-                                    child: Text('Public'),
-                                  ),
-                                  DropdownMenuItem(
-                                    value: 'followers',
-                                    child: Text('Followers'),
-                                  ),
-                                  DropdownMenuItem(
-                                    value: 'friends',
-                                    child: Text('Friends'),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-
-                  const SizedBox(height: AppSpacing.xxl),
-
-                  // Post content text field
-                  TextField(
-                    controller: _textController,
-                    maxLines: null,
-                    minLines: 4,
-                    style: AppTextStyles.body.copyWith(
-                      fontSize: 16,
-                      color: AppColors.textPrimary,
-                    ),
-                    decoration: InputDecoration(
-                      hintText: "What's on your mind?",
-                      hintStyle: AppTextStyles.body.copyWith(
-                        fontSize: 16,
-                        color: AppColors.textMuted,
-                      ),
-                      border: InputBorder.none,
-                      enabledBorder: InputBorder.none,
-                      focusedBorder: InputBorder.none,
-                      contentPadding: EdgeInsets.zero,
-                    ),
-                    onChanged: (_) => setState(() {}),
-                  ),
-
-                  const SizedBox(height: AppSpacing.xxl),
-
-                  // Post type chips
-                  Text(
-                    'Post type',
-                    style: AppTextStyles.labelSmall,
-                  ),
-                  const SizedBox(height: AppSpacing.m),
-                  SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: Row(
-                      children: [
-                        _buildPostTypeChip('Post', 'post'),
-                        _buildPostTypeChip('Reel', 'reel'),
-                        _buildPostTypeChip('Video', 'video'),
-                      ],
-                    ),
-                  ),
-
-                  // Media preview
-                  if (_selectedMedia.isNotEmpty) ...[
-                    const SizedBox(height: AppSpacing.xxl),
-                    Text(
-                      'Media',
-                      style: AppTextStyles.labelSmall,
-                    ),
-                    const SizedBox(height: AppSpacing.m),
-                    SizedBox(
-                      height: 80,
-                      child: ListView.builder(
-                        scrollDirection: Axis.horizontal,
-                        itemCount: _selectedMedia.length,
-                        itemBuilder: (context, index) {
-                          final xfile = _selectedMedia[index];
-                          return Container(
-                            margin: const EdgeInsets.only(right: AppSpacing.m),
-                            width: 80,
-                            height: 80,
-                            child: Stack(
-                              children: [
-                                ClipRRect(
-                                  borderRadius: BorderRadius.circular(
-                                    AppSpacing.radiusSmall,
-                                  ),
-                                  child: Image.file(
-                                    File(xfile.path),
-                                    width: 80,
-                                    height: 80,
-                                    fit: BoxFit.cover,
-                                    errorBuilder: (_, _, _) => Container(
-                                      width: 80,
-                                      height: 80,
-                                      color: AppColors.bgTertiary,
-                                      child: const Icon(
-                                        Icons.videocam_rounded,
-                                        color: AppColors.textMuted,
-                                        size: 32,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                                Positioned(
-                                  top: 2,
-                                  right: 2,
-                                  child: GestureDetector(
-                                    onTap: () => _removeMedia(index),
-                                    child: Container(
-                                      width: 20,
-                                      height: 20,
-                                      decoration: const BoxDecoration(
-                                        color: Colors.black54,
-                                        shape: BoxShape.circle,
-                                      ),
-                                      child: const Icon(
-                                        Icons.close_rounded,
-                                        color: Colors.white,
-                                        size: 14,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          );
-                        },
-                      ),
-                    ),
-                  ],
+                  Text(user?.displayName ?? 'User', style: AppTextStyles.h3),
+                  _buildVisibilityButton(state),
                 ],
               ),
+              const Spacer(),
+              // AI Sparkle Button
+              IconButton(
+                icon: state.isGeneratingAi
+                  ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.auto_awesome, color: Colors.amber),
+                onPressed: () => ref.read(creationProvider.notifier).enhanceWithAi(),
+                tooltip: 'Enhance with AI',
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _textController,
+            maxLines: null,
+            style: const TextStyle(color: Colors.white, fontSize: 18),
+            decoration: const InputDecoration(
+              hintText: "What's happening?",
+              hintStyle: TextStyle(color: Colors.grey),
+              border: InputBorder.none,
             ),
           ),
+        ],
+      ),
+    );
+  }
 
-          // Bottom media toolbar
-          Container(
-            padding: EdgeInsets.only(
-              left: AppSpacing.xxl,
-              right: AppSpacing.xxl,
-              top: AppSpacing.l,
-              bottom:
-                  MediaQuery.of(context).viewInsets.bottom + AppSpacing.l,
-            ),
-            decoration: const BoxDecoration(
-              color: AppColors.bgSecondary,
-              border: Border(
-                top: BorderSide(color: AppColors.borderSubtle),
+  Widget _buildVisibilityButton(CreationState state) {
+    return PopupMenuButton<PostVisibility>(
+      initialValue: state.visibility,
+      onSelected: ref.read(creationProvider.notifier).setVisibility,
+      itemBuilder: (context) => PostVisibility.values.map((v) =>
+        PopupMenuItem(value: v, child: Text(v.name.toUpperCase()))
+      ).toList(),
+      child: Row(
+        children: [
+          Text(state.visibility.name.toUpperCase(), style: AppTextStyles.labelSmall),
+          const Icon(Icons.arrow_drop_down, size: 16, color: Colors.grey),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPollEditor(CreationState state, CreationNotifier notifier) {
+    return Container(
+      margin: const EdgeInsets.only(top: 16),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(color: AppColors.bgCard, borderRadius: BorderRadius.circular(20)),
+      child: Column(
+        children: [
+          ...state.pollOptions.asMap().entries.map((e) => Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: TextField(
+              onChanged: (val) => notifier.updatePollOption(e.key, val),
+              style: const TextStyle(color: Colors.white),
+              decoration: InputDecoration(
+                hintText: 'Option ${e.key + 1}',
+                suffixIcon: state.pollOptions.length > 2 ? IconButton(
+                  icon: const Icon(Icons.remove_circle, color: Colors.red),
+                  onPressed: () => notifier.removePollOption(e.key),
+                ) : null,
               ),
             ),
-            child: Row(
-              children: [
-                IconButton(
-                  icon: const Icon(
-                    Icons.image_outlined,
-                    color: AppColors.textSecondary,
-                  ),
-                  tooltip: 'Add photos',
-                  onPressed: _pickImages,
-                ),
-                IconButton(
-                  icon: const Icon(
-                    Icons.videocam_outlined,
-                    color: AppColors.textSecondary,
-                  ),
-                  tooltip: 'Add video',
-                  onPressed: _pickVideo,
-                ),
-                IconButton(
-                  icon: const Icon(
-                    Icons.camera_alt_outlined,
-                    color: AppColors.textSecondary,
-                  ),
-                  tooltip: 'Take photo',
-                  onPressed: _pickFromCamera,
-                ),
-                const Spacer(),
-                if (_selectedMedia.isNotEmpty)
-                  Text(
-                    '${_selectedMedia.length} file${_selectedMedia.length == 1 ? '' : 's'}',
-                    style: AppTextStyles.labelSmall,
-                  ),
-              ],
+          )),
+          if (state.pollOptions.length < 5)
+            TextButton.icon(
+              onPressed: notifier.addPollOption,
+              icon: const Icon(Icons.add),
+              label: const Text('Add Option'),
             ),
-          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMediaPreview(CreationState state, CreationNotifier notifier) {
+    return Container(
+      height: 120,
+      margin: const EdgeInsets.only(top: 16),
+      child: ListView.builder(
+        scrollDirection: Axis.horizontal,
+        itemCount: state.files.length,
+        itemBuilder: (context, index) => Stack(
+          children: [
+            Container(
+              width: 100,
+              margin: const EdgeInsets.only(right: 8),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(12),
+                image: DecorationImage(image: FileImage(File(state.files[index].path)), fit: BoxFit.cover),
+              ),
+            ),
+            Positioned(
+              right: 4, top: 4,
+              child: GestureDetector(
+                onTap: () => notifier.removeFile(index),
+                child: const CircleAvatar(radius: 10, backgroundColor: Colors.black54, child: Icon(Icons.close, size: 12, color: Colors.white)),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBottomToolbar(CreationState state, CreationNotifier notifier) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+      decoration: const BoxDecoration(border: Border(top: BorderSide(color: AppColors.borderSubtle))),
+      child: Row(
+        children: [
+          IconButton(icon: const Icon(Icons.image, color: Colors.blue), onPressed: _pickImages),
+          IconButton(icon: const Icon(Icons.videocam, color: Colors.red), onPressed: _pickVideo),
+          IconButton(icon: const Icon(Icons.poll, color: Colors.purple), onPressed: () => notifier.setType(PostType.poll)),
+          IconButton(icon: const Icon(Icons.location_on, color: Colors.green), onPressed: () {}),
+          const Spacer(),
+          Text('${state.text.length}/3000', style: AppTextStyles.labelTiny),
         ],
       ),
     );

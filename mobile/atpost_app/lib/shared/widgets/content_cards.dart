@@ -1,8 +1,12 @@
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_app/data/models/post.dart';
+import 'package:atpost_app/data/repositories/post_repository.dart';
+import 'package:atpost_app/shared/widgets/reaction_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 class ActionPillButton extends StatelessWidget {
   const ActionPillButton({
@@ -11,18 +15,21 @@ class ActionPillButton extends StatelessWidget {
     required this.label,
     this.active = false,
     this.onTap,
+    this.onLongPress,
   });
 
   final IconData icon;
   final String label;
   final bool active;
   final VoidCallback? onTap;
+  final VoidCallback? onLongPress;
 
   @override
   Widget build(BuildContext context) {
     final color = active ? AppColors.postbookPrimary : AppColors.textMuted;
     return GestureDetector(
       onTap: onTap,
+      onLongPress: onLongPress,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
         decoration: BoxDecoration(
@@ -45,24 +52,24 @@ class ActionPillButton extends StatelessWidget {
   }
 }
 
-class PostCard extends StatelessWidget {
+class PostCard extends ConsumerWidget {
   const PostCard({
     super.key,
-    required this.name,
-    required this.handle,
-    required this.content,
-    required this.tags,
-    this.liked = false,
+    required this.post,
   });
 
-  final String name;
-  final String handle;
-  final String content;
-  final List<String> tags;
-  final bool liked;
+  final Post post;
+
+  String _formatCount(int count) {
+    if (count >= 1000000) return '${(count / 1000000).toStringAsFixed(1)}M';
+    if (count >= 1000) return '${(count / 1000).toStringAsFixed(1)}K';
+    return count.toString();
+  }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final repo = ref.watch(postRepositoryProvider);
+
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
       padding: const EdgeInsets.all(16),
@@ -83,16 +90,23 @@ class PostCard extends StatelessWidget {
                   color: AppColors.bgTertiary,
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: Center(child: Text(name.substring(0, 1), style: AppTextStyles.h3)),
+                child: Center(
+                  child: post.authorAvatar != null
+                      ? ClipRRect(
+                          borderRadius: BorderRadius.circular(12),
+                          child: Image.network(post.authorAvatar!),
+                        )
+                      : Text(post.authorName?.substring(0, 1) ?? '?', style: AppTextStyles.h3),
+                ),
               ),
               const SizedBox(width: 10),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(name, style: AppTextStyles.h3),
+                    Text(post.authorName ?? 'Anonymous', style: AppTextStyles.h3),
                     Text(
-                      '$handle  2h',
+                      '@${(post.authorName ?? 'user').toLowerCase().replaceAll(' ', '_')} • ${_timeAgo(post.createdAt)}',
                       style: AppTextStyles.bodySmall.copyWith(color: AppColors.textDim),
                     ),
                   ],
@@ -102,13 +116,13 @@ class PostCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 12),
-          Text(content, style: AppTextStyles.body),
-          if (tags.isNotEmpty) ...[
+          Text(post.content, style: AppTextStyles.body),
+          if (post.tags.isNotEmpty) ...[
             const SizedBox(height: 10),
             Wrap(
               spacing: 8,
               runSpacing: 6,
-              children: tags
+              children: post.tags
                   .map(
                     (tag) => Container(
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
@@ -123,18 +137,52 @@ class PostCard extends StatelessWidget {
             ),
           ],
           const SizedBox(height: 12),
-          const Row(
+          Row(
             children: [
-              ActionPillButton(icon: Icons.favorite_border, label: '128'),
-              SizedBox(width: 8),
-              ActionPillButton(icon: Icons.chat_bubble_outline, label: '24'),
-              SizedBox(width: 8),
-              ActionPillButton(icon: Icons.reply, label: 'Share'),
+              Builder(
+                builder: (context) => ActionPillButton(
+                  icon: post.isLiked ? Icons.favorite : Icons.favorite_border,
+                  label: _formatCount(post.likeCount),
+                  active: post.isLiked,
+                  onTap: () => repo.toggleReaction(post.id),
+                  onLongPress: () {
+                    final RenderBox box = context.findRenderObject() as RenderBox;
+                    final position = box.localToGlobal(Offset.zero);
+                    showReactionPicker(context, position, (emoji) {
+                      repo.toggleReaction(post.id, emoji: emoji);
+                    });
+                  },
+                ),
+              ),
+              const SizedBox(width: 8),
+              ActionPillButton(
+                icon: Icons.chat_bubble_outline,
+                label: _formatCount(post.commentCount),
+                onTap: () {
+                  // Navigate to comments
+                },
+              ),
+              const SizedBox(width: 8),
+              ActionPillButton(
+                icon: Icons.reply,
+                label: 'Share',
+                onTap: () {
+                  // Share post
+                },
+              ),
             ],
           ),
         ],
       ),
     );
+  }
+
+  String _timeAgo(DateTime dt) {
+    final diff = DateTime.now().difference(dt);
+    if (diff.inDays > 0) return '${diff.inDays}d';
+    if (diff.inHours > 0) return '${diff.inHours}h';
+    if (diff.inMinutes > 0) return '${diff.inMinutes}m';
+    return 'now';
   }
 }
 
@@ -330,4 +378,3 @@ class VideoCard extends StatelessWidget {
     );
   }
 }
-

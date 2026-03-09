@@ -2,6 +2,7 @@ import 'package:atpost_app/core/config/environment.dart';
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_app/services/api_client.dart';
 import 'package:atpost_app/services/auth_service.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
@@ -55,52 +56,54 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
   Future<void> _submit() async {
     final error = _validate();
     if (error != null) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error)));
       return;
     }
 
     setState(() => _loading = true);
 
     try {
-      final dio = Dio(BaseOptions(
-        baseUrl: Environment.apiBaseUrl,
-        connectTimeout: const Duration(seconds: 10),
-      ));
-
-      final response = await dio.post(
-        '${Environment.authPath}/register',
-        data: {
-          'username': _usernameController.text.trim(),
-          'email': _emailController.text.trim(),
-          'password': _passwordController.text,
-          'display_name': _displayNameController.text.trim(),
-        },
-      );
+      final response = await ref
+          .read(apiClientProvider)
+          .post(
+            '${Environment.authPath}/register',
+            data: {
+              'username': _usernameController.text.trim(),
+              'email': _emailController.text.trim(),
+              'password': _passwordController.text,
+              'display_name': _displayNameController.text.trim(),
+            },
+          );
 
       final data = response.data['data'] as Map<String, dynamic>?;
       if (data == null) {
         throw Exception('Unexpected response format.');
       }
 
-      final userId = data['user_id'] as String? ?? '';
-      final token = data['access_token'] as String? ?? '';
-      final refreshToken = data['refresh_token'] as String?;
+      final tokens = data['tokens'] as Map<String, dynamic>? ?? data;
+      final user = data['user'] as Map<String, dynamic>?;
+      final userId = user?['id'] as String? ?? data['user_id'] as String? ?? '';
+      final token = tokens['access_token'] as String? ?? '';
+      final refreshToken = tokens['refresh_token'] as String?;
 
       if (!mounted) return;
 
-      ref.read(authServiceProvider).setSession(
-            userId: userId,
-            token: token,
-            refreshToken: refreshToken,
-          );
+      ref
+          .read(authServiceProvider)
+          .setSession(userId: userId, token: token, refreshToken: refreshToken);
 
       context.go('/');
     } on DioException catch (e) {
       if (!mounted) return;
-      final message = e.response?.data?['error'] as String? ??
+      final message =
+          e.response?.data?['error'] as String? ??
           e.response?.data?['message'] as String? ??
           'Registration failed. Please try again.';
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -119,7 +122,11 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
         backgroundColor: Colors.transparent,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new_rounded, color: AppColors.textSecondary, size: 20),
+          icon: const Icon(
+            Icons.arrow_back_ios_new_rounded,
+            color: AppColors.textSecondary,
+            size: 20,
+          ),
           onPressed: () => context.pop(),
         ),
         title: Text('Create Account', style: AppTextStyles.h2),
@@ -136,7 +143,9 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
               // Subheading
               Text(
                 'Join AtPost and connect with the world.',
-                style: AppTextStyles.body.copyWith(color: AppColors.textTertiary),
+                style: AppTextStyles.body.copyWith(
+                  color: AppColors.textTertiary,
+                ),
                 textAlign: TextAlign.center,
               ),
 
@@ -186,7 +195,8 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                 textInputAction: TextInputAction.next,
                 suffixIcon: _visibilityToggle(
                   obscured: _obscurePassword,
-                  onTap: () => setState(() => _obscurePassword = !_obscurePassword),
+                  onTap: () =>
+                      setState(() => _obscurePassword = !_obscurePassword),
                 ),
               ),
 
@@ -203,7 +213,8 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                 onSubmitted: (_) => _submit(),
                 suffixIcon: _visibilityToggle(
                   obscured: _obscureConfirm,
-                  onTap: () => setState(() => _obscureConfirm = !_obscureConfirm),
+                  onTap: () =>
+                      setState(() => _obscureConfirm = !_obscureConfirm),
                 ),
               ),
 
@@ -222,12 +233,18 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Text('Already have an account?', style: AppTextStyles.bodySmall),
+                  Text(
+                    'Already have an account?',
+                    style: AppTextStyles.bodySmall,
+                  ),
                   TextButton(
                     onPressed: () => context.pop(),
                     style: TextButton.styleFrom(
                       foregroundColor: AppColors.postbookPrimary,
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 6,
+                        vertical: 4,
+                      ),
                       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     ),
                     child: Text(
@@ -248,10 +265,16 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
   }
 
   Widget _buildLabel(String text) {
-    return Text(text, style: AppTextStyles.label.copyWith(color: AppColors.textSecondary));
+    return Text(
+      text,
+      style: AppTextStyles.label.copyWith(color: AppColors.textSecondary),
+    );
   }
 
-  Widget _visibilityToggle({required bool obscured, required VoidCallback onTap}) {
+  Widget _visibilityToggle({
+    required bool obscured,
+    required VoidCallback onTap,
+  }) {
     return IconButton(
       icon: Icon(
         obscured ? Icons.visibility_off_outlined : Icons.visibility_outlined,
@@ -284,7 +307,10 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
         filled: true,
         fillColor: AppColors.bgCard,
         suffixIcon: suffixIcon,
-        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 16,
+          vertical: 14,
+        ),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
           borderSide: BorderSide(color: AppColors.borderSubtle),
@@ -295,7 +321,10 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
-          borderSide: const BorderSide(color: AppColors.postbookPrimary, width: 1.5),
+          borderSide: const BorderSide(
+            color: AppColors.postbookPrimary,
+            width: 1.5,
+          ),
         ),
       ),
     );
@@ -340,7 +369,10 @@ class _GradientButton extends StatelessWidget {
                   )
                 : Text(
                     label,
-                    style: AppTextStyles.h3.copyWith(color: Colors.white, letterSpacing: 0.4),
+                    style: AppTextStyles.h3.copyWith(
+                      color: Colors.white,
+                      letterSpacing: 0.4,
+                    ),
                   ),
           ),
         ),

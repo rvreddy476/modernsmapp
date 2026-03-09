@@ -25,6 +25,7 @@ class _SecuritySettingsScreenState extends ConsumerState<SecuritySettingsScreen>
   bool _obscureConfirm = true;
   bool _savingPassword = false;
   bool _twoFactorEnabled = false;
+  bool _togglingTwoFactor = false;
 
   @override
   void dispose() {
@@ -32,6 +33,25 @@ class _SecuritySettingsScreenState extends ConsumerState<SecuritySettingsScreen>
     _newPasswordController.dispose();
     _confirmPasswordController.dispose();
     super.dispose();
+  }
+
+  Future<void> _toggleTwoFactor(bool enable) async {
+    setState(() => _togglingTwoFactor = true);
+    try {
+      final endpoint = enable
+          ? '${Environment.authPath}/2fa/enable'
+          : '${Environment.authPath}/2fa/disable';
+      await ref.read(apiClientProvider).post(endpoint);
+      if (mounted) setState(() => _twoFactorEnabled = enable);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to ${enable ? 'enable' : 'disable'} 2FA')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _togglingTwoFactor = false);
+    }
   }
 
   Future<void> _changePassword() async {
@@ -170,12 +190,14 @@ class _SecuritySettingsScreenState extends ConsumerState<SecuritySettingsScreen>
               contentPadding: const EdgeInsets.symmetric(horizontal: 16),
               title: Text('Two-Factor Authentication', style: AppTextStyles.body),
               subtitle: Text(
-                'Add an extra layer of security to your account',
+                _togglingTwoFactor
+                    ? 'Updating...'
+                    : 'Add an extra layer of security to your account',
                 style: AppTextStyles.bodySmall.copyWith(color: AppColors.textSecondary),
               ),
               value: _twoFactorEnabled,
               activeThumbColor: AppColors.postbookPrimary,
-              onChanged: (val) => setState(() => _twoFactorEnabled = val),
+              onChanged: _togglingTwoFactor ? null : _toggleTwoFactor,
             ),
           ),
           const SizedBox(height: 24),

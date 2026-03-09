@@ -1,3 +1,5 @@
+import 'package:atpost_app/core/config/environment.dart';
+
 class User {
   final String id;
   final String username;
@@ -41,7 +43,11 @@ class User {
     );
   }
 
-  String get avatarUrl => avatarMediaId != null
-      ? '/v1/media/$avatarMediaId/serve'
+  /// Whether this user has a real avatar uploaded.
+  bool get hasAvatar => avatarMediaId != null && avatarMediaId!.isNotEmpty;
+
+  /// Full URL to serve the avatar via the API gateway.
+  String get avatarUrl => hasAvatar
+      ? '${Environment.apiBaseUrl}/v1/media/$avatarMediaId/serve'
       : 'https://api.dicebear.com/7.x/avataaars/svg?seed=$id';
 }

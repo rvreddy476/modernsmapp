@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 
 	"github.com/google/uuid"
 )
@@ -67,6 +68,9 @@ func (s *Service) HydratePosts(ctx context.Context, items []FeedItem, viewerID u
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-User-Id", viewerID.String())
+	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
+		req.Header.Set("X-Internal-Service-Key", key)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

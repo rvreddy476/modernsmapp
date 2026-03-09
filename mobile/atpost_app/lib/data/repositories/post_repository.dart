@@ -1,5 +1,4 @@
 import 'package:atpost_app/core/config/environment.dart';
-import 'package:atpost_app/data/models/post.dart';
 import 'package:atpost_app/services/api_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -8,66 +7,83 @@ class PostRepository {
 
   PostRepository(this._api);
 
-  /// Get a single post by ID.
-  Future<Post> getPost(String postId) async {
-    final response = await _api.get('${Environment.postsPath}/$postId');
-    return Post.fromJson(response.data['data'] as Map<String, dynamic>);
-  }
-
-  /// Create a new post.
-  Future<Post> createPost({
-    required String content,
-    String contentType = 'post',
-    String visibility = 'public',
-    List<String>? mediaIds,
-    List<String>? tags,
-  }) async {
-    final response = await _api.post(Environment.postsPath, data: {
-      'content': content,
-      'content_type': contentType,
-      'visibility': visibility,
-      'media_ids': ?mediaIds,
-      'tags': ?tags,
-    });
-    return Post.fromJson(response.data['data'] as Map<String, dynamic>);
-  }
-
-  /// Toggle like on a post.
-  Future<void> toggleLike(String postId) async {
-    await _api.post('${Environment.postsPath}/$postId/like');
-  }
-
-  /// React to a post.
-  Future<void> react(String postId, String reactType) async {
-    await _api.post('${Environment.postsPath}/$postId/react', data: {
-      'react_type': reactType,
-    });
-  }
-
-  /// Get comments for a post.
-  Future<List<Comment>> getComments(String postId, {int limit = 20}) async {
-    final response = await _api.get(
-      '${Environment.postsPath}/$postId/comments',
-      queryParameters: {'limit': limit},
+  /// Toggle a reaction on a post.
+  /// Matches the web app's toggleReaction logic.
+  Future<void> toggleReaction(String postId, {String emoji = '❤️'}) async {
+    await _api.put(
+      '${Environment.postsPath}/$postId/reactions',
+      data: {'emoji': emoji},
     );
-    final items = (response.data['data']?['items'] as List<dynamic>?) ?? [];
-    return items
-        .map((e) => Comment.fromJson(e as Map<String, dynamic>))
-        .toList();
   }
 
   /// Add a comment to a post.
-  Future<Comment> addComment(String postId, String text) async {
-    final response = await _api.post(
+  Future<void> addComment(String postId, String text) async {
+    await _api.post(
       '${Environment.postsPath}/$postId/comments',
       data: {'text': text},
     );
-    return Comment.fromJson(response.data['data'] as Map<String, dynamic>);
   }
 
-  /// Bookmark a post.
+  /// Toggle bookmark status.
   Future<void> toggleBookmark(String postId) async {
     await _api.post('${Environment.postsPath}/$postId/bookmark');
+  }
+
+  /// Delete a post.
+  Future<void> deletePost(String postId) async {
+    await _api.delete('${Environment.postsPath}/$postId');
+  }
+
+  /// Create a new post with full metadata.
+  Future<void> createPost({
+    required String text,
+    required String contentType,
+    required String visibility,
+    List<String>? mediaIds,
+    List<String>? tags,
+    String? feeling,
+    String? activity,
+    String? activityDetail,
+    String? locationName,
+    Map<String, dynamic>? poll,
+    bool noComments = false,
+    bool noLikes = false,
+    String? postType,
+  }) async {
+    await _api.post(
+      Environment.postsPath,
+      data: {
+        'text': text,
+        'content_type': contentType,
+        'visibility': visibility,
+        'media_ids': mediaIds,
+        'tags': tags,
+        'feeling': feeling,
+        'activity': activity,
+        'activity_detail': activityDetail,
+        'location_name': locationName,
+        'poll': poll,
+        'no_comments': noComments,
+        'no_likes': noLikes,
+        'post_type': postType,
+      },
+    );
+  }
+
+  /// Get AI-assisted content suggestions or enhancements.
+  /// Mirrors the 'Sparkles' functionality on the web.
+  Future<Map<String, dynamic>> generateAiSuggestions({
+    required String text,
+    String? context,
+  }) async {
+    final response = await _api.post(
+      '${Environment.postsPath}/ai-assist',
+      data: {
+        'content': text,
+        'context': context,
+      },
+    );
+    return response.data['data'] as Map<String, dynamic>? ?? response.data;
   }
 }
 

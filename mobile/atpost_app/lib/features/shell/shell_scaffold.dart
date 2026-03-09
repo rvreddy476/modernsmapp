@@ -34,6 +34,14 @@ class ShellScaffold extends ConsumerWidget {
         children: [
           IndexedStack(index: currentTab, children: pages),
           if (showCreateMenu)
+            Positioned.fill(
+              child: GestureDetector(
+                onTap: () =>
+                    ref.read(createMenuOpenProvider.notifier).state = false,
+                child: Container(color: Colors.black.withValues(alpha: 0.22)),
+              ),
+            ),
+          if (showCreateMenu)
             Positioned(
               left: 0,
               right: 0,
@@ -173,52 +181,81 @@ class _CreateButton extends StatelessWidget {
       onTap: onTap,
       child: Transform.translate(
         offset: const Offset(0, -10),
-        child: Container(
-          width: 50,
-          height: 50,
-          decoration: BoxDecoration(
-            gradient: AppColors.ctaGradient,
-            borderRadius: BorderRadius.circular(16),
-            boxShadow: const [
-              BoxShadow(
-                color: Color(0x66FF6B35),
-                blurRadius: 16,
-                offset: Offset(0, 6),
+        child:
+            Container(
+              width: 50,
+              height: 50,
+              decoration: BoxDecoration(
+                gradient: AppColors.ctaGradient,
+                borderRadius: BorderRadius.circular(16),
+                boxShadow: const [
+                  BoxShadow(
+                    color: Color(0x66FF6B35),
+                    blurRadius: 16,
+                    offset: Offset(0, 6),
+                  ),
+                ],
               ),
-            ],
-          ),
-          child: const Icon(Icons.add, color: Colors.white),
-        )
-            .animate()
-            .scale(duration: 220.ms, begin: const Offset(1, 1), end: const Offset(1.05, 1.05)),
+              child: const Icon(Icons.add, color: Colors.white),
+            ).animate().scale(
+              duration: 220.ms,
+              begin: const Offset(1, 1),
+              end: const Offset(1.05, 1.05),
+            ),
       ),
     );
   }
 }
 
-class _CreateMenu extends StatelessWidget {
+class _CreateMenu extends ConsumerWidget {
   const _CreateMenu();
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    void openRoute(String route) {
+      final router = GoRouter.of(context);
+      ref.read(createMenuOpenProvider.notifier).state = false;
+      router.push(route);
+    }
+
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 18),
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        color: AppColors.bgTertiary,
-        borderRadius: BorderRadius.circular(AppSpacing.radiusXL),
-        border: Border.all(color: AppColors.borderSubtle),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceAround,
-        children: [
-          const _CreateItem(label: 'Post', icon: Icons.edit_note, color: AppColors.postbookPrimary),
-          const _CreateItem(label: 'Reel', icon: Icons.movie_filter, color: AppColors.postgramPrimary),
-          _CreateItem(label: 'Video', icon: Icons.live_tv, color: AppColors.posttubePrimary, onTap: () => context.push('/posttube')),
-          _CreateItem(label: 'Live', icon: Icons.podcasts, color: AppColors.liveRed, onTap: () => context.push('/live')),
-        ],
-      ),
-    )
+          margin: const EdgeInsets.symmetric(horizontal: 18),
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: AppColors.bgTertiary,
+            borderRadius: BorderRadius.circular(AppSpacing.radiusXL),
+            border: Border.all(color: AppColors.borderSubtle),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: [
+              _CreateItem(
+                label: 'Post',
+                icon: Icons.edit_note,
+                color: AppColors.postbookPrimary,
+                onTap: () => openRoute('/create'),
+              ),
+              _CreateItem(
+                label: 'Reel',
+                icon: Icons.movie_filter,
+                color: AppColors.postgramPrimary,
+                onTap: () => openRoute('/reels'),
+              ),
+              _CreateItem(
+                label: 'Video',
+                icon: Icons.live_tv,
+                color: AppColors.posttubePrimary,
+                onTap: () => openRoute('/posttube'),
+              ),
+              _CreateItem(
+                label: 'Live',
+                icon: Icons.podcasts,
+                color: AppColors.liveRed,
+                onTap: () => openRoute('/live'),
+              ),
+            ],
+          ),
+        )
         .animate()
         .fadeIn(duration: 220.ms, curve: Curves.easeOut)
         .slideY(begin: 0.2, end: 0, duration: 220.ms, curve: Curves.easeOut);
@@ -240,25 +277,36 @@ class _CreateItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: 42,
-            height: 42,
-            decoration: BoxDecoration(
-              color: color.withValues(alpha: 0.2),
-              borderRadius: BorderRadius.circular(14),
-            ),
-            child: Icon(icon, color: color, size: 20),
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.2),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Icon(icon, color: color, size: 20),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                label,
+                style: AppTextStyles.labelSmall.copyWith(
+                  color: AppColors.textSecondary,
+                ),
+              ),
+            ],
           ),
-          const SizedBox(height: 4),
-          Text(label, style: AppTextStyles.labelSmall.copyWith(color: AppColors.textSecondary)),
-        ],
+        ),
       ),
     );
   }
 }
-

@@ -88,6 +88,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		channelByID.DELETE("/:id", h.DeleteChannel)
 	}
 
+	// Onboarding
+	r.POST("/v1/onboarding/ensure-publisher", h.EnsurePublisher)
+
 	// Business Pages
 	pages := r.Group("/v1/pages")
 	{
@@ -797,6 +800,30 @@ func (h *Handler) DeleteChannel(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "deleted"}, nil)
+}
+
+// --- Onboarding ---
+
+// EnsurePublisher handles POST /v1/onboarding/ensure-publisher.
+// It atomically creates a handle and default channel if the user doesn't have them.
+func (h *Handler) EnsurePublisher(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	result, err := h.svc.EnsurePublisher(c.Request.Context(), userID)
+	if err != nil {
+		if err.Error() == "user not found: "+userID.String() {
+			api.Error(c.Writer, http.StatusNotFound, "USER_NOT_FOUND", "User not found", nil, nil)
+			return
+		}
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to ensure publisher identity", nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, result, nil)
 }
 
 // --- Business Pages ---

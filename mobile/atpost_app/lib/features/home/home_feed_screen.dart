@@ -57,7 +57,10 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
                       ShaderMask(
                         blendMode: BlendMode.srcIn,
                         shaderCallback: (rect) => const LinearGradient(
-                          colors: [AppColors.postbookPrimary, AppColors.posttubePrimary],
+                          colors: [
+                            AppColors.postbookPrimary,
+                            AppColors.posttubePrimary,
+                          ],
                         ).createShader(rect),
                         child: Text('atpost', style: AppTextStyles.logo),
                       ),
@@ -78,12 +81,17 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
                       const SizedBox(width: 8),
                       BadgeIconButton(
                         icon: Icons.notifications_none,
-                        badgeCount: ref.watch(unreadNotificationCountProvider).valueOrNull ?? 0,
+                        badgeCount:
+                            ref
+                                .watch(unreadNotificationCountProvider)
+                                .valueOrNull ??
+                            0,
                       ),
                       const SizedBox(width: 8),
                       BadgeIconButton(
                         icon: Icons.chat_bubble_outline,
-                        badgeCount: ref.watch(unreadChatCountProvider),
+                        badgeCount:
+                            ref.watch(unreadChatCountProvider).valueOrNull ?? 0,
                         onPressed: () => context.push('/chat'),
                       ),
                     ],
@@ -91,39 +99,27 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
                   const SizedBox(height: 16),
                   SizedBox(
                     height: 98,
-                    child: ListView.separated(
+                    child: ListView(
                       scrollDirection: Axis.horizontal,
-                      itemCount: 7,
-                      separatorBuilder: (context, index) => const SizedBox(width: 10),
-                      itemBuilder: (context, index) {
-                        if (index == 0) {
-                          return GestureDetector(
-                            onTap: () => context.push('/stories/create'),
-                            child: const StoryRing(
-                              initials: 'Y',
-                              label: 'Your Story',
-                              isOwn: true,
-                            ),
-                          );
-                        }
-                        if (index == 1) {
-                          return GestureDetector(
-                            onTap: () => context.push('/live'),
-                            child: const StoryRing(
-                              initials: 'L',
-                              label: 'Live',
-                              isLive: true,
-                            ),
-                          );
-                        }
-                        return GestureDetector(
-                          onTap: () => context.push('/stories/user_$index'),
-                          child: StoryRing(
-                            initials: String.fromCharCode(65 + index),
-                            label: 'user_$index',
+                      children: [
+                        GestureDetector(
+                          onTap: () => context.push('/stories/create'),
+                          child: const StoryRing(
+                            initials: 'Y',
+                            label: 'Your Story',
+                            isOwn: true,
                           ),
-                        );
-                      },
+                        ),
+                        const SizedBox(width: 10),
+                        GestureDetector(
+                          onTap: () => context.push('/live'),
+                          child: const StoryRing(
+                            initials: 'L',
+                            label: 'Live',
+                            isLive: true,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                   const SizedBox(height: 14),
@@ -132,8 +128,11 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
                     activeIndex: feedTab,
                     onChanged: (v) {
                       setState(() => feedTab = v);
-                      ref.read(feedFilterProvider.notifier).state =
-                          ['For You', 'Following', 'Trending'][v];
+                      ref.read(feedFilterProvider.notifier).state = [
+                        'For You',
+                        'Following',
+                        'Trending',
+                      ][v];
                     },
                   ),
                   const SizedBox(height: 14),
@@ -162,34 +161,33 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
               SliverPadding(
                 padding: AppSpacing.pagePadding.copyWith(bottom: 130),
                 sliver: SliverList(
-                  delegate: SliverChildBuilderDelegate(
-                    (context, index) {
-                      final post = posts[index];
-                      if (post.isReel) {
-                        return ReelCard(
-                          title: post.content,
-                          creator: 'By ${post.authorName ?? 'unknown'}',
-                          duration: _formatDuration(post.durationSeconds ?? 0),
-                          onTap: () => context.push('/reels'),
-                        );
-                      }
-                      if (post.isVideo) {
-                        return VideoCard(
-                          title: post.content,
-                          stats: '${_formatCount(post.likeCount)} views  -  ${_timeAgo(post.createdAt)}',
-                          onTap: () => context.push('/posttube'),
-                        );
-                      }
-                      return PostCard(
-                        name: post.authorName ?? 'Anonymous',
-                        handle: '@${(post.authorName ?? 'user').toLowerCase().replaceAll(' ', '_')}',
-                        content: post.content,
-                        tags: post.tags,
-                        liked: post.isLiked,
+                  delegate: SliverChildBuilderDelegate((context, index) {
+                    final post = posts[index];
+                    if (post.isReel) {
+                      return ReelCard(
+                        title: post.content,
+                        creator: 'By ${post.authorName ?? 'unknown'}',
+                        duration: _formatDuration(post.durationSeconds ?? 0),
+                        onTap: () => context.push('/reels'),
                       );
-                    },
-                    childCount: posts.length,
-                  ),
+                    }
+                    if (post.isVideo) {
+                      return VideoCard(
+                        title: post.content,
+                        stats:
+                            '${_formatCount(post.likeCount)} views  -  ${_timeAgo(post.createdAt)}',
+                        onTap: () => context.push('/posttube'),
+                      );
+                    }
+                    return PostCard(
+                      name: post.authorName ?? 'Anonymous',
+                      handle:
+                          '@${(post.authorName ?? 'user').toLowerCase().replaceAll(' ', '_')}',
+                      content: post.content,
+                      tags: post.tags,
+                      liked: post.isLiked,
+                    );
+                  }, childCount: posts.length),
                 ),
               ),
             ],
@@ -199,4 +197,3 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
     );
   }
 }
-

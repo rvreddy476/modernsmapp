@@ -1,11 +1,23 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'dart:io' show Platform;
+
 /// Environment configuration for API endpoints.
 class Environment {
   const Environment._();
 
-  // Base URLs — change these per environment (dev/staging/prod)
-  static const String apiBaseUrl = 'http://10.0.2.2:8080'; // Android emulator → host
-  static const String wsBaseUrl = 'ws://10.0.2.2:8092';
-  static const String wsGatewayUrl = 'ws://10.0.2.2:8089';
+  // Resolve host: Android emulator uses 10.0.2.2, everything else uses localhost
+  static String get _host {
+    if (kIsWeb) return 'localhost';
+    try {
+      if (Platform.isAndroid) return '10.0.2.2';
+    } catch (_) {}
+    return 'localhost';
+  }
+
+  // Base URLs — auto-detect platform
+  static String get apiBaseUrl => 'http://$_host:8080';
+  static String get wsBaseUrl => 'ws://$_host:8092';
+  static String get wsGatewayUrl => 'ws://$_host:8089';
 
   // API paths
   static const String authPath = '/v1/auth';

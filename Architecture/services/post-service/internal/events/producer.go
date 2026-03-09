@@ -127,6 +127,19 @@ func (p *Producer) publish(ctx context.Context, eventType string, actorID *uuid.
 	})
 }
 
+// PublishRaw publishes a pre-built EventEnvelope to Kafka (used by outbox worker).
+func (p *Producer) PublishRaw(ctx context.Context, envelope events.EventEnvelope) error {
+	envelopeBytes, err := json.Marshal(envelope)
+	if err != nil {
+		return fmt.Errorf("failed to marshal envelope: %w", err)
+	}
+
+	return p.writer.WriteMessages(ctx, kafka.Message{
+		Key:   []byte(envelope.EventID),
+		Value: envelopeBytes,
+	})
+}
+
 func (p *Producer) Close() error {
 	return p.writer.Close()
 }

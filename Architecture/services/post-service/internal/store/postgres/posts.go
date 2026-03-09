@@ -33,6 +33,25 @@ type Post struct {
 	PostType       string          `json:"post_type"`
 	AppOrigin      string          `json:"app_origin"`
 	ReviewStatus   string          `json:"review_status"` // "approved", "flagged", "rejected"
+	Title              string      `json:"title,omitempty"`
+	Tags               []string    `json:"tags,omitempty"`
+	Category           string      `json:"category,omitempty"`
+	Language           string      `json:"language,omitempty"`
+	SEOTitle           string      `json:"seo_title,omitempty"`
+	PaidPromotion      bool        `json:"paid_promotion"`
+	AlteredContent     bool        `json:"altered_content"`
+	IsMadeForKids      bool        `json:"is_made_for_kids"`
+	License            string      `json:"license,omitempty"`
+	AllowEmbedding     bool        `json:"allow_embedding"`
+	PublishToFeed      bool        `json:"publish_to_feed"`
+	RemixSetting       string      `json:"remix_setting,omitempty"`
+	CommentModeration  string      `json:"comment_moderation,omitempty"`
+	CommentAccess      string      `json:"comment_access,omitempty"`
+	RecordingDate      *time.Time  `json:"recording_date,omitempty"`
+	RecordingLocation  string      `json:"recording_location,omitempty"`
+	CoverMediaID       *uuid.UUID  `json:"cover_media_id,omitempty"`
+	OriginalAudioVol   float32     `json:"original_audio_volume"`
+	OverlayAudioVol    float32     `json:"overlay_audio_volume"`
 	CreatedAt      time.Time       `json:"created_at"`
 	UpdatedAt      time.Time       `json:"updated_at"`
 	Media          []PostMedia     `json:"media,omitempty"`
@@ -77,6 +96,12 @@ const postCols = `id, author_id, text, visibility, content_type, is_pinned,
 	no_comments, no_likes,
 	hashtags, mentions, location_name, location_lat, location_lng,
 	post_type, app_origin,
+	title, tags, category, language, seo_title,
+	paid_promotion, altered_content, is_made_for_kids,
+	license, allow_embedding, publish_to_feed, remix_setting,
+	comment_moderation, comment_access,
+	recording_date, recording_location,
+	cover_media_id, original_audio_volume, overlay_audio_volume,
 	created_at, updated_at`
 
 func scanPost(row pgx.Row) (*Post, error) {
@@ -87,6 +112,12 @@ func scanPost(row pgx.Row) (*Post, error) {
 		&p.NoComments, &p.NoLikes,
 		&p.Hashtags, &p.Mentions, &p.LocationName, &p.LocationLat, &p.LocationLng,
 		&p.PostType, &p.AppOrigin,
+		&p.Title, &p.Tags, &p.Category, &p.Language, &p.SEOTitle,
+		&p.PaidPromotion, &p.AlteredContent, &p.IsMadeForKids,
+		&p.License, &p.AllowEmbedding, &p.PublishToFeed, &p.RemixSetting,
+		&p.CommentModeration, &p.CommentAccess,
+		&p.RecordingDate, &p.RecordingLocation,
+		&p.CoverMediaID, &p.OriginalAudioVol, &p.OverlayAudioVol,
 		&p.CreatedAt, &p.UpdatedAt,
 	)
 	if err != nil {
@@ -105,6 +136,12 @@ func scanPostRows(rows pgx.Rows) ([]Post, error) {
 			&p.NoComments, &p.NoLikes,
 			&p.Hashtags, &p.Mentions, &p.LocationName, &p.LocationLat, &p.LocationLng,
 			&p.PostType, &p.AppOrigin,
+			&p.Title, &p.Tags, &p.Category, &p.Language, &p.SEOTitle,
+			&p.PaidPromotion, &p.AlteredContent, &p.IsMadeForKids,
+			&p.License, &p.AllowEmbedding, &p.PublishToFeed, &p.RemixSetting,
+			&p.CommentModeration, &p.CommentAccess,
+			&p.RecordingDate, &p.RecordingLocation,
+			&p.CoverMediaID, &p.OriginalAudioVol, &p.OverlayAudioVol,
 			&p.CreatedAt, &p.UpdatedAt,
 		); err != nil {
 			return nil, err
@@ -157,14 +194,33 @@ func (s *Store) CreatePost(ctx context.Context, p *Post) error {
 			no_comments, no_likes,
 			hashtags, mentions, location_name, location_lat, location_lng,
 			post_type, app_origin, review_status,
+			title, tags, category, language, seo_title,
+			paid_promotion, altered_content, is_made_for_kids,
+			license, allow_embedding, publish_to_feed, remix_setting,
+			comment_moderation, comment_access,
+			recording_date, recording_location,
+			cover_media_id, original_audio_volume, overlay_audio_volume,
 			created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-			$12, $13, $14, $15, $16, $17, $18, $19, $20, $20)
+			$12, $13, $14, $15, $16, $17, $18, $19,
+			$20, $21, $22, $23, $24,
+			$25, $26, $27,
+			$28, $29, $30, $31,
+			$32, $33,
+			$34, $35,
+			$36, $37, $38,
+			$39, $39)
 	`, p.ID, p.AuthorID, p.Text, p.Visibility, p.ContentType,
 		p.Feeling, p.Activity, p.ActivityDetail, p.RichText,
 		p.NoComments, p.NoLikes,
 		p.Hashtags, p.Mentions, p.LocationName, p.LocationLat, p.LocationLng,
 		p.PostType, p.AppOrigin, reviewStatus,
+		p.Title, p.Tags, p.Category, p.Language, p.SEOTitle,
+		p.PaidPromotion, p.AlteredContent, p.IsMadeForKids,
+		p.License, p.AllowEmbedding, p.PublishToFeed, p.RemixSetting,
+		p.CommentModeration, p.CommentAccess,
+		p.RecordingDate, p.RecordingLocation,
+		p.CoverMediaID, p.OriginalAudioVol, p.OverlayAudioVol,
 		p.CreatedAt)
 	if err != nil {
 		return err

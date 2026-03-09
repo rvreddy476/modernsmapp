@@ -108,6 +108,9 @@ func main() {
 	checker.RegisterRoutes(r)
 	r.GET("/metrics", metrics.Handler())
 	mediaHandler.RegisterRoutes(r, authMW, optionalAuthMW)
+	mediaHandler.RegisterAudioRoutes(r, authMW)
+	mediaHandler.RegisterRenditionRoutes(r, authMW)
+	mediaHandler.RegisterResumableRoutes(r, authMW)
 
 	// 10. Graceful shutdown
 	if err := server.Run(r, server.Config{

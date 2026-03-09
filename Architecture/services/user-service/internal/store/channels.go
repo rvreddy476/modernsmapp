@@ -26,6 +26,7 @@ type Channel struct {
 	ContentSchedule string          `json:"content_schedule,omitempty"`
 	SubscriberCount int             `json:"subscriber_count"`
 	IsVerified      bool            `json:"is_verified"`
+	IsDefault       bool            `json:"is_default"`
 	CreatedAt       time.Time       `json:"created_at"`
 	UpdatedAt       time.Time       `json:"updated_at"`
 }
@@ -59,11 +60,11 @@ func (s *Store) CreateChannel(ctx context.Context, ch *Channel) error {
 	_, err := s.db.Exec(ctx, `
 		INSERT INTO channels (id, user_id, handle, name, description, icon_url, banner_url,
 			category, country, language, contact_email, collab_status, content_schedule,
-			subscriber_count, is_verified, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+			subscriber_count, is_verified, is_default, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 	`, ch.ID, ch.UserID, ch.Handle, ch.Name, ch.Description, ch.IconURL, ch.BannerURL,
 		ch.Category, ch.Country, ch.Language, ch.ContactEmail, ch.CollabStatus, ch.ContentSchedule,
-		ch.SubscriberCount, ch.IsVerified, ch.CreatedAt, ch.UpdatedAt)
+		ch.SubscriberCount, ch.IsVerified, ch.IsDefault, ch.CreatedAt, ch.UpdatedAt)
 	return err
 }
 
@@ -73,12 +74,12 @@ func (s *Store) GetChannelByHandle(ctx context.Context, handle string) (*Channel
 	err := s.db.QueryRow(ctx, `
 		SELECT id, user_id, handle, name, description, icon_url, banner_url,
 			category, country, language, contact_email, collab_status, content_schedule,
-			subscriber_count, is_verified, created_at, updated_at
+			subscriber_count, is_verified, is_default, created_at, updated_at
 		FROM channels WHERE handle = $1
 	`, handle).Scan(
 		&ch.ID, &ch.UserID, &ch.Handle, &ch.Name, &ch.Description, &ch.IconURL, &ch.BannerURL,
 		&ch.Category, &ch.Country, &ch.Language, &ch.ContactEmail, &ch.CollabStatus, &ch.ContentSchedule,
-		&ch.SubscriberCount, &ch.IsVerified, &ch.CreatedAt, &ch.UpdatedAt,
+		&ch.SubscriberCount, &ch.IsVerified, &ch.IsDefault, &ch.CreatedAt, &ch.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -92,12 +93,12 @@ func (s *Store) GetChannelByID(ctx context.Context, id uuid.UUID) (*Channel, err
 	err := s.db.QueryRow(ctx, `
 		SELECT id, user_id, handle, name, description, icon_url, banner_url,
 			category, country, language, contact_email, collab_status, content_schedule,
-			subscriber_count, is_verified, created_at, updated_at
+			subscriber_count, is_verified, is_default, created_at, updated_at
 		FROM channels WHERE id = $1
 	`, id).Scan(
 		&ch.ID, &ch.UserID, &ch.Handle, &ch.Name, &ch.Description, &ch.IconURL, &ch.BannerURL,
 		&ch.Category, &ch.Country, &ch.Language, &ch.ContactEmail, &ch.CollabStatus, &ch.ContentSchedule,
-		&ch.SubscriberCount, &ch.IsVerified, &ch.CreatedAt, &ch.UpdatedAt,
+		&ch.SubscriberCount, &ch.IsVerified, &ch.IsDefault, &ch.CreatedAt, &ch.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -110,7 +111,7 @@ func (s *Store) GetUserChannels(ctx context.Context, userID uuid.UUID) ([]Channe
 	rows, err := s.db.Query(ctx, `
 		SELECT id, user_id, handle, name, description, icon_url, banner_url,
 			category, country, language, contact_email, collab_status, content_schedule,
-			subscriber_count, is_verified, created_at, updated_at
+			subscriber_count, is_verified, is_default, created_at, updated_at
 		FROM channels WHERE user_id = $1 ORDER BY created_at DESC
 	`, userID)
 	if err != nil {
@@ -124,7 +125,7 @@ func (s *Store) GetUserChannels(ctx context.Context, userID uuid.UUID) ([]Channe
 		if err := rows.Scan(
 			&ch.ID, &ch.UserID, &ch.Handle, &ch.Name, &ch.Description, &ch.IconURL, &ch.BannerURL,
 			&ch.Category, &ch.Country, &ch.Language, &ch.ContactEmail, &ch.CollabStatus, &ch.ContentSchedule,
-			&ch.SubscriberCount, &ch.IsVerified, &ch.CreatedAt, &ch.UpdatedAt,
+			&ch.SubscriberCount, &ch.IsVerified, &ch.IsDefault, &ch.CreatedAt, &ch.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}

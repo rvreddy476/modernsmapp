@@ -1,4 +1,5 @@
 import 'package:atpost_app/data/models/group.dart';
+import 'package:atpost_app/data/models/post.dart';
 import 'package:atpost_app/data/models/user.dart';
 import 'package:atpost_app/services/api_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -64,6 +65,21 @@ class GroupsRepository {
 
   Future<void> leaveGroup(String groupId) async {
     await _api.post('/v1/groups/$groupId/leave');
+  }
+
+  Future<List<Post>> getGroupPosts(String groupId, {int page = 1}) async {
+    final response = await _api.get(
+      '/v1/groups/$groupId/posts',
+      queryParameters: {'page': page},
+    );
+    final data = response.data;
+    if (data is Map<String, dynamic>) {
+      final items = (data['data'] as List<dynamic>?) ?? [];
+      return items
+          .map((e) => Post.fromJson(e as Map<String, dynamic>))
+          .toList();
+    }
+    return [];
   }
 
   Future<List<User>> getGroupMembers(String groupId, {int page = 1}) async {

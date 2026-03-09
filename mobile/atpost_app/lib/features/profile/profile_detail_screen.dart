@@ -3,6 +3,7 @@ import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/repositories/user_repository.dart';
 import 'package:atpost_app/providers/user_provider.dart';
+import 'package:atpost_app/services/api_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -13,11 +14,14 @@ class ProfileDetailScreen extends ConsumerStatefulWidget {
   final String userId;
 
   @override
-  ConsumerState<ProfileDetailScreen> createState() => _ProfileDetailScreenState();
+  ConsumerState<ProfileDetailScreen> createState() =>
+      _ProfileDetailScreenState();
 }
 
 class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
   bool _following = false;
+  bool _subscribed = false;
+  bool _subscribing = false;
 
   @override
   Widget build(BuildContext context) {
@@ -56,28 +60,37 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
                             color: AppColors.textSecondary,
                           ),
                           const Spacer(),
-                          const Icon(Icons.more_horiz, color: AppColors.textMuted),
+                          const Icon(
+                            Icons.more_horiz,
+                            color: AppColors.textMuted,
+                          ),
                         ],
                       ),
                       const SizedBox(height: 8),
                       Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Container(
-                            width: 72,
-                            height: 72,
-                            decoration: BoxDecoration(
-                              gradient: AppColors.postbookGradient,
-                              borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(
+                              AppSpacing.radiusLarge,
                             ),
-                            child: Center(
-                              child: Text(
-                                user.displayName.isNotEmpty
-                                    ? user.displayName[0].toUpperCase()
-                                    : 'U',
-                                style: AppTextStyles.h1.copyWith(color: Colors.white),
-                              ),
-                            ),
+                            child: user.hasAvatar
+                                ? Image.network(
+                                    user.avatarUrl,
+                                    width: 72,
+                                    height: 72,
+                                    fit: BoxFit.cover,
+                                    errorBuilder: (_, _, _) => _AvatarFallback(
+                                      size: 72,
+                                      initial: user.displayName,
+                                      style: AppTextStyles.h1,
+                                    ),
+                                  )
+                                : _AvatarFallback(
+                                    size: 72,
+                                    initial: user.displayName,
+                                    style: AppTextStyles.h1,
+                                  ),
                           ),
                           const SizedBox(width: 16),
                           Expanded(
@@ -87,7 +100,10 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
                                 Row(
                                   children: [
                                     Flexible(
-                                      child: Text(user.displayName, style: AppTextStyles.h2),
+                                      child: Text(
+                                        user.displayName,
+                                        style: AppTextStyles.h2,
+                                      ),
                                     ),
                                     if (user.isVerified) ...[
                                       const SizedBox(width: 4),
@@ -100,7 +116,10 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
                                   ],
                                 ),
                                 const SizedBox(height: 2),
-                                Text('@${user.username}', style: AppTextStyles.bodySmall),
+                                Text(
+                                  '@${user.username}',
+                                  style: AppTextStyles.bodySmall,
+                                ),
                                 if (user.profession != null &&
                                     user.profession!.isNotEmpty) ...[
                                   const SizedBox(height: 2),
@@ -128,9 +147,15 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
                       const SizedBox(height: 16),
                       Row(
                         children: [
-                          _StatBadge(label: 'Followers', count: user.followerCount),
+                          _StatBadge(
+                            label: 'Followers',
+                            count: user.followerCount,
+                          ),
                           const SizedBox(width: 10),
-                          _StatBadge(label: 'Following', count: user.followingCount),
+                          _StatBadge(
+                            label: 'Following',
+                            count: user.followingCount,
+                          ),
                           const SizedBox(width: 10),
                           _StatBadge(label: 'Friends', count: user.friendCount),
                         ],
@@ -141,50 +166,141 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
                           Expanded(
                             child: GestureDetector(
                               onTap: () async {
-                              final repo = ref.read(userRepositoryProvider);
-                              final messenger = ScaffoldMessenger.of(context);
-                              try {
-                                if (_following) {
-                                  await repo.unfollowUser(widget.userId);
-                                } else {
-                                  await repo.followUser(widget.userId);
+                                final repo = ref.read(userRepositoryProvider);
+                                try {
+                                  if (_following) {
+                                    await repo.unfollowUser(widget.userId);
+                                  } else {
+                                    await repo.followUser(widget.userId);
+                                  }
+                                  if (mounted) {
+                                    setState(() => _following = !_following);
+                                  }
+                                } catch (_) {
+                                  if (!context.mounted) return;
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text(
+                                        'Could not update follow status.',
+                                      ),
+                                    ),
+                                  );
                                 }
-                                if (mounted) setState(() => _following = !_following);
-                              } catch (_) {
-                                messenger.showSnackBar(
-                                  const SnackBar(
-                                    content: Text('Could not update follow status.'),
-                                  ),
-                                );
-                              }
-                            },
+                              },
                               child: AnimatedContainer(
                                 duration: const Duration(milliseconds: 200),
-                                padding: const EdgeInsets.symmetric(vertical: 12),
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 12,
+                                ),
                                 decoration: BoxDecoration(
-                                  gradient: _following ? null : AppColors.postbookGradient,
-                                  color: _following
-                                      ? AppColors.bgCard
-                                      : null,
-                                  borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
+                                  gradient: _following
+                                      ? null
+                                      : AppColors.postbookGradient,
+                                  color: _following ? AppColors.bgCard : null,
+                                  borderRadius: BorderRadius.circular(
+                                    AppSpacing.radiusLarge,
+                                  ),
                                   border: Border.all(
                                     color: _following
                                         ? AppColors.borderSubtle
-                                        : AppColors.postbookPrimary.withValues(alpha: 0.4),
+                                        : AppColors.postbookPrimary.withValues(
+                                            alpha: 0.4,
+                                          ),
                                   ),
                                 ),
                                 child: Center(
                                   child: Text(
                                     _following ? 'Following' : 'Follow',
                                     style: AppTextStyles.label.copyWith(
-                                      color: _following ? AppColors.textSecondary : Colors.white,
+                                      color: _following
+                                          ? AppColors.textSecondary
+                                          : Colors.white,
                                     ),
                                   ),
                                 ),
                               ),
                             ),
                           ),
-                          const SizedBox(width: 10),
+                          if (user.isVerified) ...[
+                            const SizedBox(width: 8),
+                            GestureDetector(
+                              onTap: _subscribing
+                                  ? null
+                                  : () async {
+                                      setState(() => _subscribing = true);
+                                      try {
+                                        await ref
+                                            .read(apiClientProvider)
+                                            .post(
+                                              '/v1/monetization/subscribe',
+                                              data: {
+                                                'target_user_id': widget.userId,
+                                              },
+                                            );
+                                        if (mounted) {
+                                          setState(
+                                            () => _subscribed = !_subscribed,
+                                          );
+                                        }
+                                      } catch (_) {
+                                        if (!context.mounted) return;
+                                        ScaffoldMessenger.of(
+                                          context,
+                                        ).showSnackBar(
+                                          const SnackBar(
+                                            content: Text(
+                                              'Could not update subscription.',
+                                            ),
+                                          ),
+                                        );
+                                      } finally {
+                                        if (mounted) {
+                                          setState(() => _subscribing = false);
+                                        }
+                                      }
+                                    },
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 14,
+                                  vertical: 12,
+                                ),
+                                decoration: BoxDecoration(
+                                  gradient: _subscribed
+                                      ? null
+                                      : AppColors.ctaGradient,
+                                  color: _subscribed ? AppColors.bgCard : null,
+                                  borderRadius: BorderRadius.circular(
+                                    AppSpacing.radiusLarge,
+                                  ),
+                                  border: Border.all(
+                                    color: _subscribed
+                                        ? AppColors.borderSubtle
+                                        : Colors.transparent,
+                                  ),
+                                ),
+                                child: _subscribing
+                                    ? const SizedBox(
+                                        width: 16,
+                                        height: 16,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          color: AppColors.postbookPrimary,
+                                        ),
+                                      )
+                                    : Text(
+                                        _subscribed
+                                            ? 'Subscribed'
+                                            : 'Subscribe',
+                                        style: AppTextStyles.label.copyWith(
+                                          color: _subscribed
+                                              ? AppColors.textSecondary
+                                              : Colors.white,
+                                        ),
+                                      ),
+                              ),
+                            ),
+                          ],
+                          const SizedBox(width: 8),
                           Container(
                             padding: const EdgeInsets.symmetric(
                               horizontal: 18,
@@ -192,7 +308,9 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
                             ),
                             decoration: BoxDecoration(
                               color: AppColors.bgCard,
-                              borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
+                              borderRadius: BorderRadius.circular(
+                                AppSpacing.radiusLarge,
+                              ),
                               border: Border.all(color: AppColors.borderSubtle),
                             ),
                             child: Text('Message', style: AppTextStyles.label),
@@ -222,10 +340,7 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
                           size: 32,
                         ),
                         const SizedBox(height: 8),
-                        Text(
-                          'No posts yet',
-                          style: AppTextStyles.bodySmall,
-                        ),
+                        Text('No posts yet', style: AppTextStyles.bodySmall),
                       ],
                     ),
                   ),
@@ -233,6 +348,33 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AvatarFallback extends StatelessWidget {
+  const _AvatarFallback({
+    required this.size,
+    required this.initial,
+    required this.style,
+  });
+
+  final double size;
+  final String initial;
+  final TextStyle style;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: const BoxDecoration(gradient: AppColors.postbookGradient),
+      child: Center(
+        child: Text(
+          initial.isNotEmpty ? initial[0].toUpperCase() : 'U',
+          style: style.copyWith(color: Colors.white),
         ),
       ),
     );

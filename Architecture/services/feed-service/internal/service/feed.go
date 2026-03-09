@@ -99,20 +99,41 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 	}
 
 	// Filter out blocked/muted authors
-	if len(candidates) > 0 {
-		blockedMuted, err := s.getBlockedAndMuted(ctx, userID)
-		if err == nil && len(blockedMuted) > 0 {
-			blockedSet := make(map[uuid.UUID]struct{}, len(blockedMuted))
-			for _, id := range blockedMuted {
-				blockedSet[id] = struct{}{}
+	var blockedSet map[uuid.UUID]struct{}
+	blockedMuted, bmErr := s.getBlockedAndMuted(ctx, userID)
+	if bmErr == nil && len(blockedMuted) > 0 {
+		blockedSet = make(map[uuid.UUID]struct{}, len(blockedMuted))
+		for _, id := range blockedMuted {
+			blockedSet[id] = struct{}{}
+		}
+		filtered := candidates[:0]
+		for _, c := range candidates {
+			if _, blocked := blockedSet[c.AuthorID]; !blocked {
+				filtered = append(filtered, c)
 			}
-			filtered := candidates[:0]
-			for _, c := range candidates {
-				if _, blocked := blockedSet[c.AuthorID]; !blocked {
-					filtered = append(filtered, c)
+		}
+		candidates = filtered
+	}
+
+	// Cold-start fallback: if timeline is empty, fetch recent public posts
+	if len(candidates) == 0 {
+		log.Printf("Cold-start fallback triggered for user %s (empty timeline), fetching from %s", userID, s.postServiceURL)
+		coldItems, err := s.getRecentPublicPosts(ctx, limit*2)
+		if err != nil {
+			log.Printf("Cold-start fallback failed: %v", err)
+		} else {
+			log.Printf("Cold-start fallback returned %d posts", len(coldItems))
+			for _, item := range coldItems {
+				if excludeSelf && item.AuthorID == userID {
+					continue
 				}
+				if blockedSet != nil {
+					if _, blocked := blockedSet[item.AuthorID]; blocked {
+						continue
+					}
+				}
+				candidates = append(candidates, item)
 			}
-			candidates = filtered
 		}
 	}
 
@@ -472,6 +493,63 @@ func (s *Service) fetchCircleMembers(ctx context.Context, userID uuid.UUID) ([]u
 	}
 
 	return allFriends, nil
+}
+
+// getRecentPublicPosts fetches recent public posts from post-service as a cold-start fallback
+// for users with an empty home timeline (new users, no follows, etc.).
+func (s *Service) getRecentPublicPosts(ctx context.Context, limit int) ([]FeedItem, error) {
+	url := fmt.Sprintf("%s/v1/posts/recent?limit=%d", s.postServiceURL, limit)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-Internal-Service-Key", os.Getenv("INTERNAL_SERVICE_KEY"))
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("post-service request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("post-service returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	var envelope struct {
+		Data []struct {
+			ID          string    `json:"id"`
+			AuthorID    string    `json:"author_id"`
+			CreatedAt   time.Time `json:"created_at"`
+			ContentType string    `json:"content_type"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+
+	items := make([]FeedItem, 0, len(envelope.Data))
+	for _, p := range envelope.Data {
+		postID, err := uuid.Parse(p.ID)
+		if err != nil {
+			continue
+		}
+		authorID, err := uuid.Parse(p.AuthorID)
+		if err != nil {
+			continue
+		}
+		ct := p.ContentType
+		if ct == "" {
+			ct = "post"
+		}
+		items = append(items, FeedItem{
+			PostID:      postID,
+			AuthorID:    authorID,
+			CreatedAt:   p.CreatedAt,
+			ContentType: ct,
+		})
+	}
+	return items, nil
 }
 
 // feedItemsToCandidates converts service FeedItems to ranking Candidates.

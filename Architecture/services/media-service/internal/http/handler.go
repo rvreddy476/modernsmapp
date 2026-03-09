@@ -18,8 +18,6 @@ func New(svc *service.Service) *Handler {
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, optionalAuthMW gin.HandlerFunc) {
-	r.GET("/healthz", h.HealthCheck)
-
 	v1 := r.Group("/v1/media")
 	{
 		// Write endpoints — require authentication
