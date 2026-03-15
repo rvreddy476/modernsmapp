@@ -146,6 +146,41 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 	// Remix token
 	v1.GET("/:postId/remix-token", h.GetRemixToken)
+
+	// Video Series
+	vseries := r.Group("/v1/video-series")
+	{
+		vseries.POST("", h.CreateVideoSeries)
+		vseries.GET("/:seriesId", h.GetVideoSeries)
+		vseries.GET("/:seriesId/episodes", h.GetVideoSeriesEpisodes)
+		vseries.POST("/:seriesId/episodes", h.AddVideoSeriesEpisode)
+	}
+	r.GET("/v1/creators/:creatorId/video-series", h.ListCreatorVideoSeries)
+
+	// Playlists
+	playlists := r.Group("/v1/playlists")
+	{
+		playlists.POST("", h.CreatePlaylist)
+		playlists.GET("/:playlistId", h.GetPlaylist)
+		playlists.DELETE("/:playlistId", h.DeletePlaylist)
+		playlists.POST("/:playlistId/items", h.AddPlaylistItem)
+		playlists.DELETE("/:playlistId/items/:postId", h.RemovePlaylistItem)
+		playlists.GET("/:playlistId/items", h.GetPlaylistItems)
+	}
+	r.GET("/v1/creators/:creatorId/playlists", h.ListCreatorPlaylists)
+
+	// Chapters / end screens / cards
+	r.POST("/v1/posts/:postId/chapters", h.SaveChapters)
+	r.GET("/v1/posts/:postId/chapters", h.GetChapters)
+	r.POST("/v1/posts/:postId/end-screens", h.SaveEndScreens)
+	r.GET("/v1/posts/:postId/end-screens", h.GetEndScreens)
+	r.POST("/v1/posts/:postId/cards", h.SaveVideoCards)
+	r.GET("/v1/posts/:postId/cards", h.GetVideoCards)
+
+	// Watch Progress
+	r.POST("/v1/videos/:postId/progress", h.SaveWatchProgress)
+	r.GET("/v1/videos/continue-watching", h.GetContinueWatching)
+	r.DELETE("/v1/videos/:postId/progress", h.DeleteWatchProgress)
 }
 
 type CreatePollRequest struct {

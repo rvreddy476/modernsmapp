@@ -89,6 +89,18 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		channelByID.DELETE("/:id", h.DeleteChannel)
 	}
 
+	// Channel Subscriptions
+	channelSubs := r.Group("/v1/channels/:channelId")
+	{
+		channelSubs.POST("/subscribe", h.SubscribeToChannel)
+		channelSubs.DELETE("/subscribe", h.UnsubscribeFromChannel)
+		channelSubs.GET("/subscription", h.GetChannelSubscriptionStatus)
+		channelSubs.GET("/subscribers", h.ListChannelSubscribers)
+	}
+
+	// User subscriptions list
+	v1.GET("/:userId/subscriptions", h.ListUserChannelSubscriptions)
+
 	// Onboarding
 	r.POST("/v1/onboarding/ensure-publisher", h.EnsurePublisher)
 

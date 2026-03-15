@@ -44,6 +44,44 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// Scheduled
 		v1.POST("/schedule", h.ScheduleStream)
 		v1.GET("/schedule/upcoming", h.ListUpcomingStreams)
+
+		// Guests
+		v1.POST("/streams/:streamId/guests", h.InviteGuest)
+		v1.PATCH("/streams/:streamId/guests/:userId/status", h.UpdateGuestStatus)
+		v1.GET("/streams/:streamId/guests", h.GetStreamGuests)
+
+		// Polls
+		v1.POST("/streams/:streamId/polls", h.CreateLivePoll)
+		v1.POST("/streams/:streamId/polls/:pollId/vote", h.VoteOnPoll)
+		v1.GET("/streams/:streamId/polls", h.GetLivePolls)
+
+		// Gifts
+		v1.POST("/streams/:streamId/gifts", h.SendGift)
+		v1.GET("/streams/:streamId/gifts", h.GetStreamGifts)
+
+		// Moderation
+		v1.POST("/streams/:streamId/mutes", h.MuteUser)
+		v1.DELETE("/streams/:streamId/mutes/:userId", h.UnmuteUser)
+		v1.GET("/streams/:streamId/mutes", h.GetMutedUsers)
+		v1.POST("/streams/:streamId/word-filters", h.AddWordFilter)
+		v1.DELETE("/streams/:streamId/word-filters", h.RemoveWordFilter)
+		v1.GET("/streams/:streamId/word-filters", h.GetWordFilters)
+
+		// DVR
+		v1.GET("/streams/:streamId/dvr", h.GetDVRSegments)
+	}
+
+	// Audio Rooms
+	audioRooms := r.Group("/v1/audio-rooms")
+	{
+		audioRooms.POST("", h.CreateAudioRoom)
+		audioRooms.GET("", h.ListLiveAudioRooms)
+		audioRooms.GET("/:roomId", h.GetAudioRoom)
+		audioRooms.POST("/:roomId/start", h.StartAudioRoom)
+		audioRooms.POST("/:roomId/end", h.EndAudioRoom)
+		audioRooms.POST("/:roomId/join", h.JoinAudioRoom)
+		audioRooms.POST("/:roomId/leave", h.LeaveAudioRoom)
+		audioRooms.GET("/:roomId/members", h.GetAudioRoomMembers)
 	}
 }
 
