@@ -41,6 +41,22 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.POST("/:callId/participants/:userId/mute", h.MuteParticipant)
 		v1.POST("/:callId/participants/:userId/remove", h.RemoveParticipant)
 		v1.PATCH("/:callId/upgrade", h.UpgradeCall)
+
+		// Call links
+		v1.POST("/link", h.GenerateCallLink)
+		v1.POST("/join-by-link", h.JoinCallByLink)
+
+		// Scheduled calls
+		v1.POST("/schedule", h.ScheduleCall)
+		v1.GET("/scheduled", h.ListScheduledCalls)
+
+		// Reminders
+		v1.POST("/:callId/reminders", h.SetCallReminder)
+		v1.DELETE("/:callId/reminders", h.DeleteCallReminder)
+
+		// AI summaries
+		v1.GET("/:callId/summary", h.GetCallSummary)
+		v1.POST("/:callId/summary", h.CreateCallSummary)
 	}
 }
 

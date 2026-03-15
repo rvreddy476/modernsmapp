@@ -135,3 +135,9 @@ func (s *idempotencyConvStoreStub) ReleaseIdempotencyKey(ctx context.Context, ke
 	s.releaseCalled++
 	return s.releaseErr
 }
+func (s *idempotencyConvStoreStub) UpsertUserProfile(ctx context.Context, userID uuid.UUID, displayName string, avatarMediaID *uuid.UUID) error {
+	return errors.New("not implemented")
+}
+func (s *idempotencyConvStoreStub) GetUserProfiles(ctx context.Context, userIDs []uuid.UUID) (map[uuid.UUID]postgres.UserProfile, error) {
+	return nil, errors.New("not implemented")
+}

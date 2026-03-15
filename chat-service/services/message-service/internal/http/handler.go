@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/atpost/chat-message-service/internal/service"
+	store "github.com/atpost/chat-message-service/internal/store/postgres"
 	"github.com/atpost/chat-message-service/internal/store/scylla"
 	"github.com/atpost/chat-shared/api"
 	"github.com/gin-gonic/gin"
@@ -32,6 +33,40 @@ type ChatService interface {
 	SetTyping(ctx context.Context, userID, conversationID uuid.UUID) error
 	MarkRead(ctx context.Context, userID, conversationID uuid.UUID, messageID string) error
 	GetPresence(ctx context.Context, userIDs []uuid.UUID) (map[string]bool, error)
+
+	// Conversation settings
+	GetSettings(ctx context.Context, userID, convID uuid.UUID) (*store.ConversationSettings, error)
+	UpdateSettings(ctx context.Context, settings *store.ConversationSettings) error
+	// Folders
+	CreateFolder(ctx context.Context, userID uuid.UUID, name, icon string, sortOrder int) (*store.ChatFolder, error)
+	ListFolders(ctx context.Context, userID uuid.UUID) ([]store.ChatFolder, error)
+	DeleteFolder(ctx context.Context, userID, folderID uuid.UUID) error
+	AddToFolder(ctx context.Context, userID, folderID, conversationID uuid.UUID) error
+	RemoveFromFolder(ctx context.Context, userID, folderID, conversationID uuid.UUID) error
+	// Pins
+	PinMessageSvc(ctx context.Context, userID, convID, messageID uuid.UUID) (*store.ConversationPin, error)
+	UnpinMessageSvc(ctx context.Context, userID uuid.UUID, pinID uuid.UUID) error
+	GetPins(ctx context.Context, userID, convID uuid.UUID) ([]store.ConversationPin, error)
+	// Message requests
+	AcceptRequest(ctx context.Context, userID, convID uuid.UUID) error
+	DeclineRequest(ctx context.Context, userID, convID uuid.UUID) error
+	ListRequests(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.Conversation, error)
+	// Starred messages
+	StarMessageSvc(ctx context.Context, userID, convID, messageID uuid.UUID, preview *string) (*store.StarredMessage, error)
+	UnstarMessageSvc(ctx context.Context, userID, messageID uuid.UUID) error
+	GetStarredMessages(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.StarredMessage, error)
+	// Backups
+	CreateBackup(ctx context.Context, userID uuid.UUID, keyHint *string) (*store.ChatBackup, error)
+	GetLatestBackup(ctx context.Context, userID uuid.UUID) (*store.ChatBackup, error)
+	// Scheduled messages
+	CreateScheduledMessage(ctx context.Context, convID, senderID uuid.UUID, msgType, content string, mediaID *uuid.UUID, sendAt time.Time) (*store.ScheduledMessage, error)
+	CancelScheduledMessageSvc(ctx context.Context, userID, msgID uuid.UUID) error
+	ListScheduledMessagesSvc(ctx context.Context, userID, convID uuid.UUID) ([]store.ScheduledMessage, error)
+	// Translation
+	GetTranslation(ctx context.Context, messageID uuid.UUID, targetLang string) (*store.MessageTranslation, error)
+	// Threads
+	GetOrCreateThreadSvc(ctx context.Context, convID, parentMessageID uuid.UUID) (*store.MessageThread, error)
+	ListThreadsSvc(ctx context.Context, convID uuid.UUID) ([]store.MessageThread, error)
 }
 
 type Handler struct {
@@ -68,6 +103,48 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.POST("/conversations/:id/read", h.MarkRead)
 		// Presence
 		v1.POST("/presence", h.GetPresence)
+
+		// Conversation settings
+		v1.GET("/conversations/:id/settings", h.GetConversationSettings)
+		v1.PUT("/conversations/:id/settings", h.UpdateConversationSettings)
+
+		// Folders
+		v1.POST("/folders", h.CreateChatFolder)
+		v1.GET("/folders", h.ListChatFolders)
+		v1.DELETE("/folders/:folderId", h.DeleteChatFolder)
+		v1.POST("/folders/:folderId/conversations", h.AddConversationToFolder)
+		v1.DELETE("/folders/:folderId/conversations/:conversationId", h.RemoveConversationFromFolder)
+
+		// Pins
+		v1.POST("/conversations/:id/pins", h.PinMessage)
+		v1.DELETE("/conversations/:id/pins/:pinId", h.UnpinMessage)
+		v1.GET("/conversations/:id/pins", h.GetConversationPins)
+
+		// Message requests
+		v1.GET("/requests", h.ListMessageRequests)
+		v1.POST("/conversations/:id/requests/accept", h.AcceptMessageRequest)
+		v1.POST("/conversations/:id/requests/decline", h.DeclineMessageRequest)
+
+		// Starred messages
+		v1.POST("/conversations/:id/messages/:messageId/star", h.StarMessage)
+		v1.DELETE("/messages/:messageId/star", h.UnstarMessage)
+		v1.GET("/starred", h.GetStarredMessages)
+
+		// Backups
+		v1.POST("/backup", h.CreateChatBackup)
+		v1.GET("/backup/latest", h.GetLatestChatBackup)
+
+		// Scheduled messages
+		v1.POST("/conversations/:id/scheduled", h.CreateScheduledMessage)
+		v1.DELETE("/scheduled/:msgId", h.CancelScheduledMessage)
+		v1.GET("/conversations/:id/scheduled", h.ListScheduledMessages)
+
+		// Translation
+		v1.GET("/messages/:messageId/translation", h.GetMessageTranslation)
+
+		// Threads
+		v1.GET("/conversations/:id/threads/:parentMessageId", h.GetOrCreateThread)
+		v1.GET("/conversations/:id/threads", h.ListConversationThreads)
 	}
 }
 

@@ -92,7 +92,10 @@ func main() {
 	// 7. Outbox Relay (background)
 	go svc.StartOutboxRelay(ctx)
 
-	// 8. HTTP Server
+	// 8. Scheduled Message Worker (background)
+	go svc.StartScheduledMessageWorker(ctx)
+
+	// 9. HTTP Server
 	r := gin.New()
 	r.Use(http.RequestIDMiddleware())
 	r.Use(http.LoggerMiddleware(logger))
