@@ -277,15 +277,17 @@ func (s *Service) PublishDraft(ctx context.Context, draftID uuid.UUID, authorID 
 	}
 
 	input := &CreatePostInput{
-		AuthorID:    authorID,
-		Text:        draft.Caption,
-		Visibility:  draft.Visibility,
-		ContentType: "reel",
-		MediaIDs:    mediaIDs,
-		NoComments:  !draft.CommentsEnabled,
-		NoLikes:     !draft.LikesEnabled,
-		PostType:    "video",
-		AppOrigin:   "postboek-web",
+		AuthorID:      authorID,
+		Text:          draft.Caption,
+		Visibility:    draft.Visibility,
+		ContentType:   "reel",
+		MediaIDs:      mediaIDs,
+		CoverMediaID:  draft.CoverMediaID,
+		NoComments:    !draft.CommentsEnabled,
+		NoLikes:       !draft.LikesEnabled,
+		PostType:      "video",
+		AppOrigin:     "postboek-web",
+		PublishToFeed: draft.PublishToFeed,
 	}
 
 	post, err := s.CreatePost(ctx, input)

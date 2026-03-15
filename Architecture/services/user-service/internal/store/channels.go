@@ -11,24 +11,24 @@ import (
 
 // Channel represents a creator video channel on Posttube.
 type Channel struct {
-	ID              uuid.UUID       `json:"id"`
-	UserID          uuid.UUID       `json:"user_id"`
-	Handle          string          `json:"handle"`
-	Name            string          `json:"name"`
-	Description     string          `json:"description"`
-	IconURL         string          `json:"icon_url,omitempty"`
-	BannerURL       string          `json:"banner_url,omitempty"`
-	Category        string          `json:"category,omitempty"`
-	Country         string          `json:"country,omitempty"`
-	Language        string          `json:"language,omitempty"`
-	ContactEmail    string          `json:"contact_email,omitempty"`
-	CollabStatus    string          `json:"collab_status,omitempty"` // open, closed
-	ContentSchedule string          `json:"content_schedule,omitempty"`
-	SubscriberCount int             `json:"subscriber_count"`
-	IsVerified      bool            `json:"is_verified"`
-	IsDefault       bool            `json:"is_default"`
-	CreatedAt       time.Time       `json:"created_at"`
-	UpdatedAt       time.Time       `json:"updated_at"`
+	ID              uuid.UUID  `json:"id"`
+	UserID          uuid.UUID  `json:"user_id"`
+	Handle          string     `json:"handle"`
+	Name            string     `json:"name"`
+	Description     string     `json:"description"`
+	AvatarMediaID   *uuid.UUID `json:"avatar_media_id,omitempty"`
+	BannerMediaID   *uuid.UUID `json:"banner_media_id,omitempty"`
+	Category        string     `json:"category,omitempty"`
+	Country         string     `json:"country,omitempty"`
+	Language        string     `json:"language,omitempty"`
+	ContactEmail    string     `json:"contact_email,omitempty"`
+	CollabStatus    string     `json:"collab_status,omitempty"` // open, closed
+	ContentSchedule string     `json:"content_schedule,omitempty"`
+	SubscriberCount int        `json:"subscriber_count"`
+	IsVerified      bool       `json:"is_verified"`
+	IsDefault       bool       `json:"is_default"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
 // ChannelLink represents a link on a channel profile.
@@ -58,11 +58,11 @@ func (s *Store) CreateChannel(ctx context.Context, ch *Channel) error {
 	ch.UpdatedAt = now
 
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO channels (id, user_id, handle, name, description, icon_url, banner_url,
+		INSERT INTO channels (id, user_id, handle, name, description, avatar_media_id, banner_media_id,
 			category, country, language, contact_email, collab_status, content_schedule,
 			subscriber_count, is_verified, is_default, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
-	`, ch.ID, ch.UserID, ch.Handle, ch.Name, ch.Description, ch.IconURL, ch.BannerURL,
+	`, ch.ID, ch.UserID, ch.Handle, ch.Name, ch.Description, ch.AvatarMediaID, ch.BannerMediaID,
 		ch.Category, ch.Country, ch.Language, ch.ContactEmail, ch.CollabStatus, ch.ContentSchedule,
 		ch.SubscriberCount, ch.IsVerified, ch.IsDefault, ch.CreatedAt, ch.UpdatedAt)
 	return err
@@ -72,12 +72,12 @@ func (s *Store) CreateChannel(ctx context.Context, ch *Channel) error {
 func (s *Store) GetChannelByHandle(ctx context.Context, handle string) (*Channel, error) {
 	var ch Channel
 	err := s.db.QueryRow(ctx, `
-		SELECT id, user_id, handle, name, description, icon_url, banner_url,
+		SELECT id, user_id, handle, name, description, avatar_media_id, banner_media_id,
 			category, country, language, contact_email, collab_status, content_schedule,
 			subscriber_count, is_verified, is_default, created_at, updated_at
 		FROM channels WHERE handle = $1
 	`, handle).Scan(
-		&ch.ID, &ch.UserID, &ch.Handle, &ch.Name, &ch.Description, &ch.IconURL, &ch.BannerURL,
+		&ch.ID, &ch.UserID, &ch.Handle, &ch.Name, &ch.Description, &ch.AvatarMediaID, &ch.BannerMediaID,
 		&ch.Category, &ch.Country, &ch.Language, &ch.ContactEmail, &ch.CollabStatus, &ch.ContentSchedule,
 		&ch.SubscriberCount, &ch.IsVerified, &ch.IsDefault, &ch.CreatedAt, &ch.UpdatedAt,
 	)
@@ -91,12 +91,12 @@ func (s *Store) GetChannelByHandle(ctx context.Context, handle string) (*Channel
 func (s *Store) GetChannelByID(ctx context.Context, id uuid.UUID) (*Channel, error) {
 	var ch Channel
 	err := s.db.QueryRow(ctx, `
-		SELECT id, user_id, handle, name, description, icon_url, banner_url,
+		SELECT id, user_id, handle, name, description, avatar_media_id, banner_media_id,
 			category, country, language, contact_email, collab_status, content_schedule,
 			subscriber_count, is_verified, is_default, created_at, updated_at
 		FROM channels WHERE id = $1
 	`, id).Scan(
-		&ch.ID, &ch.UserID, &ch.Handle, &ch.Name, &ch.Description, &ch.IconURL, &ch.BannerURL,
+		&ch.ID, &ch.UserID, &ch.Handle, &ch.Name, &ch.Description, &ch.AvatarMediaID, &ch.BannerMediaID,
 		&ch.Category, &ch.Country, &ch.Language, &ch.ContactEmail, &ch.CollabStatus, &ch.ContentSchedule,
 		&ch.SubscriberCount, &ch.IsVerified, &ch.IsDefault, &ch.CreatedAt, &ch.UpdatedAt,
 	)
@@ -109,7 +109,7 @@ func (s *Store) GetChannelByID(ctx context.Context, id uuid.UUID) (*Channel, err
 // GetUserChannels returns all channels owned by a user.
 func (s *Store) GetUserChannels(ctx context.Context, userID uuid.UUID) ([]Channel, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, user_id, handle, name, description, icon_url, banner_url,
+		SELECT id, user_id, handle, name, description, avatar_media_id, banner_media_id,
 			category, country, language, contact_email, collab_status, content_schedule,
 			subscriber_count, is_verified, is_default, created_at, updated_at
 		FROM channels WHERE user_id = $1 ORDER BY created_at DESC
@@ -123,7 +123,7 @@ func (s *Store) GetUserChannels(ctx context.Context, userID uuid.UUID) ([]Channe
 	for rows.Next() {
 		var ch Channel
 		if err := rows.Scan(
-			&ch.ID, &ch.UserID, &ch.Handle, &ch.Name, &ch.Description, &ch.IconURL, &ch.BannerURL,
+			&ch.ID, &ch.UserID, &ch.Handle, &ch.Name, &ch.Description, &ch.AvatarMediaID, &ch.BannerMediaID,
 			&ch.Category, &ch.Country, &ch.Language, &ch.ContactEmail, &ch.CollabStatus, &ch.ContentSchedule,
 			&ch.SubscriberCount, &ch.IsVerified, &ch.IsDefault, &ch.CreatedAt, &ch.UpdatedAt,
 		); err != nil {
@@ -134,17 +134,41 @@ func (s *Store) GetUserChannels(ctx context.Context, userID uuid.UUID) ([]Channe
 	return channels, rows.Err()
 }
 
-// UpdateChannel updates a channel's editable fields.
-func (s *Store) UpdateChannel(ctx context.Context, ch *Channel) error {
+// ChannelUpdate holds optional fields for partial channel updates.
+type ChannelUpdate struct {
+	ID              uuid.UUID
+	UserID          uuid.UUID
+	Name            *string
+	Description     *string
+	AvatarMediaID   *uuid.UUID
+	BannerMediaID   *uuid.UUID
+	Category        *string
+	Country         *string
+	Language        *string
+	ContactEmail    *string
+	CollabStatus    *string
+	ContentSchedule *string
+}
+
+// UpdateChannel partially updates a channel — only non-nil fields are changed.
+func (s *Store) UpdateChannel(ctx context.Context, u *ChannelUpdate) error {
 	tag, err := s.db.Exec(ctx, `
 		UPDATE channels SET
-			name = $2, description = $3, icon_url = $4, banner_url = $5,
-			category = $6, country = $7, language = $8, contact_email = $9,
-			collab_status = $10, content_schedule = $11, updated_at = NOW()
+			name             = COALESCE($2, name),
+			description      = COALESCE($3, description),
+			avatar_media_id  = COALESCE($4, avatar_media_id),
+			banner_media_id  = COALESCE($5, banner_media_id),
+			category         = COALESCE($6, category),
+			country          = COALESCE($7, country),
+			language         = COALESCE($8, language),
+			contact_email    = COALESCE($9, contact_email),
+			collab_status    = COALESCE($10, collab_status),
+			content_schedule = COALESCE($11, content_schedule),
+			updated_at       = NOW()
 		WHERE id = $1 AND user_id = $12
-	`, ch.ID, ch.Name, ch.Description, ch.IconURL, ch.BannerURL,
-		ch.Category, ch.Country, ch.Language, ch.ContactEmail,
-		ch.CollabStatus, ch.ContentSchedule, ch.UserID)
+	`, u.ID, u.Name, u.Description, u.AvatarMediaID, u.BannerMediaID,
+		u.Category, u.Country, u.Language, u.ContactEmail,
+		u.CollabStatus, u.ContentSchedule, u.UserID)
 	if err != nil {
 		return err
 	}

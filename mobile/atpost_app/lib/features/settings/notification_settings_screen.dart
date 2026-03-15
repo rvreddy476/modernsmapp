@@ -35,7 +35,7 @@ class _NotificationSettingsScreenState
   Future<void> _loadPrefs() async {
     try {
       final api = ref.read(apiClientProvider);
-      final response = await api.get('/v1/notifications/preferences');
+      final response = await api.get('/v1/users/me/notification-preferences');
       final data = response.data['data'] as Map<String, dynamic>?;
       if (data != null && mounted) {
         setState(() {
@@ -60,7 +60,7 @@ class _NotificationSettingsScreenState
     try {
       await ref
           .read(apiClientProvider)
-          .put('/v1/notifications/preferences', data: Map<String, dynamic>.from(_prefs));
+          .put('/v1/users/me/notification-preferences', data: Map<String, dynamic>.from(_prefs));
     } catch (_) {
       // Revert on failure
       if (mounted) setState(() => _prefs[key] = !value);

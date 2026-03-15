@@ -137,14 +137,41 @@ func (s *Server) serveConnection(
 	s.log.Info("websocket disconnected", "user_id", userID)
 }
 
-// signalingTypes are WebRTC call signaling message types relayed peer-to-peer via Redis.
-var signalingTypes = map[string]bool{
-	"call_offer":     true,
-	"call_answer":    true,
-	"ice_candidate":  true,
-	"call_end":       true,
-	"call_decline":   true,
-	"call_busy":      true,
+// directSignalingTypes are P2P call signaling types relayed to a specific target user.
+var directSignalingTypes = map[string]bool{
+	"call_offer":    true,
+	"call_answer":   true,
+	"ice_candidate": true,
+	"call_end":      true,
+	"call_decline":  true,
+	"call_busy":     true,
+	"call_ring":     true,
+	"call_accept":   true,
+	"call_reject":   true,
+}
+
+// roomSignalingTypes are call room signaling types broadcast to all participants via call:{callId}.
+var roomSignalingTypes = map[string]bool{
+	"call_join":                true,
+	"call_leave":               true,
+	"call_mute_toggle":         true,
+	"call_video_toggle":        true,
+	"call_screen_share_start":  true,
+	"call_screen_share_stop":   true,
+	"call_hand_raise":          true,
+	"call_hand_lower":          true,
+	"call_participant_joined":  true,
+	"call_participant_left":    true,
+	"call_participant_muted":   true,
+	"call_participant_unmuted": true,
+	"call_participant_removed": true,
+	"call_state_change":        true,
+	"call_quality_report":      true,
+	"call_upgrade_request":     true,
+	"call_upgrade_accept":      true,
+	"call_upgrade_reject":      true,
+	"call_recording_started":   true,
+	"call_recording_stopped":   true,
 }
 
 func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, pubsub *redis.PubSub, userID uuid.UUID) {
@@ -153,6 +180,8 @@ func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *
 	conn.SetReadLimit(s.opts.MaxMessageSize)
 	_ = conn.SetReadDeadline(time.Now().Add(s.opts.PongWait))
 	conn.SetPongHandler(func(string) error {
+		// Refresh presence TTL on each pong (keeps user "online" while WS is alive).
+		_ = s.rdb.Set(ctx, "presence:"+userID.String(), "1", 90*time.Second)
 		return conn.SetReadDeadline(time.Now().Add(s.opts.PongWait))
 	})
 
@@ -174,7 +203,7 @@ func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *
 		}
 		msgType, _ := envelope["type"].(string)
 
-		// Handle post room subscriptions (dynamic per-post channels)
+		// Handle room subscriptions (dynamic per-post and per-call channels)
 		switch msgType {
 		case "subscribe_post":
 			postID, _ := envelope["post_id"].(string)
@@ -194,24 +223,55 @@ func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *
 				}
 			}
 			continue
-		}
-
-		// WebRTC signaling relay
-		if !signalingTypes[msgType] {
+		case "subscribe_call":
+			callID, _ := envelope["call_id"].(string)
+			if callID != "" {
+				channel := fmt.Sprintf("call:%s", callID)
+				if err := pubsub.Subscribe(ctx, channel); err != nil {
+					s.log.Warn("call room subscribe failed", "err", err, "user_id", userID, "call_id", callID)
+				}
+			}
 			continue
-		}
-		targetStr, _ := envelope["target_user_id"].(string)
-		targetID, parseErr := uuid.Parse(targetStr)
-		if parseErr != nil || targetID == uuid.Nil {
+		case "unsubscribe_call":
+			callID, _ := envelope["call_id"].(string)
+			if callID != "" {
+				channel := fmt.Sprintf("call:%s", callID)
+				if err := pubsub.Unsubscribe(ctx, channel); err != nil {
+					s.log.Warn("call room unsubscribe failed", "err", err, "user_id", userID, "call_id", callID)
+				}
+			}
 			continue
 		}
 
 		// Inject sender_id server-side to prevent spoofing
 		envelope["sender_id"] = userID.String()
 		relay, _ := json.Marshal(envelope)
-		channel := fmt.Sprintf("chat:%s", targetID.String())
-		if pubErr := s.rdb.Publish(ctx, channel, string(relay)).Err(); pubErr != nil {
-			s.log.Warn("signaling relay failed", "err", pubErr, "user_id", userID, "target", targetID)
+
+		// Direct signaling: relay to target user's personal channel
+		if directSignalingTypes[msgType] {
+			targetStr, _ := envelope["target_user_id"].(string)
+			targetID, parseErr := uuid.Parse(targetStr)
+			if parseErr != nil || targetID == uuid.Nil {
+				continue
+			}
+			channel := fmt.Sprintf("chat:%s", targetID.String())
+			if pubErr := s.rdb.Publish(ctx, channel, string(relay)).Err(); pubErr != nil {
+				s.log.Warn("signaling relay failed", "err", pubErr, "user_id", userID, "target", targetID)
+			}
+			continue
+		}
+
+		// Room signaling: broadcast to all call participants via call:{callID}
+		if roomSignalingTypes[msgType] {
+			callID, _ := envelope["call_id"].(string)
+			if callID == "" {
+				continue
+			}
+			channel := fmt.Sprintf("call:%s", callID)
+			if pubErr := s.rdb.Publish(ctx, channel, string(relay)).Err(); pubErr != nil {
+				s.log.Warn("call room relay failed", "err", pubErr, "user_id", userID, "call_id", callID)
+			}
+			continue
 		}
 	}
 }

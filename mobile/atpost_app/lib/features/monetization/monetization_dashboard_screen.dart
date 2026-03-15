@@ -1,7 +1,10 @@
+import 'dart:math';
+
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/providers/monetization_provider.dart';
+import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -13,6 +16,7 @@ class MonetizationDashboardScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final earningsAsync = ref.watch(earningsSummaryProvider);
     final payoutsAsync = ref.watch(payoutsProvider);
+    final earningsHistoryAsync = ref.watch(earningsHistoryProvider);
 
     return Scaffold(
       backgroundColor: AppColors.bgPrimary,
@@ -75,6 +79,37 @@ class MonetizationDashboardScreen extends ConsumerWidget {
                   ),
                 ],
               ),
+            ),
+            const SizedBox(height: 24),
+
+            // Earnings Trend Chart
+            Text('Earnings Trend (30 days)', style: AppTextStyles.h3),
+            const SizedBox(height: 12),
+            earningsHistoryAsync.when(
+              loading: () => Container(
+                height: 200,
+                decoration: BoxDecoration(
+                  color: AppColors.bgCard,
+                  borderRadius:
+                      BorderRadius.circular(AppSpacing.radiusLarge),
+                  border: Border.all(color: AppColors.borderSubtle),
+                ),
+                child: const Center(child: CircularProgressIndicator()),
+              ),
+              error: (_, _) => Container(
+                height: 200,
+                decoration: BoxDecoration(
+                  color: AppColors.bgCard,
+                  borderRadius:
+                      BorderRadius.circular(AppSpacing.radiusLarge),
+                  border: Border.all(color: AppColors.borderSubtle),
+                ),
+                child: Center(
+                  child: Text('Could not load chart data',
+                      style: AppTextStyles.bodySmall),
+                ),
+              ),
+              data: (history) => _EarningsLineChart(history: history),
             ),
             const SizedBox(height: 24),
 
@@ -170,6 +205,164 @@ class MonetizationDashboardScreen extends ConsumerWidget {
     );
   }
 }
+
+// ---------- Earnings Line Chart ----------
+
+class _EarningsLineChart extends StatelessWidget {
+  final List<Map<String, dynamic>> history;
+
+  const _EarningsLineChart({required this.history});
+
+  @override
+  Widget build(BuildContext context) {
+    if (history.isEmpty) {
+      return Container(
+        height: 200,
+        decoration: BoxDecoration(
+          color: AppColors.bgCard,
+          borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
+          border: Border.all(color: AppColors.borderSubtle),
+        ),
+        child: Center(
+          child: Text('No earnings data yet', style: AppTextStyles.bodySmall),
+        ),
+      );
+    }
+
+    final spots = history.asMap().entries.map((entry) {
+      final views = (entry.value['views'] as int? ?? 0).toDouble();
+      return FlSpot(entry.key.toDouble(), views);
+    }).toList();
+
+    final maxY = spots.map((s) => s.y).reduce(max);
+    final yMax = maxY == 0 ? 100.0 : maxY * 1.2;
+
+    return Container(
+      height: 200,
+      padding: const EdgeInsets.fromLTRB(8, 16, 16, 8),
+      decoration: BoxDecoration(
+        color: AppColors.bgCard,
+        borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
+        border: Border.all(color: AppColors.borderSubtle),
+      ),
+      child: LineChart(
+        LineChartData(
+          minY: 0,
+          maxY: yMax,
+          gridData: FlGridData(
+            show: true,
+            drawVerticalLine: false,
+            horizontalInterval: yMax / 4,
+            getDrawingHorizontalLine: (value) => FlLine(
+              color: AppColors.borderSubtle,
+              strokeWidth: 0.5,
+            ),
+          ),
+          titlesData: FlTitlesData(
+            topTitles: const AxisTitles(
+              sideTitles: SideTitles(showTitles: false),
+            ),
+            rightTitles: const AxisTitles(
+              sideTitles: SideTitles(showTitles: false),
+            ),
+            leftTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                reservedSize: 40,
+                getTitlesWidget: (value, meta) {
+                  if (value == meta.min || value == meta.max) {
+                    return const SizedBox.shrink();
+                  }
+                  return Padding(
+                    padding: const EdgeInsets.only(right: 4),
+                    child: Text(
+                      value.toInt().toString(),
+                      style: AppTextStyles.labelTiny,
+                    ),
+                  );
+                },
+              ),
+            ),
+            bottomTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                reservedSize: 28,
+                interval: (history.length / 5).ceilToDouble(),
+                getTitlesWidget: (value, meta) {
+                  final idx = value.toInt();
+                  if (idx < 0 || idx >= history.length) {
+                    return const SizedBox.shrink();
+                  }
+                  final date = history[idx]['date']?.toString() ?? '';
+                  final label = date.length >= 10
+                      ? '${date.substring(8, 10)}/${date.substring(5, 7)}'
+                      : date;
+                  return Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text(label, style: AppTextStyles.labelTiny),
+                  );
+                },
+              ),
+            ),
+          ),
+          borderData: FlBorderData(show: false),
+          lineBarsData: [
+            LineChartBarData(
+              spots: spots,
+              isCurved: true,
+              curveSmoothness: 0.3,
+              color: AppColors.postbookPrimary,
+              barWidth: 2.5,
+              isStrokeCapRound: true,
+              dotData: FlDotData(
+                show: spots.length <= 14,
+                getDotPainter: (spot, percent, barData, index) =>
+                    FlDotCirclePainter(
+                  radius: 3,
+                  color: AppColors.postbookPrimary,
+                  strokeWidth: 1.5,
+                  strokeColor: AppColors.bgPrimary,
+                ),
+              ),
+              belowBarData: BarAreaData(
+                show: true,
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    AppColors.postbookPrimary.withValues(alpha: 0.25),
+                    AppColors.postbookPrimary.withValues(alpha: 0.0),
+                  ],
+                ),
+              ),
+            ),
+          ],
+          lineTouchData: LineTouchData(
+            touchTooltipData: LineTouchTooltipData(
+              getTooltipColor: (_) => AppColors.bgSecondary,
+              getTooltipItems: (touchedSpots) {
+                return touchedSpots.map((spot) {
+                  final idx = spot.x.toInt();
+                  final dateLabel = idx < history.length
+                      ? (history[idx]['date']?.toString() ?? '')
+                      : '';
+                  return LineTooltipItem(
+                    '${spot.y.toInt()} views\n$dateLabel',
+                    AppTextStyles.labelSmall.copyWith(
+                      color: AppColors.postbookPrimary,
+                    ),
+                  );
+                }).toList();
+              },
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ---------- Supporting widgets (unchanged) ----------
 
 class _StatCard extends StatelessWidget {
   final String label;

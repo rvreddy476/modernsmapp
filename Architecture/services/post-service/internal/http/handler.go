@@ -97,6 +97,16 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// Hashtag search
 	r.GET("/v1/hashtags/:tag/posts", h.GetPostsByHashtag)
 
+	// Video creator tools
+	videos := r.Group("/v1/videos")
+	{
+		videos.GET("/:videoId", h.GetVideoDetail)
+		videos.PATCH("/:videoId/trim", h.UpdateTrim)
+		videos.PATCH("/:videoId/category", h.OverrideCategory)
+		videos.POST("/:videoId/cover-frame", h.SetCoverFrame)
+		videos.POST("/:videoId/publish", h.PublishVideo)
+	}
+
 	// Comment-level routes
 	comments := r.Group("/v1/comments")
 	{
@@ -1441,4 +1451,159 @@ func (h *Handler) GetPostsByHashtag(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, posts, meta)
+}
+
+// ============================================================
+// Video Creator Tools Handlers
+// ============================================================
+
+func (h *Handler) GetVideoDetail(c *gin.Context) {
+	videoID, err := uuid.Parse(c.Param("videoId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid video ID", nil, nil)
+		return
+	}
+	vm, err := h.svc.GetVideoDetail(c.Request.Context(), videoID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Video metadata not found", nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, vm, nil)
+}
+
+func (h *Handler) UpdateTrim(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+	videoID, err := uuid.Parse(c.Param("videoId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid video ID", nil, nil)
+		return
+	}
+
+	var req struct {
+		TrimStartMs int  `json:"trim_start_ms"`
+		TrimEndMs   *int `json:"trim_end_ms"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+
+	if err := h.svc.UpdateVideoTrim(c.Request.Context(), videoID, userID, req.TrimStartMs, req.TrimEndMs); err != nil {
+		if strings.Contains(err.Error(), "unauthorized") {
+			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil, nil)
+			return
+		}
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "updated"}, nil)
+}
+
+func (h *Handler) OverrideCategory(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+	videoID, err := uuid.Parse(c.Param("videoId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid video ID", nil, nil)
+		return
+	}
+
+	var req struct {
+		Category string `json:"category" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+
+	if err := h.svc.OverrideCategory(c.Request.Context(), videoID, userID, req.Category); err != nil {
+		if strings.Contains(err.Error(), "unauthorized") {
+			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil, nil)
+			return
+		}
+		if strings.Contains(err.Error(), "cannot classify") {
+			api.Error(c.Writer, http.StatusUnprocessableEntity, "VALIDATION_ERROR", err.Error(), nil, nil)
+			return
+		}
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "updated"}, nil)
+}
+
+func (h *Handler) SetCoverFrame(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+	videoID, err := uuid.Parse(c.Param("videoId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid video ID", nil, nil)
+		return
+	}
+
+	var req struct {
+		CoverMediaID *string `json:"cover_media_id"`
+		ThumbnailURL *string `json:"thumbnail_url"`
+		TimestampMs  *int    `json:"timestamp_ms"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+
+	var coverMediaID *uuid.UUID
+	if req.CoverMediaID != nil {
+		id, err := uuid.Parse(*req.CoverMediaID)
+		if err != nil {
+			api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid cover media ID", nil, nil)
+			return
+		}
+		coverMediaID = &id
+	}
+
+	if err := h.svc.SetCoverFrame(c.Request.Context(), videoID, userID, coverMediaID, req.ThumbnailURL); err != nil {
+		if strings.Contains(err.Error(), "unauthorized") {
+			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil, nil)
+			return
+		}
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "updated"}, nil)
+}
+
+func (h *Handler) PublishVideo(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+	videoID, err := uuid.Parse(c.Param("videoId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid video ID", nil, nil)
+		return
+	}
+
+	if err := h.svc.PublishVideo(c.Request.Context(), videoID, userID); err != nil {
+		if strings.Contains(err.Error(), "unauthorized") {
+			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil, nil)
+			return
+		}
+		if strings.Contains(err.Error(), "not ready") {
+			api.Error(c.Writer, http.StatusConflict, "NOT_READY", err.Error(), nil, nil)
+			return
+		}
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "published"}, nil)
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/atpost/identity-profile-service/internal/config"
@@ -635,4 +636,222 @@ func (s *Service) updateCircleSetsRemove(ctx context.Context, userA, userB uuid.
 			s.log.Warn("failed to SREM circle set", "err", err)
 		}
 	}()
+}
+
+// ---------------------------------------------------------------
+// Module Profiles
+// ---------------------------------------------------------------
+
+// GetModuleProfile returns a single module profile for a user+module.
+func (s *Service) GetModuleProfile(ctx context.Context, userID uuid.UUID, module string) (*store.ModuleProfile, error) {
+	if !isValidModule(module) {
+		return nil, errors.New("invalid module: must be postbook, posttube, or postgram")
+	}
+
+	cacheKey := fmt.Sprintf("module_profile:%s:%s", userID, module)
+	val, err := s.rdb.Get(ctx, cacheKey).Result()
+	if err == nil {
+		var mp store.ModuleProfile
+		if err := json.Unmarshal([]byte(val), &mp); err == nil {
+			return &mp, nil
+		}
+	}
+
+	mp, err := s.store.GetModuleProfile(ctx, userID, module)
+	if err != nil {
+		return nil, err
+	}
+	if mp == nil {
+		return nil, nil
+	}
+
+	s.cacheModuleProfile(cacheKey, mp)
+	return mp, nil
+}
+
+// GetModuleProfiles returns all module profiles for a user.
+func (s *Service) GetModuleProfiles(ctx context.Context, userID uuid.UUID) ([]store.ModuleProfile, error) {
+	return s.store.GetModuleProfiles(ctx, userID)
+}
+
+// UpsertModuleProfile creates or updates a module profile and publishes an event.
+func (s *Service) UpsertModuleProfile(ctx context.Context, userID uuid.UUID, module string, params store.UpsertModuleProfileParams) (*store.ModuleProfile, error) {
+	if !isValidModule(module) {
+		return nil, errors.New("invalid module: must be postbook, posttube, or postgram")
+	}
+
+	mp, err := s.store.UpsertModuleProfile(ctx, userID, module, params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to upsert module profile: %w", err)
+	}
+
+	// Invalidate cache
+	s.rdb.Del(ctx, fmt.Sprintf("module_profile:%s:%s", userID, module))
+
+	// Publish event
+	if err := s.producer.PublishModuleProfileUpdated(ctx, userID, module); err != nil {
+		s.log.Warn("failed to publish module profile updated event", "err", err, "user_id", userID, "module", module)
+	}
+
+	return mp, nil
+}
+
+// DeleteModuleProfile removes a module profile.
+func (s *Service) DeleteModuleProfile(ctx context.Context, userID uuid.UUID, module string) error {
+	if !isValidModule(module) {
+		return errors.New("invalid module: must be postbook, posttube, or postgram")
+	}
+
+	if err := s.store.DeleteModuleProfile(ctx, userID, module); err != nil {
+		return fmt.Errorf("failed to delete module profile: %w", err)
+	}
+
+	s.rdb.Del(ctx, fmt.Sprintf("module_profile:%s:%s", userID, module))
+	return nil
+}
+
+// ResolveModuleIdentity returns the display name for a user in a given module.
+// If use_global_identity=true (default), reads from the global profile.
+// Otherwise, uses the module-specific name override.
+// Media (avatar, banner, watermark) is now resolved via owner_media_slots in the media service.
+func (s *Service) ResolveModuleIdentity(ctx context.Context, userID uuid.UUID, module string) (displayName string, err error) {
+	mp, err := s.GetModuleProfile(ctx, userID, module)
+	if err != nil {
+		return "", err
+	}
+
+	// If no module profile or use_global_identity=true, fall back to global
+	if mp == nil || mp.UseGlobalIdentity {
+		profile, err := s.GetProfile(ctx, userID)
+		if err != nil {
+			return "", err
+		}
+		if profile == nil {
+			return "", errors.New("profile not found")
+		}
+		return profile.DisplayName, nil
+	}
+
+	return safeString(mp.NameOverride), nil
+}
+
+func (s *Service) cacheModuleProfile(key string, mp *store.ModuleProfile) {
+	go func() {
+		data, err := json.Marshal(mp)
+		if err != nil {
+			return
+		}
+		s.rdb.Set(context.Background(), key, data, s.cfg.CacheTTL)
+	}()
+}
+
+// ---------------------------------------------------------------
+// Handle Change
+// ---------------------------------------------------------------
+
+// ChangeHandle changes the user's username with cooldown enforcement (30 days between changes).
+func (s *Service) ChangeHandle(ctx context.Context, userID uuid.UUID, newUsername string) (*store.Profile, error) {
+	newUsername = strings.TrimPrefix(newUsername, "@")
+	newUsername = strings.TrimSpace(newUsername)
+	if newUsername == "" {
+		return nil, errors.New("username cannot be empty")
+	}
+
+	// Get current profile
+	profile, err := s.store.GetProfile(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get profile: %w", err)
+	}
+	if profile == nil {
+		return nil, errors.New("profile not found")
+	}
+
+	oldUsername := ""
+	if profile.Username != nil {
+		oldUsername = *profile.Username
+	}
+
+	if oldUsername == newUsername {
+		return profile, nil
+	}
+
+	// Check cooldown
+	latest, err := s.store.GetLatestHandleChange(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check handle cooldown: %w", err)
+	}
+	if latest != nil && latest.CooldownUntil.After(time.Now()) {
+		return nil, fmt.Errorf("handle change on cooldown until %s", latest.CooldownUntil.Format(time.RFC3339))
+	}
+
+	// Check if new username is taken
+	existing, err := s.store.GetProfileByUsername(ctx, newUsername)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check username availability: %w", err)
+	}
+	if existing != nil && existing.UserID != userID {
+		return nil, errors.New("username already taken")
+	}
+
+	// Update profile username
+	params := store.UpdateProfileParams{
+		DisplayName: profile.DisplayName,
+		Bio:         profile.Bio,
+		Username:    &newUsername,
+		Category:    profile.Category,
+		Profession:  profile.Profession,
+		Website:     profile.Website,
+		Location:    profile.Location,
+		ProfileThemeColor: profile.ProfileThemeColor,
+	}
+	updated, err := s.store.UpdateProfile(ctx, userID, params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update username: %w", err)
+	}
+
+	// Record handle change history
+	if oldUsername != "" {
+		if _, err := s.store.InsertHandleHistory(ctx, userID, oldUsername, newUsername); err != nil {
+			s.log.Warn("failed to record handle history", "err", err, "user_id", userID)
+		}
+	}
+
+	// Invalidate caches
+	s.rdb.Del(ctx, fmt.Sprintf("profile:card:%s", userID))
+	if oldUsername != "" {
+		s.rdb.Del(ctx, fmt.Sprintf("profile:name:%s", oldUsername))
+	}
+	s.rdb.Del(ctx, fmt.Sprintf("profile:name:%s", newUsername))
+
+	// Publish event
+	if err := s.producer.PublishHandleChanged(ctx, userID, oldUsername, newUsername); err != nil {
+		s.log.Warn("failed to publish handle changed event", "err", err, "user_id", userID)
+	}
+
+	return updated, nil
+}
+
+// ResolveHandle looks up the current username for an old handle (redirect support, 90-day window).
+func (s *Service) ResolveHandle(ctx context.Context, oldUsername string) (*uuid.UUID, *string, error) {
+	return s.store.ResolveHandle(ctx, oldUsername)
+}
+
+// GetHandleHistory returns the handle change history for a user.
+func (s *Service) GetHandleHistory(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.HandleHistoryEntry, error) {
+	return s.store.GetHandleHistory(ctx, userID, limit, offset)
+}
+
+// ---------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------
+
+func isValidModule(module string) bool {
+	return module == "postbook" || module == "posttube" || module == "postgram"
+}
+
+func safeString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }

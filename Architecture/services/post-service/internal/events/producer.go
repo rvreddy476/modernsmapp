@@ -140,6 +140,29 @@ func (p *Producer) PublishRaw(ctx context.Context, envelope events.EventEnvelope
 	})
 }
 
+// PublishUploadDeleted emits an upload.deleted event when a user deletes their upload.
+func (p *Producer) PublishUploadDeleted(ctx context.Context, postID, authorID uuid.UUID, contentType string) error {
+	payload := events.UploadDeletedPayload{
+		PostID:      postID.String(),
+		AuthorID:    authorID.String(),
+		ContentType: contentType,
+		DeletedAt:   time.Now(),
+	}
+	return p.publish(ctx, events.UploadDeleted, &authorID, payload)
+}
+
+// PublishCrosspostRemoved emits a crosspost.removed event.
+func (p *Producer) PublishCrosspostRemoved(ctx context.Context, crosspostID, sourcePostID uuid.UUID, sourceModule string, targetPostID uuid.UUID) error {
+	payload := events.CrosspostRemovedPayload{
+		CrosspostID:  crosspostID.String(),
+		SourcePostID: sourcePostID.String(),
+		SourceModule: sourceModule,
+		TargetPostID: targetPostID.String(),
+		RemovedAt:    time.Now(),
+	}
+	return p.publish(ctx, events.CrosspostRemoved, nil, payload)
+}
+
 func (p *Producer) Close() error {
 	return p.writer.Close()
 }

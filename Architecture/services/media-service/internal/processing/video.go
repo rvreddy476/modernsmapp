@@ -82,8 +82,12 @@ type TranscodeOutput struct {
 type VideoMeta struct {
 	Width           int
 	Height          int
-	DurationMs      int // internal, from ffprobe (milliseconds)
-	DurationSeconds int // for DB storage (seconds)
+	DurationMs      int     // internal, from ffprobe (milliseconds)
+	DurationSeconds int     // for DB storage (seconds)
+	DurationFloat   float64 // precise duration in seconds
+	CodecVideo      string  // e.g. "h264", "hevc"
+	CodecAudio      string  // e.g. "aac", "opus"
+	FrameRate       float64 // e.g. 30.0, 59.94
 }
 
 // ExtractThumbnail generates a JPEG thumbnail from a video at the given timestamp.
@@ -153,17 +157,66 @@ func ProbeVideo(ctx context.Context, inputPath string) (*VideoMeta, error) {
 		h, _ = strconv.Atoi(parts[1])
 	}
 
+	// Get codec and framerate info
+	codecArgs := []string{
+		"-v", "error",
+		"-select_streams", "v:0",
+		"-show_entries", "stream=codec_name,r_frame_rate",
+		"-of", "default=noprint_wrappers=1",
+		inputPath,
+	}
+	codecOut, _ := exec.CommandContext(ctx, "ffprobe", codecArgs...).Output()
+	codecVideo := ""
+	frameRate := 0.0
+	for _, line := range strings.Split(string(codecOut), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "codec_name=") {
+			codecVideo = strings.TrimPrefix(line, "codec_name=")
+		}
+		if strings.HasPrefix(line, "r_frame_rate=") {
+			frStr := strings.TrimPrefix(line, "r_frame_rate=")
+			frParts := strings.Split(frStr, "/")
+			if len(frParts) == 2 {
+				num, _ := strconv.ParseFloat(frParts[0], 64)
+				den, _ := strconv.ParseFloat(frParts[1], 64)
+				if den > 0 {
+					frameRate = num / den
+				}
+			}
+		}
+	}
+
+	audioArgs := []string{
+		"-v", "error",
+		"-select_streams", "a:0",
+		"-show_entries", "stream=codec_name",
+		"-of", "default=noprint_wrappers=1:nokey=1",
+		inputPath,
+	}
+	audioOut, _ := exec.CommandContext(ctx, "ffprobe", audioArgs...).Output()
+	codecAudio := strings.TrimSpace(string(audioOut))
+
 	return &VideoMeta{
 		Width:           w,
 		Height:          h,
 		DurationMs:      int(durFloat * 1000),
 		DurationSeconds: int(durFloat),
+		DurationFloat:   durFloat,
+		CodecVideo:      codecVideo,
+		CodecAudio:      codecAudio,
+		FrameRate:       frameRate,
 	}, nil
 }
 
 // ReelMaxDurationSeconds is the maximum duration (inclusive) for a video to be
-// classified as a reel. Videos longer than this are considered long-form.
-const ReelMaxDurationSeconds = 90
+// classified as a flick (short-form). Videos longer than this are considered long-form.
+const ReelMaxDurationSeconds = 180
+
+// MinVideoDurationSeconds is the minimum accepted video duration.
+const MinVideoDurationSeconds = 3
+
+// MinVideoResolution is the minimum accepted video height (360p).
+const MinVideoResolution = 360
 
 // TranscodeToMP4Fast transcodes with ultrafast preset for reels where encode
 // speed matters more than compression ratio.
@@ -191,9 +244,13 @@ func TranscodeReel(ctx context.Context, inputPath, tmpDir string) ([]TranscodeOu
 
 	var outputs []TranscodeOutput
 
-	// 1. Thumbnail
+	// 1. Thumbnail at 25% of duration
+	thumbAt := meta.DurationSeconds / 4
+	if thumbAt < 1 {
+		thumbAt = 1
+	}
 	thumbPath := filepath.Join(tmpDir, "thumb_150.jpg")
-	if err := ExtractThumbnail(ctx, inputPath, thumbPath, 1, 150); err == nil {
+	if err := ExtractThumbnail(ctx, inputPath, thumbPath, thumbAt, 150); err == nil {
 		outputs = append(outputs, TranscodeOutput{
 			Name: "thumb_150", FilePath: thumbPath,
 			Width: 150, Height: 150, Mime: "image/jpeg",
@@ -246,9 +303,13 @@ func TranscodeVideo(ctx context.Context, inputPath, tmpDir string) ([]TranscodeO
 
 	var outputs []TranscodeOutput
 
-	// 1. Thumbnail
+	// 1. Thumbnail at 25% of duration
+	thumbAt := meta.DurationSeconds / 4
+	if thumbAt < 1 {
+		thumbAt = 1
+	}
 	thumbPath := filepath.Join(tmpDir, "thumb_150.jpg")
-	if err := ExtractThumbnail(ctx, inputPath, thumbPath, 1, 150); err == nil {
+	if err := ExtractThumbnail(ctx, inputPath, thumbPath, thumbAt, 150); err == nil {
 		outputs = append(outputs, TranscodeOutput{
 			Name: "thumb_150", FilePath: thumbPath,
 			Width: 150, Height: 150, Mime: "image/jpeg",

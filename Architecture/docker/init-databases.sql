@@ -12,3 +12,6 @@ WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'commerce_db')\gexec
 
 SELECT 'CREATE DATABASE feed_db'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'feed_db')\gexec
+
+SELECT 'CREATE DATABASE call_db'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'call_db')\gexec

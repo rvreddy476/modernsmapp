@@ -1,10 +1,11 @@
+import 'package:atpost_app/core/config/environment.dart';
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/models/post.dart';
 import 'package:atpost_app/providers/feed_provider.dart';
 import 'package:atpost_app/shared/widgets/content_cards.dart';
-import 'package:atpost_app/shared/widgets/glass_icon_button.dart';
+import 'package:atpost_app/shared/widgets/video_player_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -71,6 +72,9 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     _VideoPanel(
+                      videoUrl: currentVideo != null && currentVideo.firstMediaUrl.isNotEmpty
+                          ? '${Environment.apiBaseUrl}${currentVideo.firstMediaUrl}'
+                          : '',
                       progress: _progress,
                       isPlaying: _playing,
                       onProgressChanged: (value) => setState(() => _progress = value),
@@ -176,12 +180,14 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
 
 class _VideoPanel extends StatelessWidget {
   const _VideoPanel({
+    required this.videoUrl,
     required this.progress,
     required this.isPlaying,
     required this.onProgressChanged,
     required this.onTogglePlay,
   });
 
+  final String videoUrl;
   final double progress;
   final bool isPlaying;
   final ValueChanged<double> onProgressChanged;
@@ -189,6 +195,8 @@ class _VideoPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final hasVideo = videoUrl.isNotEmpty;
+
     return Container(
       decoration: BoxDecoration(
         color: AppColors.bgTertiary,
@@ -197,116 +205,73 @@ class _VideoPanel extends StatelessWidget {
       ),
       child: Column(
         children: [
-          Container(
-            height: 230,
-            decoration: const BoxDecoration(
-              borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [Color(0xFF163B42), Color(0xFF151524)],
-              ),
-            ),
-            child: Stack(
-              children: [
-                Positioned(
-                  top: 10,
-                  left: 10,
-                  right: 10,
-                  child: Row(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                        decoration: BoxDecoration(
-                          color: AppColors.posttubePrimary.withValues(alpha: 0.18),
-                          borderRadius: BorderRadius.circular(999),
-                        ),
-                        child: Text(
-                          'POSTTUBE',
-                          style: AppTextStyles.labelTiny.copyWith(
-                            color: AppColors.posttubePrimary,
-                          ),
-                        ),
-                      ),
-                      const Spacer(),
-                      const GlassIconButton(icon: Icons.settings_outlined),
-                    ],
-                  ),
-                ),
-                Center(
-                  child: GestureDetector(
-                    onTap: onTogglePlay,
-                    child: Container(
-                      width: 62,
-                      height: 62,
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.14),
-                        shape: BoxShape.circle,
-                        border: Border.all(color: Colors.white.withValues(alpha: 0.2)),
-                      ),
-                      child: Icon(
-                        isPlaying ? Icons.pause : Icons.play_arrow,
-                        color: Colors.white,
-                        size: 28,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
+          ClipRRect(
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+            child: SizedBox(
+              height: 230,
+              width: double.infinity,
+              child: hasVideo
+                  ? VideoPlayerWidget(
+                      videoUrl: videoUrl,
+                      autoPlay: true,
+                      looping: false,
+                      showControls: true,
+                      aspectRatio: 16 / 9,
+                      placeholder: _gradientPlaceholder(onTogglePlay, isPlaying),
+                    )
+                  : _gradientPlaceholder(onTogglePlay, isPlaying),
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(10, 6, 10, 10),
-            child: Column(
-              children: [
-                SliderTheme(
-                  data: SliderTheme.of(context).copyWith(
-                    thumbColor: AppColors.posttubePrimary,
-                    activeTrackColor: AppColors.posttubePrimary,
-                    inactiveTrackColor: Colors.white.withValues(alpha: 0.2),
-                    overlayShape: SliderComponentShape.noOverlay,
-                    thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-                  ),
-                  child: Slider(
-                    min: 0,
-                    max: 1,
-                    value: progress,
-                    onChanged: onProgressChanged,
-                  ),
+        ],
+      ),
+    );
+  }
+
+  static Widget _gradientPlaceholder(VoidCallback onTogglePlay, bool isPlaying) {
+    return Container(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF163B42), Color(0xFF151524)],
+        ),
+      ),
+      child: Stack(
+        children: [
+          Positioned(
+            top: 10,
+            left: 10,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                color: AppColors.posttubePrimary.withValues(alpha: 0.18),
+                borderRadius: BorderRadius.circular(999),
+              ),
+              child: Text(
+                'POSTTUBE',
+                style: AppTextStyles.labelTiny.copyWith(
+                  color: AppColors.posttubePrimary,
                 ),
-                Row(
-                  children: [
-                    Text(
-                      '08:22 / 21:47',
-                      style: AppTextStyles.mono.copyWith(color: AppColors.textSecondary),
-                    ),
-                    const Spacer(),
-                    IconButton(
-                      onPressed: () {},
-                      icon: const Icon(Icons.skip_previous, color: AppColors.textMuted),
-                    ),
-                    IconButton(
-                      onPressed: onTogglePlay,
-                      icon: Icon(
-                        isPlaying ? Icons.pause_circle_outline : Icons.play_circle_outline,
-                        color: AppColors.textSecondary,
-                      ),
-                    ),
-                    IconButton(
-                      onPressed: () {},
-                      icon: const Icon(Icons.skip_next, color: AppColors.textMuted),
-                    ),
-                    IconButton(
-                      onPressed: () {},
-                      icon: const Icon(Icons.volume_up_outlined, color: AppColors.textMuted),
-                    ),
-                    IconButton(
-                      onPressed: () {},
-                      icon: const Icon(Icons.fullscreen, color: AppColors.textMuted),
-                    ),
-                  ],
+              ),
+            ),
+          ),
+          Center(
+            child: GestureDetector(
+              onTap: onTogglePlay,
+              child: Container(
+                width: 62,
+                height: 62,
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.14),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white.withValues(alpha: 0.2)),
                 ),
-              ],
+                child: Icon(
+                  isPlaying ? Icons.pause : Icons.play_arrow,
+                  color: Colors.white,
+                  size: 28,
+                ),
+              ),
             ),
           ),
         ],

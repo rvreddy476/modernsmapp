@@ -63,6 +63,15 @@ type ProfileService interface {
 	GetRelationship(ctx context.Context, viewerID, targetID uuid.UUID) (*store.RelationshipStatus, error)
 	// Batch
 	GetProfilesBatch(ctx context.Context, userIDs []uuid.UUID) (map[uuid.UUID]*store.Profile, error)
+	// Module Profiles
+	GetModuleProfile(ctx context.Context, userID uuid.UUID, module string) (*store.ModuleProfile, error)
+	GetModuleProfiles(ctx context.Context, userID uuid.UUID) ([]store.ModuleProfile, error)
+	UpsertModuleProfile(ctx context.Context, userID uuid.UUID, module string, params store.UpsertModuleProfileParams) (*store.ModuleProfile, error)
+	DeleteModuleProfile(ctx context.Context, userID uuid.UUID, module string) error
+	// Handle Change
+	ChangeHandle(ctx context.Context, userID uuid.UUID, newUsername string) (*store.Profile, error)
+	ResolveHandle(ctx context.Context, oldUsername string) (*uuid.UUID, *string, error)
+	GetHandleHistory(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.HandleHistoryEntry, error)
 }
 
 func New(svc ProfileService, logger *slog.Logger) *Handler {
@@ -125,10 +134,24 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, auth gin.HandlerFunc, csrf gin.H
 		// Block / Unblock
 		protected.POST("/:username/block", csrf, h.BlockUser)
 		protected.DELETE("/:username/block", csrf, h.UnblockUser)
+		// Module Profiles
+		protected.GET("/me/modules", h.GetMyModuleProfiles)
+		protected.GET("/me/modules/:module", h.GetMyModuleProfile)
+		protected.PUT("/me/modules/:module", csrf, h.UpsertMyModuleProfile)
+		protected.DELETE("/me/modules/:module", csrf, h.DeleteMyModuleProfile)
+		// Handle Change
+		protected.PUT("/me/handle", csrf, h.ChangeHandle)
+		protected.GET("/me/handle-history", h.GetHandleHistory)
 	}
 
 	// Public: link click tracking
 	r.POST("/v1/links/:id/click", h.TrackLinkClick)
+
+	// Public: handle redirect resolution
+	v1.GET("/resolve-handle/:username", h.ResolveHandle)
+
+	// Public: module profile for any user
+	v1.GET("/:userId/modules/:module", h.GetUserModuleProfile)
 }
 
 func (h *Handler) Health(c *gin.Context) {
@@ -1241,4 +1264,184 @@ func (h *Handler) GetProfilesBatch(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, profiles)
+}
+
+// ---------------------------------------------------------------
+// Module Profiles
+// ---------------------------------------------------------------
+
+func (h *Handler) GetMyModuleProfiles(c *gin.Context) {
+	userID, err := parseUserHeader(c)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	profiles, err := h.svc.GetModuleProfiles(c.Request.Context(), userID)
+	if err != nil {
+		h.log.Error("failed to get module profiles", "err", err, "user_id", userID)
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
+		return
+	}
+	if profiles == nil {
+		profiles = []store.ModuleProfile{}
+	}
+	api.JSON(c.Writer, http.StatusOK, profiles, nil)
+}
+
+func (h *Handler) GetMyModuleProfile(c *gin.Context) {
+	userID, err := parseUserHeader(c)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+	module := c.Param("module")
+
+	mp, err := h.svc.GetModuleProfile(c.Request.Context(), userID, module)
+	if err != nil {
+		h.log.Error("failed to get module profile", "err", err, "user_id", userID, "module", module)
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	if mp == nil {
+		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Module profile not found", nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, mp, nil)
+}
+
+func (h *Handler) UpsertMyModuleProfile(c *gin.Context) {
+	userID, err := parseUserHeader(c)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+	module := c.Param("module")
+
+	var params store.UpsertModuleProfileParams
+	if err := c.BindJSON(&params); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "invalid body", nil, nil)
+		return
+	}
+
+	mp, err := h.svc.UpsertModuleProfile(c.Request.Context(), userID, module, params)
+	if err != nil {
+		h.log.Error("failed to upsert module profile", "err", err, "user_id", userID, "module", module)
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, mp, nil)
+}
+
+func (h *Handler) DeleteMyModuleProfile(c *gin.Context) {
+	userID, err := parseUserHeader(c)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+	module := c.Param("module")
+
+	if err := h.svc.DeleteModuleProfile(c.Request.Context(), userID, module); err != nil {
+		h.log.Error("failed to delete module profile", "err", err, "user_id", userID, "module", module)
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	c.JSON(http.StatusNoContent, nil)
+}
+
+func (h *Handler) GetUserModuleProfile(c *gin.Context) {
+	targetID, err := uuid.Parse(c.Param("userId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "invalid user ID", nil, nil)
+		return
+	}
+	module := c.Param("module")
+
+	mp, err := h.svc.GetModuleProfile(c.Request.Context(), targetID, module)
+	if err != nil {
+		h.log.Error("failed to get user module profile", "err", err, "target_id", targetID, "module", module)
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	if mp == nil {
+		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Module profile not found", nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, mp, nil)
+}
+
+// ---------------------------------------------------------------
+// Handle Change
+// ---------------------------------------------------------------
+
+func (h *Handler) ChangeHandle(c *gin.Context) {
+	userID, err := parseUserHeader(c)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	var req struct {
+		Username string `json:"username"`
+	}
+	if err := c.BindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "invalid body", nil, nil)
+		return
+	}
+	if req.Username == "" {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "username is required", nil, nil)
+		return
+	}
+
+	profile, err := h.svc.ChangeHandle(c.Request.Context(), userID, req.Username)
+	if err != nil {
+		h.log.Warn("handle change failed", "err", err, "user_id", userID)
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, profile, nil)
+}
+
+func (h *Handler) ResolveHandle(c *gin.Context) {
+	username := c.Param("username")
+	if username == "" {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "username is required", nil, nil)
+		return
+	}
+
+	userID, newUsername, err := h.svc.ResolveHandle(c.Request.Context(), username)
+	if err != nil {
+		h.log.Error("failed to resolve handle", "err", err, "username", username)
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
+		return
+	}
+	if userID == nil {
+		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "No redirect found for this handle", nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, gin.H{
+		"user_id":      userID.String(),
+		"new_username": *newUsername,
+	}, nil)
+}
+
+func (h *Handler) GetHandleHistory(c *gin.Context) {
+	userID, err := parseUserHeader(c)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+	limit, offset := parsePagination(c)
+
+	history, err := h.svc.GetHandleHistory(c.Request.Context(), userID, limit, offset)
+	if err != nil {
+		h.log.Error("failed to get handle history", "err", err, "user_id", userID)
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
+		return
+	}
+	if history == nil {
+		history = []store.HandleHistoryEntry{}
+	}
+	api.JSON(c.Writer, http.StatusOK, history, nil)
 }

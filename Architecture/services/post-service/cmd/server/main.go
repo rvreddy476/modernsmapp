@@ -194,6 +194,8 @@ func main() {
 	postHandler.RegisterReelEngagementRoutes(r)
 	postHandler.RegisterReelFeedRoutes(r)
 	postHandler.RegisterReportRoutes(r)
+	postHandler.RegisterCrosspostRoutes(r)
+	postHandler.RegisterMyUploadsRoutes(r)
 
 	// 12b. Scheduled draft publish worker (every 60 seconds)
 	go func() {

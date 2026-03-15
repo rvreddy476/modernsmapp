@@ -98,3 +98,123 @@ func splitReelCursor(cursor string) []string {
 func encodeReelCursor(t time.Time, id uuid.UUID) string {
 	return t.Format(time.RFC3339Nano) + "_" + id.String()
 }
+
+// GetFlickCandidates returns public flick posts (content_type IN ('flick', 'reel'))
+// ordered by recency with cursor pagination.
+func (s *Store) GetFlickCandidates(ctx context.Context, limit int, cursor string) ([]*Post, string, error) {
+	var cursorTime time.Time
+	var cursorID uuid.UUID
+
+	if cursor != "" {
+		if t, id, err := parseReelCursor(cursor); err == nil {
+			cursorTime = t
+			cursorID = id
+		}
+	}
+
+	var rows pgx.Rows
+	var err error
+
+	if cursorTime.IsZero() {
+		rows, err = s.db.Query(ctx, `
+			SELECT `+postCols+`
+			FROM posts
+			WHERE content_type IN ('flick', 'reel') AND visibility = 'public'
+				AND deleted_at IS NULL AND review_status = 'approved'
+			ORDER BY created_at DESC, id DESC
+			LIMIT $1
+		`, limit)
+	} else {
+		rows, err = s.db.Query(ctx, `
+			SELECT `+postCols+`
+			FROM posts
+			WHERE content_type IN ('flick', 'reel') AND visibility = 'public'
+				AND deleted_at IS NULL AND review_status = 'approved'
+				AND (created_at, id) < ($2, $3)
+			ORDER BY created_at DESC, id DESC
+			LIMIT $1
+		`, limit, cursorTime, cursorID)
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+
+	posts, err := scanPostRows(rows)
+	if err != nil {
+		return nil, "", err
+	}
+
+	result := make([]*Post, len(posts))
+	for i := range posts {
+		result[i] = &posts[i]
+	}
+
+	nextCursor := ""
+	if len(result) >= limit {
+		last := result[len(result)-1]
+		nextCursor = encodeReelCursor(last.CreatedAt, last.ID)
+	}
+
+	return result, nextCursor, nil
+}
+
+// GetLongVideoCandidates returns public long video posts (content_type IN ('long_video', 'video'))
+// ordered by recency with cursor pagination.
+func (s *Store) GetLongVideoCandidates(ctx context.Context, limit int, cursor string) ([]*Post, string, error) {
+	var cursorTime time.Time
+	var cursorID uuid.UUID
+
+	if cursor != "" {
+		if t, id, err := parseReelCursor(cursor); err == nil {
+			cursorTime = t
+			cursorID = id
+		}
+	}
+
+	var rows pgx.Rows
+	var err error
+
+	if cursorTime.IsZero() {
+		rows, err = s.db.Query(ctx, `
+			SELECT `+postCols+`
+			FROM posts
+			WHERE content_type IN ('long_video', 'video') AND visibility = 'public'
+				AND deleted_at IS NULL AND review_status = 'approved'
+			ORDER BY created_at DESC, id DESC
+			LIMIT $1
+		`, limit)
+	} else {
+		rows, err = s.db.Query(ctx, `
+			SELECT `+postCols+`
+			FROM posts
+			WHERE content_type IN ('long_video', 'video') AND visibility = 'public'
+				AND deleted_at IS NULL AND review_status = 'approved'
+				AND (created_at, id) < ($2, $3)
+			ORDER BY created_at DESC, id DESC
+			LIMIT $1
+		`, limit, cursorTime, cursorID)
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+
+	posts, err := scanPostRows(rows)
+	if err != nil {
+		return nil, "", err
+	}
+
+	result := make([]*Post, len(posts))
+	for i := range posts {
+		result[i] = &posts[i]
+	}
+
+	nextCursor := ""
+	if len(result) >= limit {
+		last := result[len(result)-1]
+		nextCursor = encodeReelCursor(last.CreatedAt, last.ID)
+	}
+
+	return result, nextCursor, nil
+}

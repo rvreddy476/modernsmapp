@@ -249,8 +249,8 @@ func (s *Service) GetChannel(ctx context.Context, handle string) (*store.Channel
 }
 
 // UpdateChannel updates a channel's editable fields.
-func (s *Service) UpdateChannel(ctx context.Context, ch *store.Channel) error {
-	return s.store.UpdateChannel(ctx, ch)
+func (s *Service) UpdateChannel(ctx context.Context, upd *store.ChannelUpdate) error {
+	return s.store.UpdateChannel(ctx, upd)
 }
 
 // DeleteChannel removes a channel.

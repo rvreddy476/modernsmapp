@@ -13,6 +13,8 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./init-databases.sql:/docker-entrypoint-initdb.d/00-init-databases.sql:ro
+      - ./database:/docker-entrypoint-initdb.d/database:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
@@ -114,8 +116,11 @@ services:
       dockerfile: services/api-gateway/Dockerfile
     environment:
       HTTP_PORT: "8080"
-      CORS_ORIGINS: "http://localhost:3000"
+      JWT_SECRET: dev_secret_change_me
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-dev_internal_key_change_me}
+      CORS_ORIGINS: "${CORS_ORIGINS:-http://localhost:3000}"
       AUTH_SERVICE_URL: http://identity-auth:8081
+      CALL_SERVICE_URL: http://call-service:8097
       USER_SERVICE_URL: http://user-service:8082
       GRAPH_SERVICE_URL: http://graph-service:8083
       POST_SERVICE_URL: http://post-service:8084
@@ -154,6 +159,7 @@ services:
       POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/identity_db?sslmode=disable
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
+      JWT_SECRET: dev_secret_change_me
       RATE_LIMIT_ENABLED: "true"
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-dev_internal_key_change_me}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
@@ -170,12 +176,12 @@ services:
       context: ../../identity-platform
       dockerfile: services/user-service/Dockerfile
     environment:
-      HTTP_PORT: "8097"
+      HTTP_PORT: "8110"
       POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/identity_db?sslmode=disable
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
     ports:
-      - "8097:8097"
+      - "8110:8110"
     depends_on:
       postgres:
         condition: service_healthy
@@ -191,6 +197,7 @@ services:
       POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/identity_db?sslmode=disable
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
+      JWT_SECRET: dev_secret_change_me
     ports:
       - "8098:8098"
     depends_on:
@@ -269,7 +276,7 @@ services:
       SCYLLA_HOSTS: scylla
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
-      USER_SERVICE_URL: http://identity-user:8097
+      USER_SERVICE_URL: http://identity-user:8110
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-dev_internal_key_change_me}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
     ports:
@@ -414,6 +421,7 @@ services:
       HTTP_PORT: "8091"
       POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/app?sslmode=disable
       KAFKA_BROKERS: redpanda:9092
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-dev_internal_key_change_me}
     ports:
       - "8091:8091"
     depends_on:
@@ -462,12 +470,35 @@ services:
       HTTP_PORT: "8093"
       REDIS_ADDR: redis:6379
       JWT_SECRET: dev_secret_change_me
-      ALLOWED_ORIGINS: "http://localhost:3000"
+      ALLOWED_ORIGINS: "${CORS_ORIGINS:-http://localhost:3000}"
     ports:
       - "8093:8093"
     depends_on:
       redis:
         condition: service_healthy
+
+  call-service:
+    build:
+      context: ../../chat-service
+      dockerfile: services/call-service/Dockerfile
+    environment:
+      HTTP_PORT: "8097"
+      POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/call_db?sslmode=disable
+      REDIS_ADDR: redis:6379
+      KAFKA_BROKERS: redpanda:9092
+      JWT_SECRET: dev_secret_change_me
+      KAFKA_LIFECYCLE_TOPIC: call.lifecycle
+      KAFKA_NOTIFICATION_TOPIC: call.notifications
+      KAFKA_ANALYTICS_TOPIC: call.analytics
+    ports:
+      - "8106:8097"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      redpanda:
+        condition: service_started
 
   monetization-service:
     build:
@@ -533,6 +564,7 @@ services:
       HTTP_PORT: "8096"
       POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/app?sslmode=disable
       KAFKA_BROKERS: redpanda:9092
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-dev_internal_key_change_me}
     ports:
       - "8096:8096"
     depends_on:

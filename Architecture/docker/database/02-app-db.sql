@@ -826,57 +826,44 @@ CREATE TABLE IF NOT EXISTS inbox_events (
 CREATE INDEX IF NOT EXISTS idx_inbox_cleanup ON inbox_events (processed_at);
 
 -- ============================================================
--- SEED DATA for app db
+-- VIDEO METADATA (Unified Video Module — Flicks + Long Videos)
 -- ============================================================
-INSERT INTO users (id, username, display_name, first_name, last_name, bio, dob, gender, avatar_media_id, cover_media_id, category, profession, website, location, badge_flags, is_verified, created_at, updated_at) VALUES
-    ('b2e06bd7-fa13-4f05-94cc-8973bcafe892', 'johndoe', 'John Doe', 'John', 'Doe', 'Full-stack developer & open-source enthusiast.', '1995-06-15', 'male', '00000000-0000-4000-a000-000000000001', '00000000-0000-4000-a000-000000000002', 'personal', 'Software Engineer', 'https://johndoe.dev', 'San Francisco, CA', 3, TRUE, '2026-01-15T10:00:00Z', '2026-02-01T12:00:00Z'),
-    ('a1b2c3d4-e5f6-7890-abcd-ef1234567890', 'janedoe', 'Jane Doe', 'Jane', 'Doe', 'Designer & photographer.', '1998-03-22', 'female', '00000000-0000-4000-a000-000000000003', NULL, 'personal', 'UX Designer', 'https://janedoe.design', 'New York, NY', 1, TRUE, '2026-01-15T10:01:00Z', '2026-01-20T09:00:00Z'),
-    ('c3d4e5f6-a1b2-3456-7890-abcdef123456', 'bobsmith', 'Bob Smith', 'Bob', 'Smith', 'Music producer and coffee addict.', '1992-11-08', 'male', NULL, NULL, 'personal', 'Music Producer', NULL, 'Austin, TX', 0, FALSE, '2026-01-15T10:02:00Z', '2026-01-15T10:02:00Z')
-ON CONFLICT DO NOTHING;
 
-INSERT INTO user_settings (user_id, account_visibility, allow_messages_from, allow_comments_from, created_at, updated_at) VALUES
-    ('b2e06bd7-fa13-4f05-94cc-8973bcafe892', 'public', 'everyone', 'everyone', '2026-01-15T10:00:00Z', '2026-01-15T10:00:00Z'),
-    ('a1b2c3d4-e5f6-7890-abcd-ef1234567890', 'public', 'everyone', 'everyone', '2026-01-15T10:01:00Z', '2026-01-15T10:01:00Z'),
-    ('c3d4e5f6-a1b2-3456-7890-abcdef123456', 'public', 'followers', 'everyone', '2026-01-15T10:02:00Z', '2026-01-15T10:02:00Z')
-ON CONFLICT DO NOTHING;
+CREATE TABLE IF NOT EXISTS video_metadata (
+    post_id             UUID PRIMARY KEY REFERENCES posts(id) ON DELETE CASCADE,
+    duration_seconds    REAL NOT NULL DEFAULT 0,
+    width               INT,
+    height              INT,
+    aspect_ratio        TEXT,
+    orientation         TEXT NOT NULL DEFAULT 'landscape'
+                        CHECK (orientation IN ('portrait', 'landscape', 'square')),
+    file_size_bytes     BIGINT,
+    mime_type           TEXT,
+    codec_video         TEXT,
+    codec_audio         TEXT,
+    frame_rate          REAL,
+    storage_video_url   TEXT,
+    playback_url        TEXT,
+    thumbnail_url       TEXT,
+    trim_start_ms       INT DEFAULT 0,
+    trim_end_ms         INT,
+    computed_category   TEXT NOT NULL DEFAULT 'flick'
+                        CHECK (computed_category IN ('flick', 'long_video')),
+    final_category      TEXT NOT NULL DEFAULT 'flick'
+                        CHECK (final_category IN ('flick', 'long_video')),
+    upload_status       TEXT NOT NULL DEFAULT 'pending'
+                        CHECK (upload_status IN ('pending', 'processing', 'ready', 'failed')),
+    media_asset_id      UUID,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_video_metadata_status ON video_metadata(upload_status);
+CREATE INDEX IF NOT EXISTS idx_video_metadata_category ON video_metadata(final_category);
+CREATE INDEX IF NOT EXISTS idx_posts_author_flick ON posts(author_id, created_at DESC) WHERE content_type = 'flick' AND deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_posts_author_long_video ON posts(author_id, created_at DESC) WHERE content_type = 'long_video' AND deleted_at IS NULL;
 
-INSERT INTO follows (follower_id, followee_id, created_at) VALUES
-    ('a1b2c3d4-e5f6-7890-abcd-ef1234567890', 'b2e06bd7-fa13-4f05-94cc-8973bcafe892', '2026-01-16T12:00:00Z'),
-    ('c3d4e5f6-a1b2-3456-7890-abcdef123456', 'b2e06bd7-fa13-4f05-94cc-8973bcafe892', '2026-01-17T08:00:00Z'),
-    ('b2e06bd7-fa13-4f05-94cc-8973bcafe892', 'a1b2c3d4-e5f6-7890-abcd-ef1234567890', '2026-01-16T14:00:00Z')
-ON CONFLICT DO NOTHING;
+ALTER TABLE post_engagement_counts ADD COLUMN IF NOT EXISTS view_count INT NOT NULL DEFAULT 0;
 
-INSERT INTO friends (user_a, user_b, created_at) VALUES
-    ('a1b2c3d4-e5f6-7890-abcd-ef1234567890', 'b2e06bd7-fa13-4f05-94cc-8973bcafe892', '2026-01-18T10:00:00Z')
-ON CONFLICT DO NOTHING;
-
-INSERT INTO counts (user_id, follower_count, following_count, friend_count, updated_at) VALUES
-    ('b2e06bd7-fa13-4f05-94cc-8973bcafe892', 2, 2, 1, '2026-02-01T12:00:00Z'),
-    ('a1b2c3d4-e5f6-7890-abcd-ef1234567890', 1, 1, 1, '2026-02-01T12:00:00Z'),
-    ('c3d4e5f6-a1b2-3456-7890-abcdef123456', 1, 1, 0, '2026-02-01T12:00:00Z')
-ON CONFLICT (user_id) DO UPDATE SET follower_count=EXCLUDED.follower_count, following_count=EXCLUDED.following_count, friend_count=EXCLUDED.friend_count, updated_at=EXCLUDED.updated_at;
-
-INSERT INTO media_assets (id, uploader_id, file_type, media_subtype, mime_type, file_size_bytes, storage_bucket, storage_key, processing_status, created_at, updated_at) VALUES
-    ('00000000-0000-4000-a000-000000000001', 'b2e06bd7-fa13-4f05-94cc-8973bcafe892', 'image', 'avatar', 'image/jpeg', 52400, 'media', 'avatars/b2e06bd7/avatar.jpg', 'ready', '2026-01-15T10:05:00Z', '2026-01-15T10:05:00Z'),
-    ('00000000-0000-4000-a000-000000000002', 'b2e06bd7-fa13-4f05-94cc-8973bcafe892', 'image', 'cover', 'image/jpeg', 204800, 'media', 'covers/b2e06bd7/cover.jpg', 'ready', '2026-01-15T10:06:00Z', '2026-01-15T10:06:00Z'),
-    ('00000000-0000-4000-a000-000000000003', 'a1b2c3d4-e5f6-7890-abcd-ef1234567890', 'image', 'avatar', 'image/jpeg', 48000, 'media', 'avatars/a1b2c3d4/avatar.jpg', 'ready', '2026-01-15T10:07:00Z', '2026-01-15T10:07:00Z'),
-    ('20000000-0000-4000-a000-000000000001', 'b2e06bd7-fa13-4f05-94cc-8973bcafe892', 'image', 'general', 'image/jpeg', 310000, 'media', 'posts/b2e06bd7/photo1.jpg', 'ready', '2026-01-20T10:00:00Z', '2026-01-20T10:00:00Z'),
-    ('20000000-0000-4000-a000-000000000003', 'b2e06bd7-fa13-4f05-94cc-8973bcafe892', 'video', 'general', 'video/mp4', 15000000, 'media', 'posts/b2e06bd7/short1.mp4', 'ready', '2026-01-25T10:00:00Z', '2026-01-25T10:00:00Z'),
-    ('20000000-0000-4000-a000-000000000004', 'b2e06bd7-fa13-4f05-94cc-8973bcafe892', 'video', 'general', 'video/mp4', 85000000, 'media', 'posts/b2e06bd7/video1.mp4', 'ready', '2026-02-01T10:00:00Z', '2026-02-01T10:00:00Z')
-ON CONFLICT DO NOTHING;
-
-INSERT INTO posts (id, author_id, text, visibility, content_type, is_pinned, created_at, updated_at) VALUES
-    ('30000000-0000-4000-a000-000000000001', 'b2e06bd7-fa13-4f05-94cc-8973bcafe892', 'Just shipped a major refactor of our API layer. Clean architecture really pays off!', 'public', 'post', TRUE, '2026-01-20T09:30:00Z', '2026-01-20T09:30:00Z'),
-    ('30000000-0000-4000-a000-000000000002', 'b2e06bd7-fa13-4f05-94cc-8973bcafe892', 'Golden Gate Bridge at sunset.', 'public', 'post', FALSE, '2026-01-22T18:45:00Z', '2026-01-22T18:45:00Z'),
-    ('30000000-0000-4000-a000-000000000003', 'b2e06bd7-fa13-4f05-94cc-8973bcafe892', 'Quick tip: use cursor-based pagination instead of offset-based.', 'public', 'post', FALSE, '2026-01-24T11:00:00Z', '2026-01-24T11:00:00Z'),
-    ('30000000-0000-4000-a000-000000000010', 'a1b2c3d4-e5f6-7890-abcd-ef1234567890', 'New design system is coming together!', 'public', 'post', FALSE, '2026-01-21T14:00:00Z', '2026-01-21T14:00:00Z'),
-    ('30000000-0000-4000-a000-000000000020', 'c3d4e5f6-a1b2-3456-7890-abcdef123456', 'New beat dropped! Check out my latest track.', 'public', 'post', FALSE, '2026-02-03T20:00:00Z', '2026-02-03T20:00:00Z')
-ON CONFLICT DO NOTHING;
-
-INSERT INTO post_media (post_id, media_id, kind) VALUES
-    ('30000000-0000-4000-a000-000000000002', '20000000-0000-4000-a000-000000000001', 'image')
-ON CONFLICT DO NOTHING;
-
-INSERT INTO celeb_authors (author_id, is_celeb, updated_at) VALUES
-    ('b2e06bd7-fa13-4f05-94cc-8973bcafe892', TRUE, '2026-02-01T12:00:00Z')
-ON CONFLICT DO NOTHING;
+-- ============================================================
+-- SEED DATA (removed — use real accounts via registration)
+-- ============================================================

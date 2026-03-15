@@ -28,8 +28,8 @@ class _PrivacySettingsScreenState extends ConsumerState<PrivacySettingsScreen> {
     setState(() => _saving = true);
     try {
       await ref.read(apiClientProvider).put('/v1/users/me/privacy', data: {
-        'default_post_audience': _postAudience.name,
-        'who_can_message': _messageAudience.name,
+        'profile_visibility': _postAudience.name,
+        'dm_permission': _messageAudience.name,
         'show_follower_count': _showFollowerCount,
       });
       if (mounted) {

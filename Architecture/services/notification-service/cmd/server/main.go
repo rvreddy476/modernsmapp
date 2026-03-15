@@ -107,7 +107,7 @@ func main() {
 	}
 	notifHandler := http.New(notifSvc, rdb)
 
-	// 9. Kafka Consumer
+	// 9. Kafka Consumers
 	consumer := events.NewConsumer(
 		strings.Split(kafkaBrokers, ","),
 		"notification-service-group",
@@ -115,7 +115,16 @@ func main() {
 		notifSvc,
 	)
 	go consumer.Start(ctx)
-	slog.Info("kafka consumer started")
+	slog.Info("kafka consumer started", "topic", "social.events.v1")
+
+	callConsumer := events.NewCallConsumer(
+		strings.Split(kafkaBrokers, ","),
+		"notification-service-calls-group",
+		env("KAFKA_CALL_NOTIFICATIONS_TOPIC", "call.notifications"),
+		notifSvc,
+	)
+	go callConsumer.Start(ctx)
+	slog.Info("kafka call consumer started", "topic", "call.notifications")
 
 	// 10. HTTP Server
 	gin.SetMode(gin.ReleaseMode)

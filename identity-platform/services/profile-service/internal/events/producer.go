@@ -171,6 +171,27 @@ func (p *Producer) publishEvent(ctx context.Context, eventType string, messageKe
 	})
 }
 
+// PublishModuleProfileUpdated emits a ModuleProfileUpdated event.
+func (p *Producer) PublishModuleProfileUpdated(ctx context.Context, userID uuid.UUID, module string) error {
+	payload := sharedEvents.ModuleProfileUpdatedPayload{
+		UserID:    userID.String(),
+		Module:    module,
+		UpdatedAt: time.Now(),
+	}
+	return p.publishEvent(ctx, sharedEvents.ModuleProfileUpdated, userID.String(), &userID, payload)
+}
+
+// PublishHandleChanged emits a HandleChanged event.
+func (p *Producer) PublishHandleChanged(ctx context.Context, userID uuid.UUID, oldUsername, newUsername string) error {
+	payload := sharedEvents.HandleChangedPayload{
+		UserID:      userID.String(),
+		OldUsername: oldUsername,
+		NewUsername: newUsername,
+		ChangedAt:   time.Now(),
+	}
+	return p.publishEvent(ctx, sharedEvents.HandleChanged, userID.String(), &userID, payload)
+}
+
 func (p *Producer) Close() error {
 	return p.writer.Close()
 }

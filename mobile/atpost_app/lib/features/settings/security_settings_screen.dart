@@ -58,8 +58,8 @@ class _SecuritySettingsScreenState extends ConsumerState<SecuritySettingsScreen>
     if (!(_formKey.currentState?.validate() ?? false)) return;
     setState(() => _savingPassword = true);
     try {
-      await ref.read(apiClientProvider).patch(
-        '${Environment.authPath}/password',
+      await ref.read(apiClientProvider).post(
+        '${Environment.authPath}/change-password',
         data: {
           'current_password': _currentPasswordController.text,
           'new_password': _newPasswordController.text,

@@ -89,8 +89,6 @@ github.com/gocql/gocql
 github.com/gocql/gocql/internal/lru
 github.com/gocql/gocql/internal/murmur
 github.com/gocql/gocql/internal/streams
-# github.com/golang/snappy v0.0.3
-## explicit
 # github.com/golang/snappy v0.0.4
 ## explicit
 github.com/golang/snappy
@@ -109,8 +107,6 @@ github.com/jackc/pgpassfile
 # github.com/jackc/pgservicefile v0.0.0-20221227161230-091c0ba34f0a
 ## explicit; go 1.14
 github.com/jackc/pgservicefile
-# github.com/jackc/pgx/v5 v5.5.3
-## explicit; go 1.19
 # github.com/jackc/pgx/v5 v5.5.5
 ## explicit; go 1.19
 github.com/jackc/pgx/v5
@@ -132,8 +128,6 @@ github.com/jackc/puddle/v2/internal/genstack
 # github.com/json-iterator/go v1.1.12
 ## explicit; go 1.12
 github.com/json-iterator/go
-# github.com/klauspost/compress v1.15.9
-## explicit; go 1.19
 # github.com/klauspost/compress v1.17.4
 ## explicit; go 1.19
 github.com/klauspost/compress
@@ -147,13 +141,9 @@ github.com/klauspost/compress/s2
 github.com/klauspost/compress/snappy
 github.com/klauspost/compress/zstd
 github.com/klauspost/compress/zstd/internal/xxhash
-# github.com/klauspost/cpuid/v2 v2.2.4
-## explicit; go 1.15
 # github.com/klauspost/cpuid/v2 v2.2.6
 ## explicit; go 1.15
 github.com/klauspost/cpuid/v2
-# github.com/kr/pretty v0.3.0
-## explicit; go 1.12
 # github.com/kr/text v0.2.0
 ## explicit
 # github.com/leodido/go-urn v1.2.4
@@ -227,8 +217,6 @@ github.com/prometheus/common/model
 github.com/prometheus/procfs
 github.com/prometheus/procfs/internal/fs
 github.com/prometheus/procfs/internal/util
-# github.com/redis/go-redis/v9 v9.4.0
-## explicit; go 1.18
 # github.com/redis/go-redis/v9 v9.5.1
 ## explicit; go 1.18
 github.com/redis/go-redis/v9
@@ -244,8 +232,6 @@ github.com/redis/go-redis/v9/internal/util
 # github.com/rs/xid v1.5.0
 ## explicit; go 1.12
 github.com/rs/xid
-# github.com/segmentio/kafka-go v0.4.47
-## explicit; go 1.23
 # github.com/segmentio/kafka-go v0.4.50
 ## explicit; go 1.23
 github.com/segmentio/kafka-go
@@ -325,10 +311,6 @@ github.com/ugorji/go/codec
 # golang.org/x/arch v0.3.0
 ## explicit; go 1.17
 golang.org/x/arch/x86/x86asm
-# golang.org/x/crypto v0.17.0
-## explicit; go 1.23.0
-# golang.org/x/crypto v0.18.0
-## explicit; go 1.23.0
 # golang.org/x/crypto v0.36.0
 ## explicit; go 1.23.0
 golang.org/x/crypto/argon2
@@ -341,12 +323,6 @@ golang.org/x/image/bmp
 golang.org/x/image/ccitt
 golang.org/x/image/tiff
 golang.org/x/image/tiff/lzw
-# golang.org/x/net v0.10.0
-## explicit; go 1.23.0
-# golang.org/x/net v0.17.0
-## explicit; go 1.23.0
-# golang.org/x/net v0.20.0
-## explicit; go 1.23.0
 # golang.org/x/net v0.38.0
 ## explicit; go 1.23.0
 golang.org/x/net/html
@@ -358,26 +334,14 @@ golang.org/x/net/http2/hpack
 golang.org/x/net/idna
 golang.org/x/net/internal/httpcommon
 golang.org/x/net/publicsuffix
-# golang.org/x/sync v0.1.0
-## explicit; go 1.23.0
-# golang.org/x/sync v0.3.0
-## explicit; go 1.23.0
 # golang.org/x/sync v0.12.0
 ## explicit; go 1.23.0
 golang.org/x/sync/semaphore
-# golang.org/x/sys v0.15.0
-## explicit; go 1.23.0
-# golang.org/x/sys v0.16.0
-## explicit; go 1.23.0
-# golang.org/x/sys v0.26.0
-## explicit; go 1.23.0
 # golang.org/x/sys v0.31.0
 ## explicit; go 1.23.0
 golang.org/x/sys/cpu
 golang.org/x/sys/unix
 golang.org/x/sys/windows
-# golang.org/x/text v0.14.0
-## explicit; go 1.23.0
 # golang.org/x/text v0.23.0
 ## explicit; go 1.23.0
 golang.org/x/text/cases
@@ -394,10 +358,8 @@ golang.org/x/text/unicode/bidi
 golang.org/x/text/unicode/norm
 golang.org/x/text/width
 # golang.org/x/time v0.14.0
-## explicit; go 1.18
+## explicit; go 1.24.0
 golang.org/x/time/rate
-# google.golang.org/protobuf v1.30.0
-## explicit; go 1.17
 # google.golang.org/protobuf v1.32.0
 ## explicit; go 1.17
 google.golang.org/protobuf/encoding/protodelim
@@ -427,8 +389,6 @@ google.golang.org/protobuf/reflect/protoregistry
 google.golang.org/protobuf/runtime/protoiface
 google.golang.org/protobuf/runtime/protoimpl
 google.golang.org/protobuf/types/known/timestamppb
-# gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c
-## explicit; go 1.11
 # gopkg.in/inf.v0 v0.9.1
 ## explicit
 gopkg.in/inf.v0

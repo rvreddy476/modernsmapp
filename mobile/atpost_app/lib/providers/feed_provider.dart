@@ -98,38 +98,80 @@ class HomeFeedNotifier extends StateNotifier<AsyncValue<FeedState>> {
     _realtimeSub = _realtime.events.listen((event) {
       if (event is PostInteractionEvent) {
         _handlePostInteraction(event);
+      } else if (event is PostLikedEvent) {
+        _handlePostLiked(event);
+      } else if (event is PostCommentedEvent) {
+        _handlePostCommented(event);
       }
     });
   }
 
   void _handlePostInteraction(PostInteractionEvent event) {
+    _updatePost(event.postId, (post) => Post(
+      id: post.id,
+      authorId: post.authorId,
+      authorName: post.authorName,
+      authorAvatar: post.authorAvatar,
+      content: post.content,
+      contentType: post.contentType,
+      tags: post.tags,
+      mediaIds: post.mediaIds,
+      likeCount: event.likes ?? post.likeCount,
+      commentCount: event.comments ?? post.commentCount,
+      shareCount: post.shareCount,
+      isLiked: post.isLiked,
+      isBookmarked: post.isBookmarked,
+      createdAt: post.createdAt,
+    ));
+  }
+
+  void _handlePostLiked(PostLikedEvent event) {
+    _updatePost(event.postId, (post) => Post(
+      id: post.id,
+      authorId: post.authorId,
+      authorName: post.authorName,
+      authorAvatar: post.authorAvatar,
+      content: post.content,
+      contentType: post.contentType,
+      tags: post.tags,
+      mediaIds: post.mediaIds,
+      likeCount: event.likeCount ?? (post.likeCount + 1),
+      commentCount: post.commentCount,
+      shareCount: post.shareCount,
+      isLiked: post.isLiked,
+      isBookmarked: post.isBookmarked,
+      createdAt: post.createdAt,
+    ));
+  }
+
+  void _handlePostCommented(PostCommentedEvent event) {
+    _updatePost(event.postId, (post) => Post(
+      id: post.id,
+      authorId: post.authorId,
+      authorName: post.authorName,
+      authorAvatar: post.authorAvatar,
+      content: post.content,
+      contentType: post.contentType,
+      tags: post.tags,
+      mediaIds: post.mediaIds,
+      likeCount: post.likeCount,
+      commentCount: event.commentCount ?? (post.commentCount + 1),
+      shareCount: post.shareCount,
+      isLiked: post.isLiked,
+      isBookmarked: post.isBookmarked,
+      createdAt: post.createdAt,
+    ));
+  }
+
+  /// Helper to find and update a post in the feed by ID.
+  void _updatePost(String postId, Post Function(Post) updater) {
     final currentState = state.value;
     if (currentState == null) return;
 
-    final index = currentState.posts.indexWhere((p) => p.id == event.postId);
+    final index = currentState.posts.indexWhere((p) => p.id == postId);
     if (index != -1) {
-      final post = currentState.posts[index];
-
-      // Update counts based on the event
-      final updatedPost = Post(
-        id: post.id,
-        authorId: post.authorId,
-        authorName: post.authorName,
-        authorAvatar: post.authorAvatar,
-        content: post.content,
-        contentType: post.contentType,
-        tags: post.tags,
-        mediaIds: post.mediaIds,
-        likeCount: event.likes ?? post.likeCount,
-        commentCount: event.comments ?? post.commentCount,
-        shareCount: post.shareCount,
-        isLiked: post.isLiked,
-        isBookmarked: post.isBookmarked,
-        createdAt: post.createdAt,
-      );
-
       final newPosts = List<Post>.from(currentState.posts);
-      newPosts[index] = updatedPost;
+      newPosts[index] = updater(currentState.posts[index]);
       state = AsyncValue.data(currentState.copyWith(posts: newPosts));
     }
   }

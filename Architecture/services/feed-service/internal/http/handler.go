@@ -39,6 +39,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	{
 		v1.GET("/home", h.GetHomeFeed)
 		v1.GET("/reels", h.GetReelFeed)
+		v1.GET("/flicks", h.GetFlickFeed)
+		v1.GET("/videos", h.GetLongVideoFeed)
 		v1.GET("/watch", h.GetVideoFeed)
 		v1.POST("/preference", h.SetPreference)
 		v1.POST("/signal", h.PostSignal)
@@ -73,8 +75,9 @@ func (h *Handler) GetHomeFeed(c *gin.Context) {
 	}
 
 	excludeSelf := c.DefaultQuery("exclude_self", "") == "true"
+	circleOnly := c.DefaultQuery("circle_only", "") == "true"
 
-	feedItems, err := h.svc.GetHomeFeed(c.Request.Context(), userID, limit, feedMode, excludeSelf)
+	feedItems, err := h.svc.GetHomeFeed(c.Request.Context(), userID, limit, feedMode, excludeSelf, circleOnly)
 	if err != nil {
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
 		return
@@ -126,6 +129,76 @@ func (h *Handler) GetReelFeed(c *gin.Context) {
 	}
 
 	c.Writer.Header().Set("X-Feed-Surface", "reels")
+	api.JSON(c.Writer, http.StatusOK, hydrated, nil)
+}
+
+func (h *Handler) GetFlickFeed(c *gin.Context) {
+	userIDStr := c.GetHeader("X-User-Id")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	limitStr := c.DefaultQuery("limit", "20")
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil || limit <= 0 {
+		limit = 20
+	}
+	if limit > 50 {
+		limit = 50
+	}
+
+	feedItems, err := h.svc.GetFlickFeed(c.Request.Context(), userID, limit)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+
+	hydrated, err := h.svc.HydratePosts(c.Request.Context(), feedItems, userID)
+	if err != nil {
+		log.Printf("Warning: flick feed hydration failed: %v", err)
+		c.Writer.Header().Set("X-Feed-Surface", "flicks")
+		api.JSON(c.Writer, http.StatusOK, feedItems, nil)
+		return
+	}
+
+	c.Writer.Header().Set("X-Feed-Surface", "flicks")
+	api.JSON(c.Writer, http.StatusOK, hydrated, nil)
+}
+
+func (h *Handler) GetLongVideoFeed(c *gin.Context) {
+	userIDStr := c.GetHeader("X-User-Id")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	limitStr := c.DefaultQuery("limit", "20")
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil || limit <= 0 {
+		limit = 20
+	}
+	if limit > 50 {
+		limit = 50
+	}
+
+	feedItems, err := h.svc.GetLongVideoFeed(c.Request.Context(), userID, limit)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+
+	hydrated, err := h.svc.HydratePosts(c.Request.Context(), feedItems, userID)
+	if err != nil {
+		log.Printf("Warning: long video feed hydration failed: %v", err)
+		c.Writer.Header().Set("X-Feed-Surface", "videos")
+		api.JSON(c.Writer, http.StatusOK, feedItems, nil)
+		return
+	}
+
+	c.Writer.Header().Set("X-Feed-Surface", "videos")
 	api.JSON(c.Writer, http.StatusOK, hydrated, nil)
 }
 

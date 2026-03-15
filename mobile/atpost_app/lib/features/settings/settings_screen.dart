@@ -1,6 +1,7 @@
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_app/data/repositories/user_repository.dart';
 import 'package:atpost_app/providers/user_provider.dart';
 import 'package:atpost_app/services/auth_service.dart';
 import 'package:flutter/material.dart';
@@ -75,6 +76,52 @@ class SettingsScreen extends ConsumerWidget {
                   title: 'Notifications',
                   subtitle: 'Push and in-app notification preferences',
                   onTap: () => context.push('/settings/notifications'),
+                ),
+                _SettingTile(
+                  icon: Icons.download_outlined,
+                  title: 'Download My Data',
+                  subtitle: 'Request an export of all your account data',
+                  onTap: () async {
+                    try {
+                      await ref.read(userRepositoryProvider).requestDataExport();
+                      if (!context.mounted) return;
+                      showDialog(
+                        context: context,
+                        builder: (ctx) => AlertDialog(
+                          backgroundColor: AppColors.bgCard,
+                          title: Text(
+                            'Data Export Requested',
+                            style: AppTextStyles.h3,
+                          ),
+                          content: Text(
+                            'Your data export has been requested. '
+                            'You\'ll receive a download link via email.',
+                            style: AppTextStyles.body,
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.of(ctx).pop(),
+                              child: Text(
+                                'OK',
+                                style: AppTextStyles.label.copyWith(
+                                  color: AppColors.postbookPrimary,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    } catch (_) {
+                      if (!context.mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text(
+                            'Could not request data export. Please try again.',
+                          ),
+                        ),
+                      );
+                    }
+                  },
                 ),
               ],
             ),

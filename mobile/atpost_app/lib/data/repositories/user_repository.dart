@@ -94,19 +94,78 @@ class UserRepository {
   }
 
   /// Mute a user (hides their posts from feed).
-  Future<void> muteUser(String mutedId) async {
+  Future<void> muteUser(String userId) async {
     await _api.post(
       '${Environment.graphPath}/mute',
-      data: {'muted_id': mutedId},
+      data: {'user_id': userId},
     );
   }
 
   /// Unmute a user.
-  Future<void> unmuteUser(String mutedId) async {
+  Future<void> unmuteUser(String userId) async {
     await _api.deleteWithData(
       '${Environment.graphPath}/mute',
-      data: {'muted_id': mutedId},
+      data: {'user_id': userId},
     );
+  }
+
+  /// Block a user.
+  Future<void> blockUser(String userId) async {
+    await _api.post(
+      '${Environment.graphPath}/block',
+      data: {'user_id': userId},
+    );
+  }
+
+  /// Unblock a user.
+  Future<void> unblockUser(String userId) async {
+    await _api.deleteWithData(
+      '${Environment.graphPath}/block',
+      data: {'user_id': userId},
+    );
+  }
+
+  /// Send a friend request.
+  Future<void> sendFriendRequest(String userId) async {
+    await _api.post(
+      '${Environment.graphPath}/friend-request',
+      data: {'user_id': userId},
+    );
+  }
+
+  /// Accept a friend request.
+  Future<void> acceptFriendRequest(String userId) async {
+    await _api.post(
+      '${Environment.graphPath}/friend-request/accept',
+      data: {'user_id': userId},
+    );
+  }
+
+  /// Reject a friend request.
+  Future<void> rejectFriendRequest(String userId) async {
+    await _api.post(
+      '${Environment.graphPath}/friend-request/reject',
+      data: {'user_id': userId},
+    );
+  }
+
+  /// Get pending friend requests (both sent and received).
+  Future<List<Map<String, dynamic>>> getPendingFriendRequests() async {
+    final response = await _api.get('${Environment.graphPath}/friend-requests');
+    final data = response.data;
+    if (data is Map<String, dynamic>) {
+      final items = (data['data'] as List<dynamic>?) ?? [];
+      return items.cast<Map<String, dynamic>>();
+    }
+    if (data is List<dynamic>) {
+      return data.cast<Map<String, dynamic>>();
+    }
+    return [];
+  }
+
+  /// Request a data export (GDPR).
+  Future<void> requestDataExport() async {
+    await _api.get('${Environment.authPath}/data-export');
   }
 
   /// Autocomplete search: returns list of maps with user_id, username, display_name.

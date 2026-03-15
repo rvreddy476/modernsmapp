@@ -510,6 +510,33 @@ func (s *Store) DeleteUser(ctx context.Context, userID string) error {
 	return nil
 }
 
+// UpdateUserUsername performs a partial update on a user document to change the username field.
+func (s *Store) UpdateUserUsername(ctx context.Context, userID, newUsername string) error {
+	doc := map[string]interface{}{
+		"doc": map[string]interface{}{
+			"username": newUsername,
+		},
+	}
+	body, _ := json.Marshal(doc)
+	req := opensearchapi.UpdateRequest{
+		Index:      "users_v1",
+		DocumentID: userID,
+		Body:       bytes.NewReader(body),
+	}
+	res, err := req.Do(ctx, s.client)
+	if err != nil {
+		slog.Error("opensearch: failed to update user username", "user_id", userID, "error", err)
+		return err
+	}
+	defer res.Body.Close()
+	if res.IsError() && res.StatusCode != 404 {
+		err = fmt.Errorf("opensearch update user error: %s", res.String())
+		slog.Error("opensearch: failed to update user username", "user_id", userID, "error", err)
+		return err
+	}
+	return nil
+}
+
 // AutocompleteResult represents a single autocomplete suggestion.
 type AutocompleteResult struct {
 	UserID      string `json:"user_id"`

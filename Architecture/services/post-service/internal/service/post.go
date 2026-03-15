@@ -155,21 +155,73 @@ func extractMentions(text string) []string {
 	return usernames
 }
 
-// reelMaxDurationSeconds is the maximum duration (inclusive) for a video to
-// be auto-classified as a reel. Matches analytics-service threshold (90s).
-const reelMaxDurationSeconds = 90
+// flickMaxDurationSeconds is the maximum duration (inclusive) for a video to
+// be auto-classified as a "reel" (Flick). Videos longer than this are "video" (Long Video).
+// Flick = up to 3 minutes, Long Video = more than 3 minutes.
+const flickMaxDurationSeconds = 180
 
 // validContentTypes is the allowed set for content_type.
 var validContentTypes = map[string]bool{
 	"post": true, "poll": true, "reel": true, "video": true,
+	"flick": true, "long_video": true,
 }
 
-// classifyVideoContentType returns "reel" or "video" based on duration.
+// classifyVideoContentType returns "flick" or "long_video" based on duration and dimensions.
+// Legacy callers: "reel" maps to "flick", "video" maps to "long_video".
 func classifyVideoContentType(durationSeconds int) string {
-	if durationSeconds > 0 && durationSeconds <= reelMaxDurationSeconds {
-		return "reel"
+	if durationSeconds > 0 && durationSeconds <= flickMaxDurationSeconds {
+		return "flick"
 	}
-	return "video"
+	return "long_video"
+}
+
+// ClassifyVideo returns the computed category and orientation based on duration and dimensions.
+func ClassifyVideo(durationSeconds float64, width, height int) (category, orientation string) {
+	orientation = deriveOrientation(width, height)
+	if durationSeconds <= float64(flickMaxDurationSeconds) && (orientation == "portrait" || orientation == "square") {
+		return "flick", orientation
+	}
+	return "long_video", orientation
+}
+
+// deriveOrientation returns "portrait", "landscape", or "square" from dimensions.
+func deriveOrientation(width, height int) string {
+	if width <= 0 || height <= 0 {
+		return "landscape"
+	}
+	ratio := float64(width) / float64(height)
+	if ratio > 1.05 {
+		return "landscape"
+	}
+	if ratio < 0.95 {
+		return "portrait"
+	}
+	return "square"
+}
+
+// ValidateCategoryOverride checks if a category override request is valid.
+func ValidateCategoryOverride(vm *postgres.VideoMetadata, requested string) error {
+	if requested == "flick" {
+		if vm.DurationSeconds > float64(flickMaxDurationSeconds) {
+			return fmt.Errorf("cannot classify as flick: duration exceeds %ds", flickMaxDurationSeconds)
+		}
+		if vm.Orientation == "landscape" {
+			return fmt.Errorf("cannot classify as flick: landscape orientation")
+		}
+	}
+	return nil // long_video is always valid
+}
+
+// normalizeLegacyContentType maps old content types to new ones.
+func normalizeLegacyContentType(contentType string) string {
+	switch contentType {
+	case "reel":
+		return "flick"
+	case "video":
+		return "long_video"
+	default:
+		return contentType
+	}
 }
 
 func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*postgres.Post, error) {
@@ -178,9 +230,12 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		contentType = "post"
 	}
 
+	// Normalize legacy content types from old clients
+	contentType = normalizeLegacyContentType(contentType)
+
 	// Validate content_type
 	if !validContentTypes[contentType] {
-		return nil, fmt.Errorf("invalid content_type %q: must be post, poll, reel, or video", contentType)
+		return nil, fmt.Errorf("invalid content_type %q: must be post, poll, flick, or long_video", contentType)
 	}
 
 	postType := input.PostType
@@ -284,10 +339,29 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		}
 	}
 
-	// Auto-classify: if caller sent default content_type but attached video,
-	// derive reel vs video from duration
-	if maxDuration > 0 && contentType == "post" {
-		p.ContentType = classifyVideoContentType(maxDuration)
+	// Auto-classify video content type per spec v2.1:
+	// Flick = ≤180s AND (portrait/square); LongVideo = everything else.
+	// If duration is unknown (async processing not done), default to long_video as safe fallback.
+	var videoMediaID uuid.UUID
+	hasVideo := false
+	for _, m := range p.Media {
+		if m.Kind == "video" {
+			videoMediaID = m.MediaID
+			hasVideo = true
+			break
+		}
+	}
+	if hasVideo {
+		if maxDuration > 0 {
+			// Duration known — classify properly
+			w, h, _ := s.pgStore.ResolveMediaDimensions(ctx, videoMediaID)
+			cat, _ := ClassifyVideo(float64(maxDuration), w, h)
+			p.ContentType = cat
+		} else if contentType == "post" || contentType == "flick" || contentType == "reel" {
+			// Duration unknown (media still processing) — safe default to long_video
+			// The video_metadata consumer will reclassify once processing completes
+			p.ContentType = "long_video"
+		}
 	}
 
 	// Attach poll
@@ -326,6 +400,29 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 
 	if err := s.pgStore.CreatePost(ctx, p); err != nil {
 		return nil, err
+	}
+
+	// Create video_metadata for video content types
+	if videoMediaID != uuid.Nil && maxDuration > 0 {
+		width, height, _ := s.pgStore.ResolveMediaDimensions(ctx, videoMediaID)
+		category, orientation := ClassifyVideo(float64(maxDuration), width, height)
+		vm := &postgres.VideoMetadata{
+			PostID:           p.ID,
+			DurationSeconds:  float64(maxDuration),
+			Width:            &width,
+			Height:           &height,
+			Orientation:      orientation,
+			ComputedCategory: category,
+			FinalCategory:    category,
+			UploadStatus:     "pending",
+			MediaAssetID:     &videoMediaID,
+		}
+		if err := s.pgStore.CreateVideoMetadata(ctx, vm); err != nil {
+			log.Printf("Warning: failed to create video_metadata for post %s: %v", p.ID, err)
+		}
+		// Ensure post content_type matches classification
+		p.ContentType = category
+		s.pgStore.UpdatePostContentType(ctx, p.ID, category)
 	}
 
 	// Resolve @mentions and emit user.mentioned events (fire and forget)
@@ -1327,6 +1424,125 @@ func (s *Service) ToggleReaction(ctx context.Context, postID, userID uuid.UUID, 
 		IsSet:        isSet,
 		Counts:       counts,
 	}, nil
+}
+
+// ── Video Creator Tools ────────────────────────────────────────
+
+// GetVideoDetail returns the video metadata for a post.
+func (s *Service) GetVideoDetail(ctx context.Context, postID uuid.UUID) (*postgres.VideoMetadata, error) {
+	return s.pgStore.GetVideoMetadata(ctx, postID)
+}
+
+// UpdateVideoTrim updates trim points for a video.
+func (s *Service) UpdateVideoTrim(ctx context.Context, postID, userID uuid.UUID, startMs int, endMs *int) error {
+	authorID, err := s.pgStore.GetPostAuthorID(ctx, postID)
+	if err != nil {
+		return fmt.Errorf("post not found")
+	}
+	if authorID != userID {
+		return fmt.Errorf("unauthorized")
+	}
+
+	vm, err := s.pgStore.GetVideoMetadata(ctx, postID)
+	if err != nil {
+		return fmt.Errorf("video metadata not found")
+	}
+
+	// Validate: 0 <= start < end <= duration*1000
+	maxMs := int(vm.DurationSeconds * 1000)
+	if startMs < 0 {
+		return fmt.Errorf("trim_start_ms must be >= 0")
+	}
+	effectiveEnd := maxMs
+	if endMs != nil {
+		effectiveEnd = *endMs
+	}
+	if startMs >= effectiveEnd {
+		return fmt.Errorf("trim_start_ms must be less than trim_end_ms")
+	}
+	if effectiveEnd > maxMs {
+		return fmt.Errorf("trim_end_ms exceeds video duration")
+	}
+
+	return s.pgStore.UpdateTrim(ctx, postID, startMs, endMs)
+}
+
+// OverrideCategory overrides the video category classification.
+func (s *Service) OverrideCategory(ctx context.Context, postID, userID uuid.UUID, category string) error {
+	authorID, err := s.pgStore.GetPostAuthorID(ctx, postID)
+	if err != nil {
+		return fmt.Errorf("post not found")
+	}
+	if authorID != userID {
+		return fmt.Errorf("unauthorized")
+	}
+
+	if category != "flick" && category != "long_video" {
+		return fmt.Errorf("invalid category: must be flick or long_video")
+	}
+
+	vm, err := s.pgStore.GetVideoMetadata(ctx, postID)
+	if err != nil {
+		return fmt.Errorf("video metadata not found")
+	}
+
+	if err := ValidateCategoryOverride(vm, category); err != nil {
+		return err
+	}
+
+	return s.pgStore.UpdateFinalCategory(ctx, postID, category)
+}
+
+// SetCoverFrame sets the cover frame for a video.
+func (s *Service) SetCoverFrame(ctx context.Context, postID, userID uuid.UUID, coverMediaID *uuid.UUID, thumbnailURL *string) error {
+	authorID, err := s.pgStore.GetPostAuthorID(ctx, postID)
+	if err != nil {
+		return fmt.Errorf("post not found")
+	}
+	if authorID != userID {
+		return fmt.Errorf("unauthorized")
+	}
+
+	// Update cover_media_id on the post
+	if coverMediaID != nil {
+		if err := s.pgStore.UpdatePostCoverMedia(ctx, postID, coverMediaID); err != nil {
+			return err
+		}
+	}
+
+	// Update thumbnail_url on video_metadata
+	if thumbnailURL != nil {
+		vm, err := s.pgStore.GetVideoMetadata(ctx, postID)
+		if err != nil {
+			return fmt.Errorf("video metadata not found")
+		}
+		vm.ThumbnailURL = thumbnailURL
+		return s.pgStore.UpdateVideoMetadata(ctx, vm)
+	}
+
+	return nil
+}
+
+// PublishVideo publishes a video post, checking processing status first.
+func (s *Service) PublishVideo(ctx context.Context, postID, userID uuid.UUID) error {
+	authorID, err := s.pgStore.GetPostAuthorID(ctx, postID)
+	if err != nil {
+		return fmt.Errorf("post not found")
+	}
+	if authorID != userID {
+		return fmt.Errorf("unauthorized")
+	}
+
+	vm, err := s.pgStore.GetVideoMetadata(ctx, postID)
+	if err != nil {
+		return fmt.Errorf("video metadata not found")
+	}
+
+	if vm.UploadStatus != "ready" {
+		return fmt.Errorf("video not ready: current status is %s", vm.UploadStatus)
+	}
+
+	return s.pgStore.PublishPost(ctx, postID)
 }
 
 // GetReactionCounts returns the breakdown of reaction counts for a post.

@@ -2,6 +2,7 @@ import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/repositories/user_repository.dart';
+import 'package:atpost_app/providers/social_provider.dart';
 import 'package:atpost_app/providers/user_provider.dart';
 import 'package:atpost_app/services/api_client.dart';
 import 'package:flutter/material.dart';
@@ -22,6 +23,161 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
   bool _following = false;
   bool _subscribed = false;
   bool _subscribing = false;
+
+  void _showProfileOptions(
+    BuildContext context,
+    WidgetRef ref,
+    String userId,
+  ) {
+    final isMuted = ref.read(muteStateProvider(userId));
+    final isBlocked = ref.read(blockStateProvider(userId));
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.bgCard,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 36,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 12),
+                decoration: BoxDecoration(
+                  color: AppColors.textMuted,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              ListTile(
+                leading: Icon(
+                  isMuted ? Icons.volume_up_outlined : Icons.volume_off_outlined,
+                  color: AppColors.textSecondary,
+                ),
+                title: Text(
+                  isMuted ? 'Unmute' : 'Mute',
+                  style: AppTextStyles.label,
+                ),
+                subtitle: Text(
+                  isMuted
+                      ? 'Show their posts in your feed again'
+                      : 'Hide their posts from your feed',
+                  style: AppTextStyles.labelSmall,
+                ),
+                onTap: () async {
+                  Navigator.of(ctx).pop();
+                  final repo = ref.read(userRepositoryProvider);
+                  try {
+                    if (isMuted) {
+                      await repo.unmuteUser(userId);
+                    } else {
+                      await repo.muteUser(userId);
+                    }
+                    ref.read(muteStateProvider(userId).notifier).state =
+                        !isMuted;
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            isMuted
+                                ? 'User unmuted.'
+                                : 'User muted.',
+                          ),
+                        ),
+                      );
+                    }
+                  } catch (_) {
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Could not update mute status.'),
+                        ),
+                      );
+                    }
+                  }
+                },
+              ),
+              ListTile(
+                leading: Icon(
+                  isBlocked ? Icons.check_circle_outline : Icons.block,
+                  color: isBlocked ? AppColors.textSecondary : Colors.red,
+                ),
+                title: Text(
+                  isBlocked ? 'Unblock' : 'Block',
+                  style: AppTextStyles.label.copyWith(
+                    color: isBlocked ? null : Colors.red,
+                  ),
+                ),
+                subtitle: Text(
+                  isBlocked
+                      ? 'Allow this user to see your profile again'
+                      : 'Prevent this user from seeing your profile',
+                  style: AppTextStyles.labelSmall,
+                ),
+                onTap: () async {
+                  Navigator.of(ctx).pop();
+                  final repo = ref.read(userRepositoryProvider);
+                  try {
+                    if (isBlocked) {
+                      await repo.unblockUser(userId);
+                    } else {
+                      await repo.blockUser(userId);
+                    }
+                    ref.read(blockStateProvider(userId).notifier).state =
+                        !isBlocked;
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            isBlocked
+                                ? 'User unblocked.'
+                                : 'User blocked.',
+                          ),
+                        ),
+                      );
+                    }
+                  } catch (_) {
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Could not update block status.'),
+                        ),
+                      );
+                    }
+                  }
+                },
+              ),
+              ListTile(
+                leading: const Icon(
+                  Icons.flag_outlined,
+                  color: AppColors.textSecondary,
+                ),
+                title: Text('Report', style: AppTextStyles.label),
+                subtitle: Text(
+                  'Report this profile for violating guidelines',
+                  style: AppTextStyles.labelSmall,
+                ),
+                onTap: () {
+                  Navigator.of(ctx).pop();
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text(
+                        'Report submitted. We will review this profile.',
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -60,9 +216,16 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
                             color: AppColors.textSecondary,
                           ),
                           const Spacer(),
-                          const Icon(
-                            Icons.more_horiz,
-                            color: AppColors.textMuted,
+                          IconButton(
+                            onPressed: () => _showProfileOptions(
+                              context,
+                              ref,
+                              widget.userId,
+                            ),
+                            icon: const Icon(
+                              Icons.more_horiz,
+                              color: AppColors.textMuted,
+                            ),
                           ),
                         ],
                       ),

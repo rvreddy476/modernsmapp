@@ -5,6 +5,7 @@ class User {
   final String username;
   final String displayName;
   final String? bio;
+  final String? pronouns;
   final String? avatarMediaId;
   final String? location;
   final String? profession;
@@ -18,6 +19,7 @@ class User {
     required this.username,
     required this.displayName,
     this.bio,
+    this.pronouns,
     this.avatarMediaId,
     this.location,
     this.profession,
@@ -33,6 +35,7 @@ class User {
       username: json['username'] as String? ?? '',
       displayName: json['display_name'] as String? ?? json['name'] as String? ?? '',
       bio: json['bio'] as String?,
+      pronouns: json['pronouns'] as String?,
       avatarMediaId: json['avatar_media_id'] as String?,
       location: json['location'] as String?,
       profession: json['profession'] as String?,

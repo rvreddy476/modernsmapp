@@ -24,23 +24,42 @@ type Group struct {
 	PostCount          int64      `json:"post_count"`
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`
+	// V2 fields
+	Handle       string     `json:"handle,omitempty"`
+	Category     string     `json:"category,omitempty"`
+	PrivacyLevel string     `json:"privacy_level"`
+	JoinMode     string     `json:"join_mode"`
+	WhoCanPost   string     `json:"who_can_post"`
+	WhoCanInvite string     `json:"who_can_invite"`
+	Location     string     `json:"location,omitempty"`
+	Language     string     `json:"language,omitempty"`
+	Status       string     `json:"status"`
+	DeletedAt           *time.Time `json:"deleted_at,omitempty"`
+	PendingRequestCount int        `json:"pending_request_count"`
 }
 
 type GroupMember struct {
-	GroupID  uuid.UUID `json:"group_id"`
-	UserID   uuid.UUID `json:"user_id"`
-	Role     string    `json:"role"`
-	JoinedAt time.Time `json:"joined_at"`
+	GroupID         uuid.UUID  `json:"group_id"`
+	UserID          uuid.UUID  `json:"user_id"`
+	Role            string     `json:"role"`
+	JoinedAt        time.Time  `json:"joined_at"`
+	ID              uuid.UUID  `json:"id,omitempty"`
+	InvitedByUserID *uuid.UUID `json:"invited_by_user_id,omitempty"`
+	Status          string     `json:"status"`
+	RemovedAt       *time.Time `json:"removed_at,omitempty"`
+	RemovedByUserID *uuid.UUID `json:"removed_by_user_id,omitempty"`
+	RemovalReason   *string    `json:"removal_reason,omitempty"`
 }
 
 type GroupInvite struct {
-	ID        uuid.UUID `json:"id"`
-	GroupID   uuid.UUID `json:"group_id"`
-	InviterID uuid.UUID `json:"inviter_id"`
-	InviteeID uuid.UUID `json:"invitee_id"`
-	Status    string    `json:"status"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID        uuid.UUID  `json:"id"`
+	GroupID   uuid.UUID  `json:"group_id"`
+	InviterID uuid.UUID  `json:"inviter_id"`
+	InviteeID uuid.UUID  `json:"invitee_id"`
+	Status    string     `json:"status"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
 type GroupPost struct {
@@ -50,12 +69,71 @@ type GroupPost struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type GroupJoinRequest struct {
+	ID               uuid.UUID  `json:"id"`
+	GroupID          uuid.UUID  `json:"group_id"`
+	UserID           uuid.UUID  `json:"user_id"`
+	Status           string     `json:"status"`
+	ReviewedByUserID *uuid.UUID `json:"reviewed_by_user_id,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	ReviewedAt       *time.Time `json:"reviewed_at,omitempty"`
+}
+
+type GroupRule struct {
+	ID          uuid.UUID `json:"id"`
+	GroupID     uuid.UUID `json:"group_id"`
+	RuleOrder   int       `json:"rule_order"`
+	Title       string    `json:"title"`
+	Description string    `json:"description"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
 type Store struct {
 	db *pgxpool.Pool
 }
 
 func New(db *pgxpool.Pool) *Store {
 	return &Store{db: db}
+}
+
+// v2 group columns for SELECT queries — use g. prefix for JOIN safety
+const groupColumns = `g.id, g.name, g.description, g.avatar_media_id, g.cover_media_id, g.creator_id,
+       g.visibility, g.is_archived, g.chat_conversation_id, g.member_count, g.post_count,
+       g.created_at, g.updated_at, g.handle, g.category, g.privacy_level, g.join_mode,
+       g.who_can_post, g.who_can_invite, g.location, g.language, g.status, g.deleted_at, g.pending_request_count`
+
+func scanGroup(row pgx.Row) (*Group, error) {
+	var g Group
+	err := row.Scan(
+		&g.ID, &g.Name, &g.Description, &g.AvatarMediaID, &g.CoverMediaID, &g.CreatorID,
+		&g.Visibility, &g.IsArchived, &g.ChatConversationID, &g.MemberCount, &g.PostCount,
+		&g.CreatedAt, &g.UpdatedAt, &g.Handle, &g.Category, &g.PrivacyLevel, &g.JoinMode,
+		&g.WhoCanPost, &g.WhoCanInvite, &g.Location, &g.Language, &g.Status, &g.DeletedAt, &g.PendingRequestCount,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &g, nil
+}
+
+func scanGroups(rows pgx.Rows) ([]Group, error) {
+	var groups []Group
+	for rows.Next() {
+		var g Group
+		if err := rows.Scan(
+			&g.ID, &g.Name, &g.Description, &g.AvatarMediaID, &g.CoverMediaID, &g.CreatorID,
+			&g.Visibility, &g.IsArchived, &g.ChatConversationID, &g.MemberCount, &g.PostCount,
+			&g.CreatedAt, &g.UpdatedAt, &g.Handle, &g.Category, &g.PrivacyLevel, &g.JoinMode,
+			&g.WhoCanPost, &g.WhoCanInvite, &g.Location, &g.Language, &g.Status, &g.DeletedAt, &g.PendingRequestCount,
+		); err != nil {
+			return nil, err
+		}
+		groups = append(groups, g)
+	}
+	return groups, rows.Err()
 }
 
 // --- Groups ---
@@ -69,10 +147,14 @@ func (s *Store) CreateGroup(ctx context.Context, g *Group) error {
 	defer tx.Rollback(ctx)
 
 	err = tx.QueryRow(ctx, `
-		INSERT INTO groups (name, description, creator_id, visibility)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO groups (name, description, creator_id, visibility, handle, category,
+		                    privacy_level, join_mode, who_can_post, who_can_invite,
+		                    location, language, status)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		RETURNING id, member_count, post_count, is_archived, created_at, updated_at
-	`, g.Name, g.Description, g.CreatorID, g.Visibility).Scan(
+	`, g.Name, g.Description, g.CreatorID, g.Visibility, g.Handle, g.Category,
+		g.PrivacyLevel, g.JoinMode, g.WhoCanPost, g.WhoCanInvite,
+		g.Location, g.Language, g.Status).Scan(
 		&g.ID, &g.MemberCount, &g.PostCount, &g.IsArchived, &g.CreatedAt, &g.UpdatedAt,
 	)
 	if err != nil {
@@ -80,8 +162,8 @@ func (s *Store) CreateGroup(ctx context.Context, g *Group) error {
 	}
 
 	_, err = tx.Exec(ctx, `
-		INSERT INTO group_members (group_id, user_id, role)
-		VALUES ($1, $2, 'admin')
+		INSERT INTO group_members (group_id, user_id, role, status)
+		VALUES ($1, $2, 'admin', 'active')
 	`, g.ID, g.CreatorID)
 	if err != nil {
 		return err
@@ -100,24 +182,23 @@ func (s *Store) CreateGroup(ctx context.Context, g *Group) error {
 
 // GetGroupByID returns a group by its primary key, or nil if not found.
 func (s *Store) GetGroupByID(ctx context.Context, id uuid.UUID) (*Group, error) {
-	var g Group
+	row := s.db.QueryRow(ctx, `SELECT `+groupColumns+` FROM groups g WHERE g.id = $1 AND g.status != 'deleted'`, id)
+	return scanGroup(row)
+}
+
+// GetGroupByHandle returns a group by its handle, or nil if not found.
+func (s *Store) GetGroupByHandle(ctx context.Context, handle string) (*Group, error) {
+	row := s.db.QueryRow(ctx, `SELECT `+groupColumns+` FROM groups g WHERE g.handle = $1 AND g.status != 'deleted'`, handle)
+	return scanGroup(row)
+}
+
+// CheckHandleAvailability checks if a handle is available for use.
+func (s *Store) CheckHandleAvailability(ctx context.Context, handle string) (bool, error) {
+	var exists bool
 	err := s.db.QueryRow(ctx, `
-		SELECT id, name, description, avatar_media_id, cover_media_id, creator_id,
-		       visibility, is_archived, chat_conversation_id, member_count, post_count,
-		       created_at, updated_at
-		FROM groups WHERE id = $1
-	`, id).Scan(
-		&g.ID, &g.Name, &g.Description, &g.AvatarMediaID, &g.CoverMediaID, &g.CreatorID,
-		&g.Visibility, &g.IsArchived, &g.ChatConversationID, &g.MemberCount, &g.PostCount,
-		&g.CreatedAt, &g.UpdatedAt,
-	)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return &g, nil
+		SELECT EXISTS(SELECT 1 FROM groups WHERE handle = $1 AND status != 'deleted')
+	`, handle).Scan(&exists)
+	return !exists, err
 }
 
 // UpdateGroup updates mutable fields of a group.
@@ -131,9 +212,34 @@ func (s *Store) UpdateGroup(ctx context.Context, id uuid.UUID, name, desc string
 	return err
 }
 
-// DeleteGroup removes a group (cascades to members, invites, posts).
+// UpdateGroupV2 updates v2 fields of a group.
+func (s *Store) UpdateGroupV2(ctx context.Context, id uuid.UUID, name, desc string, avatar, cover *uuid.UUID,
+	visibility, category, privacyLevel, joinMode, whoCanPost, whoCanInvite, location, language string) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE groups
+		SET name = $2, description = $3, avatar_media_id = $4, cover_media_id = $5,
+		    visibility = $6, category = $7, privacy_level = $8, join_mode = $9,
+		    who_can_post = $10, who_can_invite = $11, location = $12, language = $13,
+		    updated_at = NOW()
+		WHERE id = $1 AND status != 'deleted'
+	`, id, name, desc, avatar, cover, visibility, category, privacyLevel, joinMode,
+		whoCanPost, whoCanInvite, location, language)
+	return err
+}
+
+// DeleteGroup soft-deletes a group.
 func (s *Store) DeleteGroup(ctx context.Context, id uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `DELETE FROM groups WHERE id = $1`, id)
+	_, err := s.db.Exec(ctx, `
+		UPDATE groups SET status = 'deleted', deleted_at = NOW(), updated_at = NOW() WHERE id = $1
+	`, id)
+	return err
+}
+
+// ArchiveGroup sets a group status to archived.
+func (s *Store) ArchiveGroup(ctx context.Context, id uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE groups SET status = 'archived', is_archived = TRUE, updated_at = NOW() WHERE id = $1
+	`, id)
 	return err
 }
 
@@ -156,9 +262,10 @@ func (s *Store) AddMember(ctx context.Context, groupID, userID uuid.UUID, role s
 	defer tx.Rollback(ctx)
 
 	cmdTag, err := tx.Exec(ctx, `
-		INSERT INTO group_members (group_id, user_id, role)
-		VALUES ($1, $2, $3)
-		ON CONFLICT (group_id, user_id) DO NOTHING
+		INSERT INTO group_members (group_id, user_id, role, status)
+		VALUES ($1, $2, $3, 'active')
+		ON CONFLICT (group_id, user_id) DO UPDATE SET status = 'active', role = $3, removed_at = NULL, removed_by_user_id = NULL
+		WHERE group_members.status != 'active'
 	`, groupID, userID, role)
 	if err != nil {
 		return err
@@ -176,7 +283,37 @@ func (s *Store) AddMember(ctx context.Context, groupID, userID uuid.UUID, role s
 	return tx.Commit(ctx)
 }
 
-// RemoveMember removes a user from a group.
+// AddMemberWithInviter adds a user to a group with the given role and tracks who invited them.
+func (s *Store) AddMemberWithInviter(ctx context.Context, groupID, userID uuid.UUID, role string, invitedBy uuid.UUID) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	cmdTag, err := tx.Exec(ctx, `
+		INSERT INTO group_members (group_id, user_id, role, status, invited_by_user_id)
+		VALUES ($1, $2, $3, 'active', $4)
+		ON CONFLICT (group_id, user_id) DO UPDATE SET status = 'active', role = $3, invited_by_user_id = $4, removed_at = NULL, removed_by_user_id = NULL
+		WHERE group_members.status != 'active'
+	`, groupID, userID, role, invitedBy)
+	if err != nil {
+		return err
+	}
+
+	if cmdTag.RowsAffected() > 0 {
+		_, err = tx.Exec(ctx, `
+			UPDATE groups SET member_count = member_count + 1, updated_at = NOW() WHERE id = $1
+		`, groupID)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit(ctx)
+}
+
+// RemoveMember soft-removes a user from a group (status='left').
 func (s *Store) RemoveMember(ctx context.Context, groupID, userID uuid.UUID) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -185,8 +322,65 @@ func (s *Store) RemoveMember(ctx context.Context, groupID, userID uuid.UUID) err
 	defer tx.Rollback(ctx)
 
 	cmdTag, err := tx.Exec(ctx, `
-		DELETE FROM group_members WHERE group_id = $1 AND user_id = $2
+		UPDATE group_members SET status = 'left', removed_at = NOW()
+		WHERE group_id = $1 AND user_id = $2 AND status = 'active'
 	`, groupID, userID)
+	if err != nil {
+		return err
+	}
+
+	if cmdTag.RowsAffected() > 0 {
+		_, err = tx.Exec(ctx, `
+			UPDATE groups SET member_count = GREATEST(member_count - 1, 0), updated_at = NOW() WHERE id = $1
+		`, groupID)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit(ctx)
+}
+
+// BanMember sets a member's status to 'banned'.
+func (s *Store) BanMember(ctx context.Context, groupID, userID, removedBy uuid.UUID) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	cmdTag, err := tx.Exec(ctx, `
+		UPDATE group_members SET status = 'banned', removed_at = NOW(), removed_by_user_id = $3
+		WHERE group_id = $1 AND user_id = $2 AND status = 'active'
+	`, groupID, userID, removedBy)
+	if err != nil {
+		return err
+	}
+
+	if cmdTag.RowsAffected() > 0 {
+		_, err = tx.Exec(ctx, `
+			UPDATE groups SET member_count = GREATEST(member_count - 1, 0), updated_at = NOW() WHERE id = $1
+		`, groupID)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit(ctx)
+}
+
+// KickMember sets a member's status to 'removed' with the actor who removed them.
+func (s *Store) KickMember(ctx context.Context, groupID, userID, removedBy uuid.UUID) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	cmdTag, err := tx.Exec(ctx, `
+		UPDATE group_members SET status = 'removed', removed_at = NOW(), removed_by_user_id = $3
+		WHERE group_id = $1 AND user_id = $2 AND status = 'active'
+	`, groupID, userID, removedBy)
 	if err != nil {
 		return err
 	}
@@ -206,7 +400,7 @@ func (s *Store) RemoveMember(ctx context.Context, groupID, userID uuid.UUID) err
 // UpdateMemberRole changes a member's role within a group.
 func (s *Store) UpdateMemberRole(ctx context.Context, groupID, userID uuid.UUID, role string) error {
 	_, err := s.db.Exec(ctx, `
-		UPDATE group_members SET role = $3 WHERE group_id = $1 AND user_id = $2
+		UPDATE group_members SET role = $3 WHERE group_id = $1 AND user_id = $2 AND status = 'active'
 	`, groupID, userID, role)
 	return err
 }
@@ -215,9 +409,10 @@ func (s *Store) UpdateMemberRole(ctx context.Context, groupID, userID uuid.UUID,
 func (s *Store) GetMember(ctx context.Context, groupID, userID uuid.UUID) (*GroupMember, error) {
 	var m GroupMember
 	err := s.db.QueryRow(ctx, `
-		SELECT group_id, user_id, role, joined_at
+		SELECT group_id, user_id, role, joined_at, id, invited_by_user_id, status, removed_at, removed_by_user_id, removal_reason
 		FROM group_members WHERE group_id = $1 AND user_id = $2
-	`, groupID, userID).Scan(&m.GroupID, &m.UserID, &m.Role, &m.JoinedAt)
+	`, groupID, userID).Scan(&m.GroupID, &m.UserID, &m.Role, &m.JoinedAt,
+		&m.ID, &m.InvitedByUserID, &m.Status, &m.RemovedAt, &m.RemovedByUserID, &m.RemovalReason)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -227,24 +422,50 @@ func (s *Store) GetMember(ctx context.Context, groupID, userID uuid.UUID) (*Grou
 	return &m, nil
 }
 
-// CheckMembership returns true if the user is a member of the group.
+// GetActiveMember returns an active group member.
+func (s *Store) GetActiveMember(ctx context.Context, groupID, userID uuid.UUID) (*GroupMember, error) {
+	var m GroupMember
+	err := s.db.QueryRow(ctx, `
+		SELECT group_id, user_id, role, joined_at, id, invited_by_user_id, status, removed_at, removed_by_user_id, removal_reason
+		FROM group_members WHERE group_id = $1 AND user_id = $2 AND status = 'active'
+	`, groupID, userID).Scan(&m.GroupID, &m.UserID, &m.Role, &m.JoinedAt,
+		&m.ID, &m.InvitedByUserID, &m.Status, &m.RemovedAt, &m.RemovedByUserID, &m.RemovalReason)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &m, nil
+}
+
+// CheckMembership returns true if the user is an active member of the group.
 func (s *Store) CheckMembership(ctx context.Context, groupID, userID uuid.UUID) (bool, error) {
 	var exists bool
 	err := s.db.QueryRow(ctx, `
-		SELECT EXISTS(SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2)
+		SELECT EXISTS(SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2 AND status = 'active')
 	`, groupID, userID).Scan(&exists)
 	return exists, err
 }
 
-// ListMembers returns paginated group members.
+// CheckBanned returns true if the user is banned from the group.
+func (s *Store) CheckBanned(ctx context.Context, groupID, userID uuid.UUID) (bool, error) {
+	var exists bool
+	err := s.db.QueryRow(ctx, `
+		SELECT EXISTS(SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2 AND status = 'banned')
+	`, groupID, userID).Scan(&exists)
+	return exists, err
+}
+
+// ListMembers returns paginated active group members.
 func (s *Store) ListMembers(ctx context.Context, groupID uuid.UUID, limit, offset int) ([]GroupMember, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
 	rows, err := s.db.Query(ctx, `
-		SELECT group_id, user_id, role, joined_at
+		SELECT group_id, user_id, role, joined_at, id, invited_by_user_id, status, removed_at, removed_by_user_id, removal_reason
 		FROM group_members
-		WHERE group_id = $1
+		WHERE group_id = $1 AND status = 'active'
 		ORDER BY joined_at ASC
 		LIMIT $2 OFFSET $3
 	`, groupID, limit, offset)
@@ -256,7 +477,8 @@ func (s *Store) ListMembers(ctx context.Context, groupID uuid.UUID, limit, offse
 	var members []GroupMember
 	for rows.Next() {
 		var m GroupMember
-		if err := rows.Scan(&m.GroupID, &m.UserID, &m.Role, &m.JoinedAt); err != nil {
+		if err := rows.Scan(&m.GroupID, &m.UserID, &m.Role, &m.JoinedAt,
+			&m.ID, &m.InvitedByUserID, &m.Status, &m.RemovedAt, &m.RemovedByUserID, &m.RemovalReason); err != nil {
 			return nil, err
 		}
 		members = append(members, m)
@@ -264,31 +486,110 @@ func (s *Store) ListMembers(ctx context.Context, groupID uuid.UUID, limit, offse
 	return members, rows.Err()
 }
 
+// --- GDPR ---
+
+// RemoveUserFromAllGroups soft-removes a user from all groups they belong to.
+func (s *Store) RemoveUserFromAllGroups(ctx context.Context, userID uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE group_members SET status = 'removed', removed_at = NOW()
+		WHERE user_id = $1 AND status = 'active'
+	`, userID)
+	return err
+}
+
+// CancelUserInvites cancels all pending invites for a user.
+func (s *Store) CancelUserInvites(ctx context.Context, userID uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE group_invites SET status = 'rejected', updated_at = NOW()
+		WHERE invitee_id = $1 AND status = 'pending'
+	`, userID)
+	return err
+}
+
+// CancelUserJoinRequests cancels all pending join requests by a user.
+func (s *Store) CancelUserJoinRequests(ctx context.Context, userID uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE group_join_requests SET status = 'rejected', reviewed_at = NOW()
+		WHERE user_id = $1 AND status = 'pending'
+	`, userID)
+	return err
+}
+
+// ListGroupsWhereUserIsOnlyAdmin returns group IDs where the user is the sole admin.
+func (s *Store) ListGroupsWhereUserIsOnlyAdmin(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT gm.group_id FROM group_members gm
+		WHERE gm.user_id = $1 AND gm.role = 'admin' AND gm.status = 'active'
+		AND NOT EXISTS (
+			SELECT 1 FROM group_members gm2
+			WHERE gm2.group_id = gm.group_id AND gm2.user_id != $1
+			AND gm2.role = 'admin' AND gm2.status = 'active'
+		)
+	`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // --- Invites ---
 
 // CreateInvite creates or re-opens an invite for a user to a group.
 func (s *Store) CreateInvite(ctx context.Context, inv *GroupInvite) error {
 	err := s.db.QueryRow(ctx, `
-		INSERT INTO group_invites (group_id, inviter_id, invitee_id)
-		VALUES ($1, $2, $3)
+		INSERT INTO group_invites (group_id, inviter_id, invitee_id, expires_at)
+		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (group_id, invitee_id) DO UPDATE
-		SET status = 'pending', inviter_id = $2, updated_at = NOW()
+		SET status = 'pending', inviter_id = $2, updated_at = NOW(), expires_at = $4
 		RETURNING id, status, created_at, updated_at
-	`, inv.GroupID, inv.InviterID, inv.InviteeID).Scan(
+	`, inv.GroupID, inv.InviterID, inv.InviteeID, inv.ExpiresAt).Scan(
 		&inv.ID, &inv.Status, &inv.CreatedAt, &inv.UpdatedAt,
 	)
 	return err
+}
+
+// CreateInviteBatch creates invites for multiple users at once.
+func (s *Store) CreateInviteBatch(ctx context.Context, groupID, inviterID uuid.UUID, inviteeIDs []uuid.UUID, expiresAt *time.Time) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	for _, inviteeID := range inviteeIDs {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO group_invites (group_id, inviter_id, invitee_id, expires_at)
+			VALUES ($1, $2, $3, $4)
+			ON CONFLICT (group_id, invitee_id) DO UPDATE
+			SET status = 'pending', inviter_id = $2, updated_at = NOW(), expires_at = $4
+		`, groupID, inviterID, inviteeID, expiresAt)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit(ctx)
 }
 
 // GetInviteByID returns an invite by its primary key.
 func (s *Store) GetInviteByID(ctx context.Context, id uuid.UUID) (*GroupInvite, error) {
 	var inv GroupInvite
 	err := s.db.QueryRow(ctx, `
-		SELECT id, group_id, inviter_id, invitee_id, status, created_at, updated_at
+		SELECT id, group_id, inviter_id, invitee_id, status, created_at, updated_at, expires_at
 		FROM group_invites WHERE id = $1
 	`, id).Scan(
 		&inv.ID, &inv.GroupID, &inv.InviterID, &inv.InviteeID, &inv.Status,
-		&inv.CreatedAt, &inv.UpdatedAt,
+		&inv.CreatedAt, &inv.UpdatedAt, &inv.ExpiresAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -310,7 +611,7 @@ func (s *Store) UpdateInviteStatus(ctx context.Context, id uuid.UUID, status str
 // ListInvitesByUser returns pending invites for a given user.
 func (s *Store) ListInvitesByUser(ctx context.Context, userID uuid.UUID) ([]GroupInvite, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, group_id, inviter_id, invitee_id, status, created_at, updated_at
+		SELECT id, group_id, inviter_id, invitee_id, status, created_at, updated_at, expires_at
 		FROM group_invites
 		WHERE invitee_id = $1 AND status = 'pending'
 		ORDER BY created_at DESC
@@ -323,7 +624,8 @@ func (s *Store) ListInvitesByUser(ctx context.Context, userID uuid.UUID) ([]Grou
 	var invites []GroupInvite
 	for rows.Next() {
 		var inv GroupInvite
-		if err := rows.Scan(&inv.ID, &inv.GroupID, &inv.InviterID, &inv.InviteeID, &inv.Status, &inv.CreatedAt, &inv.UpdatedAt); err != nil {
+		if err := rows.Scan(&inv.ID, &inv.GroupID, &inv.InviterID, &inv.InviteeID, &inv.Status,
+			&inv.CreatedAt, &inv.UpdatedAt, &inv.ExpiresAt); err != nil {
 			return nil, err
 		}
 		invites = append(invites, inv)
@@ -334,7 +636,7 @@ func (s *Store) ListInvitesByUser(ctx context.Context, userID uuid.UUID) ([]Grou
 // ListGroupInvites returns pending invites for a given group.
 func (s *Store) ListGroupInvites(ctx context.Context, groupID uuid.UUID) ([]GroupInvite, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, group_id, inviter_id, invitee_id, status, created_at, updated_at
+		SELECT id, group_id, inviter_id, invitee_id, status, created_at, updated_at, expires_at
 		FROM group_invites
 		WHERE group_id = $1 AND status = 'pending'
 		ORDER BY created_at DESC
@@ -347,12 +649,132 @@ func (s *Store) ListGroupInvites(ctx context.Context, groupID uuid.UUID) ([]Grou
 	var invites []GroupInvite
 	for rows.Next() {
 		var inv GroupInvite
-		if err := rows.Scan(&inv.ID, &inv.GroupID, &inv.InviterID, &inv.InviteeID, &inv.Status, &inv.CreatedAt, &inv.UpdatedAt); err != nil {
+		if err := rows.Scan(&inv.ID, &inv.GroupID, &inv.InviterID, &inv.InviteeID, &inv.Status,
+			&inv.CreatedAt, &inv.UpdatedAt, &inv.ExpiresAt); err != nil {
 			return nil, err
 		}
 		invites = append(invites, inv)
 	}
 	return invites, rows.Err()
+}
+
+// --- Join Requests ---
+
+// CreateJoinRequest creates a new join request.
+func (s *Store) CreateJoinRequest(ctx context.Context, jr *GroupJoinRequest) error {
+	return s.db.QueryRow(ctx, `
+		INSERT INTO group_join_requests (group_id, user_id)
+		VALUES ($1, $2)
+		RETURNING id, status, created_at
+	`, jr.GroupID, jr.UserID).Scan(&jr.ID, &jr.Status, &jr.CreatedAt)
+}
+
+// GetJoinRequestByID returns a join request by its primary key.
+func (s *Store) GetJoinRequestByID(ctx context.Context, id uuid.UUID) (*GroupJoinRequest, error) {
+	var jr GroupJoinRequest
+	err := s.db.QueryRow(ctx, `
+		SELECT id, group_id, user_id, status, reviewed_by_user_id, created_at, reviewed_at
+		FROM group_join_requests WHERE id = $1
+	`, id).Scan(&jr.ID, &jr.GroupID, &jr.UserID, &jr.Status,
+		&jr.ReviewedByUserID, &jr.CreatedAt, &jr.ReviewedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &jr, nil
+}
+
+// ListJoinRequests returns pending join requests for a group.
+func (s *Store) ListJoinRequests(ctx context.Context, groupID uuid.UUID, limit, offset int) ([]GroupJoinRequest, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT id, group_id, user_id, status, reviewed_by_user_id, created_at, reviewed_at
+		FROM group_join_requests
+		WHERE group_id = $1 AND status = 'pending'
+		ORDER BY created_at ASC
+		LIMIT $2 OFFSET $3
+	`, groupID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var requests []GroupJoinRequest
+	for rows.Next() {
+		var jr GroupJoinRequest
+		if err := rows.Scan(&jr.ID, &jr.GroupID, &jr.UserID, &jr.Status,
+			&jr.ReviewedByUserID, &jr.CreatedAt, &jr.ReviewedAt); err != nil {
+			return nil, err
+		}
+		requests = append(requests, jr)
+	}
+	return requests, rows.Err()
+}
+
+// UpdateJoinRequestStatus updates the status of a join request.
+func (s *Store) UpdateJoinRequestStatus(ctx context.Context, id uuid.UUID, status string, reviewedBy uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE group_join_requests
+		SET status = $2, reviewed_by_user_id = $3, reviewed_at = NOW()
+		WHERE id = $1
+	`, id, status, reviewedBy)
+	return err
+}
+
+// --- Group Rules ---
+
+// ListGroupRules returns rules for a group ordered by rule_order.
+func (s *Store) ListGroupRules(ctx context.Context, groupID uuid.UUID) ([]GroupRule, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT id, group_id, rule_order, title, description, created_at
+		FROM group_rules
+		WHERE group_id = $1
+		ORDER BY rule_order ASC
+	`, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var rules []GroupRule
+	for rows.Next() {
+		var r GroupRule
+		if err := rows.Scan(&r.ID, &r.GroupID, &r.RuleOrder, &r.Title, &r.Description, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		rules = append(rules, r)
+	}
+	return rules, rows.Err()
+}
+
+// ReplaceGroupRules deletes existing rules and inserts new ones atomically.
+func (s *Store) ReplaceGroupRules(ctx context.Context, groupID uuid.UUID, rules []GroupRule) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	_, err = tx.Exec(ctx, `DELETE FROM group_rules WHERE group_id = $1`, groupID)
+	if err != nil {
+		return err
+	}
+
+	for i, r := range rules {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO group_rules (group_id, rule_order, title, description)
+			VALUES ($1, $2, $3, $4)
+		`, groupID, i+1, r.Title, r.Description)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit(ctx)
 }
 
 // --- Group Posts ---
@@ -419,12 +841,10 @@ func (s *Store) ListGroupsByUser(ctx context.Context, userID uuid.UUID, limit, o
 		limit = 20
 	}
 	rows, err := s.db.Query(ctx, `
-		SELECT g.id, g.name, g.description, g.avatar_media_id, g.cover_media_id, g.creator_id,
-		       g.visibility, g.is_archived, g.chat_conversation_id, g.member_count, g.post_count,
-		       g.created_at, g.updated_at
+		SELECT `+groupColumns+`
 		FROM groups g
 		JOIN group_members gm ON g.id = gm.group_id
-		WHERE gm.user_id = $1
+		WHERE gm.user_id = $1 AND gm.status = 'active' AND g.status != 'deleted'
 		ORDER BY gm.joined_at DESC
 		LIMIT $2 OFFSET $3
 	`, userID, limit, offset)
@@ -433,19 +853,7 @@ func (s *Store) ListGroupsByUser(ctx context.Context, userID uuid.UUID, limit, o
 	}
 	defer rows.Close()
 
-	var groups []Group
-	for rows.Next() {
-		var g Group
-		if err := rows.Scan(
-			&g.ID, &g.Name, &g.Description, &g.AvatarMediaID, &g.CoverMediaID, &g.CreatorID,
-			&g.Visibility, &g.IsArchived, &g.ChatConversationID, &g.MemberCount, &g.PostCount,
-			&g.CreatedAt, &g.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		groups = append(groups, g)
-	}
-	return groups, rows.Err()
+	return scanGroups(rows)
 }
 
 // DiscoverPublicGroups returns public, non-archived groups sorted by member count.
@@ -454,12 +862,10 @@ func (s *Store) DiscoverPublicGroups(ctx context.Context, limit, offset int) ([]
 		limit = 20
 	}
 	rows, err := s.db.Query(ctx, `
-		SELECT id, name, description, avatar_media_id, cover_media_id, creator_id,
-		       visibility, is_archived, chat_conversation_id, member_count, post_count,
-		       created_at, updated_at
-		FROM groups
-		WHERE visibility = 'public' AND is_archived = FALSE
-		ORDER BY member_count DESC
+		SELECT `+groupColumns+`
+		FROM groups g
+		WHERE g.privacy_level = 'public' AND g.status = 'active'
+		ORDER BY g.member_count DESC
 		LIMIT $1 OFFSET $2
 	`, limit, offset)
 	if err != nil {
@@ -467,19 +873,7 @@ func (s *Store) DiscoverPublicGroups(ctx context.Context, limit, offset int) ([]
 	}
 	defer rows.Close()
 
-	var groups []Group
-	for rows.Next() {
-		var g Group
-		if err := rows.Scan(
-			&g.ID, &g.Name, &g.Description, &g.AvatarMediaID, &g.CoverMediaID, &g.CreatorID,
-			&g.Visibility, &g.IsArchived, &g.ChatConversationID, &g.MemberCount, &g.PostCount,
-			&g.CreatedAt, &g.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		groups = append(groups, g)
-	}
-	return groups, rows.Err()
+	return scanGroups(rows)
 }
 
 // SearchGroups performs full-text search on group names.
@@ -488,13 +882,11 @@ func (s *Store) SearchGroups(ctx context.Context, query string, limit, offset in
 		limit = 20
 	}
 	rows, err := s.db.Query(ctx, `
-		SELECT id, name, description, avatar_media_id, cover_media_id, creator_id,
-		       visibility, is_archived, chat_conversation_id, member_count, post_count,
-		       created_at, updated_at
-		FROM groups
-		WHERE to_tsvector('english', name) @@ to_tsquery('english', $1)
-		  AND is_archived = FALSE
-		ORDER BY member_count DESC
+		SELECT `+groupColumns+`
+		FROM groups g
+		WHERE to_tsvector('english', g.name) @@ to_tsquery('english', $1)
+		  AND g.status = 'active'
+		ORDER BY g.member_count DESC
 		LIMIT $2 OFFSET $3
 	`, query, limit, offset)
 	if err != nil {
@@ -502,17 +894,175 @@ func (s *Store) SearchGroups(ctx context.Context, query string, limit, offset in
 	}
 	defer rows.Close()
 
-	var groups []Group
+	return scanGroups(rows)
+}
+
+// PinPost sets pinned_at on a post.
+func (s *Store) PinPost(ctx context.Context, postID uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `UPDATE posts SET pinned_at = NOW() WHERE id = $1`, postID)
+	return err
+}
+
+// UnpinPost clears pinned_at on a post.
+func (s *Store) UnpinPost(ctx context.Context, postID uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `UPDATE posts SET pinned_at = NULL WHERE id = $1`, postID)
+	return err
+}
+
+// CountPinnedPosts counts currently pinned posts in a group.
+func (s *Store) CountPinnedPosts(ctx context.Context, groupID uuid.UUID) (int, error) {
+	var count int
+	err := s.db.QueryRow(ctx, `
+		SELECT COUNT(*) FROM group_posts gp
+		JOIN posts p ON p.id = gp.post_id
+		WHERE gp.group_id = $1 AND p.pinned_at IS NOT NULL
+	`, groupID).Scan(&count)
+	return count, err
+}
+
+// DeleteGroupPost removes a post from the group and decrements the post count.
+func (s *Store) DeleteGroupPost(ctx context.Context, groupID, postID uuid.UUID) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	cmdTag, err := tx.Exec(ctx, `DELETE FROM group_posts WHERE group_id = $1 AND post_id = $2`, groupID, postID)
+	if err != nil {
+		return err
+	}
+
+	if cmdTag.RowsAffected() > 0 {
+		_, err = tx.Exec(ctx, `UPDATE groups SET post_count = GREATEST(post_count - 1, 0), updated_at = NOW() WHERE id = $1`, groupID)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit(ctx)
+}
+
+// GetGroupPost returns a group post by group ID and post ID.
+func (s *Store) GetGroupPost(ctx context.Context, groupID, postID uuid.UUID) (*GroupPost, error) {
+	var p GroupPost
+	err := s.db.QueryRow(ctx, `
+		SELECT group_id, post_id, author_id, created_at
+		FROM group_posts WHERE group_id = $1 AND post_id = $2
+	`, groupID, postID).Scan(&p.GroupID, &p.PostID, &p.AuthorID, &p.CreatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &p, nil
+}
+
+// UnbanMember resets a banned member back to removed status (they can rejoin).
+func (s *Store) UnbanMember(ctx context.Context, groupID, userID uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE group_members SET status = 'removed', removal_reason = NULL
+		WHERE group_id = $1 AND user_id = $2 AND status = 'banned'
+	`, groupID, userID)
+	return err
+}
+
+// BanMemberWithReason sets a member's status to 'banned' with a reason.
+func (s *Store) BanMemberWithReason(ctx context.Context, groupID, userID, removedBy uuid.UUID, reason string) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	cmdTag, err := tx.Exec(ctx, `
+		UPDATE group_members SET status = 'banned', removed_at = NOW(), removed_by_user_id = $3, removal_reason = $4
+		WHERE group_id = $1 AND user_id = $2 AND status = 'active'
+	`, groupID, userID, removedBy, reason)
+	if err != nil {
+		return err
+	}
+
+	if cmdTag.RowsAffected() > 0 {
+		_, err = tx.Exec(ctx, `
+			UPDATE groups SET member_count = GREATEST(member_count - 1, 0), updated_at = NOW() WHERE id = $1
+		`, groupID)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit(ctx)
+}
+
+// IncrementPendingRequestCount increments the pending request count on a group.
+func (s *Store) IncrementPendingRequestCount(ctx context.Context, groupID uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `UPDATE groups SET pending_request_count = pending_request_count + 1 WHERE id = $1`, groupID)
+	return err
+}
+
+// DecrementPendingRequestCount decrements the pending request count on a group.
+func (s *Store) DecrementPendingRequestCount(ctx context.Context, groupID uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `UPDATE groups SET pending_request_count = GREATEST(pending_request_count - 1, 0) WHERE id = $1`, groupID)
+	return err
+}
+
+// ListGroupMedia returns media posts (image, video, flick) for a group.
+func (s *Store) ListGroupMedia(ctx context.Context, groupID uuid.UUID, limit, offset int) ([]GroupPost, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 30
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT gp.group_id, gp.post_id, gp.author_id, gp.created_at
+		FROM group_posts gp
+		JOIN posts p ON p.id = gp.post_id
+		WHERE gp.group_id = $1 AND p.content_type IN ('image', 'video', 'flick')
+		  AND p.status = 'published'
+		ORDER BY gp.created_at DESC
+		LIMIT $2 OFFSET $3
+	`, groupID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var posts []GroupPost
 	for rows.Next() {
-		var g Group
-		if err := rows.Scan(
-			&g.ID, &g.Name, &g.Description, &g.AvatarMediaID, &g.CoverMediaID, &g.CreatorID,
-			&g.Visibility, &g.IsArchived, &g.ChatConversationID, &g.MemberCount, &g.PostCount,
-			&g.CreatedAt, &g.UpdatedAt,
-		); err != nil {
+		var p GroupPost
+		if err := rows.Scan(&p.GroupID, &p.PostID, &p.AuthorID, &p.CreatedAt); err != nil {
 			return nil, err
 		}
-		groups = append(groups, g)
+		posts = append(posts, p)
 	}
-	return groups, rows.Err()
+	return posts, rows.Err()
+}
+
+// ListBannedMembers returns banned members for a group.
+func (s *Store) ListBannedMembers(ctx context.Context, groupID uuid.UUID, limit, offset int) ([]GroupMember, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT group_id, user_id, role, joined_at, id, invited_by_user_id, status, removed_at, removed_by_user_id, removal_reason
+		FROM group_members
+		WHERE group_id = $1 AND status = 'banned'
+		ORDER BY removed_at DESC
+		LIMIT $2 OFFSET $3
+	`, groupID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var members []GroupMember
+	for rows.Next() {
+		var m GroupMember
+		if err := rows.Scan(&m.GroupID, &m.UserID, &m.Role, &m.JoinedAt,
+			&m.ID, &m.InvitedByUserID, &m.Status, &m.RemovedAt, &m.RemovedByUserID, &m.RemovalReason); err != nil {
+			return nil, err
+		}
+		members = append(members, m)
+	}
+	return members, rows.Err()
 }

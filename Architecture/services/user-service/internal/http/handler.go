@@ -39,6 +39,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	{
 		v1.GET("/by-username/:username", h.GetUserByUsername)
 		v1.GET("/:userId", h.GetUser)
+		v1.GET("/:userId/channels", h.GetUserChannels)
 		v1.GET("/:userId/links", h.GetUserLinks)
 		v1.PUT("/me", h.UpdateMe)
 		v1.GET("/me", h.GetMe)
@@ -107,6 +108,23 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		myPages.POST("", h.CreateBusinessPage)
 		myPages.GET("", h.ListMyBusinessPages)
 	}
+}
+
+func (h *Handler) GetUserChannels(c *gin.Context) {
+	userID, err := uuid.Parse(c.Param("userId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil, nil)
+		return
+	}
+	channels, err := h.svc.GetUserChannels(c.Request.Context(), userID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	if channels == nil {
+		channels = []store.Channel{}
+	}
+	api.JSON(c.Writer, http.StatusOK, channels, nil)
 }
 
 func (h *Handler) GetUser(c *gin.Context) {
@@ -649,8 +667,6 @@ type CreateChannelRequest struct {
 	Handle          string `json:"handle" binding:"required"`
 	Name            string `json:"name" binding:"required"`
 	Description     string `json:"description"`
-	IconURL         string `json:"icon_url"`
-	BannerURL       string `json:"banner_url"`
 	Category        string `json:"category"`
 	Country         string `json:"country"`
 	Language        string `json:"language"`
@@ -677,8 +693,6 @@ func (h *Handler) CreateChannel(c *gin.Context) {
 		Handle:          req.Handle,
 		Name:            req.Name,
 		Description:     req.Description,
-		IconURL:         req.IconURL,
-		BannerURL:       req.BannerURL,
 		Category:        req.Category,
 		Country:         req.Country,
 		Language:        req.Language,
@@ -723,16 +737,16 @@ func (h *Handler) ListMyChannels(c *gin.Context) {
 }
 
 type UpdateChannelRequest struct {
-	Name            string `json:"name"`
-	Description     string `json:"description"`
-	IconURL         string `json:"icon_url"`
-	BannerURL       string `json:"banner_url"`
-	Category        string `json:"category"`
-	Country         string `json:"country"`
-	Language        string `json:"language"`
-	ContactEmail    string `json:"contact_email"`
-	CollabStatus    string `json:"collab_status"`
-	ContentSchedule string `json:"content_schedule"`
+	Name            *string    `json:"name"`
+	Description     *string    `json:"description"`
+	AvatarMediaID   *uuid.UUID `json:"avatar_media_id"`
+	BannerMediaID   *uuid.UUID `json:"banner_media_id"`
+	Category        *string    `json:"category"`
+	Country         *string    `json:"country"`
+	Language        *string    `json:"language"`
+	ContactEmail    *string    `json:"contact_email"`
+	CollabStatus    *string    `json:"collab_status"`
+	ContentSchedule *string    `json:"content_schedule"`
 }
 
 func (h *Handler) UpdateChannel(c *gin.Context) {
@@ -753,13 +767,13 @@ func (h *Handler) UpdateChannel(c *gin.Context) {
 		return
 	}
 
-	ch := &store.Channel{
+	upd := &store.ChannelUpdate{
 		ID:              channelID,
 		UserID:          userID,
 		Name:            req.Name,
 		Description:     req.Description,
-		IconURL:         req.IconURL,
-		BannerURL:       req.BannerURL,
+		AvatarMediaID:   req.AvatarMediaID,
+		BannerMediaID:   req.BannerMediaID,
 		Category:        req.Category,
 		Country:         req.Country,
 		Language:        req.Language,
@@ -768,7 +782,7 @@ func (h *Handler) UpdateChannel(c *gin.Context) {
 		ContentSchedule: req.ContentSchedule,
 	}
 
-	if err := h.svc.UpdateChannel(c.Request.Context(), ch); err != nil {
+	if err := h.svc.UpdateChannel(c.Request.Context(), upd); err != nil {
 		if err.Error() == "CHANNEL_NOT_FOUND" {
 			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Channel not found or not owned by you", nil, nil)
 			return

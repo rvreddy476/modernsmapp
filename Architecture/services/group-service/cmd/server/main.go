@@ -4,8 +4,10 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
+	groupevents "github.com/atpost/group-service/internal/events"
 	"github.com/atpost/group-service/internal/http"
 	"github.com/atpost/group-service/internal/service"
 	"github.com/atpost/group-service/internal/store"
@@ -29,7 +31,10 @@ func main() {
 	redisAddr := os.Getenv("REDIS_ADDR")
 	msgURL := env("MESSAGE_SERVICE_URL", "http://chat-message-service:8092")
 	postURL := env("POST_SERVICE_URL", "http://post-service:8084")
+	userURL := env("USER_SERVICE_URL", "http://user-service:8082")
 	jwtSecret := env("JWT_SECRET", "dev_secret_change_me")
+	kafkaBrokers := strings.Split(env("KAFKA_BROKERS", "redpanda:9092"), ",")
+	kafkaTopic := env("KAFKA_TOPIC", "group-events")
 
 	// 3. Database
 	ctx := context.Background()
@@ -72,10 +77,22 @@ func main() {
 
 	// 7. Dependencies
 	groupStore := store.New(dbPool)
-	groupSvc := service.New(groupStore, rdb, msgURL, postURL, jwtSecret)
+	groupSvc := service.New(groupStore, rdb, msgURL, postURL, userURL, jwtSecret)
+
+	// 8. Kafka producer
+	producer := groupevents.NewProducer(kafkaBrokers, kafkaTopic)
+	groupSvc.SetProducer(producer)
+	slog.Info("kafka producer initialized", "topic", kafkaTopic)
+
+	// 9. Kafka consumer (GDPR + cache invalidation)
+	consumer := groupevents.NewConsumer(kafkaBrokers, "group-service-consumer", groupStore, rdb)
+	consumerCtx, cancelConsumer := context.WithCancel(ctx)
+	go consumer.Start(consumerCtx)
+	slog.Info("kafka consumer started")
+
 	groupHandler := http.New(groupSvc)
 
-	// 8. Gin with middleware stack
+	// 10. Gin with middleware stack
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
@@ -87,11 +104,15 @@ func main() {
 	r.GET("/metrics", metrics.Handler())
 	groupHandler.RegisterRoutes(r)
 
-	// 9. Graceful shutdown
+	// 11. Graceful shutdown
 	if err := server.Run(r, server.Config{
 		Port:            port,
 		ShutdownTimeout: 10 * time.Second,
 		OnShutdown: func() {
+			cancelConsumer()
+			if err := producer.Close(); err != nil {
+				slog.Warn("failed to close kafka producer", "error", err)
+			}
 			rdb.Close()
 			dbPool.Close()
 			slog.Info("cleanup completed")

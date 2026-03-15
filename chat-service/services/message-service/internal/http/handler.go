@@ -31,6 +31,7 @@ type ChatService interface {
 	ToggleReaction(ctx context.Context, userID, conversationID, messageID uuid.UUID, bucket string, ts time.Time, emoji string) (*service.ToggleReactionResponse, error)
 	SetTyping(ctx context.Context, userID, conversationID uuid.UUID) error
 	MarkRead(ctx context.Context, userID, conversationID uuid.UUID, messageID string) error
+	GetPresence(ctx context.Context, userIDs []uuid.UUID) (map[string]bool, error)
 }
 
 type Handler struct {
@@ -65,6 +66,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// Typing & Read receipts
 		v1.POST("/conversations/:id/typing", h.SetTyping)
 		v1.POST("/conversations/:id/read", h.MarkRead)
+		// Presence
+		v1.POST("/presence", h.GetPresence)
 	}
 }
 
@@ -609,6 +612,43 @@ func decodeMsgCursor(raw string) (*scylla.MessageCursor, error) {
 		return nil, err
 	}
 	return &scylla.MessageCursor{Bucket: payload.Bucket, Ts: payload.Ts, MsgID: msgID}, nil
+}
+
+// --- Presence ---
+
+type GetPresenceRequest struct {
+	UserIDs []string `json:"user_ids" binding:"required"`
+}
+
+func (h *Handler) GetPresence(c *gin.Context) {
+	var req GetPresenceRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", err.Error(), nil)
+		return
+	}
+
+	if len(req.UserIDs) > 200 {
+		api.Error(c.Writer, http.StatusBadRequest, "TOO_MANY_IDS", "Maximum 200 user IDs per request", nil, nil)
+		return
+	}
+
+	userIDs := make([]uuid.UUID, 0, len(req.UserIDs))
+	for _, raw := range req.UserIDs {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			continue
+		}
+		userIDs = append(userIDs, id)
+	}
+
+	presence, err := h.svc.GetPresence(c.Request.Context(), userIDs)
+	if err != nil {
+		h.log.Error("failed to get presence", "err", err)
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL", "Failed to check presence", nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, presence, nil)
 }
 
 func writeIdempotencyError(c *gin.Context, err error) bool {

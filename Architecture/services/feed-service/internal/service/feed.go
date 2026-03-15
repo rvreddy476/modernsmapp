@@ -65,7 +65,7 @@ type FeedItem struct {
 	ContentType string    `json:"content_type,omitempty"`
 }
 
-func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, feedMode string, excludeSelf bool) ([]FeedItem, error) {
+func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, feedMode string, excludeSelf bool, circleOnly bool) ([]FeedItem, error) {
 	// Over-fetch for ranking headroom: 5x when ranked, normal otherwise
 	// Also over-fetch slightly when excluding self to compensate for filtered items
 	fetchLimit := limit
@@ -115,8 +115,30 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 		candidates = filtered
 	}
 
-	// Cold-start fallback: if timeline is empty, fetch recent public posts
-	if len(candidates) == 0 {
+	// Filter to circle-only (friends) if requested
+	if circleOnly && len(candidates) > 0 {
+		friends, err := s.fetchCircleMembers(ctx, userID)
+		if err != nil {
+			log.Printf("circle_only filter: failed to fetch friends for %s: %v", userID, err)
+		} else if len(friends) > 0 {
+			friendSet := make(map[uuid.UUID]struct{}, len(friends))
+			for _, fid := range friends {
+				friendSet[fid] = struct{}{}
+			}
+			filtered := candidates[:0]
+			for _, c := range candidates {
+				if _, ok := friendSet[c.AuthorID]; ok {
+					filtered = append(filtered, c)
+				}
+			}
+			candidates = filtered
+		} else {
+			candidates = nil
+		}
+	}
+
+	// Cold-start fallback: if timeline is empty, fetch recent public posts (only for ranked/discovery feeds)
+	if len(candidates) == 0 && feedMode == "ranked" {
 		log.Printf("Cold-start fallback triggered for user %s (empty timeline), fetching from %s", userID, s.postServiceURL)
 		coldItems, err := s.getRecentPublicPosts(ctx, limit*2)
 		if err != nil {
@@ -161,9 +183,67 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 	return candidates, nil
 }
 
+// GetFlickFeed returns the user's flick-only timeline (flick + legacy reel), scored by recency.
+func (s *Service) GetFlickFeed(ctx context.Context, userID uuid.UUID, limit int) ([]FeedItem, error) {
+	items, err := s.scyllaStore.GetHomeTimelineByContentTypes(ctx, userID, []string{"flick", "reel"}, limit*3)
+	if err != nil {
+		return nil, err
+	}
+
+	candidates := make([]FeedItem, 0, len(items))
+	for _, item := range items {
+		candidates = append(candidates, FeedItem{
+			PostID:      item.PostID,
+			AuthorID:    item.AuthorID,
+			CreatedAt:   item.CreatedAt,
+			ContentType: item.ContentType,
+		})
+	}
+
+	scored := scoreReels(candidates)
+	if len(scored) > limit {
+		scored = scored[:limit]
+	}
+	return scored, nil
+}
+
+// GetLongVideoFeed returns the user's long-video-only timeline (long_video + legacy video).
+func (s *Service) GetLongVideoFeed(ctx context.Context, userID uuid.UUID, limit int) ([]FeedItem, error) {
+	items, err := s.scyllaStore.GetHomeTimelineByContentTypes(ctx, userID, []string{"long_video", "video"}, limit*3)
+	if err != nil {
+		return nil, err
+	}
+
+	candidates := make([]FeedItem, 0, len(items))
+	for _, item := range items {
+		candidates = append(candidates, FeedItem{
+			PostID:      item.PostID,
+			AuthorID:    item.AuthorID,
+			CreatedAt:   item.CreatedAt,
+			ContentType: item.ContentType,
+		})
+	}
+
+	if s.ranker != nil && len(candidates) > 0 {
+		rc := feedItemsToCandidates(candidates)
+		ranked, err := s.ranker.Rank(ctx, userID, rc, limit)
+		if err != nil {
+			log.Printf("Long video feed ranking failed, fallback to chronological: %v", err)
+		} else {
+			candidates = candidatesToFeedItems(ranked)
+		}
+	}
+
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	return candidates, nil
+}
+
 // GetReelFeed returns the user's reel-only timeline, scored by recency.
+// Acts as an alias for GetFlickFeed (backward compat).
 func (s *Service) GetReelFeed(ctx context.Context, userID uuid.UUID, limit int) ([]FeedItem, error) {
-	items, err := s.scyllaStore.GetHomeTimelineByContentType(ctx, userID, "reel", limit*3)
+	items, err := s.scyllaStore.GetHomeTimelineByContentTypes(ctx, userID, []string{"flick", "reel"}, limit*3)
 	if err != nil {
 		return nil, err
 	}
@@ -188,8 +268,9 @@ func (s *Service) GetReelFeed(ctx context.Context, userID uuid.UUID, limit int) 
 }
 
 // GetVideoFeed returns the user's long-video-only timeline.
+// Aliases to GetLongVideoFeed (backward compat).
 func (s *Service) GetVideoFeed(ctx context.Context, userID uuid.UUID, limit int) ([]FeedItem, error) {
-	items, err := s.scyllaStore.GetHomeTimelineByContentType(ctx, userID, "video", limit*3)
+	items, err := s.scyllaStore.GetHomeTimelineByContentTypes(ctx, userID, []string{"long_video", "video"}, limit*3)
 	if err != nil {
 		return nil, err
 	}

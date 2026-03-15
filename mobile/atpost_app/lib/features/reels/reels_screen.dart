@@ -6,6 +6,7 @@ import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/models/post.dart';
 import 'package:atpost_app/data/repositories/feed_repository.dart';
 import 'package:atpost_app/data/repositories/post_repository.dart';
+import 'package:atpost_app/shared/widgets/video_player_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -211,7 +212,7 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> {
     });
 
     try {
-      await ref.read(postRepositoryProvider).toggleLike(post.id);
+      await ref.read(postRepositoryProvider).toggleReaction(post.id);
     } catch (_) {
       if (!mounted) return;
       setState(() {
@@ -254,7 +255,7 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> {
     }
 
     try {
-      await ref.read(postRepositoryProvider).react(post.id, 'dislike');
+      await ref.read(postRepositoryProvider).toggleReaction(post.id, emoji: '👎');
     } catch (_) {
       if (!mounted) return;
       setState(() {
@@ -409,7 +410,7 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> {
   }
 }
 
-class _ReelPage extends StatelessWidget {
+class _ReelPage extends StatefulWidget {
   const _ReelPage({
     required this.post,
     required this.engagement,
@@ -440,14 +441,21 @@ class _ReelPage extends StatelessWidget {
   final VoidCallback onSave;
   final String Function(int value) countLabel;
 
+  @override
+  State<_ReelPage> createState() => _ReelPageState();
+}
+
+class _ReelPageState extends State<_ReelPage> {
+  final GlobalKey<VideoPlayerWidgetState> _playerKey = GlobalKey();
+
   String get _title {
-    final text = post.content.trim();
+    final text = widget.post.content.trim();
     if (text.isNotEmpty) return text;
-    return 'New reel from ${post.authorName ?? 'creator'}';
+    return 'New reel from ${widget.post.authorName ?? 'creator'}';
   }
 
   String get _authorHandle {
-    final raw = (post.authorName ?? 'creator').toLowerCase().replaceAll(
+    final raw = (widget.post.authorName ?? 'creator').toLowerCase().replaceAll(
       ' ',
       '.',
     );
@@ -455,25 +463,47 @@ class _ReelPage extends StatelessWidget {
   }
 
   String get _tags {
-    if (post.tags.isEmpty) return '#reels #atpost';
-    return post.tags.take(4).map((tag) => '#$tag').join(' ');
+    if (widget.post.tags.isEmpty) return '#reels #atpost';
+    return widget.post.tags.take(4).map((tag) => '#$tag').join(' ');
+  }
+
+  String get _videoUrl {
+    final mediaUrl = widget.post.firstMediaUrl;
+    if (mediaUrl.isEmpty) return '';
+    return '${Environment.apiBaseUrl}$mediaUrl';
   }
 
   @override
   Widget build(BuildContext context) {
+    final hasVideo = _videoUrl.isNotEmpty;
+
+    // Gradient background placeholder (used behind video or as fallback).
+    final gradientBg = DecoratedBox(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: widget.colors,
+        ),
+      ),
+    );
+
     return Stack(
       children: [
+        // Background: video player or gradient fallback.
         Positioned.fill(
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: colors,
-              ),
-            ),
-          ),
+          child: hasVideo
+              ? VideoPlayerWidget(
+                  key: _playerKey,
+                  videoUrl: _videoUrl,
+                  autoPlay: true,
+                  looping: true,
+                  showControls: false,
+                  placeholder: gradientBg,
+                )
+              : gradientBg,
         ),
+        // Scrim overlay for readability of text/icons.
         Positioned.fill(
           child: IgnorePointer(
             child: DecoratedBox(
@@ -491,46 +521,49 @@ class _ReelPage extends StatelessWidget {
             ),
           ),
         ),
-        Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 110,
-                height: 110,
-                decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.14),
-                  shape: BoxShape.circle,
-                  border: Border.all(
-                    color: Colors.white.withValues(alpha: 0.2),
+        // If no video, show the old placeholder icon.
+        if (!hasVideo)
+          Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 110,
+                  height: 110,
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.14),
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.2),
+                    ),
+                  ),
+                  child: const Icon(
+                    Icons.play_arrow_rounded,
+                    size: 52,
+                    color: Colors.white,
                   ),
                 ),
-                child: const Icon(
-                  Icons.play_arrow_rounded,
-                  size: 52,
-                  color: Colors.white,
+                const SizedBox(height: 12),
+                Text(
+                  widget.post.contentType.toUpperCase(),
+                  style: AppTextStyles.label.copyWith(color: Colors.white70),
                 ),
-              ),
-              const SizedBox(height: 12),
-              Text(
-                post.contentType.toUpperCase(),
-                style: AppTextStyles.label.copyWith(color: Colors.white70),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
+        // Top bar.
         SafeArea(
           bottom: false,
           child: Padding(
             padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
             child: Row(
               children: [
-                if (fullscreenRoute)
+                if (widget.fullscreenRoute)
                   Padding(
                     padding: const EdgeInsets.only(right: 8),
                     child: _OverlayIconButton(
                       icon: Icons.arrow_back,
-                      onTap: onBack,
+                      onTap: widget.onBack,
                     ),
                   ),
                 Container(
@@ -554,42 +587,44 @@ class _ReelPage extends StatelessWidget {
                 ),
                 const Spacer(),
                 _OverlayIconButton(
-                  icon: muted
+                  icon: widget.muted
                       ? Icons.volume_off_outlined
                       : Icons.volume_up_outlined,
-                  onTap: onToggleMute,
+                  onTap: widget.onToggleMute,
                 ),
               ],
             ),
           ),
         ),
+        // Engagement rail.
         Positioned(
           right: 12,
-          bottom: fullscreenRoute ? 132 : 214,
+          bottom: widget.fullscreenRoute ? 132 : 214,
           child: _ActionRail(
-            liked: engagement.liked,
-            disliked: engagement.disliked,
-            saved: engagement.saved,
-            likes: countLabel(engagement.likeCount),
-            dislikes: countLabel(engagement.dislikeCount),
-            comments: countLabel(engagement.commentCount),
-            shares: countLabel(engagement.shareCount),
-            onLike: onLike,
-            onDislike: onDislike,
-            onComment: onComment,
-            onShare: onShare,
-            onSave: onSave,
+            liked: widget.engagement.liked,
+            disliked: widget.engagement.disliked,
+            saved: widget.engagement.saved,
+            likes: widget.countLabel(widget.engagement.likeCount),
+            dislikes: widget.countLabel(widget.engagement.dislikeCount),
+            comments: widget.countLabel(widget.engagement.commentCount),
+            shares: widget.countLabel(widget.engagement.shareCount),
+            onLike: widget.onLike,
+            onDislike: widget.onDislike,
+            onComment: widget.onComment,
+            onShare: widget.onShare,
+            onSave: widget.onSave,
           ),
         ),
+        // Bottom info.
         Positioned(
           left: 12,
           right: 78,
-          bottom: fullscreenRoute ? 24 : 98,
+          bottom: widget.fullscreenRoute ? 24 : 98,
           child: _BottomInfo(
             authorHandle: _authorHandle,
             title: _title,
             tags: _tags,
-            mediaCount: post.mediaIds.length,
+            mediaCount: widget.post.mediaIds.length,
           ),
         ),
       ],

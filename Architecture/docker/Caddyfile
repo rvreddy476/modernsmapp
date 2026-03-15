@@ -1,0 +1,33 @@
+{$DOMAIN:localhost} {
+	# ── Frontend (Next.js) ──
+	handle / {
+		reverse_proxy nextjs:3000
+	}
+	handle /favicon.ico {
+		reverse_proxy nextjs:3000
+	}
+	handle /_next/* {
+		reverse_proxy nextjs:3000
+	}
+
+	# ── WebSocket gateway (upgrade-aware) ──
+	handle /v1/ws/* {
+		reverse_proxy chat-ws-gateway:8093
+	}
+
+	# ── MinIO object storage (media files) ──
+	handle /storage/* {
+		uri strip_prefix /storage
+		reverse_proxy minio:9000
+	}
+
+	# ── API Gateway (all /v1/* routes) ──
+	handle /v1/* {
+		reverse_proxy api-gateway:8080
+	}
+
+	# ── Everything else → frontend ──
+	handle {
+		reverse_proxy nextjs:3000
+	}
+}

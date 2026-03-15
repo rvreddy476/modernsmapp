@@ -21,6 +21,10 @@ const (
 	FriendRequestRejected = "FriendRequestRejected" // payload: FriendRequestPayload
 	UserBlocked           = "UserBlocked"           // payload: BlockPayload
 	UserUnblocked         = "UserUnblocked"         // payload: BlockPayload
+
+	// Profile Sync + Cross-Post v3
+	ModuleProfileUpdated = "module_profile.updated" // payload: ModuleProfileUpdatedPayload
+	HandleChanged        = "handle.changed"         // payload: HandleChangedPayload
 )
 
 // EventEnvelope is the CloudEvents-style structure used on Kafka.
@@ -104,4 +108,19 @@ type BlockPayload struct {
 	BlockerID string    `json:"blocker_id"`
 	BlockedID string    `json:"blocked_id"`
 	Timestamp time.Time `json:"timestamp"`
+}
+
+// ModuleProfileUpdatedPayload is emitted when a user's module profile is created/updated.
+type ModuleProfileUpdatedPayload struct {
+	UserID    string    `json:"user_id"`
+	Module    string    `json:"module"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// HandleChangedPayload is emitted when a user changes their username/handle.
+type HandleChangedPayload struct {
+	UserID      string    `json:"user_id"`
+	OldUsername string    `json:"old_username"`
+	NewUsername string    `json:"new_username"`
+	ChangedAt   time.Time `json:"changed_at"`
 }

@@ -19,7 +19,7 @@ import (
 // Size limits per subtype/file_type
 const (
 	MaxImageSize  int64 = 20 * 1024 * 1024  // 20 MB
-	MaxVideoSize  int64 = 500 * 1024 * 1024 // 500 MB
+	MaxVideoSize  int64 = 2 * 1024 * 1024 * 1024 // 2 GB
 	MaxAvatarSize int64 = 10 * 1024 * 1024  // 10 MB
 	MaxCoverSize  int64 = 10 * 1024 * 1024  // 10 MB
 	MaxGIFSize    int64 = 15 * 1024 * 1024  // 15 MB
@@ -288,7 +288,17 @@ func (s *Service) processImage(ctx context.Context, media *postgres.MediaAsset) 
 	s.populateMediaURLs(ctx, media, variants)
 
 	// Mark as ready
-	return s.pgStore.UpdateStatus(ctx, media.ID, "ready")
+	if err := s.pgStore.UpdateStatus(ctx, media.ID, "ready"); err != nil {
+		return err
+	}
+
+	// Activate any pending slots referencing this media asset
+	if err := s.ActivatePendingSlots(ctx, media.ID); err != nil {
+		slog.Warn("failed to activate pending slots after image processing",
+			"media_id", media.ID, "error", err)
+	}
+
+	return nil
 }
 
 // isImage returns true when contentType is an image MIME type.

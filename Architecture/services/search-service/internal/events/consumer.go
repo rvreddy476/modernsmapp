@@ -140,6 +140,32 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		}
 		return c.store.DeleteUser(ctx, p.UserID)
 
+	case events.CrosspostRemoved:
+		var p events.CrosspostRemovedPayload
+		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
+			return err
+		}
+		// Delete the embed post from the search index
+		if err := c.store.DeletePost(ctx, p.TargetPostID); err != nil {
+			slog.Error("search: failed to delete crosspost target", "target_post_id", p.TargetPostID, "error", err)
+		}
+		return nil
+
+	case events.UploadDeleted:
+		var p events.UploadDeletedPayload
+		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
+			return err
+		}
+		return c.store.DeletePost(ctx, p.PostID)
+
+	case events.HandleChanged:
+		var p events.HandleChangedPayload
+		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
+			return err
+		}
+		// Update the user's username in the search index via partial update
+		return c.store.UpdateUserUsername(ctx, p.UserID, p.NewUsername)
+
 	default:
 		return nil
 	}

@@ -136,6 +136,56 @@ func (s *TimelineStore) GetHomeTimelineByContentType(ctx context.Context, userID
 	return items, nil
 }
 
+// GetHomeTimelineByContentTypes returns timeline items filtered to a set of
+// content_types. Over-fetches and filters in Go since content_type is not a
+// clustering key. The partition scan is bounded by (user_id, bucket).
+func (s *TimelineStore) GetHomeTimelineByContentTypes(ctx context.Context, userID uuid.UUID, contentTypes []string, limit int) ([]FeedItem, error) {
+	fetchLimit := limit * 5
+	if fetchLimit > 1000 {
+		fetchLimit = 1000
+	}
+
+	b := currentBucket()
+
+	iter := s.session.Query(`
+		SELECT post_id, author_id, created_at, content_type FROM home_timeline_by_user
+		WHERE user_id = ? AND bucket = ?
+		ORDER BY ts DESC
+		LIMIT ?
+	`, toGocql(userID), b, fetchLimit).Iter()
+
+	// Build set for O(1) lookup
+	typeSet := make(map[string]bool, len(contentTypes))
+	for _, ct := range contentTypes {
+		typeSet[ct] = true
+	}
+
+	var items []FeedItem
+	var pid, aid gocql.UUID
+	var createdAt time.Time
+	var ct *string
+	for iter.Scan(&pid, &aid, &createdAt, &ct) {
+		rowType := "post"
+		if ct != nil && *ct != "" {
+			rowType = *ct
+		}
+		if !typeSet[rowType] {
+			continue
+		}
+		items = append(items, FeedItem{
+			PostID:      uuid.UUID(pid),
+			AuthorID:    uuid.UUID(aid),
+			CreatedAt:   createdAt,
+			ContentType: rowType,
+		})
+		if len(items) >= limit {
+			break
+		}
+	}
+	_ = iter.Close()
+	return items, nil
+}
+
 // GetAuthorTimeline (for Pull merge)
 func (s *TimelineStore) GetAuthorTimeline(ctx context.Context, authorID uuid.UUID, limit int) ([]FeedItem, error) {
 	b := currentBucket()
@@ -187,6 +237,45 @@ func (s *TimelineStore) DeleteTimelineEntriesByAuthor(ctx context.Context, autho
 		}
 	}
 	return nil
+}
+
+// DeleteAuthorTimelineEntry removes a single post entry from the author timeline
+// for a given bucket. Used when an upload is deleted to clean up the author's timeline.
+func (s *TimelineStore) DeleteAuthorTimelineEntry(ctx context.Context, authorID, postID uuid.UUID, bucket int) error {
+	// Since post_id is not a clustering key, we need to find the ts for this post_id first
+	// and then delete by (author_id, bucket, ts). For simplicity, we scan the bucket to find it.
+	iter := s.session.Query(`
+		SELECT ts FROM author_timeline_by_author
+		WHERE author_id = ? AND bucket = ?
+		ORDER BY ts DESC
+	`, toGocql(authorID), bucket).Iter()
+
+	var ts gocql.UUID
+	found := false
+	// Also scan post_id to match
+	var pid gocql.UUID
+	iter2 := s.session.Query(`
+		SELECT ts, post_id FROM author_timeline_by_author
+		WHERE author_id = ? AND bucket = ?
+	`, toGocql(authorID), bucket).Iter()
+
+	for iter2.Scan(&ts, &pid) {
+		if uuid.UUID(pid) == postID {
+			found = true
+			break
+		}
+	}
+	_ = iter.Close()
+	_ = iter2.Close()
+
+	if !found {
+		return nil
+	}
+
+	return s.session.Query(`
+		DELETE FROM author_timeline_by_author
+		WHERE author_id = ? AND bucket = ? AND ts = ?
+	`, toGocql(authorID), bucket, ts).WithContext(ctx).Exec()
 }
 
 // RecordInteraction stores a user-post interaction in ScyllaDB as the

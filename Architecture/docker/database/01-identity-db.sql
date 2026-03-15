@@ -245,37 +245,5 @@ CREATE INDEX IF NOT EXISTS idx_blocks_blocker ON profile.blocks(blocker_id);
 CREATE INDEX IF NOT EXISTS idx_blocks_blocked ON profile.blocks(blocked_id);
 
 -- ============================================================
--- SEED DATA
+-- SEED DATA (removed — use real accounts via registration)
 -- ============================================================
--- Users: user1@example.com / user2@example.com / user3@example.com
--- All passwords: password123
-
-INSERT INTO auth.users (user_id, email, phone, password_hash, created_at) VALUES
-    ('b2e06bd7-fa13-4f05-94cc-8973bcafe892', 'user1@example.com', NULL, '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', '2026-01-15T10:00:00Z'),
-    ('a1b2c3d4-e5f6-7890-abcd-ef1234567890', 'user2@example.com', NULL, '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', '2026-01-15T10:01:00Z'),
-    ('c3d4e5f6-a1b2-3456-7890-abcdef123456', 'user3@example.com', '+15551234567', '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', '2026-01-15T10:02:00Z')
-ON CONFLICT DO NOTHING;
-
-INSERT INTO usr.users (id, status, is_verified, created_at, updated_at) VALUES
-    ('b2e06bd7-fa13-4f05-94cc-8973bcafe892', 'active', TRUE,  '2026-01-15T10:00:00Z', '2026-02-01T12:00:00Z'),
-    ('a1b2c3d4-e5f6-7890-abcd-ef1234567890', 'active', TRUE,  '2026-01-15T10:01:00Z', '2026-01-20T09:00:00Z'),
-    ('c3d4e5f6-a1b2-3456-7890-abcdef123456', 'active', FALSE, '2026-01-15T10:02:00Z', '2026-01-15T10:02:00Z')
-ON CONFLICT DO NOTHING;
-
-INSERT INTO usr.user_settings (user_id, account_visibility, allow_messages_from, allow_comments_from, created_at, updated_at) VALUES
-    ('b2e06bd7-fa13-4f05-94cc-8973bcafe892', 'public', 'everyone', 'everyone', '2026-01-15T10:00:00Z', '2026-01-15T10:00:00Z'),
-    ('a1b2c3d4-e5f6-7890-abcd-ef1234567890', 'public', 'everyone', 'everyone', '2026-01-15T10:01:00Z', '2026-01-15T10:01:00Z'),
-    ('c3d4e5f6-a1b2-3456-7890-abcdef123456', 'public', 'followers', 'everyone', '2026-01-15T10:02:00Z', '2026-01-15T10:02:00Z')
-ON CONFLICT DO NOTHING;
-
-INSERT INTO profile.profiles (user_id, username, display_name, first_name, last_name, bio, dob, gender, avatar_media_id, cover_media_id, category, profession, website, location, badge_flags, created_at, updated_at) VALUES
-    ('b2e06bd7-fa13-4f05-94cc-8973bcafe892', 'johndoe', 'John Doe', 'John', 'Doe', 'Full-stack developer & open-source enthusiast.', '1995-06-15', 'male', '00000000-0000-4000-a000-000000000001', '00000000-0000-4000-a000-000000000002', 'personal', 'Software Engineer', 'https://johndoe.dev', 'San Francisco, CA', 3, '2026-01-15T10:00:00Z', '2026-02-01T12:00:00Z'),
-    ('a1b2c3d4-e5f6-7890-abcd-ef1234567890', 'janedoe', 'Jane Doe', 'Jane', 'Doe', 'Designer & photographer.', '1998-03-22', 'female', '00000000-0000-4000-a000-000000000003', NULL, 'personal', 'UX Designer', 'https://janedoe.design', 'New York, NY', 1, '2026-01-15T10:01:00Z', '2026-01-20T09:00:00Z'),
-    ('c3d4e5f6-a1b2-3456-7890-abcdef123456', 'bobsmith', 'Bob Smith', 'Bob', 'Smith', 'Music producer and coffee addict.', '1992-11-08', 'male', NULL, NULL, 'personal', 'Music Producer', '', 'Austin, TX', 0, '2026-01-15T10:02:00Z', '2026-01-15T10:02:00Z')
-ON CONFLICT DO NOTHING;
-
-INSERT INTO profile.user_links (user_id, platform, url, display_label, sort_order) VALUES
-    ('b2e06bd7-fa13-4f05-94cc-8973bcafe892', 'github',   'https://github.com/johndoe',     'GitHub',    0),
-    ('b2e06bd7-fa13-4f05-94cc-8973bcafe892', 'twitter',  'https://x.com/johndoe',          '@johndoe',  1),
-    ('a1b2c3d4-e5f6-7890-abcd-ef1234567890', 'dribbble', 'https://dribbble.com/janedoe',    'Dribbble',  0)
-ON CONFLICT DO NOTHING;

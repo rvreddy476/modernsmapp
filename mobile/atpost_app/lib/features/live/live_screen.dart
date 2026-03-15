@@ -3,6 +3,7 @@ import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/models/live_stream.dart';
 import 'package:atpost_app/data/repositories/live_repository.dart';
+import 'package:atpost_app/shared/widgets/video_player_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -484,46 +485,36 @@ class _LiveStreamCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          AspectRatio(
-            aspectRatio: 16 / 9,
-            child: Container(
-              decoration: BoxDecoration(
-                borderRadius: const BorderRadius.vertical(
-                  top: Radius.circular(16),
-                ),
-                gradient: const LinearGradient(
-                  colors: [
-                    Color(0x33111111),
-                    Color(0x33FF3366),
-                    Color(0x334ECDC4),
-                  ],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-              ),
+          ClipRRect(
+            borderRadius: const BorderRadius.vertical(
+              top: Radius.circular(16),
+            ),
+            child: AspectRatio(
+              aspectRatio: 16 / 9,
               child: Stack(
                 children: [
-                  if ((stream.thumbnailUrl ?? '').isNotEmpty)
-                    ClipRRect(
-                      borderRadius: const BorderRadius.vertical(
-                        top: Radius.circular(16),
-                      ),
-                      child: Image.network(
-                        stream.thumbnailUrl!,
-                        fit: BoxFit.cover,
-                        width: double.infinity,
-                        height: double.infinity,
-                        errorBuilder: (_, _, _) => const SizedBox.shrink(),
-                      ),
-                    )
-                  else
-                    const Center(
-                      child: Icon(
-                        Icons.play_circle_outline,
-                        size: 56,
-                        color: Colors.white60,
-                      ),
-                    ),
+                  // Video layer: real player if stream URL available,
+                  // thumbnail if available, gradient fallback otherwise.
+                  Positioned.fill(
+                    child: (stream.streamUrl ?? '').isNotEmpty
+                        ? VideoPlayerWidget(
+                            videoUrl: stream.streamUrl!,
+                            autoPlay: true,
+                            looping: false,
+                            showControls: false,
+                            placeholder: _streamPlaceholder(),
+                          )
+                        : (stream.thumbnailUrl ?? '').isNotEmpty
+                            ? Image.network(
+                                stream.thumbnailUrl!,
+                                fit: BoxFit.cover,
+                                width: double.infinity,
+                                height: double.infinity,
+                                errorBuilder: (_, _, _) => _streamPlaceholder(),
+                              )
+                            : _streamPlaceholder(),
+                  ),
+                  // LIVE badge.
                   Positioned(
                     top: 10,
                     left: 10,
@@ -544,6 +535,7 @@ class _LiveStreamCard extends StatelessWidget {
                       ),
                     ),
                   ),
+                  // Viewer count badge.
                   Positioned(
                     top: 10,
                     right: 10,
@@ -575,6 +567,26 @@ class _LiveStreamCard extends StatelessWidget {
                       ),
                     ),
                   ),
+                  // "Stream starting..." overlay when no stream URL.
+                  if ((stream.streamUrl ?? '').isEmpty)
+                    Center(
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 8,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.5),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(
+                          'Stream starting...',
+                          style: AppTextStyles.label.copyWith(
+                            color: Colors.white70,
+                          ),
+                        ),
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -645,6 +657,29 @@ class _LiveStreamCard extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _streamPlaceholder() {
+    return Container(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            Color(0x33111111),
+            Color(0x33FF3366),
+            Color(0x334ECDC4),
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+      ),
+      child: const Center(
+        child: Icon(
+          Icons.play_circle_outline,
+          size: 56,
+          color: Colors.white60,
+        ),
       ),
     );
   }

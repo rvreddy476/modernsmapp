@@ -1,61 +1,11 @@
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
-import 'package:atpost_app/services/api_client.dart';
+import 'package:atpost_app/data/repositories/user_repository.dart';
+import 'package:atpost_app/providers/social_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-
-class _FriendRequest {
-  const _FriendRequest({
-    required this.id,
-    required this.senderId,
-    required this.senderName,
-    required this.receiverId,
-    required this.receiverName,
-    required this.createdAt,
-    required this.direction,
-    this.senderAvatarId,
-  });
-
-  final String id;
-  final String senderId;
-  final String senderName;
-  final String receiverId;
-  final String receiverName;
-  final String? senderAvatarId;
-  final DateTime createdAt;
-  final String direction;
-
-  factory _FriendRequest.fromJson(Map<String, dynamic> json) {
-    return _FriendRequest(
-      id: json['id'] as String? ?? '',
-      senderId: json['sender_id'] as String? ?? '',
-      senderName:
-          json['sender_name'] as String? ?? json['sender_id'] as String? ?? '',
-      receiverId: json['receiver_id'] as String? ?? '',
-      receiverName:
-          json['receiver_name'] as String? ??
-          json['receiver_id'] as String? ??
-          '',
-      senderAvatarId: json['sender_avatar_id'] as String?,
-      createdAt: json['created_at'] != null
-          ? DateTime.parse(json['created_at'] as String)
-          : DateTime.now(),
-      direction: (json['direction'] as String? ?? 'received').toLowerCase(),
-    );
-  }
-}
-
-final _friendRequestsProvider =
-    FutureProvider.autoDispose<List<_FriendRequest>>((ref) async {
-      final api = ref.watch(apiClientProvider);
-      final response = await api.get('/v1/graph/friend-requests');
-      final items = (response.data['data'] as List<dynamic>?) ?? [];
-      return items
-          .map((e) => _FriendRequest.fromJson(e as Map<String, dynamic>))
-          .toList();
-    });
 
 class FriendRequestsScreen extends ConsumerStatefulWidget {
   const FriendRequestsScreen({super.key});
@@ -92,7 +42,7 @@ class _FriendRequestsScreenState extends ConsumerState<FriendRequestsScreen>
     return '${(diff.inDays / 7).floor()}w ago';
   }
 
-  List<_FriendRequest> _filter(List<_FriendRequest> requests) {
+  List<FriendRequest> _filter(List<FriendRequest> requests) {
     final query = _searchController.text.trim().toLowerCase();
     if (query.isEmpty) return requests;
 
@@ -107,7 +57,7 @@ class _FriendRequestsScreenState extends ConsumerState<FriendRequestsScreen>
 
   @override
   Widget build(BuildContext context) {
-    final requestsAsync = ref.watch(_friendRequestsProvider);
+    final requestsAsync = ref.watch(friendRequestsProvider);
 
     return Scaffold(
       backgroundColor: AppColors.bgPrimary,
@@ -121,7 +71,7 @@ class _FriendRequestsScreenState extends ConsumerState<FriendRequestsScreen>
               icon: Icons.mail_lock_outlined,
               message: 'Could not load friend requests.',
               action: 'Retry',
-              onTap: () => ref.invalidate(_friendRequestsProvider),
+              onTap: () => ref.invalidate(friendRequestsProvider),
             ),
           ),
           data: (requests) {
@@ -142,7 +92,7 @@ class _FriendRequestsScreenState extends ConsumerState<FriendRequestsScreen>
                     receivedCount: receivedAll.length,
                     sentCount: sentAll.length,
                     onBack: () => context.pop(),
-                    onRefresh: () => ref.invalidate(_friendRequestsProvider),
+                    onRefresh: () => ref.invalidate(friendRequestsProvider),
                     onViewFriends: () => context.push('/friends'),
                   ),
                 ),
@@ -212,7 +162,7 @@ class _FriendRequestsScreenState extends ConsumerState<FriendRequestsScreen>
                   child: RefreshIndicator(
                     color: AppColors.postbookPrimary,
                     onRefresh: () async =>
-                        ref.invalidate(_friendRequestsProvider),
+                        ref.invalidate(friendRequestsProvider),
                     child: TabBarView(
                       controller: _tabController,
                       children: [
@@ -229,12 +179,12 @@ class _FriendRequestsScreenState extends ConsumerState<FriendRequestsScreen>
                                   _searchController.clear();
                                   setState(() {});
                                 }
-                              : () => ref.invalidate(_friendRequestsProvider),
+                              : () => ref.invalidate(friendRequestsProvider),
                           itemBuilder: (request) => _ReceivedRequestTile(
                             request: request,
                             relativeTime: _relativeTime(request.createdAt),
                             onAction: () =>
-                                ref.invalidate(_friendRequestsProvider),
+                                ref.invalidate(friendRequestsProvider),
                           ),
                         ),
                         _RequestList(
@@ -250,12 +200,12 @@ class _FriendRequestsScreenState extends ConsumerState<FriendRequestsScreen>
                                   _searchController.clear();
                                   setState(() {});
                                 }
-                              : () => ref.invalidate(_friendRequestsProvider),
+                              : () => ref.invalidate(friendRequestsProvider),
                           itemBuilder: (request) => _SentRequestTile(
                             request: request,
                             relativeTime: _relativeTime(request.createdAt),
                             onAction: () =>
-                                ref.invalidate(_friendRequestsProvider),
+                                ref.invalidate(friendRequestsProvider),
                           ),
                         ),
                       ],
@@ -390,11 +340,11 @@ class _RequestList extends StatelessWidget {
     required this.itemBuilder,
   });
 
-  final List<_FriendRequest> requests;
+  final List<FriendRequest> requests;
   final String emptyText;
   final String emptyActionLabel;
   final VoidCallback onEmptyAction;
-  final Widget Function(_FriendRequest request) itemBuilder;
+  final Widget Function(FriendRequest request) itemBuilder;
 
   @override
   Widget build(BuildContext context) {
@@ -434,7 +384,7 @@ class _ReceivedRequestTile extends ConsumerStatefulWidget {
     required this.onAction,
   });
 
-  final _FriendRequest request;
+  final FriendRequest request;
   final String relativeTime;
   final VoidCallback onAction;
 
@@ -451,9 +401,8 @@ class _ReceivedRequestTileState extends ConsumerState<_ReceivedRequestTile> {
 
     setState(() => _loading = true);
     try {
-      await ref
-          .read(apiClientProvider)
-          .post('/v1/graph/friend-requests/${widget.request.id}/accept');
+      final repo = ref.read(userRepositoryProvider);
+      await repo.acceptFriendRequest(widget.request.senderId);
       widget.onAction();
     } catch (_) {
       if (!mounted) return;
@@ -472,9 +421,8 @@ class _ReceivedRequestTileState extends ConsumerState<_ReceivedRequestTile> {
 
     setState(() => _loading = true);
     try {
-      await ref
-          .read(apiClientProvider)
-          .post('/v1/graph/friend-requests/${widget.request.id}/decline');
+      final repo = ref.read(userRepositoryProvider);
+      await repo.rejectFriendRequest(widget.request.senderId);
       widget.onAction();
     } catch (_) {
       if (!mounted) return;
@@ -525,7 +473,26 @@ class _ReceivedRequestTileState extends ConsumerState<_ReceivedRequestTile> {
                   overflow: TextOverflow.ellipsis,
                   style: AppTextStyles.label,
                 ),
-                Text(widget.relativeTime, style: AppTextStyles.labelSmall),
+                Row(
+                  children: [
+                    Text(widget.relativeTime, style: AppTextStyles.labelSmall),
+                    if (request.mutualFriendsCount > 0) ...[
+                      const SizedBox(width: 6),
+                      Icon(
+                        Icons.people_outline,
+                        size: 12,
+                        color: AppColors.textMuted,
+                      ),
+                      const SizedBox(width: 2),
+                      Text(
+                        '${request.mutualFriendsCount} mutual',
+                        style: AppTextStyles.labelSmall.copyWith(
+                          color: AppColors.textMuted,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
               ],
             ),
           ),
@@ -551,7 +518,7 @@ class _ReceivedRequestTileState extends ConsumerState<_ReceivedRequestTile> {
                       style: TextButton.styleFrom(
                         foregroundColor: AppColors.textDim,
                       ),
-                      child: const Text('Decline'),
+                      child: const Text('Reject'),
                     ),
                   ],
                 ),
@@ -568,7 +535,7 @@ class _SentRequestTile extends ConsumerStatefulWidget {
     required this.onAction,
   });
 
-  final _FriendRequest request;
+  final FriendRequest request;
   final String relativeTime;
   final VoidCallback onAction;
 
@@ -584,9 +551,8 @@ class _SentRequestTileState extends ConsumerState<_SentRequestTile> {
 
     setState(() => _loading = true);
     try {
-      await ref
-          .read(apiClientProvider)
-          .delete('/v1/graph/friend-requests/${widget.request.id}');
+      final repo = ref.read(userRepositoryProvider);
+      await repo.rejectFriendRequest(widget.request.receiverId);
       widget.onAction();
     } catch (_) {
       if (!mounted) return;

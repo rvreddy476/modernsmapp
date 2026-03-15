@@ -1,7 +1,8 @@
-go 1.24.0
+go 1.25.0
 
 use (
-	./shared
+	./services/call-service
 	./services/message-service
 	./services/ws-gateway
+	./shared
 )

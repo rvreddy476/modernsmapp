@@ -1,4 +1,5 @@
 import 'package:atpost_app/core/config/environment.dart';
+import 'package:atpost_app/data/models/post.dart';
 import 'package:atpost_app/services/api_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -14,6 +15,17 @@ class PostRepository {
       '${Environment.postsPath}/$postId/reactions',
       data: {'emoji': emoji},
     );
+  }
+
+  /// Fetch comments for a post.
+  Future<List<Comment>> getComments(String postId) async {
+    final response = await _api.get(
+      '${Environment.postsPath}/$postId/comments',
+    );
+    final items = (response.data['data'] as List<dynamic>?) ?? [];
+    return items
+        .map((e) => Comment.fromJson(e as Map<String, dynamic>))
+        .toList();
   }
 
   /// Add a comment to a post.

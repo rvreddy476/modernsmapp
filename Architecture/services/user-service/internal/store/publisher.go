@@ -36,6 +36,8 @@ func (s *Store) EnsurePublisher(ctx context.Context, userID uuid.UUID, genHandle
 	result := &EnsurePublisherResult{}
 
 	// 1. Lock user row and read current handle + display_name.
+	//    If the user doesn't exist yet (e.g. created in identity-platform but not
+	//    synced to user-service), insert a minimal row so the flow can proceed.
 	var handle *string
 	var displayName string
 	err = tx.QueryRow(ctx,
@@ -44,9 +46,28 @@ func (s *Store) EnsurePublisher(ctx context.Context, userID uuid.UUID, genHandle
 	).Scan(&handle, &displayName)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, fmt.Errorf("user not found: %s", userID)
+			// Auto-provision a minimal user row.
+			now := time.Now()
+			_, insertErr := tx.Exec(ctx,
+				`INSERT INTO users (id, display_name, created_at, updated_at) VALUES ($1, $2, $3, $3)
+				 ON CONFLICT (id) DO NOTHING`,
+				userID, "User", now,
+			)
+			if insertErr != nil {
+				return nil, fmt.Errorf("auto-provision user row: %w", insertErr)
+			}
+			displayName = "User"
+			// Re-lock the newly created row.
+			err = tx.QueryRow(ctx,
+				`SELECT handle, display_name FROM users WHERE id = $1 FOR UPDATE`,
+				userID,
+			).Scan(&handle, &displayName)
+			if err != nil {
+				return nil, fmt.Errorf("lock new user row: %w", err)
+			}
+		} else {
+			return nil, fmt.Errorf("lock user row: %w", err)
 		}
-		return nil, fmt.Errorf("lock user row: %w", err)
 	}
 
 	// 2. Ensure account handle exists.
@@ -98,12 +119,12 @@ func (s *Store) EnsurePublisher(ctx context.Context, userID uuid.UUID, genHandle
 	// 3. Ensure default channel exists.
 	var ch Channel
 	err = tx.QueryRow(ctx, `
-		SELECT id, user_id, handle, name, description, icon_url, banner_url,
+		SELECT id, user_id, handle, name, description, avatar_media_id, banner_media_id,
 			category, country, language, contact_email, collab_status, content_schedule,
 			subscriber_count, is_verified, is_default, created_at, updated_at
 		FROM channels WHERE user_id = $1 AND is_default = TRUE LIMIT 1
 	`, userID).Scan(
-		&ch.ID, &ch.UserID, &ch.Handle, &ch.Name, &ch.Description, &ch.IconURL, &ch.BannerURL,
+		&ch.ID, &ch.UserID, &ch.Handle, &ch.Name, &ch.Description, &ch.AvatarMediaID, &ch.BannerMediaID,
 		&ch.Category, &ch.Country, &ch.Language, &ch.ContactEmail, &ch.CollabStatus, &ch.ContentSchedule,
 		&ch.SubscriberCount, &ch.IsVerified, &ch.IsDefault, &ch.CreatedAt, &ch.UpdatedAt,
 	)
@@ -144,10 +165,10 @@ func (s *Store) EnsurePublisher(ctx context.Context, userID uuid.UUID, genHandle
 		}
 
 		_, err = tx.Exec(ctx, `
-			INSERT INTO channels (id, user_id, handle, name, description, icon_url, banner_url,
+			INSERT INTO channels (id, user_id, handle, name, description, avatar_media_id, banner_media_id,
 				category, country, language, contact_email, collab_status, content_schedule,
 				subscriber_count, is_verified, is_default, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, '', '', '', '', '', '', '', 'closed', '', 0, FALSE, TRUE, $5, $5)
+			VALUES ($1, $2, $3, $4, '', NULL, NULL, '', '', '', '', 'closed', '', 0, FALSE, TRUE, $5, $5)
 		`, ch.ID, userID, channelHandle, ch.Name, now)
 		if err != nil {
 			return nil, fmt.Errorf("create default channel: %w", err)

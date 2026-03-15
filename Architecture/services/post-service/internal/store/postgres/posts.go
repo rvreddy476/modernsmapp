@@ -176,6 +176,7 @@ func (s *Store) ResolveMediaDuration(ctx context.Context, mediaID uuid.UUID) int
 	return *dur
 }
 
+
 // CreatePost inserts a post with optional media and poll in a single transaction.
 func (s *Store) CreatePost(ctx context.Context, p *Post) error {
 	tx, err := s.db.Begin(ctx)
@@ -595,6 +596,33 @@ func (s *Store) HasPoll(ctx context.Context, postID uuid.UUID) (bool, error) {
 	var exists bool
 	err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM polls WHERE post_id = $1)`, postID).Scan(&exists)
 	return exists, err
+}
+
+// UpdatePostContentType updates the content_type of a post.
+func (s *Store) UpdatePostContentType(ctx context.Context, postID uuid.UUID, contentType string) error {
+	_, err := s.db.Exec(ctx, `UPDATE posts SET content_type = $2, updated_at = NOW() WHERE id = $1`, postID, contentType)
+	return err
+}
+
+// GetPostAuthorID returns the author_id for a post.
+func (s *Store) GetPostAuthorID(ctx context.Context, postID uuid.UUID) (uuid.UUID, error) {
+	var authorID uuid.UUID
+	err := s.db.QueryRow(ctx, `SELECT author_id FROM posts WHERE id = $1 AND deleted_at IS NULL`, postID).Scan(&authorID)
+	return authorID, err
+}
+
+// UpdatePostCoverMedia updates the cover_media_id of a post.
+func (s *Store) UpdatePostCoverMedia(ctx context.Context, postID uuid.UUID, coverMediaID *uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `UPDATE posts SET cover_media_id = $2, updated_at = NOW() WHERE id = $1`, postID, coverMediaID)
+	return err
+}
+
+// PublishPost sets publish status and published_at on a post.
+func (s *Store) PublishPost(ctx context.Context, postID uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE posts SET visibility = 'public', updated_at = NOW() WHERE id = $1
+	`, postID)
+	return err
 }
 
 // --- Bookmark methods ---

@@ -361,5 +361,14 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload events.
 	}
 
 	// 11. Set status to ready
-	return pgStore.UpdateStatus(ctx, mediaAssetID, "ready")
+	if err := pgStore.UpdateStatus(ctx, mediaAssetID, "ready"); err != nil {
+		return err
+	}
+
+	// 12. Activate any pending media slots referencing this asset
+	if err := pgStore.ActivatePendingSlot(ctx, mediaAssetID); err != nil {
+		log.Printf("Warning: failed to activate pending slots for %s: %v", mediaAssetID, err)
+	}
+
+	return nil
 }

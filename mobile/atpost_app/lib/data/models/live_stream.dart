@@ -4,6 +4,7 @@ class LiveStream {
   final String title;
   final String description;
   final String? thumbnailUrl;
+  final String? streamUrl;
   final String status;
   final String visibility;
   final int peakViewers;
@@ -18,6 +19,7 @@ class LiveStream {
     required this.title,
     required this.description,
     this.thumbnailUrl,
+    this.streamUrl,
     required this.status,
     required this.visibility,
     required this.peakViewers,
@@ -34,6 +36,7 @@ class LiveStream {
       title: json['title'] as String? ?? '',
       description: json['description'] as String? ?? '',
       thumbnailUrl: json['thumbnail_url'] as String?,
+      streamUrl: json['stream_url'] as String?,
       status: json['status'] as String? ?? 'idle',
       visibility: json['visibility'] as String? ?? 'public',
       peakViewers: json['peak_viewers'] as int? ?? 0,

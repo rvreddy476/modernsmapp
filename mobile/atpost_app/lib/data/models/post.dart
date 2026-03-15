@@ -80,6 +80,12 @@ class Post {
   bool get isReel => contentType == 'reel';
   bool get isVideo => contentType == 'video';
   bool get isPoll => contentType == 'poll';
+
+  /// Returns the serve URL for the first media item, or empty string if none.
+  String get firstMediaUrl {
+    if (mediaIds.isEmpty) return '';
+    return '/v1/media/${mediaIds.first}/serve';
+  }
 }
 
 class PollData {
@@ -164,9 +170,9 @@ class Comment {
     return Comment(
       id: json['id'] as String? ?? json['comment_id'] as String? ?? '',
       postId: json['post_id'] as String? ?? '',
-      authorId: json['author_id'] as String? ?? '',
-      authorName: json['author_name'] as String?,
-      authorAvatar: json['author_avatar'] as String?,
+      authorId: json['user_id'] as String? ?? json['author_id'] as String? ?? '',
+      authorName: json['user_display_name'] as String? ?? json['author_name'] as String?,
+      authorAvatar: json['user_avatar_url'] as String? ?? json['author_avatar'] as String?,
       text: json['text'] as String? ?? '',
       likeCount: json['like_count'] as int? ?? 0,
       createdAt: json['created_at'] != null

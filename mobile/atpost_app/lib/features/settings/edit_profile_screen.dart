@@ -3,8 +3,8 @@ import 'dart:io';
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
-import 'package:atpost_app/data/repositories/user_repository.dart';
 import 'package:atpost_app/providers/user_provider.dart';
+import 'package:atpost_app/services/api_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -23,6 +23,7 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
   final _displayNameController = TextEditingController();
   final _usernameController = TextEditingController();
   final _bioController = TextEditingController();
+  final _pronounsController = TextEditingController();
   final _locationController = TextEditingController();
   final _professionController = TextEditingController();
 
@@ -35,6 +36,7 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
     _displayNameController.dispose();
     _usernameController.dispose();
     _bioController.dispose();
+    _pronounsController.dispose();
     _locationController.dispose();
     _professionController.dispose();
     super.dispose();
@@ -46,6 +48,7 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
     _displayNameController.text = user.displayName;
     _usernameController.text = user.username;
     _bioController.text = user.bio ?? '';
+    _pronounsController.text = user.pronouns ?? '';
     _locationController.text = user.location ?? '';
     _professionController.text = user.profession ?? '';
   }
@@ -69,13 +72,11 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
     if (!(_formKey.currentState?.validate() ?? false)) return;
     setState(() => _saving = true);
     try {
-      final userRepo = ref.read(userRepositoryProvider);
-      await userRepo.updateProfile({
+      await ref.read(apiClientProvider).put('/v1/profiles/me', data: {
         'display_name': _displayNameController.text.trim(),
-        'username': _usernameController.text.trim(),
         'bio': _bioController.text.trim(),
+        'pronouns': _pronounsController.text.trim(),
         'location': _locationController.text.trim(),
-        'profession': _professionController.text.trim(),
       });
       ref.invalidate(currentUserProvider);
       if (mounted) context.pop();
@@ -197,6 +198,13 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
                     controller: _bioController,
                     hint: 'Tell people about yourself',
                     maxLines: 3,
+                  ),
+                  const SizedBox(height: 16),
+                  _FieldLabel('Pronouns'),
+                  const SizedBox(height: 6),
+                  _ProfileTextField(
+                    controller: _pronounsController,
+                    hint: 'e.g. she/her, he/him, they/them',
                   ),
                   const SizedBox(height: 16),
                   _FieldLabel('Location'),

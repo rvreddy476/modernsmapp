@@ -25,7 +25,7 @@ class StoriesRepository {
     await _api.post('/v1/stories', data: {
       'media_id': mediaId,
       'media_type': mediaType,
-      'text': ?text,
+      'text': text,
     });
   }
 }

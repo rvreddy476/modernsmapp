@@ -64,4 +64,5 @@ var (
 	BookmarkLimitPerHour   = 200
 	ReplyLimitPerHour      = 20
 	CommentLikeLimitPerHour = 120
+	CrosspostLimitPerHour   = 5
 )

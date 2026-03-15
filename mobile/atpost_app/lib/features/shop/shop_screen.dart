@@ -1,3 +1,4 @@
+import 'package:atpost_app/core/config/environment.dart';
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
@@ -634,11 +635,11 @@ class _ProductCard extends StatelessWidget {
             flex: 3,
             child: Container(
               width: double.infinity,
-              decoration: BoxDecoration(
-                borderRadius: const BorderRadius.vertical(
+              decoration: const BoxDecoration(
+                borderRadius: BorderRadius.vertical(
                   top: Radius.circular(16),
                 ),
-                gradient: const LinearGradient(
+                gradient: LinearGradient(
                   colors: [
                     Color(0x3325B2FF),
                     Color(0x335350E6),
@@ -650,13 +651,50 @@ class _ProductCard extends StatelessWidget {
               ),
               child: Stack(
                 children: [
-                  const Center(
-                    child: Icon(
-                      Icons.shopping_bag_outlined,
-                      size: 40,
-                      color: AppColors.textSecondary,
+                  // Product image from first media ID, or fallback icon.
+                  if (product.mediaIds.isNotEmpty)
+                    Positioned.fill(
+                      child: ClipRRect(
+                        borderRadius: const BorderRadius.vertical(
+                          top: Radius.circular(16),
+                        ),
+                        child: Image.network(
+                          '${Environment.apiBaseUrl}/v1/media/${product.mediaIds.first}/serve',
+                          fit: BoxFit.cover,
+                          width: double.infinity,
+                          height: double.infinity,
+                          loadingBuilder: (context, child, loadingProgress) {
+                            if (loadingProgress == null) return child;
+                            return const Center(
+                              child: SizedBox(
+                                width: 24,
+                                height: 24,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: AppColors.postbookPrimary,
+                                ),
+                              ),
+                            );
+                          },
+                          errorBuilder: (_, _, _) => const Center(
+                            child: Icon(
+                              Icons.shopping_bag_outlined,
+                              size: 40,
+                              color: AppColors.textSecondary,
+                            ),
+                          ),
+                        ),
+                      ),
+                    )
+                  else
+                    const Center(
+                      child: Icon(
+                        Icons.shopping_bag_outlined,
+                        size: 40,
+                        color: AppColors.textSecondary,
+                      ),
                     ),
-                  ),
+                  // Category badge.
                   Positioned(
                     top: 8,
                     left: 8,

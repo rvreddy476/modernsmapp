@@ -40,6 +40,10 @@ const (
 	GroupMemberJoined = "GroupMemberJoined" // payload: GroupMemberJoinedPayload
 	GroupMemberLeft   = "GroupMemberLeft"   // payload: GroupMemberLeftPayload
 	GroupPostCreated  = "GroupPostCreated"  // payload: GroupPostCreatedPayload
+	GroupPostDeleted  = "GroupPostDeleted"  // payload: GroupPostDeletedPayload
+	GroupPostPinned   = "GroupPostPinned"   // payload: GroupPostPinnedPayload
+	GroupPostUnpinned = "GroupPostUnpinned" // payload: GroupPostUnpinnedPayload
+	MemberBanLifted   = "MemberBanLifted"   // payload: MemberBanLiftedPayload
 
 	StoryCreated = "StoryCreated" // payload: StoryCreatedPayload
 	StoryViewed  = "StoryViewed"  // payload: StoryViewedPayload
@@ -133,6 +137,47 @@ const (
 	MediaProcessingCompleted = "media.processing.completed"
 	CrossPostCreated        = "crosspost.created"
 	CrossPostCompleted      = "crosspost.completed"
+
+	// Groups V2 Events
+	GroupUpdated           = "group.updated"
+	GroupDeleted           = "group.deleted"
+	GroupArchived          = "group.archived"
+	GroupMemberRemoved     = "group.member.removed"
+	GroupMemberBanned      = "group.member.banned"
+	GroupMemberRoleChanged = "group.member.role_changed"
+	GroupInviteSent        = "group.invite.sent"
+	GroupInviteAccepted    = "group.invite.accepted"
+	GroupInviteRejected    = "group.invite.rejected"
+	GroupJoinRequested     = "group.join.requested"
+	GroupJoinApproved      = "group.join.approved"
+	GroupJoinRejected      = "group.join.rejected"
+
+	// Video Processing Lifecycle
+	VideoUploaded  = "video.uploaded"
+	VideoProcessed = "video.processed"
+	VideoReady     = "video.ready"
+	VideoFailed    = "video.failed"
+
+	// Profile Sync + Cross-Post v3
+	VideoPublished       = "video.published"
+	FlickPublished       = "flick.published"
+	CrosspostRemoved     = "crosspost.removed"
+	ModuleProfileUpdated = "module_profile.updated"
+	HandleChanged        = "handle.changed"
+	UploadDeleted        = "upload.deleted"
+
+	// Voice/Video Calling
+	EventCallCreated            = "call.created"
+	EventCallInvited            = "call.invited"
+	EventCallAccepted           = "call.accepted"
+	EventCallDeclined           = "call.declined"
+	EventCallExpired            = "call.expired"
+	EventCallJoined             = "call.joined"
+	EventCallLeft               = "call.left"
+	EventCallEnded              = "call.ended"
+	EventCallParticipantMuted   = "call.participant.muted"
+	EventCallParticipantRemoved = "call.participant.removed"
+	EventCallUpgraded           = "call.upgraded"
 )
 
 // EventEnvelope is the CloudEvents-ish structure we use on Kafka.
@@ -327,6 +372,34 @@ type GroupPostCreatedPayload struct {
 	PostID    string    `json:"post_id"`
 	AuthorID  string    `json:"author_id"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+type GroupPostDeletedPayload struct {
+	GroupID   string    `json:"group_id"`
+	PostID    string    `json:"post_id"`
+	DeletedBy string    `json:"deleted_by"`
+	DeletedAt time.Time `json:"deleted_at"`
+}
+
+type GroupPostPinnedPayload struct {
+	GroupID  string    `json:"group_id"`
+	PostID   string    `json:"post_id"`
+	PinnedBy string    `json:"pinned_by"`
+	PinnedAt time.Time `json:"pinned_at"`
+}
+
+type GroupPostUnpinnedPayload struct {
+	GroupID    string    `json:"group_id"`
+	PostID     string    `json:"post_id"`
+	UnpinnedBy string    `json:"unpinned_by"`
+	UnpinnedAt time.Time `json:"unpinned_at"`
+}
+
+type MemberBanLiftedPayload struct {
+	GroupID   string    `json:"group_id"`
+	UserID    string    `json:"user_id"`
+	LiftedBy  string    `json:"lifted_by"`
+	LiftedAt  time.Time `json:"lifted_at"`
 }
 
 type StoryCreatedPayload struct {
@@ -691,6 +764,187 @@ type CrossPostCompletedPayload struct {
 	TargetType   string    `json:"target_type"`
 	Status       string    `json:"status"`
 	CompletedAt  time.Time `json:"completed_at"`
+}
+
+// VideoProcessedPayload is emitted after media processing extracts video metadata.
+type VideoProcessedPayload struct {
+	PostID           string  `json:"post_id"`
+	MediaAssetID     string  `json:"media_asset_id"`
+	DurationSeconds  float64 `json:"duration_seconds"`
+	Width            int     `json:"width"`
+	Height           int     `json:"height"`
+	Orientation      string  `json:"orientation"`
+	ComputedCategory string  `json:"computed_category"`
+}
+
+// VideoReadyPayload is emitted when video transcoding is complete and playback URLs are available.
+type VideoReadyPayload struct {
+	PostID       string `json:"post_id"`
+	PlaybackURL  string `json:"playback_url"`
+	ThumbnailURL string `json:"thumbnail_url"`
+}
+
+// VideoFailedPayload is emitted when video processing fails.
+type VideoFailedPayload struct {
+	PostID string `json:"post_id"`
+	Error  string `json:"error"`
+}
+
+// --- Profile Sync + Cross-Post v3 Payloads ---
+
+type VideoPublishedPayload struct {
+	PostID      string    `json:"post_id"`
+	AuthorID    string    `json:"author_id"`
+	Title       string    `json:"title"`
+	Category    string    `json:"category"` // long_video or flick
+	PublishedAt time.Time `json:"published_at"`
+}
+
+type FlickPublishedPayload struct {
+	PostID      string    `json:"post_id"`
+	AuthorID    string    `json:"author_id"`
+	Caption     string    `json:"caption"`
+	PublishedAt time.Time `json:"published_at"`
+}
+
+type CrosspostRemovedPayload struct {
+	CrosspostID  string    `json:"crosspost_id"`
+	SourcePostID string    `json:"source_post_id"`
+	SourceModule string    `json:"source_module"`
+	TargetPostID string    `json:"target_post_id"`
+	RemovedAt    time.Time `json:"removed_at"`
+}
+
+type ModuleProfileUpdatedPayload struct {
+	UserID    string    `json:"user_id"`
+	Module    string    `json:"module"` // postbook, posttube, postgram
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type HandleChangedPayload struct {
+	UserID      string    `json:"user_id"`
+	OldUsername  string    `json:"old_username"`
+	NewUsername  string    `json:"new_username"`
+	ChangedAt   time.Time `json:"changed_at"`
+}
+
+type UploadDeletedPayload struct {
+	PostID      string    `json:"post_id"`
+	AuthorID    string    `json:"author_id"`
+	ContentType string    `json:"content_type"`
+	DeletedAt   time.Time `json:"deleted_at"`
+}
+
+// --- Groups V2 Payloads ---
+
+type GroupUpdatedPayload struct {
+	GroupID   string    `json:"group_id"`
+	ActorID   string    `json:"actor_id"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type GroupDeletedPayload struct {
+	GroupID   string    `json:"group_id"`
+	ActorID   string    `json:"actor_id"`
+	DeletedAt time.Time `json:"deleted_at"`
+}
+
+type GroupArchivedPayload struct {
+	GroupID    string    `json:"group_id"`
+	ActorID    string    `json:"actor_id"`
+	ArchivedAt time.Time `json:"archived_at"`
+}
+
+type GroupMemberRemovedPayload struct {
+	GroupID   string    `json:"group_id"`
+	UserID    string    `json:"user_id"`
+	RemovedBy string    `json:"removed_by"`
+	RemovedAt time.Time `json:"removed_at"`
+}
+
+type GroupMemberBannedPayload struct {
+	GroupID  string    `json:"group_id"`
+	UserID   string    `json:"user_id"`
+	BannedBy string    `json:"banned_by"`
+	BannedAt time.Time `json:"banned_at"`
+}
+
+type GroupMemberRoleChangedPayload struct {
+	GroupID  string    `json:"group_id"`
+	UserID   string    `json:"user_id"`
+	OldRole  string    `json:"old_role"`
+	NewRole  string    `json:"new_role"`
+	ChangedBy string   `json:"changed_by"`
+	ChangedAt time.Time `json:"changed_at"`
+}
+
+type GroupInviteSentPayload struct {
+	GroupID   string    `json:"group_id"`
+	InviterID string    `json:"inviter_id"`
+	InviteeID string    `json:"invitee_id"`
+	InviteID  string    `json:"invite_id"`
+	SentAt    time.Time `json:"sent_at"`
+}
+
+type GroupInviteAcceptedPayload struct {
+	GroupID   string    `json:"group_id"`
+	InviteID  string    `json:"invite_id"`
+	UserID    string    `json:"user_id"`
+	AcceptedAt time.Time `json:"accepted_at"`
+}
+
+type GroupInviteRejectedPayload struct {
+	GroupID   string    `json:"group_id"`
+	InviteID  string    `json:"invite_id"`
+	UserID    string    `json:"user_id"`
+	RejectedAt time.Time `json:"rejected_at"`
+}
+
+type GroupJoinRequestedPayload struct {
+	GroupID   string    `json:"group_id"`
+	UserID    string    `json:"user_id"`
+	RequestID string    `json:"request_id"`
+	RequestedAt time.Time `json:"requested_at"`
+}
+
+type GroupJoinApprovedPayload struct {
+	GroupID    string    `json:"group_id"`
+	UserID     string    `json:"user_id"`
+	RequestID  string    `json:"request_id"`
+	ApprovedBy string    `json:"approved_by"`
+	ApprovedAt time.Time `json:"approved_at"`
+}
+
+type GroupJoinRejectedPayload struct {
+	GroupID    string    `json:"group_id"`
+	UserID     string    `json:"user_id"`
+	RequestID  string    `json:"request_id"`
+	RejectedBy string    `json:"rejected_by"`
+	RejectedAt time.Time `json:"rejected_at"`
+}
+
+// ---------------------------------------------------------------------------
+// Call event payloads
+// ---------------------------------------------------------------------------
+
+type CallInvitedPayload struct {
+	CallID        string    `json:"call_id"`
+	InviteID      string    `json:"invite_id"`
+	InviterUserID string    `json:"inviter_user_id"`
+	InviteeUserID string    `json:"invitee_user_id"`
+	CallType      string    `json:"call_type"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+type CallEndedPayload struct {
+	CallID          string    `json:"call_id"`
+	InitiatorUserID string    `json:"initiator_user_id"`
+	EndedBy         string    `json:"ended_by"`
+	EndedReason     string    `json:"ended_reason"`
+	DurationSeconds int       `json:"duration_seconds"`
+	SourceType      string    `json:"source_type"`
+	SourceID        string    `json:"source_id,omitempty"`
+	EndedAt         time.Time `json:"ended_at"`
 }
 
 // NewEnvelope creates an EventEnvelope with a new EventID and

@@ -1,0 +1,61 @@
+# ── External access overlay ──
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.external.yml up --build -d
+#
+# Prerequisites:
+#   1. Point your domain DNS (A record) to your laptop's public IP
+#   2. Forward ports 80 and 443 on your router to this machine
+#   3. Set DOMAIN in your shell:  export DOMAIN=yourdomain.com
+#
+# Caddy auto-provisions Let's Encrypt TLS certs — no manual SSL setup needed.
+# WebRTC (getUserMedia) REQUIRES HTTPS, so this is mandatory for call testing.
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    depends_on:
+      - api-gateway
+      - chat-ws-gateway
+      - nextjs
+    restart: unless-stopped
+
+  nextjs:
+    image: node:20-alpine
+    working_dir: /app
+    command: sh -c "npm install --legacy-peer-deps --production && npm run build && npm start"
+    volumes:
+      - ../../../postbook-ui:/app
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: "https://${DOMAIN:-localhost}"
+      NEXT_PUBLIC_WS_BASE_URL: "wss://${DOMAIN:-localhost}/v1/ws"
+      PORT: "3000"
+    expose:
+      - "3000"
+
+  # Override API gateway CORS to allow the domain
+  api-gateway:
+    environment:
+      CORS_ORIGINS: "https://${DOMAIN:-localhost},http://localhost:3000"
+
+  # Override WS gateway allowed origins
+  chat-ws-gateway:
+    environment:
+      ALLOWED_ORIGINS: "https://${DOMAIN:-localhost},http://localhost:3000"
+
+  # Override media public endpoint for external access
+  media-service:
+    environment:
+      MINIO_PUBLIC_ENDPOINT: "https://${DOMAIN:-localhost}/storage"
+
+volumes:
+  caddy_data:
+  caddy_config:

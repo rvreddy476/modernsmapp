@@ -75,6 +75,15 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		}
 		return nil
 
+	case events.CrosspostRemoved:
+		return c.handleCrosspostRemoved(ctx, envelope)
+
+	case events.UploadDeleted:
+		return c.handleUploadDeleted(ctx, envelope)
+
+	case events.HandleChanged:
+		return c.handleHandleChanged(ctx, envelope)
+
 	default:
 		return nil
 	}
@@ -177,6 +186,85 @@ func (c *Consumer) handleCommentCreated(ctx context.Context, envelope events.Eve
 	}
 
 	log.Printf("Processing CommentCreated: post=%s commenter=%s", postID, authorID)
+	return nil
+}
+
+func (c *Consumer) handleCrosspostRemoved(ctx context.Context, envelope events.EventEnvelope) error {
+	var event events.CrosspostRemovedPayload
+	payloadBytes, _ := json.Marshal(envelope.Payload)
+	if err := json.Unmarshal(payloadBytes, &event); err != nil {
+		return err
+	}
+
+	// The target embed post has been soft-deleted in Postgres.
+	// Remove it from home timelines via Redis cache invalidation so
+	// hydration will skip it on next feed fetch.
+	targetKey := fmt.Sprintf("post:deleted:%s", event.TargetPostID)
+	if err := c.rdb.Set(ctx, targetKey, "1", 24*time.Hour).Err(); err != nil {
+		log.Printf("Failed to mark crosspost target deleted in Redis: %v", err)
+	}
+
+	log.Printf("Processing CrosspostRemoved: crosspost=%s target=%s", event.CrosspostID, event.TargetPostID)
+	return nil
+}
+
+func (c *Consumer) handleUploadDeleted(ctx context.Context, envelope events.EventEnvelope) error {
+	var event events.UploadDeletedPayload
+	payloadBytes, _ := json.Marshal(envelope.Payload)
+	if err := json.Unmarshal(payloadBytes, &event); err != nil {
+		return err
+	}
+
+	postID, err := uuid.Parse(event.PostID)
+	if err != nil {
+		return err
+	}
+
+	// Mark the post as deleted in Redis so feed hydration skips it
+	deletedKey := fmt.Sprintf("post:deleted:%s", event.PostID)
+	if err := c.rdb.Set(ctx, deletedKey, "1", 24*time.Hour).Err(); err != nil {
+		log.Printf("Failed to mark upload deleted in Redis: %v", err)
+	}
+
+	// Clean up interaction counters
+	c.rdb.Del(ctx, fmt.Sprintf("post:counters:%s:likes", event.PostID))
+	c.rdb.Del(ctx, fmt.Sprintf("post:counters:%s:comments", event.PostID))
+	c.rdb.Del(ctx, fmt.Sprintf("post:likers:%s", event.PostID))
+
+	// If author provided, delete from author timeline
+	if event.AuthorID != "" {
+		authorID, parseErr := uuid.Parse(event.AuthorID)
+		if parseErr == nil && c.timelineStore != nil {
+			// Delete the specific post entry from author timeline (current month)
+			now := time.Now().UTC()
+			b := now.Year()*100 + int(now.Month())
+			if delErr := c.timelineStore.DeleteAuthorTimelineEntry(ctx, authorID, postID, b); delErr != nil {
+				log.Printf("Failed to delete author timeline entry for %s: %v", event.PostID, delErr)
+			}
+		}
+	}
+
+	log.Printf("Processing UploadDeleted: post=%s author=%s type=%s", event.PostID, event.AuthorID, event.ContentType)
+	return nil
+}
+
+func (c *Consumer) handleHandleChanged(ctx context.Context, envelope events.EventEnvelope) error {
+	var event events.HandleChangedPayload
+	payloadBytes, _ := json.Marshal(envelope.Payload)
+	if err := json.Unmarshal(payloadBytes, &event); err != nil {
+		return err
+	}
+
+	// Invalidate any cached profile data for this user so feed hydration
+	// fetches the updated username on next request.
+	cacheKey := fmt.Sprintf("feed:profile:%s", event.UserID)
+	c.rdb.Del(ctx, cacheKey)
+
+	// Also invalidate old username lookup cache
+	oldKey := fmt.Sprintf("feed:handle:%s", event.OldUsername)
+	c.rdb.Del(ctx, oldKey)
+
+	log.Printf("Processing HandleChanged: user=%s old=@%s new=@%s", event.UserID, event.OldUsername, event.NewUsername)
 	return nil
 }
 

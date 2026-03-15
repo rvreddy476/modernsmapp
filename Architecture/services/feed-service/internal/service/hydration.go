@@ -23,6 +23,7 @@ type HydratedPost struct {
 	Feeling        *string         `json:"feeling,omitempty"`
 	Activity       *string         `json:"activity,omitempty"`
 	ActivityDetail *string         `json:"activity_detail,omitempty"`
+	CoverMediaID   *uuid.UUID      `json:"cover_media_id,omitempty"`
 	CreatedAt      string          `json:"created_at"`
 	UpdatedAt      string          `json:"updated_at"`
 	Media          json.RawMessage `json:"media,omitempty"`
@@ -31,7 +32,10 @@ type HydratedPost struct {
 	IsBookmarked   bool            `json:"is_bookmarked"`
 	Poll           json.RawMessage `json:"poll,omitempty"`
 	Location       *string         `json:"location,omitempty"`
+	Hashtags       json.RawMessage `json:"hashtags,omitempty"`
+	PostType       string          `json:"post_type,omitempty"`
 	Score          float64         `json:"score,omitempty"`
+	VideoMetadata  json.RawMessage `json:"video_metadata,omitempty"`
 }
 
 // HydratePosts calls post-service's batch endpoint to enrich timeline entries

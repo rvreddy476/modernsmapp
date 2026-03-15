@@ -62,7 +62,9 @@ func main() {
 		{"/v1/links", env("USER_SERVICE_URL", "http://user-service:8082")},
 		{"/v1/users", env("USER_SERVICE_URL", "http://user-service:8082")},
 		{"/v1/graph", env("GRAPH_SERVICE_URL", "http://graph-service:8083")},
-		// Post service: reels, posts, comments, stories, reactions, saved, hashtags
+		// Post service: videos, reels, posts, comments, stories, reactions, saved, hashtags, uploads
+		{"/v1/uploads", env("POST_SERVICE_URL", "http://post-service:8084")},
+		{"/v1/videos", env("POST_SERVICE_URL", "http://post-service:8084")},
 		{"/v1/reels", env("POST_SERVICE_URL", "http://post-service:8084")},
 		{"/v1/stories", env("POST_SERVICE_URL", "http://post-service:8084")},
 		{"/v1/saved", env("POST_SERVICE_URL", "http://post-service:8084")},
@@ -79,6 +81,7 @@ func main() {
 		{"/v1/groups", env("GROUP_SERVICE_URL", "http://group-service:8090")},
 		{"/v1/reports", env("TRUST_SAFETY_SERVICE_URL", "http://trust-safety-service:8091")},
 		{"/v1/ws", env("WS_GATEWAY_URL", "http://ws-gateway:8093")},
+		{"/v1/calls", env("CALL_SERVICE_URL", "http://call-service:8097")},
 		{"/v1/chat", env("MESSAGE_SERVICE_URL", "http://message-service:8092")},
 		{"/v1/analytics", env("ANALYTICS_SERVICE_URL", "http://analytics-service:8094")},
 		{"/v1/flags", env("FLAGS_SERVICE_URL", "http://feature-flag-service:8095")},

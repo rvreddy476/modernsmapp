@@ -1,4 +1,3 @@
-import 'dart:io';
 
 import 'package:atpost_app/core/config/environment.dart';
 import 'package:atpost_app/core/utils/app_logger.dart';
@@ -189,6 +188,17 @@ class ApiClient {
       AppLogger.error('Media upload failed', tag: _tag, error: e);
       rethrow;
     }
+  }
+
+  /// Perform a DELETE request with a JSON body.
+  /// Alias for [delete] — provided for clarity when passing request data.
+  Future<Response<T>> deleteWithData<T>(
+    String path, {
+    Object? data,
+    Options? options,
+    CancelToken? cancelToken,
+  }) {
+    return delete<T>(path, data: data, options: options, cancelToken: cancelToken);
   }
 
   /// Centralized error logging for network requests.

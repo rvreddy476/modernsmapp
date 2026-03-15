@@ -2,8 +2,16 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'dart:io' show Platform;
 
 /// Environment configuration for API endpoints.
+///
+/// Set [externalDomain] to route all traffic through Caddy reverse proxy
+/// (e.g. "cleestudio.com") for external/HTTPS testing. When null, uses
+/// direct localhost/emulator connections.
 class Environment {
   const Environment._();
+
+  /// Set to a domain (e.g. "cleestudio.com") to use external HTTPS endpoints.
+  /// Leave null for local development with direct service ports.
+  static String? externalDomain;
 
   // Resolve host: Android emulator uses 10.0.2.2, everything else uses localhost
   static String get _host {
@@ -14,10 +22,21 @@ class Environment {
     return 'localhost';
   }
 
-  // Base URLs — auto-detect platform
-  static String get apiBaseUrl => 'http://$_host:8080';
-  static String get wsBaseUrl => 'ws://$_host:8092';
-  static String get wsGatewayUrl => 'ws://$_host:8089';
+  // Base URLs — auto-detect platform, or use external domain if set
+  static String get apiBaseUrl {
+    if (externalDomain != null) return 'https://$externalDomain';
+    return 'http://$_host:8080';
+  }
+
+  static String get wsBaseUrl {
+    if (externalDomain != null) return 'wss://$externalDomain/v1/ws';
+    return 'ws://$_host:8092';
+  }
+
+  static String get wsGatewayUrl {
+    if (externalDomain != null) return 'wss://$externalDomain/v1/ws';
+    return 'ws://$_host:8089';
+  }
 
   // API paths
   static const String authPath = '/v1/auth';

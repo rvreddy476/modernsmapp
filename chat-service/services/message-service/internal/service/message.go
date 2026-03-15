@@ -946,3 +946,28 @@ func (s *Service) MarkRead(ctx context.Context, userID, conversationID uuid.UUID
 
 	return nil
 }
+
+// GetPresence checks which of the given user IDs are currently online
+// by looking up their presence keys in Redis.
+func (s *Service) GetPresence(ctx context.Context, userIDs []uuid.UUID) (map[string]bool, error) {
+	if len(userIDs) == 0 {
+		return map[string]bool{}, nil
+	}
+
+	keys := make([]string, len(userIDs))
+	for i, id := range userIDs {
+		keys[i] = "presence:" + id.String()
+	}
+
+	results, err := s.rdb.MGet(ctx, keys...).Result()
+	if err != nil {
+		s.log.Warn("failed to check presence", "err", err)
+		return map[string]bool{}, nil
+	}
+
+	presence := make(map[string]bool, len(userIDs))
+	for i, id := range userIDs {
+		presence[id.String()] = results[i] != nil
+	}
+	return presence, nil
+}
