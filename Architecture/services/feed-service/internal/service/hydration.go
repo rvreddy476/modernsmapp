@@ -33,9 +33,11 @@ type HydratedPost struct {
 	Poll           json.RawMessage `json:"poll,omitempty"`
 	Location       *string         `json:"location,omitempty"`
 	Hashtags       json.RawMessage `json:"hashtags,omitempty"`
-	PostType       string          `json:"post_type,omitempty"`
-	Score          float64         `json:"score,omitempty"`
-	VideoMetadata  json.RawMessage `json:"video_metadata,omitempty"`
+	PostType        string          `json:"post_type,omitempty"`
+	AppOrigin       string          `json:"app_origin,omitempty"`
+	ShareToPostbook bool            `json:"share_to_postbook"`
+	Score           float64         `json:"score,omitempty"`
+	VideoMetadata   json.RawMessage `json:"video_metadata,omitempty"`
 }
 
 // HydratePosts calls post-service's batch endpoint to enrich timeline entries

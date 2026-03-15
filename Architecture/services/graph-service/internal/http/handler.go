@@ -60,7 +60,45 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.DELETE("/friend", h.RemoveFriend)
 		v1.GET("/friends/:userId", h.GetFriends)
 		v1.GET("/friend-requests", h.GetPendingRequests)
+
+		// Close Friends
+		cfGroup := v1.Group("/close-friends")
+		cfGroup.GET("", h.GetCloseFriends)
+		cfGroup.POST("/:id", h.AddCloseFriend)
+		cfGroup.DELETE("/:id", h.RemoveCloseFriend)
+
+		// Circles
+		circlesGroup := v1.Group("/circles")
+		circlesGroup.POST("", h.CreateCircle)
+		circlesGroup.GET("", h.ListCircles)
+		circlesGroup.PUT("/:circleId", h.UpdateCircle)
+		circlesGroup.DELETE("/:circleId", h.DeleteCircle)
+		circlesGroup.GET("/:circleId/members", h.GetCircleMembers)
+		circlesGroup.POST("/:circleId/members/:userId", h.AddCircleMember)
+		circlesGroup.DELETE("/:circleId/members/:userId", h.RemoveCircleMember)
+
+		// Relationship Labels
+		labelsGroup := v1.Group("/labels")
+		labelsGroup.GET("", h.ListRelationshipLabels)
+		labelsGroup.PUT("/:userId", h.UpsertRelationshipLabel)
+		labelsGroup.DELETE("/:userId", h.DeleteRelationshipLabel)
+
+		// Favorites
+		favsGroup := v1.Group("/favorites")
+		favsGroup.GET("", h.GetFavorites)
+		favsGroup.POST("/:userId", h.AddFavorite)
+		favsGroup.DELETE("/:userId", h.RemoveFavorite)
 	}
+}
+
+// getUserID extracts and parses the authenticated user ID from the X-User-Id header.
+func getUserID(c *gin.Context) (uuid.UUID, bool) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return uuid.Nil, false
+	}
+	return userID, true
 }
 
 type UserIDRequest struct {
@@ -404,6 +442,332 @@ func (h *Handler) GetBlockedAndMuted(c *gin.Context) {
 		ids = []uuid.UUID{}
 	}
 	c.JSON(http.StatusOK, gin.H{"user_ids": ids})
+}
+
+// ── Close Friends ───────────────────────────────────────────
+
+func (h *Handler) GetCloseFriends(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	ids, err := h.svc.GetCloseFriends(c.Request.Context(), userID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	if ids == nil {
+		ids = []uuid.UUID{}
+	}
+	api.JSON(c.Writer, http.StatusOK, ids, nil)
+}
+
+func (h *Handler) AddCloseFriend(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	friendID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid friend id", nil, nil)
+		return
+	}
+	if err := h.svc.AddCloseFriend(c.Request.Context(), userID, friendID); err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
+}
+
+func (h *Handler) RemoveCloseFriend(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	friendID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid friend id", nil, nil)
+		return
+	}
+	if err := h.svc.RemoveCloseFriend(c.Request.Context(), userID, friendID); err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
+}
+
+// ── Circles ─────────────────────────────────────────────────
+
+func (h *Handler) CreateCircle(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		Name  string  `json:"name" binding:"required"`
+		Emoji *string `json:"emoji"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	circle, err := h.svc.CreateCircle(c.Request.Context(), userID, req.Name, req.Emoji)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusCreated, circle, nil)
+}
+
+func (h *Handler) ListCircles(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	circles, err := h.svc.ListCircles(c.Request.Context(), userID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	if circles == nil {
+		circles = []store.Circle{}
+	}
+	api.JSON(c.Writer, http.StatusOK, circles, nil)
+}
+
+func (h *Handler) UpdateCircle(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	circleID, err := uuid.Parse(c.Param("circleId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid circle id", nil, nil)
+		return
+	}
+	var req struct {
+		Name  string  `json:"name" binding:"required"`
+		Emoji *string `json:"emoji"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	circle, err := h.svc.UpdateCircle(c.Request.Context(), circleID, userID, req.Name, req.Emoji)
+	if err != nil {
+		if err.Error() == "circle not found" {
+			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "circle not found", nil, nil)
+			return
+		}
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, circle, nil)
+}
+
+func (h *Handler) DeleteCircle(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	circleID, err := uuid.Parse(c.Param("circleId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid circle id", nil, nil)
+		return
+	}
+	if err := h.svc.DeleteCircle(c.Request.Context(), circleID, userID); err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
+}
+
+func (h *Handler) GetCircleMembers(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	circleID, err := uuid.Parse(c.Param("circleId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid circle id", nil, nil)
+		return
+	}
+	ids, err := h.svc.GetCircleMembers(c.Request.Context(), circleID, userID)
+	if err != nil {
+		if err.Error() == "circle not found" {
+			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "circle not found", nil, nil)
+			return
+		}
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	if ids == nil {
+		ids = []uuid.UUID{}
+	}
+	api.JSON(c.Writer, http.StatusOK, ids, nil)
+}
+
+func (h *Handler) AddCircleMember(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	circleID, err := uuid.Parse(c.Param("circleId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid circle id", nil, nil)
+		return
+	}
+	memberID, err := uuid.Parse(c.Param("userId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid user id", nil, nil)
+		return
+	}
+	if err := h.svc.AddCircleMember(c.Request.Context(), circleID, userID, memberID); err != nil {
+		if err.Error() == "circle not found" {
+			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "circle not found", nil, nil)
+			return
+		}
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
+}
+
+func (h *Handler) RemoveCircleMember(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	circleID, err := uuid.Parse(c.Param("circleId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid circle id", nil, nil)
+		return
+	}
+	memberID, err := uuid.Parse(c.Param("userId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid user id", nil, nil)
+		return
+	}
+	if err := h.svc.RemoveCircleMember(c.Request.Context(), circleID, userID, memberID); err != nil {
+		if err.Error() == "circle not found" {
+			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "circle not found", nil, nil)
+			return
+		}
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
+}
+
+// ── Relationship Labels ──────────────────────────────────────
+
+func (h *Handler) ListRelationshipLabels(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	labels, err := h.svc.ListRelationshipLabels(c.Request.Context(), userID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	if labels == nil {
+		labels = []store.RelationshipLabel{}
+	}
+	api.JSON(c.Writer, http.StatusOK, labels, nil)
+}
+
+func (h *Handler) UpsertRelationshipLabel(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	targetID, err := uuid.Parse(c.Param("userId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid user id", nil, nil)
+		return
+	}
+	var req struct {
+		Label string `json:"label" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	if err := h.svc.UpsertRelationshipLabel(c.Request.Context(), userID, targetID, req.Label); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_LABEL", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
+}
+
+func (h *Handler) DeleteRelationshipLabel(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	targetID, err := uuid.Parse(c.Param("userId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid user id", nil, nil)
+		return
+	}
+	if err := h.svc.DeleteRelationshipLabel(c.Request.Context(), userID, targetID); err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
+}
+
+// ── Favorites ────────────────────────────────────────────────
+
+func (h *Handler) GetFavorites(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	ids, err := h.svc.GetFavorites(c.Request.Context(), userID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	if ids == nil {
+		ids = []uuid.UUID{}
+	}
+	api.JSON(c.Writer, http.StatusOK, ids, nil)
+}
+
+func (h *Handler) AddFavorite(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	targetID, err := uuid.Parse(c.Param("userId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid user id", nil, nil)
+		return
+	}
+	if err := h.svc.AddFavorite(c.Request.Context(), userID, targetID); err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
+}
+
+func (h *Handler) RemoveFavorite(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	targetID, err := uuid.Parse(c.Param("userId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid user id", nil, nil)
+		return
+	}
+	if err := h.svc.RemoveFavorite(c.Request.Context(), userID, targetID); err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
 }
 
 func (h *Handler) GetRelationshipBatch(c *gin.Context) {

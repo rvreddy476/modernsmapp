@@ -94,7 +94,8 @@ type CreatePostInput struct {
 	LocationLat    *float64
 	LocationLng    *float64
 	PostType       string
-	AppOrigin      string
+	AppOrigin       string
+	ShareToPostbook bool
 	// Reel metadata
 	Title              string
 	Tags               []string
@@ -300,7 +301,8 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		LocationLat:    input.LocationLat,
 		LocationLng:    input.LocationLng,
 		PostType:       postType,
-		AppOrigin:      appOrigin,
+		AppOrigin:          appOrigin,
+		ShareToPostbook:    input.ShareToPostbook,
 		Title:              input.Title,
 		Tags:               input.Tags,
 		Category:           input.Category,

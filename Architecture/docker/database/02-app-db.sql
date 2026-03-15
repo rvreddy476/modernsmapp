@@ -285,6 +285,7 @@ CREATE TABLE IF NOT EXISTS posts (
     location_lng DOUBLE PRECISION,
     post_type TEXT NOT NULL DEFAULT 'standard',
     app_origin TEXT,
+    share_to_postbook BOOLEAN NOT NULL DEFAULT FALSE,
     no_comments BOOLEAN NOT NULL DEFAULT FALSE,
     no_likes BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ NOT NULL,

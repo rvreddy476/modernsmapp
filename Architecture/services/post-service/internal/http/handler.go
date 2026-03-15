@@ -69,7 +69,21 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.DELETE("/:postId/bookmark", h.RemoveBookmark)
 		v1.GET("/:postId/poll", h.GetPoll)
 		v1.POST("/:postId/vote", h.CastVote)
+
+		// Poll results (new)
+		v1.POST("/:postId/poll/vote", h.CastPollVote)
+		v1.GET("/:postId/poll/results", h.GetPollResults)
+
+		// Tune (private negative signal)
+		v1.POST("/:postId/tune", h.CreateTune)
+		v1.DELETE("/:postId/tune", h.DeleteTune)
 	}
+
+	// Events
+	r.POST("/v1/events", h.CreateEvent)
+	r.GET("/v1/events/:eventId", h.GetEvent)
+	r.POST("/v1/events/:eventId/rsvp", h.RSVPEvent)
+	r.GET("/v1/events/:eventId/rsvps", h.GetEventRSVPs)
 
 	// Stories
 	stories := r.Group("/v1/stories")
@@ -147,7 +161,8 @@ type CreatePostRequest struct {
 	LocationLat    *float64        `json:"location_lat"`
 	LocationLng    *float64        `json:"location_lng"`
 	PostType       string          `json:"post_type"`
-	AppOrigin      string          `json:"app_origin"`
+	AppOrigin       string          `json:"app_origin"`
+	ShareToPostbook bool            `json:"share_to_postbook"`
 	// Reel metadata
 	Title              string   `json:"title"`
 	Tags               []string `json:"tags"`
@@ -242,8 +257,9 @@ func (h *Handler) CreatePost(c *gin.Context) {
 		LocationLat:    req.LocationLat,
 		LocationLng:    req.LocationLng,
 		PostType:       req.PostType,
-		AppOrigin:      req.AppOrigin,
-		Title:              req.Title,
+		AppOrigin:       req.AppOrigin,
+		ShareToPostbook: req.ShareToPostbook,
+		Title:               req.Title,
 		Tags:               req.Tags,
 		Category:           req.Category,
 		Language:           req.Language,
@@ -1606,4 +1622,196 @@ func (h *Handler) PublishVideo(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "published"}, nil)
+}
+
+// ============================================================
+// Poll Results Handlers
+// ============================================================
+
+func (h *Handler) CastPollVote(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+	postID, err := uuid.Parse(c.Param("postId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		return
+	}
+	var req struct {
+		OptionID uuid.UUID `json:"option_id" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	if err := h.svc.CastPollVote(c.Request.Context(), postID, req.OptionID, userID); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "VOTE_ERROR", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]bool{"ok": true}, nil)
+}
+
+func (h *Handler) GetPollResults(c *gin.Context) {
+	postID, err := uuid.Parse(c.Param("postId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		return
+	}
+	results, err := h.svc.GetPollResults(c.Request.Context(), postID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	if results == nil {
+		results = []postgres.PollVoteResult{}
+	}
+	api.JSON(c.Writer, http.StatusOK, results, nil)
+}
+
+// ============================================================
+// Tune Handlers
+// ============================================================
+
+func (h *Handler) CreateTune(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+	postID, err := uuid.Parse(c.Param("postId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		return
+	}
+	if err := h.svc.CreateTune(c.Request.Context(), userID, postID); err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]bool{"ok": true}, nil)
+}
+
+func (h *Handler) DeleteTune(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+	postID, err := uuid.Parse(c.Param("postId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		return
+	}
+	if err := h.svc.DeleteTune(c.Request.Context(), userID, postID); err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]bool{"ok": true}, nil)
+}
+
+// ============================================================
+// Event Handlers
+// ============================================================
+
+func (h *Handler) CreateEvent(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+	var req struct {
+		Title        string     `json:"title" binding:"required"`
+		Description  string     `json:"description"`
+		StartsAt     time.Time  `json:"starts_at" binding:"required"`
+		EndsAt       *time.Time `json:"ends_at"`
+		LocationName *string    `json:"location_name"`
+		LocationLat  *float64   `json:"location_lat"`
+		LocationLng  *float64   `json:"location_lng"`
+		CoverMediaID *uuid.UUID `json:"cover_media_id"`
+		IsTicketed   bool       `json:"is_ticketed"`
+		TicketPrice  *float64   `json:"ticket_price"`
+		MaxAttendees *int       `json:"max_attendees"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	event, err := h.svc.CreateEvent(c.Request.Context(), service.CreateEventInput{
+		CreatorID:    userID,
+		Title:        req.Title,
+		Description:  req.Description,
+		StartsAt:     req.StartsAt,
+		EndsAt:       req.EndsAt,
+		LocationName: req.LocationName,
+		LocationLat:  req.LocationLat,
+		LocationLng:  req.LocationLng,
+		CoverMediaID: req.CoverMediaID,
+		IsTicketed:   req.IsTicketed,
+		TicketPrice:  req.TicketPrice,
+		MaxAttendees: req.MaxAttendees,
+	})
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "CREATE_EVENT_ERROR", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusCreated, event, nil)
+}
+
+func (h *Handler) GetEvent(c *gin.Context) {
+	eventID, err := uuid.Parse(c.Param("eventId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid event ID", nil, nil)
+		return
+	}
+	event, err := h.svc.GetEvent(c.Request.Context(), eventID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, event, nil)
+}
+
+func (h *Handler) RSVPEvent(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+	eventID, err := uuid.Parse(c.Param("eventId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid event ID", nil, nil)
+		return
+	}
+	var req struct {
+		Status string `json:"status" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	if err := h.svc.RSVPEvent(c.Request.Context(), eventID, userID, req.Status); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "RSVP_ERROR", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]bool{"ok": true}, nil)
+}
+
+func (h *Handler) GetEventRSVPs(c *gin.Context) {
+	eventID, err := uuid.Parse(c.Param("eventId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid event ID", nil, nil)
+		return
+	}
+	limit := 20
+	offset := 0
+	rsvps, err := h.svc.GetEventRSVPs(c.Request.Context(), eventID, limit, offset)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	if rsvps == nil {
+		rsvps = []postgres.EventRSVP{}
+	}
+	api.JSON(c.Writer, http.StatusOK, rsvps, nil)
 }

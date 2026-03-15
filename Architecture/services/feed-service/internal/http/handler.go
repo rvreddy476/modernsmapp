@@ -5,8 +5,10 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/atpost/feed-service/internal/service"
+	"github.com/atpost/feed-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
 	sharedmiddleware "github.com/atpost/shared/middleware"
 	"github.com/gin-gonic/gin"
@@ -45,6 +47,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.POST("/preference", h.SetPreference)
 		v1.POST("/signal", h.PostSignal)
 		v1.GET("/debug", h.DebugFeed)
+
+		// Feed control
+		v1.POST("/hide/:postId", h.HidePost)
+		v1.DELETE("/hide/:postId", h.UnhidePost)
+		v1.POST("/mute", h.MuteTarget)
+		v1.DELETE("/mute", h.UnmuteTarget)
+		v1.GET("/muted", h.GetMutedTargets)
 	}
 }
 
@@ -76,6 +85,7 @@ func (h *Handler) GetHomeFeed(c *gin.Context) {
 
 	excludeSelf := c.DefaultQuery("exclude_self", "") == "true"
 	circleOnly := c.DefaultQuery("circle_only", "") == "true"
+	platform := c.DefaultQuery("platform", "") // "postbook" | "posttube" | ""
 
 	feedItems, err := h.svc.GetHomeFeed(c.Request.Context(), userID, limit, feedMode, excludeSelf, circleOnly)
 	if err != nil {
@@ -91,6 +101,24 @@ func (h *Handler) GetHomeFeed(c *gin.Context) {
 		c.Writer.Header().Set("X-Feed-Mode", feedMode)
 		api.JSON(c.Writer, http.StatusOK, feedItems, nil)
 		return
+	}
+
+	// Platform filter: Postbook sees only social posts (post/poll) plus PostTube
+	// videos the author explicitly opted to share there. PostTube uses its own
+	// dedicated /feed/flicks and /feed/videos endpoints instead.
+	if platform == "postbook" {
+		videoTypes := map[string]bool{"flick": true, "long_video": true, "video": true, "reel": true, "short": true}
+		filtered := hydrated[:0]
+		for _, p := range hydrated {
+			if videoTypes[p.ContentType] {
+				if p.ShareToPostbook {
+					filtered = append(filtered, p)
+				}
+			} else {
+				filtered = append(filtered, p)
+			}
+		}
+		hydrated = filtered
 	}
 
 	c.Writer.Header().Set("X-Feed-Mode", feedMode)
@@ -319,4 +347,100 @@ func (h *Handler) DebugFeed(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, debug, nil)
+}
+
+func (h *Handler) HidePost(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+	postID, err := uuid.Parse(c.Param("postId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		return
+	}
+	if err := h.svc.HidePost(c.Request.Context(), userID, postID); err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
+}
+
+func (h *Handler) UnhidePost(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+	postID, err := uuid.Parse(c.Param("postId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		return
+	}
+	if err := h.svc.UnhidePost(c.Request.Context(), userID, postID); err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
+}
+
+func (h *Handler) MuteTarget(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+	var req struct {
+		TargetType string     `json:"target_type" binding:"required"`
+		TargetID   string     `json:"target_id" binding:"required"`
+		ExpiresAt  *time.Time `json:"expires_at"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	if err := h.svc.MuteTarget(c.Request.Context(), userID, req.TargetType, req.TargetID, req.ExpiresAt); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "MUTE_ERROR", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
+}
+
+func (h *Handler) UnmuteTarget(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+	var req struct {
+		TargetType string `json:"target_type" binding:"required"`
+		TargetID   string `json:"target_id" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	if err := h.svc.UnmuteTarget(c.Request.Context(), userID, req.TargetType, req.TargetID); err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
+}
+
+func (h *Handler) GetMutedTargets(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+	mutes, err := h.svc.GetMutedTargets(c.Request.Context(), userID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	if mutes == nil {
+		mutes = []postgres.FeedMute{}
+	}
+	api.JSON(c.Writer, http.StatusOK, mutes, nil)
 }

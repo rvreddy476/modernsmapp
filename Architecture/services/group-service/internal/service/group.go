@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	groupevents "github.com/atpost/group-service/internal/events"
@@ -1500,4 +1501,152 @@ func (s *Service) syncMemberToChat(ctx context.Context, conversationID, userID u
 			slog.Warn("chat sync returned error", "status", resp.StatusCode, "conversation_id", conversationID, "user_id", userID)
 		}
 	}()
+}
+
+// ── Word Blocklist ───────────────────────────────────────────
+
+func (s *Service) AddWordToBlocklist(ctx context.Context, actorID, groupID uuid.UUID, word string) error {
+	actor, err := s.store.GetActiveMember(ctx, groupID, actorID)
+	if err != nil {
+		return err
+	}
+	if actor == nil || (actor.Role != "admin" && actor.Role != "moderator") {
+		return fmt.Errorf("forbidden: only admins or moderators can manage the word blocklist")
+	}
+	word = strings.ToLower(strings.TrimSpace(word))
+	if word == "" {
+		return fmt.Errorf("word cannot be empty")
+	}
+	return s.store.AddWordToBlocklist(ctx, groupID, word, actorID)
+}
+
+func (s *Service) RemoveWordFromBlocklist(ctx context.Context, actorID, groupID uuid.UUID, word string) error {
+	actor, err := s.store.GetActiveMember(ctx, groupID, actorID)
+	if err != nil {
+		return err
+	}
+	if actor == nil || (actor.Role != "admin" && actor.Role != "moderator") {
+		return fmt.Errorf("forbidden: only admins or moderators can manage the word blocklist")
+	}
+	return s.store.RemoveWordFromBlocklist(ctx, groupID, word)
+}
+
+func (s *Service) GetWordBlocklist(ctx context.Context, actorID, groupID uuid.UUID) ([]string, error) {
+	actor, err := s.store.GetActiveMember(ctx, groupID, actorID)
+	if err != nil {
+		return nil, err
+	}
+	if actor == nil || (actor.Role != "admin" && actor.Role != "moderator") {
+		return nil, fmt.Errorf("forbidden: only admins or moderators can view the word blocklist")
+	}
+	return s.store.GetWordBlocklist(ctx, groupID)
+}
+
+// ── Post Approval Queue ──────────────────────────────────────
+
+func (s *Service) GetApprovalQueue(ctx context.Context, actorID, groupID uuid.UUID, limit, offset int) ([]store.ApprovalQueueItem, error) {
+	actor, err := s.store.GetActiveMember(ctx, groupID, actorID)
+	if err != nil {
+		return nil, err
+	}
+	if actor == nil || (actor.Role != "admin" && actor.Role != "moderator") {
+		return nil, fmt.Errorf("forbidden: only admins or moderators can view the approval queue")
+	}
+	return s.store.GetApprovalQueue(ctx, groupID, "pending", limit, offset)
+}
+
+func (s *Service) ApprovePost(ctx context.Context, actorID, groupID, itemID uuid.UUID) error {
+	actor, err := s.store.GetActiveMember(ctx, groupID, actorID)
+	if err != nil {
+		return err
+	}
+	if actor == nil || (actor.Role != "admin" && actor.Role != "moderator") {
+		return fmt.Errorf("forbidden: only admins or moderators can approve posts")
+	}
+	return s.store.ReviewApprovalItem(ctx, itemID, actorID, "approved")
+}
+
+func (s *Service) RejectQueuedPost(ctx context.Context, actorID, groupID, itemID uuid.UUID) error {
+	actor, err := s.store.GetActiveMember(ctx, groupID, actorID)
+	if err != nil {
+		return err
+	}
+	if actor == nil || (actor.Role != "admin" && actor.Role != "moderator") {
+		return fmt.Errorf("forbidden: only admins or moderators can reject posts")
+	}
+	return s.store.ReviewApprovalItem(ctx, itemID, actorID, "rejected")
+}
+
+// ── Group Channels ───────────────────────────────────────────
+
+func (s *Service) CreateGroupChannel(ctx context.Context, actorID, groupID uuid.UUID, name, chanType, description string) (*store.GroupChannel, error) {
+	actor, err := s.store.GetActiveMember(ctx, groupID, actorID)
+	if err != nil {
+		return nil, err
+	}
+	if actor == nil || (actor.Role != "admin" && actor.Role != "moderator") {
+		return nil, fmt.Errorf("forbidden: only admins or moderators can create channels")
+	}
+	ch := &store.GroupChannel{
+		GroupID:     groupID,
+		Name:        name,
+		Type:        chanType,
+		Description: description,
+		CreatedBy:   actorID,
+	}
+	return s.store.CreateGroupChannel(ctx, ch)
+}
+
+func (s *Service) ListGroupChannels(ctx context.Context, groupID uuid.UUID) ([]store.GroupChannel, error) {
+	return s.store.ListGroupChannels(ctx, groupID)
+}
+
+func (s *Service) DeleteGroupChannel(ctx context.Context, actorID, groupID, channelID uuid.UUID) error {
+	actor, err := s.store.GetActiveMember(ctx, groupID, actorID)
+	if err != nil {
+		return err
+	}
+	if actor == nil || (actor.Role != "admin" && actor.Role != "moderator") {
+		return fmt.Errorf("forbidden: only admins or moderators can delete channels")
+	}
+	return s.store.DeleteGroupChannel(ctx, channelID, groupID)
+}
+
+// ── Group Wiki ───────────────────────────────────────────────
+
+func (s *Service) CreateWikiPage(ctx context.Context, actorID, groupID uuid.UUID, title, content string) (*store.WikiPage, error) {
+	isMember, err := s.store.CheckMembership(ctx, groupID, actorID)
+	if err != nil {
+		return nil, err
+	}
+	if !isMember {
+		return nil, fmt.Errorf("forbidden: only members can create wiki pages")
+	}
+	return s.store.CreateWikiPage(ctx, groupID, actorID, title, content)
+}
+
+func (s *Service) UpdateWikiPage(ctx context.Context, actorID, groupID, pageID uuid.UUID, title, content string) (*store.WikiPage, error) {
+	isMember, err := s.store.CheckMembership(ctx, groupID, actorID)
+	if err != nil {
+		return nil, err
+	}
+	if !isMember {
+		return nil, fmt.Errorf("forbidden: only members can update wiki pages")
+	}
+	return s.store.UpdateWikiPage(ctx, pageID, actorID, title, content)
+}
+
+func (s *Service) ListWikiPages(ctx context.Context, groupID uuid.UUID) ([]store.WikiPage, error) {
+	return s.store.ListWikiPages(ctx, groupID)
+}
+
+func (s *Service) DeleteWikiPage(ctx context.Context, actorID, groupID, pageID uuid.UUID) error {
+	actor, err := s.store.GetActiveMember(ctx, groupID, actorID)
+	if err != nil {
+		return err
+	}
+	if actor == nil || (actor.Role != "admin" && actor.Role != "moderator") {
+		return fmt.Errorf("forbidden: only admins or moderators can delete wiki pages")
+	}
+	return s.store.DeleteWikiPage(ctx, pageID, groupID)
 }

@@ -326,3 +326,123 @@ func (s *Service) invalidateCounts(ctx context.Context, a, b uuid.UUID) {
 	s.rdb.Del(ctx, fmt.Sprintf("graph:counts:%s", a))
 	s.rdb.Del(ctx, fmt.Sprintf("graph:counts:%s", b))
 }
+
+// ═══════════════════════════════════════════════════════════
+// Close Friends
+// ═══════════════════════════════════════════════════════════
+
+func (s *Service) AddCloseFriend(ctx context.Context, userID, friendID uuid.UUID) error {
+	return s.store.AddCloseFriend(ctx, userID, friendID)
+}
+
+func (s *Service) RemoveCloseFriend(ctx context.Context, userID, friendID uuid.UUID) error {
+	return s.store.RemoveCloseFriend(ctx, userID, friendID)
+}
+
+func (s *Service) GetCloseFriends(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	return s.store.GetCloseFriends(ctx, userID)
+}
+
+// ═══════════════════════════════════════════════════════════
+// Circles
+// ═══════════════════════════════════════════════════════════
+
+func (s *Service) CreateCircle(ctx context.Context, ownerID uuid.UUID, name string, emoji *string) (*store.Circle, error) {
+	if name == "" {
+		return nil, fmt.Errorf("circle name is required")
+	}
+	return s.store.CreateCircle(ctx, ownerID, name, emoji)
+}
+
+func (s *Service) ListCircles(ctx context.Context, ownerID uuid.UUID) ([]store.Circle, error) {
+	return s.store.ListCircles(ctx, ownerID)
+}
+
+func (s *Service) UpdateCircle(ctx context.Context, circleID, ownerID uuid.UUID, name string, emoji *string) (*store.Circle, error) {
+	c, err := s.store.UpdateCircle(ctx, circleID, ownerID, name, emoji)
+	if err != nil {
+		return nil, err
+	}
+	if c == nil {
+		return nil, fmt.Errorf("circle not found")
+	}
+	return c, nil
+}
+
+func (s *Service) DeleteCircle(ctx context.Context, circleID, ownerID uuid.UUID) error {
+	return s.store.DeleteCircle(ctx, circleID, ownerID)
+}
+
+func (s *Service) AddCircleMember(ctx context.Context, circleID, ownerID, userID uuid.UUID) error {
+	// Verify circle belongs to owner
+	c, err := s.store.GetCircle(ctx, circleID, ownerID)
+	if err != nil {
+		return err
+	}
+	if c == nil {
+		return fmt.Errorf("circle not found")
+	}
+	return s.store.AddCircleMember(ctx, circleID, userID)
+}
+
+func (s *Service) RemoveCircleMember(ctx context.Context, circleID, ownerID, userID uuid.UUID) error {
+	c, err := s.store.GetCircle(ctx, circleID, ownerID)
+	if err != nil {
+		return err
+	}
+	if c == nil {
+		return fmt.Errorf("circle not found")
+	}
+	return s.store.RemoveCircleMember(ctx, circleID, userID)
+}
+
+func (s *Service) GetCircleMembers(ctx context.Context, circleID, ownerID uuid.UUID) ([]uuid.UUID, error) {
+	c, err := s.store.GetCircle(ctx, circleID, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	if c == nil {
+		return nil, fmt.Errorf("circle not found")
+	}
+	return s.store.GetCircleMembers(ctx, circleID)
+}
+
+// ═══════════════════════════════════════════════════════════
+// Relationship Labels
+// ═══════════════════════════════════════════════════════════
+
+func (s *Service) UpsertRelationshipLabel(ctx context.Context, userID, targetID uuid.UUID, label string) error {
+	validLabels := map[string]bool{"best_friend": true, "family": true, "colleague": true, "classmate": true, "acquaintance": true}
+	if !validLabels[label] {
+		return fmt.Errorf("invalid label: must be one of best_friend, family, colleague, classmate, acquaintance")
+	}
+	return s.store.UpsertRelationshipLabel(ctx, userID, targetID, label)
+}
+
+func (s *Service) DeleteRelationshipLabel(ctx context.Context, userID, targetID uuid.UUID) error {
+	return s.store.DeleteRelationshipLabel(ctx, userID, targetID)
+}
+
+func (s *Service) ListRelationshipLabels(ctx context.Context, userID uuid.UUID) ([]store.RelationshipLabel, error) {
+	return s.store.ListRelationshipLabels(ctx, userID)
+}
+
+// ═══════════════════════════════════════════════════════════
+// Favorites
+// ═══════════════════════════════════════════════════════════
+
+func (s *Service) AddFavorite(ctx context.Context, userID, targetID uuid.UUID) error {
+	// Cache invalidation for feed ranker
+	s.rdb.SAdd(ctx, fmt.Sprintf("favorites:%s", userID.String()), targetID.String())
+	s.rdb.Expire(ctx, fmt.Sprintf("favorites:%s", userID.String()), 24*time.Hour)
+	return s.store.AddFavorite(ctx, userID, targetID)
+}
+
+func (s *Service) RemoveFavorite(ctx context.Context, userID, targetID uuid.UUID) error {
+	s.rdb.SRem(ctx, fmt.Sprintf("favorites:%s", userID.String()), targetID.String())
+	return s.store.RemoveFavorite(ctx, userID, targetID)
+}
+
+func (s *Service) GetFavorites(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	return s.store.GetFavorites(ctx, userID)
+}

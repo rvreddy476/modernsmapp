@@ -70,6 +70,27 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 		// Media
 		v1.GET("/:groupId/media", h.GetGroupMedia)
+
+		// Word Blocklist
+		v1.GET("/:groupId/word-blocklist", h.GetWordBlocklist)
+		v1.POST("/:groupId/word-blocklist", h.AddWordToBlocklist)
+		v1.DELETE("/:groupId/word-blocklist/:word", h.RemoveWordFromBlocklist)
+
+		// Post Approval Queue
+		v1.GET("/:groupId/approval-queue", h.GetApprovalQueue)
+		v1.POST("/:groupId/approval-queue/:itemId/approve", h.ApproveQueuedPost)
+		v1.POST("/:groupId/approval-queue/:itemId/reject", h.RejectQueuedPost)
+
+		// Group Channels
+		v1.GET("/:groupId/channels", h.ListGroupChannels)
+		v1.POST("/:groupId/channels", h.CreateGroupChannel)
+		v1.DELETE("/:groupId/channels/:channelId", h.DeleteGroupChannel)
+
+		// Wiki
+		v1.GET("/:groupId/wiki", h.ListWikiPages)
+		v1.POST("/:groupId/wiki", h.CreateWikiPage)
+		v1.PUT("/:groupId/wiki/:pageId", h.UpdateWikiPage)
+		v1.DELETE("/:groupId/wiki/:pageId", h.DeleteWikiPage)
 	}
 }
 
@@ -1033,4 +1054,303 @@ func (h *Handler) GetGroupMedia(c *gin.Context) {
 		posts = []store.GroupPost{}
 	}
 	api.JSON(c.Writer, http.StatusOK, posts, nil)
+}
+
+// ── Word Blocklist ───────────────────────────────────────────
+
+func (h *Handler) GetWordBlocklist(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid group id", nil, nil)
+		return
+	}
+	words, err := h.svc.GetWordBlocklist(c.Request.Context(), actorID, groupID)
+	if err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	if words == nil {
+		words = []string{}
+	}
+	api.JSON(c.Writer, http.StatusOK, words, nil)
+}
+
+func (h *Handler) AddWordToBlocklist(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid group id", nil, nil)
+		return
+	}
+	var req struct {
+		Word string `json:"word" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	if err := h.svc.AddWordToBlocklist(c.Request.Context(), actorID, groupID, req.Word); err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
+}
+
+func (h *Handler) RemoveWordFromBlocklist(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid group id", nil, nil)
+		return
+	}
+	word := c.Param("word")
+	if err := h.svc.RemoveWordFromBlocklist(c.Request.Context(), actorID, groupID, word); err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
+}
+
+// ── Post Approval Queue ──────────────────────────────────────
+
+func (h *Handler) GetApprovalQueue(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid group id", nil, nil)
+		return
+	}
+	limit, offset := parsePagination(c)
+	items, err := h.svc.GetApprovalQueue(c.Request.Context(), actorID, groupID, limit, offset)
+	if err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	if items == nil {
+		items = []store.ApprovalQueueItem{}
+	}
+	api.JSON(c.Writer, http.StatusOK, items, nil)
+}
+
+func (h *Handler) ApproveQueuedPost(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid group id", nil, nil)
+		return
+	}
+	itemID, err := uuid.Parse(c.Param("itemId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid item id", nil, nil)
+		return
+	}
+	if err := h.svc.ApprovePost(c.Request.Context(), actorID, groupID, itemID); err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
+}
+
+func (h *Handler) RejectQueuedPost(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid group id", nil, nil)
+		return
+	}
+	itemID, err := uuid.Parse(c.Param("itemId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid item id", nil, nil)
+		return
+	}
+	if err := h.svc.RejectQueuedPost(c.Request.Context(), actorID, groupID, itemID); err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
+}
+
+// ── Group Channels ───────────────────────────────────────────
+
+func (h *Handler) ListGroupChannels(c *gin.Context) {
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid group id", nil, nil)
+		return
+	}
+	channels, err := h.svc.ListGroupChannels(c.Request.Context(), groupID)
+	if err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	if channels == nil {
+		channels = []store.GroupChannel{}
+	}
+	api.JSON(c.Writer, http.StatusOK, channels, nil)
+}
+
+func (h *Handler) CreateGroupChannel(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid group id", nil, nil)
+		return
+	}
+	var req struct {
+		Name        string `json:"name" binding:"required"`
+		Type        string `json:"type" binding:"required"`
+		Description string `json:"description"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	ch, err := h.svc.CreateGroupChannel(c.Request.Context(), actorID, groupID, req.Name, req.Type, req.Description)
+	if err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusCreated, ch, nil)
+}
+
+func (h *Handler) DeleteGroupChannel(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid group id", nil, nil)
+		return
+	}
+	channelID, err := uuid.Parse(c.Param("channelId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid channel id", nil, nil)
+		return
+	}
+	if err := h.svc.DeleteGroupChannel(c.Request.Context(), actorID, groupID, channelID); err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
+}
+
+// ── Wiki ─────────────────────────────────────────────────────
+
+func (h *Handler) ListWikiPages(c *gin.Context) {
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid group id", nil, nil)
+		return
+	}
+	pages, err := h.svc.ListWikiPages(c.Request.Context(), groupID)
+	if err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	if pages == nil {
+		pages = []store.WikiPage{}
+	}
+	api.JSON(c.Writer, http.StatusOK, pages, nil)
+}
+
+func (h *Handler) CreateWikiPage(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid group id", nil, nil)
+		return
+	}
+	var req struct {
+		Title   string `json:"title" binding:"required"`
+		Content string `json:"content" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	page, err := h.svc.CreateWikiPage(c.Request.Context(), actorID, groupID, req.Title, req.Content)
+	if err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusCreated, page, nil)
+}
+
+func (h *Handler) UpdateWikiPage(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid group id", nil, nil)
+		return
+	}
+	pageID, err := uuid.Parse(c.Param("pageId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid page id", nil, nil)
+		return
+	}
+	var req struct {
+		Title   string `json:"title" binding:"required"`
+		Content string `json:"content" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	page, err := h.svc.UpdateWikiPage(c.Request.Context(), actorID, groupID, pageID, req.Title, req.Content)
+	if err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, page, nil)
+}
+
+func (h *Handler) DeleteWikiPage(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid group id", nil, nil)
+		return
+	}
+	pageID, err := uuid.Parse(c.Param("pageId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid page id", nil, nil)
+		return
+	}
+	if err := h.svc.DeleteWikiPage(c.Request.Context(), actorID, groupID, pageID); err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
 }

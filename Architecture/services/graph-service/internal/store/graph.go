@@ -574,3 +574,237 @@ func (s *Store) GetRelationshipBatch(ctx context.Context, viewerID uuid.UUID, ta
 
 	return result, nil
 }
+
+// ═══════════════════════════════════════════════════════════
+// Close Friends
+// ═══════════════════════════════════════════════════════════
+
+func (s *Store) AddCloseFriend(ctx context.Context, userID, friendID uuid.UUID) error {
+	_, err := s.db.Exec(ctx,
+		`INSERT INTO close_friends (user_id, friend_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+		userID, friendID)
+	return err
+}
+
+func (s *Store) RemoveCloseFriend(ctx context.Context, userID, friendID uuid.UUID) error {
+	_, err := s.db.Exec(ctx,
+		`DELETE FROM close_friends WHERE user_id = $1 AND friend_id = $2`,
+		userID, friendID)
+	return err
+}
+
+func (s *Store) GetCloseFriends(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT friend_id FROM close_friends WHERE user_id = $1 ORDER BY added_at DESC`,
+		userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func (s *Store) IsCloseFriend(ctx context.Context, userID, friendID uuid.UUID) (bool, error) {
+	var exists bool
+	err := s.db.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM close_friends WHERE user_id = $1 AND friend_id = $2)`,
+		userID, friendID).Scan(&exists)
+	return exists, err
+}
+
+// ═══════════════════════════════════════════════════════════
+// Circles
+// ═══════════════════════════════════════════════════════════
+
+type Circle struct {
+	ID        uuid.UUID `json:"id"`
+	OwnerID   uuid.UUID `json:"owner_id"`
+	Name      string    `json:"name"`
+	Emoji     *string   `json:"emoji,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func (s *Store) CreateCircle(ctx context.Context, ownerID uuid.UUID, name string, emoji *string) (*Circle, error) {
+	c := &Circle{}
+	err := s.db.QueryRow(ctx,
+		`INSERT INTO circles (owner_id, name, emoji) VALUES ($1, $2, $3)
+		 RETURNING id, owner_id, name, emoji, created_at, updated_at`,
+		ownerID, name, emoji).
+		Scan(&c.ID, &c.OwnerID, &c.Name, &c.Emoji, &c.CreatedAt, &c.UpdatedAt)
+	return c, err
+}
+
+func (s *Store) GetCircle(ctx context.Context, circleID, ownerID uuid.UUID) (*Circle, error) {
+	c := &Circle{}
+	err := s.db.QueryRow(ctx,
+		`SELECT id, owner_id, name, emoji, created_at, updated_at FROM circles WHERE id = $1 AND owner_id = $2`,
+		circleID, ownerID).
+		Scan(&c.ID, &c.OwnerID, &c.Name, &c.Emoji, &c.CreatedAt, &c.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return c, err
+}
+
+func (s *Store) UpdateCircle(ctx context.Context, circleID, ownerID uuid.UUID, name string, emoji *string) (*Circle, error) {
+	c := &Circle{}
+	err := s.db.QueryRow(ctx,
+		`UPDATE circles SET name=$3, emoji=$4, updated_at=NOW() WHERE id=$1 AND owner_id=$2
+		 RETURNING id, owner_id, name, emoji, created_at, updated_at`,
+		circleID, ownerID, name, emoji).
+		Scan(&c.ID, &c.OwnerID, &c.Name, &c.Emoji, &c.CreatedAt, &c.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return c, err
+}
+
+func (s *Store) DeleteCircle(ctx context.Context, circleID, ownerID uuid.UUID) error {
+	_, err := s.db.Exec(ctx,
+		`DELETE FROM circles WHERE id = $1 AND owner_id = $2`,
+		circleID, ownerID)
+	return err
+}
+
+func (s *Store) ListCircles(ctx context.Context, ownerID uuid.UUID) ([]Circle, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT id, owner_id, name, emoji, created_at, updated_at FROM circles WHERE owner_id = $1 ORDER BY created_at DESC`,
+		ownerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var circles []Circle
+	for rows.Next() {
+		var c Circle
+		if err := rows.Scan(&c.ID, &c.OwnerID, &c.Name, &c.Emoji, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			return nil, err
+		}
+		circles = append(circles, c)
+	}
+	return circles, rows.Err()
+}
+
+func (s *Store) AddCircleMember(ctx context.Context, circleID, userID uuid.UUID) error {
+	_, err := s.db.Exec(ctx,
+		`INSERT INTO circle_members (circle_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+		circleID, userID)
+	return err
+}
+
+func (s *Store) RemoveCircleMember(ctx context.Context, circleID, userID uuid.UUID) error {
+	_, err := s.db.Exec(ctx,
+		`DELETE FROM circle_members WHERE circle_id = $1 AND user_id = $2`,
+		circleID, userID)
+	return err
+}
+
+func (s *Store) GetCircleMembers(ctx context.Context, circleID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT user_id FROM circle_members WHERE circle_id = $1 ORDER BY added_at DESC`,
+		circleID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// ═══════════════════════════════════════════════════════════
+// Relationship Labels
+// ═══════════════════════════════════════════════════════════
+
+type RelationshipLabel struct {
+	UserID    uuid.UUID `json:"user_id"`
+	TargetID  uuid.UUID `json:"target_id"`
+	Label     string    `json:"label"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func (s *Store) UpsertRelationshipLabel(ctx context.Context, userID, targetID uuid.UUID, label string) error {
+	_, err := s.db.Exec(ctx,
+		`INSERT INTO relationship_labels (user_id, target_id, label) VALUES ($1, $2, $3)
+		 ON CONFLICT (user_id, target_id) DO UPDATE SET label = EXCLUDED.label`,
+		userID, targetID, label)
+	return err
+}
+
+func (s *Store) DeleteRelationshipLabel(ctx context.Context, userID, targetID uuid.UUID) error {
+	_, err := s.db.Exec(ctx,
+		`DELETE FROM relationship_labels WHERE user_id = $1 AND target_id = $2`,
+		userID, targetID)
+	return err
+}
+
+func (s *Store) ListRelationshipLabels(ctx context.Context, userID uuid.UUID) ([]RelationshipLabel, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT user_id, target_id, label, created_at FROM relationship_labels WHERE user_id = $1 ORDER BY created_at DESC`,
+		userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var labels []RelationshipLabel
+	for rows.Next() {
+		var l RelationshipLabel
+		if err := rows.Scan(&l.UserID, &l.TargetID, &l.Label, &l.CreatedAt); err != nil {
+			return nil, err
+		}
+		labels = append(labels, l)
+	}
+	return labels, rows.Err()
+}
+
+// ═══════════════════════════════════════════════════════════
+// Favorites
+// ═══════════════════════════════════════════════════════════
+
+func (s *Store) AddFavorite(ctx context.Context, userID, targetID uuid.UUID) error {
+	_, err := s.db.Exec(ctx,
+		`INSERT INTO favorites (user_id, target_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+		userID, targetID)
+	return err
+}
+
+func (s *Store) RemoveFavorite(ctx context.Context, userID, targetID uuid.UUID) error {
+	_, err := s.db.Exec(ctx,
+		`DELETE FROM favorites WHERE user_id = $1 AND target_id = $2`,
+		userID, targetID)
+	return err
+}
+
+func (s *Store) GetFavorites(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT target_id FROM favorites WHERE user_id = $1 ORDER BY added_at DESC`,
+		userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}

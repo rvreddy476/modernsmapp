@@ -31,7 +31,8 @@ type Post struct {
 	LocationLat    *float64        `json:"location_lat,omitempty"`
 	LocationLng    *float64        `json:"location_lng,omitempty"`
 	PostType       string          `json:"post_type"`
-	AppOrigin      string          `json:"app_origin"`
+	AppOrigin       string          `json:"app_origin"`
+	ShareToPostbook bool            `json:"share_to_postbook"`
 	ReviewStatus   string          `json:"review_status"` // "approved", "flagged", "rejected"
 	Title              string      `json:"title,omitempty"`
 	Tags               []string    `json:"tags,omitempty"`
@@ -95,7 +96,7 @@ const postCols = `id, author_id, text, visibility, content_type, is_pinned,
 	feeling, activity, activity_detail, rich_text,
 	no_comments, no_likes,
 	hashtags, mentions, location_name, location_lat, location_lng,
-	post_type, app_origin,
+	post_type, app_origin, share_to_postbook,
 	title, tags, category, language, seo_title,
 	paid_promotion, altered_content, is_made_for_kids,
 	license, allow_embedding, publish_to_feed, remix_setting,
@@ -111,7 +112,7 @@ func scanPost(row pgx.Row) (*Post, error) {
 		&p.Feeling, &p.Activity, &p.ActivityDetail, &p.RichText,
 		&p.NoComments, &p.NoLikes,
 		&p.Hashtags, &p.Mentions, &p.LocationName, &p.LocationLat, &p.LocationLng,
-		&p.PostType, &p.AppOrigin,
+		&p.PostType, &p.AppOrigin, &p.ShareToPostbook,
 		&p.Title, &p.Tags, &p.Category, &p.Language, &p.SEOTitle,
 		&p.PaidPromotion, &p.AlteredContent, &p.IsMadeForKids,
 		&p.License, &p.AllowEmbedding, &p.PublishToFeed, &p.RemixSetting,
@@ -135,7 +136,7 @@ func scanPostRows(rows pgx.Rows) ([]Post, error) {
 			&p.Feeling, &p.Activity, &p.ActivityDetail, &p.RichText,
 			&p.NoComments, &p.NoLikes,
 			&p.Hashtags, &p.Mentions, &p.LocationName, &p.LocationLat, &p.LocationLng,
-			&p.PostType, &p.AppOrigin,
+			&p.PostType, &p.AppOrigin, &p.ShareToPostbook,
 			&p.Title, &p.Tags, &p.Category, &p.Language, &p.SEOTitle,
 			&p.PaidPromotion, &p.AlteredContent, &p.IsMadeForKids,
 			&p.License, &p.AllowEmbedding, &p.PublishToFeed, &p.RemixSetting,
@@ -194,7 +195,7 @@ func (s *Store) CreatePost(ctx context.Context, p *Post) error {
 			feeling, activity, activity_detail, rich_text,
 			no_comments, no_likes,
 			hashtags, mentions, location_name, location_lat, location_lng,
-			post_type, app_origin, review_status,
+			post_type, app_origin, share_to_postbook, review_status,
 			title, tags, category, language, seo_title,
 			paid_promotion, altered_content, is_made_for_kids,
 			license, allow_embedding, publish_to_feed, remix_setting,
@@ -203,19 +204,19 @@ func (s *Store) CreatePost(ctx context.Context, p *Post) error {
 			cover_media_id, original_audio_volume, overlay_audio_volume,
 			created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-			$12, $13, $14, $15, $16, $17, $18, $19,
-			$20, $21, $22, $23, $24,
-			$25, $26, $27,
-			$28, $29, $30, $31,
-			$32, $33,
-			$34, $35,
-			$36, $37, $38,
-			$39, $39)
+			$12, $13, $14, $15, $16, $17, $18, $19, $20,
+			$21, $22, $23, $24, $25,
+			$26, $27, $28,
+			$29, $30, $31, $32,
+			$33, $34,
+			$35, $36,
+			$37, $38, $39,
+			$40, $40)
 	`, p.ID, p.AuthorID, p.Text, p.Visibility, p.ContentType,
 		p.Feeling, p.Activity, p.ActivityDetail, p.RichText,
 		p.NoComments, p.NoLikes,
 		p.Hashtags, p.Mentions, p.LocationName, p.LocationLat, p.LocationLng,
-		p.PostType, p.AppOrigin, reviewStatus,
+		p.PostType, p.AppOrigin, p.ShareToPostbook, reviewStatus,
 		p.Title, p.Tags, p.Category, p.Language, p.SEOTitle,
 		p.PaidPromotion, p.AlteredContent, p.IsMadeForKids,
 		p.License, p.AllowEmbedding, p.PublishToFeed, p.RemixSetting,
