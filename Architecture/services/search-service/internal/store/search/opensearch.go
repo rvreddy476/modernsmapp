@@ -68,6 +68,51 @@ func (s *Store) initIndices() {
 			}
 		}
 	}`)
+
+	// Products index
+	s.createIndexIfNotExists(ctx, "products_v1", `{
+		"settings": { "number_of_shards": 1, "number_of_replicas": 0 },
+		"mappings": {
+			"properties": {
+				"product_id":   { "type": "keyword" },
+				"title":        { "type": "text", "analyzer": "english" },
+				"description":  { "type": "text" },
+				"category":     { "type": "keyword" },
+				"price":        { "type": "float" },
+				"city":         { "type": "keyword" },
+				"seller_id":    { "type": "keyword" },
+				"status":       { "type": "keyword" }
+			}
+		}
+	}`)
+
+	// Events index
+	s.createIndexIfNotExists(ctx, "events_v1", `{
+		"settings": { "number_of_shards": 1, "number_of_replicas": 0 },
+		"mappings": {
+			"properties": {
+				"event_id":     { "type": "keyword" },
+				"title":        { "type": "text" },
+				"description":  { "type": "text" },
+				"starts_at":    { "type": "date" },
+				"status":       { "type": "keyword" }
+			}
+		}
+	}`)
+
+	// Messages index (search within chat)
+	s.createIndexIfNotExists(ctx, "messages_v1", `{
+		"settings": { "number_of_shards": 1, "number_of_replicas": 0 },
+		"mappings": {
+			"properties": {
+				"message_id":       { "type": "keyword" },
+				"conversation_id":  { "type": "keyword" },
+				"sender_id":        { "type": "keyword" },
+				"text":             { "type": "text", "analyzer": "english" },
+				"ts":               { "type": "date" }
+			}
+		}
+	}`)
 }
 
 func (s *Store) createIndexIfNotExists(ctx context.Context, index, body string) {
@@ -628,4 +673,190 @@ func (s *Store) GetPopularPosts(ctx context.Context, limit int) ([]PostDoc, erro
 		},
 	}
 	return s.execPostSearch(ctx, q)
+}
+
+// execGenericSearch runs a search against the given index and returns raw _source maps.
+func (s *Store) execGenericSearch(ctx context.Context, index string, query interface{}) ([]map[string]any, error) {
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(query); err != nil {
+		return nil, err
+	}
+
+	res, err := s.client.Search(
+		s.client.Search.WithContext(ctx),
+		s.client.Search.WithIndex(index),
+		s.client.Search.WithBody(&buf),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+
+	if res.IsError() {
+		return nil, fmt.Errorf("search error [%s]: %s", index, res.String())
+	}
+
+	var r map[string]interface{}
+	if err := json.NewDecoder(res.Body).Decode(&r); err != nil {
+		return nil, err
+	}
+
+	hitsOuter, _ := r["hits"].(map[string]interface{})
+	hitsInner, _ := hitsOuter["hits"].([]interface{})
+	docs := make([]map[string]any, 0, len(hitsInner))
+	for _, hit := range hitsInner {
+		source, _ := hit.(map[string]interface{})["_source"].(map[string]interface{})
+		docs = append(docs, source)
+	}
+	return docs, nil
+}
+
+// IndexProduct indexes a product document into products_v1.
+func (s *Store) IndexProduct(ctx context.Context, doc map[string]any) error {
+	id, _ := doc["product_id"].(string)
+	data, _ := json.Marshal(doc)
+	req := opensearchapi.IndexRequest{
+		Index:      "products_v1",
+		DocumentID: id,
+		Body:       bytes.NewReader(data),
+		Refresh:    "true",
+	}
+	res, err := req.Do(ctx, s.client)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return fmt.Errorf("index product error: %s", res.String())
+	}
+	return nil
+}
+
+// IndexEvent indexes an event document into events_v1.
+func (s *Store) IndexEvent(ctx context.Context, doc map[string]any) error {
+	id, _ := doc["event_id"].(string)
+	data, _ := json.Marshal(doc)
+	req := opensearchapi.IndexRequest{
+		Index:      "events_v1",
+		DocumentID: id,
+		Body:       bytes.NewReader(data),
+		Refresh:    "true",
+	}
+	res, err := req.Do(ctx, s.client)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return fmt.Errorf("index event error: %s", res.String())
+	}
+	return nil
+}
+
+// IndexMessage indexes a message document into messages_v1.
+func (s *Store) IndexMessage(ctx context.Context, doc map[string]any) error {
+	id, _ := doc["message_id"].(string)
+	data, _ := json.Marshal(doc)
+	req := opensearchapi.IndexRequest{
+		Index:      "messages_v1",
+		DocumentID: id,
+		Body:       bytes.NewReader(data),
+		Refresh:    "true",
+	}
+	res, err := req.Do(ctx, s.client)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return fmt.Errorf("index message error: %s", res.String())
+	}
+	return nil
+}
+
+// SearchProducts searches products by query text with optional category filter.
+func (s *Store) SearchProducts(ctx context.Context, query, category string, limit int) ([]map[string]any, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+
+	must := []interface{}{
+		map[string]interface{}{
+			"multi_match": map[string]interface{}{
+				"query":  query,
+				"fields": []string{"title^2", "description", "category"},
+			},
+		},
+	}
+	if category != "" {
+		must = append(must, map[string]interface{}{
+			"term": map[string]interface{}{"category": category},
+		})
+	}
+
+	q := map[string]interface{}{
+		"size": limit,
+		"query": map[string]interface{}{
+			"bool": map[string]interface{}{
+				"must": must,
+			},
+		},
+	}
+	return s.execGenericSearch(ctx, "products_v1", q)
+}
+
+// SearchEvents searches events by query text.
+func (s *Store) SearchEvents(ctx context.Context, query string, limit int) ([]map[string]any, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	q := map[string]interface{}{
+		"size": limit,
+		"query": map[string]interface{}{
+			"multi_match": map[string]interface{}{
+				"query":  query,
+				"fields": []string{"title^2", "description"},
+			},
+		},
+	}
+	return s.execGenericSearch(ctx, "events_v1", q)
+}
+
+// SearchMessages searches messages within an optional conversation for the given user.
+func (s *Store) SearchMessages(ctx context.Context, userID, convID, query string, limit int) ([]map[string]any, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+
+	filters := []interface{}{
+		map[string]interface{}{
+			"bool": map[string]interface{}{
+				"should": []interface{}{
+					map[string]interface{}{"term": map[string]interface{}{"sender_id": userID}},
+				},
+				"minimum_should_match": 1,
+			},
+		},
+	}
+	if convID != "" {
+		filters = append(filters, map[string]interface{}{
+			"term": map[string]interface{}{"conversation_id": convID},
+		})
+	}
+
+	q := map[string]interface{}{
+		"size": limit,
+		"query": map[string]interface{}{
+			"bool": map[string]interface{}{
+				"must": map[string]interface{}{
+					"match": map[string]interface{}{"text": query},
+				},
+				"filter": filters,
+			},
+		},
+		"sort": []interface{}{
+			map[string]interface{}{"ts": map[string]interface{}{"order": "desc"}},
+		},
+	}
+	return s.execGenericSearch(ctx, "messages_v1", q)
 }

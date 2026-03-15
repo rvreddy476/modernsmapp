@@ -1,6 +1,7 @@
 go 1.24.0
 
 use (
+	./services/ai-service
 	./services/admin-service
 	./services/analytics-service
 	./services/api-gateway

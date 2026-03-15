@@ -7,10 +7,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/search-service/internal/store/postgres"
 	"github.com/atpost/search-service/internal/store/search"
 	"github.com/atpost/shared/api"
 	sharedmiddleware "github.com/atpost/shared/middleware"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -18,10 +20,17 @@ type Handler struct {
 	store       *search.Store
 	rdb         *redis.Client
 	internalKey string
+	extrasStore *postgres.SearchExtrasStore
 }
 
 func New(store *search.Store, rdb *redis.Client) *Handler {
 	return &Handler{store: store, rdb: rdb}
+}
+
+// WithExtrasStore sets the Postgres extras store (saved searches, history).
+func (h *Handler) WithExtrasStore(s *postgres.SearchExtrasStore) *Handler {
+	h.extrasStore = s
+	return h
 }
 
 // WithInternalKey sets the internal service key used to authenticate
@@ -58,6 +67,14 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.POST("/users/bulk-sync", h.BulkSyncUsers)
 		v1.GET("/hashtags", h.SearchHashtags)
 		v1.GET("/autocomplete", h.Autocomplete)
+		v1.POST("/saved", h.SaveSearch)
+		v1.GET("/saved", h.GetSavedSearches)
+		v1.DELETE("/saved/:id", h.DeleteSavedSearch)
+		v1.GET("/history", h.GetSearchHistory)
+		v1.DELETE("/history", h.ClearSearchHistory)
+		v1.GET("/products", h.SearchProducts)
+		v1.GET("/events", h.SearchEvents)
+		v1.GET("/messages", h.SearchMessages)
 	}
 
 	discover := r.Group("/v1/discover")
@@ -273,4 +290,246 @@ func (h *Handler) GetSuggested(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": posts}, nil)
+}
+
+// requireExtras returns false and writes a 503 if the extras store is not configured.
+func (h *Handler) requireExtras(c *gin.Context) bool {
+	if h.extrasStore == nil {
+		api.Error(c.Writer, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "Postgres extras store not configured", nil, nil)
+		return false
+	}
+	return true
+}
+
+// requireUserID parses X-User-Id and returns the UUID. On failure it writes 401 and returns false.
+func requireUserID(c *gin.Context) (uuid.UUID, bool) {
+	raw := c.GetHeader("X-User-Id")
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid or missing X-User-Id", nil, nil)
+		return uuid.Nil, false
+	}
+	return id, true
+}
+
+// SaveSearch handles POST /v1/search/saved
+// Body: {"query":"...", "search_type":"universal"}
+func (h *Handler) SaveSearch(c *gin.Context) {
+	if !h.requireExtras(c) {
+		return
+	}
+	userID, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+
+	var req struct {
+		Query      string `json:"query" binding:"required"`
+		SearchType string `json:"search_type"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	if req.SearchType == "" {
+		req.SearchType = "universal"
+	}
+
+	ss, err := h.extrasStore.SaveSearch(c.Request.Context(), userID, req.Query, req.SearchType)
+	if err != nil {
+		slog.Error("SaveSearch error", "error", err)
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to save search", nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusCreated, ss, nil)
+}
+
+// GetSavedSearches handles GET /v1/search/saved
+func (h *Handler) GetSavedSearches(c *gin.Context) {
+	if !h.requireExtras(c) {
+		return
+	}
+	userID, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+
+	items, err := h.extrasStore.GetSavedSearches(c.Request.Context(), userID)
+	if err != nil {
+		slog.Error("GetSavedSearches error", "error", err)
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get saved searches", nil, nil)
+		return
+	}
+	if items == nil {
+		items = []postgres.SavedSearch{}
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": items}, nil)
+}
+
+// DeleteSavedSearch handles DELETE /v1/search/saved/:id
+func (h *Handler) DeleteSavedSearch(c *gin.Context) {
+	if !h.requireExtras(c) {
+		return
+	}
+	userID, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid saved search ID", nil, nil)
+		return
+	}
+
+	if err := h.extrasStore.DeleteSavedSearch(c.Request.Context(), id, userID); err != nil {
+		if err == postgres.ErrNotFound {
+			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Saved search not found", nil, nil)
+			return
+		}
+		slog.Error("DeleteSavedSearch error", "error", err)
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to delete saved search", nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"status": "deleted"}, nil)
+}
+
+// GetSearchHistory handles GET /v1/search/history
+// Query params: limit (default: 20, max: 20)
+func (h *Handler) GetSearchHistory(c *gin.Context) {
+	if !h.requireExtras(c) {
+		return
+	}
+	userID, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+
+	limit := 20
+	if l := c.Query("limit"); l != "" {
+		if val, err := strconv.Atoi(l); err == nil && val > 0 && val <= 20 {
+			limit = val
+		}
+	}
+
+	items, err := h.extrasStore.GetSearchHistory(c.Request.Context(), userID, limit)
+	if err != nil {
+		slog.Error("GetSearchHistory error", "error", err)
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get search history", nil, nil)
+		return
+	}
+	if items == nil {
+		items = []postgres.SearchHistoryItem{}
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": items}, nil)
+}
+
+// ClearSearchHistory handles DELETE /v1/search/history
+func (h *Handler) ClearSearchHistory(c *gin.Context) {
+	if !h.requireExtras(c) {
+		return
+	}
+	userID, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+
+	if err := h.extrasStore.ClearSearchHistory(c.Request.Context(), userID); err != nil {
+		slog.Error("ClearSearchHistory error", "error", err)
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to clear search history", nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"status": "cleared"}, nil)
+}
+
+// SearchProducts handles GET /v1/search/products
+// Query params: q (required), category (optional), limit (default: 20)
+func (h *Handler) SearchProducts(c *gin.Context) {
+	query := c.Query("q")
+	if errMsg := validateSearchQuery(query); errMsg != "" {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", errMsg, nil, nil)
+		return
+	}
+
+	category := c.Query("category")
+	limit := 20
+	if l := c.Query("limit"); l != "" {
+		if val, err := strconv.Atoi(l); err == nil && val > 0 && val <= 100 {
+			limit = val
+		}
+	}
+
+	results, err := h.store.SearchProducts(c.Request.Context(), query, category, limit)
+	if err != nil {
+		slog.Error("SearchProducts error", "error", err)
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Product search failed", nil, nil)
+		return
+	}
+	if results == nil {
+		results = []map[string]any{}
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": results}, nil)
+}
+
+// SearchEvents handles GET /v1/search/events
+// Query params: q (required), limit (default: 20)
+func (h *Handler) SearchEvents(c *gin.Context) {
+	query := c.Query("q")
+	if errMsg := validateSearchQuery(query); errMsg != "" {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", errMsg, nil, nil)
+		return
+	}
+
+	limit := 20
+	if l := c.Query("limit"); l != "" {
+		if val, err := strconv.Atoi(l); err == nil && val > 0 && val <= 100 {
+			limit = val
+		}
+	}
+
+	results, err := h.store.SearchEvents(c.Request.Context(), query, limit)
+	if err != nil {
+		slog.Error("SearchEvents error", "error", err)
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Event search failed", nil, nil)
+		return
+	}
+	if results == nil {
+		results = []map[string]any{}
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": results}, nil)
+}
+
+// SearchMessages handles GET /v1/search/messages
+// Query params: q (required), conv_id (optional), limit (default: 20)
+// Requires X-User-Id header.
+func (h *Handler) SearchMessages(c *gin.Context) {
+	userID, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+
+	query := c.Query("q")
+	if errMsg := validateSearchQuery(query); errMsg != "" {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", errMsg, nil, nil)
+		return
+	}
+
+	convID := c.Query("conv_id")
+	limit := 20
+	if l := c.Query("limit"); l != "" {
+		if val, err := strconv.Atoi(l); err == nil && val > 0 && val <= 100 {
+			limit = val
+		}
+	}
+
+	results, err := h.store.SearchMessages(c.Request.Context(), userID.String(), convID, query, limit)
+	if err != nil {
+		slog.Error("SearchMessages error", "error", err)
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Message search failed", nil, nil)
+		return
+	}
+	if results == nil {
+		results = []map[string]any{}
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": results}, nil)
 }

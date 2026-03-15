@@ -51,6 +51,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.PATCH("/preferences", h.UpdatePreferences)
 		v1.POST("/devices", h.RegisterDevice)
 		v1.DELETE("/devices/:id", h.UnregisterDevice)
+		v1.GET("/digests", h.GetDigests)
+		v1.POST("/bundle", h.BundleNotification)
 	}
 }
 
@@ -314,6 +316,75 @@ func (h *Handler) UnregisterDevice(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "removed"}, nil)
+}
+
+// GetDigests handles GET /v1/notifications/digests
+// Returns weekly/monthly notification digests for the authenticated user.
+func (h *Handler) GetDigests(c *gin.Context) {
+	userIDStr := c.GetHeader("X-User-Id")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	digests, err := h.svc.GetDigests(c.Request.Context(), userID)
+	if err != nil {
+		log.Printf("GetDigests error: %v", err)
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get digests", nil, nil)
+		return
+	}
+	if digests == nil {
+		api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": []any{}}, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": digests}, nil)
+}
+
+// BundleNotificationRequest is the request body for POST /v1/notifications/bundle.
+type BundleNotificationRequest struct {
+	UserID     string  `json:"user_id" binding:"required"`
+	ActorID    string  `json:"actor_id" binding:"required"`
+	BundleType string  `json:"bundle_type" binding:"required"`
+	RefID      *string `json:"ref_id"`
+}
+
+// BundleNotification handles POST /v1/notifications/bundle (internal only).
+// It groups a notification event into a bundle to reduce noise.
+func (h *Handler) BundleNotification(c *gin.Context) {
+	var req BundleNotificationRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		return
+	}
+
+	userID, err := uuid.Parse(req.UserID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid user_id", nil, nil)
+		return
+	}
+	actorID, err := uuid.Parse(req.ActorID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid actor_id", nil, nil)
+		return
+	}
+
+	var refID *uuid.UUID
+	if req.RefID != nil && *req.RefID != "" {
+		parsed, parseErr := uuid.Parse(*req.RefID)
+		if parseErr != nil {
+			api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid ref_id", nil, nil)
+			return
+		}
+		refID = &parsed
+	}
+
+	if err := h.svc.BundleNotification(c.Request.Context(), userID, actorID, req.BundleType, refID); err != nil {
+		log.Printf("BundleNotification error: %v", err)
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to bundle notification", nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "ok"}, nil)
 }
 
 // StreamNotifications uses SSE to push real-time notifications from Redis pub/sub

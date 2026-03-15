@@ -101,6 +101,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// User subscriptions list
 	v1.GET("/:userId/subscriptions", h.ListUserChannelSubscriptions)
 
+	// Profile extras: pins, portfolio, QR codes, digital wellbeing
+	h.registerProfileExtrasRoutes(r)
+
 	// Onboarding
 	r.POST("/v1/onboarding/ensure-publisher", h.EnsurePublisher)
 

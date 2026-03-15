@@ -38,6 +38,44 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/:id", h.GetReport)
 		v1.PATCH("/:id", h.UpdateReport)
 	}
+
+	appeals := r.Group("/v1/appeals")
+	{
+		appeals.POST("", h.SubmitAppeal)
+		appeals.GET("", h.AdminListAppeals)
+		appeals.PATCH("/:id", h.ReviewAppeal)
+	}
+
+	keywords := r.Group("/v1/keyword-filters")
+	{
+		keywords.POST("", h.AddKeywordFilter)
+		keywords.GET("", h.GetKeywordFilters)
+	}
+
+	teen := r.Group("/v1/teen-accounts")
+	{
+		teen.POST("", h.UpsertTeenAccount)
+		teen.GET("/:userId", h.GetTeenAccount)
+	}
+
+	mediaLabels := r.Group("/v1/media-labels")
+	{
+		mediaLabels.POST("", h.AddMediaLabel)
+		mediaLabels.GET("/:mediaId", h.GetMediaLabels)
+	}
+
+	strikes := r.Group("/v1/strikes")
+	{
+		strikes.POST("", h.IssueStrike)
+		strikes.GET("/:userId", h.GetUserStrikes)
+	}
+
+	verification := r.Group("/v1/verification-requests")
+	{
+		verification.POST("", h.SubmitVerificationRequest)
+		verification.GET("", h.AdminListVerificationRequests)
+		verification.PATCH("/:id", h.ReviewVerificationRequest)
+	}
 }
 
 type FileReportRequest struct {

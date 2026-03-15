@@ -27,6 +27,7 @@ var validTransitions = map[string][]string{
 
 type Service struct {
 	store       *postgres.ReportStore
+	extras      *postgres.TrustExtrasStore
 	kafkaWriter *kafka.Writer
 }
 

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/atpost/admin-service/internal/service"
+	"github.com/atpost/admin-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -57,6 +58,30 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.POST("/takedown", h.TakedownContent)
 		v1.POST("/users/:userId/suspend", h.SuspendUser)
 		v1.DELETE("/users/:userId/suspend", h.UnsuspendUser)
+
+		// Data export
+		v1.POST("/data-export", h.RequestDataExport)
+		v1.GET("/data-export/:id", h.GetDataExportStatus)
+	}
+
+	// Mini Apps
+	apps := r.Group("/v1/apps")
+	{
+		apps.POST("", h.CreateMiniApp)
+		apps.GET("", h.ListMiniApps)
+		apps.GET("/installed", h.GetUserInstalledApps)
+		apps.GET("/:id", h.GetMiniApp)
+		apps.PATCH("/:id/status", h.UpdateMiniAppStatus)
+		apps.POST("/:id/install", h.InstallApp)
+		apps.DELETE("/:id/install", h.UninstallApp)
+	}
+
+	// OAuth
+	oauth := r.Group("/v1/oauth")
+	{
+		oauth.POST("/clients", h.CreateOAuthClient)
+		oauth.GET("/authorize", h.OAuthAuthorize)
+		oauth.POST("/token", h.OAuthToken)
 	}
 }
 
@@ -244,3 +269,334 @@ func parsePagination(c *gin.Context) (int, int) {
 	}
 	return limit, offset
 }
+
+// --- Data Export ---
+
+// RequestDataExport handles POST /v1/admin/data-export.
+// Users request their own data export.
+func (h *Handler) RequestDataExport(c *gin.Context) {
+	userIDStr := c.GetHeader("X-User-Id")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	req, err := h.svc.RequestDataExport(c.Request.Context(), userID)
+	if err != nil {
+		log.Printf("RequestDataExport error: %v", err)
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to create export request", nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusCreated, req, nil)
+}
+
+// GetDataExportStatus handles GET /v1/admin/data-export/:id.
+func (h *Handler) GetDataExportStatus(c *gin.Context) {
+	userIDStr := c.GetHeader("X-User-Id")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid export request ID", nil, nil)
+		return
+	}
+
+	req, err := h.svc.GetDataExportStatus(c.Request.Context(), id, userID)
+	if err != nil {
+		if err.Error() == "NOT_FOUND" {
+			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Export request not found", nil, nil)
+			return
+		}
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get export status", nil, nil)
+		return
+	}
+	if req == nil {
+		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Export request not found", nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, req, nil)
+}
+
+// --- Mini Apps ---
+
+type CreateMiniAppRequest struct {
+	Name        string   `json:"name" binding:"required"`
+	Description string   `json:"description" binding:"required"`
+	IconURL     string   `json:"icon_url"`
+	ManifestURL string   `json:"manifest_url" binding:"required"`
+	Permissions []string `json:"permissions"`
+	Category    string   `json:"category"`
+}
+
+func (h *Handler) CreateMiniApp(c *gin.Context) {
+	developerIDStr := c.GetHeader("X-User-Id")
+	developerID, err := uuid.Parse(developerIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid developer ID", nil, nil)
+		return
+	}
+
+	var req CreateMiniAppRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+
+	app := &postgres.MiniApp{
+		DeveloperID: developerID,
+		Name:        req.Name,
+		Description: req.Description,
+		IconURL:     req.IconURL,
+		ManifestURL: req.ManifestURL,
+		Permissions: req.Permissions,
+		Category:    req.Category,
+	}
+	if app.Permissions == nil {
+		app.Permissions = []string{}
+	}
+
+	if err := h.svc.CreateMiniApp(c.Request.Context(), app); err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusCreated, app, nil)
+}
+
+func (h *Handler) ListMiniApps(c *gin.Context) {
+	limit, offset := parsePagination(c)
+	category := c.Query("category")
+
+	apps, err := h.svc.ListMiniApps(c.Request.Context(), category, limit, offset)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	if apps == nil {
+		apps = []postgres.MiniApp{}
+	}
+
+	api.JSON(c.Writer, http.StatusOK, apps, nil)
+}
+
+func (h *Handler) GetMiniApp(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid app ID", nil, nil)
+		return
+	}
+
+	app, err := h.svc.GetMiniApp(c.Request.Context(), id)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	if app == nil {
+		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "App not found", nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, app, nil)
+}
+
+type UpdateAppStatusRequest struct {
+	Status string `json:"status" binding:"required"`
+}
+
+func (h *Handler) UpdateMiniAppStatus(c *gin.Context) {
+	if !requireAnyScope(c, "admin", "superadmin") {
+		return
+	}
+
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid app ID", nil, nil)
+		return
+	}
+
+	var req UpdateAppStatusRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+
+	if err := h.svc.UpdateMiniAppStatus(c.Request.Context(), id, req.Status); err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": req.Status}, nil)
+}
+
+type InstallAppRequest struct {
+	GrantedPermissions []string `json:"granted_permissions"`
+}
+
+func (h *Handler) InstallApp(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	appID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid app ID", nil, nil)
+		return
+	}
+
+	var req InstallAppRequest
+	_ = c.ShouldBindJSON(&req)
+	if req.GrantedPermissions == nil {
+		req.GrantedPermissions = []string{}
+	}
+
+	inst, err := h.svc.InstallApp(c.Request.Context(), appID, userID, req.GrantedPermissions)
+	if err != nil {
+		if err.Error() == "APP_NOT_AVAILABLE" {
+			api.Error(c.Writer, http.StatusBadRequest, "APP_NOT_AVAILABLE", "App is not available for installation", nil, nil)
+			return
+		}
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusCreated, inst, nil)
+}
+
+func (h *Handler) UninstallApp(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	appID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid app ID", nil, nil)
+		return
+	}
+
+	if err := h.svc.UninstallApp(c.Request.Context(), appID, userID); err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "uninstalled"}, nil)
+}
+
+func (h *Handler) GetUserInstalledApps(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	apps, err := h.svc.GetUserInstalledApps(c.Request.Context(), userID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	if apps == nil {
+		apps = []postgres.MiniApp{}
+	}
+
+	api.JSON(c.Writer, http.StatusOK, apps, nil)
+}
+
+// --- OAuth ---
+
+type CreateOAuthClientRequest struct {
+	Name         string   `json:"name" binding:"required"`
+	ClientID     string   `json:"client_id" binding:"required"`
+	ClientSecret string   `json:"client_secret" binding:"required"`
+	RedirectURIs []string `json:"redirect_uris"`
+	Scopes       []string `json:"scopes"`
+}
+
+func (h *Handler) CreateOAuthClient(c *gin.Context) {
+	developerID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid developer ID", nil, nil)
+		return
+	}
+
+	var req CreateOAuthClientRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+
+	client := &postgres.OAuthClient{
+		DeveloperID:      developerID,
+		Name:             req.Name,
+		ClientID:         req.ClientID,
+		ClientSecretHash: req.ClientSecret, // In production: hash this
+		RedirectURIs:     req.RedirectURIs,
+		Scopes:           req.Scopes,
+	}
+	if client.RedirectURIs == nil {
+		client.RedirectURIs = []string{}
+	}
+	if client.Scopes == nil {
+		client.Scopes = []string{}
+	}
+
+	if err := h.svc.CreateOAuthClient(c.Request.Context(), client); err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+
+	// Return without secret hash
+	client.ClientSecretHash = ""
+	api.JSON(c.Writer, http.StatusCreated, client, nil)
+}
+
+// OAuthAuthorize is a stub returning consent page data.
+// Full PKCE/authorization-code flow would be implemented here.
+func (h *Handler) OAuthAuthorize(c *gin.Context) {
+	clientID := c.Query("client_id")
+	redirectURI := c.Query("redirect_uri")
+	scope := c.Query("scope")
+	state := c.Query("state")
+
+	if clientID == "" {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "client_id is required", nil, nil)
+		return
+	}
+
+	client, err := h.svc.GetOAuthClientByClientID(c.Request.Context(), clientID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	if client == nil || !client.IsActive {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_CLIENT", "Unknown or inactive client", nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{
+		"client_name":  client.Name,
+		"client_id":    clientID,
+		"redirect_uri": redirectURI,
+		"scopes":       strings.Fields(scope),
+		"state":        state,
+	}, nil)
+}
+
+// OAuthToken is a stub for the token exchange endpoint.
+func (h *Handler) OAuthToken(c *gin.Context) {
+	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{
+		"token_type":   "Bearer",
+		"access_token": "stub_token_exchange_not_implemented",
+		"expires_in":   3600,
+	}, nil)
+}
+
