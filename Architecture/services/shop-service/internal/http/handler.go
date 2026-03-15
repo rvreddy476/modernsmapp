@@ -39,6 +39,45 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/orders", h.ListOrders)
 		v1.GET("/orders/:orderId", h.GetOrder)
 		v1.PATCH("/orders/:orderId/status", h.UpdateOrderStatus)
+
+		// Storefronts
+		v1.POST("/storefronts", h.CreateStorefront)
+		v1.GET("/storefronts/:handle", h.GetStorefrontByHandle)
+		v1.GET("/storefronts/by-seller/:sellerId", h.GetStorefrontBySeller)
+		v1.PUT("/storefronts/:storefrontId", h.UpdateStorefront)
+		v1.POST("/storefronts/:storefrontId/featured", h.SetFeaturedListings)
+		v1.GET("/storefronts/:storefrontId/featured", h.GetFeaturedListings)
+		v1.POST("/storefronts/:storefrontId/collections", h.CreateCollection)
+		v1.GET("/storefronts/:storefrontId/collections", h.GetCollections)
+		v1.POST("/collections/:collectionId/listings", h.AddListingToCollection)
+		v1.GET("/collections/:collectionId/listings", h.GetCollectionListings)
+
+		// Product tags
+		v1.POST("/posts/:postId/product-tags", h.UpsertPostProductTags)
+		v1.GET("/posts/:postId/product-tags", h.GetPostProductTags)
+
+		// Wishlist
+		v1.GET("/wishlist", h.GetWishlist)
+		v1.POST("/wishlist/items", h.AddToWishlist)
+		v1.DELETE("/wishlist/items/:listingId", h.RemoveFromWishlist)
+		v1.POST("/listings/:listingId/stock-alert", h.CreateStockAlert)
+		v1.DELETE("/listings/:listingId/stock-alert", h.RemoveStockAlert)
+
+		// Group Buy
+		v1.POST("/group-buys", h.CreateGroupBuy)
+		v1.GET("/group-buys/:groupBuyId", h.GetGroupBuy)
+		v1.POST("/group-buys/:groupBuyId/join", h.JoinGroupBuy)
+		v1.GET("/listings/:listingId/group-buys", h.ListActiveGroupBuys)
+
+		// Ads
+		v1.POST("/ads/campaigns", h.CreateAdCampaign)
+		v1.GET("/ads/campaigns", h.ListAdCampaigns)
+		v1.GET("/ads/campaigns/:campaignId", h.GetAdCampaign)
+		v1.PATCH("/ads/campaigns/:campaignId/status", h.UpdateAdCampaignStatus)
+		v1.POST("/ads/campaigns/:campaignId/ad-sets", h.CreateAdSet)
+		v1.POST("/ads/campaigns/:campaignId/creatives", h.CreateAdCreative)
+		v1.GET("/ads/campaigns/:campaignId/performance", h.GetAdPerformance)
+		v1.POST("/ads/campaigns/:campaignId/frequency-cap", h.SetAdFrequencyCap)
 	}
 }
 

@@ -53,6 +53,21 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 		// Dashboard
 		v1.GET("/dashboard", h.GetDashboard)
+
+		// Affiliate links
+		v1.POST("/affiliate/links", h.CreateAffiliateLink)
+		v1.GET("/affiliate/links", h.ListAffiliateLinks)
+		v1.GET("/affiliate/:linkCode", h.GetAffiliateLinkByCode)
+		v1.GET("/affiliate/conversions", h.ListAffiliateConversions)
+
+		// Fundraisers
+		v1.POST("/fundraisers", h.CreateFundraiser)
+		v1.GET("/fundraisers", h.ListActiveFundraisers)
+		v1.GET("/fundraisers/mine", h.ListMyFundraisers)
+		v1.GET("/fundraisers/:fundraiserId", h.GetFundraiser)
+		v1.PATCH("/fundraisers/:fundraiserId/pause", h.PauseFundraiser)
+		v1.POST("/fundraisers/:fundraiserId/donate", h.Donate)
+		v1.GET("/fundraisers/:fundraiserId/donations", h.GetDonationsByFundraiser)
 	}
 }
 

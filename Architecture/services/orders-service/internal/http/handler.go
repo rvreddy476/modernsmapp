@@ -42,6 +42,16 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		bookings.GET("", h.ListBookings)
 		bookings.GET("/:bookingId", h.GetBooking)
 		bookings.PATCH("/:bookingId/status", h.UpdateBookingStatus)
+
+		// Returns & Refunds
+		v1.POST("/orders/:orderId/return", h.CreateReturnRequest)
+		v1.GET("/returns/:returnId", h.GetReturnRequest)
+		v1.GET("/returns/buyer", h.ListBuyerReturns)
+		v1.GET("/returns/seller", h.ListSellerReturns)
+		v1.POST("/returns/:returnId/approve", h.ApproveReturn)
+		v1.POST("/returns/:returnId/reject", h.RejectReturn)
+		v1.POST("/returns/:returnId/received", h.MarkItemReceived)
+		v1.POST("/returns/:returnId/tracking", h.UpdateReturnTracking)
 	}
 }
 

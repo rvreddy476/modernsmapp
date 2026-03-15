@@ -10,12 +10,14 @@ import (
 	"github.com/atpost/shared/events"
 	"github.com/atpost/shop-service/internal/store/postgres"
 	"github.com/google/uuid"
-	"github.com/segmentio/kafka-go"
+	"github.com/redis/go-redis/v9"
+	kafka "github.com/segmentio/kafka-go"
 )
 
 type Service struct {
 	store  *postgres.Store
 	writer *kafka.Writer
+	rdb    *redis.Client
 }
 
 func New(store *postgres.Store, kafkaBrokers string) *Service {
@@ -25,6 +27,12 @@ func New(store *postgres.Store, kafkaBrokers string) *Service {
 		Balancer: &kafka.LeastBytes{},
 	}
 	return &Service{store: store, writer: w}
+}
+
+func NewWithRedis(store *postgres.Store, kafkaBrokers string, rdb *redis.Client) *Service {
+	svc := New(store, kafkaBrokers)
+	svc.rdb = rdb
+	return svc
 }
 
 func (s *Service) Close() {
