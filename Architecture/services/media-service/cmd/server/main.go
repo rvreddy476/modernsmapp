@@ -109,6 +109,7 @@ func main() {
 	r.GET("/metrics", metrics.Handler())
 	mediaHandler.RegisterRoutes(r, authMW, optionalAuthMW)
 	mediaHandler.RegisterAudioRoutes(r, authMW)
+	mediaHandler.RegisterClipsRoutes(r, authMW)
 	mediaHandler.RegisterRenditionRoutes(r, authMW)
 	mediaHandler.RegisterResumableRoutes(r, authMW)
 	mediaHandler.RegisterSlotRoutes(r, authMW)

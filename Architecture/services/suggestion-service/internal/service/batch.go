@@ -448,12 +448,20 @@ func (s *Service) RunFollowCandidatesFull(ctx context.Context) error {
 }
 
 func (s *Service) runFollowBatchForUser(ctx context.Context, viewerID uuid.UUID) error {
-	// Load exclusion set
+	// Load exclusion set — must include existing friends, follows, blocked, and cooldowns
+	friendIDs, _ := s.store.GetFriendIDs(ctx, viewerID)
+	followingIDs, _ := s.store.GetFollowingIDs(ctx, viewerID)
 	blockedIDs, _ := s.store.GetBlockedIDs(ctx, viewerID)
 	cooldowns, _ := s.store.GetActiveCooldowns(ctx, viewerID)
 
 	excludeSet := make(map[uuid.UUID]bool)
 	excludeSet[viewerID] = true
+	for _, id := range friendIDs {
+		excludeSet[id] = true
+	}
+	for _, id := range followingIDs {
+		excludeSet[id] = true
+	}
 	for _, id := range blockedIDs {
 		excludeSet[id] = true
 	}

@@ -449,7 +449,9 @@ func (s *Service) paginateItems(items []SuggestionItem, suggType string, offset,
 func (s *Service) getPopularFallback(ctx context.Context, viewerID uuid.UUID, suggType string, limit int, surface string) (*SuggestionsResponse, error) {
 	excludeIDs := []uuid.UUID{viewerID}
 	friendIDs, _ := s.store.GetFriendIDs(ctx, viewerID)
+	followingIDs, _ := s.store.GetFollowingIDs(ctx, viewerID)
 	excludeIDs = append(excludeIDs, friendIDs...)
+	excludeIDs = append(excludeIDs, followingIDs...)
 
 	popular, err := s.store.GetPopularUsers(ctx, limit+len(excludeIDs))
 	if err != nil {

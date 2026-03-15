@@ -1,9 +1,11 @@
 package http
 
 import (
+	"io"
 	"net/http"
 	"strconv"
 
+	"github.com/atpost/media-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -19,6 +21,13 @@ func (h *Handler) RegisterAudioRoutes(r *gin.Engine, authMW gin.HandlerFunc) {
 		v1.GET("/:audioId", h.GetAudioTrack)
 		v1.GET("/:audioId/url", h.GetAudioTrackURL)
 		v1.POST("/:audioId/use", authMW, h.UseAudioTrack)
+		v1.POST("/voiceover", authMW, h.UploadVoiceover)
+	}
+
+	lib := r.Group("/v1/audio-library")
+	{
+		lib.GET("", h.GetAudioLibrary)
+		lib.GET("/:audioId", h.GetAudioLibraryTrack)
 	}
 }
 
@@ -139,4 +148,76 @@ func (h *Handler) UseAudioTrack(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, gin.H{"status": "ok"}, nil)
+}
+
+func (h *Handler) UploadVoiceover(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	file, header, err := c.Request.FormFile("audio")
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "audio file required (form field: audio)", nil, nil)
+		return
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to read file", nil, nil)
+		return
+	}
+
+	mimeType := header.Header.Get("Content-Type")
+	if mimeType == "" {
+		mimeType = "audio/webm"
+	}
+
+	asset, err := h.svc.RecordVoiceover(c.Request.Context(), userID, data, mimeType)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusCreated, asset, nil)
+}
+
+func (h *Handler) GetAudioLibrary(c *gin.Context) {
+	genre := c.Query("genre")
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+
+	var genrePtr *string
+	if genre != "" {
+		genrePtr = &genre
+	}
+
+	tracks, err := h.svc.GetTrendingAudioLibrary(c.Request.Context(), genrePtr, limit, offset)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	if tracks == nil {
+		tracks = []postgres.AudioLibraryTrack{}
+	}
+
+	api.JSON(c.Writer, http.StatusOK, gin.H{"tracks": tracks, "total": len(tracks)}, nil)
+}
+
+func (h *Handler) GetAudioLibraryTrack(c *gin.Context) {
+	audioID, err := uuid.Parse(c.Param("audioId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid audio ID", nil, nil)
+		return
+	}
+
+	track, err := h.svc.GetAudioLibraryTrackByID(c.Request.Context(), audioID)
+	if err != nil || track == nil {
+		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Audio track not found", nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, track, nil)
 }

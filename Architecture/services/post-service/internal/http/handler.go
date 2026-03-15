@@ -130,6 +130,22 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		comments.DELETE("/:commentId", h.DeleteComment)
 		comments.PATCH("/:commentId", h.EditComment)
 	}
+
+	// Flick Series
+	series := r.Group("/v1/series")
+	{
+		series.POST("", h.CreateFlickSeries)
+		series.GET("/:seriesId", h.GetFlickSeries)
+		series.GET("/:seriesId/episodes", h.GetSeriesEpisodes)
+		series.POST("/:seriesId/episodes", h.AddEpisodeToSeries)
+		series.POST("/:seriesId/follow", h.FollowSeries)
+		series.DELETE("/:seriesId/follow", h.UnfollowSeries)
+	}
+	// Creator's series list
+	r.GET("/v1/creators/:creatorId/series", h.ListCreatorSeries)
+
+	// Remix token
+	v1.GET("/:postId/remix-token", h.GetRemixToken)
 }
 
 type CreatePollRequest struct {
@@ -1814,4 +1830,161 @@ func (h *Handler) GetEventRSVPs(c *gin.Context) {
 		rsvps = []postgres.EventRSVP{}
 	}
 	api.JSON(c.Writer, http.StatusOK, rsvps, nil)
+}
+
+// ── Flick Series ─────────────────────────────────────────────
+
+func (h *Handler) CreateFlickSeries(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil, nil)
+		return
+	}
+	var req struct {
+		Title       string `json:"title" binding:"required"`
+		Description string `json:"description"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	fs, err := h.svc.CreateFlickSeries(c.Request.Context(), userID, req.Title, req.Description)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "CREATE_SERIES_ERROR", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusCreated, fs, nil)
+}
+
+func (h *Handler) GetFlickSeries(c *gin.Context) {
+	seriesID, err := uuid.Parse(c.Param("seriesId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "invalid series id", nil, nil)
+		return
+	}
+	fs, err := h.svc.GetFlickSeries(c.Request.Context(), seriesID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, fs, nil)
+}
+
+func (h *Handler) GetSeriesEpisodes(c *gin.Context) {
+	seriesID, err := uuid.Parse(c.Param("seriesId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "invalid series id", nil, nil)
+		return
+	}
+	items, err := h.svc.GetSeriesEpisodes(c.Request.Context(), seriesID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	if items == nil {
+		items = []postgres.FlickSeriesItem{}
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"items": items}, nil)
+}
+
+func (h *Handler) AddEpisodeToSeries(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil, nil)
+		return
+	}
+	seriesID, err := uuid.Parse(c.Param("seriesId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "invalid series id", nil, nil)
+		return
+	}
+	var req struct {
+		PostID     uuid.UUID `json:"post_id" binding:"required"`
+		EpisodeNum int       `json:"episode_num" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	item, err := h.svc.AddEpisodeToSeries(c.Request.Context(), userID, seriesID, req.PostID, req.EpisodeNum)
+	if err != nil {
+		if strings.Contains(err.Error(), "forbidden") {
+			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil, nil)
+			return
+		}
+		api.Error(c.Writer, http.StatusBadRequest, "ADD_EPISODE_ERROR", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusCreated, item, nil)
+}
+
+func (h *Handler) FollowSeries(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil, nil)
+		return
+	}
+	seriesID, err := uuid.Parse(c.Param("seriesId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "invalid series id", nil, nil)
+		return
+	}
+	if err := h.svc.FollowSeries(c.Request.Context(), userID, seriesID); err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
+}
+
+func (h *Handler) UnfollowSeries(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil, nil)
+		return
+	}
+	seriesID, err := uuid.Parse(c.Param("seriesId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "invalid series id", nil, nil)
+		return
+	}
+	if err := h.svc.UnfollowSeries(c.Request.Context(), userID, seriesID); err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
+}
+
+func (h *Handler) ListCreatorSeries(c *gin.Context) {
+	creatorID, err := uuid.Parse(c.Param("creatorId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "invalid creator id", nil, nil)
+		return
+	}
+	series, err := h.svc.ListFlickSeriesByCreator(c.Request.Context(), creatorID, 20, 0)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	if series == nil {
+		series = []postgres.FlickSeries{}
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"series": series}, nil)
+}
+
+func (h *Handler) GetRemixToken(c *gin.Context) {
+	postID, err := uuid.Parse(c.Param("postId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "invalid post id", nil, nil)
+		return
+	}
+	result, err := h.svc.GetRemixToken(c.Request.Context(), postID)
+	if err != nil {
+		if strings.Contains(err.Error(), "does not allow") {
+			api.Error(c.Writer, http.StatusForbidden, "REMIX_NOT_ALLOWED", err.Error(), nil, nil)
+			return
+		}
+		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, result, nil)
 }

@@ -6,6 +6,8 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS pronouns TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS status_text TEXT NOT NULL DEFAULT '';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS status_emoji TEXT NOT NULL DEFAULT '';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS status_expires_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS handle TEXT;
+CREATE INDEX IF NOT EXISTS idx_users_handle ON users (handle) WHERE handle IS NOT NULL;
 
 -- Extend user_links table
 ALTER TABLE user_links ADD COLUMN IF NOT EXISTS click_count INTEGER NOT NULL DEFAULT 0;
@@ -121,3 +123,14 @@ CREATE TABLE IF NOT EXISTS endorsements (
 
 CREATE INDEX IF NOT EXISTS idx_endorsements_to ON endorsements (to_user_id);
 CREATE INDEX IF NOT EXISTS idx_endorsements_from ON endorsements (from_user_id);
+
+-- Channel members (owners, admins, moderators)
+CREATE TABLE IF NOT EXISTS channel_members (
+    channel_id  UUID NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    user_id     UUID NOT NULL,
+    role        TEXT NOT NULL DEFAULT 'member',
+    joined_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (channel_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_channel_members_user ON channel_members (user_id);

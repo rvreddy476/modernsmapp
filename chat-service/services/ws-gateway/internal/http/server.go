@@ -97,16 +97,20 @@ func (s *Server) handleWS(w nethttp.ResponseWriter, r *nethttp.Request) {
 	if err := s.rdb.Set(ctx, "presence:"+userID.String(), "1", 90*time.Second).Err(); err != nil {
 		s.log.Warn("failed to set presence on connect", "err", err, "user_id", userID)
 	}
+	// Broadcast online status to the presence channel so other connected users can react.
+	s.rdb.Publish(ctx, "presence:updates", fmt.Sprintf(`{"user_id":"%s","online":true}`, userID.String()))
+
 	// Clear presence when the connection closes.
 	defer func() {
 		delCtx := context.Background()
 		if err := s.rdb.Del(delCtx, "presence:"+userID.String()).Err(); err != nil {
 			s.log.Warn("failed to clear presence on disconnect", "err", err, "user_id", userID)
 		}
+		s.rdb.Publish(delCtx, "presence:updates", fmt.Sprintf(`{"user_id":"%s","online":false}`, userID.String()))
 	}()
 
-	// Subscribe to chat messages, new posts, and post interaction updates
-	pubsub := s.rdb.Subscribe(ctx, chatChannel, "feed:new_post", "feed:post_update")
+	// Subscribe to chat messages, new posts, post interaction updates, and presence changes
+	pubsub := s.rdb.Subscribe(ctx, chatChannel, "feed:new_post", "feed:post_update", "presence:updates")
 	defer func() {
 		_ = pubsub.Close()
 	}()
@@ -293,6 +297,23 @@ func (s *Server) redisLoop(
 		case msg, ok := <-ch:
 			if !ok {
 				return
+			}
+			// Presence updates: wrap with type field and skip own presence
+			if msg.Channel == "presence:updates" {
+				var pdata map[string]any
+				if json.Unmarshal([]byte(msg.Payload), &pdata) == nil {
+					if presUID, _ := pdata["user_id"].(string); presUID == uid {
+						continue // Don't send own presence back to self
+					}
+					pdata["type"] = "presence_update"
+					if wrapped, err := json.Marshal(pdata); err == nil {
+						select {
+						case outbound <- wrapped:
+						default:
+						}
+					}
+				}
+				continue
 			}
 			// For feed/post messages, skip if authored/acted by this connected user
 			if msg.Channel == "feed:new_post" || msg.Channel == "feed:post_update" || strings.HasPrefix(msg.Channel, "post:") {

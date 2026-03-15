@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
+	"time"
 
 	"github.com/atpost/media-service/internal/processing"
 	"github.com/atpost/media-service/internal/store/postgres"
@@ -144,4 +146,115 @@ func (s *Service) GetAudioTrackURL(ctx context.Context, id uuid.UUID) (string, e
 		return "", err
 	}
 	return u.String(), nil
+}
+
+// ─── Audio Library ──────────────────────────────────────────────────
+
+// GetTrendingAudioLibrary returns library tracks ordered by usage_count.
+func (s *Service) GetTrendingAudioLibrary(ctx context.Context, genre *string, limit, offset int) ([]postgres.AudioLibraryTrack, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+	return s.pgStore.GetTrendingAudioLibrary(ctx, genre, limit, offset)
+}
+
+// GetAudioLibraryTrackByID returns a single audio_library track.
+func (s *Service) GetAudioLibraryTrackByID(ctx context.Context, id uuid.UUID) (*postgres.AudioLibraryTrack, error) {
+	return s.pgStore.GetAudioLibraryTrack(ctx, id)
+}
+
+// ─── Multi-clip ─────────────────────────────────────────────────────
+
+// SaveMediaClips replaces the clip sequence for a Flick post.
+func (s *Service) SaveMediaClips(ctx context.Context, postID uuid.UUID, clips []postgres.MediaClip) error {
+	return s.pgStore.SaveMediaClips(ctx, postID, clips)
+}
+
+// GetMediaClips returns the ordered clip sequence for a Flick post.
+func (s *Service) GetMediaClips(ctx context.Context, postID uuid.UUID) ([]postgres.MediaClip, error) {
+	return s.pgStore.GetMediaClips(ctx, postID)
+}
+
+// ─── Subtitles ───────────────────────────────────────────────────────
+
+// GetSubtitles returns all subtitle tracks for a media asset.
+func (s *Service) GetSubtitles(ctx context.Context, mediaAssetID uuid.UUID) ([]postgres.MediaSubtitle, error) {
+	return s.pgStore.GetSubtitles(ctx, mediaAssetID)
+}
+
+// CreateSubtitle upserts a subtitle track for a media asset.
+func (s *Service) CreateSubtitle(ctx context.Context, sub *postgres.MediaSubtitle) (*postgres.MediaSubtitle, error) {
+	return s.pgStore.CreateSubtitle(ctx, sub)
+}
+
+// ─── Voiceover ───────────────────────────────────────────────────────
+
+// RecordVoiceover transcodes raw audio to AAC, uploads it to blob storage,
+// and creates a media_assets record so it can be attached as a Flick overlay.
+func (s *Service) RecordVoiceover(ctx context.Context, uploaderID uuid.UUID, audioData []byte, mimeType string) (*postgres.MediaAsset, error) {
+	tmpDir, err := os.MkdirTemp("", "voiceover-")
+	if err != nil {
+		return nil, fmt.Errorf("create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	ext := ".webm"
+	switch mimeType {
+	case "audio/mp4", "audio/aac":
+		ext = ".m4a"
+	case "audio/ogg":
+		ext = ".ogg"
+	}
+	inputPath := tmpDir + "/input" + ext
+	if err := os.WriteFile(inputPath, audioData, 0644); err != nil {
+		return nil, fmt.Errorf("write input: %w", err)
+	}
+
+	outputPath := tmpDir + "/output.m4a"
+	cmd := exec.CommandContext(ctx, "ffmpeg", "-y", "-i", inputPath,
+		"-c:a", "aac", "-b:a", "128k", outputPath)
+	if out, cmdErr := cmd.CombinedOutput(); cmdErr != nil {
+		slog.Warn("ffmpeg voiceover transcode failed, using raw audio",
+			"err", cmdErr, "output", string(out))
+		outputPath = inputPath
+	}
+
+	outData, err := os.ReadFile(outputPath)
+	if err != nil {
+		return nil, fmt.Errorf("read output: %w", err)
+	}
+
+	storageKey := fmt.Sprintf("voiceovers/%s/%s.m4a", uploaderID, uuid.New())
+	if err := s.blobStore.UploadObject(ctx, storageKey, outData, "audio/mp4"); err != nil {
+		return nil, fmt.Errorf("upload voiceover: %w", err)
+	}
+
+	presignURL, err := s.blobStore.GeneratePresignedGetURL(ctx, storageKey, 24*time.Hour)
+	if err != nil {
+		return nil, fmt.Errorf("presign voiceover URL: %w", err)
+	}
+
+	now := time.Now()
+	asset := &postgres.MediaAsset{
+		ID:               uuid.New(),
+		UploaderID:       uploaderID,
+		FileType:         "audio",
+		MediaSubtype:     "voiceover",
+		MimeType:         "audio/mp4",
+		FileSizeBytes:    int64(len(outData)),
+		StorageBucket:    s.blobStore.Bucket(),
+		StorageKey:       storageKey,
+		ProcessingStatus: "ready",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	originalURL := presignURL.String()
+	asset.OriginalURL = &originalURL
+
+	if err := s.pgStore.CreateMedia(ctx, asset); err != nil {
+		return nil, fmt.Errorf("create media asset: %w", err)
+	}
+
+	slog.Info("voiceover uploaded", "uploader_id", uploaderID, "media_id", asset.ID, "size_bytes", len(outData))
+	return asset, nil
 }

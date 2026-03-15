@@ -325,7 +325,7 @@ services:
       POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/app?sslmode=disable
       JWT_SECRET: dev_secret_change_me
       MINIO_ENDPOINT: minio:9000
-      MINIO_PUBLIC_ENDPOINT: http://localhost:9000
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-https://cleestudio.com}
       MINIO_ACCESS_KEY: minio
       MINIO_SECRET_KEY: minio12345
       MINIO_BUCKET: media
@@ -470,7 +470,7 @@ services:
       HTTP_PORT: "8093"
       REDIS_ADDR: redis:6379
       JWT_SECRET: dev_secret_change_me
-      ALLOWED_ORIGINS: "${CORS_ORIGINS:-http://localhost:3000}"
+      ALLOWED_ORIGINS: "${CORS_ORIGINS:-*}"
     ports:
       - "8093:8093"
     depends_on:
