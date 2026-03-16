@@ -5,6 +5,7 @@ import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/features/create/providers/creation_provider.dart';
 import 'package:atpost_app/providers/user_provider.dart';
+import 'package:atpost_app/services/api_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -19,7 +20,10 @@ class CreatePostScreen extends ConsumerStatefulWidget {
 
 class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
   final TextEditingController _textController = TextEditingController();
-  String? _activePanel;
+  bool _loadingCaptions = false;
+  bool _loadingHashtags = false;
+  List<String> _captionSuggestions = [];
+  List<String> _hashtagSuggestions = [];
 
   @override
   void initState() {
@@ -150,7 +154,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
               label: Text(type.name.toUpperCase()),
               selected: isSelected,
               onSelected: (_) => notifier.setType(type),
-              selectedColor: AppColors.postbookPrimary.withOpacity(0.2),
+              selectedColor: AppColors.postbookPrimary.withValues(alpha: 0.2),
               labelStyle: TextStyle(
                 color: isSelected ? AppColors.postbookPrimary : Colors.grey,
                 fontWeight: FontWeight.bold,
@@ -206,9 +210,90 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
               border: InputBorder.none,
             ),
           ),
+          const SizedBox(height: 8),
+          // AI suggestion buttons
+          Row(
+            children: [
+              TextButton.icon(
+                onPressed: _loadingCaptions ? null : _fetchCaptionSuggestions,
+                icon: _loadingCaptions
+                    ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.auto_awesome, size: 14, color: Colors.amber),
+                label: const Text('Captions', style: TextStyle(fontSize: 12)),
+              ),
+              TextButton.icon(
+                onPressed: _loadingHashtags ? null : _fetchHashtagSuggestions,
+                icon: _loadingHashtags
+                    ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.tag, size: 14, color: Colors.blue),
+                label: const Text('Hashtags', style: TextStyle(fontSize: 12)),
+              ),
+              if (_captionSuggestions.isNotEmpty || _hashtagSuggestions.isNotEmpty)
+                IconButton(
+                  icon: const Icon(Icons.close, size: 16),
+                  onPressed: () => setState(() { _captionSuggestions = []; _hashtagSuggestions = []; }),
+                  tooltip: 'Clear suggestions',
+                ),
+            ],
+          ),
+          if (_captionSuggestions.isNotEmpty) ...[
+            const Divider(),
+            ...(_captionSuggestions.map((s) => ListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              title: Text(s, style: const TextStyle(fontSize: 13)),
+              trailing: TextButton(
+                onPressed: () { _textController.text = s; setState(() => _captionSuggestions = []); },
+                child: const Text('Use'),
+              ),
+            ))),
+          ],
+          if (_hashtagSuggestions.isNotEmpty) ...[
+            const Divider(),
+            Wrap(
+              spacing: 6,
+              children: _hashtagSuggestions.map((tag) => ActionChip(
+                label: Text(tag, style: const TextStyle(fontSize: 12)),
+                onPressed: () {
+                  final current = _textController.text;
+                  _textController.text = current.isEmpty ? tag : '$current $tag';
+                },
+              )).toList(),
+            ),
+          ],
         ],
       ),
     );
+  }
+
+  Future<void> _fetchCaptionSuggestions() async {
+    setState(() { _loadingCaptions = true; _captionSuggestions = []; });
+    try {
+      final res = await ref.read(apiClientProvider).post('/v1/ai/caption-suggestions', data: {
+        'ref_id': 'new', 'ref_type': 'post', 'context_text': _textController.text,
+      });
+      final data = res.data['data'] ?? res.data;
+      setState(() => _captionSuggestions = List<String>.from(data['captions'] ?? []));
+    } catch (_) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not load suggestions')));
+    } finally {
+      if (mounted) setState(() => _loadingCaptions = false);
+    }
+  }
+
+  Future<void> _fetchHashtagSuggestions() async {
+    setState(() { _loadingHashtags = true; _hashtagSuggestions = []; });
+    try {
+      final res = await ref.read(apiClientProvider).post('/v1/ai/hashtag-suggestions', data: {
+        'ref_id': 'new', 'ref_type': 'post', 'context_text': _textController.text,
+      });
+      final data = res.data['data'] ?? res.data;
+      setState(() => _hashtagSuggestions = List<String>.from(data['hashtags'] ?? []));
+    } catch (_) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not load hashtags')));
+    } finally {
+      if (mounted) setState(() => _loadingHashtags = false);
+    }
   }
 
   Widget _buildVisibilityButton(CreationState state) {
