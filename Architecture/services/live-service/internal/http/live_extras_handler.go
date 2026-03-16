@@ -15,7 +15,7 @@ import (
 // --- Guests ---
 
 func (h *Handler) InviteGuest(c *gin.Context) {
-	userID, ok := parseUserID(c)
+	hostID, ok := parseUserID(c)
 	if !ok {
 		return
 	}
@@ -33,9 +33,8 @@ func (h *Handler) InviteGuest(c *gin.Context) {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
 		return
 	}
-	_ = userID // host identity recorded for authorization
 
-	if err := h.svc.InviteGuest(c.Request.Context(), streamID, body.UserID, body.Role); err != nil {
+	if err := h.svc.InviteGuest(c.Request.Context(), streamID, hostID, body.UserID, body.Role); err != nil {
 		api.Error(c.Writer, http.StatusBadRequest, "INVITE_FAILED", err.Error(), nil, nil)
 		return
 	}
@@ -43,6 +42,10 @@ func (h *Handler) InviteGuest(c *gin.Context) {
 }
 
 func (h *Handler) UpdateGuestStatus(c *gin.Context) {
+	callerID, ok := parseUserID(c)
+	if !ok {
+		return
+	}
 	streamID, err := uuid.Parse(c.Param("streamId"))
 	if err != nil {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid stream id", nil, nil)
@@ -62,7 +65,7 @@ func (h *Handler) UpdateGuestStatus(c *gin.Context) {
 		return
 	}
 
-	if err := h.svc.UpdateGuestStatus(c.Request.Context(), streamID, guestID, body.Status); err != nil {
+	if err := h.svc.UpdateGuestStatus(c.Request.Context(), streamID, callerID, guestID, body.Status); err != nil {
 		api.Error(c.Writer, http.StatusBadRequest, "UPDATE_FAILED", err.Error(), nil, nil)
 		return
 	}
@@ -87,7 +90,7 @@ func (h *Handler) GetStreamGuests(c *gin.Context) {
 // --- Polls ---
 
 func (h *Handler) CreateLivePoll(c *gin.Context) {
-	_, ok := parseUserID(c)
+	hostID, ok := parseUserID(c)
 	if !ok {
 		return
 	}
@@ -109,6 +112,7 @@ func (h *Handler) CreateLivePoll(c *gin.Context) {
 
 	input := &service.CreatePollInput{
 		StreamID: streamID,
+		HostID:   hostID,
 		Question: body.Question,
 		Options:  body.Options,
 	}
@@ -131,6 +135,11 @@ func (h *Handler) VoteOnPoll(c *gin.Context) {
 	if !ok {
 		return
 	}
+	streamID, err := uuid.Parse(c.Param("streamId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid stream id", nil, nil)
+		return
+	}
 	pollID, err := uuid.Parse(c.Param("pollId"))
 	if err != nil {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid poll id", nil, nil)
@@ -145,7 +154,7 @@ func (h *Handler) VoteOnPoll(c *gin.Context) {
 		return
 	}
 
-	if err := h.svc.VoteOnPoll(c.Request.Context(), pollID, userID, body.OptionID); err != nil {
+	if err := h.svc.VoteOnPoll(c.Request.Context(), streamID, pollID, userID, body.OptionID); err != nil {
 		api.Error(c.Writer, http.StatusBadRequest, "VOTE_FAILED", err.Error(), nil, nil)
 		return
 	}
@@ -228,6 +237,28 @@ func (h *Handler) GetStreamGifts(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": gifts}, nil)
 }
 
+func (h *Handler) GetGiftLeaderboard(c *gin.Context) {
+	streamID, err := uuid.Parse(c.Param("streamId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid stream id", nil, nil)
+		return
+	}
+
+	limit := 10
+	if v := c.Query("limit"); v != "" {
+		if l, err := strconv.Atoi(v); err == nil && l > 0 && l <= 50 {
+			limit = l
+		}
+	}
+
+	entries, err := h.svc.GetGiftLeaderboard(c.Request.Context(), streamID, limit)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "LIST_FAILED", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": entries}, nil)
+}
+
 // --- Moderation ---
 
 func (h *Handler) MuteUser(c *gin.Context) {
@@ -257,6 +288,10 @@ func (h *Handler) MuteUser(c *gin.Context) {
 }
 
 func (h *Handler) UnmuteUser(c *gin.Context) {
+	callerID, ok := parseUserID(c)
+	if !ok {
+		return
+	}
 	streamID, err := uuid.Parse(c.Param("streamId"))
 	if err != nil {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid stream id", nil, nil)
@@ -268,7 +303,7 @@ func (h *Handler) UnmuteUser(c *gin.Context) {
 		return
 	}
 
-	if err := h.svc.UnmuteUser(c.Request.Context(), streamID, targetID); err != nil {
+	if err := h.svc.UnmuteUser(c.Request.Context(), streamID, targetID, callerID); err != nil {
 		api.Error(c.Writer, http.StatusBadRequest, "UNMUTE_FAILED", err.Error(), nil, nil)
 		return
 	}
@@ -317,7 +352,7 @@ func (h *Handler) AddWordFilter(c *gin.Context) {
 }
 
 func (h *Handler) RemoveWordFilter(c *gin.Context) {
-	_, ok := parseUserID(c)
+	callerID, ok := parseUserID(c)
 	if !ok {
 		return
 	}
@@ -341,7 +376,7 @@ func (h *Handler) RemoveWordFilter(c *gin.Context) {
 		return
 	}
 
-	if err := h.svc.RemoveWordFilter(c.Request.Context(), streamID, word); err != nil {
+	if err := h.svc.RemoveWordFilter(c.Request.Context(), streamID, word, callerID); err != nil {
 		api.Error(c.Writer, http.StatusBadRequest, "REMOVE_FILTER_FAILED", err.Error(), nil, nil)
 		return
 	}

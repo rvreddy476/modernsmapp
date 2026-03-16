@@ -16,7 +16,7 @@ import (
 )
 
 type Service struct {
-	store  *postgres.Store
+	store  Storer
 	writer *kafka.Writer
 }
 
@@ -184,6 +184,24 @@ func (s *Service) SendChatMessage(ctx context.Context, streamID, userID uuid.UUI
 		return nil, fmt.Errorf("message must be 1-500 characters")
 	}
 
+	// Enforce mute: muted users cannot send chat messages
+	muted, err := s.store.IsUserMuted(ctx, streamID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check mute status: %w", err)
+	}
+	if muted {
+		return nil, fmt.Errorf("you have been muted in this stream")
+	}
+
+	// Enforce word filters: reject messages containing filtered words
+	filtered, err := s.store.MatchesWordFilter(ctx, streamID, message)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check word filter: %w", err)
+	}
+	if filtered {
+		return nil, fmt.Errorf("message contains a blocked word or phrase")
+	}
+
 	msg := &postgres.ChatMessage{
 		ID:        uuid.New(),
 		StreamID:  streamID,
@@ -246,7 +264,7 @@ func generateStreamKey() string {
 	return "live_" + hex.EncodeToString(b)
 }
 
-func (s *Service) publishEvent(ctx context.Context, eventType string, actorID *uuid.UUID, payload interface{}) {
+func (s *Service) publishEvent(ctx context.Context, eventType string, actorID *uuid.UUID, payload any) {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		log.Printf("Warning: failed to marshal %s payload: %v", eventType, err)

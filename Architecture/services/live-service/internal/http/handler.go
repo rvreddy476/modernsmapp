@@ -58,6 +58,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// Gifts
 		v1.POST("/streams/:streamId/gifts", h.SendGift)
 		v1.GET("/streams/:streamId/gifts", h.GetStreamGifts)
+		v1.GET("/streams/:streamId/gifts/leaderboard", h.GetGiftLeaderboard)
 
 		// Moderation
 		v1.POST("/streams/:streamId/mutes", h.MuteUser)

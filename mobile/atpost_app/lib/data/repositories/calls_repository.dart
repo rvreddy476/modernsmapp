@@ -17,7 +17,7 @@ class CallsRepository {
     final response = await _api.post('/v1/calls', data: {
       'call_type': callType,
       'source_type': sourceType,
-      if (sourceId != null) 'source_id': sourceId,
+      'source_id': ?sourceId,
       'audio_only': audioOnly,
       'invitee_user_ids': inviteeUserIds,
     });

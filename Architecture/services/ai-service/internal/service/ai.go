@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/atpost/ai-service/internal/provider"
 	"github.com/atpost/ai-service/internal/store/postgres"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -20,13 +21,27 @@ const moderationTTL = time.Hour
 
 // Service holds business logic for the ai-service.
 type Service struct {
-	store *postgres.Store
-	rdb   *redis.Client
+	store    *postgres.Store
+	rdb      *redis.Client
+	provider provider.TextProvider
 }
 
 // New returns a new Service.
+// If textProvider is nil a stub provider is used automatically.
 func New(store *postgres.Store, rdb *redis.Client) *Service {
-	return &Service{store: store, rdb: rdb}
+	return &Service{
+		store:    store,
+		rdb:      rdb,
+		provider: provider.NewStubTextProvider(),
+	}
+}
+
+// NewWithProvider returns a Service wired to the given provider.
+func NewWithProvider(store *postgres.Store, rdb *redis.Client, p provider.TextProvider) *Service {
+	if p == nil {
+		p = provider.NewStubTextProvider()
+	}
+	return &Service{store: store, rdb: rdb, provider: p}
 }
 
 // EnqueueJob creates a job record with status=queued and returns it.
@@ -53,6 +68,69 @@ func (s *Service) GetJob(ctx context.Context, id uuid.UUID) (*postgres.AIJob, er
 		return nil, fmt.Errorf("get job: %w", err)
 	}
 	return job, nil
+}
+
+// SuggestCaptions returns caption suggestions, using the cache-first pattern.
+func (s *Service) SuggestCaptions(ctx context.Context, draftID uuid.UUID, content string, hints []string) ([]string, error) {
+	cached, err := s.GetCachedCaption(ctx, draftID)
+	if err != nil {
+		slog.Warn("caption cache lookup failed", "error", err)
+	}
+	if cached != nil {
+		return cached, nil
+	}
+
+	suggestions, err := s.provider.GenerateCaptions(ctx, content, hints)
+	if err != nil {
+		return nil, fmt.Errorf("suggest captions: %w", err)
+	}
+
+	if cacheErr := s.CacheCaption(ctx, draftID, suggestions); cacheErr != nil {
+		slog.Warn("caption cache store failed", "error", cacheErr)
+	}
+	return suggestions, nil
+}
+
+// SuggestHashtags returns hashtag suggestions, using the cache-first pattern.
+func (s *Service) SuggestHashtags(ctx context.Context, draftID uuid.UUID, content string) ([]string, error) {
+	cached, err := s.GetCachedHashtags(ctx, draftID)
+	if err != nil {
+		slog.Warn("hashtag cache lookup failed", "error", err)
+	}
+	if cached != nil {
+		return cached, nil
+	}
+
+	tags, err := s.provider.GenerateHashtags(ctx, content)
+	if err != nil {
+		return nil, fmt.Errorf("suggest hashtags: %w", err)
+	}
+
+	if cacheErr := s.CacheHashtags(ctx, draftID, tags); cacheErr != nil {
+		slog.Warn("hashtag cache store failed", "error", cacheErr)
+	}
+	return tags, nil
+}
+
+// GetSmartReplies returns smart-reply suggestions, using the cache-first pattern.
+func (s *Service) GetSmartReplies(ctx context.Context, convID uuid.UUID, lastMessage string) ([]string, error) {
+	cached, err := s.GetCachedSmartReplies(ctx, convID)
+	if err != nil {
+		slog.Warn("smart reply cache lookup failed", "error", err)
+	}
+	if cached != nil {
+		return cached, nil
+	}
+
+	replies, err := s.provider.SmartReply(ctx, lastMessage, "")
+	if err != nil {
+		return nil, fmt.Errorf("get smart replies: %w", err)
+	}
+
+	if cacheErr := s.CacheSmartReplies(ctx, convID, replies); cacheErr != nil {
+		slog.Warn("smart reply cache store failed", "error", cacheErr)
+	}
+	return replies, nil
 }
 
 // GetCachedCaption checks Redis ai:caption:{draftID} → returns suggestions slice or nil.

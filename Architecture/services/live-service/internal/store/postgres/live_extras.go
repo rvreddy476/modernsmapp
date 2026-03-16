@@ -301,6 +301,183 @@ func (s *Store) GetWordFilters(ctx context.Context, streamID uuid.UUID) ([]LiveW
 	return filters, nil
 }
 
+// --- Gift Leaderboard ---
+
+type GiftLeaderboardEntry struct {
+	SenderID   uuid.UUID `json:"sender_id"`
+	TotalValue float64   `json:"total_value"`
+	GiftCount  int       `json:"gift_count"`
+}
+
+func (s *Store) GetGiftLeaderboard(ctx context.Context, streamID uuid.UUID, limit int) ([]GiftLeaderboardEntry, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT sender_id, SUM(value_inr * gift_count) AS total_value, SUM(gift_count) AS gift_count
+		FROM live_gifts WHERE stream_id = $1
+		GROUP BY sender_id
+		ORDER BY total_value DESC
+		LIMIT $2
+	`, streamID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var entries []GiftLeaderboardEntry
+	for rows.Next() {
+		var e GiftLeaderboardEntry
+		if err := rows.Scan(&e.SenderID, &e.TotalValue, &e.GiftCount); err != nil {
+			return nil, err
+		}
+		entries = append(entries, e)
+	}
+	return entries, nil
+}
+
+// --- Moderation checks ---
+
+func (s *Store) IsUserMuted(ctx context.Context, streamID, userID uuid.UUID) (bool, error) {
+	var exists bool
+	err := s.db.QueryRow(ctx, `
+		SELECT EXISTS(SELECT 1 FROM live_mutes WHERE stream_id = $1 AND user_id = $2)
+	`, streamID, userID).Scan(&exists)
+	return exists, err
+}
+
+func (s *Store) MatchesWordFilter(ctx context.Context, streamID uuid.UUID, message string) (bool, error) {
+	var exists bool
+	err := s.db.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM live_word_filters
+			WHERE stream_id = $1
+			  AND $2 ILIKE '%' || word || '%'
+		)
+	`, streamID, message).Scan(&exists)
+	return exists, err
+}
+
+// --- DVR Segments ---
+
+func (s *Store) ExpireDVRSegments(ctx context.Context, olderThan time.Time) (int64, error) {
+	tag, err := s.db.Exec(ctx, `
+		DELETE FROM live_dvr_segments WHERE start_ts < $1
+	`, olderThan)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
+// --- Worker helpers ---
+
+// FindScheduledStreamsForReminder returns scheduled streams whose start_time is within
+// the next windowMinutes and for which a reminder has not yet been sent.
+func (s *Store) FindScheduledStreamsForReminder(ctx context.Context, windowMinutes int) ([]ScheduledStream, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT id, host_id, title, description, scheduled_at, reminder_sent, stream_id, created_at
+		FROM live.scheduled_streams
+		WHERE stream_id IS NULL
+		  AND reminder_sent = FALSE
+		  AND scheduled_at > NOW()
+		  AND scheduled_at <= NOW() + ($1 || ' minutes')::INTERVAL
+	`, windowMinutes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var scheduled []ScheduledStream
+	for rows.Next() {
+		var ss ScheduledStream
+		if err := rows.Scan(&ss.ID, &ss.HostID, &ss.Title, &ss.Description, &ss.ScheduledAt, &ss.ReminderSent, &ss.StreamID, &ss.CreatedAt); err != nil {
+			return nil, err
+		}
+		scheduled = append(scheduled, ss)
+	}
+	return scheduled, nil
+}
+
+// MarkReminderSent marks the reminder_sent flag on a scheduled stream.
+func (s *Store) MarkReminderSent(ctx context.Context, id uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE live.scheduled_streams SET reminder_sent = TRUE WHERE id = $1
+	`, id)
+	return err
+}
+
+// FindScheduledStreamsToActivate returns scheduled streams whose scheduled_at has passed
+// but which have not yet been linked to a live stream (host never manually went live).
+func (s *Store) FindScheduledStreamsToActivate(ctx context.Context) ([]ScheduledStream, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT id, host_id, title, description, scheduled_at, reminder_sent, stream_id, created_at
+		FROM live.scheduled_streams
+		WHERE stream_id IS NULL
+		  AND scheduled_at <= NOW()
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var scheduled []ScheduledStream
+	for rows.Next() {
+		var ss ScheduledStream
+		if err := rows.Scan(&ss.ID, &ss.HostID, &ss.Title, &ss.Description, &ss.ScheduledAt, &ss.ReminderSent, &ss.StreamID, &ss.CreatedAt); err != nil {
+			return nil, err
+		}
+		scheduled = append(scheduled, ss)
+	}
+	return scheduled, nil
+}
+
+// LinkScheduledStreamToLive associates a scheduled stream record with the created live stream.
+func (s *Store) LinkScheduledStreamToLive(ctx context.Context, scheduledID, streamID uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE live.scheduled_streams SET stream_id = $2 WHERE id = $1
+	`, scheduledID, streamID)
+	return err
+}
+
+// EndStaleViewerSessions closes any viewer sessions that have been open longer than maxAgeHours.
+func (s *Store) EndStaleViewerSessions(ctx context.Context, maxAgeHours int) (int64, error) {
+	tag, err := s.db.Exec(ctx, `
+		UPDATE live.viewer_sessions
+		SET left_at = NOW(),
+		    duration_secs = EXTRACT(EPOCH FROM (NOW() - joined_at))::int
+		WHERE left_at IS NULL
+		  AND joined_at < NOW() - ($1 || ' hours')::INTERVAL
+	`, maxAgeHours)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
+// EndIdleAudioRooms ends audio rooms that have had 0 active members for longer than idleMinutes.
+func (s *Store) EndIdleAudioRooms(ctx context.Context, idleMinutes int) ([]uuid.UUID, error) {
+	rows, err := s.db.Query(ctx, `
+		UPDATE audio_rooms
+		SET status = 'ended', ended_at = NOW()
+		WHERE status = 'live'
+		  AND listener_count = 0
+		  AND started_at < NOW() - ($1 || ' minutes')::INTERVAL
+		RETURNING id
+	`, idleMinutes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
 // --- DVR Segments ---
 
 func (s *Store) AddDVRSegment(ctx context.Context, seg *LiveDVRSegment) error {

@@ -103,15 +103,15 @@ func (s *Store) UpdateJobStatus(ctx context.Context, id uuid.UUID, status string
 		    latency_ms = $5, completed_at = NOW()
 		WHERE id = $1`
 
-	var resultArg interface{}
+	var resultArg any
 	if len(result) > 0 {
 		resultArg = result
 	}
-	var errMsgArg interface{}
+	var errMsgArg any
 	if errMsg != "" {
 		errMsgArg = errMsg
 	}
-	var latencyArg interface{}
+	var latencyArg any
 	if latencyMs > 0 {
 		latencyArg = latencyMs
 	}
@@ -206,6 +206,35 @@ func (s *Store) GetModerationResult(ctx context.Context, contentType string, con
 		return nil, fmt.Errorf("get moderation result: %w", err)
 	}
 	return r, nil
+}
+
+// GetPendingJobs returns up to limit jobs that are in 'queued' status,
+// ordered oldest-first so that the worker processes them in FIFO order.
+func (s *Store) GetPendingJobs(ctx context.Context, limit int) ([]AIJob, error) {
+	const q = `
+		SELECT id, job_type, input_ref_type, input_ref_id, requester_id,
+		       status, result, error_message, model_version, latency_ms,
+		       created_at, completed_at
+		FROM ai.ai_jobs
+		WHERE status = 'queued'
+		ORDER BY created_at ASC
+		LIMIT $1`
+
+	rows, err := s.db.Query(ctx, q, limit)
+	if err != nil {
+		return nil, fmt.Errorf("get pending jobs: %w", err)
+	}
+	defer rows.Close()
+
+	var jobs []AIJob
+	for rows.Next() {
+		job, err := scanJob(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan pending job: %w", err)
+		}
+		jobs = append(jobs, *job)
+	}
+	return jobs, rows.Err()
 }
 
 // scanJob is a helper that scans a job row from any pgx row-like type.

@@ -2,11 +2,15 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// ErrNotFound is returned by store methods when a requested entity does not exist.
+var ErrNotFound = errors.New("record not found")
 
 type Stream struct {
 	ID           uuid.UUID  `json:"id"`

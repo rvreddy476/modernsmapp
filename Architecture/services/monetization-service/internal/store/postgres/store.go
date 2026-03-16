@@ -83,6 +83,7 @@ type CreatorTier struct {
 	Perks           json.RawMessage `json:"perks"`
 	SubscriberCount int             `json:"subscriber_count"`
 	IsActive        bool            `json:"is_active"`
+	BillingPeriod   string          `json:"billing_period,omitempty"` // monthly, quarterly, yearly
 	CreatedAt       time.Time       `json:"created_at"`
 	UpdatedAt       time.Time       `json:"updated_at"`
 }
