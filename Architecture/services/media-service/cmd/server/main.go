@@ -113,6 +113,7 @@ func main() {
 	mediaHandler.RegisterRenditionRoutes(r, authMW)
 	mediaHandler.RegisterResumableRoutes(r, authMW)
 	mediaHandler.RegisterSlotRoutes(r, authMW)
+	mediaHandler.RegisterStudioRoutes(r, authMW)
 
 	// 10. Graceful shutdown
 	if err := server.Run(r, server.Config{

@@ -1,10 +1,14 @@
 import 'package:atpost_app/features/auth/forgot_password_screen.dart';
+import 'package:atpost_app/features/create/upload_progress_screen.dart';
+import 'package:atpost_app/features/posttube/posttube_upload_screen.dart';
 import 'package:atpost_app/features/auth/login_screen.dart';
 import 'package:atpost_app/features/auth/otp_verify_screen.dart';
 import 'package:atpost_app/features/auth/register_screen.dart';
 import 'package:atpost_app/features/bookmarks/bookmarks_screen.dart';
 import 'package:atpost_app/features/comments/comments_screen.dart';
 import 'package:atpost_app/features/create/create_post_screen.dart';
+import 'package:atpost_app/features/create/flicks_caption_screen.dart';
+import 'package:atpost_app/features/create/flicks_editor_screen.dart';
 import 'package:atpost_app/features/discover/discover_screen.dart';
 import 'package:atpost_app/features/groups/group_detail_screen.dart';
 import 'package:atpost_app/features/groups/groups_list_screen.dart';
@@ -293,6 +297,34 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         path: '/orders/:orderId',
         builder: (context, state) =>
             OrderDetailScreen(orderId: state.pathParameters['orderId']!),
+      ),
+
+      // --- Flicks Editor ---
+      GoRoute(
+        path: '/flicks/editor',
+        builder: (_, _) => const FlicksEditorScreen(),
+      ),
+      GoRoute(
+        path: '/flicks/caption',
+        builder: (_, _) => const FlicksCaptionScreen(),
+      ),
+
+      // --- Upload / Creative Studio ---
+      GoRoute(
+        path: '/upload/progress',
+        builder: (context, state) {
+          final extra = state.extra as Map<String, dynamic>? ?? {};
+          return UploadProgressScreen(
+            videoPath: extra['videoPath'] as String? ?? '',
+            caption: extra['caption'] as String? ?? '',
+            hashtags: List<String>.from(extra['hashtags'] as List? ?? []),
+            visibility: extra['visibility'] as String? ?? 'public',
+          );
+        },
+      ),
+      GoRoute(
+        path: '/posttube/upload',
+        builder: (_, _) => const PosttubeUploadScreen(),
       ),
     ],
   );

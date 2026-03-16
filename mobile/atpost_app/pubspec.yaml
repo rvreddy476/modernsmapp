@@ -48,6 +48,14 @@ dependencies:
   flutter_secure_storage: ^9.2.2
   fl_chart: ^0.69.0
 
+  # Creative Studio — Video Editor
+  ffmpeg_kit_flutter_full: ^6.0.3
+  camera: ^0.10.5+9
+  just_audio: ^0.9.40
+  record: ^5.1.2
+  video_thumbnail: ^0.5.3
+  colorfilter_generator: ^0.0.8
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

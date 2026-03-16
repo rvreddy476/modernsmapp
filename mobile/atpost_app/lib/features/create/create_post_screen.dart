@@ -382,6 +382,11 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
         children: [
           IconButton(icon: const Icon(Icons.image, color: Colors.blue), onPressed: _pickImages),
           IconButton(icon: const Icon(Icons.videocam, color: Colors.red), onPressed: _pickVideo),
+          IconButton(
+            icon: const Icon(Icons.movie_edit, color: Colors.amber),
+            tooltip: 'Flicks Editor',
+            onPressed: () => context.push('/flicks/editor'),
+          ),
           IconButton(icon: const Icon(Icons.poll, color: Colors.purple), onPressed: () => notifier.setType(PostType.poll)),
           IconButton(icon: const Icon(Icons.location_on, color: Colors.green), onPressed: () {}),
           const Spacer(),
