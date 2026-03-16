@@ -78,6 +78,18 @@ class SettingsScreen extends ConsumerWidget {
                   onTap: () => context.push('/settings/notifications'),
                 ),
                 _SettingTile(
+                  icon: Icons.self_improvement,
+                  title: 'Digital Wellbeing',
+                  subtitle: 'Screen time & focus mode',
+                  onTap: () => context.push('/settings/wellbeing'),
+                ),
+                _SettingTile(
+                  icon: Icons.verified,
+                  title: 'Get Verified',
+                  subtitle: 'Apply for a verified badge',
+                  onTap: () => context.push('/settings/verification'),
+                ),
+                _SettingTile(
                   icon: Icons.download_outlined,
                   title: 'Download My Data',
                   subtitle: 'Request an export of all your account data',
@@ -146,6 +158,12 @@ class SettingsScreen extends ConsumerWidget {
                   title: 'Friends & Requests',
                   subtitle: 'Manage connections and pending invites',
                   onTap: () => context.push('/friend-requests'),
+                ),
+                _SettingTile(
+                  icon: Icons.apps,
+                  title: 'Mini Apps',
+                  subtitle: 'Discover apps built on AtPost',
+                  onTap: () => context.push('/apps'),
                 ),
               ],
             ),

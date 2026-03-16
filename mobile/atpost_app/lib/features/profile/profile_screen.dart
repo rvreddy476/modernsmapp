@@ -5,6 +5,7 @@ import 'package:atpost_app/data/models/post.dart';
 import 'package:atpost_app/providers/user_provider.dart';
 import 'package:atpost_app/services/api_client.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -18,6 +19,24 @@ final _myPostsProvider = FutureProvider.autoDispose<List<Post>>((ref) async {
   return items.map((e) => Post.fromJson(e as Map<String, dynamic>)).toList();
 });
 
+final _myPinsProvider = FutureProvider.autoDispose<List<Map<String, dynamic>>>((ref) async {
+  final api = ref.watch(apiClientProvider);
+  final response = await api.get('/v1/users/me/pins');
+  final items = (response.data['data'] as List<dynamic>?) ??
+      (response.data['pins'] as List<dynamic>?) ??
+      [];
+  return items.map((e) => e as Map<String, dynamic>).toList();
+});
+
+final _myPortfolioProvider = FutureProvider.autoDispose<List<Map<String, dynamic>>>((ref) async {
+  final api = ref.watch(apiClientProvider);
+  final response = await api.get('/v1/users/me/portfolio');
+  final items = (response.data['data'] as List<dynamic>?) ??
+      (response.data['items'] as List<dynamic>?) ??
+      [];
+  return items.map((e) => e as Map<String, dynamic>).toList();
+});
+
 class ProfileScreen extends ConsumerStatefulWidget {
   const ProfileScreen({super.key});
 
@@ -25,12 +44,28 @@ class ProfileScreen extends ConsumerStatefulWidget {
   ConsumerState<ProfileScreen> createState() => _ProfileScreenState();
 }
 
-class _ProfileScreenState extends ConsumerState<ProfileScreen> {
+class _ProfileScreenState extends ConsumerState<ProfileScreen>
+    with SingleTickerProviderStateMixin {
   _PostFilter _activeFilter = _PostFilter.all;
+  late TabController _tabController;
+
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 2, vsync: this);
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
+  }
 
   Future<void> _refresh() async {
     ref.invalidate(currentUserProvider);
     ref.invalidate(_myPostsProvider);
+    ref.invalidate(_myPinsProvider);
+    ref.invalidate(_myPortfolioProvider);
   }
 
   List<Post> _filtered(List<Post> posts) {
@@ -42,6 +77,16 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
         _PostFilter.videos => post.isVideo,
       };
     }).toList();
+  }
+
+  void _showQrCodeModal(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (_) => const _QrCodeSheet(),
+    );
   }
 
   @override
@@ -87,15 +132,16 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
             return RefreshIndicator(
               color: AppColors.postbookPrimary,
               onRefresh: _refresh,
-              child: CustomScrollView(
+              child: NestedScrollView(
                 physics: const AlwaysScrollableScrollPhysics(),
-                slivers: [
+                headerSliverBuilder: (context, _) => [
                   SliverToBoxAdapter(
                     child: Padding(
                       padding: AppSpacing.pagePadding.copyWith(top: 12),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
+                          // Profile header card
                           Container(
                             width: double.infinity,
                             padding: const EdgeInsets.all(16),
@@ -165,6 +211,20 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                                                   color:
                                                       AppColors.posttubePrimary,
                                                 ),
+                                              // QR Code button
+                                              IconButton(
+                                                icon: const Icon(
+                                                  Icons.qr_code,
+                                                  size: 20,
+                                                  color: AppColors.textMuted,
+                                                ),
+                                                onPressed: () =>
+                                                    _showQrCodeModal(context),
+                                                tooltip: 'Your QR Code',
+                                                padding: EdgeInsets.zero,
+                                                constraints:
+                                                    const BoxConstraints(),
+                                              ),
                                             ],
                                           ),
                                           const SizedBox(height: 2),
@@ -181,7 +241,8 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                                               ),
                                               child: Text(
                                                 user.profession!,
-                                                style: AppTextStyles.labelSmall,
+                                                style:
+                                                    AppTextStyles.labelSmall,
                                               ),
                                             ),
                                           if ((user.location ?? '')
@@ -193,7 +254,8 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                                               ),
                                               child: Text(
                                                 user.location!,
-                                                style: AppTextStyles.labelSmall,
+                                                style:
+                                                    AppTextStyles.labelSmall,
                                               ),
                                             ),
                                         ],
@@ -269,7 +331,8 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                                       child: _ActionButton(
                                         icon: Icons.bookmark_border,
                                         label: 'Bookmarks',
-                                        onTap: () => context.push('/bookmarks'),
+                                        onTap: () =>
+                                            context.push('/bookmarks'),
                                       ),
                                     ),
                                     const SizedBox(width: 8),
@@ -286,117 +349,45 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                             ),
                           ),
                           const SizedBox(height: 16),
-                          Row(
-                            children: [
-                              Text('Your Content', style: AppTextStyles.h2),
-                              const Spacer(),
-                              TextButton(
-                                onPressed: () => context.push('/create'),
-                                child: Text(
-                                  'Create',
-                                  style: AppTextStyles.label.copyWith(
-                                    color: AppColors.postbookPrimary,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
+                          // Pinned posts section
+                          const _PinnedPostsSection(),
                           const SizedBox(height: 8),
-                          Wrap(
-                            spacing: 8,
-                            runSpacing: 8,
-                            children: [
-                              _FilterChip(
-                                label: 'All',
-                                selected: _activeFilter == _PostFilter.all,
-                                onTap: () => setState(
-                                  () => _activeFilter = _PostFilter.all,
-                                ),
-                              ),
-                              _FilterChip(
-                                label: 'Posts',
-                                selected: _activeFilter == _PostFilter.posts,
-                                onTap: () => setState(
-                                  () => _activeFilter = _PostFilter.posts,
-                                ),
-                              ),
-                              _FilterChip(
-                                label: 'Reels',
-                                selected: _activeFilter == _PostFilter.reels,
-                                onTap: () => setState(
-                                  () => _activeFilter = _PostFilter.reels,
-                                ),
-                              ),
-                              _FilterChip(
-                                label: 'Videos',
-                                selected: _activeFilter == _PostFilter.videos,
-                                onTap: () => setState(
-                                  () => _activeFilter = _PostFilter.videos,
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 10),
                         ],
                       ),
                     ),
                   ),
-                  if (postsAsync.isLoading)
-                    const SliverToBoxAdapter(
-                      child: Padding(
-                        padding: EdgeInsets.symmetric(vertical: 24),
-                        child: Center(
-                          child: CircularProgressIndicator(
-                            color: AppColors.postbookPrimary,
-                          ),
-                        ),
-                      ),
-                    )
-                  else if (postsAsync.hasError)
-                    SliverToBoxAdapter(
-                      child: Padding(
-                        padding: AppSpacing.pagePadding,
-                        child: _InlineStateCard(
-                          icon: Icons.grid_off_outlined,
-                          message: 'Could not load posts.',
-                          action: 'Retry',
-                          onTap: () => ref.invalidate(_myPostsProvider),
-                        ),
-                      ),
-                    )
-                  else if (filteredPosts.isEmpty)
-                    SliverToBoxAdapter(
-                      child: Padding(
-                        padding: AppSpacing.pagePadding,
-                        child: _InlineStateCard(
-                          icon: Icons.photo_library_outlined,
-                          message: 'No posts in this filter yet.',
-                          action: 'Create one',
-                          onTap: () => context.push('/create'),
-                        ),
-                      ),
-                    )
-                  else
-                    SliverPadding(
-                      padding: AppSpacing.pagePadding.copyWith(bottom: 110),
-                      sliver: SliverGrid(
-                        gridDelegate:
-                            const SliverGridDelegateWithMaxCrossAxisExtent(
-                              maxCrossAxisExtent: 180,
-                              mainAxisSpacing: 8,
-                              crossAxisSpacing: 8,
-                              childAspectRatio: 0.86,
-                            ),
-                        delegate: SliverChildBuilderDelegate((context, index) {
-                          final post = filteredPosts[index];
-                          return _PostTile(
-                            post: post,
-                            onTap: () => context.push('/comments/${post.id}'),
-                          );
-                        }, childCount: filteredPosts.length),
+                  // Tab bar
+                  SliverPersistentHeader(
+                    pinned: true,
+                    delegate: _SliverTabBarDelegate(
+                      TabBar(
+                        controller: _tabController,
+                        labelColor: AppColors.postbookPrimary,
+                        unselectedLabelColor: AppColors.textMuted,
+                        indicatorColor: AppColors.postbookPrimary,
+                        tabs: const [
+                          Tab(icon: Icon(Icons.grid_on_outlined), text: 'Posts'),
+                          Tab(icon: Icon(Icons.work_outline), text: 'Portfolio'),
+                        ],
                       ),
                     ),
+                  ),
                 ],
+                body: TabBarView(
+                  controller: _tabController,
+                  children: [
+                    // Posts tab
+                    _PostsTabContent(
+                      postsAsync: postsAsync,
+                      filteredPosts: filteredPosts,
+                      activeFilter: _activeFilter,
+                      onFilterChanged: (f) =>
+                          setState(() => _activeFilter = f),
+                    ),
+                    // Portfolio tab
+                    const _PortfolioTab(),
+                  ],
+                ),
               ),
             );
           },
@@ -405,6 +396,814 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     );
   }
 }
+
+// ---------------------------------------------------------------------------
+// Sliver tab bar delegate
+// ---------------------------------------------------------------------------
+
+class _SliverTabBarDelegate extends SliverPersistentHeaderDelegate {
+  const _SliverTabBarDelegate(this.tabBar);
+
+  final TabBar tabBar;
+
+  @override
+  double get minExtent => tabBar.preferredSize.height;
+
+  @override
+  double get maxExtent => tabBar.preferredSize.height;
+
+  @override
+  Widget build(
+    BuildContext context,
+    double shrinkOffset,
+    bool overlapsContent,
+  ) {
+    return Container(
+      color: AppColors.bgPrimary,
+      child: tabBar,
+    );
+  }
+
+  @override
+  bool shouldRebuild(_SliverTabBarDelegate oldDelegate) => false;
+}
+
+// ---------------------------------------------------------------------------
+// Posts tab content (extracted so the NestedScrollView body can host it)
+// ---------------------------------------------------------------------------
+
+class _PostsTabContent extends StatelessWidget {
+  const _PostsTabContent({
+    required this.postsAsync,
+    required this.filteredPosts,
+    required this.activeFilter,
+    required this.onFilterChanged,
+  });
+
+  final AsyncValue<List<Post>> postsAsync;
+  final List<Post> filteredPosts;
+  final _PostFilter activeFilter;
+  final void Function(_PostFilter) onFilterChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return CustomScrollView(
+      slivers: [
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: AppSpacing.pagePadding.copyWith(top: 12, bottom: 0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Text('Your Content', style: AppTextStyles.h2),
+                    const Spacer(),
+                    TextButton(
+                      onPressed: () => context.push('/create'),
+                      child: Text(
+                        'Create',
+                        style: AppTextStyles.label.copyWith(
+                          color: AppColors.postbookPrimary,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    _FilterChip(
+                      label: 'All',
+                      selected: activeFilter == _PostFilter.all,
+                      onTap: () => onFilterChanged(_PostFilter.all),
+                    ),
+                    _FilterChip(
+                      label: 'Posts',
+                      selected: activeFilter == _PostFilter.posts,
+                      onTap: () => onFilterChanged(_PostFilter.posts),
+                    ),
+                    _FilterChip(
+                      label: 'Reels',
+                      selected: activeFilter == _PostFilter.reels,
+                      onTap: () => onFilterChanged(_PostFilter.reels),
+                    ),
+                    _FilterChip(
+                      label: 'Videos',
+                      selected: activeFilter == _PostFilter.videos,
+                      onTap: () => onFilterChanged(_PostFilter.videos),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+              ],
+            ),
+          ),
+        ),
+        if (postsAsync.isLoading)
+          const SliverToBoxAdapter(
+            child: Padding(
+              padding: EdgeInsets.symmetric(vertical: 24),
+              child: Center(
+                child: CircularProgressIndicator(
+                  color: AppColors.postbookPrimary,
+                ),
+              ),
+            ),
+          )
+        else if (postsAsync.hasError)
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: AppSpacing.pagePadding,
+              child: _InlineStateCard(
+                icon: Icons.grid_off_outlined,
+                message: 'Could not load posts.',
+                action: 'Retry',
+                onTap: () {},
+              ),
+            ),
+          )
+        else if (filteredPosts.isEmpty)
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: AppSpacing.pagePadding,
+              child: _InlineStateCard(
+                icon: Icons.photo_library_outlined,
+                message: 'No posts in this filter yet.',
+                action: 'Create one',
+                onTap: () => context.push('/create'),
+              ),
+            ),
+          )
+        else
+          SliverPadding(
+            padding: AppSpacing.pagePadding.copyWith(bottom: 110),
+            sliver: SliverGrid(
+              gridDelegate:
+                  const SliverGridDelegateWithMaxCrossAxisExtent(
+                    maxCrossAxisExtent: 180,
+                    mainAxisSpacing: 8,
+                    crossAxisSpacing: 8,
+                    childAspectRatio: 0.86,
+                  ),
+              delegate: SliverChildBuilderDelegate((context, index) {
+                final post = filteredPosts[index];
+                return _PostTile(
+                  post: post,
+                  onTap: () => context.push('/comments/${post.id}'),
+                );
+              }, childCount: filteredPosts.length),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Pinned Posts Section
+// ---------------------------------------------------------------------------
+
+class _PinnedPostsSection extends ConsumerStatefulWidget {
+  const _PinnedPostsSection();
+
+  @override
+  ConsumerState<_PinnedPostsSection> createState() =>
+      _PinnedPostsSectionState();
+}
+
+class _PinnedPostsSectionState extends ConsumerState<_PinnedPostsSection> {
+  Future<void> _unpin(String pinId) async {
+    try {
+      await ref.read(apiClientProvider).delete('/v1/users/me/pins/$pinId');
+      ref.invalidate(_myPinsProvider);
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not unpin item.')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final pinsAsync = ref.watch(_myPinsProvider);
+
+    return pinsAsync.when(
+      loading: () => const SizedBox.shrink(),
+      error: (_, _) => const SizedBox.shrink(),
+      data: (pins) {
+        if (pins.isEmpty) return const SizedBox.shrink();
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.push_pin, size: 16, color: AppColors.textMuted),
+                const SizedBox(width: 4),
+                Text('Pinned', style: AppTextStyles.label),
+              ],
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              height: 80,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                itemCount: pins.length,
+                separatorBuilder: (_, _) => const SizedBox(width: 8),
+                itemBuilder: (context, index) {
+                  final pin = pins[index];
+                  final pinId = pin['id']?.toString() ?? '';
+                  final contentType =
+                      pin['content_type']?.toString() ?? 'post';
+                  final contentId =
+                      pin['content_id']?.toString() ?? '';
+
+                  return GestureDetector(
+                    onLongPress: () {
+                      showModalBottomSheet(
+                        context: context,
+                        backgroundColor: AppColors.bgCard,
+                        shape: const RoundedRectangleBorder(
+                          borderRadius: BorderRadius.vertical(
+                            top: Radius.circular(16),
+                          ),
+                        ),
+                        builder: (ctx) => SafeArea(
+                          child: ListTile(
+                            leading: const Icon(
+                              Icons.remove_circle_outline,
+                              color: Colors.red,
+                            ),
+                            title: const Text('Unpin'),
+                            onTap: () {
+                              Navigator.of(ctx).pop();
+                              _unpin(pinId);
+                            },
+                          ),
+                        ),
+                      );
+                    },
+                    child: Container(
+                      width: 130,
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: AppColors.bgCard,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: AppColors.borderSubtle),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Row(
+                            children: [
+                              const Icon(
+                                Icons.push_pin,
+                                size: 12,
+                                color: AppColors.postbookPrimary,
+                              ),
+                              const SizedBox(width: 4),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 6,
+                                  vertical: 2,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: AppColors.postbookPrimary
+                                      .withValues(alpha: 0.15),
+                                  borderRadius: BorderRadius.circular(999),
+                                ),
+                                child: Text(
+                                  contentType.toUpperCase(),
+                                  style: AppTextStyles.labelSmall.copyWith(
+                                    color: AppColors.postbookPrimary,
+                                    fontSize: 9,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            contentId.length > 12
+                                ? '${contentId.substring(0, 12)}…'
+                                : contentId,
+                            style: AppTextStyles.labelSmall,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
+        );
+      },
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Portfolio Tab
+// ---------------------------------------------------------------------------
+
+class _PortfolioTab extends ConsumerStatefulWidget {
+  const _PortfolioTab();
+
+  @override
+  ConsumerState<_PortfolioTab> createState() => _PortfolioTabState();
+}
+
+class _PortfolioTabState extends ConsumerState<_PortfolioTab> {
+  void _showAddSheet() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppColors.bgCard,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (_) => _AddPortfolioItemSheet(
+        onAdded: () => ref.invalidate(_myPortfolioProvider),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final portfolioAsync = ref.watch(_myPortfolioProvider);
+
+    return portfolioAsync.when(
+      loading: () => const Center(
+        child: CircularProgressIndicator(color: AppColors.postbookPrimary),
+      ),
+      error: (_, _) => Center(
+        child: _InlineStateCard(
+          icon: Icons.work_off_outlined,
+          message: 'Could not load portfolio.',
+          action: 'Retry',
+          onTap: () => ref.invalidate(_myPortfolioProvider),
+        ),
+      ),
+      data: (items) => Stack(
+        children: [
+          items.isEmpty
+              ? Center(
+                  child: Padding(
+                    padding: AppSpacing.pagePadding,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(
+                          Icons.work_outline,
+                          size: 48,
+                          color: AppColors.textMuted,
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          'Add your portfolio items to showcase your work',
+                          style: AppTextStyles.bodySmall,
+                          textAlign: TextAlign.center,
+                        ),
+                      ],
+                    ),
+                  ),
+                )
+              : ListView.separated(
+                  padding: AppSpacing.pagePadding.copyWith(bottom: 100),
+                  itemCount: items.length,
+                  separatorBuilder: (_, _) => const SizedBox(height: 10),
+                  itemBuilder: (context, index) {
+                    final item = items[index];
+                    return _PortfolioCard(item: item);
+                  },
+                ),
+          Positioned(
+            bottom: 24,
+            right: 16,
+            child: FloatingActionButton.extended(
+              onPressed: _showAddSheet,
+              backgroundColor: AppColors.postbookPrimary,
+              icon: const Icon(Icons.add, color: Colors.white),
+              label: const Text(
+                'Add Item',
+                style: TextStyle(color: Colors.white),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PortfolioCard extends StatelessWidget {
+  const _PortfolioCard({required this.item});
+
+  final Map<String, dynamic> item;
+
+  @override
+  Widget build(BuildContext context) {
+    final title = item['title']?.toString() ?? 'Untitled';
+    final description = item['description']?.toString() ?? '';
+    final type = item['item_type']?.toString() ?? item['type']?.toString() ?? 'other';
+    final url = item['url']?.toString() ?? '';
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.bgCard,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.borderSubtle),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  title,
+                  style: AppTextStyles.label.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: AppColors.postbookPrimary.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  type.toUpperCase(),
+                  style: AppTextStyles.labelSmall.copyWith(
+                    color: AppColors.postbookPrimary,
+                    fontSize: 10,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (description.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              description,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: AppTextStyles.bodySmall.copyWith(
+                color: AppColors.textSecondary,
+              ),
+            ),
+          ],
+          if (url.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            TextButton.icon(
+              onPressed: () {},
+              icon: const Icon(Icons.link, size: 14),
+              label: Text(
+                'View Link',
+                style: AppTextStyles.labelSmall.copyWith(
+                  color: AppColors.postbookPrimary,
+                ),
+              ),
+              style: TextButton.styleFrom(
+                padding: EdgeInsets.zero,
+                minimumSize: Size.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _AddPortfolioItemSheet extends StatefulWidget {
+  const _AddPortfolioItemSheet({required this.onAdded});
+
+  final VoidCallback onAdded;
+
+  @override
+  State<_AddPortfolioItemSheet> createState() => _AddPortfolioItemSheetState();
+}
+
+class _AddPortfolioItemSheetState extends State<_AddPortfolioItemSheet> {
+  final _titleController = TextEditingController();
+  final _descController = TextEditingController();
+  final _urlController = TextEditingController();
+  String _itemType = 'project';
+  bool _submitting = false;
+  String? _error;
+
+  static const _itemTypes = [
+    'project',
+    'article',
+    'video',
+    'design',
+    'other',
+  ];
+
+  @override
+  void dispose() {
+    _titleController.dispose();
+    _descController.dispose();
+    _urlController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (_titleController.text.trim().isEmpty) {
+      setState(() => _error = 'Title is required.');
+      return;
+    }
+    setState(() {
+      _submitting = true;
+      _error = null;
+    });
+    try {
+      final api = context
+          .findAncestorStateOfType<ConsumerState>()
+          ?.ref
+          .read(apiClientProvider);
+      if (api == null) {
+        setState(() {
+          _error = 'Could not reach API.';
+          _submitting = false;
+        });
+        return;
+      }
+      await api.post('/v1/users/me/portfolio', data: {
+        'title': _titleController.text.trim(),
+        'description': _descController.text.trim(),
+        'url': _urlController.text.trim(),
+        'item_type': _itemType,
+      });
+      widget.onAdded();
+      if (mounted) Navigator.of(context).pop();
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _error = 'Could not add portfolio item.';
+        _submitting = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(
+        left: 20,
+        right: 20,
+        top: 20,
+        bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Center(
+            child: Container(
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: AppColors.textMuted,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Text('Add Portfolio Item', style: AppTextStyles.h2),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _titleController,
+            style: const TextStyle(color: Colors.white),
+            decoration: const InputDecoration(
+              labelText: 'Title *',
+              labelStyle: TextStyle(color: AppColors.textMuted),
+              enabledBorder: UnderlineInputBorder(
+                borderSide: BorderSide(color: AppColors.borderSubtle),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _descController,
+            style: const TextStyle(color: Colors.white),
+            maxLines: 2,
+            decoration: const InputDecoration(
+              labelText: 'Description',
+              labelStyle: TextStyle(color: AppColors.textMuted),
+              enabledBorder: UnderlineInputBorder(
+                borderSide: BorderSide(color: AppColors.borderSubtle),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _urlController,
+            style: const TextStyle(color: Colors.white),
+            decoration: const InputDecoration(
+              labelText: 'URL',
+              labelStyle: TextStyle(color: AppColors.textMuted),
+              enabledBorder: UnderlineInputBorder(
+                borderSide: BorderSide(color: AppColors.borderSubtle),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          DropdownButtonFormField<String>(
+            initialValue: _itemType,
+            dropdownColor: AppColors.bgCard,
+            style: const TextStyle(color: Colors.white),
+            decoration: const InputDecoration(
+              labelText: 'Type',
+              labelStyle: TextStyle(color: AppColors.textMuted),
+              enabledBorder: UnderlineInputBorder(
+                borderSide: BorderSide(color: AppColors.borderSubtle),
+              ),
+            ),
+            items: _itemTypes
+                .map(
+                  (t) => DropdownMenuItem(
+                    value: t,
+                    child: Text(t[0].toUpperCase() + t.substring(1)),
+                  ),
+                )
+                .toList(),
+            onChanged: (val) {
+              if (val != null) setState(() => _itemType = val);
+            },
+          ),
+          if (_error != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              _error!,
+              style: const TextStyle(color: Colors.redAccent, fontSize: 12),
+            ),
+          ],
+          const SizedBox(height: 20),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              onPressed: _submitting ? null : _submit,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.postbookPrimary,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+              child: _submitting
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Text(
+                      'Add to Portfolio',
+                      style: TextStyle(color: Colors.white),
+                    ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// QR Code Sheet
+// ---------------------------------------------------------------------------
+
+class _QrCodeSheet extends ConsumerStatefulWidget {
+  const _QrCodeSheet();
+
+  @override
+  ConsumerState<_QrCodeSheet> createState() => _QrCodeSheetState();
+}
+
+class _QrCodeSheetState extends ConsumerState<_QrCodeSheet> {
+  Map<String, dynamic>? _qrData;
+  bool _loading = true;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchQr();
+  }
+
+  Future<void> _fetchQr() async {
+    try {
+      final res = await ref.read(apiClientProvider).get('/v1/users/me/qr');
+      final data = res.data['data'] as Map<String, dynamic>? ??
+          res.data as Map<String, dynamic>? ??
+          {};
+      if (mounted) setState(() { _qrData = data; _loading = false; });
+    } catch (_) {
+      if (mounted) setState(() { _error = 'Could not load QR code.'; _loading = false; });
+    }
+  }
+
+  void _copyLink(String url) {
+    Clipboard.setData(ClipboardData(text: url));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Copied!')),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final profileUrl = _qrData?['profile_url']?.toString() ?? '';
+    final scanCount = _qrData?['scan_count'] ?? 0;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 36,
+            height: 4,
+            margin: const EdgeInsets.only(bottom: 16),
+            decoration: BoxDecoration(
+              color: AppColors.textMuted,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          Text('Your Profile QR', style: AppTextStyles.h2),
+          const SizedBox(height: 20),
+          if (_loading)
+            const CircularProgressIndicator(color: AppColors.postbookPrimary)
+          else if (_error != null)
+            Text(_error!, style: const TextStyle(color: Colors.redAccent))
+          else ...[
+            Container(
+              width: 200,
+              height: 200,
+              decoration: BoxDecoration(
+                border: Border.all(color: AppColors.borderMedium, width: 2),
+                borderRadius: BorderRadius.circular(12),
+                color: AppColors.bgCard,
+              ),
+              child: const Center(
+                child: Icon(Icons.qr_code, size: 120, color: AppColors.textSecondary),
+              ),
+            ),
+            const SizedBox(height: 16),
+            if (profileUrl.isNotEmpty) ...[
+              SelectableText(
+                profileUrl,
+                style: AppTextStyles.labelSmall.copyWith(
+                  color: AppColors.textSecondary,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 8),
+            ],
+            Text(
+              'Scan count: $scanCount times',
+              style: AppTextStyles.labelSmall,
+            ),
+            const SizedBox(height: 16),
+            ElevatedButton.icon(
+              onPressed: profileUrl.isNotEmpty ? () => _copyLink(profileUrl) : null,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.postbookPrimary,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+              icon: const Icon(Icons.copy, color: Colors.white, size: 16),
+              label: const Text(
+                'Copy Link',
+                style: TextStyle(color: Colors.white),
+              ),
+            ),
+          ],
+          const SizedBox(height: 8),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Shared small widgets (unchanged)
+// ---------------------------------------------------------------------------
 
 enum _PostFilter { all, posts, reels, videos }
 

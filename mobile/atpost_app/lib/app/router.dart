@@ -30,11 +30,15 @@ import 'package:atpost_app/features/social/friend_requests_screen.dart';
 import 'package:atpost_app/features/social/friends_screen.dart';
 import 'package:atpost_app/features/posttube/posttube_screen.dart';
 import 'package:atpost_app/features/reels/reels_screen.dart';
+import 'package:atpost_app/features/mini_apps/mini_apps_screen.dart';
+import 'package:atpost_app/features/mini_apps/mini_app_detail_screen.dart';
 import 'package:atpost_app/features/settings/edit_profile_screen.dart';
 import 'package:atpost_app/features/settings/notification_settings_screen.dart';
 import 'package:atpost_app/features/settings/privacy_settings_screen.dart';
 import 'package:atpost_app/features/settings/security_settings_screen.dart';
 import 'package:atpost_app/features/settings/settings_screen.dart';
+import 'package:atpost_app/features/settings/verification_screen.dart';
+import 'package:atpost_app/features/settings/wellbeing_settings_screen.dart';
 import 'package:atpost_app/features/shell/shell_scaffold.dart';
 import 'package:atpost_app/features/shop/shop_screen.dart';
 import 'package:atpost_app/services/auth_service.dart';
@@ -200,6 +204,25 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/settings/privacy',
         builder: (context, state) => const PrivacySettingsScreen(),
+      ),
+      GoRoute(
+        path: '/settings/wellbeing',
+        builder: (_, _) => const WellbeingSettingsScreen(),
+      ),
+      GoRoute(
+        path: '/settings/verification',
+        builder: (_, _) => const VerificationScreen(),
+      ),
+
+      // --- Mini Apps ---
+      GoRoute(
+        path: '/apps',
+        builder: (_, _) => const MiniAppsScreen(),
+      ),
+      GoRoute(
+        path: '/apps/:id',
+        builder: (context, state) =>
+            MiniAppDetailScreen(appId: state.pathParameters['id']!),
       ),
 
       // --- Stories ---
