@@ -116,7 +116,7 @@ class CallNotifier extends StateNotifier<CallInfo?> {
       models.CallSession? session;
       if (_callsRepo != null) {
         try {
-          session = await _callsRepo!.createCall(
+          session = await _callsRepo.createCall(
             callType: type == CallType.video ? 'video' : 'audio',
             sourceType: 'direct',
             audioOnly: type == CallType.audio,
@@ -170,8 +170,8 @@ class CallNotifier extends StateNotifier<CallInfo?> {
       final inviteId = state!.inviteId;
       if (_callsRepo != null && callId != null && inviteId != null) {
         try {
-          await _callsRepo!.acceptInvite(callId, inviteId);
-          await _callsRepo!.joinCall(callId);
+          await _callsRepo.acceptInvite(callId, inviteId);
+          await _callsRepo.joinCall(callId);
         } catch (_) {
           // Continue with P2P signaling fallback
         }
@@ -223,7 +223,7 @@ class CallNotifier extends StateNotifier<CallInfo?> {
     ));
 
     if (_callsRepo != null && callId != null && inviteId != null) {
-      _callsRepo!.declineInvite(callId, inviteId);
+      _callsRepo.declineInvite(callId, inviteId);
     }
     _cleanup();
   }
@@ -241,7 +241,7 @@ class CallNotifier extends StateNotifier<CallInfo?> {
     ));
 
     if (_callsRepo != null && callId != null) {
-      _callsRepo!.endCall(callId);
+      _callsRepo.endCall(callId);
     }
     _cleanup();
   }

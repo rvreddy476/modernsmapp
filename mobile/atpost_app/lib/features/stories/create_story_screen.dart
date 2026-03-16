@@ -56,7 +56,7 @@ class _CreateStoryScreenState extends ConsumerState<CreateStoryScreen> {
       final api = ref.read(apiClientProvider);
       final storiesRepo = ref.read(storiesRepositoryProvider);
       final mediaId =
-          await api.uploadFile(_picked!, type: _isVideo ? 'video' : 'image');
+          await api.uploadMedia(_picked!, type: _isVideo ? 'video' : 'image');
       final text = _textController.text.trim();
       await storiesRepo.createStory(
         mediaId: mediaId,

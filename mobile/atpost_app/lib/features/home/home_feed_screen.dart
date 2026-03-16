@@ -157,12 +157,12 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
                 ),
               ),
             ],
-            data: (posts) => [
+            data: (feedState) => [
               SliverPadding(
                 padding: AppSpacing.pagePadding.copyWith(bottom: 130),
                 sliver: SliverList(
                   delegate: SliverChildBuilderDelegate((context, index) {
-                    final post = posts[index];
+                    final post = feedState.posts[index];
                     if (post.isReel) {
                       return ReelCard(
                         title: post.content,
@@ -179,15 +179,8 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
                         onTap: () => context.push('/posttube'),
                       );
                     }
-                    return PostCard(
-                      name: post.authorName ?? 'Anonymous',
-                      handle:
-                          '@${(post.authorName ?? 'user').toLowerCase().replaceAll(' ', '_')}',
-                      content: post.content,
-                      tags: post.tags,
-                      liked: post.isLiked,
-                    );
-                  }, childCount: posts.length),
+                    return PostCard(post: post);
+                  }, childCount: feedState.posts.length),
                 ),
               ),
             ],

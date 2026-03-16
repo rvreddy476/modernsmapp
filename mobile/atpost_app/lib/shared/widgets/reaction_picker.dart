@@ -49,7 +49,7 @@ class ReactionPicker extends StatelessWidget {
           .scale(
             delay: (index * 40).ms,
             duration: 200.ms,
-            curve: Curves.backOut,
+            curve: Curves.easeOutBack,
             begin: const Offset(0, 0),
             end: const Offset(1, 1),
           )

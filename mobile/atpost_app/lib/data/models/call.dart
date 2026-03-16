@@ -1,4 +1,4 @@
-/// Data models for the call-service REST API.
+// Data models for the call-service REST API.
 
 class CallSession {
   final String id;

@@ -162,7 +162,7 @@ class CreationNotifier extends StateNotifier<CreationState> {
         visibility: state.visibility.name,
         mediaIds: mediaIds.isEmpty ? null : mediaIds,
         tags: state.tags.isEmpty ? null : state.tags,
-        mood: state.mood,
+        feeling: state.mood,
         locationName: state.location,
         poll: pollPayload,
       );
