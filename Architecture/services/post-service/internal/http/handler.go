@@ -178,9 +178,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	r.GET("/v1/posts/:postId/cards", h.GetVideoCards)
 
 	// Watch Progress
-	r.POST("/v1/videos/:postId/progress", h.SaveWatchProgress)
+	r.POST("/v1/videos/:videoId/progress", h.SaveWatchProgress)
 	r.GET("/v1/videos/continue-watching", h.GetContinueWatching)
-	r.DELETE("/v1/videos/:postId/progress", h.DeleteWatchProgress)
+	r.DELETE("/v1/videos/:videoId/progress", h.DeleteWatchProgress)
 }
 
 type CreatePollRequest struct {
@@ -241,6 +241,13 @@ func (h *Handler) CreatePost(c *gin.Context) {
 	authorID, err := uuid.Parse(authorIDStr)
 	if err != nil {
 		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	// Post creation rate limit (Redis sliding window)
+	if err := service.CheckPostRateLimit(c.Request.Context(), h.rdb, authorID); err != nil {
+		c.Header("Retry-After", "3600")
+		api.Error(c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", err.Error(), nil, nil)
 		return
 	}
 

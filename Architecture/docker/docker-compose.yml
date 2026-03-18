@@ -141,6 +141,8 @@ services:
       SHOP_SERVICE_URL: http://shop-service:8105
       LIVE_SERVICE_URL: http://live-service:8103
       MEMORIES_SERVICE_URL: http://memories-service:8104
+      CHANNEL_SERVICE_URL: http://channel-service:8106
+      COMMUNITY_SERVICE_URL: http://community-service:8107
     ports:
       - "8080:8080"
     depends_on:
@@ -491,7 +493,7 @@ services:
       KAFKA_NOTIFICATION_TOPIC: call.notifications
       KAFKA_ANALYTICS_TOPIC: call.analytics
     ports:
-      - "8106:8097"
+      - "8097:8097"
     depends_on:
       postgres:
         condition: service_healthy
@@ -680,6 +682,40 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+
+  channel-service:
+    build:
+      context: ..
+      dockerfile: services/channel-service/Dockerfile
+    environment:
+      HTTP_PORT: "8106"
+      POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/app?sslmode=disable
+      REDIS_ADDR: redis:6379
+      KAFKA_BROKERS: redpanda:9092
+      INTERNAL_SERVICE_KEY: dev-internal-key
+    ports:
+      - "8106:8106"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      redpanda: { condition: service_started }
+
+  community-service:
+    build:
+      context: ..
+      dockerfile: services/community-service/Dockerfile
+    environment:
+      HTTP_PORT: "8107"
+      POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/app?sslmode=disable
+      REDIS_ADDR: redis:6379
+      KAFKA_BROKERS: redpanda:9092
+      INTERNAL_SERVICE_KEY: dev-internal-key
+    ports:
+      - "8107:8107"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      redpanda: { condition: service_started }
 
 volumes:
   pgdata:

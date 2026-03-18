@@ -64,6 +64,7 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
                 children: [
                   GlassIconButton(
                     icon: Icons.arrow_back,
+                    tooltip: 'Back',
                     onPressed: () => context.pop(),
                   ),
                   const SizedBox(width: 10),
@@ -103,11 +104,13 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
                   ),
                   GlassIconButton(
                     icon: Icons.call_outlined,
+                    tooltip: 'Voice call',
                     onPressed: () => _startCall(CallType.audio, title),
                   ),
                   const SizedBox(width: 8),
                   GlassIconButton(
                     icon: Icons.videocam_outlined,
+                    tooltip: 'Video call',
                     onPressed: () => _startCall(CallType.video, title),
                   ),
                 ],

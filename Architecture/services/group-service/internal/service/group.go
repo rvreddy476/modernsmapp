@@ -163,20 +163,64 @@ func (s *Service) CreateGroup(ctx context.Context, actorID uuid.UUID, req Create
 		visibility = "private"
 	}
 
+	// GCC Phase 1: group type
+	groupType := req.GroupType
+	if groupType == "" {
+		groupType = "public"
+	}
+	if err := ValidateGroupType(groupType); err != nil {
+		return nil, err
+	}
+
+	// Comment permission
+	commentPermission := req.CommentPermission
+	if commentPermission == "" {
+		commentPermission = "all_members"
+	}
+	if err := ValidateCommentPermission(commentPermission); err != nil {
+		return nil, err
+	}
+
+	memberListVisible := true
+	if req.MemberListVisible != nil {
+		memberListVisible = *req.MemberListVisible
+	}
+	linkSharing := true
+	if req.LinkSharing != nil {
+		linkSharing = *req.LinkSharing
+	}
+
+	joinQuestions := req.JoinQuestions
+	if joinQuestions == nil {
+		joinQuestions = json.RawMessage("[]")
+	}
+
+	topicTags := req.TopicTags
+	if topicTags == nil {
+		topicTags = []string{}
+	}
+
 	g := &store.Group{
-		Name:         req.Name,
-		Description:  req.Description,
-		CreatorID:    actorID,
-		Visibility:   visibility,
-		Handle:       handle,
-		Category:     req.Category,
-		PrivacyLevel: privacyLevel,
-		JoinMode:     joinMode,
-		WhoCanPost:   whoCanPost,
-		WhoCanInvite: whoCanInvite,
-		Location:     req.Location,
-		Language:     req.Language,
-		Status:       "active",
+		Name:              req.Name,
+		Description:       req.Description,
+		CreatorID:         actorID,
+		Visibility:        visibility,
+		Handle:            handle,
+		Category:          req.Category,
+		PrivacyLevel:      privacyLevel,
+		JoinMode:          joinMode,
+		WhoCanPost:        whoCanPost,
+		WhoCanInvite:      whoCanInvite,
+		Location:          req.Location,
+		Language:          req.Language,
+		Status:            "active",
+		GroupType:         groupType,
+		MaxMembers:        req.MaxMembers,
+		JoinQuestions:     joinQuestions,
+		TopicTags:         topicTags,
+		CommentPermission: commentPermission,
+		MemberListVisible: memberListVisible,
+		LinkSharing:       linkSharing,
 	}
 
 	if err := s.store.CreateGroup(ctx, g); err != nil {
@@ -223,6 +267,39 @@ type CreateGroupParams struct {
 	Location       string
 	Language       string
 	IdempotencyKey string
+	// GCC Phase 1 fields
+	GroupType         string
+	MaxMembers        int
+	JoinQuestions     json.RawMessage
+	TopicTags         []string
+	CommentPermission string
+	MemberListVisible *bool
+	LinkSharing       *bool
+}
+
+var validGroupTypes = map[string]bool{
+	"public": true, "private": true, "hidden": true, "local": true,
+	"study": true, "marketplace": true, "brand": true, "event": true, "family": true,
+}
+
+var validCommentPermissions = map[string]bool{
+	"all_members": true, "admins_mods": true, "admins_only": true,
+}
+
+// ValidateGroupType checks that a group type is one of the allowed values.
+func ValidateGroupType(gt string) error {
+	if !validGroupTypes[gt] {
+		return fmt.Errorf("invalid group type '%s'", gt)
+	}
+	return nil
+}
+
+// ValidateCommentPermission checks that comment permission is valid.
+func ValidateCommentPermission(cp string) error {
+	if !validCommentPermissions[cp] {
+		return fmt.Errorf("invalid comment permission '%s'", cp)
+	}
+	return nil
 }
 
 // GroupWithViewerRole wraps a Group with the viewer's role.
@@ -380,6 +457,46 @@ func (s *Service) UpdateGroup(ctx context.Context, actorID, groupID uuid.UUID, n
 	return nil
 }
 
+// UpdateGroupSettings updates GCC Phase 1 settings fields for a group.
+func (s *Service) UpdateGroupSettings(ctx context.Context, actorID, groupID uuid.UUID,
+	groupType string, maxMembers int, joinQuestions json.RawMessage, topicTags []string,
+	commentPermission string, memberListVisible, linkSharing bool) error {
+
+	g, err := s.store.GetGroupByID(ctx, groupID)
+	if err != nil {
+		return err
+	}
+	if g == nil {
+		return fmt.Errorf("group not found")
+	}
+
+	member, err := s.store.GetActiveMember(ctx, groupID, actorID)
+	if err != nil {
+		return err
+	}
+	if member == nil || (member.Role != "admin" && g.CreatorID != actorID) {
+		return fmt.Errorf("forbidden: only admins can update the group")
+	}
+
+	if err := ValidateGroupType(groupType); err != nil {
+		return err
+	}
+	if err := ValidateCommentPermission(commentPermission); err != nil {
+		return err
+	}
+
+	if err := s.store.UpdateGroupSettings(ctx, groupID, groupType, maxMembers, joinQuestions, topicTags, commentPermission, memberListVisible, linkSharing); err != nil {
+		return err
+	}
+
+	s.publishEvent(func() error {
+		return s.producer.PublishGroupUpdated(ctx, groupID, actorID)
+	})
+
+	s.invalidateGroupCache(ctx, groupID)
+	return nil
+}
+
 // DeleteGroup soft-deletes a group. Only the creator (who is an admin) may delete.
 func (s *Service) DeleteGroup(ctx context.Context, actorID, groupID uuid.UUID) error {
 	g, err := s.store.GetGroupByID(ctx, groupID)
@@ -454,6 +571,17 @@ func (s *Service) JoinGroup(ctx context.Context, actorID, groupID uuid.UUID) (st
 	}
 	if banned {
 		return "", fmt.Errorf("forbidden: you are banned from this group")
+	}
+
+	// Enforce max members
+	if g.MaxMembers > 0 {
+		count, err := s.store.GetActiveMemberCount(ctx, groupID)
+		if err != nil {
+			return "", err
+		}
+		if count >= int64(g.MaxMembers) {
+			return "", fmt.Errorf("group has reached its maximum member limit")
+		}
 	}
 
 	switch g.JoinMode {
@@ -1369,6 +1497,50 @@ func (s *Service) ListBannedMembers(ctx context.Context, actorID, groupID uuid.U
 	return s.store.ListBannedMembers(ctx, groupID, limit, offset)
 }
 
+// --- Member Stats ---
+
+// GetMemberStats returns activity stats for a member in a group.
+func (s *Service) GetMemberStats(ctx context.Context, actorID, groupID, userID uuid.UUID) (*store.MemberStats, error) {
+	g, err := s.store.GetGroupByID(ctx, groupID)
+	if err != nil {
+		return nil, err
+	}
+	if g == nil {
+		return nil, fmt.Errorf("group not found")
+	}
+
+	if err := s.checkGroupAccess(ctx, g, actorID); err != nil {
+		return nil, err
+	}
+
+	stats, err := s.store.GetMemberStats(ctx, groupID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if stats == nil {
+		// Return zero stats instead of nil for convenience
+		return &store.MemberStats{GroupID: groupID, UserID: userID}, nil
+	}
+	return stats, nil
+}
+
+// GetTopContributors returns top contributors for a group.
+func (s *Service) GetTopContributors(ctx context.Context, actorID, groupID uuid.UUID, limit int) ([]store.MemberStats, error) {
+	g, err := s.store.GetGroupByID(ctx, groupID)
+	if err != nil {
+		return nil, err
+	}
+	if g == nil {
+		return nil, fmt.Errorf("group not found")
+	}
+
+	if err := s.checkGroupAccess(ctx, g, actorID); err != nil {
+		return nil, err
+	}
+
+	return s.store.GetTopContributors(ctx, groupID, limit)
+}
+
 // --- Discovery ---
 
 // GetMyGroups returns groups that the actor is a member of.
@@ -1377,7 +1549,13 @@ func (s *Service) GetMyGroups(ctx context.Context, actorID uuid.UUID, limit, off
 }
 
 // DiscoverGroups returns public, non-archived groups for discovery.
-func (s *Service) DiscoverGroups(ctx context.Context, limit, offset int) ([]store.Group, error) {
+func (s *Service) DiscoverGroups(ctx context.Context, limit, offset int, groupType string) ([]store.Group, error) {
+	if groupType != "" {
+		if err := ValidateGroupType(groupType); err != nil {
+			return nil, err
+		}
+		return s.store.DiscoverPublicGroupsByType(ctx, groupType, limit, offset)
+	}
 	return s.store.DiscoverPublicGroups(ctx, limit, offset)
 }
 

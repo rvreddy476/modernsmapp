@@ -59,12 +59,12 @@ func (m *mockStore) GetWallet(_ context.Context, userID uuid.UUID) (*postgres.Wa
 func (m *mockStore) EnsureWallet(_ context.Context, userID uuid.UUID) (*postgres.Wallet, error) {
 	if _, ok := m.wallets[userID]; !ok {
 		m.wallets[userID] = &postgres.Wallet{
-			UserID:    userID,
-			Balance:   0,
-			Currency:  "INR",
-			IsFrozen:  false,
-			CreatedAt: time.Now(),
-			UpdatedAt: time.Now(),
+			UserID:       userID,
+			BalancePaise: 0,
+			Currency:     "INR",
+			IsFrozen:     false,
+			CreatedAt:    time.Now(),
+			UpdatedAt:    time.Now(),
 		}
 	}
 	return m.wallets[userID], nil
@@ -95,7 +95,7 @@ func (m *mockStore) AddPayoutMethod(_ context.Context, _ *postgres.PayoutMethod)
 
 func (m *mockStore) RemovePayoutMethod(_ context.Context, _, _ uuid.UUID) error { return nil }
 
-func (m *mockStore) RequestPayout(_ context.Context, userID uuid.UUID, amount float64, _ uuid.UUID) (*postgres.Transaction, error) {
+func (m *mockStore) RequestPayout(_ context.Context, userID uuid.UUID, amountPaise int64, _ uuid.UUID) (*postgres.Transaction, error) {
 	w, ok := m.wallets[userID]
 	if !ok {
 		return nil, errors.New("WALLET_NOT_FOUND")
@@ -103,16 +103,16 @@ func (m *mockStore) RequestPayout(_ context.Context, userID uuid.UUID, amount fl
 	if w.IsFrozen {
 		return nil, errors.New("WALLET_FROZEN")
 	}
-	if w.Balance < amount {
+	if w.BalancePaise < amountPaise {
 		return nil, errors.New("INSUFFICIENT_BALANCE")
 	}
-	w.Balance -= amount
+	w.BalancePaise -= amountPaise
 	t := &postgres.Transaction{
-		ID:       uuid.New(),
-		WalletID: userID,
-		Type:     "payout",
-		Amount:   amount,
-		Status:   "pending",
+		ID:          uuid.New(),
+		WalletID:    userID,
+		Type:        "payout",
+		AmountPaise: amountPaise,
+		Status:      "pending",
 	}
 	m.transactions = append(m.transactions, t)
 	return t, nil
@@ -172,7 +172,7 @@ func (m *mockStore) GetSubscriptionByIdempotencyKey(_ context.Context, key strin
 	return sub, nil
 }
 
-func (m *mockStore) Subscribe(_ context.Context, subscriberID, creatorID, tierID uuid.UUID, tierName string, price float64, currency string, idempotencyKey string) (*postgres.Subscription, error) {
+func (m *mockStore) Subscribe(_ context.Context, subscriberID, creatorID, tierID uuid.UUID, tierName string, pricePaise int64, currency string, idempotencyKey string) (*postgres.Subscription, error) {
 	if !m.chargeOK {
 		return nil, errors.New("INSUFFICIENT_BALANCE_OR_FROZEN")
 	}
@@ -182,7 +182,7 @@ func (m *mockStore) Subscribe(_ context.Context, subscriberID, creatorID, tierID
 		CreatorID:          creatorID,
 		TierID:             tierID,
 		TierName:           tierName,
-		Price:              price,
+		PricePaise:         pricePaise,
 		Currency:           currency,
 		Status:             "active",
 		CurrentPeriodStart: time.Now(),
@@ -207,7 +207,7 @@ func (m *mockStore) Unsubscribe(_ context.Context, subscriberID, creatorID uuid.
 	return nil
 }
 
-func (m *mockStore) ChargeAndCredit(_ context.Context, _ string, _ string, _ float64, _ string) error {
+func (m *mockStore) ChargeAndCredit(_ context.Context, _ string, _ string, _ int64, _ string) error {
 	if !m.chargeOK {
 		return postgres.ErrInsufficientFunds
 	}
@@ -382,13 +382,13 @@ func TestRequestPayout_InsufficientBalance(t *testing.T) {
 
 	// Create wallet with low balance.
 	store.wallets[userID] = &postgres.Wallet{
-		UserID:   userID,
-		Balance:  50.0,
-		Currency: "INR",
+		UserID:       userID,
+		BalancePaise: 5000,
+		Currency:     "INR",
 	}
 
 	// Attempt payout above balance.
-	_, err := requestPayout(ctx, store, userID, 200.0, methodID)
+	_, err := requestPayout(ctx, store, userID, 20000, methodID)
 	if err == nil {
 		t.Fatal("expected error for insufficient balance, got nil")
 	}
@@ -399,7 +399,7 @@ func TestRequestPayout_InsufficientBalance(t *testing.T) {
 }
 
 // requestPayout mirrors service.Service.RequestPayout business logic.
-func requestPayout(ctx context.Context, store *mockStore, userID uuid.UUID, amount float64, payoutMethodID uuid.UUID) (*postgres.Transaction, error) {
+func requestPayout(ctx context.Context, store *mockStore, userID uuid.UUID, amountPaise int64, payoutMethodID uuid.UUID) (*postgres.Transaction, error) {
 	wallet, err := store.GetWallet(ctx, userID)
 	if err != nil {
 		return nil, err
@@ -410,10 +410,10 @@ func requestPayout(ctx context.Context, store *mockStore, userID uuid.UUID, amou
 	if wallet.IsFrozen {
 		return nil, errors.New("WALLET_FROZEN")
 	}
-	if wallet.Balance < amount {
+	if wallet.BalancePaise < amountPaise {
 		return nil, errors.New("INSUFFICIENT_BALANCE")
 	}
-	return store.RequestPayout(ctx, userID, amount, payoutMethodID)
+	return store.RequestPayout(ctx, userID, amountPaise, payoutMethodID)
 }
 
 // TestSubscribe_Idempotent verifies that calling Subscribe twice with the same
@@ -429,25 +429,25 @@ func TestSubscribe_Idempotent(t *testing.T) {
 	// Set up tier.
 	perks, _ := json.Marshal([]string{})
 	store.tiers[tierID] = &postgres.CreatorTier{
-		ID:        tierID,
-		CreatorID: creatorID,
-		Name:      "Gold",
-		Price:     99.0,
-		Currency:  "INR",
-		Perks:     perks,
-		IsActive:  true,
+		ID:         tierID,
+		CreatorID:  creatorID,
+		Name:       "Gold",
+		PricePaise: 9900,
+		Currency:   "INR",
+		Perks:      perks,
+		IsActive:   true,
 	}
 
 	// Set up wallets with enough balance.
 	store.wallets[subscriberID] = &postgres.Wallet{
-		UserID:   subscriberID,
-		Balance:  1000.0,
-		Currency: "INR",
+		UserID:       subscriberID,
+		BalancePaise: 100000,
+		Currency:     "INR",
 	}
 	store.wallets[creatorID] = &postgres.Wallet{
-		UserID:   creatorID,
-		Balance:  0,
-		Currency: "INR",
+		UserID:       creatorID,
+		BalancePaise: 0,
+		Currency:     "INR",
 	}
 
 	idempotencyKey := "idem-key-abc-123"
@@ -508,7 +508,7 @@ func subscribe(ctx context.Context, store *mockStore, subscriberID, creatorID, t
 	_, _ = store.EnsureWallet(ctx, subscriberID)
 	_, _ = store.EnsureWallet(ctx, creatorID)
 
-	return store.Subscribe(ctx, subscriberID, creatorID, tier.ID, tier.Name, tier.Price, tier.Currency, idempotencyKey)
+	return store.Subscribe(ctx, subscriberID, creatorID, tier.ID, tier.Name, tier.PricePaise, tier.Currency, idempotencyKey)
 }
 
 // TestDonation_UpdatesFundraiserTotal verifies that a donation increments the

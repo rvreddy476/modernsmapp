@@ -587,7 +587,7 @@ func (h *Handler) SaveWatchProgress(c *gin.Context) {
 		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil, nil)
 		return
 	}
-	postID, err := uuid.Parse(c.Param("postId"))
+	postID, err := uuid.Parse(c.Param("videoId"))
 	if err != nil {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
 		return
@@ -647,7 +647,7 @@ func (h *Handler) DeleteWatchProgress(c *gin.Context) {
 		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil, nil)
 		return
 	}
-	postID, err := uuid.Parse(c.Param("postId"))
+	postID, err := uuid.Parse(c.Param("videoId"))
 	if err != nil {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
 		return

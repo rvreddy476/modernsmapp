@@ -78,6 +78,12 @@ SERVICE_PORT[live-service]=8103
 SERVICE_DIR[memories-service]="Architecture/services/memories-service"
 SERVICE_PORT[memories-service]=8104
 
+SERVICE_DIR[channel-service]="Architecture/services/channel-service"
+SERVICE_PORT[channel-service]=8106
+
+SERVICE_DIR[community-service]="Architecture/services/community-service"
+SERVICE_PORT[community-service]=8107
+
 # Commerce services (v2.1)
 SERVICE_DIR[orders-service]="Architecture/services/orders-service"
 SERVICE_PORT[orders-service]=8101

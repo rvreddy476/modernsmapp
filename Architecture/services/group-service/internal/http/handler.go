@@ -68,6 +68,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.DELETE("/:groupId/members/:userId/ban", h.UnbanMember)
 		v1.GET("/:groupId/members/banned", h.ListBannedMembers)
 
+		// Member Stats
+		v1.GET("/:groupId/stats/contributors", h.GetTopContributors)
+		v1.GET("/:groupId/members/:userId/stats", h.GetMemberStats)
+
 		// Media
 		v1.GET("/:groupId/media", h.GetGroupMedia)
 
@@ -109,6 +113,14 @@ type CreateGroupRequest struct {
 	Location       string `json:"location"`
 	Language       string `json:"language"`
 	IdempotencyKey string `json:"idempotency_key"`
+	// GCC Phase 1 fields
+	GroupType         string          `json:"group_type"`
+	MaxMembers        int             `json:"max_members"`
+	JoinQuestions     json.RawMessage `json:"join_questions"`
+	TopicTags         []string        `json:"topic_tags"`
+	CommentPermission string          `json:"comment_permission"`
+	MemberListVisible *bool           `json:"member_list_visible"`
+	LinkSharing       *bool           `json:"link_sharing"`
 }
 
 type UpdateGroupRequest struct {
@@ -117,6 +129,14 @@ type UpdateGroupRequest struct {
 	Visibility    *string `json:"visibility"`
 	AvatarMediaID *string `json:"avatar_media_id"`
 	CoverMediaID  *string `json:"cover_media_id"`
+	// GCC Phase 1 fields
+	GroupType         *string          `json:"group_type"`
+	MaxMembers        *int             `json:"max_members"`
+	JoinQuestions     json.RawMessage  `json:"join_questions"`
+	TopicTags         []string         `json:"topic_tags"`
+	CommentPermission *string          `json:"comment_permission"`
+	MemberListVisible *bool            `json:"member_list_visible"`
+	LinkSharing       *bool            `json:"link_sharing"`
 }
 
 type InviteRequest struct {
@@ -219,17 +239,24 @@ func (h *Handler) CreateGroup(c *gin.Context) {
 	}
 
 	params := service.CreateGroupParams{
-		Name:           req.Name,
-		Description:    req.Description,
-		Handle:         req.Handle,
-		Category:       req.Category,
-		PrivacyLevel:   req.PrivacyLevel,
-		JoinMode:       req.JoinMode,
-		WhoCanPost:     req.WhoCanPost,
-		WhoCanInvite:   req.WhoCanInvite,
-		Location:       req.Location,
-		Language:       req.Language,
-		IdempotencyKey: req.IdempotencyKey,
+		Name:              req.Name,
+		Description:       req.Description,
+		Handle:            req.Handle,
+		Category:          req.Category,
+		PrivacyLevel:      req.PrivacyLevel,
+		JoinMode:          req.JoinMode,
+		WhoCanPost:        req.WhoCanPost,
+		WhoCanInvite:      req.WhoCanInvite,
+		Location:          req.Location,
+		Language:          req.Language,
+		IdempotencyKey:    req.IdempotencyKey,
+		GroupType:         req.GroupType,
+		MaxMembers:        req.MaxMembers,
+		JoinQuestions:     req.JoinQuestions,
+		TopicTags:         req.TopicTags,
+		CommentPermission: req.CommentPermission,
+		MemberListVisible: req.MemberListVisible,
+		LinkSharing:       req.LinkSharing,
 	}
 
 	group, err := h.svc.CreateGroup(c.Request.Context(), actorID, params)
@@ -369,6 +396,47 @@ func (h *Handler) UpdateGroup(c *gin.Context) {
 		handleServiceError(c, err)
 		return
 	}
+
+	// Update GCC Phase 1 settings if any provided
+	hasSettings := req.GroupType != nil || req.MaxMembers != nil || req.JoinQuestions != nil ||
+		req.TopicTags != nil || req.CommentPermission != nil || req.MemberListVisible != nil || req.LinkSharing != nil
+	if hasSettings {
+		groupType := existing.GroupType
+		if req.GroupType != nil {
+			groupType = *req.GroupType
+		}
+		maxMembers := existing.MaxMembers
+		if req.MaxMembers != nil {
+			maxMembers = *req.MaxMembers
+		}
+		joinQuestions := existing.JoinQuestions
+		if req.JoinQuestions != nil {
+			joinQuestions = req.JoinQuestions
+		}
+		topicTags := existing.TopicTags
+		if req.TopicTags != nil {
+			topicTags = req.TopicTags
+		}
+		commentPermission := existing.CommentPermission
+		if req.CommentPermission != nil {
+			commentPermission = *req.CommentPermission
+		}
+		memberListVisible := existing.MemberListVisible
+		if req.MemberListVisible != nil {
+			memberListVisible = *req.MemberListVisible
+		}
+		linkSharing := existing.LinkSharing
+		if req.LinkSharing != nil {
+			linkSharing = *req.LinkSharing
+		}
+
+		if err := h.svc.UpdateGroupSettings(c.Request.Context(), actorID, groupID, groupType, maxMembers,
+			joinQuestions, topicTags, commentPermission, memberListVisible, linkSharing); err != nil {
+			handleServiceError(c, err)
+			return
+		}
+	}
+
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "updated"}, nil)
 }
 
@@ -748,8 +816,9 @@ func (h *Handler) GetMyGroups(c *gin.Context) {
 
 func (h *Handler) DiscoverGroups(c *gin.Context) {
 	limit, offset := parsePagination(c)
+	groupType := c.Query("type")
 
-	groups, err := h.svc.DiscoverGroups(c.Request.Context(), limit, offset)
+	groups, err := h.svc.DiscoverGroups(c.Request.Context(), limit, offset, groupType)
 	if err != nil {
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
 		return
@@ -1030,6 +1099,53 @@ func (h *Handler) ListBannedMembers(c *gin.Context) {
 		members = []store.GroupMember{}
 	}
 	api.JSON(c.Writer, http.StatusOK, members, nil)
+}
+
+// --- Member Stats ---
+
+func (h *Handler) GetTopContributors(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid group ID", nil, nil)
+		return
+	}
+	limit, _ := parsePagination(c)
+	contributors, err := h.svc.GetTopContributors(c.Request.Context(), actorID, groupID, limit)
+	if err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	if contributors == nil {
+		contributors = []store.MemberStats{}
+	}
+	api.JSON(c.Writer, http.StatusOK, contributors, nil)
+}
+
+func (h *Handler) GetMemberStats(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid group ID", nil, nil)
+		return
+	}
+	userID, err := uuid.Parse(c.Param("userId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil, nil)
+		return
+	}
+	stats, err := h.svc.GetMemberStats(c.Request.Context(), actorID, groupID, userID)
+	if err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, stats, nil)
 }
 
 // --- Media ---

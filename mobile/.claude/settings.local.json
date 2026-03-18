@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd /c/workspace/atpost/mobile/atpost_app && flutter build apk --release)",
+      "Bash(flutter build:*)"
+    ]
+  }
+}

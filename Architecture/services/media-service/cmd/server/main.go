@@ -19,6 +19,7 @@ import (
 	"github.com/atpost/shared/server"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -72,9 +73,22 @@ func main() {
 	}
 	slog.Info("connected to minio")
 
+	// 4b. Redis (for upload rate limiting)
+	redisAddr := env("REDIS_ADDR", "redis:6379")
+	rdb := redis.NewClient(&redis.Options{Addr: redisAddr})
+	if err := rdb.Ping(ctx).Err(); err != nil {
+		slog.Warn("redis not available, upload rate limiting disabled", "error", err)
+		rdb = nil
+	} else {
+		slog.Info("connected to redis", "addr", redisAddr)
+	}
+
 	// 5. Dependencies
 	pgStore := postgres.New(dbPool)
 	mediaSvc := service.New(pgStore, blobStore)
+	if rdb != nil {
+		mediaSvc.SetRedis(rdb)
+	}
 
 	// 6. Kafka producer for video transcode events
 	brokers := strings.Split(kafkaBrokers, ",")

@@ -38,13 +38,15 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
     return '${diff.inMinutes}m ago';
   }
 
-  static const List<_Chapter> _chapters = [
-    _Chapter(time: '00:00', label: 'Intro'),
-    _Chapter(time: '02:14', label: 'Architecture'),
-    _Chapter(time: '08:22', label: 'Feed Ranking'),
-    _Chapter(time: '13:09', label: 'Realtime Events'),
-    _Chapter(time: '19:41', label: 'Wrap Up'),
-  ];
+  // Chapters are now derived from video metadata when available.
+  // Placeholder chapters shown only when a video is loaded.
+  List<_Chapter> get _chapters {
+    if (_videos.isEmpty) return [];
+    // TODO: Parse chapter markers from video metadata API response.
+    return const [
+      _Chapter(time: '00:00', label: 'Intro'),
+    ];
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -82,14 +84,14 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
                     ),
                     const SizedBox(height: 14),
                     Text(
-                      currentVideo?.content ?? 'Building a scalable feed with event-driven architecture',
+                      currentVideo?.content ?? '',
                       style: AppTextStyles.h2.copyWith(fontSize: 19),
                     ),
                     const SizedBox(height: 6),
                     Text(
                       currentVideo != null
                           ? '${_formatCount(currentVideo.likeCount)} views  •  ${_timeAgo(currentVideo.createdAt)}'
-                          : '45.2K views  •  3h ago  •  4.9',
+                          : '',
                       style: AppTextStyles.bodySmall.copyWith(color: AppColors.textDim),
                     ),
                     const SizedBox(height: 14),

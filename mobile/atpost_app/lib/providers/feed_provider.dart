@@ -60,12 +60,13 @@ class HomeFeedNotifier extends StateNotifier<AsyncValue<FeedState>> {
   Future<void> fetchFirstPage() async {
     state = const AsyncValue.loading();
     try {
-      final posts = await _repo.getHomeFeed(
+      final page = await _repo.getHomeFeedPage(
         feedMode: _filterToMode(_currentFilter),
       );
-      // In a real app, we'd get the cursor from the response.
-      // Assuming for now the repo might need an update to return FeedPage.
-      state = AsyncValue.data(FeedState(posts: posts));
+      state = AsyncValue.data(FeedState(
+        posts: page.items,
+        nextCursor: page.nextCursor,
+      ));
     } catch (e, st) {
       state = AsyncValue.error(e, st);
     }
@@ -78,14 +79,14 @@ class HomeFeedNotifier extends StateNotifier<AsyncValue<FeedState>> {
     state = AsyncValue.data(currentState.copyWith(isLoadingMore: true));
 
     try {
-      final newPosts = await _repo.getHomeFeed(
+      final page = await _repo.getHomeFeedPage(
         cursor: currentState.nextCursor,
         feedMode: _filterToMode(_currentFilter),
       );
 
       state = AsyncValue.data(FeedState(
-        posts: [...currentState.posts, ...newPosts],
-        nextCursor: null, // Update when repo supports cursor return
+        posts: [...currentState.posts, ...page.items],
+        nextCursor: page.nextCursor,
         isLoadingMore: false,
       ));
     } catch (e) {

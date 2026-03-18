@@ -99,6 +99,9 @@ func main() {
 		{"/v1/shop",     env("SHOP_SERVICE_URL",     "http://shop-service:8105")},
 		{"/v1/live",     env("LIVE_SERVICE_URL",      "http://live-service:8103")},
 		{"/v1/memories", env("MEMORIES_SERVICE_URL",  "http://memories-service:8104")},
+		// Broadcast Channels / Communities (GCC Phase 4)
+		{"/v1/broadcast-channels", env("CHANNEL_SERVICE_URL", "http://channel-service:8106")},
+		{"/v1/communities", env("COMMUNITY_SERVICE_URL", "http://community-service:8107")},
 	}
 
 	var routes []route

@@ -11,7 +11,7 @@ class Environment {
 
   /// Set to a domain (e.g. "cleestudio.com") to use external HTTPS endpoints.
   /// Leave null for local development with direct service ports.
-  static String? externalDomain;
+  static String? externalDomain = 'cleestudio.com';
 
   // Resolve host: Android emulator uses 10.0.2.2, everything else uses localhost
   static String get _host {

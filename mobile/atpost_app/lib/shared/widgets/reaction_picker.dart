@@ -11,8 +11,20 @@ class ReactionPicker extends StatelessWidget {
   final Function(String emoji) onReactionSelected;
 
   static const List<String> _emojis = [
-    '❤️', '🔥', '😂', '😮', '😢', '👏', '🙌', '💯'
+    '\u2764\uFE0F', '\uD83D\uDD25', '\uD83D\uDE02', '\uD83D\uDE2E',
+    '\uD83D\uDE22', '\uD83D\uDC4F', '\uD83D\uDE4C', '\uD83D\uDCAF'
   ];
+
+  static const Map<String, String> _emojiLabels = {
+    '\u2764\uFE0F': 'Love',
+    '\uD83D\uDD25': 'Fire',
+    '\uD83D\uDE02': 'Laugh',
+    '\uD83D\uDE2E': 'Wow',
+    '\uD83D\uDE22': 'Sad',
+    '\uD83D\uDC4F': 'Clap',
+    '\uD83D\uDE4C': 'Celebrate',
+    '\uD83D\uDCAF': 'Hundred',
+  };
 
   @override
   Widget build(BuildContext context) {
@@ -35,13 +47,19 @@ class ReactionPicker extends StatelessWidget {
         children: _emojis.asMap().entries.map((entry) {
           final index = entry.key;
           final emoji = entry.value;
-          return GestureDetector(
-            onTap: () => onReactionSelected(emoji),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 6),
-              child: Text(
-                emoji,
-                style: const TextStyle(fontSize: 26),
+          return Semantics(
+            button: true,
+            label: _emojiLabels[emoji] ?? 'Reaction',
+            child: GestureDetector(
+              onTap: () => onReactionSelected(emoji),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 6),
+                child: ExcludeSemantics(
+                  child: Text(
+                    emoji,
+                    style: const TextStyle(fontSize: 26),
+                  ),
+                ),
               ),
             ),
           )

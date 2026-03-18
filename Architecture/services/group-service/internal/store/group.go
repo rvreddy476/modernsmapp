@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -36,6 +38,14 @@ type Group struct {
 	Status       string     `json:"status"`
 	DeletedAt           *time.Time `json:"deleted_at,omitempty"`
 	PendingRequestCount int        `json:"pending_request_count"`
+	// GCC Phase 1 fields
+	GroupType         string          `json:"group_type"`
+	MaxMembers        int             `json:"max_members"`
+	JoinQuestions     json.RawMessage `json:"join_questions,omitempty"`
+	TopicTags         []string        `json:"topic_tags"`
+	CommentPermission string          `json:"comment_permission"`
+	MemberListVisible bool            `json:"member_list_visible"`
+	LinkSharing       bool            `json:"link_sharing"`
 }
 
 type GroupMember struct {
@@ -100,7 +110,8 @@ func New(db *pgxpool.Pool) *Store {
 const groupColumns = `g.id, g.name, g.description, g.avatar_media_id, g.cover_media_id, g.creator_id,
        g.visibility, g.is_archived, g.chat_conversation_id, g.member_count, g.post_count,
        g.created_at, g.updated_at, g.handle, g.category, g.privacy_level, g.join_mode,
-       g.who_can_post, g.who_can_invite, g.location, g.language, g.status, g.deleted_at, g.pending_request_count`
+       g.who_can_post, g.who_can_invite, g.location, g.language, g.status, g.deleted_at, g.pending_request_count,
+       g.group_type, g.max_members, g.join_questions, g.topic_tags, g.comment_permission, g.member_list_visible, g.link_sharing`
 
 func scanGroup(row pgx.Row) (*Group, error) {
 	var g Group
@@ -109,6 +120,7 @@ func scanGroup(row pgx.Row) (*Group, error) {
 		&g.Visibility, &g.IsArchived, &g.ChatConversationID, &g.MemberCount, &g.PostCount,
 		&g.CreatedAt, &g.UpdatedAt, &g.Handle, &g.Category, &g.PrivacyLevel, &g.JoinMode,
 		&g.WhoCanPost, &g.WhoCanInvite, &g.Location, &g.Language, &g.Status, &g.DeletedAt, &g.PendingRequestCount,
+		&g.GroupType, &g.MaxMembers, &g.JoinQuestions, &g.TopicTags, &g.CommentPermission, &g.MemberListVisible, &g.LinkSharing,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -128,6 +140,7 @@ func scanGroups(rows pgx.Rows) ([]Group, error) {
 			&g.Visibility, &g.IsArchived, &g.ChatConversationID, &g.MemberCount, &g.PostCount,
 			&g.CreatedAt, &g.UpdatedAt, &g.Handle, &g.Category, &g.PrivacyLevel, &g.JoinMode,
 			&g.WhoCanPost, &g.WhoCanInvite, &g.Location, &g.Language, &g.Status, &g.DeletedAt, &g.PendingRequestCount,
+			&g.GroupType, &g.MaxMembers, &g.JoinQuestions, &g.TopicTags, &g.CommentPermission, &g.MemberListVisible, &g.LinkSharing,
 		); err != nil {
 			return nil, err
 		}
@@ -149,12 +162,17 @@ func (s *Store) CreateGroup(ctx context.Context, g *Group) error {
 	err = tx.QueryRow(ctx, `
 		INSERT INTO groups (name, description, creator_id, visibility, handle, category,
 		                    privacy_level, join_mode, who_can_post, who_can_invite,
-		                    location, language, status)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		                    location, language, status,
+		                    group_type, max_members, join_questions, topic_tags,
+		                    comment_permission, member_list_visible, link_sharing)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+		        $14, $15, $16, $17, $18, $19, $20)
 		RETURNING id, member_count, post_count, is_archived, created_at, updated_at
 	`, g.Name, g.Description, g.CreatorID, g.Visibility, g.Handle, g.Category,
 		g.PrivacyLevel, g.JoinMode, g.WhoCanPost, g.WhoCanInvite,
-		g.Location, g.Language, g.Status).Scan(
+		g.Location, g.Language, g.Status,
+		g.GroupType, g.MaxMembers, g.JoinQuestions, g.TopicTags,
+		g.CommentPermission, g.MemberListVisible, g.LinkSharing).Scan(
 		&g.ID, &g.MemberCount, &g.PostCount, &g.IsArchived, &g.CreatedAt, &g.UpdatedAt,
 	)
 	if err != nil {
@@ -225,6 +243,51 @@ func (s *Store) UpdateGroupV2(ctx context.Context, id uuid.UUID, name, desc stri
 	`, id, name, desc, avatar, cover, visibility, category, privacyLevel, joinMode,
 		whoCanPost, whoCanInvite, location, language)
 	return err
+}
+
+// UpdateGroupSettings updates GCC Phase 1 settings fields.
+func (s *Store) UpdateGroupSettings(ctx context.Context, id uuid.UUID, groupType string, maxMembers int,
+	joinQuestions json.RawMessage, topicTags []string, commentPermission string, memberListVisible, linkSharing bool) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE groups
+		SET group_type = $2, max_members = $3, join_questions = $4, topic_tags = $5,
+		    comment_permission = $6, member_list_visible = $7, link_sharing = $8,
+		    updated_at = NOW()
+		WHERE id = $1 AND status != 'deleted'
+	`, id, groupType, maxMembers, joinQuestions, topicTags, commentPermission, memberListVisible, linkSharing)
+	return err
+}
+
+// DiscoverPublicGroupsByType returns discoverable groups filtered by group_type.
+func (s *Store) DiscoverPublicGroupsByType(ctx context.Context, groupType string, limit, offset int) ([]Group, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT `+groupColumns+`
+		FROM groups g
+		WHERE g.privacy_level = 'public' AND g.status = 'active' AND g.group_type = $3
+		ORDER BY g.member_count DESC
+		LIMIT $1 OFFSET $2
+	`, limit, offset, groupType)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanGroups(rows)
+}
+
+// GetActiveMemberCount returns the count of active members in a group.
+func (s *Store) GetActiveMemberCount(ctx context.Context, groupID uuid.UUID) (int64, error) {
+	var count int64
+	err := s.db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM group_members WHERE group_id = $1 AND status = 'active'`,
+		groupID).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count active members: %w", err)
+	}
+	return count, nil
 }
 
 // DeleteGroup soft-deletes a group.
@@ -1247,6 +1310,86 @@ func (s *Store) DeleteWikiPage(ctx context.Context, pageID, groupID uuid.UUID) e
 		`DELETE FROM group_wiki_pages WHERE id = $1 AND group_id = $2`,
 		pageID, groupID)
 	return err
+}
+
+// ═══════════════════════════════════════════════════════════
+// Group Member Stats
+// ═══════════════════════════════════════════════════════════
+
+// MemberStats represents a member's activity stats within a group.
+type MemberStats struct {
+	GroupID        uuid.UUID `json:"group_id"`
+	UserID         uuid.UUID `json:"user_id"`
+	PostCount      int       `json:"post_count"`
+	SparksReceived int       `json:"sparks_received"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+// GetMemberStats returns stats for a specific member in a group.
+func (s *Store) GetMemberStats(ctx context.Context, groupID, userID uuid.UUID) (*MemberStats, error) {
+	var ms MemberStats
+	err := s.db.QueryRow(ctx, `
+		SELECT group_id, user_id, post_count, sparks_received, updated_at
+		FROM group_member_stats
+		WHERE group_id = $1 AND user_id = $2
+	`, groupID, userID).Scan(&ms.GroupID, &ms.UserID, &ms.PostCount, &ms.SparksReceived, &ms.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &ms, nil
+}
+
+// IncrementMemberPostCount increments the post count for a member in a group.
+func (s *Store) IncrementMemberPostCount(ctx context.Context, groupID, userID uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO group_member_stats (group_id, user_id, post_count, updated_at)
+		VALUES ($1, $2, 1, NOW())
+		ON CONFLICT (group_id, user_id) DO UPDATE
+		SET post_count = group_member_stats.post_count + 1, updated_at = NOW()
+	`, groupID, userID)
+	return err
+}
+
+// IncrementMemberSparks increments the sparks received for a member in a group.
+func (s *Store) IncrementMemberSparks(ctx context.Context, groupID, userID uuid.UUID, delta int) error {
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO group_member_stats (group_id, user_id, sparks_received, updated_at)
+		VALUES ($1, $2, $3, NOW())
+		ON CONFLICT (group_id, user_id) DO UPDATE
+		SET sparks_received = group_member_stats.sparks_received + $3, updated_at = NOW()
+	`, groupID, userID, delta)
+	return err
+}
+
+// GetTopContributors returns the top contributors for a group ordered by post count.
+func (s *Store) GetTopContributors(ctx context.Context, groupID uuid.UUID, limit int) ([]MemberStats, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 10
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT group_id, user_id, post_count, sparks_received, updated_at
+		FROM group_member_stats
+		WHERE group_id = $1
+		ORDER BY post_count DESC
+		LIMIT $2
+	`, groupID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var stats []MemberStats
+	for rows.Next() {
+		var ms MemberStats
+		if err := rows.Scan(&ms.GroupID, &ms.UserID, &ms.PostCount, &ms.SparksReceived, &ms.UpdatedAt); err != nil {
+			return nil, err
+		}
+		stats = append(stats, ms)
+	}
+	return stats, rows.Err()
 }
 
 // ListBannedMembers returns banned members for a group.

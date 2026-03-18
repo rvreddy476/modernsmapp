@@ -13,13 +13,13 @@ import (
 
 // SubscriptionForRenewal is a lightweight view of subscriptions used by the renewal worker.
 type SubscriptionForRenewal struct {
-	ID                 uuid.UUID
-	SubscriberID       uuid.UUID
-	CreatorID          uuid.UUID
-	TierID             uuid.UUID
-	Price              float64
-	Currency           string
-	CurrentPeriodEnd   time.Time
+	ID               uuid.UUID
+	SubscriberID     uuid.UUID
+	CreatorID        uuid.UUID
+	TierID           uuid.UUID
+	PricePaise       int64
+	Currency         string
+	CurrentPeriodEnd time.Time
 }
 
 // GetSubscriptionsDueForRenewal returns active, auto-renew subscriptions whose
@@ -44,7 +44,7 @@ func (s *Store) GetSubscriptionsDueForRenewal(ctx context.Context, before time.T
 		var sub SubscriptionForRenewal
 		if err := rows.Scan(
 			&sub.ID, &sub.SubscriberID, &sub.CreatorID, &sub.TierID,
-			&sub.Price, &sub.Currency, &sub.CurrentPeriodEnd,
+			&sub.PricePaise, &sub.Currency, &sub.CurrentPeriodEnd,
 		); err != nil {
 			return nil, err
 		}
@@ -121,14 +121,14 @@ func (s *Store) GetCreatorTierWithBillingPeriod(ctx context.Context, tierID uuid
 
 // PayoutRequest is used by the payout worker.
 type PayoutRequest struct {
-	ID              uuid.UUID
-	UserID          uuid.UUID
-	TransactionID   uuid.UUID
-	Amount          float64
-	Currency        string
-	Status          string
-	payoutMethodID  *uuid.UUID
-	RequestedAt     time.Time
+	ID             uuid.UUID
+	UserID         uuid.UUID
+	TransactionID  uuid.UUID
+	AmountPaise    int64
+	Currency       string
+	Status         string
+	payoutMethodID *uuid.UUID
+	RequestedAt    time.Time
 }
 
 // PayoutMethodID returns the payout method ID as string, or empty string if nil.
@@ -158,7 +158,7 @@ func (s *Store) GetPendingPayoutRequests(ctx context.Context, before time.Time) 
 	for rows.Next() {
 		var r PayoutRequest
 		if err := rows.Scan(
-			&r.ID, &r.UserID, &r.TransactionID, &r.Amount, &r.Currency, &r.Status,
+			&r.ID, &r.UserID, &r.TransactionID, &r.AmountPaise, &r.Currency, &r.Status,
 			&r.payoutMethodID, &r.RequestedAt,
 		); err != nil {
 			return nil, err

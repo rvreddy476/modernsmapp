@@ -53,17 +53,38 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
     _professionController.text = user.profession ?? '';
   }
 
+  bool _uploadingAvatar = false;
+  String? _uploadedAvatarId;
+
   Future<void> _pickPhoto() async {
     final picker = ImagePicker();
     final picked = await picker.pickImage(source: ImageSource.gallery);
     if (picked != null) {
-      setState(() => _pickedImageFile = File(picked.path));
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Photo will be saved when upload is implemented'),
-          ),
+      setState(() {
+        _pickedImageFile = File(picked.path);
+        _uploadingAvatar = true;
+      });
+      try {
+        final mediaId = await ref.read(apiClientProvider).uploadMedia(
+          XFile(picked.path),
+          type: 'avatar',
         );
+        if (mounted) {
+          setState(() {
+            _uploadedAvatarId = mediaId;
+            _uploadingAvatar = false;
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Photo uploaded successfully')),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          setState(() => _uploadingAvatar = false);
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Photo upload failed: $e')),
+          );
+        }
       }
     }
   }
@@ -72,12 +93,16 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
     if (!(_formKey.currentState?.validate() ?? false)) return;
     setState(() => _saving = true);
     try {
-      await ref.read(apiClientProvider).put('/v1/profiles/me', data: {
+      final data = <String, dynamic>{
         'display_name': _displayNameController.text.trim(),
         'bio': _bioController.text.trim(),
         'pronouns': _pronounsController.text.trim(),
         'location': _locationController.text.trim(),
-      });
+      };
+      if (_uploadedAvatarId != null && _uploadedAvatarId!.isNotEmpty) {
+        data['avatar_media_id'] = _uploadedAvatarId;
+      }
+      await ref.read(apiClientProvider).put('/v1/profiles/me', data: data);
       ref.invalidate(currentUserProvider);
       if (mounted) context.pop();
     } catch (e) {
@@ -145,20 +170,39 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
                   Center(
                     child: Column(
                       children: [
-                        CircleAvatar(
-                          radius: 48,
-                          backgroundColor: AppColors.bgCard,
-                          backgroundImage: _pickedImageFile != null
-                              ? FileImage(_pickedImageFile!)
-                              : null,
-                          child: _pickedImageFile == null
-                              ? Text(
-                                  user.displayName.isNotEmpty
-                                      ? user.displayName[0].toUpperCase()
-                                      : 'U',
-                                  style: AppTextStyles.h1.copyWith(color: AppColors.textPrimary),
-                                )
-                              : null,
+                        Stack(
+                          children: [
+                            CircleAvatar(
+                              radius: 48,
+                              backgroundColor: AppColors.bgCard,
+                              backgroundImage: _pickedImageFile != null
+                                  ? FileImage(_pickedImageFile!)
+                                  : null,
+                              child: _pickedImageFile == null
+                                  ? Text(
+                                      user.displayName.isNotEmpty
+                                          ? user.displayName[0].toUpperCase()
+                                          : 'U',
+                                      style: AppTextStyles.h1.copyWith(color: AppColors.textPrimary),
+                                    )
+                                  : null,
+                            ),
+                            if (_uploadingAvatar)
+                              const Positioned.fill(
+                                child: CircleAvatar(
+                                  radius: 48,
+                                  backgroundColor: Colors.black38,
+                                  child: SizedBox(
+                                    width: 24,
+                                    height: 24,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                          ],
                         ),
                         const SizedBox(height: 8),
                         TextButton(

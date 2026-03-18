@@ -18,3 +18,5 @@ go.work.sum
 # OS
 .DS_Store
 Thumbs.db
+.claude/worktrees/
+technicaldesign/

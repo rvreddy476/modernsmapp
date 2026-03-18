@@ -42,13 +42,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 		// Storefronts
 		v1.POST("/storefronts", h.CreateStorefront)
-		v1.GET("/storefronts/:handle", h.GetStorefrontByHandle)
 		v1.GET("/storefronts/by-seller/:sellerId", h.GetStorefrontBySeller)
-		v1.PUT("/storefronts/:storefrontId", h.UpdateStorefront)
-		v1.POST("/storefronts/:storefrontId/featured", h.SetFeaturedListings)
-		v1.GET("/storefronts/:storefrontId/featured", h.GetFeaturedListings)
-		v1.POST("/storefronts/:storefrontId/collections", h.CreateCollection)
-		v1.GET("/storefronts/:storefrontId/collections", h.GetCollections)
+		v1.GET("/storefronts/:id", h.GetStorefrontByHandle)
+		v1.PUT("/storefronts/:id", h.UpdateStorefront)
+		v1.POST("/storefronts/:id/featured", h.SetFeaturedListings)
+		v1.GET("/storefronts/:id/featured", h.GetFeaturedListings)
+		v1.POST("/storefronts/:id/collections", h.CreateCollection)
+		v1.GET("/storefronts/:id/collections", h.GetCollections)
 		v1.POST("/collections/:collectionId/listings", h.AddListingToCollection)
 		v1.GET("/collections/:collectionId/listings", h.GetCollectionListings)
 

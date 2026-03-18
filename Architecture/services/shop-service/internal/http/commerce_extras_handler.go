@@ -62,7 +62,7 @@ func (h *Handler) CreateStorefront(c *gin.Context) {
 }
 
 func (h *Handler) GetStorefrontByHandle(c *gin.Context) {
-	handle := c.Param("handle")
+	handle := c.Param("id")
 	sf, err := h.svc.GetStorefrontByHandle(c.Request.Context(), handle)
 	if err != nil {
 		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "storefront not found", nil, nil)

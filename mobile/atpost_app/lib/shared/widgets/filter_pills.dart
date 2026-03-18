@@ -23,31 +23,38 @@ class FilterPills extends StatelessWidget {
         scrollDirection: Axis.horizontal,
         itemBuilder: (context, index) {
           final isActive = index == activeIndex;
-          return GestureDetector(
-            onTap: () => onChanged(index),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 250),
-              curve: Curves.easeOut,
-              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(AppSpacing.radiusXL),
-                gradient: isActive ? AppColors.postbookGradient : null,
-                color: isActive ? null : AppColors.bgCard,
-                border: Border.all(color: AppColors.borderSubtle),
-                boxShadow: isActive
-                    ? const [
-                        BoxShadow(
-                          color: Color(0x4DFF6B35),
-                          blurRadius: 16,
-                          offset: Offset(0, 4),
-                        ),
-                      ]
-                    : const [],
-              ),
-              child: Text(
-                labels[index],
-                style: AppTextStyles.label.copyWith(
-                  color: isActive ? Colors.white : AppColors.textMuted,
+          return Semantics(
+            selected: isActive,
+            label: labels[index],
+            button: true,
+            child: GestureDetector(
+              onTap: () => onChanged(index),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 250),
+                curve: Curves.easeOut,
+                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(AppSpacing.radiusXL),
+                  gradient: isActive ? AppColors.postbookGradient : null,
+                  color: isActive ? null : AppColors.bgCard,
+                  border: Border.all(color: AppColors.borderSubtle),
+                  boxShadow: isActive
+                      ? const [
+                          BoxShadow(
+                            color: Color(0x4DFF6B35),
+                            blurRadius: 16,
+                            offset: Offset(0, 4),
+                          ),
+                        ]
+                      : const [],
+                ),
+                child: ExcludeSemantics(
+                  child: Text(
+                    labels[index],
+                    style: AppTextStyles.label.copyWith(
+                      color: isActive ? Colors.white : AppColors.textMuted,
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -59,4 +66,3 @@ class FilterPills extends StatelessWidget {
     );
   }
 }
-

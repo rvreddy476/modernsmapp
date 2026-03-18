@@ -845,6 +845,64 @@ func (s *Service) GetHandleHistory(ctx context.Context, userID uuid.UUID, limit,
 // Helpers
 // ---------------------------------------------------------------
 
+// ---------------------------------------------------------------
+// Profile Stats
+// ---------------------------------------------------------------
+
+// GetProfileStats returns cached aggregated stats for a user's profile.
+func (s *Service) GetProfileStats(ctx context.Context, userID uuid.UUID) (*store.ProfileStats, error) {
+	cacheKey := fmt.Sprintf("profile:stats:%s", userID)
+	val, err := s.rdb.Get(ctx, cacheKey).Result()
+	if err == nil {
+		var ps store.ProfileStats
+		if err := json.Unmarshal([]byte(val), &ps); err == nil {
+			return &ps, nil
+		}
+	}
+
+	ps, err := s.store.GetProfileStats(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if ps == nil {
+		// If no stats row exists, recalculate from profile
+		ps, err = s.store.RecalculateProfileStats(ctx, userID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to recalculate profile stats: %w", err)
+		}
+	}
+
+	// Cache for 5 minutes
+	go func() {
+		data, err := json.Marshal(ps)
+		if err != nil {
+			return
+		}
+		s.rdb.Set(context.Background(), cacheKey, data, 5*time.Minute)
+	}()
+
+	return ps, nil
+}
+
+// IncrementProfileStat increments a stat field and invalidates cache.
+func (s *Service) IncrementProfileStat(ctx context.Context, userID uuid.UUID, field string, delta int) error {
+	if err := s.store.IncrementProfileStat(ctx, userID, field, delta); err != nil {
+		return err
+	}
+	s.rdb.Del(ctx, fmt.Sprintf("profile:stats:%s", userID))
+	return nil
+}
+
+// RecalculateProfileStats recounts from source tables and updates cache.
+func (s *Service) RecalculateProfileStats(ctx context.Context, userID uuid.UUID) (*store.ProfileStats, error) {
+	ps, err := s.store.RecalculateProfileStats(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	s.rdb.Del(ctx, fmt.Sprintf("profile:stats:%s", userID))
+	return ps, nil
+}
+
 func isValidModule(module string) bool {
 	return module == "postbook" || module == "posttube" || module == "postgram"
 }

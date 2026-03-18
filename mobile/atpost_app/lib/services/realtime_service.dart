@@ -178,7 +178,6 @@ final realtimeServiceProvider = Provider<RealtimeService>((ref) {
   return service;
 });
 
-/// Legacy provider for backward compatibility with CallService.
-final signalingServiceProvider = Provider<RealtimeService>((ref) {
-  return ref.watch(realtimeServiceProvider);
-});
+// NOTE: signalingServiceProvider has been removed from here to resolve
+// duplicate provider conflict. The auth-wired version is defined in
+// signaling_service.dart and is used by CallService.

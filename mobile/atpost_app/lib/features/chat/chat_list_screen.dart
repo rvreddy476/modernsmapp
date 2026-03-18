@@ -61,6 +61,7 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
                 children: [
                   GlassIconButton(
                     icon: Icons.arrow_back_ios_new,
+                    tooltip: 'Back',
                     onPressed: () => context.pop(),
                   ),
                   const SizedBox(width: 8),
@@ -68,10 +69,11 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
                   const Spacer(),
                   GlassIconButton(
                     icon: Icons.search,
+                    tooltip: 'Search',
                     onPressed: () => setState(() => _showSearch = !_showSearch),
                   ),
                   const SizedBox(width: 8),
-                  const GlassIconButton(icon: Icons.tune),
+                  const GlassIconButton(icon: Icons.tune, tooltip: 'Filter'),
                 ],
               ),
               AnimatedCrossFade(

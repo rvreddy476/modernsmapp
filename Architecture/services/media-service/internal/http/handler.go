@@ -2,6 +2,7 @@ package http
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/atpost/media-service/internal/service"
 	"github.com/atpost/shared/api"
@@ -26,6 +27,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, optionalAuthMW gin.Handl
 		v1.DELETE("/:mediaId", authMW, h.DeleteMedia)
 		v1.PATCH("/:mediaId/alt-text", authMW, h.UpdateAltText)
 		v1.POST("/upload/presigned", authMW, h.GetPresignedUploadURL)
+
+		// Cover frame extraction
+		v1.POST("/:mediaId/extract-frame", authMW, h.ExtractFrame)
 
 		// Read endpoints — public (media URLs need to be accessible for rendering)
 		v1.POST("/batch", h.BatchMediaURLs)
@@ -71,7 +75,18 @@ func (h *Handler) InitUpload(c *gin.Context) {
 
 	res, err := h.svc.InitUpload(c.Request.Context(), userID, req.FileType, subtype, req.MimeType, req.FileSizeBytes, req.AltText)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		msg := err.Error()
+		switch {
+		case strings.Contains(msg, "file too large"):
+			api.Error(c.Writer, http.StatusRequestEntityTooLarge, "FILE_TOO_LARGE", msg, nil, nil)
+		case strings.Contains(msg, "invalid video type") || strings.Contains(msg, "invalid image type"):
+			api.Error(c.Writer, http.StatusUnsupportedMediaType, "UNSUPPORTED_MEDIA_TYPE", msg, nil, nil)
+		case strings.Contains(msg, "upload rate limit exceeded"):
+			c.Header("Retry-After", "3600")
+			api.Error(c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", msg, nil, nil)
+		default:
+			api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", msg, nil, nil)
+		}
 		return
 	}
 
@@ -343,5 +358,57 @@ func (h *Handler) GetPresignedUploadURL(c *gin.Context) {
 		"media_id":   res.MediaID,
 		"object_key": res.ObjectKey,
 		"expires_at": res.ExpiresAt,
+	}, nil)
+}
+
+// ─── Cover Frame Extraction ────────────────────────────────────────
+
+type ExtractFrameRequest struct {
+	TimestampMs int `json:"timestamp_ms"`
+}
+
+// ExtractFrame extracts a single frame from a video at the given timestamp.
+// Currently returns a stub response; actual FFmpeg extraction requires the
+// binary in the container image.
+func (h *Handler) ExtractFrame(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	mediaID, err := uuid.Parse(c.Param("mediaId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid media ID", nil, nil)
+		return
+	}
+
+	var req ExtractFrameRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		return
+	}
+
+	// Verify the media exists and is owned by the caller
+	media, err := h.svc.GetMedia(c.Request.Context(), mediaID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found", nil, nil)
+		return
+	}
+	if media.UploaderID != userID {
+		api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "you do not own this media", nil, nil)
+		return
+	}
+	if media.FileType != "video" {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "frame extraction only supported for video media", nil, nil)
+		return
+	}
+
+	// Stub: return the original media as cover for now
+	// TODO: implement FFmpeg frame extraction when binary is available in container
+	api.JSON(c.Writer, http.StatusOK, map[string]any{
+		"media_id":     mediaID.String(),
+		"timestamp_ms": req.TimestampMs,
+		"status":       "stub_extraction",
 	}, nil)
 }

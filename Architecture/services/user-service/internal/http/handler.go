@@ -74,28 +74,20 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	}
 
 	// Channels
-	channels := r.Group("/v1/channels")
-	{
-		channels.GET("/:handle", h.GetChannel)
-	}
 	myChannels := r.Group("/v1/users/me/channels")
 	{
 		myChannels.POST("", h.CreateChannel)
 		myChannels.GET("", h.ListMyChannels)
 	}
-	channelByID := r.Group("/v1/channels")
+	channelByID := r.Group("/v1/channels/:id")
 	{
-		channelByID.PATCH("/:id", h.UpdateChannel)
-		channelByID.DELETE("/:id", h.DeleteChannel)
-	}
-
-	// Channel Subscriptions
-	channelSubs := r.Group("/v1/channels/:channelId")
-	{
-		channelSubs.POST("/subscribe", h.SubscribeToChannel)
-		channelSubs.DELETE("/subscribe", h.UnsubscribeFromChannel)
-		channelSubs.GET("/subscription", h.GetChannelSubscriptionStatus)
-		channelSubs.GET("/subscribers", h.ListChannelSubscribers)
+		channelByID.GET("", h.GetChannel)
+		channelByID.PATCH("", h.UpdateChannel)
+		channelByID.DELETE("", h.DeleteChannel)
+		channelByID.POST("/subscribe", h.SubscribeToChannel)
+		channelByID.DELETE("/subscribe", h.UnsubscribeFromChannel)
+		channelByID.GET("/subscription", h.GetChannelSubscriptionStatus)
+		channelByID.GET("/subscribers", h.ListChannelSubscribers)
 	}
 
 	// User subscriptions list
@@ -724,7 +716,7 @@ func (h *Handler) CreateChannel(c *gin.Context) {
 }
 
 func (h *Handler) GetChannel(c *gin.Context) {
-	handle := c.Param("handle")
+	handle := c.Param("id")
 	detail, err := h.svc.GetChannel(c.Request.Context(), handle)
 	if err != nil {
 		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Channel not found", nil, nil)

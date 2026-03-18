@@ -125,6 +125,27 @@ func (s *MediaAssetStore) AreAllRenditionsReady(ctx context.Context, mediaID uui
 	return count == 0, nil
 }
 
+// UpdateRenditionStatus sets the status of a rendition directly.
+func (s *MediaAssetStore) UpdateRenditionStatus(ctx context.Context, id uuid.UUID, status string) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE media_renditions SET status = $1, updated_at = NOW()
+		WHERE id = $2
+	`, status, id)
+	return err
+}
+
+// IncrementRetry increments the retry_count of a rendition and resets its status to 'pending'.
+func (s *MediaAssetStore) IncrementRetry(ctx context.Context, id uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE media_renditions SET
+			retry_count = retry_count + 1,
+			status = CASE WHEN retry_count + 1 < max_retries THEN 'pending' ELSE 'failed' END,
+			updated_at = NOW()
+		WHERE id = $1
+	`, id)
+	return err
+}
+
 func scanRenditions(rows pgx.Rows) ([]MediaRendition, error) {
 	var renditions []MediaRendition
 	for rows.Next() {

@@ -88,8 +88,8 @@ func (s *Service) RemovePayoutMethod(ctx context.Context, userID, methodID uuid.
 
 // RequestPayout validates the request and creates a payout transaction.
 // Validates: wallet exists, not frozen, sufficient balance.
-func (s *Service) RequestPayout(ctx context.Context, userID uuid.UUID, amount float64, payoutMethodID uuid.UUID) (*postgres.Transaction, error) {
-	if amount <= 0 || amount > maxAmountMinorUnits {
+func (s *Service) RequestPayout(ctx context.Context, userID uuid.UUID, amountPaise int64, payoutMethodID uuid.UUID) (*postgres.Transaction, error) {
+	if amountPaise <= 0 || amountPaise > maxAmountPaise {
 		return nil, fmt.Errorf("amount out of valid range: %w", ErrInvalidAmount)
 	}
 
@@ -104,11 +104,11 @@ func (s *Service) RequestPayout(ctx context.Context, userID uuid.UUID, amount fl
 	if wallet.IsFrozen {
 		return nil, fmt.Errorf("WALLET_FROZEN")
 	}
-	if wallet.Balance < amount {
+	if wallet.BalancePaise < amountPaise {
 		return nil, fmt.Errorf("INSUFFICIENT_BALANCE")
 	}
 
-	return s.store.RequestPayout(ctx, userID, amount, payoutMethodID)
+	return s.store.RequestPayout(ctx, userID, amountPaise, payoutMethodID)
 }
 
 // ---------------------------------------------------------------------------
@@ -137,7 +137,7 @@ func (s *Service) UpdateTier(ctx context.Context, t *postgres.CreatorTier) error
 // ErrInvalidAmount is returned when an amount is out of valid range.
 var ErrInvalidAmount = errors.New("invalid amount")
 
-const maxAmountMinorUnits = 100_000_000 // 1,000,000.00 in minor units
+const maxAmountPaise int64 = 100_000_000 // 1,000,000.00 INR in paise
 
 // Subscribe validates the tier exists and is active, then creates the subscription.
 // Charges the subscriber wallet and credits the creator wallet.
@@ -171,7 +171,7 @@ func (s *Service) Subscribe(ctx context.Context, subscriberID, creatorID uuid.UU
 	}
 
 	// Amount bounds validation
-	if tier.Price <= 0 || tier.Price > maxAmountMinorUnits {
+	if tier.PricePaise <= 0 || tier.PricePaise > maxAmountPaise {
 		return nil, fmt.Errorf("amount out of valid range: %w", ErrInvalidAmount)
 	}
 
@@ -194,7 +194,7 @@ func (s *Service) Subscribe(ctx context.Context, subscriberID, creatorID uuid.UU
 		return nil, err
 	}
 
-	return s.store.Subscribe(ctx, subscriberID, creatorID, tier.ID, tier.Name, tier.Price, tier.Currency, idempotencyKey)
+	return s.store.Subscribe(ctx, subscriberID, creatorID, tier.ID, tier.Name, tier.PricePaise, tier.Currency, idempotencyKey)
 }
 
 // Unsubscribe cancels an active subscription.
@@ -269,11 +269,11 @@ func (s *Service) ProcessViewEarnings(ctx context.Context, creatorID uuid.UUID, 
 		return fmt.Errorf("query view_score_total: %w", err)
 	}
 
-	// Calculate earnings: 1 mill per 1000 view score = 0.001 per view score.
-	const earningsRate = 0.001
-	earnings := viewScoreTotal * earningsRate
+	// Calculate earnings in paise: 1 mill per 1000 view score = 0.1 paise per view score.
+	// Using integer math: earningsPaise = viewScoreTotal / 10 (rounded down).
+	earningsPaise := int64(viewScoreTotal / 10)
 
-	if earnings <= 0 {
+	if earningsPaise <= 0 {
 		return nil
 	}
 
@@ -288,7 +288,7 @@ func (s *Service) ProcessViewEarnings(ctx context.Context, creatorID uuid.UUID, 
 		ID:          uuid.New(),
 		WalletID:    wallet.UserID,
 		Type:        "view_earnings",
-		Amount:      earnings,
+		AmountPaise: earningsPaise,
 		Currency:    wallet.Currency,
 		Description: fmt.Sprintf("View earnings for %s period (%d days, %.2f view score)", period, days, viewScoreTotal),
 		CreatedAt:   time.Now(),
@@ -298,6 +298,59 @@ func (s *Service) ProcessViewEarnings(ctx context.Context, creatorID uuid.UUID, 
 	}
 
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Ledger
+// ---------------------------------------------------------------------------
+
+// CreateLedgerEntry creates a double-entry ledger entry between two accounts.
+// It ensures both accounts exist before inserting the entry.
+func (s *Service) CreateLedgerEntry(ctx context.Context, debitOwnerID uuid.UUID, debitAccountType string, creditOwnerID uuid.UUID, creditAccountType string, amountPaise int64, currency, referenceType string, referenceID *uuid.UUID, idempotencyKey, description string) error {
+	if amountPaise <= 0 {
+		return fmt.Errorf("ledger entry amount must be positive: %w", ErrInvalidAmount)
+	}
+
+	debitAccount, err := s.store.EnsureAccount(ctx, debitOwnerID, debitAccountType)
+	if err != nil {
+		return fmt.Errorf("ensure debit account: %w", err)
+	}
+
+	creditAccount, err := s.store.EnsureAccount(ctx, creditOwnerID, creditAccountType)
+	if err != nil {
+		return fmt.Errorf("ensure credit account: %w", err)
+	}
+
+	entry := &postgres.LedgerEntry{
+		DebitAccountID:  debitAccount.ID,
+		CreditAccountID: creditAccount.ID,
+		AmountPaise:     amountPaise,
+		Currency:        currency,
+		ReferenceType:   referenceType,
+		ReferenceID:     referenceID,
+		IdempotencyKey:  idempotencyKey,
+		Description:     description,
+	}
+	return s.store.InsertLedgerEntry(ctx, entry)
+}
+
+// ---------------------------------------------------------------------------
+// Admin wallet operations
+// ---------------------------------------------------------------------------
+
+// FreezeWallet freezes a user's wallet.
+func (s *Service) FreezeWallet(ctx context.Context, userID uuid.UUID) error {
+	return s.store.FreezeWallet(ctx, userID)
+}
+
+// UnfreezeWallet unfreezes a user's wallet.
+func (s *Service) UnfreezeWallet(ctx context.Context, userID uuid.UUID) error {
+	return s.store.UnfreezeWallet(ctx, userID)
+}
+
+// RebuildWallet recalculates a wallet balance from ledger entries.
+func (s *Service) RebuildWallet(ctx context.Context, userID uuid.UUID) (int64, error) {
+	return s.store.RebuildWalletFromLedger(ctx, userID)
 }
 
 // ---------------------------------------------------------------------------

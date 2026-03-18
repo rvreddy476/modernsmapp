@@ -68,6 +68,44 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.PATCH("/fundraisers/:fundraiserId/pause", h.PauseFundraiser)
 		v1.POST("/fundraisers/:fundraiserId/donate", h.Donate)
 		v1.GET("/fundraisers/:fundraiserId/donations", h.GetDonationsByFundraiser)
+
+		// Disputes
+		v1.POST("/disputes", h.CreateDispute)
+		v1.GET("/disputes", h.ListUserDisputes)
+		v1.GET("/disputes/:id", h.GetDisputeByID)
+		v1.PATCH("/disputes/:id", h.ResolveDisputeAdmin)
+
+		// Refunds (admin)
+		v1.POST("/refunds", h.ProcessRefund)
+
+		// Fraud reviews (admin)
+		v1.GET("/admin/fraud-reviews", h.ListPendingFraudReviews)
+		v1.PATCH("/admin/fraud-reviews/:id", h.ResolveFraudReviewAdmin)
+
+		// Admin wallet operations
+		v1.POST("/admin/wallet/:userId/freeze", h.FreezeWallet)
+		v1.POST("/admin/wallet/:userId/unfreeze", h.UnfreezeWallet)
+		v1.POST("/admin/wallet/:userId/rebuild", h.RebuildWallet)
+
+		// Subscription lifecycle
+		v1.POST("/subscriptions/:id/pause", h.PauseSubscription)
+		v1.POST("/subscriptions/:id/resume", h.ResumeSubscription)
+		v1.POST("/subscriptions/:id/cancel", h.CancelSubscription)
+		v1.POST("/subscriptions/:id/upgrade", h.UpgradeSubscription)
+		v1.GET("/subscriptions/:id/events", h.GetSubscriptionEvents)
+
+		// Tax profile & compliance
+		v1.POST("/tax-profile", h.SaveTaxProfile)
+		v1.GET("/tax-profile", h.GetTaxProfile)
+		v1.GET("/tds-summary/:year", h.GetTDSSummary)
+		v1.GET("/invoices", h.ListInvoices)
+
+		// Payout statements
+		v1.GET("/payout-statements", h.ListPayoutStatements)
+		v1.GET("/payout-statements/:id", h.GetPayoutStatement)
+
+		// Payout webhooks (no auth — signature verified externally)
+		v1.POST("/webhooks/payout", h.HandlePayoutWebhook)
 	}
 }
 
@@ -227,8 +265,8 @@ func (h *Handler) GetPayoutMethods(c *gin.Context) {
 // ---------------------------------------------------------------------------
 
 type RequestPayoutRequest struct {
-	Amount         float64 `json:"amount" binding:"required"`
-	PayoutMethodID string  `json:"payout_method_id" binding:"required"`
+	AmountPaise    int64  `json:"amount_paise" binding:"required"`
+	PayoutMethodID string `json:"payout_method_id" binding:"required"`
 }
 
 func (h *Handler) RequestPayout(c *gin.Context) {
@@ -249,7 +287,7 @@ func (h *Handler) RequestPayout(c *gin.Context) {
 		return
 	}
 
-	txn, err := h.svc.RequestPayout(c.Request.Context(), userID, req.Amount, payoutMethodID)
+	txn, err := h.svc.RequestPayout(c.Request.Context(), userID, req.AmountPaise, payoutMethodID)
 	if err != nil {
 		switch err.Error() {
 		case "INVALID_AMOUNT":
@@ -341,10 +379,10 @@ func (h *Handler) SaveTaxInfo(c *gin.Context) {
 // ---------------------------------------------------------------------------
 
 type CreateTierRequest struct {
-	Name     string          `json:"name" binding:"required"`
-	Price    float64         `json:"price" binding:"required"`
-	Currency string          `json:"currency"`
-	Perks    json.RawMessage `json:"perks"`
+	Name       string          `json:"name" binding:"required"`
+	PricePaise int64           `json:"price_paise" binding:"required"`
+	Currency   string          `json:"currency"`
+	Perks      json.RawMessage `json:"perks"`
 }
 
 func (h *Handler) GetMyTiers(c *gin.Context) {
@@ -383,12 +421,12 @@ func (h *Handler) CreateTier(c *gin.Context) {
 	}
 
 	t := &postgres.CreatorTier{
-		CreatorID: userID,
-		Name:      req.Name,
-		Price:     req.Price,
-		Currency:  currency,
-		Perks:     req.Perks,
-		IsActive:  true,
+		CreatorID:  userID,
+		Name:       req.Name,
+		PricePaise: req.PricePaise,
+		Currency:   currency,
+		Perks:      req.Perks,
+		IsActive:   true,
 	}
 
 	if err := h.svc.CreateTier(c.Request.Context(), t); err != nil {
@@ -400,11 +438,11 @@ func (h *Handler) CreateTier(c *gin.Context) {
 }
 
 type UpdateTierRequest struct {
-	Name     string          `json:"name"`
-	Price    float64         `json:"price"`
-	Currency string          `json:"currency"`
-	Perks    json.RawMessage `json:"perks"`
-	IsActive *bool           `json:"is_active"`
+	Name       string          `json:"name"`
+	PricePaise int64           `json:"price_paise"`
+	Currency   string          `json:"currency"`
+	Perks      json.RawMessage `json:"perks"`
+	IsActive   *bool           `json:"is_active"`
 }
 
 func (h *Handler) UpdateTier(c *gin.Context) {
@@ -431,13 +469,13 @@ func (h *Handler) UpdateTier(c *gin.Context) {
 	}
 
 	t := &postgres.CreatorTier{
-		ID:        tierID,
-		CreatorID: userID,
-		Name:      req.Name,
-		Price:     req.Price,
-		Currency:  req.Currency,
-		Perks:     req.Perks,
-		IsActive:  isActive,
+		ID:         tierID,
+		CreatorID:  userID,
+		Name:       req.Name,
+		PricePaise: req.PricePaise,
+		Currency:   req.Currency,
+		Perks:      req.Perks,
+		IsActive:   isActive,
 	}
 
 	if err := h.svc.UpdateTier(c.Request.Context(), t); err != nil {

@@ -3,6 +3,8 @@ go 1.24.0
 use (
 	./services/ai-service
 	./services/admin-service
+	./services/channel-service
+	./services/community-service
 	./services/analytics-service
 	./services/api-gateway
 	./services/feature-flag-service

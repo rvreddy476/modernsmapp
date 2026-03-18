@@ -76,11 +76,13 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
                       const Spacer(),
                       BadgeIconButton(
                         icon: Icons.search,
+                        tooltip: 'Search',
                         onPressed: () => context.push('/discover'),
                       ),
                       const SizedBox(width: 8),
                       BadgeIconButton(
                         icon: Icons.notifications_none,
+                        tooltip: 'Notifications',
                         badgeCount:
                             ref
                                 .watch(unreadNotificationCountProvider)
@@ -90,6 +92,7 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
                       const SizedBox(width: 8),
                       BadgeIconButton(
                         icon: Icons.chat_bubble_outline,
+                        tooltip: 'Messages',
                         badgeCount:
                             ref.watch(unreadChatCountProvider).valueOrNull ?? 0,
                         onPressed: () => context.push('/chat'),

@@ -1151,6 +1151,101 @@ func (s *Store) GetProfilesByIDs(ctx context.Context, ids []uuid.UUID) ([]Profil
 	return profiles, rows.Err()
 }
 
+// ---------------------------------------------------------------
+// Profile Stats Cache
+// ---------------------------------------------------------------
+
+// ProfileStats represents cached aggregated stats for a user's profile.
+type ProfileStats struct {
+	UserID         uuid.UUID `json:"user_id"`
+	PostCount      int       `json:"post_count"`
+	FollowerCount  int       `json:"follower_count"`
+	FollowingCount int       `json:"following_count"`
+	FriendCount    int       `json:"friend_count"`
+	TotalSparks    int       `json:"total_sparks"`
+	IsCreator      bool      `json:"is_creator"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+// GetProfileStats returns cached stats for a user.
+func (s *Store) GetProfileStats(ctx context.Context, userID uuid.UUID) (*ProfileStats, error) {
+	var ps ProfileStats
+	err := s.db.QueryRow(ctx, `
+		SELECT user_id, post_count, follower_count, following_count, friend_count, total_sparks, is_creator, updated_at
+		FROM profile.profile_stats
+		WHERE user_id = $1
+	`, userID).Scan(&ps.UserID, &ps.PostCount, &ps.FollowerCount, &ps.FollowingCount,
+		&ps.FriendCount, &ps.TotalSparks, &ps.IsCreator, &ps.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &ps, nil
+}
+
+// IncrementProfileStat increments a single stat field by delta using an upsert.
+// field must be one of: post_count, follower_count, following_count, friend_count, total_sparks.
+func (s *Store) IncrementProfileStat(ctx context.Context, userID uuid.UUID, field string, delta int) error {
+	// Validate field name to prevent SQL injection
+	allowed := map[string]bool{
+		"post_count": true, "follower_count": true, "following_count": true,
+		"friend_count": true, "total_sparks": true,
+	}
+	if !allowed[field] {
+		return errors.New("invalid stat field: " + field)
+	}
+
+	query := `
+		INSERT INTO profile.profile_stats (user_id, ` + field + `, updated_at)
+		VALUES ($1, $2, NOW())
+		ON CONFLICT (user_id) DO UPDATE
+		SET ` + field + ` = GREATEST(profile.profile_stats.` + field + ` + $2, 0), updated_at = NOW()
+	`
+	_, err := s.db.Exec(ctx, query, userID, delta)
+	return err
+}
+
+// SetCreatorFlag marks a user as a creator or not.
+func (s *Store) SetCreatorFlag(ctx context.Context, userID uuid.UUID, isCreator bool) error {
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO profile.profile_stats (user_id, is_creator, updated_at)
+		VALUES ($1, $2, NOW())
+		ON CONFLICT (user_id) DO UPDATE
+		SET is_creator = $2, updated_at = NOW()
+	`, userID, isCreator)
+	return err
+}
+
+// RecalculateProfileStats recounts stats from the canonical profiles table and writes them to profile_stats.
+func (s *Store) RecalculateProfileStats(ctx context.Context, userID uuid.UUID) (*ProfileStats, error) {
+	// Read the current profile counts as the source of truth
+	p, err := s.GetProfile(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if p == nil {
+		return nil, errors.New("profile not found")
+	}
+
+	var ps ProfileStats
+	err = s.db.QueryRow(ctx, `
+		INSERT INTO profile.profile_stats (user_id, post_count, follower_count, following_count, friend_count, updated_at)
+		VALUES ($1, $2, $3, $4, $5, NOW())
+		ON CONFLICT (user_id) DO UPDATE
+		SET post_count = $2, follower_count = $3, following_count = $4, friend_count = $5, updated_at = NOW()
+		RETURNING user_id, post_count, follower_count, following_count, friend_count, total_sparks, is_creator, updated_at
+	`, userID, p.PostCount, p.FollowerCount, p.FollowingCount, p.FriendCount).Scan(
+		&ps.UserID, &ps.PostCount, &ps.FollowerCount, &ps.FollowingCount,
+		&ps.FriendCount, &ps.TotalSparks, &ps.IsCreator, &ps.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &ps, nil
+}
+
 // CountMutualFriends counts how many accepted friends viewerID and targetID have in common.
 func (s *Store) CountMutualFriends(ctx context.Context, userA, userB uuid.UUID) (int, error) {
 	var count int

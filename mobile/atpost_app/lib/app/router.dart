@@ -1,3 +1,9 @@
+import 'package:atpost_app/features/channels/channels_list_screen.dart';
+import 'package:atpost_app/features/channels/channel_detail_screen.dart';
+import 'package:atpost_app/features/channels/create_channel_screen.dart';
+import 'package:atpost_app/features/communities/communities_list_screen.dart';
+import 'package:atpost_app/features/communities/community_detail_screen.dart';
+import 'package:atpost_app/features/communities/create_community_screen.dart';
 import 'package:atpost_app/features/auth/forgot_password_screen.dart';
 import 'package:atpost_app/features/create/upload_progress_screen.dart';
 import 'package:atpost_app/features/posttube/posttube_upload_screen.dart';
@@ -253,6 +259,36 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         path: '/search/results',
         builder: (context, state) =>
             SearchResultsScreen(query: state.uri.queryParameters['q'] ?? ''),
+      ),
+
+      // --- Channels ---
+      GoRoute(
+        path: '/channels',
+        builder: (context, state) => const ChannelsListScreen(),
+      ),
+      GoRoute(
+        path: '/channels/create',
+        builder: (context, state) => const CreateChannelScreen(),
+      ),
+      GoRoute(
+        path: '/channels/:channelId',
+        builder: (context, state) =>
+            ChannelDetailScreen(channelId: state.pathParameters['channelId']!),
+      ),
+
+      // --- Communities ---
+      GoRoute(
+        path: '/communities',
+        builder: (context, state) => const CommunitiesListScreen(),
+      ),
+      GoRoute(
+        path: '/communities/create',
+        builder: (context, state) => const CreateCommunityScreen(),
+      ),
+      GoRoute(
+        path: '/communities/:communityId',
+        builder: (context, state) => CommunityDetailScreen(
+            communityId: state.pathParameters['communityId']!),
       ),
 
       // --- Groups ---

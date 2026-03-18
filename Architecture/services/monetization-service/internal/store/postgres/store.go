@@ -21,14 +21,14 @@ var ErrInsufficientFunds = errors.New("insufficient funds")
 
 // Wallet represents a user's monetization wallet.
 type Wallet struct {
-	UserID           uuid.UUID `json:"user_id"`
-	Balance          float64   `json:"balance"`
-	LifetimeEarnings float64   `json:"lifetime_earnings"`
-	PendingPayout    float64   `json:"pending_payout"`
-	Currency         string    `json:"currency"`
-	IsFrozen         bool      `json:"is_frozen"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	UserID               uuid.UUID `json:"user_id"`
+	BalancePaise         int64     `json:"balance_paise"`
+	LifetimeEarningsPaise int64    `json:"lifetime_earnings_paise"`
+	PendingPayoutPaise   int64     `json:"pending_payout_paise"`
+	Currency             string    `json:"currency"`
+	IsFrozen             bool      `json:"is_frozen"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
 }
 
 // Transaction represents a financial transaction on a wallet.
@@ -36,7 +36,7 @@ type Transaction struct {
 	ID            uuid.UUID `json:"id"`
 	WalletID      uuid.UUID `json:"wallet_id"`
 	Type          string    `json:"type"` // earning, payout, refund, adjustment, subscription_payment
-	Amount        float64   `json:"amount"`
+	AmountPaise   int64     `json:"amount_paise"`
 	Currency      string    `json:"currency"`
 	Status        string    `json:"status"` // pending, completed, failed
 	ReferenceType string    `json:"reference_type,omitempty"`
@@ -64,7 +64,7 @@ type Subscription struct {
 	CreatorID          uuid.UUID `json:"creator_id"`
 	TierID             uuid.UUID `json:"tier_id"`
 	TierName           string    `json:"tier_name"`
-	Price              float64   `json:"price"`
+	PricePaise         int64     `json:"price_paise"`
 	Currency           string    `json:"currency"`
 	Status             string    `json:"status"` // active, cancelled, expired, paused
 	CurrentPeriodStart time.Time `json:"current_period_start"`
@@ -78,7 +78,7 @@ type CreatorTier struct {
 	ID              uuid.UUID       `json:"id"`
 	CreatorID       uuid.UUID       `json:"creator_id"`
 	Name            string          `json:"name"`
-	Price           float64         `json:"price"`
+	PricePaise      int64           `json:"price_paise"`
 	Currency        string          `json:"currency"`
 	Perks           json.RawMessage `json:"perks"`
 	SubscriberCount int             `json:"subscriber_count"`
@@ -118,6 +118,30 @@ type Dashboard struct {
 	Tiers        []CreatorTier `json:"tiers"`
 }
 
+// Account represents a double-entry ledger account.
+type Account struct {
+	ID           uuid.UUID `json:"id"`
+	OwnerID      uuid.UUID `json:"owner_id"`
+	AccountType  string    `json:"account_type"`
+	BalancePaise int64     `json:"balance_paise"`
+	Currency     string    `json:"currency"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+// LedgerEntry represents an immutable double-entry ledger entry.
+type LedgerEntry struct {
+	ID              uuid.UUID  `json:"id"`
+	DebitAccountID  uuid.UUID  `json:"debit_account_id"`
+	CreditAccountID uuid.UUID  `json:"credit_account_id"`
+	AmountPaise     int64      `json:"amount_paise"`
+	Currency        string     `json:"currency"`
+	ReferenceType   string     `json:"reference_type"`
+	ReferenceID     *uuid.UUID `json:"reference_id,omitempty"`
+	IdempotencyKey  string     `json:"idempotency_key,omitempty"`
+	Description     string     `json:"description"`
+	CreatedAt       time.Time  `json:"created_at"`
+}
+
 // ---------------------------------------------------------------------------
 // Store
 // ---------------------------------------------------------------------------
@@ -142,7 +166,7 @@ func (s *Store) GetWallet(ctx context.Context, userID uuid.UUID) (*Wallet, error
 		FROM wallets
 		WHERE user_id = $1
 	`, userID).Scan(
-		&w.UserID, &w.Balance, &w.LifetimeEarnings, &w.PendingPayout,
+		&w.UserID, &w.BalancePaise, &w.LifetimeEarningsPaise, &w.PendingPayoutPaise,
 		&w.Currency, &w.IsFrozen, &w.CreatedAt, &w.UpdatedAt,
 	)
 	if err != nil {
@@ -191,7 +215,7 @@ func (s *Store) GetTransactions(ctx context.Context, userID uuid.UUID, cursor ti
 	for rows.Next() {
 		var t Transaction
 		if err := rows.Scan(
-			&t.ID, &t.WalletID, &t.Type, &t.Amount, &t.Currency,
+			&t.ID, &t.WalletID, &t.Type, &t.AmountPaise, &t.Currency,
 			&t.Status, &t.ReferenceType, &t.ReferenceID, &t.Description, &t.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -219,7 +243,7 @@ func (s *Store) GetTransactionsByType(ctx context.Context, userID uuid.UUID, txT
 	for rows.Next() {
 		var t Transaction
 		if err := rows.Scan(
-			&t.ID, &t.WalletID, &t.Type, &t.Amount, &t.Currency,
+			&t.ID, &t.WalletID, &t.Type, &t.AmountPaise, &t.Currency,
 			&t.Status, &t.ReferenceType, &t.ReferenceID, &t.Description, &t.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -239,7 +263,7 @@ func (s *Store) CreateTransaction(ctx context.Context, t *Transaction) error {
 	_, err := s.db.Exec(ctx, `
 		INSERT INTO transactions (id, wallet_id, type, amount, currency, status, reference_type, reference_id, description, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-	`, t.ID, t.WalletID, t.Type, t.Amount, t.Currency, t.Status,
+	`, t.ID, t.WalletID, t.Type, t.AmountPaise, t.Currency, t.Status,
 		t.ReferenceType, t.ReferenceID, t.Description, t.CreatedAt)
 	return err
 }
@@ -310,7 +334,7 @@ func (s *Store) RemovePayoutMethod(ctx context.Context, userID, methodID uuid.UU
 
 // RequestPayout creates a payout transaction and deducts from the wallet's pending_payout.
 // This is done within a DB transaction for atomicity.
-func (s *Store) RequestPayout(ctx context.Context, userID uuid.UUID, amount float64, payoutMethodID uuid.UUID) (*Transaction, error) {
+func (s *Store) RequestPayout(ctx context.Context, userID uuid.UUID, amountPaise int64, payoutMethodID uuid.UUID) (*Transaction, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -318,7 +342,7 @@ func (s *Store) RequestPayout(ctx context.Context, userID uuid.UUID, amount floa
 	defer tx.Rollback(ctx)
 
 	// Lock the wallet row
-	var balance, pending float64
+	var balance, pending int64
 	var frozen bool
 	err = tx.QueryRow(ctx, `
 		SELECT balance, pending_payout, is_frozen
@@ -335,7 +359,7 @@ func (s *Store) RequestPayout(ctx context.Context, userID uuid.UUID, amount floa
 	if frozen {
 		return nil, errors.New("WALLET_FROZEN")
 	}
-	if balance < amount {
+	if balance < amountPaise {
 		return nil, errors.New("INSUFFICIENT_BALANCE")
 	}
 
@@ -344,7 +368,7 @@ func (s *Store) RequestPayout(ctx context.Context, userID uuid.UUID, amount floa
 		UPDATE wallets
 		SET balance = balance - $2, pending_payout = pending_payout + $2, updated_at = NOW()
 		WHERE user_id = $1
-	`, userID, amount)
+	`, userID, amountPaise)
 	if err != nil {
 		return nil, err
 	}
@@ -355,7 +379,7 @@ func (s *Store) RequestPayout(ctx context.Context, userID uuid.UUID, amount floa
 		ID:            uuid.New(),
 		WalletID:      userID,
 		Type:          "payout",
-		Amount:        amount,
+		AmountPaise:   amountPaise,
 		Currency:      "INR",
 		Status:        "pending",
 		ReferenceType: "payout_method",
@@ -366,7 +390,7 @@ func (s *Store) RequestPayout(ctx context.Context, userID uuid.UUID, amount floa
 	_, err = tx.Exec(ctx, `
 		INSERT INTO transactions (id, wallet_id, type, amount, currency, status, reference_type, reference_id, description, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-	`, t.ID, t.WalletID, t.Type, t.Amount, t.Currency, t.Status,
+	`, t.ID, t.WalletID, t.Type, t.AmountPaise, t.Currency, t.Status,
 		t.ReferenceType, t.ReferenceID, t.Description, t.CreatedAt)
 	if err != nil {
 		return nil, err
@@ -399,7 +423,7 @@ func (s *Store) GetCreatorTiers(ctx context.Context, creatorID uuid.UUID) ([]Cre
 	for rows.Next() {
 		var t CreatorTier
 		if err := rows.Scan(
-			&t.ID, &t.CreatorID, &t.Name, &t.Price, &t.Currency,
+			&t.ID, &t.CreatorID, &t.Name, &t.PricePaise, &t.Currency,
 			&t.Perks, &t.SubscriberCount, &t.IsActive, &t.CreatedAt, &t.UpdatedAt,
 		); err != nil {
 			return nil, err
@@ -417,7 +441,7 @@ func (s *Store) GetCreatorTier(ctx context.Context, tierID uuid.UUID) (*CreatorT
 		FROM creator_tiers
 		WHERE id = $1
 	`, tierID).Scan(
-		&t.ID, &t.CreatorID, &t.Name, &t.Price, &t.Currency,
+		&t.ID, &t.CreatorID, &t.Name, &t.PricePaise, &t.Currency,
 		&t.Perks, &t.SubscriberCount, &t.IsActive, &t.CreatedAt, &t.UpdatedAt,
 	)
 	if err != nil {
@@ -443,7 +467,7 @@ func (s *Store) CreateTier(ctx context.Context, t *CreatorTier) error {
 	_, err := s.db.Exec(ctx, `
 		INSERT INTO creator_tiers (id, creator_id, name, price, currency, perks, subscriber_count, is_active, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-	`, t.ID, t.CreatorID, t.Name, t.Price, t.Currency, t.Perks,
+	`, t.ID, t.CreatorID, t.Name, t.PricePaise, t.Currency, t.Perks,
 		t.SubscriberCount, t.IsActive, t.CreatedAt, t.UpdatedAt)
 	return err
 }
@@ -454,7 +478,7 @@ func (s *Store) UpdateTier(ctx context.Context, t *CreatorTier) error {
 		UPDATE creator_tiers
 		SET name = $3, price = $4, currency = $5, perks = $6, is_active = $7, updated_at = NOW()
 		WHERE id = $1 AND creator_id = $2
-	`, t.ID, t.CreatorID, t.Name, t.Price, t.Currency, t.Perks, t.IsActive)
+	`, t.ID, t.CreatorID, t.Name, t.PricePaise, t.Currency, t.Perks, t.IsActive)
 	if err != nil {
 		return err
 	}
@@ -471,7 +495,7 @@ func (s *Store) UpdateTier(ctx context.Context, t *CreatorTier) error {
 // Subscribe creates a subscription, charges the subscriber wallet, and credits the creator wallet.
 // All operations are performed within a single DB transaction.
 // idempotencyKey is optional; if non-empty it is stored on the subscription row.
-func (s *Store) Subscribe(ctx context.Context, subscriberID, creatorID, tierID uuid.UUID, tierName string, price float64, currency string, idempotencyKey string) (*Subscription, error) {
+func (s *Store) Subscribe(ctx context.Context, subscriberID, creatorID, tierID uuid.UUID, tierName string, pricePaise int64, currency string, idempotencyKey string) (*Subscription, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -485,7 +509,7 @@ func (s *Store) Subscribe(ctx context.Context, subscriberID, creatorID, tierID u
 	tag, err := tx.Exec(ctx, `
 		UPDATE wallets SET balance = balance - $2, updated_at = NOW()
 		WHERE user_id = $1 AND balance >= $2 AND is_frozen = false
-	`, subscriberID, price)
+	`, subscriberID, pricePaise)
 	if err != nil {
 		return nil, err
 	}
@@ -497,7 +521,7 @@ func (s *Store) Subscribe(ctx context.Context, subscriberID, creatorID, tierID u
 	_, err = tx.Exec(ctx, `
 		UPDATE wallets SET balance = balance + $2, lifetime_earnings = lifetime_earnings + $2, updated_at = NOW()
 		WHERE user_id = $1
-	`, creatorID, price)
+	`, creatorID, pricePaise)
 	if err != nil {
 		return nil, err
 	}
@@ -513,7 +537,7 @@ func (s *Store) Subscribe(ctx context.Context, subscriberID, creatorID, tierID u
 		CreatorID:          creatorID,
 		TierID:             tierID,
 		TierName:           tierName,
-		Price:              price,
+		PricePaise:         pricePaise,
 		Currency:           currency,
 		Status:             "active",
 		CurrentPeriodStart: now,
@@ -525,7 +549,7 @@ func (s *Store) Subscribe(ctx context.Context, subscriberID, creatorID, tierID u
 		INSERT INTO subscriptions (id, subscriber_id, creator_id, tier_id, tier_name, price, currency, status, current_period_start, current_period_end, created_at, idempotency_key)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 	`, sub.ID, sub.SubscriberID, sub.CreatorID, sub.TierID, sub.TierName,
-		sub.Price, sub.Currency, sub.Status, sub.CurrentPeriodStart, sub.CurrentPeriodEnd, sub.CreatedAt, iKey)
+		sub.PricePaise, sub.Currency, sub.Status, sub.CurrentPeriodStart, sub.CurrentPeriodEnd, sub.CreatedAt, iKey)
 	if err != nil {
 		return nil, err
 	}
@@ -534,7 +558,7 @@ func (s *Store) Subscribe(ctx context.Context, subscriberID, creatorID, tierID u
 	_, err = tx.Exec(ctx, `
 		INSERT INTO transactions (id, wallet_id, type, amount, currency, status, reference_type, reference_id, description, created_at)
 		VALUES ($1, $2, 'subscription_payment', $3, $4, 'completed', 'subscription', $5, $6, $7)
-	`, uuid.New(), subscriberID, price, currency, sub.ID.String(),
+	`, uuid.New(), subscriberID, pricePaise, currency, sub.ID.String(),
 		"Subscription to "+tierName, now)
 	if err != nil {
 		return nil, err
@@ -544,7 +568,7 @@ func (s *Store) Subscribe(ctx context.Context, subscriberID, creatorID, tierID u
 	_, err = tx.Exec(ctx, `
 		INSERT INTO transactions (id, wallet_id, type, amount, currency, status, reference_type, reference_id, description, created_at)
 		VALUES ($1, $2, 'earning', $3, $4, 'completed', 'subscription', $5, $6, $7)
-	`, uuid.New(), creatorID, price, currency, sub.ID.String(),
+	`, uuid.New(), creatorID, pricePaise, currency, sub.ID.String(),
 		"Earning from subscription", now)
 	if err != nil {
 		return nil, err
@@ -609,7 +633,7 @@ func (s *Store) GetSubscription(ctx context.Context, subscriberID, creatorID uui
 		WHERE subscriber_id = $1 AND creator_id = $2 AND status = 'active'
 	`, subscriberID, creatorID).Scan(
 		&sub.ID, &sub.SubscriberID, &sub.CreatorID, &sub.TierID, &sub.TierName,
-		&sub.Price, &sub.Currency, &sub.Status, &sub.CurrentPeriodStart, &sub.CurrentPeriodEnd, &sub.CreatedAt,
+		&sub.PricePaise, &sub.Currency, &sub.Status, &sub.CurrentPeriodStart, &sub.CurrentPeriodEnd, &sub.CreatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -630,7 +654,7 @@ func (s *Store) GetSubscriptionByIdempotencyKey(ctx context.Context, key string)
 		WHERE idempotency_key = $1
 	`, key).Scan(
 		&sub.ID, &sub.SubscriberID, &sub.CreatorID, &sub.TierID, &sub.TierName,
-		&sub.Price, &sub.Currency, &sub.Status, &sub.CurrentPeriodStart, &sub.CurrentPeriodEnd, &sub.CreatedAt,
+		&sub.PricePaise, &sub.Currency, &sub.Status, &sub.CurrentPeriodStart, &sub.CurrentPeriodEnd, &sub.CreatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -644,7 +668,7 @@ func (s *Store) GetSubscriptionByIdempotencyKey(ctx context.Context, key string)
 
 // ChargeAndCredit atomically debits fromUserID and credits toUserID in a single transaction.
 // Returns ErrInsufficientFunds if fromUserID has insufficient balance.
-func (s *Store) ChargeAndCredit(ctx context.Context, fromUserID, toUserID string, amount float64, description string) error {
+func (s *Store) ChargeAndCredit(ctx context.Context, fromUserID, toUserID string, amountPaise int64, description string) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return err
@@ -652,10 +676,10 @@ func (s *Store) ChargeAndCredit(ctx context.Context, fromUserID, toUserID string
 	defer tx.Rollback(ctx)
 
 	// Atomic debit: only succeeds if balance is sufficient
-	var newBalance float64
+	var newBalance int64
 	err = tx.QueryRow(ctx,
 		`UPDATE wallets SET balance = balance - $2, updated_at = NOW() WHERE user_id = $1 AND balance >= $2 AND is_frozen = false RETURNING balance`,
-		fromUserID, amount,
+		fromUserID, amountPaise,
 	).Scan(&newBalance)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -667,7 +691,7 @@ func (s *Store) ChargeAndCredit(ctx context.Context, fromUserID, toUserID string
 	// Credit
 	_, err = tx.Exec(ctx,
 		`UPDATE wallets SET balance = balance + $2, lifetime_earnings = lifetime_earnings + $2, updated_at = NOW() WHERE user_id = $1`,
-		toUserID, amount,
+		toUserID, amountPaise,
 	)
 	if err != nil {
 		return err
@@ -677,7 +701,7 @@ func (s *Store) ChargeAndCredit(ctx context.Context, fromUserID, toUserID string
 	_, err = tx.Exec(ctx,
 		`INSERT INTO transactions (id, wallet_id, type, amount, currency, status, description, created_at)
 		 SELECT $1, id, 'subscription_payment', $3, currency, 'completed', $4, NOW() FROM wallets WHERE user_id = $2`,
-		uuid.New(), fromUserID, amount, description,
+		uuid.New(), fromUserID, amountPaise, description,
 	)
 	if err != nil {
 		return fmt.Errorf("debit transaction record: %w", err)
@@ -687,7 +711,7 @@ func (s *Store) ChargeAndCredit(ctx context.Context, fromUserID, toUserID string
 	_, err = tx.Exec(ctx,
 		`INSERT INTO transactions (id, wallet_id, type, amount, currency, status, description, created_at)
 		 SELECT $1, id, 'earning', $3, currency, 'completed', $4, NOW() FROM wallets WHERE user_id = $2`,
-		uuid.New(), toUserID, amount, description,
+		uuid.New(), toUserID, amountPaise, description,
 	)
 	if err != nil {
 		return fmt.Errorf("credit transaction record: %w", err)
@@ -788,4 +812,142 @@ func (s *Store) QueryViewScoreTotal(ctx context.Context, creatorID uuid.UUID, si
 		creatorID, since, until,
 	).Scan(&total)
 	return total, err
+}
+
+// ---------------------------------------------------------------------------
+// Accounts (double-entry ledger)
+// ---------------------------------------------------------------------------
+
+// EnsureAccount creates an account for the given owner and type if one does not exist, then returns it.
+func (s *Store) EnsureAccount(ctx context.Context, ownerID uuid.UUID, accountType string) (*Account, error) {
+	now := time.Now()
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO accounts (owner_id, account_type, balance_paise, currency, created_at)
+		VALUES ($1, $2, 0, 'INR', $3)
+		ON CONFLICT (owner_id, account_type) DO NOTHING
+	`, ownerID, accountType, now)
+	if err != nil {
+		return nil, err
+	}
+	return s.GetAccount(ctx, ownerID, accountType)
+}
+
+// GetAccount returns the account for the given owner and type, or nil if not found.
+func (s *Store) GetAccount(ctx context.Context, ownerID uuid.UUID, accountType string) (*Account, error) {
+	var a Account
+	err := s.db.QueryRow(ctx, `
+		SELECT id, owner_id, account_type, balance_paise, currency, created_at
+		FROM accounts
+		WHERE owner_id = $1 AND account_type = $2
+	`, ownerID, accountType).Scan(
+		&a.ID, &a.OwnerID, &a.AccountType, &a.BalancePaise, &a.Currency, &a.CreatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &a, nil
+}
+
+// InsertLedgerEntry inserts an immutable ledger entry and atomically updates the debit and credit account balances.
+func (s *Store) InsertLedgerEntry(ctx context.Context, entry *LedgerEntry) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	now := time.Now()
+	entry.CreatedAt = now
+	if entry.ID == uuid.Nil {
+		entry.ID = uuid.New()
+	}
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO ledger_entries (id, debit_account_id, credit_account_id, amount_paise, currency, reference_type, reference_id, idempotency_key, description, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+	`, entry.ID, entry.DebitAccountID, entry.CreditAccountID, entry.AmountPaise, entry.Currency,
+		entry.ReferenceType, entry.ReferenceID, entry.IdempotencyKey, entry.Description, entry.CreatedAt)
+	if err != nil {
+		return err
+	}
+
+	// Debit account: decrease balance
+	_, err = tx.Exec(ctx, `
+		UPDATE accounts SET balance_paise = balance_paise - $2 WHERE id = $1
+	`, entry.DebitAccountID, entry.AmountPaise)
+	if err != nil {
+		return err
+	}
+
+	// Credit account: increase balance
+	_, err = tx.Exec(ctx, `
+		UPDATE accounts SET balance_paise = balance_paise + $2 WHERE id = $1
+	`, entry.CreditAccountID, entry.AmountPaise)
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
+}
+
+// GetLedgerEntries returns ledger entries for a given account (debit or credit side), ordered by created_at DESC.
+func (s *Store) GetLedgerEntries(ctx context.Context, accountID uuid.UUID, limit, offset int) ([]LedgerEntry, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT id, debit_account_id, credit_account_id, amount_paise, currency, reference_type, reference_id, idempotency_key, description, created_at
+		FROM ledger_entries
+		WHERE debit_account_id = $1 OR credit_account_id = $1
+		ORDER BY created_at DESC
+		LIMIT $2 OFFSET $3
+	`, accountID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var entries []LedgerEntry
+	for rows.Next() {
+		var e LedgerEntry
+		if err := rows.Scan(
+			&e.ID, &e.DebitAccountID, &e.CreditAccountID, &e.AmountPaise, &e.Currency,
+			&e.ReferenceType, &e.ReferenceID, &e.IdempotencyKey, &e.Description, &e.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		entries = append(entries, e)
+	}
+	return entries, rows.Err()
+}
+
+// RebuildBalanceFromLedger recalculates an account's balance from ledger entries.
+// Returns the computed balance in paise.
+func (s *Store) RebuildBalanceFromLedger(ctx context.Context, accountID uuid.UUID) (int64, error) {
+	var creditSum, debitSum int64
+
+	err := s.db.QueryRow(ctx, `
+		SELECT COALESCE(SUM(amount_paise), 0) FROM ledger_entries WHERE credit_account_id = $1
+	`, accountID).Scan(&creditSum)
+	if err != nil {
+		return 0, err
+	}
+
+	err = s.db.QueryRow(ctx, `
+		SELECT COALESCE(SUM(amount_paise), 0) FROM ledger_entries WHERE debit_account_id = $1
+	`, accountID).Scan(&debitSum)
+	if err != nil {
+		return 0, err
+	}
+
+	return creditSum - debitSum, nil
+}
+
+// CreateBalanceSnapshot records a point-in-time balance snapshot for an account.
+func (s *Store) CreateBalanceSnapshot(ctx context.Context, accountID uuid.UUID, balancePaise int64) error {
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO balance_snapshots (account_id, balance_paise, snapshot_at)
+		VALUES ($1, $2, NOW())
+	`, accountID, balancePaise)
+	return err
 }

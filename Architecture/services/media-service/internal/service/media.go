@@ -14,6 +14,7 @@ import (
 	"github.com/atpost/media-service/internal/store/blob"
 	"github.com/atpost/media-service/internal/store/postgres"
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 )
 
 // Size limits per subtype/file_type
@@ -33,6 +34,7 @@ type Service struct {
 	producer  *mediaEvents.Producer // optional, nil = skip Kafka
 	cfg       *config.Config
 	scanner   processing.Scanner
+	rdb       *redis.Client // optional, nil = skip rate limiting
 }
 
 func New(pg *postgres.MediaAssetStore, blobStore *blob.Store) *Service {
@@ -60,6 +62,11 @@ func NewWithConfig(pg *postgres.MediaAssetStore, blobStore *blob.Store, cfg *con
 // SetProducer sets the Kafka producer for async video transcoding events.
 func (s *Service) SetProducer(p *mediaEvents.Producer) {
 	s.producer = p
+}
+
+// SetRedis sets the Redis client used for upload rate limiting.
+func (s *Service) SetRedis(rdb *redis.Client) {
+	s.rdb = rdb
 }
 
 type InitUploadResponse struct {
@@ -123,6 +130,22 @@ func ValidateUpload(fileType, mediaSubtype, mimeType string, fileSizeBytes int64
 }
 
 func (s *Service) InitUpload(ctx context.Context, userID uuid.UUID, fileType, mediaSubtype, mimeType string, fileSizeBytes int64, altText string) (*InitUploadResponse, error) {
+	// Absolute size cap (applies to all file types)
+	if err := ValidateUploadSize(fileSizeBytes); err != nil {
+		return nil, err
+	}
+
+	// MIME allow-list check
+	if err := ValidateUploadMIME(mimeType, fileType); err != nil {
+		return nil, err
+	}
+
+	// Per-user upload rate limit (Redis sliding window)
+	if err := s.CheckUploadRateLimit(ctx, userID); err != nil {
+		return nil, err
+	}
+
+	// Subtype/file-type-specific size + MIME validation (existing)
 	if err := ValidateUpload(fileType, mediaSubtype, mimeType, fileSizeBytes); err != nil {
 		return nil, err
 	}

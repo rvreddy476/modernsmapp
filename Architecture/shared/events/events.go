@@ -120,6 +120,10 @@ const (
 	// Mentions
 	EventUserMentioned = "user.mentioned" // payload: UserMentionedPayload
 
+	// Creator Analytics Events (reel engagement)
+	EventReelLiked     = "reel.liked"
+	EventReelCommented = "reel.commented"
+
 	// Reel Lifecycle (Gold Spec)
 	ReelDraftCreated        = "reel.draft.created"
 	ReelDraftUpdated        = "reel.draft.updated"
@@ -165,6 +169,28 @@ const (
 	ModuleProfileUpdated = "module_profile.updated"
 	HandleChanged        = "handle.changed"
 	UploadDeleted        = "upload.deleted"
+
+	// Broadcast Channel Events
+	EventChannelCreated         = "channel.created"
+	EventChannelUpdated         = "channel.updated"
+	EventChannelDeleted         = "channel.deleted"
+	EventChannelSubscribed      = "channel.subscribed"
+	EventChannelUnsubscribed    = "channel.unsubscribed"
+	EventChannelUpdatePublished = "channel.update.published"
+	EventChannelUpdateDeleted   = "channel.update.deleted"
+	EventChannelMemberBanned    = "channel.member.banned"
+
+	// Community Events
+	EventCommunityCreated           = "community.created"
+	EventCommunityUpdated           = "community.updated"
+	EventCommunityDeleted           = "community.deleted"
+	EventCommunityMemberJoined      = "community.member.joined"
+	EventCommunityMemberLeft        = "community.member.left"
+	EventCommunityMemberBanned      = "community.member.banned"
+	EventCommunityMemberRoleChanged = "community.member.role_changed"
+	EventCommunitySpaceCreated      = "community.space.created"
+	EventCommunitySpaceRemoved      = "community.space.removed"
+	EventCommunitySpaceQuarantined  = "community.space.quarantined"
 
 	// Voice/Video Calling
 	EventCallCreated            = "call.created"
@@ -647,6 +673,23 @@ type UserMentionedPayload struct {
 	PostID          string    `json:"post_id"`
 	CommentID       string    `json:"comment_id,omitempty"`
 	OccurredAt      time.Time `json:"occurred_at"`
+}
+
+// --- Creator Analytics Payloads ---
+
+type ReelLikedPayload struct {
+	ReelID    string    `json:"reel_id"`
+	UserID    string    `json:"user_id"`
+	CreatorID string    `json:"creator_id"`
+	LikedAt   time.Time `json:"liked_at"`
+}
+
+type ReelCommentedPayload struct {
+	ReelID    string    `json:"reel_id"`
+	UserID    string    `json:"user_id"`
+	CreatorID string    `json:"creator_id"`
+	CommentID string    `json:"comment_id"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // --- Reel Lifecycle Payloads (Gold Spec) ---

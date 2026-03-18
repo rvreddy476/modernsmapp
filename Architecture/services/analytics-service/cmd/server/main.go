@@ -60,6 +60,7 @@ func main() {
 
 	// 5. ScyllaDB
 	var watchStore *scyllaStore.WatchStore
+	var engagementStore *scyllaStore.EngagementStore
 	var scyllaSession *gocql.Session
 	if scyllaHosts != "" {
 		cluster := gocql.NewCluster(strings.Split(scyllaHosts, ",")...)
@@ -74,8 +75,17 @@ func main() {
 			scyllaSession = sess
 			defer scyllaSession.Close()
 			watchStore = scyllaStore.NewWatchStore(scyllaSession)
+
+			// Ensure engagement analytics ScyllaDB tables
+			if err := scyllaStore.EnsureEngagementSchema(scyllaSession); err != nil {
+				slog.Warn("engagement schema ensure error", "error", err)
+			}
+			engagementStore = scyllaStore.NewEngagementStore(scyllaSession)
 		}
 	}
+
+	// Suppress unused variable warning — engagementStore is wired to consumers/handlers below.
+	_ = engagementStore
 
 	// 6. Kafka producer (for publishing video events to downstream consumers)
 	var kafkaWriter *kafka.Writer

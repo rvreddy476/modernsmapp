@@ -1,5 +1,7 @@
 
 import 'package:atpost_app/core/config/environment.dart';
+import 'package:atpost_app/core/errors/app_exception.dart';
+import 'package:atpost_app/core/errors/error_handler.dart';
 import 'package:atpost_app/core/utils/app_logger.dart';
 import 'package:atpost_app/services/auth_service.dart';
 import 'package:atpost_app/services/interceptors/auth_interceptor.dart';
@@ -61,7 +63,6 @@ class ApiClient {
       );
     } catch (e) {
       _handleError(e, path);
-      rethrow;
     }
   }
 
@@ -83,7 +84,6 @@ class ApiClient {
       );
     } catch (e) {
       _handleError(e, path);
-      rethrow;
     }
   }
 
@@ -103,7 +103,6 @@ class ApiClient {
       );
     } catch (e) {
       _handleError(e, path);
-      rethrow;
     }
   }
 
@@ -123,7 +122,6 @@ class ApiClient {
       );
     } catch (e) {
       _handleError(e, path);
-      rethrow;
     }
   }
 
@@ -143,7 +141,6 @@ class ApiClient {
       );
     } catch (e) {
       _handleError(e, path);
-      rethrow;
     }
   }
 
@@ -201,19 +198,12 @@ class ApiClient {
     return delete<T>(path, data: data, options: options, cancelToken: cancelToken);
   }
 
-  /// Centralized error logging for network requests.
-  void _handleError(Object error, String path) {
-    if (error is DioException) {
-      final statusCode = error.response?.statusCode;
-      final message = error.message;
-      AppLogger.error(
-        'Request to [$path] failed ($statusCode): $message',
-        tag: _tag,
-        error: error,
-      );
-    } else {
-      AppLogger.error('Unexpected error during request to [$path]', tag: _tag, error: error);
-    }
+  /// Centralized error handling: converts raw errors to typed [AppException]
+  /// and logs them via [ErrorHandler].
+  Never _handleError(Object error, String path) {
+    final st = error is DioException ? error.stackTrace : StackTrace.current;
+    final appException = ErrorHandler.handle(error, st, context: 'ApiClient.$path');
+    throw appException;
   }
 }
 

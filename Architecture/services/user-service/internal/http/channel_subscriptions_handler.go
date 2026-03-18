@@ -21,7 +21,7 @@ func (h *Handler) SubscribeToChannel(c *gin.Context) {
 		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
 		return
 	}
-	channelID, err := uuid.Parse(c.Param("channelId"))
+	channelID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil, nil)
 		return
@@ -50,7 +50,7 @@ func (h *Handler) UnsubscribeFromChannel(c *gin.Context) {
 		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
 		return
 	}
-	channelID, err := uuid.Parse(c.Param("channelId"))
+	channelID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil, nil)
 		return
@@ -70,7 +70,7 @@ func (h *Handler) GetChannelSubscriptionStatus(c *gin.Context) {
 		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
 		return
 	}
-	channelID, err := uuid.Parse(c.Param("channelId"))
+	channelID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil, nil)
 		return
@@ -90,7 +90,7 @@ func (h *Handler) GetChannelSubscriptionStatus(c *gin.Context) {
 
 // ListChannelSubscribers handles GET /v1/channels/:channelId/subscribers
 func (h *Handler) ListChannelSubscribers(c *gin.Context) {
-	channelID, err := uuid.Parse(c.Param("channelId"))
+	channelID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil, nil)
 		return

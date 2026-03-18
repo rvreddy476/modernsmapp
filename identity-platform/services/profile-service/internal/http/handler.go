@@ -72,6 +72,9 @@ type ProfileService interface {
 	ChangeHandle(ctx context.Context, userID uuid.UUID, newUsername string) (*store.Profile, error)
 	ResolveHandle(ctx context.Context, oldUsername string) (*uuid.UUID, *string, error)
 	GetHandleHistory(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.HandleHistoryEntry, error)
+	// Profile Stats
+	GetProfileStats(ctx context.Context, userID uuid.UUID) (*store.ProfileStats, error)
+	RecalculateProfileStats(ctx context.Context, userID uuid.UUID) (*store.ProfileStats, error)
 }
 
 func New(svc ProfileService, logger *slog.Logger) *Handler {
@@ -98,6 +101,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, auth gin.HandlerFunc, csrf gin.H
 		v1.GET("/:userId/friends", h.ListFriends)
 		// Relationship (public GET — viewer ID from X-User-Id header, set by gateway or forwarded by BFF)
 		v1.GET("/:userId/relationship", h.GetRelationship)
+		// Profile Stats
+		v1.GET("/:userId/stats", h.GetProfileStats)
 	}
 
 	protected := v1.Group("")
@@ -1444,4 +1449,24 @@ func (h *Handler) GetHandleHistory(c *gin.Context) {
 		history = []store.HandleHistoryEntry{}
 	}
 	api.JSON(c.Writer, http.StatusOK, history, nil)
+}
+
+// ---------------------------------------------------------------
+// Profile Stats
+// ---------------------------------------------------------------
+
+func (h *Handler) GetProfileStats(c *gin.Context) {
+	userID, err := uuid.Parse(c.Param("userId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil, nil)
+		return
+	}
+
+	stats, err := h.svc.GetProfileStats(c.Request.Context(), userID)
+	if err != nil {
+		h.log.Error("failed to get profile stats", "err", err, "user_id", userID)
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, stats, nil)
 }

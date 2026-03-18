@@ -130,9 +130,10 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 
 // GetFriendIDs returns all friend user IDs for a given user.
 func (s *Store) GetFriendIDs(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
-	rows, err := s.appDB.Query(ctx, `
-		SELECT CASE WHEN user_a = $1 THEN user_b ELSE user_a END AS friend_id
-		FROM friends WHERE user_a = $1 OR user_b = $1
+	rows, err := s.identityDB.Query(ctx, `
+		SELECT CASE WHEN requester_id = $1 THEN addressee_id ELSE requester_id END AS friend_id
+		FROM profile.friendships
+		WHERE (requester_id = $1 OR addressee_id = $1) AND status = 'accepted'
 	`, userID)
 	if err != nil {
 		return nil, err

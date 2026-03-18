@@ -123,6 +123,21 @@ func (s *Service) GetSuggestions(ctx context.Context, viewerID uuid.UUID, suggTy
 		return s.getPopularFallback(ctx, viewerID, suggType, limit, surface)
 	}
 
+	// 4.5. Filter out existing friends, blocked users, and self
+	friendIDs, _ := s.store.GetFriendIDs(ctx, viewerID)
+	friendSet := make(map[uuid.UUID]bool, len(friendIDs)+1)
+	friendSet[viewerID] = true
+	for _, fid := range friendIDs {
+		friendSet[fid] = true
+	}
+	filtered := candidates[:0]
+	for _, c := range candidates {
+		if !friendSet[c.CandidateID] {
+			filtered = append(filtered, c)
+		}
+	}
+	candidates = filtered
+
 	// 5. Enrich with profile data + mutual friend IDs
 	items := s.candidatesToItems(ctx, viewerID, candidates)
 

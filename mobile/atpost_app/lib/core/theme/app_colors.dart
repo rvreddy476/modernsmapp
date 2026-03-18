@@ -31,6 +31,10 @@ class AppColors {
   static const Color onlineGreen = Color(0xFF4ECDC4);
   static const Color liveRed = Color(0xFFFF3366);
 
+  static const Color statusError = Color(0xFFFF4757);
+  static const Color statusWarning = Color(0xFFFFAB00);
+  static const Color statusSuccess = Color(0xFF2ED573);
+
   static const Color glassBg = Color(0x1AFFFFFF);
   static const Color glassBorder = Color(0x14FFFFFF);
 

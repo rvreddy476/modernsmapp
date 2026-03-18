@@ -7,36 +7,46 @@ class GlassIconButton extends StatelessWidget {
   const GlassIconButton({
     super.key,
     required this.icon,
+    required this.tooltip,
     this.onPressed,
     this.size = 38,
+    this.semanticLabel,
   });
 
   final IconData icon;
+  final String tooltip;
   final VoidCallback? onPressed;
   final double size;
+  final String? semanticLabel;
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onPressed,
-      child: Container(
-        width: size,
-        height: size,
-        decoration: BoxDecoration(
-          color: AppColors.bgCard,
-          borderRadius: BorderRadius.circular(AppSpacing.radiusMedium),
-          border: Border.all(color: AppColors.borderSubtle),
+    return Semantics(
+      button: true,
+      label: semanticLabel ?? tooltip,
+      child: Tooltip(
+        message: tooltip,
+        child: GestureDetector(
+          onTap: onPressed,
+          child: Container(
+            width: size,
+            height: size,
+            decoration: BoxDecoration(
+              color: AppColors.bgCard,
+              borderRadius: BorderRadius.circular(AppSpacing.radiusMedium),
+              border: Border.all(color: AppColors.borderSubtle),
+            ),
+            child: Icon(icon, color: AppColors.textSecondary, size: 18),
+          )
+              .animate()
+              .scale(
+                duration: 120.ms,
+                curve: Curves.easeOut,
+                begin: const Offset(1, 1),
+                end: const Offset(1.02, 1.02),
+              ),
         ),
-        child: Icon(icon, color: AppColors.textSecondary, size: 18),
-      )
-          .animate()
-          .scale(
-            duration: 120.ms,
-            curve: Curves.easeOut,
-            begin: const Offset(1, 1),
-            end: const Offset(1.02, 1.02),
-          ),
+      ),
     );
   }
 }
-
