@@ -1,4 +1,4 @@
-﻿import 'dart:async';
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
@@ -160,21 +160,21 @@ final realtimeServiceProvider = Provider<RealtimeService>((ref) {
   final api = ref.watch(apiClientProvider);
   final service = RealtimeService(auth, api);
 
-  // Sync with Auth state
-  ref.listen(authServiceProvider, (previous, next) {
-    if (next.isAuthenticated) {
+  void syncAuth(AuthState state) {
+    if (state.isAuthenticated) {
       service.connect();
     } else {
       service.disconnect();
     }
-  });
-
-  // Initial connection if already authenticated
-  if (auth.isAuthenticated) {
-    service.connect();
   }
 
-  ref.onDispose(() => service.dispose);
+  syncAuth(auth.state);
+  final authSub = auth.stateStream.listen(syncAuth);
+
+  ref.onDispose(() {
+    authSub.cancel();
+    service.dispose();
+  });
   return service;
 });
 

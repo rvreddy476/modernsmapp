@@ -19,7 +19,7 @@ func New(db *pgxpool.Pool) *Store {
 }
 
 // NotificationPreferences stores per-user notification settings.
-type NotificationPreferences struct {
+type NotificationPreferencesLegacy struct {
 	UserID          uuid.UUID       `json:"user_id"`
 	EmailEnabled    bool            `json:"email_enabled"`
 	PushEnabled     bool            `json:"push_enabled"`
@@ -32,8 +32,8 @@ type NotificationPreferences struct {
 
 // GetPreferences returns the notification preferences for a user.
 // Returns default preferences if none exist.
-func (s *Store) GetPreferences(ctx context.Context, userID uuid.UUID) (*NotificationPreferences, error) {
-	var p NotificationPreferences
+func (s *Store) GetPreferences(ctx context.Context, userID uuid.UUID) (*NotificationPreferencesLegacy, error) {
+	var p NotificationPreferencesLegacy
 	err := s.db.QueryRow(ctx, `
 		SELECT user_id, email_enabled, push_enabled, sms_enabled,
 			quiet_hours_start, quiet_hours_end, muted_types, updated_at
@@ -44,8 +44,7 @@ func (s *Store) GetPreferences(ctx context.Context, userID uuid.UUID) (*Notifica
 	)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			// Return defaults
-			return &NotificationPreferences{
+			return &NotificationPreferencesLegacy{
 				UserID:       userID,
 				EmailEnabled: true,
 				PushEnabled:  true,
@@ -60,7 +59,7 @@ func (s *Store) GetPreferences(ctx context.Context, userID uuid.UUID) (*Notifica
 }
 
 // UpsertPreferences creates or updates notification preferences.
-func (s *Store) UpsertPreferences(ctx context.Context, p *NotificationPreferences) error {
+func (s *Store) UpsertPreferences(ctx context.Context, p *NotificationPreferencesLegacy) error {
 	_, err := s.db.Exec(ctx, `
 		INSERT INTO notification_preferences (user_id, email_enabled, push_enabled, sms_enabled,
 			quiet_hours_start, quiet_hours_end, muted_types, updated_at)

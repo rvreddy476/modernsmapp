@@ -3,7 +3,7 @@
 -- The old table (from ensureNotifSchema) had user_id UUID; this uses TEXT to match
 -- the X-User-Id header format used across the platform.
 
-CREATE TABLE IF NOT EXISTS notification_preferences_v2 (
+CREATE TABLE IF NOT EXISTS notification_preferences (
     user_id             TEXT PRIMARY KEY,
     push_enabled        BOOLEAN NOT NULL DEFAULT TRUE,
     email_enabled       BOOLEAN NOT NULL DEFAULT FALSE,

@@ -48,7 +48,7 @@ func processDigests(ctx context.Context, db *pgxpool.Pool, pgStore *postgres.Sto
 
 func processDailyDigests(ctx context.Context, db *pgxpool.Pool, pgStore *postgres.Store, scyllaSession *gocql.Session) {
 	rows, err := db.Query(ctx, `
-		SELECT user_id FROM notification_preferences_v2
+		SELECT user_id FROM notification_preferences
 		WHERE email_enabled = TRUE AND email_digest = 'daily'
 		LIMIT 1000
 	`)
@@ -77,7 +77,7 @@ func processDailyDigests(ctx context.Context, db *pgxpool.Pool, pgStore *postgre
 
 func processWeeklyDigests(ctx context.Context, db *pgxpool.Pool, pgStore *postgres.Store, scyllaSession *gocql.Session) {
 	rows, err := db.Query(ctx, `
-		SELECT user_id FROM notification_preferences_v2
+		SELECT user_id FROM notification_preferences
 		WHERE email_enabled = TRUE AND email_digest = 'weekly'
 		LIMIT 5000
 	`)

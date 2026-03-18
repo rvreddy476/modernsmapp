@@ -7,8 +7,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// NotificationPreferencesV2 stores granular per-user notification settings.
-type NotificationPreferencesV2 struct {
+// NotificationPreferences stores granular per-user notification settings.
+type NotificationPreferences struct {
 	UserID              string  `json:"user_id"`
 	PushEnabled         bool    `json:"push_enabled"`
 	EmailEnabled        bool    `json:"email_enabled"`
@@ -37,8 +37,8 @@ type NotificationPreferencesV2 struct {
 
 // GetNotificationPreferences returns the v2 notification preferences for a user.
 // Returns sensible defaults if no row exists (upsert pattern).
-func (s *Store) GetNotificationPreferences(ctx context.Context, userID string) (*NotificationPreferencesV2, error) {
-	var p NotificationPreferencesV2
+func (s *Store) GetNotificationPreferences(ctx context.Context, userID string) (*NotificationPreferences, error) {
+	var p NotificationPreferences
 	err := s.db.QueryRow(ctx, `
 		SELECT user_id, push_enabled, email_enabled, quiet_hours_enabled,
 			quiet_hours_start, quiet_hours_end, quiet_hours_tz,
@@ -49,7 +49,7 @@ func (s *Store) GetNotificationPreferences(ctx context.Context, userID string) (
 			push_community_posts, push_community_mentions,
 			push_event_reminders, push_system,
 			email_digest, updated_at
-		FROM notification_preferences_v2
+		FROM notification_preferences
 		WHERE user_id = $1
 	`, userID).Scan(
 		&p.UserID, &p.PushEnabled, &p.EmailEnabled, &p.QuietHoursEnabled,
@@ -72,10 +72,10 @@ func (s *Store) GetNotificationPreferences(ctx context.Context, userID string) (
 }
 
 // UpdateNotificationPreferences upserts v2 notification preferences.
-func (s *Store) UpdateNotificationPreferences(ctx context.Context, p *NotificationPreferencesV2) error {
+func (s *Store) UpdateNotificationPreferences(ctx context.Context, p *NotificationPreferences) error {
 	p.UpdatedAt = time.Now()
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO notification_preferences_v2 (
+		INSERT INTO notification_preferences (
 			user_id, push_enabled, email_enabled, quiet_hours_enabled,
 			quiet_hours_start, quiet_hours_end, quiet_hours_tz,
 			push_likes, push_super_likes, push_comments, push_replies,
@@ -112,8 +112,8 @@ func (s *Store) UpdateNotificationPreferences(ctx context.Context, p *Notificati
 	return err
 }
 
-func defaultPreferencesV2(userID string) *NotificationPreferencesV2 {
-	return &NotificationPreferencesV2{
+func defaultPreferencesV2(userID string) *NotificationPreferences {
+	return &NotificationPreferences{
 		UserID:              userID,
 		PushEnabled:         true,
 		EmailEnabled:        false,

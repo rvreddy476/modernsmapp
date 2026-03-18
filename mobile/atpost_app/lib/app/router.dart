@@ -1,4 +1,4 @@
-﻿import 'dart:async';
+import 'dart:async';
 
 import 'package:atpost_app/features/channels/channels_list_screen.dart';
 import 'package:atpost_app/features/channels/channel_detail_screen.dart';
@@ -90,9 +90,12 @@ class _AuthRouterRefresh extends ChangeNotifier {
 
 final appRouterProvider = Provider<GoRouter>((ref) {
   final authService = ref.watch(authServiceProvider);
+  final refresh = _AuthRouterRefresh(authService.stateStream);
+  ref.onDispose(refresh.dispose);
 
   return GoRouter(
     initialLocation: '/splash',
+    refreshListenable: refresh,
     redirect: (context, state) async {
       final path = state.uri.path;
 

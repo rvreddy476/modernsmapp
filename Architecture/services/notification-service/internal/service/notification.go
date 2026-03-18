@@ -275,16 +275,16 @@ func (s *Service) DeleteNotification(ctx context.Context, userID uuid.UUID, buck
 	return s.scyllaStore.DeleteNotification(ctx, userID, bucket, tsUUID)
 }
 
-// GetPreferences returns notification preferences for a user.
-func (s *Service) GetPreferences(ctx context.Context, userID uuid.UUID) (*postgres.NotificationPreferences, error) {
+// GetPreferences returns legacy notification preferences for a user.
+func (s *Service) GetPreferences(ctx context.Context, userID uuid.UUID) (*postgres.NotificationPreferencesLegacy, error) {
 	if s.pgStore == nil {
-		return &postgres.NotificationPreferences{UserID: userID, EmailEnabled: true, PushEnabled: true}, nil
+		return &postgres.NotificationPreferencesLegacy{UserID: userID, EmailEnabled: true, PushEnabled: true}, nil
 	}
 	return s.pgStore.GetPreferences(ctx, userID)
 }
 
-// UpdatePreferences updates notification preferences for a user.
-func (s *Service) UpdatePreferences(ctx context.Context, prefs *postgres.NotificationPreferences) error {
+// UpdatePreferences updates legacy notification preferences for a user.
+func (s *Service) UpdatePreferences(ctx context.Context, prefs *postgres.NotificationPreferencesLegacy) error {
 	if s.pgStore == nil {
 		return fmt.Errorf("PG store not configured")
 	}
@@ -307,16 +307,16 @@ func (s *Service) UnregisterDevice(ctx context.Context, deviceID, userID uuid.UU
 	return s.pgStore.UnregisterDevice(ctx, deviceID, userID)
 }
 
-// GetPreferencesV2 returns the granular v2 notification preferences for a user.
-func (s *Service) GetPreferencesV2(ctx context.Context, userID string) (*postgres.NotificationPreferencesV2, error) {
+// GetNotifPreferences returns the granular v2 notification preferences for a user.
+func (s *Service) GetNotifPreferences(ctx context.Context, userID string) (*postgres.NotificationPreferences, error) {
 	if s.pgStore == nil {
 		return nil, fmt.Errorf("PG store not configured")
 	}
 	return s.pgStore.GetNotificationPreferences(ctx, userID)
 }
 
-// UpdatePreferencesV2 updates the granular v2 notification preferences for a user.
-func (s *Service) UpdatePreferencesV2(ctx context.Context, prefs *postgres.NotificationPreferencesV2) error {
+// UpdateNotifPreferences updates the granular v2 notification preferences for a user.
+func (s *Service) UpdateNotifPreferences(ctx context.Context, prefs *postgres.NotificationPreferences) error {
 	if s.pgStore == nil {
 		return fmt.Errorf("PG store not configured")
 	}

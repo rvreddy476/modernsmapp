@@ -44,7 +44,7 @@ func ResolveDelivery(ctx context.Context, db *pgxpool.Pool, rdb *redis.Client, r
 	}
 
 	// Load user preferences from the v2 table.
-	prefs, err := loadPreferencesV2(ctx, db, recipientID)
+	prefs, err := loadNotifPreferences(ctx, db, recipientID)
 	if err != nil {
 		slog.Warn("preference resolution: failed to load prefs, using template defaults",
 			"user", recipientID, "error", err)
@@ -57,7 +57,7 @@ func ResolveDelivery(ctx context.Context, db *pgxpool.Pool, rdb *redis.Client, r
 	}
 
 	// Level 2: Quiet hours — defer push, don't drop.
-	if decision.SendPush && prefs.QuietHoursEnabled && isInQuietHoursV2(prefs) {
+	if decision.SendPush && prefs.QuietHoursEnabled && isInQuietHours(prefs) {
 		// Security/system alerts ignore quiet hours.
 		if template.Priority != "critical" && template.EventType != "system.login_alert" {
 			decision.SendPush = false
@@ -98,10 +98,10 @@ func ResolveDelivery(ctx context.Context, db *pgxpool.Pool, rdb *redis.Client, r
 	return decision
 }
 
-// loadPreferencesV2 queries the notification_preferences_v2 table.
+// loadNotifPreferences queries the notification_preferences table.
 // On error or missing row, returns sensible defaults.
-func loadPreferencesV2(ctx context.Context, db *pgxpool.Pool, userID string) (*postgres.NotificationPreferencesV2, error) {
-	var p postgres.NotificationPreferencesV2
+func loadNotifPreferences(ctx context.Context, db *pgxpool.Pool, userID string) (*postgres.NotificationPreferences, error) {
+	var p postgres.NotificationPreferences
 	err := db.QueryRow(ctx, `SELECT
 		user_id, push_enabled, email_enabled, quiet_hours_enabled,
 		quiet_hours_start, quiet_hours_end, quiet_hours_tz,
@@ -112,7 +112,7 @@ func loadPreferencesV2(ctx context.Context, db *pgxpool.Pool, userID string) (*p
 		push_community_posts, push_community_mentions,
 		push_event_reminders, push_system,
 		email_digest, updated_at
-		FROM notification_preferences_v2 WHERE user_id = $1`, userID).Scan(
+		FROM notification_preferences WHERE user_id = $1`, userID).Scan(
 		&p.UserID, &p.PushEnabled, &p.EmailEnabled, &p.QuietHoursEnabled,
 		&p.QuietHoursStart, &p.QuietHoursEnd, &p.QuietHoursTZ,
 		&p.PushLikes, &p.PushSuperLikes, &p.PushComments, &p.PushReplies,
@@ -125,7 +125,7 @@ func loadPreferencesV2(ctx context.Context, db *pgxpool.Pool, userID string) (*p
 	)
 	if err != nil {
 		// Return defaults — likes off, system on, etc.
-		return &postgres.NotificationPreferencesV2{
+		return &postgres.NotificationPreferences{
 			UserID:                userID,
 			PushEnabled:           true,
 			EmailEnabled:          false,
@@ -149,9 +149,9 @@ func loadPreferencesV2(ctx context.Context, db *pgxpool.Pool, userID string) (*p
 	return &p, nil
 }
 
-// isInQuietHoursV2 checks whether the current moment falls within the user's quiet window.
+// isInQuietHours checks whether the current moment falls within the user's quiet window.
 // Handles cross-midnight ranges (e.g. 22:00–07:00).
-func isInQuietHoursV2(p *postgres.NotificationPreferencesV2) bool {
+func isInQuietHours(p *postgres.NotificationPreferences) bool {
 	if p.QuietHoursStart == nil || p.QuietHoursEnd == nil {
 		return false
 	}
@@ -197,7 +197,7 @@ func parseTimeMins(s string) int {
 }
 
 // checkCategoryToggle checks whether the per-category push toggle allows this event type.
-func checkCategoryToggle(p *postgres.NotificationPreferencesV2, eventType string) bool {
+func checkCategoryToggle(p *postgres.NotificationPreferences, eventType string) bool {
 	switch eventType {
 	case "post.liked":
 		return p.PushLikes

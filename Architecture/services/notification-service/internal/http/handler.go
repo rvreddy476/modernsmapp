@@ -53,8 +53,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.DELETE("/devices/:id", h.UnregisterDevice)
 		v1.GET("/digests", h.GetDigests)
 		v1.POST("/bundle", h.BundleNotification)
-		v1.GET("/preferences/v2", h.GetPreferencesV2)
-		v1.PUT("/preferences/v2", h.UpdatePreferencesV2)
+		v1.GET("/preferences/detailed", h.GetNotifPreferences)
+		v1.PUT("/preferences/detailed", h.UpdateNotifPreferences)
 	}
 
 	// Unread and read-marker APIs
@@ -393,15 +393,15 @@ func (h *Handler) BundleNotification(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "ok"}, nil)
 }
 
-// GetPreferencesV2 handles GET /v1/notifications/preferences/v2
-func (h *Handler) GetPreferencesV2(c *gin.Context) {
+// GetNotifPreferences handles GET /v1/notifications/preferences (granular)
+func (h *Handler) GetNotifPreferences(c *gin.Context) {
 	userID := c.GetHeader("X-User-Id")
 	if userID == "" {
 		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing user ID", nil, nil)
 		return
 	}
 
-	prefs, err := h.svc.GetPreferencesV2(c.Request.Context(), userID)
+	prefs, err := h.svc.GetNotifPreferences(c.Request.Context(), userID)
 	if err != nil {
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get preferences", nil, nil)
 		return
@@ -410,8 +410,8 @@ func (h *Handler) GetPreferencesV2(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, prefs, nil)
 }
 
-// UpdatePreferencesV2Request is the request body for PUT /v1/notifications/preferences/v2.
-type UpdatePreferencesV2Request struct {
+// UpdateNotifPreferencesRequest is the request body for PUT /v1/notifications/preferences (granular).
+type UpdateNotifPreferencesRequest struct {
 	PushEnabled         *bool   `json:"push_enabled"`
 	EmailEnabled        *bool   `json:"email_enabled"`
 	QuietHoursEnabled   *bool   `json:"quiet_hours_enabled"`
@@ -436,22 +436,22 @@ type UpdatePreferencesV2Request struct {
 	EmailDigest         *string `json:"email_digest"`
 }
 
-// UpdatePreferencesV2 handles PUT /v1/notifications/preferences/v2
-func (h *Handler) UpdatePreferencesV2(c *gin.Context) {
+// UpdateNotifPreferences handles PUT /v1/notifications/preferences (granular)
+func (h *Handler) UpdateNotifPreferences(c *gin.Context) {
 	userID := c.GetHeader("X-User-Id")
 	if userID == "" {
 		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing user ID", nil, nil)
 		return
 	}
 
-	var req UpdatePreferencesV2Request
+	var req UpdateNotifPreferencesRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
 		return
 	}
 
 	// Fetch current, merge updates
-	current, err := h.svc.GetPreferencesV2(c.Request.Context(), userID)
+	current, err := h.svc.GetNotifPreferences(c.Request.Context(), userID)
 	if err != nil {
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
 		return
@@ -525,7 +525,7 @@ func (h *Handler) UpdatePreferencesV2(c *gin.Context) {
 	}
 	current.UserID = userID
 
-	if err := h.svc.UpdatePreferencesV2(c.Request.Context(), current); err != nil {
+	if err := h.svc.UpdateNotifPreferences(c.Request.Context(), current); err != nil {
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to update preferences", nil, nil)
 		return
 	}
