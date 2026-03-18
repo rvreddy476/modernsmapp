@@ -1,4 +1,4 @@
-import 'dart:async';
+﻿import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
@@ -181,3 +181,4 @@ final realtimeServiceProvider = Provider<RealtimeService>((ref) {
 // NOTE: signalingServiceProvider has been removed from here to resolve
 // duplicate provider conflict. The auth-wired version is defined in
 // signaling_service.dart and is used by CallService.
+

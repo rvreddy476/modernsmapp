@@ -118,8 +118,19 @@ class AuthService {
         }
       }
       AppLogger.warn('Login failed: Invalid response structure', tag: _tag);
+    } on DioException catch (e, stack) {
+      final statusCode = e.response?.statusCode;
+      final responseData = e.response?.data;
+      AppLogger.error(
+        'Login request failed: status=$statusCode, response=$responseData, type=${e.type}, message=${e.message}',
+        tag: _tag, error: e, stackTrace: stack,
+      );
+      // Rate limited — clear and retry hint
+      if (statusCode == 429) {
+        AppLogger.warn('Rate limited — wait a moment and retry', tag: _tag);
+      }
     } catch (e, stack) {
-      AppLogger.error('Login request failed', tag: _tag, error: e, stackTrace: stack);
+      AppLogger.error('Login request failed (non-Dio): ${e.runtimeType}: $e', tag: _tag, error: e, stackTrace: stack);
     }
     return false;
   }

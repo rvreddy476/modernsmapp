@@ -15,6 +15,11 @@ func New(db *pgxpool.Pool) *MetaStore {
 	return &MetaStore{db: db}
 }
 
+// DB returns the underlying database pool for direct queries.
+func (s *MetaStore) DB() *pgxpool.Pool {
+	return s.db
+}
+
 // IsCeleb checks if an author is a celebrity
 func (s *MetaStore) IsCeleb(ctx context.Context, authorID uuid.UUID) (bool, error) {
 	var isCeleb bool

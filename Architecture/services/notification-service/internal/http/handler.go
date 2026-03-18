@@ -53,7 +53,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.DELETE("/devices/:id", h.UnregisterDevice)
 		v1.GET("/digests", h.GetDigests)
 		v1.POST("/bundle", h.BundleNotification)
+		v1.GET("/preferences/v2", h.GetPreferencesV2)
+		v1.PUT("/preferences/v2", h.UpdatePreferencesV2)
 	}
+
+	// Unread and read-marker APIs
+	r.POST("/v1/unread/bulk", h.BulkUnread)
+	r.POST("/v1/read-marker", h.ReadMarker)
 }
 
 func (h *Handler) GetNotifications(c *gin.Context) {
@@ -385,6 +391,146 @@ func (h *Handler) BundleNotification(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "ok"}, nil)
+}
+
+// GetPreferencesV2 handles GET /v1/notifications/preferences/v2
+func (h *Handler) GetPreferencesV2(c *gin.Context) {
+	userID := c.GetHeader("X-User-Id")
+	if userID == "" {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing user ID", nil, nil)
+		return
+	}
+
+	prefs, err := h.svc.GetPreferencesV2(c.Request.Context(), userID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get preferences", nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, prefs, nil)
+}
+
+// UpdatePreferencesV2Request is the request body for PUT /v1/notifications/preferences/v2.
+type UpdatePreferencesV2Request struct {
+	PushEnabled         *bool   `json:"push_enabled"`
+	EmailEnabled        *bool   `json:"email_enabled"`
+	QuietHoursEnabled   *bool   `json:"quiet_hours_enabled"`
+	QuietHoursStart     *string `json:"quiet_hours_start"`
+	QuietHoursEnd       *string `json:"quiet_hours_end"`
+	QuietHoursTZ        *string `json:"quiet_hours_tz"`
+	PushLikes           *bool   `json:"push_likes"`
+	PushSuperLikes      *bool   `json:"push_super_likes"`
+	PushComments        *bool   `json:"push_comments"`
+	PushReplies         *bool   `json:"push_replies"`
+	PushMentions        *bool   `json:"push_mentions"`
+	PushFollows         *bool   `json:"push_follows"`
+	PushFriendRequests  *bool   `json:"push_friend_requests"`
+	PushGroupPosts      *bool   `json:"push_group_posts"`
+	PushGroupMentions   *bool   `json:"push_group_mentions"`
+	PushChannelUpdates  *bool   `json:"push_channel_updates"`
+	PushChannelUrgent   *bool   `json:"push_channel_urgent"`
+	PushCommunityPosts  *bool   `json:"push_community_posts"`
+	PushCommunityMentions *bool `json:"push_community_mentions"`
+	PushEventReminders  *bool   `json:"push_event_reminders"`
+	PushSystem          *bool   `json:"push_system"`
+	EmailDigest         *string `json:"email_digest"`
+}
+
+// UpdatePreferencesV2 handles PUT /v1/notifications/preferences/v2
+func (h *Handler) UpdatePreferencesV2(c *gin.Context) {
+	userID := c.GetHeader("X-User-Id")
+	if userID == "" {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing user ID", nil, nil)
+		return
+	}
+
+	var req UpdatePreferencesV2Request
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		return
+	}
+
+	// Fetch current, merge updates
+	current, err := h.svc.GetPreferencesV2(c.Request.Context(), userID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+
+	if req.PushEnabled != nil {
+		current.PushEnabled = *req.PushEnabled
+	}
+	if req.EmailEnabled != nil {
+		current.EmailEnabled = *req.EmailEnabled
+	}
+	if req.QuietHoursEnabled != nil {
+		current.QuietHoursEnabled = *req.QuietHoursEnabled
+	}
+	if req.QuietHoursStart != nil {
+		current.QuietHoursStart = req.QuietHoursStart
+	}
+	if req.QuietHoursEnd != nil {
+		current.QuietHoursEnd = req.QuietHoursEnd
+	}
+	if req.QuietHoursTZ != nil {
+		current.QuietHoursTZ = req.QuietHoursTZ
+	}
+	if req.PushLikes != nil {
+		current.PushLikes = *req.PushLikes
+	}
+	if req.PushSuperLikes != nil {
+		current.PushSuperLikes = *req.PushSuperLikes
+	}
+	if req.PushComments != nil {
+		current.PushComments = *req.PushComments
+	}
+	if req.PushReplies != nil {
+		current.PushReplies = *req.PushReplies
+	}
+	if req.PushMentions != nil {
+		current.PushMentions = *req.PushMentions
+	}
+	if req.PushFollows != nil {
+		current.PushFollows = *req.PushFollows
+	}
+	if req.PushFriendRequests != nil {
+		current.PushFriendRequests = *req.PushFriendRequests
+	}
+	if req.PushGroupPosts != nil {
+		current.PushGroupPosts = *req.PushGroupPosts
+	}
+	if req.PushGroupMentions != nil {
+		current.PushGroupMentions = *req.PushGroupMentions
+	}
+	if req.PushChannelUpdates != nil {
+		current.PushChannelUpdates = *req.PushChannelUpdates
+	}
+	if req.PushChannelUrgent != nil {
+		current.PushChannelUrgent = *req.PushChannelUrgent
+	}
+	if req.PushCommunityPosts != nil {
+		current.PushCommunityPosts = *req.PushCommunityPosts
+	}
+	if req.PushCommunityMentions != nil {
+		current.PushCommunityMentions = *req.PushCommunityMentions
+	}
+	if req.PushEventReminders != nil {
+		current.PushEventReminders = *req.PushEventReminders
+	}
+	if req.PushSystem != nil {
+		current.PushSystem = *req.PushSystem
+	}
+	if req.EmailDigest != nil {
+		current.EmailDigest = *req.EmailDigest
+	}
+	current.UserID = userID
+
+	if err := h.svc.UpdatePreferencesV2(c.Request.Context(), current); err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to update preferences", nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, current, nil)
 }
 
 // StreamNotifications uses SSE to push real-time notifications from Redis pub/sub

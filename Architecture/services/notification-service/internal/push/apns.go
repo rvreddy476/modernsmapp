@@ -88,13 +88,24 @@ func (a *APNSPusher) Send(ctx context.Context, token, _, title, body string, dat
 		return err
 	}
 
+	aps := map[string]interface{}{
+		"alert": map[string]string{"title": title, "body": body},
+		"sound": "default",
+	}
+
+	// Apply collapse key as APNs thread-id for notification grouping.
+	collapseKey := data["collapse_key"]
+	if collapseKey != "" {
+		aps["thread-id"] = collapseKey
+	}
+
 	payload := map[string]interface{}{
-		"aps": map[string]interface{}{
-			"alert": map[string]string{"title": title, "body": body},
-			"sound": "default",
-		},
+		"aps": aps,
 	}
 	for k, v := range data {
+		if k == "collapse_key" {
+			continue // already applied as thread-id
+		}
 		payload[k] = v
 	}
 	b, _ := json.Marshal(payload)
@@ -108,6 +119,11 @@ func (a *APNSPusher) Send(ctx context.Context, token, _, title, body string, dat
 	req.Header.Set("Authorization", "bearer "+tokenStr)
 	req.Header.Set("apns-topic", a.bundleID)
 	req.Header.Set("Content-Type", "application/json")
+
+	// Set apns-collapse-id header — APNs uses this to replace notifications on the device.
+	if collapseKey != "" {
+		req.Header.Set("apns-collapse-id", collapseKey)
+	}
 
 	resp, err := a.httpClient.Do(req)
 	if err != nil {

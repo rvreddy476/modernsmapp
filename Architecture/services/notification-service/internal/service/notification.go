@@ -90,9 +90,14 @@ func (s *Service) CreateNotification(ctx context.Context, userID, actorID uuid.U
 				}
 				if prefs.PushEnabled && !isQuietHours(quietStart, quietEnd) {
 					title, body := notifTitleBody(notifType)
+					pushData := map[string]string{"type": notifType}
+					// Compute collapse key so repeated notifications (e.g. many likes)
+					// replace each other on the device instead of flooding.
+					if ck := GetCollapseKey(notifType, entityID.String(), userID.String()); ck != "" {
+						pushData["collapse_key"] = ck
+					}
 					for _, t := range tokens {
-						if err := s.pusher.Send(ctx, t.PushToken, t.Platform, title, body,
-							map[string]string{"type": notifType}); err != nil {
+						if err := s.pusher.Send(ctx, t.PushToken, t.Platform, title, body, pushData); err != nil {
 							slog.Warn("push: send failed", "error", err, "platform", t.Platform)
 						}
 					}
@@ -300,6 +305,22 @@ func (s *Service) UnregisterDevice(ctx context.Context, deviceID, userID uuid.UU
 		return fmt.Errorf("PG store not configured")
 	}
 	return s.pgStore.UnregisterDevice(ctx, deviceID, userID)
+}
+
+// GetPreferencesV2 returns the granular v2 notification preferences for a user.
+func (s *Service) GetPreferencesV2(ctx context.Context, userID string) (*postgres.NotificationPreferencesV2, error) {
+	if s.pgStore == nil {
+		return nil, fmt.Errorf("PG store not configured")
+	}
+	return s.pgStore.GetNotificationPreferences(ctx, userID)
+}
+
+// UpdatePreferencesV2 updates the granular v2 notification preferences for a user.
+func (s *Service) UpdatePreferencesV2(ctx context.Context, prefs *postgres.NotificationPreferencesV2) error {
+	if s.pgStore == nil {
+		return fmt.Errorf("PG store not configured")
+	}
+	return s.pgStore.UpdateNotificationPreferences(ctx, prefs)
 }
 
 // DeleteNotificationsForUser removes all notifications for the given user (GDPR erasure).

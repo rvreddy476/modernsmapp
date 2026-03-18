@@ -31,15 +31,25 @@ func (f *FCMPusher) Send(ctx context.Context, token, platform, title, body strin
 		return nil // FCM not configured, skip silently
 	}
 
-	payload := map[string]interface{}{
-		"message": map[string]interface{}{
-			"token": token,
-			"notification": map[string]string{
-				"title": title,
-				"body":  body,
-			},
-			"data": data,
+	msg := map[string]interface{}{
+		"token": token,
+		"notification": map[string]string{
+			"title": title,
+			"body":  body,
 		},
+		"data": data,
+	}
+
+	// Apply collapse key if provided in data.
+	// FCM collapse_key causes the latest notification to replace older ones with the same key.
+	if ck, ok := data["collapse_key"]; ok && ck != "" {
+		msg["android"] = map[string]interface{}{
+			"collapse_key": ck,
+		}
+	}
+
+	payload := map[string]interface{}{
+		"message": msg,
 	}
 
 	b, _ := json.Marshal(payload)

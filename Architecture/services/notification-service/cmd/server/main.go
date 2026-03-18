@@ -12,6 +12,7 @@ import (
 	"github.com/atpost/notification-service/internal/service"
 	"github.com/atpost/notification-service/internal/store/postgres"
 	"github.com/atpost/notification-service/internal/store/scylla"
+	"github.com/atpost/notification-service/internal/workers"
 	"github.com/atpost/shared/health"
 	"github.com/atpost/shared/middleware"
 	"github.com/atpost/shared/o11y/logging"
@@ -125,6 +126,15 @@ func main() {
 	)
 	go callConsumer.Start(ctx)
 	slog.Info("kafka call consumer started", "topic", "call.notifications")
+
+	// 9b. Background workers
+	go workers.StartCleanupWorker(ctx, session)
+	go workers.StartReconciliationWorker(ctx, session, rdb)
+	if dbPool != nil && pgStore != nil {
+		go workers.StartDigestWorker(ctx, dbPool, pgStore, session)
+		slog.Info("digest worker started")
+	}
+	slog.Info("background workers started")
 
 	// 10. HTTP Server
 	gin.SetMode(gin.ReleaseMode)

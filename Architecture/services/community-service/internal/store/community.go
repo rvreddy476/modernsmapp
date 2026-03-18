@@ -549,6 +549,80 @@ func (s *Store) ListModlog(ctx context.Context, communityID uuid.UUID, limit, of
 	return entries, rows.Err()
 }
 
+// --- Space Follow operations ---
+
+// AutoFollowDefaultSpaces auto-follows a user to default/announcements/welcome spaces
+// when they join a community.
+func (s *Store) AutoFollowDefaultSpaces(ctx context.Context, communityID, userID uuid.UUID) error {
+	// Find spaces that are announcements, welcome, or marked as default
+	rows, err := s.db.Query(ctx, `
+		SELECT id FROM community_spaces
+		WHERE community_id = $1
+		  AND (space_type IN ('announcements', 'welcome') OR is_default = TRUE)
+	`, communityID)
+	if err != nil {
+		return fmt.Errorf("failed to query default spaces: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var spaceID uuid.UUID
+		if err := rows.Scan(&spaceID); err != nil {
+			return fmt.Errorf("failed to scan space: %w", err)
+		}
+		_, err := s.db.Exec(ctx, `
+			INSERT INTO community_space_follows (community_id, space_id, user_id)
+			VALUES ($1, $2, $3)
+			ON CONFLICT (community_id, space_id, user_id) DO NOTHING
+		`, communityID, spaceID, userID.String())
+		if err != nil {
+			return fmt.Errorf("failed to auto-follow space %s: %w", spaceID, err)
+		}
+	}
+	return rows.Err()
+}
+
+// FollowSpace allows a user to follow a specific space.
+func (s *Store) FollowSpace(ctx context.Context, communityID, spaceID, userID uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO community_space_follows (community_id, space_id, user_id)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (community_id, space_id, user_id) DO NOTHING
+	`, communityID, spaceID, userID.String())
+	return err
+}
+
+// UnfollowSpace removes a user's follow on a specific space.
+func (s *Store) UnfollowSpace(ctx context.Context, communityID, spaceID, userID uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `
+		DELETE FROM community_space_follows
+		WHERE community_id = $1 AND space_id = $2 AND user_id = $3
+	`, communityID, spaceID, userID.String())
+	return err
+}
+
+// GetFollowedSpaces returns space IDs a user follows in a community.
+func (s *Store) GetFollowedSpaces(ctx context.Context, communityID, userID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT space_id FROM community_space_follows
+		WHERE community_id = $1 AND user_id = $2
+	`, communityID, userID.String())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var spaceIDs []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		spaceIDs = append(spaceIDs, id)
+	}
+	return spaceIDs, rows.Err()
+}
+
 // --- GDPR helpers ---
 
 func (s *Store) RemoveUserFromAll(ctx context.Context, userID uuid.UUID) error {

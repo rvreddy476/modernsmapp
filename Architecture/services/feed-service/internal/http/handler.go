@@ -39,6 +39,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 	v1 := r.Group("/v1/feed")
 	{
+		v1.GET("/delta", h.FeedDelta)
 		v1.GET("/home", h.GetHomeFeed)
 		v1.GET("/reels", h.GetReelFeed)
 		v1.GET("/flicks", h.GetFlickFeed)

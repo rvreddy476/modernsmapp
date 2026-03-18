@@ -5,6 +5,16 @@ import 'package:image_picker/image_picker.dart';
 
 enum PostType { text, photo, video, article, poll }
 
+/// Maps PostType to backend content_type value
+String postTypeToContentType(PostType type) {
+  switch (type) {
+    case PostType.poll:
+      return 'poll';
+    default:
+      return 'post';
+  }
+}
+
 enum PostVisibility { public, followers, private }
 
 class CreationState {
@@ -158,7 +168,7 @@ class CreationNotifier extends StateNotifier<CreationState> {
 
       await _postRepo.createPost(
         text: state.text,
-        contentType: state.type.name,
+        contentType: postTypeToContentType(state.type),
         visibility: state.visibility.name,
         mediaIds: mediaIds.isEmpty ? null : mediaIds,
         tags: state.tags.isEmpty ? null : state.tags,

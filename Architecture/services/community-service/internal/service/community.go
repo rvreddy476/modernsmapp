@@ -402,6 +402,10 @@ func (s *Service) JoinCommunity(ctx context.Context, communityID, userID uuid.UU
 		if err := s.store.IncrementMemberCount(ctx, communityID, 1); err != nil {
 			slog.Warn("failed to increment member count", "error", err)
 		}
+		// Auto-follow default spaces (announcements, welcome, is_default)
+		if err := s.store.AutoFollowDefaultSpaces(ctx, communityID, userID); err != nil {
+			slog.Warn("failed to auto-follow default spaces", "community_id", communityID, "user_id", userID, "error", err)
+		}
 		if s.producer != nil {
 			if err := s.producer.PublishMemberJoined(ctx, communityID, userID); err != nil {
 				slog.Warn("failed to publish community.member.joined event", "error", err)
@@ -836,6 +840,11 @@ func (s *Service) ApproveRequest(ctx context.Context, communityID, requestID, ac
 
 	if err := s.store.IncrementMemberCount(ctx, communityID, 1); err != nil {
 		slog.Warn("failed to increment member count", "error", err)
+	}
+
+	// Auto-follow default spaces for approved member
+	if err := s.store.AutoFollowDefaultSpaces(ctx, communityID, jr.UserID); err != nil {
+		slog.Warn("failed to auto-follow default spaces after approval", "community_id", communityID, "user_id", jr.UserID, "error", err)
 	}
 
 	if s.producer != nil {

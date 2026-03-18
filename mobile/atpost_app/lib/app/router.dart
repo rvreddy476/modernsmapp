@@ -1,3 +1,5 @@
+﻿import 'dart:async';
+
 import 'package:atpost_app/features/channels/channels_list_screen.dart';
 import 'package:atpost_app/features/channels/channel_detail_screen.dart';
 import 'package:atpost_app/features/channels/create_channel_screen.dart';
@@ -72,6 +74,20 @@ class _SplashScreen extends StatelessWidget {
   }
 }
 
+class _AuthRouterRefresh extends ChangeNotifier {
+  _AuthRouterRefresh(Stream<AuthState> stream) {
+    _subscription = stream.listen((_) => notifyListeners());
+  }
+
+  late final StreamSubscription<AuthState> _subscription;
+
+  @override
+  void dispose() {
+    _subscription.cancel();
+    super.dispose();
+  }
+}
+
 final appRouterProvider = Provider<GoRouter>((ref) {
   final authService = ref.watch(authServiceProvider);
 
@@ -86,15 +102,15 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       final isAuthenticated = authService.isAuthenticated;
       final isPublicRoute = _publicPaths.contains(path);
 
-      // Splash is only for the initial load — redirect once session is known
+      // Splash is only for the initial load â€” redirect once session is known
       if (path == '/splash') {
         return isAuthenticated ? '/' : '/login';
       }
 
-      // Not logged in → send to login (unless already on a public route)
+      // Not logged in â†’ send to login (unless already on a public route)
       if (!isAuthenticated && !isPublicRoute) return '/login';
 
-      // Logged in but on login/register → send to home
+      // Logged in but on login/register â†’ send to home
       if (isAuthenticated && isPublicRoute) return '/';
 
       return null; // no redirect
@@ -385,3 +401,4 @@ final appRouterProvider = Provider<GoRouter>((ref) {
     ],
   );
 });
+

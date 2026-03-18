@@ -156,6 +156,26 @@ func extractMentions(text string) []string {
 	return usernames
 }
 
+// DetectAndStoreMentions parses @username patterns from body text and inserts
+// them into the post_mentions table. Each unique username is stored with the
+// post ID and post type. Resolution from username to user_id happens at
+// notification time.
+func DetectAndStoreMentions(ctx context.Context, postID uuid.UUID, postType string, body string, store *postgres.Store) {
+	mentionPattern := regexp.MustCompile(`@([a-zA-Z0-9_.]{3,30})`)
+	matches := mentionPattern.FindAllStringSubmatch(body, -1)
+	seen := make(map[string]bool)
+	for _, match := range matches {
+		username := match[1]
+		if seen[username] {
+			continue
+		}
+		seen[username] = true
+		if err := store.InsertMention(ctx, postID, postType, username); err != nil {
+			log.Printf("Warning: failed to insert mention for @%s on post %s: %v", username, postID, err)
+		}
+	}
+}
+
 // flickMaxDurationSeconds is the maximum duration (inclusive) for a video to
 // be auto-classified as a "reel" (Flick). Videos longer than this are "video" (Long Video).
 // Flick = up to 3 minutes, Long Video = more than 3 minutes.
@@ -402,6 +422,11 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 
 	if err := s.pgStore.CreatePost(ctx, p); err != nil {
 		return nil, err
+	}
+
+	// Persist @mentions to post_mentions table
+	if len(mentions) > 0 {
+		DetectAndStoreMentions(ctx, p.ID, p.ContentType, p.Text, s.pgStore)
 	}
 
 	// Create video_metadata for video content types
