@@ -70,6 +70,10 @@ func (s *Service) SetProducer(p *communityevents.Producer) {
 	s.producer = p
 }
 
+func (s *Service) Store() *store.Store {
+	return s.store
+}
+
 // --- Community CRUD ---
 
 type CreateCommunityParams struct {

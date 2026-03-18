@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/atpost/feed-service/internal/consumers"
 	"github.com/atpost/feed-service/internal/events"
 	"github.com/atpost/feed-service/internal/http"
 	"github.com/atpost/feed-service/internal/pipeline"
@@ -130,6 +131,15 @@ func main() {
 	go consumer.Start(ctx)
 	defer consumer.Close()
 
+	// 11b. Channel update feed-inject consumer
+	channelConsumer := consumers.NewChannelUpdateConsumer(
+		[]string{kafkaBrokers},
+		timelineStore,
+		rdb,
+	)
+	go channelConsumer.Start(ctx)
+	defer channelConsumer.Close()
+
 	// 12. Gin with middleware stack
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
@@ -148,6 +158,7 @@ func main() {
 		ShutdownTimeout: 10 * time.Second,
 		OnShutdown: func() {
 			consumer.Close()
+			channelConsumer.Close()
 			rdb.Close()
 			scyllaSession.Close()
 			dbPool.Close()

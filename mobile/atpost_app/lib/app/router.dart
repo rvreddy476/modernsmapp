@@ -3,6 +3,7 @@ import 'package:atpost_app/features/channels/channel_detail_screen.dart';
 import 'package:atpost_app/features/channels/create_channel_screen.dart';
 import 'package:atpost_app/features/communities/communities_list_screen.dart';
 import 'package:atpost_app/features/communities/community_detail_screen.dart';
+import 'package:atpost_app/features/communities/community_space_screen.dart';
 import 'package:atpost_app/features/communities/create_community_screen.dart';
 import 'package:atpost_app/features/auth/forgot_password_screen.dart';
 import 'package:atpost_app/features/create/upload_progress_screen.dart';
@@ -16,7 +17,9 @@ import 'package:atpost_app/features/create/create_post_screen.dart';
 import 'package:atpost_app/features/create/flicks_caption_screen.dart';
 import 'package:atpost_app/features/create/flicks_editor_screen.dart';
 import 'package:atpost_app/features/discover/discover_screen.dart';
+import 'package:atpost_app/features/groups/group_admin_screen.dart';
 import 'package:atpost_app/features/groups/group_detail_screen.dart';
+import 'package:atpost_app/features/groups/group_post_composer_screen.dart';
 import 'package:atpost_app/features/groups/groups_list_screen.dart';
 import 'package:atpost_app/features/groups/create_group_screen.dart';
 import 'package:atpost_app/features/monetization/creator_analytics_screen.dart';
@@ -290,6 +293,13 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         builder: (context, state) => CommunityDetailScreen(
             communityId: state.pathParameters['communityId']!),
       ),
+      GoRoute(
+        path: '/communities/:communityId/spaces/:spaceId',
+        builder: (context, state) => CommunitySpaceScreen(
+          communityId: state.pathParameters['communityId']!,
+          spaceId: state.pathParameters['spaceId']!,
+        ),
+      ),
 
       // --- Groups ---
       GoRoute(
@@ -304,6 +314,16 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         path: '/groups/:groupId',
         builder: (context, state) =>
             GroupDetailScreen(groupId: state.pathParameters['groupId']!),
+      ),
+      GoRoute(
+        path: '/groups/:groupId/post',
+        builder: (context, state) => GroupPostComposerScreen(
+            groupId: state.pathParameters['groupId']!),
+      ),
+      GoRoute(
+        path: '/groups/:groupId/admin',
+        builder: (context, state) =>
+            GroupAdminScreen(groupId: state.pathParameters['groupId']!),
       ),
 
       // --- Monetization ---

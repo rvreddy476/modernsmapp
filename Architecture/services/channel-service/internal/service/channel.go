@@ -202,12 +202,17 @@ func (s *Service) GetChannel(ctx context.Context, channelID uuid.UUID, viewerID 
 	result := &ChannelWithMembership{BroadcastChannel: ch}
 
 	if viewerID != nil {
-		member, err := s.store.GetMember(ctx, channelID, *viewerID)
-		if err != nil {
-			slog.Warn("failed to get member state", "error", err)
-		}
-		if member != nil {
-			result.ViewerRole = member.Role
+		// Check owner_id first as authoritative source
+		if ch.OwnerID == *viewerID {
+			result.ViewerRole = "admin"
+		} else {
+			member, err := s.store.GetMember(ctx, channelID, *viewerID)
+			if err != nil {
+				slog.Warn("failed to get member state", "error", err)
+			}
+			if member != nil {
+				result.ViewerRole = member.Role
+			}
 		}
 	}
 
@@ -609,6 +614,237 @@ func (s *Service) GetMyChannels(ctx context.Context, ownerID uuid.UUID, limit, o
 
 func (s *Service) DiscoverChannels(ctx context.Context, limit, offset int) ([]store.BroadcastChannel, error) {
 	return s.store.DiscoverChannels(ctx, limit, offset)
+}
+
+// --- Engagement ---
+
+func (s *Service) SparkUpdate(ctx context.Context, channelID, updateID, userID uuid.UUID, isSupernova bool) error {
+	u, err := s.store.GetUpdate(ctx, updateID)
+	if err != nil {
+		return err
+	}
+	if u.ChannelID != channelID {
+		return fmt.Errorf("update not found")
+	}
+	return s.store.SparkUpdate(ctx, updateID, userID, isSupernova)
+}
+
+func (s *Service) UnsparkUpdate(ctx context.Context, channelID, updateID, userID uuid.UUID) error {
+	u, err := s.store.GetUpdate(ctx, updateID)
+	if err != nil {
+		return err
+	}
+	if u.ChannelID != channelID {
+		return fmt.Errorf("update not found")
+	}
+	return s.store.UnsparkUpdate(ctx, updateID, userID)
+}
+
+func (s *Service) StashUpdate(ctx context.Context, channelID, updateID, userID uuid.UUID) error {
+	u, err := s.store.GetUpdate(ctx, updateID)
+	if err != nil {
+		return err
+	}
+	if u.ChannelID != channelID {
+		return fmt.Errorf("update not found")
+	}
+	return s.store.StashUpdate(ctx, updateID, userID)
+}
+
+func (s *Service) UnstashUpdate(ctx context.Context, channelID, updateID, userID uuid.UUID) error {
+	u, err := s.store.GetUpdate(ctx, updateID)
+	if err != nil {
+		return err
+	}
+	if u.ChannelID != channelID {
+		return fmt.Errorf("update not found")
+	}
+	return s.store.UnstashUpdate(ctx, updateID, userID)
+}
+
+func (s *Service) EchoUpdate(ctx context.Context, channelID, updateID, userID uuid.UUID, echoType string) error {
+	u, err := s.store.GetUpdate(ctx, updateID)
+	if err != nil {
+		return err
+	}
+	if u.ChannelID != channelID {
+		return fmt.Errorf("update not found")
+	}
+	if echoType == "" {
+		echoType = "share"
+	}
+	return s.store.EchoUpdate(ctx, updateID, userID, echoType)
+}
+
+func (s *Service) RecordView(ctx context.Context, channelID, updateID, userID uuid.UUID) error {
+	u, err := s.store.GetUpdate(ctx, updateID)
+	if err != nil {
+		return err
+	}
+	if u.ChannelID != channelID {
+		return fmt.Errorf("update not found")
+	}
+	return s.store.RecordView(ctx, updateID, userID)
+}
+
+func (s *Service) ListComments(ctx context.Context, channelID, updateID uuid.UUID, sort string, limit, offset int) ([]store.UpdateComment, error) {
+	u, err := s.store.GetUpdate(ctx, updateID)
+	if err != nil {
+		return nil, err
+	}
+	if u.ChannelID != channelID {
+		return nil, fmt.Errorf("update not found")
+	}
+	return s.store.ListComments(ctx, updateID, sort, limit, offset)
+}
+
+func (s *Service) AddComment(ctx context.Context, channelID, updateID, userID uuid.UUID, body string, parentID *uuid.UUID) (*store.UpdateComment, error) {
+	u, err := s.store.GetUpdate(ctx, updateID)
+	if err != nil {
+		return nil, err
+	}
+	if u.ChannelID != channelID {
+		return nil, fmt.Errorf("update not found")
+	}
+	if body == "" {
+		return nil, fmt.Errorf("invalid: comment body is required")
+	}
+	return s.store.AddComment(ctx, updateID, userID, body, parentID)
+}
+
+func (s *Service) DeleteComment(ctx context.Context, channelID, updateID, commentID, userID uuid.UUID) error {
+	// Check if user is the channel owner (can delete any comment)
+	ch, err := s.store.GetChannelByID(ctx, channelID)
+	if err != nil {
+		return err
+	}
+	isOwner := ch.OwnerID == userID
+
+	// Also check admin/moderator role
+	if !isOwner {
+		member, err := s.store.GetMember(ctx, channelID, userID)
+		if err != nil {
+			return fmt.Errorf("failed to check membership: %w", err)
+		}
+		if member != nil && isAtLeast(member.Role, "moderator") {
+			isOwner = true
+		}
+	}
+
+	return s.store.DeleteComment(ctx, commentID, userID, isOwner)
+}
+
+func (s *Service) PinComment(ctx context.Context, channelID, updateID, commentID, userID uuid.UUID) error {
+	// Only admins+ can pin
+	member, err := s.store.GetMember(ctx, channelID, userID)
+	if err != nil {
+		return fmt.Errorf("failed to check membership: %w", err)
+	}
+	if member == nil || !isAtLeast(member.Role, "admin") {
+		return fmt.Errorf("forbidden: only admins and above can pin comments")
+	}
+	return s.store.PinComment(ctx, commentID)
+}
+
+func (s *Service) VoteOnPoll(ctx context.Context, channelID, updateID, userID uuid.UUID, optionIndexes []int) error {
+	u, err := s.store.GetUpdate(ctx, updateID)
+	if err != nil {
+		return err
+	}
+	if u.ChannelID != channelID {
+		return fmt.Errorf("update not found")
+	}
+	if u.UpdateType != "poll" {
+		return fmt.Errorf("invalid: this update is not a poll")
+	}
+
+	// Check if poll is expired via metadata
+	if u.Metadata != nil {
+		var meta map[string]interface{}
+		if err := json.Unmarshal(u.Metadata, &meta); err == nil {
+			if expiresStr, ok := meta["expires_at"].(string); ok {
+				if expiresAt, err := time.Parse(time.RFC3339, expiresStr); err == nil {
+					if time.Now().After(expiresAt) {
+						return fmt.Errorf("invalid: poll has expired")
+					}
+				}
+			}
+			// Check single-select constraint
+			if multiSelect, ok := meta["multi_select"].(bool); ok && !multiSelect {
+				voted, err := s.store.HasUserVoted(ctx, updateID, userID)
+				if err != nil {
+					return fmt.Errorf("failed to check vote status: %w", err)
+				}
+				if voted {
+					return fmt.Errorf("already voted on this poll")
+				}
+				if len(optionIndexes) > 1 {
+					return fmt.Errorf("invalid: only one option allowed for single-select polls")
+				}
+			}
+		}
+	}
+
+	if len(optionIndexes) == 0 {
+		return fmt.Errorf("invalid: at least one option is required")
+	}
+
+	return s.store.VoteOnPoll(ctx, updateID, userID, optionIndexes)
+}
+
+func (s *Service) GetPollResults(ctx context.Context, channelID, updateID uuid.UUID, viewerID *uuid.UUID) (*store.PollResultsResponse, error) {
+	u, err := s.store.GetUpdate(ctx, updateID)
+	if err != nil {
+		return nil, err
+	}
+	if u.ChannelID != channelID {
+		return nil, fmt.Errorf("update not found")
+	}
+
+	results, err := s.store.GetPollResults(ctx, updateID)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := &store.PollResultsResponse{Results: results}
+	if viewerID != nil {
+		voted, err := s.store.HasUserVoted(ctx, updateID, *viewerID)
+		if err == nil {
+			resp.UserVoted = voted
+		}
+	}
+	return resp, nil
+}
+
+func (s *Service) RSVPEvent(ctx context.Context, channelID, updateID, userID uuid.UUID, status string) error {
+	u, err := s.store.GetUpdate(ctx, updateID)
+	if err != nil {
+		return err
+	}
+	if u.ChannelID != channelID {
+		return fmt.Errorf("update not found")
+	}
+	if u.UpdateType != "event" {
+		return fmt.Errorf("invalid: this update is not an event")
+	}
+
+	validStatuses := map[string]bool{"going": true, "interested": true, "not_going": true}
+	if !validStatuses[status] {
+		return fmt.Errorf("invalid: status must be going, interested, or not_going")
+	}
+
+	return s.store.RSVPEvent(ctx, updateID, userID, status)
+}
+
+func (s *Service) ListAttendees(ctx context.Context, channelID, updateID uuid.UUID, status string, limit, offset int) ([]store.EventAttendee, error) {
+	u, err := s.store.GetUpdate(ctx, updateID)
+	if err != nil {
+		return nil, err
+	}
+	if u.ChannelID != channelID {
+		return nil, fmt.Errorf("update not found")
+	}
+	return s.store.ListAttendees(ctx, updateID, status, limit, offset)
 }
 
 // --- Schedule Worker ---

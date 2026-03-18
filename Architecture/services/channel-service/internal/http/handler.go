@@ -37,6 +37,22 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/:channelId/updates", h.ListUpdates)
 		v1.PUT("/:channelId/updates/:updateId", h.EditUpdate)
 		v1.DELETE("/:channelId/updates/:updateId", h.DeleteUpdate)
+
+		// Engagement
+		v1.POST("/:channelId/updates/:updateId/spark", h.SparkUpdate)
+		v1.DELETE("/:channelId/updates/:updateId/spark", h.UnsparkUpdate)
+		v1.POST("/:channelId/updates/:updateId/stash", h.StashUpdate)
+		v1.DELETE("/:channelId/updates/:updateId/stash", h.UnstashUpdate)
+		v1.POST("/:channelId/updates/:updateId/echo", h.EchoUpdate)
+		v1.POST("/:channelId/updates/:updateId/view", h.RecordView)
+		v1.GET("/:channelId/updates/:updateId/comments", h.ListComments)
+		v1.POST("/:channelId/updates/:updateId/comments", h.AddComment)
+		v1.DELETE("/:channelId/updates/:updateId/comments/:commentId", h.DeleteComment)
+		v1.POST("/:channelId/updates/:updateId/comments/:commentId/pin", h.PinComment)
+		v1.POST("/:channelId/updates/:updateId/vote", h.VoteOnPoll)
+		v1.GET("/:channelId/updates/:updateId/results", h.GetPollResults)
+		v1.POST("/:channelId/updates/:updateId/rsvp", h.RSVPEvent)
+		v1.GET("/:channelId/updates/:updateId/attendees", h.ListAttendees)
 	}
 
 }

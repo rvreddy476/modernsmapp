@@ -289,8 +289,17 @@ func (h *Handler) Login(c *gin.Context) {
 }
 
 func (h *Handler) Refresh(c *gin.Context) {
-	refreshToken, err := c.Cookie(refreshTokenCookieName)
-	if err != nil || refreshToken == "" {
+	// Try cookie first, then fall back to JSON body (for mobile clients)
+	refreshToken, _ := c.Cookie(refreshTokenCookieName)
+	if refreshToken == "" {
+		var body struct {
+			RefreshToken string `json:"refresh_token"`
+		}
+		if err := c.ShouldBindJSON(&body); err == nil && body.RefreshToken != "" {
+			refreshToken = body.RefreshToken
+		}
+	}
+	if refreshToken == "" {
 		h.log.Warn("missing refresh token", "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing refresh token", nil, nil)
 		return

@@ -18,7 +18,6 @@ class RegisterScreen extends ConsumerStatefulWidget {
 
 class _RegisterScreenState extends ConsumerState<RegisterScreen> {
   final _displayNameController = TextEditingController();
-  final _usernameController = TextEditingController();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   final _confirmPasswordController = TextEditingController();
@@ -30,7 +29,6 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
   @override
   void dispose() {
     _displayNameController.dispose();
-    _usernameController.dispose();
     _emailController.dispose();
     _passwordController.dispose();
     _confirmPasswordController.dispose();
@@ -39,13 +37,11 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
 
   String? _validate() {
     final displayName = _displayNameController.text.trim();
-    final username = _usernameController.text.trim();
     final email = _emailController.text.trim();
     final password = _passwordController.text;
     final confirm = _confirmPasswordController.text;
 
     if (displayName.isEmpty) return 'Display name is required.';
-    if (username.isEmpty) return 'Username is required.';
     if (email.isEmpty) return 'Email is required.';
     if (password.isEmpty) return 'Password is required.';
     if (password.length < 8) return 'Password must be at least 8 characters.';
@@ -65,15 +61,20 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
     setState(() => _loading = true);
 
     try {
+      // Split display name into first/last for backend
+      final nameParts = _displayNameController.text.trim().split(RegExp(r'\s+'));
+      final firstName = nameParts.first;
+      final lastName = nameParts.length > 1 ? nameParts.sublist(1).join(' ') : '';
+
       final response = await ref
           .read(apiClientProvider)
           .post(
             '${Environment.authPath}/register',
             data: {
-              'username': _usernameController.text.trim(),
               'email': _emailController.text.trim(),
               'password': _passwordController.text,
-              'display_name': _displayNameController.text.trim(),
+              'first_name': firstName,
+              'last_name': lastName,
             },
           );
 
@@ -157,17 +158,6 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
               _buildTextField(
                 controller: _displayNameController,
                 hint: 'Your full name',
-                textInputAction: TextInputAction.next,
-              ),
-
-              const SizedBox(height: 16),
-
-              // Username
-              _buildLabel('Username'),
-              const SizedBox(height: 6),
-              _buildTextField(
-                controller: _usernameController,
-                hint: '@yourhandle',
                 textInputAction: TextInputAction.next,
               ),
 

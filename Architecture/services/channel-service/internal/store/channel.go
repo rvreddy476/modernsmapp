@@ -72,6 +72,32 @@ type ChannelUpdate struct {
 	UpdatedAt     time.Time        `json:"updated_at"`
 }
 
+type UpdateComment struct {
+	ID        uuid.UUID  `json:"id"`
+	UpdateID  uuid.UUID  `json:"update_id"`
+	AuthorID  uuid.UUID  `json:"author_id"`
+	Body      string     `json:"body"`
+	ParentID  *uuid.UUID `json:"parent_id,omitempty"`
+	IsPinned  bool       `json:"is_pinned"`
+	CreatedAt time.Time  `json:"created_at"`
+}
+
+type PollResult struct {
+	OptionIndex int   `json:"option_index"`
+	VoteCount   int64 `json:"vote_count"`
+}
+
+type PollResultsResponse struct {
+	Results   []PollResult `json:"results"`
+	UserVoted bool         `json:"user_voted"`
+}
+
+type EventAttendee struct {
+	UserID    uuid.UUID `json:"user_id"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type Store struct {
 	db *pgxpool.Pool
 }
@@ -467,4 +493,260 @@ func (s *Store) CountChannelsByOwner(ctx context.Context, ownerID uuid.UUID, sin
 	var count int
 	err := s.db.QueryRow(ctx, `SELECT COUNT(*) FROM broadcast_channels WHERE owner_id = $1 AND created_at >= $2 AND status != 'deleted'`, ownerID, since).Scan(&count)
 	return count, err
+}
+
+// --- Engagement operations ---
+
+func (s *Store) SparkUpdate(ctx context.Context, updateID, userID uuid.UUID, isSupernova bool) error {
+	weight := 1
+	if isSupernova {
+		weight = 5
+	}
+	query := `INSERT INTO update_sparks (update_id, user_id, is_supernova, weight, created_at)
+		VALUES ($1, $2, $3, $4, NOW()) ON CONFLICT DO NOTHING`
+	tag, err := s.db.Exec(ctx, query, updateID, userID, isSupernova, weight)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("already sparked this update")
+	}
+	_, err = s.db.Exec(ctx,
+		`UPDATE channel_updates SET reaction_count = reaction_count + $2, updated_at = NOW() WHERE id = $1`,
+		updateID, weight)
+	return err
+}
+
+func (s *Store) UnsparkUpdate(ctx context.Context, updateID, userID uuid.UUID) error {
+	var weight int
+	err := s.db.QueryRow(ctx,
+		`DELETE FROM update_sparks WHERE update_id = $1 AND user_id = $2 RETURNING weight`,
+		updateID, userID).Scan(&weight)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("not found: spark not found")
+	}
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(ctx,
+		`UPDATE channel_updates SET reaction_count = GREATEST(reaction_count - $2, 0), updated_at = NOW() WHERE id = $1`,
+		updateID, weight)
+	return err
+}
+
+func (s *Store) StashUpdate(ctx context.Context, updateID, userID uuid.UUID) error {
+	query := `INSERT INTO update_stashes (update_id, user_id, created_at) VALUES ($1, $2, NOW()) ON CONFLICT DO NOTHING`
+	tag, err := s.db.Exec(ctx, query, updateID, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("already stashed this update")
+	}
+	_, err = s.db.Exec(ctx,
+		`UPDATE channel_updates SET stash_count = stash_count + 1, updated_at = NOW() WHERE id = $1`,
+		updateID)
+	return err
+}
+
+func (s *Store) UnstashUpdate(ctx context.Context, updateID, userID uuid.UUID) error {
+	tag, err := s.db.Exec(ctx,
+		`DELETE FROM update_stashes WHERE update_id = $1 AND user_id = $2`,
+		updateID, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("not found: stash not found")
+	}
+	_, err = s.db.Exec(ctx,
+		`UPDATE channel_updates SET stash_count = GREATEST(stash_count - 1, 0), updated_at = NOW() WHERE id = $1`,
+		updateID)
+	return err
+}
+
+func (s *Store) EchoUpdate(ctx context.Context, updateID, userID uuid.UUID, echoType string) error {
+	query := `INSERT INTO update_echoes (id, update_id, user_id, echo_type, created_at)
+		VALUES ($1, $2, $3, $4, NOW())`
+	_, err := s.db.Exec(ctx, query, uuid.New(), updateID, userID, echoType)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(ctx,
+		`UPDATE channel_updates SET forward_count = forward_count + 1, updated_at = NOW() WHERE id = $1`,
+		updateID)
+	return err
+}
+
+func (s *Store) RecordView(ctx context.Context, updateID, userID uuid.UUID) error {
+	query := `INSERT INTO update_views (update_id, user_id, created_at) VALUES ($1, $2, NOW()) ON CONFLICT DO NOTHING`
+	tag, err := s.db.Exec(ctx, query, updateID, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return nil // already viewed, no error
+	}
+	_, err = s.db.Exec(ctx,
+		`UPDATE channel_updates SET view_count = view_count + 1, updated_at = NOW() WHERE id = $1`,
+		updateID)
+	return err
+}
+
+func (s *Store) ListComments(ctx context.Context, updateID uuid.UUID, sort string, limit, offset int) ([]UpdateComment, error) {
+	orderClause := "is_pinned DESC, created_at DESC"
+	if sort == "oldest" {
+		orderClause = "is_pinned DESC, created_at ASC"
+	}
+	query := fmt.Sprintf(`SELECT id, update_id, author_id, body, parent_id, is_pinned, created_at
+		FROM update_comments WHERE update_id = $1
+		ORDER BY %s LIMIT $2 OFFSET $3`, orderClause)
+	rows, err := s.db.Query(ctx, query, updateID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var comments []UpdateComment
+	for rows.Next() {
+		var c UpdateComment
+		if err := rows.Scan(&c.ID, &c.UpdateID, &c.AuthorID, &c.Body, &c.ParentID, &c.IsPinned, &c.CreatedAt); err != nil {
+			return nil, err
+		}
+		comments = append(comments, c)
+	}
+	return comments, rows.Err()
+}
+
+func (s *Store) AddComment(ctx context.Context, updateID, userID uuid.UUID, body string, parentID *uuid.UUID) (*UpdateComment, error) {
+	c := &UpdateComment{
+		ID:       uuid.New(),
+		UpdateID: updateID,
+		AuthorID: userID,
+		Body:     body,
+		ParentID: parentID,
+	}
+	query := `INSERT INTO update_comments (id, update_id, author_id, body, parent_id, is_pinned, created_at)
+		VALUES ($1, $2, $3, $4, $5, false, NOW()) RETURNING created_at`
+	if err := s.db.QueryRow(ctx, query, c.ID, updateID, userID, body, parentID).Scan(&c.CreatedAt); err != nil {
+		return nil, err
+	}
+	_, _ = s.db.Exec(ctx,
+		`UPDATE channel_updates SET comment_count = comment_count + 1, updated_at = NOW() WHERE id = $1`,
+		updateID)
+	return c, nil
+}
+
+func (s *Store) DeleteComment(ctx context.Context, commentID, userID uuid.UUID, isOwner bool) error {
+	var query string
+	var args []any
+	if isOwner {
+		query = `DELETE FROM update_comments WHERE id = $1 RETURNING update_id`
+		args = []any{commentID}
+	} else {
+		query = `DELETE FROM update_comments WHERE id = $1 AND author_id = $2 RETURNING update_id`
+		args = []any{commentID, userID}
+	}
+
+	var updateID uuid.UUID
+	err := s.db.QueryRow(ctx, query, args...).Scan(&updateID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("not found: comment not found or not authorized")
+	}
+	if err != nil {
+		return err
+	}
+	_, _ = s.db.Exec(ctx,
+		`UPDATE channel_updates SET comment_count = GREATEST(comment_count - 1, 0), updated_at = NOW() WHERE id = $1`,
+		updateID)
+	return nil
+}
+
+func (s *Store) PinComment(ctx context.Context, commentID uuid.UUID) error {
+	// Get the update_id for this comment
+	var updateID uuid.UUID
+	err := s.db.QueryRow(ctx, `SELECT update_id FROM update_comments WHERE id = $1`, commentID).Scan(&updateID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("not found: comment not found")
+	}
+	if err != nil {
+		return err
+	}
+	// Unpin all other comments for this update
+	_, _ = s.db.Exec(ctx, `UPDATE update_comments SET is_pinned = false WHERE update_id = $1`, updateID)
+	// Pin the selected comment
+	_, err = s.db.Exec(ctx, `UPDATE update_comments SET is_pinned = true WHERE id = $1`, commentID)
+	return err
+}
+
+func (s *Store) VoteOnPoll(ctx context.Context, updateID, userID uuid.UUID, optionIndexes []int) error {
+	for _, idx := range optionIndexes {
+		query := `INSERT INTO poll_votes (update_id, user_id, option_index, created_at) VALUES ($1, $2, $3, NOW())`
+		if _, err := s.db.Exec(ctx, query, updateID, userID, idx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) GetPollResults(ctx context.Context, updateID uuid.UUID) ([]PollResult, error) {
+	query := `SELECT option_index, COUNT(*) as vote_count FROM poll_votes
+		WHERE update_id = $1 GROUP BY option_index ORDER BY option_index`
+	rows, err := s.db.Query(ctx, query, updateID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var results []PollResult
+	for rows.Next() {
+		var r PollResult
+		if err := rows.Scan(&r.OptionIndex, &r.VoteCount); err != nil {
+			return nil, err
+		}
+		results = append(results, r)
+	}
+	return results, rows.Err()
+}
+
+func (s *Store) HasUserVoted(ctx context.Context, updateID, userID uuid.UUID) (bool, error) {
+	var count int
+	err := s.db.QueryRow(ctx, `SELECT COUNT(*) FROM poll_votes WHERE update_id = $1 AND user_id = $2`, updateID, userID).Scan(&count)
+	return count > 0, err
+}
+
+func (s *Store) RSVPEvent(ctx context.Context, updateID, userID uuid.UUID, status string) error {
+	query := `INSERT INTO event_rsvps (update_id, user_id, status, created_at)
+		VALUES ($1, $2, $3, NOW())
+		ON CONFLICT (update_id, user_id) DO UPDATE SET status = $3`
+	_, err := s.db.Exec(ctx, query, updateID, userID, status)
+	return err
+}
+
+func (s *Store) ListAttendees(ctx context.Context, updateID uuid.UUID, status string, limit, offset int) ([]EventAttendee, error) {
+	var query string
+	var args []any
+	if status != "" {
+		query = `SELECT user_id, status, created_at FROM event_rsvps
+			WHERE update_id = $1 AND status = $2
+			ORDER BY created_at DESC LIMIT $3 OFFSET $4`
+		args = []any{updateID, status, limit, offset}
+	} else {
+		query = `SELECT user_id, status, created_at FROM event_rsvps
+			WHERE update_id = $1
+			ORDER BY created_at DESC LIMIT $2 OFFSET $3`
+		args = []any{updateID, limit, offset}
+	}
+	rows, err := s.db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var attendees []EventAttendee
+	for rows.Next() {
+		var a EventAttendee
+		if err := rows.Scan(&a.UserID, &a.Status, &a.CreatedAt); err != nil {
+			return nil, err
+		}
+		attendees = append(attendees, a)
+	}
+	return attendees, rows.Err()
 }

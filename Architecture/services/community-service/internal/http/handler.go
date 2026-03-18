@@ -45,6 +45,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/:communityId/modlog", h.GetModLog)
 	}
 
+	// Post, engagement, and wiki routes
+	h.registerPostRoutes(v1)
 }
 
 // --- Request structs ---

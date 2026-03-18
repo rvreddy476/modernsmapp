@@ -2,18 +2,15 @@ import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/models/group.dart';
-import 'package:atpost_app/data/models/post.dart';
 import 'package:atpost_app/data/models/user.dart';
+import 'package:atpost_app/data/repositories/group_posts_repository.dart';
 import 'package:atpost_app/data/repositories/groups_repository.dart';
+import 'package:atpost_app/providers/group_posts_provider.dart';
 import 'package:atpost_app/providers/groups_provider.dart';
+import 'package:atpost_app/shared/widgets/group_post_card.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-
-final _groupPostsProvider = FutureProvider.autoDispose
-    .family<List<Post>, String>((ref, groupId) async {
-      return ref.watch(groupsRepositoryProvider).getGroupPosts(groupId);
-    });
 
 final _groupMembersProvider = FutureProvider.autoDispose
     .family<List<User>, String>((ref, groupId) async {
@@ -78,6 +75,7 @@ class _GroupDetailBodyState extends ConsumerState<_GroupDetailBody> {
   late bool _joined;
   late int _memberCount;
   bool _joinBusy = false;
+  String? _selectedChannelId;
 
   @override
   void initState() {
@@ -337,6 +335,55 @@ class _GroupDetailBodyState extends ConsumerState<_GroupDetailBody> {
                   ),
                 ),
               ),
+              // Channel tabs (horizontal scroll)
+              SliverToBoxAdapter(
+                child: _ChannelTabs(
+                  groupId: widget.groupId,
+                  selectedChannelId: _selectedChannelId,
+                  onChannelSelected: (channelId) {
+                    setState(() => _selectedChannelId = channelId);
+                  },
+                ),
+              ),
+              // Mini composer bar
+              if (_joined)
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: AppSpacing.pagePadding.copyWith(top: 8, bottom: 4),
+                    child: GestureDetector(
+                      onTap: () =>
+                          context.push('/groups/${widget.groupId}/post'),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: AppColors.bgCard,
+                          borderRadius:
+                              BorderRadius.circular(AppSpacing.radiusLarge),
+                          border: Border.all(color: AppColors.borderSubtle),
+                        ),
+                        child: Row(
+                          children: [
+                            CircleAvatar(
+                              radius: 14,
+                              backgroundColor: AppColors.postbookPrimary
+                                  .withValues(alpha: 0.2),
+                              child: const Icon(Icons.edit,
+                                  size: 14,
+                                  color: AppColors.postbookPrimary),
+                            ),
+                            const SizedBox(width: 10),
+                            Text(
+                              'Write something...',
+                              style: AppTextStyles.body
+                                  .copyWith(color: AppColors.textDim),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
               SliverPersistentHeader(
                 pinned: true,
                 delegate: _TabBarDelegate(
@@ -356,10 +403,120 @@ class _GroupDetailBodyState extends ConsumerState<_GroupDetailBody> {
           },
           body: TabBarView(
             children: [
-              _GroupFeedTab(groupId: widget.groupId),
+              _GroupFeedTab(
+                groupId: widget.groupId,
+                channelId: _selectedChannelId,
+              ),
               _GroupMembersTab(groupId: widget.groupId),
               _GroupAboutTab(group: group),
             ],
+          ),
+        ),
+        // Admin FAB
+        floatingActionButton: group.isAdmin
+            ? FloatingActionButton(
+                onPressed: () =>
+                    context.push('/groups/${widget.groupId}/admin'),
+                backgroundColor: AppColors.postbookPrimary,
+                child: const Icon(Icons.admin_panel_settings,
+                    color: Colors.white),
+              )
+            : null,
+      ),
+    );
+  }
+}
+
+class _ChannelTabs extends ConsumerWidget {
+  final String groupId;
+  final String? selectedChannelId;
+  final ValueChanged<String?> onChannelSelected;
+
+  const _ChannelTabs({
+    required this.groupId,
+    required this.selectedChannelId,
+    required this.onChannelSelected,
+  });
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final channelsAsync = ref.watch(groupChannelsProvider(groupId));
+
+    return channelsAsync.when(
+      loading: () => const SizedBox.shrink(),
+      error: (_, _) => const SizedBox.shrink(),
+      data: (channels) {
+        if (channels.isEmpty) return const SizedBox.shrink();
+        return SizedBox(
+          height: 40,
+          child: ListView.builder(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 18),
+            itemCount: channels.length + 1,
+            itemBuilder: (context, index) {
+              if (index == 0) {
+                final isSelected = selectedChannelId == null;
+                return Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: _ChannelChip(
+                    label: 'All',
+                    isSelected: isSelected,
+                    onTap: () => onChannelSelected(null),
+                  ),
+                );
+              }
+              final ch = channels[index - 1];
+              final isSelected = selectedChannelId == ch.id;
+              return Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: _ChannelChip(
+                  label: '#${ch.name}',
+                  isSelected: isSelected,
+                  onTap: () => onChannelSelected(ch.id),
+                ),
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _ChannelChip extends StatelessWidget {
+  final String label;
+  final bool isSelected;
+  final VoidCallback onTap;
+
+  const _ChannelChip({
+    required this.label,
+    required this.isSelected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: isSelected
+              ? AppColors.postbookPrimary.withValues(alpha: 0.2)
+              : AppColors.bgCard,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: isSelected
+                ? AppColors.postbookPrimary
+                : AppColors.borderSubtle,
+          ),
+        ),
+        child: Text(
+          label,
+          style: AppTextStyles.labelSmall.copyWith(
+            color: isSelected
+                ? AppColors.postbookPrimary
+                : AppColors.textSecondary,
           ),
         ),
       ),
@@ -368,13 +525,16 @@ class _GroupDetailBodyState extends ConsumerState<_GroupDetailBody> {
 }
 
 class _GroupFeedTab extends ConsumerWidget {
-  const _GroupFeedTab({required this.groupId});
+  const _GroupFeedTab({required this.groupId, this.channelId});
 
   final String groupId;
+  final String? channelId;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final postsAsync = ref.watch(_groupPostsProvider(groupId));
+    final postsAsync = ref.watch(groupPostsProvider(
+      GroupPostsParams(groupId: groupId, channelId: channelId),
+    ));
 
     return postsAsync.when(
       loading: () => const Center(
@@ -385,7 +545,9 @@ class _GroupFeedTab extends ConsumerWidget {
           icon: Icons.article_outlined,
           message: 'Could not load group posts.',
           action: 'Retry',
-          onTap: () => ref.invalidate(_groupPostsProvider(groupId)),
+          onTap: () => ref.invalidate(groupPostsProvider(
+            GroupPostsParams(groupId: groupId, channelId: channelId),
+          )),
         ),
       ),
       data: (posts) {
@@ -395,7 +557,9 @@ class _GroupFeedTab extends ConsumerWidget {
               icon: Icons.notes_outlined,
               message: 'No posts have been shared yet.',
               action: 'Refresh',
-              onTap: () => ref.invalidate(_groupPostsProvider(groupId)),
+              onTap: () => ref.invalidate(groupPostsProvider(
+                GroupPostsParams(groupId: groupId, channelId: channelId),
+              )),
             ),
           );
         }
@@ -406,98 +570,25 @@ class _GroupFeedTab extends ConsumerWidget {
           separatorBuilder: (_, _) => const SizedBox(height: 10),
           itemBuilder: (context, index) {
             final post = posts[index];
-            return Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: AppColors.bgCard,
-                borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
-                border: Border.all(color: AppColors.borderSubtle),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      CircleAvatar(
-                        radius: 16,
-                        backgroundColor: AppColors.postbookPrimary.withValues(
-                          alpha: 0.2,
-                        ),
-                        child: Text(
-                          (post.authorName ?? '?')
-                              .substring(0, 1)
-                              .toUpperCase(),
-                          style: AppTextStyles.labelSmall.copyWith(
-                            color: AppColors.postbookPrimary,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          post.authorName ?? 'Unknown',
-                          style: AppTextStyles.label,
-                        ),
-                      ),
-                      Text(
-                        _timeAgo(post.createdAt),
-                        style: AppTextStyles.labelSmall,
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 10),
-                  Text(post.content, style: AppTextStyles.body),
-                  const SizedBox(height: 10),
-                  Row(
-                    children: [
-                      const Icon(
-                        Icons.favorite_border,
-                        size: 16,
-                        color: AppColors.textMuted,
-                      ),
-                      const SizedBox(width: 4),
-                      Text(
-                        '${post.likeCount}',
-                        style: AppTextStyles.labelSmall,
-                      ),
-                      const SizedBox(width: 12),
-                      const Icon(
-                        Icons.chat_bubble_outline,
-                        size: 16,
-                        color: AppColors.textMuted,
-                      ),
-                      const SizedBox(width: 4),
-                      Text(
-                        '${post.commentCount}',
-                        style: AppTextStyles.labelSmall,
-                      ),
-                      const Spacer(),
-                      TextButton(
-                        onPressed: () => context.push('/comments/${post.id}'),
-                        child: Text(
-                          'Open',
-                          style: AppTextStyles.label.copyWith(
-                            color: AppColors.postbookPrimary,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
+            return GroupPostCard(
+              post: post,
+              onTap: () => context.push('/comments/${post.id}'),
+              onSpark: () {
+                ref
+                    .read(groupPostsRepositoryProvider)
+                    .sparkPost(groupId, post.id);
+              },
+              onComment: () => context.push('/comments/${post.id}'),
+              onStash: () {
+                ref
+                    .read(groupPostsRepositoryProvider)
+                    .stashPost(groupId, post.id);
+              },
             );
           },
         );
       },
     );
-  }
-
-  String _timeAgo(DateTime date) {
-    final diff = DateTime.now().difference(date);
-    if (diff.inDays > 0) return '${diff.inDays}d';
-    if (diff.inHours > 0) return '${diff.inHours}h';
-    if (diff.inMinutes > 0) return '${diff.inMinutes}m';
-    return 'now';
   }
 }
 
@@ -625,18 +716,8 @@ class _GroupAboutTab extends StatelessWidget {
 
   String _formatDate(DateTime date) {
     final monthNames = [
-      'Jan',
-      'Feb',
-      'Mar',
-      'Apr',
-      'May',
-      'Jun',
-      'Jul',
-      'Aug',
-      'Sep',
-      'Oct',
-      'Nov',
-      'Dec',
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
     ];
     return '${date.day} ${monthNames[date.month - 1]} ${date.year}';
   }
