@@ -1,5 +1,5 @@
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'dart:io' show Platform;
+import 'package:flutter/foundation.dart' show kIsWeb;
 
 /// Environment configuration for API endpoints.
 ///
@@ -28,15 +28,38 @@ class Environment {
     return 'http://$_host:8080';
   }
 
-  static String get wsBaseUrl {
-    if (externalDomain != null) return 'wss://$externalDomain/v1/ws';
-    return 'ws://$_host:8092';
+  static Uri get wsGatewayUri {
+    if (externalDomain != null) {
+      return Uri(
+        scheme: 'wss',
+        host: externalDomain!,
+        path: '/v1/ws/connect',
+      );
+    }
+    return Uri(
+      scheme: 'ws',
+      host: _host,
+      port: 8093,
+      path: '/v1/ws/connect',
+    );
   }
 
-  static String get wsGatewayUrl {
-    if (externalDomain != null) return 'wss://$externalDomain/v1/ws';
-    return 'ws://$_host:8089';
+  static Uri buildWsGatewayUri([Map<String, String>? queryParameters]) {
+    final uri = wsGatewayUri;
+    if (queryParameters == null || queryParameters.isEmpty) {
+      return uri;
+    }
+    return uri.replace(
+      queryParameters: <String, String>{
+        ...uri.queryParameters,
+        ...queryParameters,
+      },
+    );
   }
+
+  static String get wsBaseUrl => wsGatewayUri.toString();
+
+  static String get wsGatewayUrl => wsGatewayUri.toString();
 
   // API paths
   static const String authPath = '/v1/auth';

@@ -1,3 +1,5 @@
+import 'package:atpost_app/core/utils/app_logger.dart';
+
 class Post {
   final String id;
   final String authorId;
@@ -46,45 +48,79 @@ class Post {
   });
 
   factory Post.fromJson(Map<String, dynamic> json) {
-    // Handle nested counts object: {"counts": {"likes": 0, "comments": 0, "shares": 0}}
-    final counts = json['counts'] as Map<String, dynamic>? ?? {};
-    return Post(
-      id: json['id'] as String? ?? json['post_id'] as String? ?? '',
-      authorId: json['author_id'] as String? ?? '',
-      authorName: json['author_name'] as String?,
-      authorAvatar: json['author_avatar'] as String?,
-      content: json['content'] as String? ?? json['text'] as String? ?? '',
-      contentType: json['content_type'] as String? ?? 'post',
-      visibility: json['visibility'] as String? ?? 'public',
-      tags: (json['tags'] as List<dynamic>?)?.cast<String>() ?? [],
-      mediaIds: (json['media_ids'] as List<dynamic>?)?.cast<String>() ?? [],
-      likeCount: json['like_count'] as int? ?? counts['likes'] as int? ?? 0,
-      commentCount: json['comment_count'] as int? ?? counts['comments'] as int? ?? 0,
-      shareCount: json['share_count'] as int? ?? counts['shares'] as int? ?? 0,
-      durationSeconds: json['duration_seconds'] as int?,
-      isLiked: json['is_liked'] as bool? ?? false,
-      isBookmarked: json['is_bookmarked'] as bool? ?? false,
-      createdAt: json['created_at'] != null
-          ? DateTime.parse(json['created_at'] as String)
-          : DateTime.now(),
-      feeling: json['feeling'] as String?,
-      activity: json['activity'] as String?,
-      activityDetail: json['activity_detail'] as String?,
-      locationName: json['location_name'] as String?,
-      poll: json['poll'] != null
-          ? PollData.fromJson(json['poll'] as Map<String, dynamic>)
-          : null,
-    );
+    try {
+      final counts = json['counts'] as Map<String, dynamic>? ?? {};
+      return Post(
+        id: (json['id'] ?? json['post_id'] ?? '').toString(),
+        authorId: (json['author_id'] ?? '').toString(),
+        authorName: json['author_name']?.toString(),
+        authorAvatar: json['author_avatar']?.toString(),
+        content: (json['content'] ?? json['text'] ?? '').toString(),
+        contentType: (json['content_type'] ?? 'post').toString(),
+        visibility: (json['visibility'] ?? 'public').toString(),
+        tags: _parseList<String>(json['tags']),
+        mediaIds: _parseList<String>(json['media_ids']),
+        likeCount: _toInt(json['like_count'] ?? counts['likes']),
+        commentCount: _toInt(json['comment_count'] ?? counts['comments']),
+        shareCount: _toInt(json['share_count'] ?? counts['shares']),
+        durationSeconds: _toIntNullable(json['duration_seconds']),
+        isLiked: _toBool(json['is_liked']),
+        isBookmarked: _toBool(json['is_bookmarked']),
+        createdAt: _parseDate(json['created_at']),
+        feeling: json['feeling']?.toString(),
+        activity: json['activity']?.toString(),
+        activityDetail: json['activity_detail']?.toString(),
+        locationName: json['location_name']?.toString(),
+        poll: json['poll'] != null
+            ? PollData.fromJson(Map<String, dynamic>.from(json['poll']))
+            : null,
+      );
+    } catch (e, st) {
+      AppLogger.error('Post.fromJson failed: $e', error: e, stackTrace: st);
+      return Post.empty();
+    }
   }
+
+  static Post empty() => Post(
+        id: 'error_${DateTime.now().millisecondsSinceEpoch}',
+        authorId: '',
+        content: 'Content unavailable',
+        createdAt: DateTime.now(),
+      );
 
   bool get isReel => contentType == 'reel';
   bool get isVideo => contentType == 'video';
   bool get isPoll => contentType == 'poll';
 
-  /// Returns the serve URL for the first media item, or empty string if none.
   String get firstMediaUrl {
     if (mediaIds.isEmpty) return '';
     return '/v1/media/${mediaIds.first}/serve';
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'author_id': authorId,
+      'author_name': authorName,
+      'author_avatar': authorAvatar,
+      'content': content,
+      'content_type': contentType,
+      'visibility': visibility,
+      'tags': tags,
+      'media_ids': mediaIds,
+      'like_count': likeCount,
+      'comment_count': commentCount,
+      'share_count': shareCount,
+      'duration_seconds': durationSeconds,
+      'is_liked': isLiked,
+      'is_bookmarked': isBookmarked,
+      'created_at': createdAt.toIso8601String(),
+      'feeling': feeling,
+      'activity': activity,
+      'activity_detail': activityDetail,
+      'location_name': locationName,
+      'poll': poll?.toJson(),
+    };
   }
 }
 
@@ -107,18 +143,26 @@ class PollData {
 
   factory PollData.fromJson(Map<String, dynamic> json) {
     return PollData(
-      question: json['question'] as String? ?? '',
-      options: (json['options'] as List<dynamic>?)
-              ?.map((e) => PollOption.fromJson(e as Map<String, dynamic>))
-              .toList() ??
-          [],
-      allowsMultiple: json['allows_multiple'] as bool? ?? false,
-      endsAt: json['ends_at'] != null
-          ? DateTime.parse(json['ends_at'] as String)
-          : null,
-      totalVotes: json['total_votes'] as int? ?? 0,
-      hasEnded: json['has_ended'] as bool? ?? false,
+      question: (json['question'] ?? '').toString(),
+      options: (json['options'] as List? ?? [])
+          .map((e) => PollOption.fromJson(Map<String, dynamic>.from(e)))
+          .toList(),
+      allowsMultiple: _toBool(json['allows_multiple']),
+      endsAt: _parseDateNullable(json['ends_at']),
+      totalVotes: _toInt(json['total_votes']),
+      hasEnded: _toBool(json['has_ended']),
     );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'question': question,
+      'options': options.map((e) => e.toJson()).toList(),
+      'allows_multiple': allowsMultiple,
+      'ends_at': endsAt?.toIso8601String(),
+      'total_votes': totalVotes,
+      'has_ended': hasEnded,
+    };
   }
 }
 
@@ -137,11 +181,20 @@ class PollOption {
 
   factory PollOption.fromJson(Map<String, dynamic> json) {
     return PollOption(
-      id: json['id'] as String? ?? '',
-      label: json['label'] as String? ?? '',
-      voteCount: json['vote_count'] as int? ?? 0,
-      percentage: (json['percentage'] as num?)?.toDouble() ?? 0,
+      id: (json['id'] ?? '').toString(),
+      label: (json['label'] ?? '').toString(),
+      voteCount: _toInt(json['vote_count']),
+      percentage: _toDouble(json['percentage']),
     );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'label': label,
+      'vote_count': voteCount,
+      'percentage': percentage,
+    };
   }
 }
 
@@ -168,16 +221,57 @@ class Comment {
 
   factory Comment.fromJson(Map<String, dynamic> json) {
     return Comment(
-      id: json['id'] as String? ?? json['comment_id'] as String? ?? '',
-      postId: json['post_id'] as String? ?? '',
-      authorId: json['user_id'] as String? ?? json['author_id'] as String? ?? '',
-      authorName: json['user_display_name'] as String? ?? json['author_name'] as String?,
-      authorAvatar: json['user_avatar_url'] as String? ?? json['author_avatar'] as String?,
-      text: json['text'] as String? ?? '',
-      likeCount: json['like_count'] as int? ?? 0,
-      createdAt: json['created_at'] != null
-          ? DateTime.parse(json['created_at'] as String)
-          : DateTime.now(),
+      id: (json['id'] ?? json['comment_id'] ?? '').toString(),
+      postId: (json['post_id'] ?? '').toString(),
+      authorId: (json['user_id'] ?? json['author_id'] ?? '').toString(),
+      authorName: (json['user_display_name'] ?? json['author_name'])?.toString(),
+      authorAvatar: (json['user_avatar_url'] ?? json['author_avatar'])?.toString(),
+      text: (json['text'] ?? '').toString(),
+      likeCount: _toInt(json['like_count']),
+      createdAt: _parseDate(json['created_at']),
     );
   }
+}
+
+// --- Total Resilience Helper Methods ---
+
+List<T> _parseList<T>(dynamic data) {
+  if (data is List) return data.cast<T>();
+  return const [];
+}
+
+int _toInt(dynamic data) {
+  if (data is int) return data;
+  if (data is double) return data.toInt();
+  if (data is String) return int.tryParse(data) ?? 0;
+  return 0;
+}
+
+int? _toIntNullable(dynamic data) {
+  if (data == null) return null;
+  return _toInt(data);
+}
+
+double _toDouble(dynamic data) {
+  if (data is double) return data;
+  if (data is int) return data.toDouble();
+  if (data is String) return double.tryParse(data) ?? 0.0;
+  return 0.0;
+}
+
+bool _toBool(dynamic data) {
+  if (data is bool) return data;
+  if (data is int) return data == 1;
+  if (data is String) return data.toLowerCase() == 'true';
+  return false;
+}
+
+DateTime _parseDate(dynamic data) {
+  if (data is String) return DateTime.tryParse(data) ?? DateTime.now();
+  return DateTime.now();
+}
+
+DateTime? _parseDateNullable(dynamic data) {
+  if (data == null) return null;
+  return _parseDate(data);
 }

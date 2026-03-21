@@ -5,12 +5,10 @@ import 'dart:math';
 import 'package:atpost_app/core/config/environment.dart';
 import 'package:atpost_app/core/utils/app_logger.dart';
 import 'package:atpost_app/data/models/realtime_event.dart';
-import 'package:atpost_app/services/api_client.dart';
 import 'package:atpost_app/services/auth_service.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
-/// Connection states for the RealtimeService.
 enum ConnectionState {
   disconnected,
   connecting,
@@ -18,8 +16,7 @@ enum ConnectionState {
   reconnecting,
 }
 
-/// A unified real-time service that handles chat, notifications, feed updates, and call signaling.
-/// Replaces the old SignalingService.
+/// Shared websocket connection used by chat, feed, presence, and call signaling.
 class RealtimeService {
   WebSocketChannel? _channel;
   final _eventController = StreamController<RealtimeEvent>.broadcast();
@@ -32,51 +29,56 @@ class RealtimeService {
   static const Duration _baseDelay = Duration(seconds: 3);
 
   final AuthService _auth;
-  final ApiClient _api;
   static const _tag = 'RealtimeService';
 
-  RealtimeService(this._auth, this._api) {
+  RealtimeService(this._auth) {
     _stateController.add(_state);
   }
 
   Stream<RealtimeEvent> get events => _eventController.stream;
   Stream<ConnectionState> get stateStream => _stateController.stream;
   ConnectionState get state => _state;
+  bool get isConnected => _state == ConnectionState.connected;
 
-  /// Connect to the WebSocket hub.
-  /// First fetches a signed chat token from the backend.
   Future<void> connect() async {
-    if (_state == ConnectionState.connected || _state == ConnectionState.connecting) return;
+    if (_state == ConnectionState.connected ||
+        _state == ConnectionState.connecting) {
+      return;
+    }
+
+    final token = _auth.token;
+    if (token == null || token.isEmpty) {
+      AppLogger.warn('Skipping websocket connect without access token', tag: _tag);
+      _updateState(ConnectionState.disconnected);
+      return;
+    }
 
     _updateState(ConnectionState.connecting);
-    AppLogger.info('Establishing real-time connection...', tag: _tag);
+    AppLogger.info('Establishing websocket connection', tag: _tag);
 
     try {
-      // 1. Fetch chat token (matches web's /api/chat/token)
-      final response = await _api.get('${Environment.chatPath}/token');
-      final data = response.data['data'] as Map<String, dynamic>? ?? response.data;
-      final token = data['token'] as String?;
-
-      if (token == null) {
-        throw Exception('Failed to acquire real-time token');
-      }
-
-      // 2. Connect to WS (matches web's /v1/ws/connect?access_token=...)
-      final wsUrl = '${Environment.apiBaseUrl.replaceFirst('http', 'ws')}/v1/ws/connect?access_token=${Uri.encodeComponent(token)}';
-      _channel = WebSocketChannel.connect(Uri.parse(wsUrl));
+      final wsUri = Environment.buildWsGatewayUri({
+        'access_token': token,
+      });
+      _channel = WebSocketChannel.connect(wsUri);
 
       _subscription = _channel!.stream.listen(
         _onRawMessage,
-        onError: (e) => _handleDisconnect(error: e),
+        onError: (error) => _handleDisconnect(error: error),
         onDone: () => _handleDisconnect(),
       );
 
       _retryCount = 0;
       _updateState(ConnectionState.connected);
-      AppLogger.info('Real-time connection established', tag: _tag);
-    } catch (e, stack) {
-      AppLogger.error('Failed to connect to real-time hub', tag: _tag, error: e, stackTrace: stack);
-      _handleDisconnect(error: e);
+      AppLogger.info('Websocket connection established', tag: _tag);
+    } catch (error, stackTrace) {
+      AppLogger.error(
+        'Failed to connect websocket',
+        tag: _tag,
+        error: error,
+        stackTrace: stackTrace,
+      );
+      _handleDisconnect(error: error);
     }
   }
 
@@ -85,9 +87,12 @@ class RealtimeService {
       final json = jsonDecode(raw as String) as Map<String, dynamic>;
       final event = RealtimeEvent.fromJson(json);
       _eventController.add(event);
-      AppLogger.debug('Received real-time event: ${event.type}', tag: _tag);
-    } catch (e) {
-      AppLogger.warn('Failed to parse real-time message: $raw', tag: _tag);
+      AppLogger.debug(
+        'Received realtime event: ${event.eventType}',
+        tag: _tag,
+      );
+    } catch (_) {
+      AppLogger.warn('Failed to parse realtime message: $raw', tag: _tag);
     }
   }
 
@@ -96,36 +101,46 @@ class RealtimeService {
 
     if (_auth.isAuthenticated && _retryCount < _maxRetries) {
       _updateState(ConnectionState.reconnecting);
-      final delay = _baseDelay * pow(2, _retryCount);
+      final multiplier = pow(2, _retryCount).toInt();
+      final delay = Duration(seconds: _baseDelay.inSeconds * multiplier);
       _retryCount++;
 
-      AppLogger.warn('Connection lost. Retrying in ${delay.inSeconds}s ($_retryCount/$_maxRetries)...', tag: _tag);
-      Timer(delay, () => connect());
-    } else {
-      _updateState(ConnectionState.disconnected);
-      if (_retryCount >= _maxRetries) {
-        AppLogger.error('Max reconnection retries reached. Real-time features disabled.', tag: _tag);
-      }
+      AppLogger.warn(
+        'Websocket disconnected. Retrying in ${delay.inSeconds}s ($_retryCount/$_maxRetries)',
+        tag: _tag,
+      );
+      Timer(delay, connect);
+      return;
+    }
+
+    _updateState(ConnectionState.disconnected);
+    if (_retryCount >= _maxRetries) {
+      AppLogger.error('Max websocket retries reached', tag: _tag, error: error);
     }
   }
 
-  /// Send a message or signal through the WebSocket.
   void send(Map<String, dynamic> data) {
-    if (_state != ConnectionState.connected || _channel == null) {
-      AppLogger.warn('Attempted to send message while disconnected', tag: _tag);
+    if (_channel == null || _state != ConnectionState.connected) {
+      AppLogger.warn('Attempted websocket send while disconnected', tag: _tag);
       return;
     }
     _channel!.sink.add(jsonEncode(data));
   }
 
-  /// Subscribe to a specific post's real-time updates.
   void subscribeToPost(String postId) {
     send({'type': 'subscribe_post', 'post_id': postId});
   }
 
-  /// Unsubscribe from a specific post's real-time updates.
   void unsubscribeFromPost(String postId) {
     send({'type': 'unsubscribe_post', 'post_id': postId});
+  }
+
+  void subscribeToCall(String callId) {
+    send({'type': 'subscribe_call', 'call_id': callId});
+  }
+
+  void unsubscribeFromCall(String callId) {
+    send({'type': 'unsubscribe_call', 'call_id': callId});
   }
 
   void _updateState(ConnectionState newState) {
@@ -141,8 +156,8 @@ class RealtimeService {
   }
 
   void disconnect() {
-    AppLogger.info('Disconnecting real-time service', tag: _tag);
-    _retryCount = _maxRetries; // Prevent auto-reconnect
+    AppLogger.info('Disconnecting websocket', tag: _tag);
+    _retryCount = _maxRetries;
     _closeChannel();
     _updateState(ConnectionState.disconnected);
   }
@@ -154,14 +169,12 @@ class RealtimeService {
   }
 }
 
-/// Global real-time service provider.
 final realtimeServiceProvider = Provider<RealtimeService>((ref) {
   final auth = ref.watch(authServiceProvider);
-  final api = ref.watch(apiClientProvider);
-  final service = RealtimeService(auth, api);
+  final service = RealtimeService(auth);
 
   void syncAuth(AuthState state) {
-    if (state.isAuthenticated) {
+    if (state.isAuthenticated && (state.token?.isNotEmpty ?? false)) {
       service.connect();
     } else {
       service.disconnect();
@@ -175,10 +188,6 @@ final realtimeServiceProvider = Provider<RealtimeService>((ref) {
     authSub.cancel();
     service.dispose();
   });
+
   return service;
 });
-
-// NOTE: signalingServiceProvider has been removed from here to resolve
-// duplicate provider conflict. The auth-wired version is defined in
-// signaling_service.dart and is used by CallService.
-

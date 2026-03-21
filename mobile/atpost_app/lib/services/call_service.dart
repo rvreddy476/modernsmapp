@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:atpost_app/data/models/call.dart' as models;
 import 'package:atpost_app/data/repositories/calls_repository.dart';
@@ -7,24 +8,23 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 
 import 'signaling_service.dart';
 
-/// Call states matching the web frontend protocol.
 enum CallState { idle, outgoing, incoming, connecting, active }
 
-/// Audio or video call.
 enum CallType { audio, video }
 
-/// Immutable snapshot of current call state.
 class CallInfo {
   final CallState state;
   final CallType type;
   final String peerId;
   final String peerName;
   final String peerAvatar;
+  final bool isInitiator;
   final DateTime? startedAt;
   final MediaStream? localStream;
   final MediaStream? remoteStream;
   final String? callId;
   final String? inviteId;
+  final models.JoinResponse? joinResponse;
 
   const CallInfo({
     required this.state,
@@ -32,11 +32,13 @@ class CallInfo {
     required this.peerId,
     this.peerName = '',
     this.peerAvatar = '',
+    this.isInitiator = false,
     this.startedAt,
     this.localStream,
     this.remoteStream,
     this.callId,
     this.inviteId,
+    this.joinResponse,
   });
 
   CallInfo copyWith({
@@ -45,11 +47,13 @@ class CallInfo {
     String? peerId,
     String? peerName,
     String? peerAvatar,
+    bool? isInitiator,
     DateTime? startedAt,
     MediaStream? localStream,
     MediaStream? remoteStream,
     String? callId,
     String? inviteId,
+    models.JoinResponse? joinResponse,
   }) {
     return CallInfo(
       state: state ?? this.state,
@@ -57,25 +61,28 @@ class CallInfo {
       peerId: peerId ?? this.peerId,
       peerName: peerName ?? this.peerName,
       peerAvatar: peerAvatar ?? this.peerAvatar,
+      isInitiator: isInitiator ?? this.isInitiator,
       startedAt: startedAt ?? this.startedAt,
       localStream: localStream ?? this.localStream,
       remoteStream: remoteStream ?? this.remoteStream,
       callId: callId ?? this.callId,
       inviteId: inviteId ?? this.inviteId,
+      joinResponse: joinResponse ?? this.joinResponse,
     );
   }
 }
 
-const _iceServers = <Map<String, dynamic>>[
+const _fallbackIceServers = <Map<String, dynamic>>[
   {
     'urls': ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'],
   },
 ];
 
-/// Manages WebRTC peer connections and call state with REST API integration.
 class CallNotifier extends StateNotifier<CallInfo?> {
   final SignalingService _signaling;
   final CallsRepository? _callsRepo;
+  final Random _random = Random.secure();
+
   StreamSubscription? _signalSub;
   RTCPeerConnection? _pc;
   final List<RTCIceCandidate> _pendingCandidates = [];
@@ -92,9 +99,6 @@ class CallNotifier extends StateNotifier<CallInfo?> {
     super.dispose();
   }
 
-  // --- Public API ---
-
-  /// Initiate an outgoing call.
   Future<void> initiateCall({
     required String contactId,
     required String contactName,
@@ -109,25 +113,32 @@ class CallNotifier extends StateNotifier<CallInfo?> {
       peerId: contactId,
       peerName: contactName,
       peerAvatar: contactAvatar,
+      isInitiator: true,
     );
 
     try {
-      // Create call session via REST API
       models.CallSession? session;
+      models.JoinResponse? joinResponse;
       if (_callsRepo != null) {
-        try {
-          session = await _callsRepo.createCall(
-            callType: type == CallType.video ? 'video' : 'audio',
-            sourceType: 'direct',
-            audioOnly: type == CallType.audio,
-            inviteeUserIds: [contactId],
-          );
-          if (state == null || state!.state != CallState.outgoing) return;
-          state = state!.copyWith(callId: session.id);
-          _signaling.subscribeToCallRoom(session.id);
-        } catch (_) {
-          // Fall back to P2P signaling if API unavailable
-        }
+        session = await _callsRepo!.createCall(
+          callType: _callTypeForRest(type),
+          sourceType: 'direct',
+          audioOnly: type == CallType.audio,
+          targetUserIds: [contactId],
+          maxParticipants: 2,
+          idempotencyKey: _idempotencyKey(),
+        );
+        joinResponse = await _callsRepo!.joinCall(session.id);
+      }
+
+      if (state == null || state!.state != CallState.outgoing) return;
+      state = state!.copyWith(
+        callId: session?.id,
+        joinResponse: joinResponse,
+      );
+
+      if (session?.id case final callId?) {
+        _signaling.subscribeToCallRoom(callId);
       }
 
       final stream = await _getMedia(type);
@@ -135,9 +146,9 @@ class CallNotifier extends StateNotifier<CallInfo?> {
         _disposeStream(stream);
         return;
       }
-      state = state!.copyWith(localStream: stream);
 
-      _pc = await _createPeerConnection();
+      state = state!.copyWith(localStream: stream);
+      _pc = await _createPeerConnection(joinResponse);
       for (final track in stream.getTracks()) {
         await _pc!.addTrack(track, stream);
       }
@@ -145,36 +156,44 @@ class CallNotifier extends StateNotifier<CallInfo?> {
       final offer = await _pc!.createOffer();
       await _pc!.setLocalDescription(offer);
 
-      _signaling.send(CallSignal(
-        type: SignalType.callOffer,
-        senderId: '',
-        targetUserId: contactId,
-        callId: session?.id,
-        callType: type == CallType.video ? 'video' : 'audio',
-        sdp: offer.sdp,
-      ));
+      _signaling.send(
+        CallSignal(
+          type: SignalType.callOffer,
+          senderId: '',
+          targetUserId: contactId,
+          callId: session?.id,
+          callType: _callTypeForSignal(type),
+          sdp: offer.sdp,
+        ),
+      );
     } catch (_) {
       _cleanup();
     }
   }
 
-  /// Accept an incoming call.
   Future<void> acceptCall() async {
     if (state == null || state!.state != CallState.incoming) return;
 
     state = state!.copyWith(state: CallState.connecting);
 
     try {
-      // Accept invite via REST API
+      models.JoinResponse? joinResponse;
       final callId = state!.callId;
       final inviteId = state!.inviteId;
-      if (_callsRepo != null && callId != null && inviteId != null) {
-        try {
-          await _callsRepo.acceptInvite(callId, inviteId);
-          await _callsRepo.joinCall(callId);
-        } catch (_) {
-          // Continue with P2P signaling fallback
+      if (_offerSdp == null || _offerSdp!.isEmpty) {
+        _cleanup();
+        return;
+      }
+
+      if (_callsRepo != null && callId != null) {
+        if (inviteId != null && inviteId.isNotEmpty) {
+          try {
+            await _callsRepo!.acceptInvite(callId, inviteId);
+          } catch (_) {
+            // Joining the call can still succeed even if invite acceptance was not provided.
+          }
         }
+        joinResponse = await _callsRepo!.joinCall(callId);
       }
 
       final stream = await _getMedia(state!.type);
@@ -182,9 +201,9 @@ class CallNotifier extends StateNotifier<CallInfo?> {
         _disposeStream(stream);
         return;
       }
-      state = state!.copyWith(localStream: stream);
 
-      _pc = await _createPeerConnection();
+      state = state!.copyWith(localStream: stream, joinResponse: joinResponse);
+      _pc = await _createPeerConnection(joinResponse);
       for (final track in stream.getTracks()) {
         await _pc!.addTrack(track, stream);
       }
@@ -197,114 +216,131 @@ class CallNotifier extends StateNotifier<CallInfo?> {
       final answer = await _pc!.createAnswer();
       await _pc!.setLocalDescription(answer);
 
-      _signaling.send(CallSignal(
-        type: SignalType.callAnswer,
-        senderId: '',
-        targetUserId: state!.peerId,
-        callId: state!.callId,
-        sdp: answer.sdp,
-      ));
+      _signaling.send(
+        CallSignal(
+          type: SignalType.callAnswer,
+          senderId: '',
+          targetUserId: state!.peerId,
+          callId: state!.callId,
+          callType: _callTypeForSignal(state!.type),
+          sdp: answer.sdp,
+        ),
+      );
     } catch (_) {
       _cleanup();
     }
   }
 
-  /// Decline an incoming call.
   void declineCall() {
     if (state == null) return;
     final callId = state!.callId;
     final inviteId = state!.inviteId;
 
-    _signaling.send(CallSignal(
-      type: SignalType.callDecline,
-      senderId: '',
-      targetUserId: state!.peerId,
-      callId: callId,
-    ));
+    _signaling.send(
+      CallSignal(
+        type: SignalType.callDecline,
+        senderId: '',
+        targetUserId: state!.peerId,
+        callId: callId,
+      ),
+    );
 
     if (_callsRepo != null && callId != null && inviteId != null) {
-      _callsRepo.declineInvite(callId, inviteId);
+      unawaited(_callsRepo!.declineInvite(callId, inviteId));
     }
     _cleanup();
   }
 
-  /// End an active call.
   void endCall() {
     if (state == null) return;
-    final callId = state!.callId;
+    final info = state!;
+    final callId = info.callId;
 
-    _signaling.send(CallSignal(
-      type: SignalType.callEnd,
-      senderId: '',
-      targetUserId: state!.peerId,
-      callId: callId,
-    ));
+    _signaling.send(
+      CallSignal(
+        type: SignalType.callEnd,
+        senderId: '',
+        targetUserId: info.peerId,
+        callId: callId,
+      ),
+    );
 
     if (_callsRepo != null && callId != null) {
-      _callsRepo.endCall(callId);
+      if (info.isInitiator) {
+        unawaited(_callsRepo!.endCall(callId));
+      } else {
+        unawaited(_callsRepo!.leaveCall(callId));
+      }
     }
     _cleanup();
   }
 
-  /// Toggle microphone mute. Returns true if now muted.
   bool toggleMute() {
     final stream = state?.localStream;
     if (stream == null) return false;
     final tracks = stream.getAudioTracks();
     if (tracks.isEmpty) return false;
+
     tracks.first.enabled = !tracks.first.enabled;
     final muted = !tracks.first.enabled;
 
-    if (state?.callId != null) {
-      _signaling.send(CallSignal(
-        type: muted ? SignalType.callParticipantMuted : SignalType.callParticipantUnmuted,
-        senderId: '',
-        targetUserId: '',
-        callId: state!.callId,
-      ));
+    if (state?.callId case final callId?) {
+      _signaling.send(
+        CallSignal(
+          type: SignalType.callMuteToggle,
+          senderId: '',
+          targetUserId: '',
+          callId: callId,
+        ),
+      );
     }
 
     return muted;
   }
 
-  /// Toggle camera. Returns true if camera is now off.
   bool toggleCamera() {
     final stream = state?.localStream;
     if (stream == null) return false;
     final tracks = stream.getVideoTracks();
     if (tracks.isEmpty) return false;
-    tracks.first.enabled = !tracks.first.enabled;
 
-    if (state?.callId != null) {
-      _signaling.send(CallSignal(
-        type: SignalType.callVideoToggle,
-        senderId: '',
-        targetUserId: '',
-        callId: state!.callId,
-      ));
+    tracks.first.enabled = !tracks.first.enabled;
+    final off = !tracks.first.enabled;
+
+    if (state?.callId case final callId?) {
+      _signaling.send(
+        CallSignal(
+          type: SignalType.callVideoToggle,
+          senderId: '',
+          targetUserId: '',
+          callId: callId,
+        ),
+      );
     }
 
-    return !tracks.first.enabled;
+    return off;
   }
 
-  // --- Private ---
-
-  Future<RTCPeerConnection> _createPeerConnection() async {
+  Future<RTCPeerConnection> _createPeerConnection(
+    models.JoinResponse? joinResponse,
+  ) async {
     final config = <String, dynamic>{
-      'iceServers': _iceServers,
+      'iceServers': _iceServersFor(joinResponse),
     };
     final conn = await createPeerConnection(config);
 
     conn.onIceCandidate = (candidate) {
-      if (state != null) {
-        _signaling.send(CallSignal(
+      if (state == null) return;
+
+      _signaling.send(
+        CallSignal(
           type: SignalType.iceCandidate,
           senderId: '',
           targetUserId: state!.peerId,
           callId: state!.callId,
           candidate: candidate.toMap(),
-        ));
-      }
+        ),
+      );
     };
 
     conn.onTrack = (event) {
@@ -332,18 +368,40 @@ class CallNotifier extends StateNotifier<CallInfo?> {
     return conn;
   }
 
+  List<Map<String, dynamic>> _iceServersFor(models.JoinResponse? joinResponse) {
+    final servers =
+        joinResponse?.iceServers
+            .where((server) => server.urls.isNotEmpty)
+            .map((server) {
+              return <String, dynamic>{
+                'urls': server.urls,
+                if (server.username != null && server.username!.isNotEmpty)
+                  'username': server.username,
+                if (server.credential != null && server.credential!.isNotEmpty)
+                  'credential': server.credential,
+              };
+            })
+            .toList() ??
+        const <Map<String, dynamic>>[];
+
+    if (servers.isNotEmpty) {
+      return servers;
+    }
+    return _fallbackIceServers;
+  }
+
   Future<MediaStream> _getMedia(CallType type) async {
     final constraints = <String, dynamic>{
       'audio': true,
       'video': type == CallType.video,
     };
-    return await navigator.mediaDevices.getUserMedia(constraints);
+    return navigator.mediaDevices.getUserMedia(constraints);
   }
 
   Future<void> _flushPendingCandidates() async {
     if (_pc == null) return;
-    for (final c in _pendingCandidates) {
-      await _pc!.addCandidate(c);
+    for (final candidate in _pendingCandidates) {
+      await _pc!.addCandidate(candidate);
     }
     _pendingCandidates.clear();
   }
@@ -352,71 +410,105 @@ class CallNotifier extends StateNotifier<CallInfo?> {
     switch (signal.type) {
       case SignalType.callOffer:
         _handleOffer(signal);
+        return;
       case SignalType.callRing:
         _handleRing(signal);
+        return;
       case SignalType.callAnswer:
         _handleAnswer(signal);
+        return;
       case SignalType.iceCandidate:
         _handleIceCandidate(signal);
+        return;
       case SignalType.callEnd:
       case SignalType.callDecline:
       case SignalType.callReject:
       case SignalType.callBusy:
         _cleanup();
+        return;
       case SignalType.callParticipantJoined:
       case SignalType.callParticipantLeft:
       case SignalType.callParticipantRemoved:
       case SignalType.callStateChange:
-        // Trigger UI rebuild
         if (state != null) {
           state = state!.copyWith();
         }
-      case _:
-        break;
+        return;
+      case SignalType.callAccept:
+      case SignalType.callJoin:
+      case SignalType.callLeave:
+      case SignalType.callMuteToggle:
+      case SignalType.callVideoToggle:
+      case SignalType.callScreenShareStart:
+      case SignalType.callScreenShareStop:
+      case SignalType.callHandRaise:
+      case SignalType.callHandLower:
+      case SignalType.callParticipantMuted:
+      case SignalType.callParticipantUnmuted:
+      case SignalType.callQualityReport:
+      case SignalType.callUpgradeRequest:
+      case SignalType.callUpgradeAccept:
+      case SignalType.callUpgradeReject:
+      case SignalType.callRecordingStarted:
+      case SignalType.callRecordingStopped:
+        return;
     }
   }
 
   void _handleOffer(CallSignal signal) {
     if (state != null) {
-      _signaling.send(CallSignal(
-        type: SignalType.callBusy,
-        senderId: '',
-        targetUserId: signal.senderId,
-      ));
+      _signaling.send(
+        CallSignal(
+          type: SignalType.callBusy,
+          senderId: '',
+          targetUserId: signal.senderId,
+          callId: signal.callId,
+        ),
+      );
       return;
     }
+
     _offerSdp = signal.sdp;
     state = CallInfo(
       state: CallState.incoming,
-      type: signal.callType == 'video' ? CallType.video : CallType.audio,
+      type: _signalTypeToCallType(signal.callType),
       peerId: signal.senderId,
       peerName: signal.senderId,
+      isInitiator: false,
       callId: signal.callId,
+      inviteId: signal.inviteId,
     );
-    if (signal.callId != null) {
-      _signaling.subscribeToCallRoom(signal.callId!);
+
+    if (signal.callId case final callId?) {
+      _signaling.subscribeToCallRoom(callId);
     }
   }
 
   void _handleRing(CallSignal signal) {
     if (state != null) {
-      _signaling.send(CallSignal(
-        type: SignalType.callBusy,
-        senderId: '',
-        targetUserId: signal.senderId,
-      ));
+      _signaling.send(
+        CallSignal(
+          type: SignalType.callBusy,
+          senderId: '',
+          targetUserId: signal.senderId,
+          callId: signal.callId,
+        ),
+      );
       return;
     }
+
     state = CallInfo(
       state: CallState.incoming,
-      type: signal.callType == 'video' ? CallType.video : CallType.audio,
+      type: _signalTypeToCallType(signal.callType),
       peerId: signal.senderId,
       peerName: signal.senderId,
+      isInitiator: false,
       callId: signal.callId,
       inviteId: signal.inviteId,
     );
-    if (signal.callId != null) {
-      _signaling.subscribeToCallRoom(signal.callId!);
+
+    if (signal.callId case final callId?) {
+      _signaling.subscribeToCallRoom(callId);
     }
   }
 
@@ -424,6 +516,7 @@ class CallNotifier extends StateNotifier<CallInfo?> {
     if (state == null || state!.state != CallState.outgoing || _pc == null) {
       return;
     }
+
     state = state!.copyWith(state: CallState.connecting);
     try {
       await _pc!.setRemoteDescription(
@@ -437,13 +530,15 @@ class CallNotifier extends StateNotifier<CallInfo?> {
 
   void _handleIceCandidate(CallSignal signal) {
     if (signal.candidate == null) return;
+
     final candidate = RTCIceCandidate(
       signal.candidate!['candidate'] as String?,
       signal.candidate!['sdpMid'] as String?,
       signal.candidate!['sdpMLineIndex'] as int?,
     );
+
     if (_pc != null) {
-      _pc!.addCandidate(candidate);
+      unawaited(_pc!.addCandidate(candidate));
     } else {
       _pendingCandidates.add(candidate);
     }
@@ -451,12 +546,13 @@ class CallNotifier extends StateNotifier<CallInfo?> {
 
   void _cleanup() {
     final callId = state?.callId;
-    if (callId != null) {
+    if (callId != null && callId.isNotEmpty) {
       _signaling.unsubscribeFromCallRoom(callId);
     }
     _pc?.close();
     _pc = null;
     _disposeStream(state?.localStream);
+    _disposeStream(state?.remoteStream);
     _pendingCandidates.clear();
     _offerSdp = null;
     state = null;
@@ -468,16 +564,40 @@ class CallNotifier extends StateNotifier<CallInfo?> {
       track.stop();
     }
   }
+
+  String _callTypeForRest(CallType type) {
+    return type == CallType.video ? 'direct_video' : 'direct_audio';
+  }
+
+  String _callTypeForSignal(CallType type) {
+    return type == CallType.video ? 'video' : 'audio';
+  }
+
+  CallType _signalTypeToCallType(String? callType) {
+    switch (callType) {
+      case 'video':
+      case 'direct_video':
+      case 'group_video':
+        return CallType.video;
+      default:
+        return CallType.audio;
+    }
+  }
+
+  String _idempotencyKey() {
+    final timestamp = DateTime.now().microsecondsSinceEpoch.toRadixString(16);
+    final randomPart = _random.nextInt(1 << 32).toRadixString(16);
+    return 'call-$timestamp-$randomPart';
+  }
 }
 
-/// Riverpod provider for call state.
 final callProvider = StateNotifierProvider<CallNotifier, CallInfo?>((ref) {
   final signaling = ref.watch(signalingServiceProvider);
   CallsRepository? callsRepo;
   try {
     callsRepo = ref.watch(callsRepositoryProvider);
   } catch (_) {
-    // Repository not available (e.g., in tests)
+    // Repository not available in tests.
   }
   return CallNotifier(signaling, callsRepo);
 });

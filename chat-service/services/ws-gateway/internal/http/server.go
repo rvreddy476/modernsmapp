@@ -245,6 +245,54 @@ func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *
 				}
 			}
 			continue
+		case "subscribe_update":
+			updateID, _ := envelope["update_id"].(string)
+			if updateID != "" {
+				channel := fmt.Sprintf("update:%s", updateID)
+				if err := pubsub.Subscribe(ctx, channel); err != nil {
+					s.log.Warn("update room subscribe failed", "err", err, "user_id", userID, "update_id", updateID)
+				}
+			}
+			continue
+		case "unsubscribe_update":
+			updateID, _ := envelope["update_id"].(string)
+			if updateID != "" {
+				channel := fmt.Sprintf("update:%s", updateID)
+				if err := pubsub.Unsubscribe(ctx, channel); err != nil {
+					s.log.Warn("update room unsubscribe failed", "err", err, "user_id", userID, "update_id", updateID)
+				}
+			}
+			continue
+		case "subscribe_group_post":
+			postID, _ := envelope["post_id"].(string)
+			if postID != "" {
+				channel := fmt.Sprintf("group_post:%s", postID)
+				if err := pubsub.Subscribe(ctx, channel); err != nil {
+					s.log.Warn("group post room subscribe failed", "err", err, "user_id", userID, "post_id", postID)
+				}
+			}
+			continue
+		case "unsubscribe_group_post":
+			postID, _ := envelope["post_id"].(string)
+			if postID != "" {
+				channel := fmt.Sprintf("group_post:%s", postID)
+				if err := pubsub.Unsubscribe(ctx, channel); err != nil {
+					s.log.Warn("group post room unsubscribe failed", "err", err, "user_id", userID, "post_id", postID)
+				}
+			}
+			continue
+		case "group_post_typing":
+			postID, _ := envelope["post_id"].(string)
+			if postID != "" {
+				// Broadcast typing indicator to all subscribers of this group post room
+				envelope["user_id"] = userID.String()
+				relay, _ := json.Marshal(envelope)
+				channel := fmt.Sprintf("group_post:%s", postID)
+				if pubErr := s.rdb.Publish(ctx, channel, string(relay)).Err(); pubErr != nil {
+					s.log.Warn("group post typing relay failed", "err", pubErr, "user_id", userID, "post_id", postID)
+				}
+			}
+			continue
 		}
 
 		// Inject sender_id server-side to prevent spoofing
@@ -316,7 +364,7 @@ func (s *Server) redisLoop(
 				continue
 			}
 			// For feed/post messages, skip if authored/acted by this connected user
-			if msg.Channel == "feed:new_post" || msg.Channel == "feed:post_update" || strings.HasPrefix(msg.Channel, "post:") {
+			if msg.Channel == "feed:new_post" || msg.Channel == "feed:post_update" || strings.HasPrefix(msg.Channel, "post:") || strings.HasPrefix(msg.Channel, "update:") || strings.HasPrefix(msg.Channel, "group_post:") {
 				var data map[string]any
 				if json.Unmarshal([]byte(msg.Payload), &data) == nil {
 					if pl, ok := data["payload"].(map[string]any); ok {

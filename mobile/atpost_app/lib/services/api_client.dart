@@ -1,4 +1,4 @@
-
+import 'dart:io';
 import 'package:atpost_app/core/config/environment.dart';
 import 'package:atpost_app/core/errors/app_exception.dart';
 import 'package:atpost_app/core/errors/error_handler.dart';
@@ -10,8 +10,10 @@ import 'package:atpost_app/services/interceptors/expired_token_interceptor.dart'
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:mime/mime.dart';
 
-/// Production-ready API client with auth, CSRF, and token refresh logic.
+/// Production-grade API client synchronized with OpenAPI spec.
+/// Supports 3-step resilient media uploads and automated token refreshing.
 class ApiClient {
   final Dio _dio;
   final AuthService _auth;
@@ -20,186 +22,123 @@ class ApiClient {
   ApiClient(this._auth)
       : _dio = Dio(BaseOptions(
           baseUrl: Environment.apiBaseUrl,
-          connectTimeout: const Duration(seconds: 15),
-          receiveTimeout: const Duration(seconds: 20),
+          connectTimeout: const Duration(seconds: 30),
+          receiveTimeout: const Duration(seconds: 30),
           headers: {
             'Content-Type': 'application/json',
             'Accept': 'application/json',
           },
         )) {
-    // Interceptor order is important:
-    // 1. Auth (injects tokens)
-    // 2. CSRF (injects CSRF tokens)
-    // 3. ExpiredToken (handles 401s by refreshing and retrying)
     _dio.interceptors.addAll([
       AuthInterceptor(_auth),
       CsrfInterceptor(),
       ExpiredTokenInterceptor(_auth, _dio),
-      // Add a simple logging interceptor for debug mode
       LogInterceptor(
         requestHeader: true,
         requestBody: true,
         responseHeader: true,
-        responseBody: false, // Don't log full response bodies to avoid clutter
+        responseBody: false,
         error: true,
         logPrint: (obj) => AppLogger.debug(obj.toString(), tag: 'Network'),
       ),
     ]);
   }
 
-  /// Perform a GET request.
-  Future<Response<T>> get<T>(
-    String path, {
-    Map<String, dynamic>? queryParameters,
-    Options? options,
-    CancelToken? cancelToken,
-  }) async {
+  // --- Core Methods ---
+
+  Future<Response<T>> get<T>(String path, {Map<String, dynamic>? queryParameters, Options? options, CancelToken? cancelToken}) async {
     try {
-      return await _dio.get<T>(
-        path,
-        queryParameters: queryParameters,
-        options: options,
-        cancelToken: cancelToken,
-      );
+      return await _dio.get<T>(path, queryParameters: queryParameters, options: options, cancelToken: cancelToken);
     } catch (e) {
       _handleError(e, path);
     }
   }
 
-  /// Perform a POST request.
-  Future<Response<T>> post<T>(
-    String path, {
-    Object? data,
-    Map<String, dynamic>? queryParameters,
-    Options? options,
-    CancelToken? cancelToken,
-  }) async {
+  Future<Response<T>> post<T>(String path, {Object? data, Map<String, dynamic>? queryParameters, Options? options, CancelToken? cancelToken}) async {
     try {
-      return await _dio.post<T>(
-        path,
-        data: data,
-        queryParameters: queryParameters,
-        options: options,
-        cancelToken: cancelToken,
-      );
+      return await _dio.post<T>(path, data: data, queryParameters: queryParameters, options: options, cancelToken: cancelToken);
     } catch (e) {
       _handleError(e, path);
     }
   }
 
-  /// Perform a PUT request.
-  Future<Response<T>> put<T>(
-    String path, {
-    Object? data,
-    Options? options,
-    CancelToken? cancelToken,
-  }) async {
+  Future<Response<T>> put<T>(String path, {Object? data, Options? options, CancelToken? cancelToken}) async {
     try {
-      return await _dio.put<T>(
-        path,
-        data: data,
-        options: options,
-        cancelToken: cancelToken,
-      );
+      return await _dio.put<T>(path, data: data, options: options, cancelToken: cancelToken);
     } catch (e) {
       _handleError(e, path);
     }
   }
 
-  /// Perform a PATCH request.
-  Future<Response<T>> patch<T>(
-    String path, {
-    Object? data,
-    Options? options,
-    CancelToken? cancelToken,
-  }) async {
+  Future<Response<T>> patch<T>(String path, {Object? data, Options? options, CancelToken? cancelToken}) async {
     try {
-      return await _dio.patch<T>(
-        path,
-        data: data,
-        options: options,
-        cancelToken: cancelToken,
-      );
+      return await _dio.patch<T>(path, data: data, options: options, cancelToken: cancelToken);
     } catch (e) {
       _handleError(e, path);
     }
   }
 
-  /// Perform a DELETE request.
-  Future<Response<T>> delete<T>(
-    String path, {
-    Object? data,
-    Options? options,
-    CancelToken? cancelToken,
-  }) async {
+  Future<Response<T>> delete<T>(String path, {Object? data, Options? options, CancelToken? cancelToken}) async {
     try {
-      return await _dio.delete<T>(
-        path,
-        data: data,
-        options: options,
-        cancelToken: cancelToken,
-      );
+      return await _dio.delete<T>(path, data: data, options: options, cancelToken: cancelToken);
     } catch (e) {
       _handleError(e, path);
     }
   }
 
-  /// Upload a file with progress tracking.
+  // --- Production Scale Media Upload (3-Step Spec) ---
+
+  /// Orchestrates a resilient 3-step media upload as per OpenAPI spec:
+  /// 1. Initialize (/v1/media/init)
+  /// 2. Upload to Presigned URL
+  /// 3. Confirm (/v1/media/confirm)
   Future<String> uploadMedia(
     XFile file, {
-    required String type,
+    required String type, // 'image' or 'video'
     void Function(int sent, int total)? onProgress,
   }) async {
     try {
-      AppLogger.info('Uploading $type file: ${file.name}', tag: _tag);
+      final fileData = File(file.path);
+      final fileSize = await fileData.length();
+      final mimeType = lookupMimeType(file.path) ?? 'application/octet-stream';
 
-      final formData = FormData.fromMap({
-        'file': await MultipartFile.fromFile(
-          file.path,
-          filename: file.name,
-        ),
-        'type': type,
+      // 1. Initialize Upload
+      AppLogger.info('Initializing upload for ${file.name}', tag: _tag);
+      final initRes = await post('/v1/media/init', data: {
+        'file_type': type,
+        'mime_type': mimeType,
+        'file_size_bytes': fileSize,
       });
 
-      final response = await _dio.post(
-        '${Environment.mediaPath}/upload',
-        data: formData,
+      final initData = initRes.data['data'] as Map<String, dynamic>;
+      final mediaId = initData['media_id'] as String;
+      final uploadUrl = initData['upload_url'] as String;
+
+      // 2. Perform Physical Upload (using a raw Dio instance to avoid global interceptors for presigned URL)
+      AppLogger.info('Uploading bytes to presigned URL', tag: _tag);
+      await Dio().put(
+        uploadUrl,
+        data: fileData.openRead(),
         onSendProgress: onProgress,
         options: Options(
-          contentType: 'multipart/form-data',
-          // Uploads usually take longer
-          sendTimeout: const Duration(minutes: 5),
-          receiveTimeout: const Duration(minutes: 5),
+          headers: {
+            'Content-Type': mimeType,
+            'Content-Length': fileSize,
+          },
         ),
       );
 
-      final data = response.data;
-      if (data is Map<String, dynamic>) {
-        final payload = data['data'] as Map<String, dynamic>? ?? data;
-        final mediaId = (payload['media_id'] ?? payload['id'] ?? '') as String;
-        AppLogger.info('Upload successful. Media ID: $mediaId', tag: _tag);
-        return mediaId;
-      }
-      return '';
-    } catch (e) {
-      AppLogger.error('Media upload failed', tag: _tag, error: e);
-      rethrow;
+      // 3. Confirm Upload
+      AppLogger.info('Confirming upload completion', tag: _tag);
+      await post('/v1/media/confirm', data: {'media_id': mediaId});
+
+      return mediaId;
+    } catch (e, st) {
+      AppLogger.error('Resilient upload failed', tag: _tag, error: e, stackTrace: st);
+      throw ErrorHandler.handle(e, st, context: 'ApiClient.uploadMedia');
     }
   }
 
-  /// Perform a DELETE request with a JSON body.
-  /// Alias for [delete] — provided for clarity when passing request data.
-  Future<Response<T>> deleteWithData<T>(
-    String path, {
-    Object? data,
-    Options? options,
-    CancelToken? cancelToken,
-  }) {
-    return delete<T>(path, data: data, options: options, cancelToken: cancelToken);
-  }
-
-  /// Centralized error handling: converts raw errors to typed [AppException]
-  /// and logs them via [ErrorHandler].
   Never _handleError(Object error, String path) {
     final st = error is DioException ? error.stackTrace : StackTrace.current;
     final appException = ErrorHandler.handle(error, st, context: 'ApiClient.$path');
@@ -207,7 +146,6 @@ class ApiClient {
   }
 }
 
-/// Global API client provider.
 final apiClientProvider = Provider<ApiClient>((ref) {
   final auth = ref.watch(authServiceProvider);
   return ApiClient(auth);

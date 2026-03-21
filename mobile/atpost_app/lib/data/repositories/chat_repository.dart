@@ -1,79 +1,125 @@
+import 'dart:math';
+
 import 'package:atpost_app/core/config/environment.dart';
 import 'package:atpost_app/data/models/conversation.dart';
 import 'package:atpost_app/services/api_client.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+class ChatPage {
+  final List<Message> messages;
+  final String? nextCursor;
+
+  const ChatPage({
+    required this.messages,
+    this.nextCursor,
+  });
+}
 
 class ChatRepository {
   final ApiClient _api;
+  final Random _random = Random.secure();
 
   ChatRepository(this._api);
 
-  /// Get list of conversations.
   Future<List<Conversation>> getConversations({int limit = 20}) async {
     final response = await _api.get(
       '${Environment.chatPath}/conversations',
       queryParameters: {'limit': limit},
     );
-    final items = (response.data['data']?['items'] as List<dynamic>?) ?? [];
+    final items = (response.data['data'] as List<dynamic>? ?? const <dynamic>[]);
     return items
-        .map((e) => Conversation.fromJson(e as Map<String, dynamic>))
+        .map((item) => Conversation.fromJson(item as Map<String, dynamic>))
         .toList();
   }
 
-  /// Get messages for a conversation.
-  Future<List<Message>> getMessages(
+  Future<Conversation> getConversation(String conversationId) async {
+    final response = await _api.get(
+      '${Environment.chatPath}/conversations/$conversationId',
+    );
+    return Conversation.fromJson(response.data['data'] as Map<String, dynamic>);
+  }
+
+  Future<Conversation> createDirectConversation(String otherUserId) async {
+    final response = await _api.post(
+      '${Environment.chatPath}/conversations/direct',
+      data: {'other_user_id': otherUserId},
+      options: Options(headers: {'Idempotency-Key': _idempotencyKey()}),
+    );
+    return Conversation.fromJson(response.data['data'] as Map<String, dynamic>);
+  }
+
+  Future<ChatPage> getMessages(
     String conversationId, {
     int limit = 50,
-    String? before,
+    String? cursor,
   }) async {
-    final params = <String, dynamic>{'limit': limit};
-    if (before != null) params['before'] = before;
+    final queryParameters = <String, dynamic>{'limit': limit};
+    if (cursor != null && cursor.isNotEmpty) {
+      queryParameters['cursor'] = cursor;
+    }
 
     final response = await _api.get(
       '${Environment.chatPath}/conversations/$conversationId/messages',
-      queryParameters: params,
+      queryParameters: queryParameters,
     );
-    final items = (response.data['data']?['items'] as List<dynamic>?) ?? [];
-    return items
-        .map((e) => Message.fromJson(e as Map<String, dynamic>))
-        .toList();
+    final items = (response.data['data'] as List<dynamic>? ?? const <dynamic>[]);
+    final nextCursor =
+        response.data['meta']?['next_cursor'] as String? ??
+        response.data['meta']?['nextCursor'] as String?;
+
+    return ChatPage(
+      messages:
+          items
+              .map((item) => Message.fromJson(item as Map<String, dynamic>))
+              .toList(),
+      nextCursor: nextCursor,
+    );
   }
 
-  /// Send a message.
-  Future<Message> sendMessage(String conversationId, String content) async {
+  Future<Message> sendMessage(
+    String conversationId,
+    String content, {
+    String type = 'text',
+    String? mediaId,
+  }) async {
     final response = await _api.post(
       '${Environment.chatPath}/conversations/$conversationId/messages',
-      data: {'content': content},
+      data: {
+        'type': type,
+        'text': type == 'text' ? content : '',
+        if (mediaId != null && mediaId.isNotEmpty) 'media_id': mediaId,
+      },
+      options: Options(headers: {'Idempotency-Key': _idempotencyKey()}),
     );
     return Message.fromJson(response.data['data'] as Map<String, dynamic>);
   }
 
-  /// Get total unread message count.
-  Future<int> getUnreadCount() async {
-    final response = await _api.get('${Environment.chatPath}/unread-count');
-    return (response.data['data']?['count'] as int?) ?? 0;
+  Future<void> sendTyping(String conversationId) async {
+    await _api.post('${Environment.chatPath}/conversations/$conversationId/typing');
   }
 
-  /// Upload this device's E2E public key bundle.
-  /// [identityKey], [signedPreKey] are base64-encoded public keys.
-  Future<void> uploadKeyBundle({
-    required String userId,
-    required String identityKey,
-    required String signedPreKey,
-    List<String> oneTimePreKeys = const [],
-  }) async {
-    await _api.post('/v1/chat/keys', data: {
-      'user_id': userId,
-      'identity_key': identityKey,
-      'signed_pre_key': signedPreKey,
-      'one_time_pre_keys': oneTimePreKeys,
-    });
+  Future<void> markRead(String conversationId, String messageId) async {
+    await _api.post(
+      '${Environment.chatPath}/conversations/$conversationId/read',
+      data: {'message_id': messageId},
+    );
   }
 
-  /// Retrieve another user's public key bundle for E2E encryption.
-  Future<Map<String, dynamic>> getKeyBundle(String userId) async {
-    final response = await _api.get('/v1/chat/keys/$userId');
-    return Map<String, dynamic>.from(response.data);
+  Future<Map<String, bool>> getPresence(List<String> userIds) async {
+    final response = await _api.post(
+      '${Environment.chatPath}/presence',
+      data: {'user_ids': userIds},
+    );
+    final data =
+        response.data['data'] as Map<String, dynamic>? ?? const <String, dynamic>{};
+    return data.map((key, value) => MapEntry(key, value == true));
+  }
+
+  String _idempotencyKey() {
+    final timestamp = DateTime.now().microsecondsSinceEpoch.toRadixString(16);
+    final randomPart = _random.nextInt(1 << 32).toRadixString(16);
+    return 'mobile-$timestamp-$randomPart';
   }
 }
 

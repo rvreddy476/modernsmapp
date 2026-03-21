@@ -36,6 +36,7 @@ import 'package:atpost_app/features/stories/story_viewer_screen.dart';
 import 'package:atpost_app/features/chat/chat_detail_screen.dart';
 import 'package:atpost_app/features/chat/chat_list_screen.dart';
 import 'package:atpost_app/features/live/live_screen.dart';
+import 'package:atpost_app/features/live/broadcast_screen.dart';
 import 'package:atpost_app/features/memories/memories_screen.dart';
 import 'package:atpost_app/features/notifications/notifications_screen.dart';
 import 'package:atpost_app/features/profile/profile_detail_screen.dart';
@@ -184,6 +185,13 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         builder: (context, state) => const MemoriesScreen(),
       ),
       GoRoute(path: '/live', builder: (context, state) => const LiveScreen()),
+      GoRoute(
+        path: '/live/broadcast/:streamId',
+        builder: (context, state) => BroadcastScreen(
+          streamId: state.pathParameters['streamId']!,
+          title: state.uri.queryParameters['title'] ?? 'Live Stream',
+        ),
+      ),
 
       // --- Profile ---
       GoRoute(
@@ -404,4 +412,3 @@ final appRouterProvider = Provider<GoRouter>((ref) {
     ],
   );
 });
-

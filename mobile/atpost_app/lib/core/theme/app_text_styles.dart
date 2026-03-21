@@ -36,6 +36,12 @@ class AppTextStyles {
     color: AppColors.textSecondary,
   );
 
+  static TextStyle bodyMedium = GoogleFonts.outfit(
+    fontWeight: FontWeight.w500,
+    fontSize: 14,
+    color: AppColors.textSecondary,
+  );
+
   static TextStyle bodySmall = GoogleFonts.outfit(
     fontWeight: FontWeight.w500,
     fontSize: 13,

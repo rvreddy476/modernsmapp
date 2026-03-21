@@ -6,6 +6,7 @@ import 'package:atpost_app/data/repositories/live_repository.dart';
 import 'package:atpost_app/shared/widgets/video_player_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 class LiveScreen extends ConsumerStatefulWidget {
   const LiveScreen({super.key});
@@ -61,18 +62,8 @@ class _LiveScreenState extends ConsumerState<LiveScreen> {
 
     setState(() => _joiningStreamIds.add(stream.id));
     try {
-      final viewerCount = await ref
-          .read(liveRepositoryProvider)
-          .joinStream(stream.id);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Joined stream. Viewers now: $viewerCount')),
-      );
-    } catch (_) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Could not join stream.')));
+      context.push('/live/broadcast/${stream.id}?title=${Uri.encodeComponent(stream.title)}');
     } finally {
       if (mounted) {
         setState(() => _joiningStreamIds.remove(stream.id));
@@ -267,9 +258,7 @@ class _LiveScreenState extends ConsumerState<LiveScreen> {
       _streams = [stream, ..._streams];
     });
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Live stream "${stream.title}" started.')),
-    );
+    context.push('/live/broadcast/${stream.id}?title=${Uri.encodeComponent(stream.title)}');
   }
 
   @override
@@ -496,9 +485,9 @@ class _LiveStreamCard extends StatelessWidget {
                   // Video layer: real player if stream URL available,
                   // thumbnail if available, gradient fallback otherwise.
                   Positioned.fill(
-                    child: (stream.streamUrl ?? '').isNotEmpty
+                    child: (stream.replayUrl ?? '').isNotEmpty
                         ? VideoPlayerWidget(
-                            videoUrl: stream.streamUrl!,
+                            videoUrl: stream.replayUrl!,
                             autoPlay: true,
                             looping: false,
                             showControls: false,
@@ -568,7 +557,7 @@ class _LiveStreamCard extends StatelessWidget {
                     ),
                   ),
                   // "Stream starting..." overlay when no stream URL.
-                  if ((stream.streamUrl ?? '').isEmpty)
+                  if ((stream.replayUrl ?? '').isEmpty)
                     Center(
                       child: Container(
                         padding: const EdgeInsets.symmetric(
@@ -702,3 +691,4 @@ class _LiveStreamCard extends StatelessWidget {
     return 'just now';
   }
 }
+
