@@ -1,73 +1,73 @@
-CREATE TABLE IF NOT EXISTS groups (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name TEXT NOT NULL,
-    description TEXT DEFAULT '',
-    avatar_media_id UUID,
-    cover_media_id UUID,
-    creator_id UUID NOT NULL,
-    visibility TEXT NOT NULL DEFAULT 'public' CHECK (visibility IN ('public', 'private')),
-    is_archived BOOLEAN NOT NULL DEFAULT FALSE,
-    chat_conversation_id UUID,
-    member_count BIGINT DEFAULT 0,
-    post_count BIGINT DEFAULT 0,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-CREATE INDEX IF NOT EXISTS idx_groups_creator ON groups(creator_id);
-CREATE INDEX IF NOT EXISTS idx_groups_visibility ON groups(visibility) WHERE is_archived = FALSE;
-CREATE INDEX IF NOT EXISTS idx_groups_name_search ON groups USING gin(to_tsvector('english', name));
+-- ============================================================
+-- Migration 008: Upgrade group_posts from V1 to V2 schema
+-- ============================================================
+-- V1 schema: (group_id, post_id, author_id, created_at) PK(group_id, post_id)
+-- V2 schema: id UUID PK, group_id, author_id TEXT, body, title, counters, etc.
+--
+-- V1 "post_id" was an FK to a separate posts table (post-service).
+-- V2 stores content natively in group_posts (body, title, attachments).
+-- We keep post_id as nullable for backward compat with V1 rows.
 
-CREATE TABLE IF NOT EXISTS group_members (
-    group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
-    user_id UUID NOT NULL,
-    role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('admin', 'moderator', 'member')),
-    joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (group_id, user_id)
-);
-CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(user_id);
+-- Step 1: Add all V2 columns
+ALTER TABLE group_posts ADD COLUMN IF NOT EXISTS id UUID DEFAULT gen_random_uuid();
+ALTER TABLE group_posts ADD COLUMN IF NOT EXISTS channel_id UUID;
+ALTER TABLE group_posts ADD COLUMN IF NOT EXISTS content_type VARCHAR(20) DEFAULT 'text';
+ALTER TABLE group_posts ADD COLUMN IF NOT EXISTS title VARCHAR(200);
+ALTER TABLE group_posts ADD COLUMN IF NOT EXISTS body TEXT;
+ALTER TABLE group_posts ADD COLUMN IF NOT EXISTS body_html TEXT;
+ALTER TABLE group_posts ADD COLUMN IF NOT EXISTS type_payload JSONB DEFAULT '{}';
+ALTER TABLE group_posts ADD COLUMN IF NOT EXISTS attachments JSONB DEFAULT '[]';
+ALTER TABLE group_posts ADD COLUMN IF NOT EXISTS needs_approval BOOLEAN DEFAULT FALSE;
+ALTER TABLE group_posts ADD COLUMN IF NOT EXISTS approved_by TEXT;
+ALTER TABLE group_posts ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
+ALTER TABLE group_posts ADD COLUMN IF NOT EXISTS is_pinned BOOLEAN DEFAULT FALSE;
+ALTER TABLE group_posts ADD COLUMN IF NOT EXISTS is_announcement BOOLEAN DEFAULT FALSE;
+ALTER TABLE group_posts ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'published';
+ALTER TABLE group_posts ADD COLUMN IF NOT EXISTS spark_count INTEGER DEFAULT 0;
+ALTER TABLE group_posts ADD COLUMN IF NOT EXISTS comment_count INTEGER DEFAULT 0;
+ALTER TABLE group_posts ADD COLUMN IF NOT EXISTS echo_count INTEGER DEFAULT 0;
+ALTER TABLE group_posts ADD COLUMN IF NOT EXISTS view_count INTEGER DEFAULT 0;
+ALTER TABLE group_posts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
 
-CREATE TABLE IF NOT EXISTS group_invites (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
-    inviter_id UUID NOT NULL,
-    invitee_id UUID NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'rejected')),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE(group_id, invitee_id)
-);
-CREATE INDEX IF NOT EXISTS idx_group_invites_invitee ON group_invites(invitee_id, status);
+-- Step 2: Populate id for any existing rows that have NULL id
+UPDATE group_posts SET id = gen_random_uuid() WHERE id IS NULL;
 
-CREATE TABLE IF NOT EXISTS group_posts (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
-    post_id UUID,
-    channel_id UUID,
-    author_id TEXT NOT NULL,
-    content_type VARCHAR(20) DEFAULT 'text',
-    title VARCHAR(200),
-    body TEXT,
-    body_html TEXT,
-    type_payload JSONB DEFAULT '{}',
-    attachments JSONB DEFAULT '[]',
-    needs_approval BOOLEAN DEFAULT FALSE,
-    approved_by TEXT,
-    approved_at TIMESTAMPTZ,
-    is_pinned BOOLEAN DEFAULT FALSE,
-    is_announcement BOOLEAN DEFAULT FALSE,
-    status VARCHAR(20) DEFAULT 'published',
-    spark_count INTEGER DEFAULT 0,
-    comment_count INTEGER DEFAULT 0,
-    echo_count INTEGER DEFAULT 0,
-    view_count INTEGER DEFAULT 0,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
+-- Step 3: Make id NOT NULL now that all rows have values
+ALTER TABLE group_posts ALTER COLUMN id SET NOT NULL;
+
+-- Step 4: Drop old composite PK and make post_id nullable
+-- (V2 inserts don't use post_id; V1 rows have it populated)
+ALTER TABLE group_posts DROP CONSTRAINT IF EXISTS group_posts_pkey;
+ALTER TABLE group_posts ALTER COLUMN post_id DROP NOT NULL;
+
+-- Step 5: Set id as the new PK
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'group_posts_pkey_v2'
+  ) THEN
+    ALTER TABLE group_posts ADD CONSTRAINT group_posts_pkey_v2 PRIMARY KEY (id);
+  END IF;
+END $$;
+
+-- Step 6: Cast author_id from UUID to TEXT if needed (V1 used UUID, V2 uses TEXT)
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'group_posts' AND column_name = 'author_id' AND data_type = 'uuid'
+  ) THEN
+    ALTER TABLE group_posts ALTER COLUMN author_id TYPE TEXT USING author_id::TEXT;
+  END IF;
+END $$;
+
+-- Step 7: Indexes
 CREATE INDEX IF NOT EXISTS idx_group_posts_feed ON group_posts(group_id, status, created_at DESC) WHERE status = 'published';
 CREATE INDEX IF NOT EXISTS idx_group_posts_pinned ON group_posts(group_id, is_pinned) WHERE is_pinned = TRUE;
 CREATE INDEX IF NOT EXISTS idx_group_posts_pending ON group_posts(group_id, status) WHERE status = 'pending_approval';
-CREATE INDEX IF NOT EXISTS idx_group_posts_group_time ON group_posts(group_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_group_posts_group_id ON group_posts(group_id, created_at DESC);
 
+-- Step 8: Engagement tables
 CREATE TABLE IF NOT EXISTS group_post_sparks (
     post_id UUID NOT NULL, user_id TEXT NOT NULL, is_supernova BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMPTZ DEFAULT NOW(), PRIMARY KEY (post_id, user_id)
@@ -87,15 +87,8 @@ CREATE TABLE IF NOT EXISTS group_post_views (
     post_id UUID NOT NULL, user_id TEXT NOT NULL, viewed_at TIMESTAMPTZ DEFAULT NOW(),
     PRIMARY KEY (post_id, user_id)
 );
-CREATE TABLE IF NOT EXISTS group_post_echoes (
-    id UUID PRIMARY KEY,
-    post_id UUID NOT NULL,
-    user_id TEXT NOT NULL,
-    echo_type VARCHAR(20) NOT NULL DEFAULT 'share',
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE(post_id, user_id)
-);
 
+-- Step 9: Events + RSVPs
 CREATE TABLE IF NOT EXISTS group_events (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     group_id UUID NOT NULL, post_id UUID, creator_id TEXT NOT NULL,
@@ -112,7 +105,9 @@ CREATE TABLE IF NOT EXISTS group_event_rsvps (
     status VARCHAR(20) NOT NULL CHECK (status IN ('going', 'maybe', 'not_going')),
     created_at TIMESTAMPTZ DEFAULT NOW(), PRIMARY KEY (event_id, user_id)
 );
+CREATE INDEX IF NOT EXISTS idx_event_rsvps_event ON group_event_rsvps(event_id);
 
+-- Step 10: Other supporting tables
 CREATE TABLE IF NOT EXISTS group_channels (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     group_id UUID NOT NULL, name VARCHAR(100) NOT NULL,

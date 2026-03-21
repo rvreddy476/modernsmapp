@@ -80,7 +80,7 @@ func main() {
 	groupSvc := service.New(groupStore, rdb, msgURL, postURL, userURL, jwtSecret)
 
 	// 8. Kafka producer
-	producer := groupevents.NewProducer(kafkaBrokers, kafkaTopic)
+	producer := groupevents.NewProducer(kafkaBrokers, kafkaTopic, rdb)
 	groupSvc.SetProducer(producer)
 	slog.Info("kafka producer initialized", "topic", kafkaTopic)
 

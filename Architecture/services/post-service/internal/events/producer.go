@@ -163,6 +163,36 @@ func (p *Producer) PublishCrosspostRemoved(ctx context.Context, crosspostID, sou
 	return p.publish(ctx, events.CrosspostRemoved, nil, payload)
 }
 
+// PublishPostReposted emits a post.reposted event when a user reposts a post.
+func (p *Producer) PublishPostReposted(ctx context.Context, repostID, reposterID, originalPostID, originalAuthorID uuid.UUID, repostType, quoteText, visibility, sourceCtxType, sourceCtxID string) error {
+	payload := events.PostRepostedPayload{
+		RepostID:          repostID.String(),
+		ReposterUserID:    reposterID.String(),
+		OriginalPostID:    originalPostID.String(),
+		OriginalAuthorID:  originalAuthorID.String(),
+		RepostType:        repostType,
+		QuoteText:         quoteText,
+		Visibility:        visibility,
+		SourceContextType: sourceCtxType,
+		SourceContextID:   sourceCtxID,
+		CreatedAt:         time.Now(),
+	}
+	return p.publish(ctx, events.EventPostReposted, &reposterID, payload)
+}
+
+// PublishPostRepostUndone emits a post.repost_undone event when a user undoes a repost.
+func (p *Producer) PublishPostRepostUndone(ctx context.Context, repostID, reposterID, originalPostID, originalAuthorID uuid.UUID, repostType string) error {
+	payload := events.PostRepostUndonePayload{
+		RepostID:         repostID.String(),
+		ReposterUserID:   reposterID.String(),
+		OriginalPostID:   originalPostID.String(),
+		OriginalAuthorID: originalAuthorID.String(),
+		RepostType:       repostType,
+		UndoneAt:         time.Now(),
+	}
+	return p.publish(ctx, events.EventPostRepostUndone, &reposterID, payload)
+}
+
 func (p *Producer) Close() error {
 	return p.writer.Close()
 }

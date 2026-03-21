@@ -608,12 +608,59 @@ func (s *Service) DeleteUpdate(ctx context.Context, channelID, updateID, actorID
 
 // --- Queries ---
 
-func (s *Service) GetMyChannels(ctx context.Context, ownerID uuid.UUID, limit, offset int) ([]store.BroadcastChannel, error) {
-	return s.store.GetMyChannels(ctx, ownerID, limit, offset)
+// GetMyChannels returns channels owned by the user AND channels they are subscribed to, with viewer_role.
+func (s *Service) GetMyChannels(ctx context.Context, userID uuid.UUID, limit, offset int) ([]ChannelWithMembership, error) {
+	// 1. Get owned channels
+	owned, err := s.store.GetMyChannels(ctx, userID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	// 2. Get subscribed channels
+	subscribed, err := s.store.GetSubscribedChannels(ctx, userID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+
+	seen := make(map[uuid.UUID]bool)
+	var result []ChannelWithMembership
+	for i := range owned {
+		seen[owned[i].ID] = true
+		result = append(result, ChannelWithMembership{BroadcastChannel: &owned[i], ViewerRole: "admin"})
+	}
+	for i := range subscribed {
+		if seen[subscribed[i].ID] {
+			continue
+		}
+		role := s.store.GetMemberRole(ctx, subscribed[i].ID, userID)
+		if role == "" {
+			role = "subscriber"
+		}
+		result = append(result, ChannelWithMembership{BroadcastChannel: &subscribed[i], ViewerRole: role})
+	}
+	return result, nil
 }
 
-func (s *Service) DiscoverChannels(ctx context.Context, limit, offset int) ([]store.BroadcastChannel, error) {
-	return s.store.DiscoverChannels(ctx, limit, offset)
+// DiscoverChannels returns discoverable channels with viewer_role for the given user.
+func (s *Service) DiscoverChannels(ctx context.Context, viewerID *uuid.UUID, limit, offset int) ([]ChannelWithMembership, error) {
+	channels, err := s.store.DiscoverChannels(ctx, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]ChannelWithMembership, len(channels))
+	for i := range channels {
+		result[i] = ChannelWithMembership{BroadcastChannel: &channels[i]}
+		if viewerID != nil {
+			if channels[i].OwnerID == *viewerID {
+				result[i].ViewerRole = "admin"
+			} else {
+				role := s.store.GetMemberRole(ctx, channels[i].ID, *viewerID)
+				if role != "" {
+					result[i].ViewerRole = role
+				}
+			}
+		}
+	}
+	return result, nil
 }
 
 // --- Engagement ---
@@ -670,10 +717,44 @@ func (s *Service) EchoUpdate(ctx context.Context, channelID, updateID, userID uu
 	if u.ChannelID != channelID {
 		return fmt.Errorf("update not found")
 	}
+
+	// Enforce forward_allowed flag
+	ch, err := s.store.GetChannelByID(ctx, channelID)
+	if err != nil {
+		return err
+	}
+	if !ch.ForwardAllowed {
+		return fmt.Errorf("forbidden: forwarding disabled")
+	}
+
 	if echoType == "" {
 		echoType = "share"
 	}
-	return s.store.EchoUpdate(ctx, updateID, userID, echoType)
+	if err := s.store.EchoUpdate(ctx, updateID, userID, echoType); err != nil {
+		return err
+	}
+
+	// Fire-and-forget: publish Kafka event
+	go func() {
+		if s.producer != nil {
+			if pubErr := s.producer.PublishChannelUpdateEchoed(context.Background(), channelID, updateID, userID, echoType); pubErr != nil {
+				slog.Warn("failed to publish channel.update.echoed", "error", pubErr)
+			}
+		}
+	}()
+
+	return nil
+}
+
+func (s *Service) UnechoUpdate(ctx context.Context, channelID, updateID, userID uuid.UUID) error {
+	u, err := s.store.GetUpdate(ctx, updateID)
+	if err != nil {
+		return err
+	}
+	if u.ChannelID != channelID {
+		return fmt.Errorf("update not found")
+	}
+	return s.store.UnechoUpdate(ctx, updateID, userID)
 }
 
 func (s *Service) RecordView(ctx context.Context, channelID, updateID, userID uuid.UUID) error {
@@ -698,6 +779,14 @@ func (s *Service) ListComments(ctx context.Context, channelID, updateID uuid.UUI
 	return s.store.ListComments(ctx, updateID, sort, limit, offset)
 }
 
+func (s *Service) ListCommentsSince(ctx context.Context, channelID, updateID uuid.UUID, since time.Time, limit int) ([]store.UpdateComment, error) {
+	_, err := s.store.GetChannelByID(ctx, channelID)
+	if err != nil {
+		return nil, err
+	}
+	return s.store.ListCommentsSince(ctx, updateID, since, limit)
+}
+
 func (s *Service) AddComment(ctx context.Context, channelID, updateID, userID uuid.UUID, body string, parentID *uuid.UUID) (*store.UpdateComment, error) {
 	u, err := s.store.GetUpdate(ctx, updateID)
 	if err != nil {
@@ -709,7 +798,25 @@ func (s *Service) AddComment(ctx context.Context, channelID, updateID, userID uu
 	if body == "" {
 		return nil, fmt.Errorf("invalid: comment body is required")
 	}
-	return s.store.AddComment(ctx, updateID, userID, body, parentID)
+	comment, err := s.store.AddComment(ctx, updateID, userID, body, parentID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Fire-and-forget: publish realtime + Kafka event
+	go func() {
+		if s.producer != nil {
+			parentStr := ""
+			if parentID != nil {
+				parentStr = parentID.String()
+			}
+			if pubErr := s.producer.PublishCommentCreated(context.Background(), channelID, updateID, comment.ID, userID, body, parentStr); pubErr != nil {
+				slog.Warn("failed to publish channel.comment.created", "error", pubErr)
+			}
+		}
+	}()
+
+	return comment, nil
 }
 
 func (s *Service) DeleteComment(ctx context.Context, channelID, updateID, commentID, userID uuid.UUID) error {
@@ -731,7 +838,20 @@ func (s *Service) DeleteComment(ctx context.Context, channelID, updateID, commen
 		}
 	}
 
-	return s.store.DeleteComment(ctx, commentID, userID, isOwner)
+	if err := s.store.DeleteComment(ctx, commentID, userID, isOwner); err != nil {
+		return err
+	}
+
+	// Fire-and-forget: publish realtime + Kafka event
+	go func() {
+		if s.producer != nil {
+			if pubErr := s.producer.PublishCommentDeleted(context.Background(), channelID, updateID, commentID, userID); pubErr != nil {
+				slog.Warn("failed to publish channel.comment.deleted", "error", pubErr)
+			}
+		}
+	}()
+
+	return nil
 }
 
 func (s *Service) PinComment(ctx context.Context, channelID, updateID, commentID, userID uuid.UUID) error {

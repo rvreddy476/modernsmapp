@@ -244,6 +244,25 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		deepLink := fmt.Sprintf("/post/%s", e.PostID)
 		return c.service.CreateNotification(ctx, mentionedID, authorID, "mention", "post", postID, deepLink, e.OccurredAt)
 
+	case events.EventPostReposted:
+		var e events.PostRepostedPayload
+		if err := unmarshalPayload(envelope.Payload, &e); err != nil {
+			return err
+		}
+
+		reposterID, _ := uuid.Parse(e.ReposterUserID)
+		originalAuthorID, _ := uuid.Parse(e.OriginalAuthorID)
+		originalPostID, _ := uuid.Parse(e.OriginalPostID)
+
+		// Don't notify if reposting own post
+		if reposterID == originalAuthorID {
+			return nil
+		}
+
+		// Notification type: "post_reposted"
+		deepLink := fmt.Sprintf("/post/%s", e.OriginalPostID)
+		return c.service.CreateNotification(ctx, originalAuthorID, reposterID, "post_reposted", "post", originalPostID, deepLink, e.CreatedAt)
+
 	default:
 		return nil
 	}

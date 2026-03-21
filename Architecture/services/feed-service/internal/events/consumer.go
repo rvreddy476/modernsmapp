@@ -84,6 +84,12 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 	case events.HandleChanged:
 		return c.handleHandleChanged(ctx, envelope)
 
+	case events.EventPostReposted:
+		return c.handlePostReposted(ctx, envelope)
+
+	case events.EventPostRepostUndone:
+		return c.handlePostRepostUndone(ctx, envelope)
+
 	default:
 		return nil
 	}
@@ -266,6 +272,54 @@ func (c *Consumer) handleHandleChanged(ctx context.Context, envelope events.Even
 
 	log.Printf("Processing HandleChanged: user=%s old=@%s new=@%s", event.UserID, event.OldUsername, event.NewUsername)
 	return nil
+}
+
+func (c *Consumer) handlePostReposted(ctx context.Context, envelope events.EventEnvelope) error {
+	var event events.PostRepostedPayload
+	payloadBytes, _ := json.Marshal(envelope.Payload)
+	if err := json.Unmarshal(payloadBytes, &event); err != nil {
+		return err
+	}
+
+	repostID, err := uuid.Parse(event.RepostID)
+	if err != nil {
+		return err
+	}
+	originalPostID, err := uuid.Parse(event.OriginalPostID)
+	if err != nil {
+		return err
+	}
+	reposterID, err := uuid.Parse(event.ReposterUserID)
+	if err != nil {
+		return err
+	}
+
+	log.Printf("Processing PostReposted: repost=%s original=%s reposter=%s type=%s",
+		event.RepostID, event.OriginalPostID, event.ReposterUserID, event.RepostType)
+
+	return c.service.FanoutRepost(ctx, repostID, originalPostID, reposterID, event.CreatedAt, event.Visibility)
+}
+
+func (c *Consumer) handlePostRepostUndone(ctx context.Context, envelope events.EventEnvelope) error {
+	var event events.PostRepostUndonePayload
+	payloadBytes, _ := json.Marshal(envelope.Payload)
+	if err := json.Unmarshal(payloadBytes, &event); err != nil {
+		return err
+	}
+
+	repostID, err := uuid.Parse(event.RepostID)
+	if err != nil {
+		return err
+	}
+	originalPostID, err := uuid.Parse(event.OriginalPostID)
+	if err != nil {
+		return err
+	}
+
+	log.Printf("Processing PostRepostUndone: repost=%s original=%s reposter=%s",
+		event.RepostID, event.OriginalPostID, event.ReposterUserID)
+
+	return c.service.UndoRepostFanout(ctx, repostID, originalPostID)
 }
 
 func (c *Consumer) Close() error {

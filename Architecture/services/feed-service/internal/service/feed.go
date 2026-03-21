@@ -648,6 +648,72 @@ func feedItemsToCandidates(items []FeedItem) []ranking.Candidate {
 	return out
 }
 
+// FanoutRepost distributes a repost into the reposter's followers' home timelines.
+// The feed entry points to the original post but is attributed to the reposter.
+func (s *Service) FanoutRepost(ctx context.Context, repostID, originalPostID, reposterID uuid.UUID, createdAt time.Time, visibility string) error {
+	// 1. Add to reposter's own home timeline so they see it
+	if err := s.scyllaStore.AddToHomeTimeline(ctx, reposterID, originalPostID, reposterID, createdAt, "repost"); err != nil {
+		log.Printf("Failed to push repost to reposter's home timeline: %v", err)
+	}
+
+	// 2. Check celeb status — if celeb, stop (pull model)
+	isCeleb, err := s.pgStore.IsCeleb(ctx, reposterID)
+	if err != nil {
+		return err
+	}
+	if isCeleb {
+		return nil
+	}
+
+	// 3. Only fan out public/default visibility reposts
+	if visibility == "private" {
+		return nil
+	}
+
+	// 4. Collect followers + friends
+	recipientSet := make(map[uuid.UUID]struct{})
+
+	followerIDs, err := s.fetchFollowers(ctx, reposterID)
+	if err != nil {
+		log.Printf("Failed to fetch followers for repost fanout: %v", err)
+	} else {
+		for _, id := range followerIDs {
+			recipientSet[id] = struct{}{}
+		}
+	}
+
+	friendIDs, err := s.fetchCircleMembers(ctx, reposterID)
+	if err != nil {
+		log.Printf("Failed to fetch circle members for repost fanout: %v", err)
+	} else {
+		for _, id := range friendIDs {
+			recipientSet[id] = struct{}{}
+		}
+	}
+
+	// 5. Push to all recipients' home timelines
+	for recipientID := range recipientSet {
+		if recipientID == reposterID {
+			continue
+		}
+		if err := s.scyllaStore.AddToHomeTimeline(ctx, recipientID, originalPostID, reposterID, createdAt, "repost"); err != nil {
+			log.Printf("Failed to push repost to timeline for user %s: %v", recipientID, err)
+		}
+	}
+
+	return nil
+}
+
+// UndoRepostFanout marks a repost as deleted in Redis so feed hydration skips it.
+func (s *Service) UndoRepostFanout(ctx context.Context, repostID, originalPostID uuid.UUID) error {
+	// Mark repost as deleted in Redis for 24h — feed hydration will filter it out
+	deletedKey := fmt.Sprintf("repost:deleted:%s", repostID)
+	if err := s.rdb.Set(ctx, deletedKey, "1", 24*time.Hour).Err(); err != nil {
+		log.Printf("Failed to mark repost deleted in Redis: %v", err)
+	}
+	return nil
+}
+
 // candidatesToFeedItems converts ranking Candidates back to service FeedItems.
 func candidatesToFeedItems(candidates []ranking.Candidate) []FeedItem {
 	out := make([]FeedItem, len(candidates))

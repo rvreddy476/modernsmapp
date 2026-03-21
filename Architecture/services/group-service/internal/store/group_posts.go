@@ -19,34 +19,7 @@ type GroupBan struct {
 	CreatedAt time.Time  `json:"created_at"`
 }
 
-// --- Engagement on group_posts table ---
-
-func (s *Store) SparkGroupPost(ctx context.Context, postID uuid.UUID, userID string, isSupernova bool) error {
-	weight := 1
-	if isSupernova {
-		weight = 5
-	}
-	_, err := s.db.Exec(ctx, `INSERT INTO group_post_sparks (post_id, user_id, is_supernova) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, postID, userID, isSupernova)
-	if err != nil {
-		return err
-	}
-	_, err = s.db.Exec(ctx, `UPDATE group_posts SET spark_count = spark_count + $2 WHERE id = $1`, postID, weight)
-	return err
-}
-
-func (s *Store) StashGroupPost(ctx context.Context, postID uuid.UUID, userID string) error {
-	_, err := s.db.Exec(ctx, `INSERT INTO group_post_stashes (post_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, postID, userID)
-	return err
-}
-
-func (s *Store) RecordGroupPostView(ctx context.Context, postID uuid.UUID, userID string) error {
-	_, err := s.db.Exec(ctx, `INSERT INTO group_post_views (post_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, postID, userID)
-	if err != nil {
-		return err
-	}
-	_, err = s.db.Exec(ctx, `UPDATE group_posts SET view_count = view_count + 1 WHERE id = $1`, postID)
-	return err
-}
+// Engagement methods moved to group.go (V2 section) with full idempotency + unspark/unstash
 
 func (s *Store) ApproveGroupPost(ctx context.Context, id uuid.UUID, approvedBy string) error {
 	now := time.Now()

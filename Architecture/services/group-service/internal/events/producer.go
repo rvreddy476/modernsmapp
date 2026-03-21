@@ -4,24 +4,27 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/atpost/shared/events"
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 	"github.com/segmentio/kafka-go"
 )
 
 type Producer struct {
 	writer *kafka.Writer
+	rdb    *redis.Client
 }
 
-func NewProducer(brokers []string, topic string) *Producer {
+func NewProducer(brokers []string, topic string, rdb *redis.Client) *Producer {
 	w := &kafka.Writer{
 		Addr:     kafka.TCP(brokers...),
 		Topic:    topic,
 		Balancer: &kafka.LeastBytes{},
 	}
-	return &Producer{writer: w}
+	return &Producer{writer: w, rdb: rdb}
 }
 
 func (p *Producer) PublishGroupCreated(ctx context.Context, groupID, creatorID uuid.UUID, name, visibility string) error {
@@ -226,7 +229,82 @@ func (p *Producer) PublishMemberBanLifted(ctx context.Context, groupID, userID, 
 	return p.publish(ctx, events.MemberBanLifted, &liftedBy, payload)
 }
 
-func (p *Producer) publish(ctx context.Context, eventType string, actorID *uuid.UUID, payload interface{}) error {
+// PublishGroupPostCommented publishes comment created event to Kafka + Redis realtime.
+func (p *Producer) PublishGroupPostCommented(ctx context.Context, groupID, postID, commentID, authorID uuid.UUID, body, parentID string) error {
+	payload := events.GroupPostCommentedPayload{
+		GroupID:   groupID.String(),
+		PostID:    postID.String(),
+		CommentID: commentID.String(),
+		AuthorID:  authorID.String(),
+		Body:      body,
+		ParentID:  parentID,
+		CreatedAt: time.Now(),
+	}
+
+	// Kafka (durable, cross-service)
+	if err := p.publish(ctx, events.GroupPostCommented, &authorID, payload); err != nil {
+		slog.Warn("kafka publish group.comment.created failed", "error", err)
+	}
+
+	// Redis pub/sub (realtime fanout to ws-gateway)
+	p.publishRealtime(ctx, postID.String(), "comment_created", map[string]any{
+		"event_id":   uuid.New().String(),
+		"group_id":   groupID.String(),
+		"post_id":    postID.String(),
+		"comment_id": commentID.String(),
+		"author_id":  authorID.String(),
+		"body":       body,
+		"parent_id":  parentID,
+		"created_at": time.Now().Format(time.RFC3339Nano),
+	})
+	return nil
+}
+
+// PublishGroupPostCommentDeleted publishes comment deleted event to Kafka + Redis realtime.
+func (p *Producer) PublishGroupPostCommentDeleted(ctx context.Context, groupID, postID, commentID, actorID uuid.UUID) error {
+	// Redis pub/sub (realtime fanout)
+	p.publishRealtime(ctx, postID.String(), "comment_deleted", map[string]any{
+		"event_id":   uuid.New().String(),
+		"group_id":   groupID.String(),
+		"post_id":    postID.String(),
+		"comment_id": commentID.String(),
+		"actor_id":   actorID.String(),
+	})
+	return nil
+}
+
+func (p *Producer) PublishGroupPostSparked(ctx context.Context, groupID, postID, userID uuid.UUID) error {
+	payload := events.GroupPostSparkedPayload{
+		GroupID:   groupID.String(),
+		PostID:    postID.String(),
+		UserID:    userID.String(),
+		SparkedAt: time.Now(),
+	}
+	return p.publish(ctx, events.GroupPostSparked, &userID, payload)
+}
+
+// publishRealtime sends a compact JSON event to Redis for ws-gateway fanout.
+func (p *Producer) publishRealtime(ctx context.Context, postID, updateType string, payload map[string]any) {
+	if p.rdb == nil {
+		return
+	}
+	payload["update_type"] = updateType
+	msg := map[string]any{
+		"type":    "group_comment_update",
+		"payload": payload,
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		slog.Warn("failed to marshal realtime group comment event", "error", err)
+		return
+	}
+	channel := fmt.Sprintf("group_post:%s", postID)
+	if err := p.rdb.Publish(ctx, channel, string(data)).Err(); err != nil {
+		slog.Warn("redis publish group comment event failed", "error", err, "channel", channel)
+	}
+}
+
+func (p *Producer) publish(ctx context.Context, eventType string, actorID *uuid.UUID, payload any) error {
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("failed to marshal payload: %w", err)

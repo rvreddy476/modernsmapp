@@ -41,9 +41,11 @@ const (
 	GroupMemberLeft   = "GroupMemberLeft"   // payload: GroupMemberLeftPayload
 	GroupPostCreated  = "GroupPostCreated"  // payload: GroupPostCreatedPayload
 	GroupPostDeleted  = "GroupPostDeleted"  // payload: GroupPostDeletedPayload
-	GroupPostPinned   = "GroupPostPinned"   // payload: GroupPostPinnedPayload
-	GroupPostUnpinned = "GroupPostUnpinned" // payload: GroupPostUnpinnedPayload
-	MemberBanLifted   = "MemberBanLifted"   // payload: MemberBanLiftedPayload
+	GroupPostPinned    = "GroupPostPinned"    // payload: GroupPostPinnedPayload
+	GroupPostUnpinned  = "GroupPostUnpinned"  // payload: GroupPostUnpinnedPayload
+	GroupPostCommented = "GroupPostCommented" // payload: GroupPostCommentedPayload
+	GroupPostSparked   = "GroupPostSparked"   // payload: GroupPostSparkedPayload
+	MemberBanLifted    = "MemberBanLifted"    // payload: MemberBanLiftedPayload
 
 	StoryCreated = "StoryCreated" // payload: StoryCreatedPayload
 	StoryViewed  = "StoryViewed"  // payload: StoryViewedPayload
@@ -180,6 +182,14 @@ const (
 	EventChannelUpdateDeleted   = "channel.update.deleted"
 	EventChannelMemberBanned    = "channel.member.banned"
 
+	// Broadcast Channel Engagement Events
+	EventChannelUpdateEchoed = "channel.update.echoed"
+
+	// Broadcast Channel Comment Events (realtime)
+	EventChannelCommentCreated = "channel.comment.created"
+	EventChannelCommentDeleted = "channel.comment.deleted"
+	EventChannelCommentUpdated = "channel.comment.updated"
+
 	// Community Events
 	EventCommunityCreated           = "community.created"
 	EventCommunityUpdated           = "community.updated"
@@ -204,6 +214,10 @@ const (
 	EventCallParticipantMuted   = "call.participant.muted"
 	EventCallParticipantRemoved = "call.participant.removed"
 	EventCallUpgraded           = "call.upgraded"
+
+	// Post Repost (Echo) Events
+	EventPostReposted    = "post.reposted"
+	EventPostRepostUndone = "post.repost_undone"
 )
 
 // EventEnvelope is the CloudEvents-ish structure we use on Kafka.
@@ -419,6 +433,23 @@ type GroupPostUnpinnedPayload struct {
 	PostID     string    `json:"post_id"`
 	UnpinnedBy string    `json:"unpinned_by"`
 	UnpinnedAt time.Time `json:"unpinned_at"`
+}
+
+type GroupPostCommentedPayload struct {
+	GroupID   string    `json:"group_id"`
+	PostID    string    `json:"post_id"`
+	CommentID string    `json:"comment_id"`
+	AuthorID  string    `json:"author_id"`
+	Body      string    `json:"body"`
+	ParentID  string    `json:"parent_id,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type GroupPostSparkedPayload struct {
+	GroupID string    `json:"group_id"`
+	PostID  string    `json:"post_id"`
+	UserID  string    `json:"user_id"`
+	SparkedAt time.Time `json:"sparked_at"`
 }
 
 type MemberBanLiftedPayload struct {
@@ -992,6 +1023,59 @@ type CallEndedPayload struct {
 
 // NewEnvelope creates an EventEnvelope with a new EventID and
 // propagated TraceID from context.
+// --- Channel Comment Payloads ---
+
+type ChannelCommentCreatedPayload struct {
+	CommentID string    `json:"comment_id"`
+	UpdateID  string    `json:"update_id"`
+	ChannelID string    `json:"channel_id"`
+	AuthorID  string    `json:"author_id"`
+	Body      string    `json:"body"`
+	ParentID  string    `json:"parent_id,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type ChannelCommentDeletedPayload struct {
+	CommentID string    `json:"comment_id"`
+	UpdateID  string    `json:"update_id"`
+	ChannelID string    `json:"channel_id"`
+	ActorID   string    `json:"actor_id"`
+	DeletedAt time.Time `json:"deleted_at"`
+}
+
+type ChannelCommentUpdatedPayload struct {
+	CommentID string    `json:"comment_id"`
+	UpdateID  string    `json:"update_id"`
+	ChannelID string    `json:"channel_id"`
+	ActorID   string    `json:"actor_id"`
+	Body      string    `json:"body"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// --- Post Repost (Echo) Payloads ---
+
+type PostRepostedPayload struct {
+	RepostID         string    `json:"repost_id"`
+	ReposterUserID   string    `json:"reposter_user_id"`
+	OriginalPostID   string    `json:"original_post_id"`
+	OriginalAuthorID string    `json:"original_author_id"`
+	RepostType       string    `json:"repost_type"` // "plain" or "quote"
+	QuoteText        string    `json:"quote_text,omitempty"`
+	Visibility       string    `json:"visibility"`
+	SourceContextType string   `json:"source_context_type,omitempty"`
+	SourceContextID  string    `json:"source_context_id,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+}
+
+type PostRepostUndonePayload struct {
+	RepostID         string    `json:"repost_id"`
+	ReposterUserID   string    `json:"reposter_user_id"`
+	OriginalPostID   string    `json:"original_post_id"`
+	OriginalAuthorID string    `json:"original_author_id"`
+	RepostType       string    `json:"repost_type"`
+	UndoneAt         time.Time `json:"undone_at"`
+}
+
 func NewEnvelope(ctx context.Context, eventType string, actorUserID *string, payload json.RawMessage) EventEnvelope {
 	traceID := trace.TraceIDFrom(ctx)
 

@@ -2030,3 +2030,185 @@ func (h *Handler) GetRemixToken(c *gin.Context) {
 	}
 	api.JSON(c.Writer, http.StatusOK, result, nil)
 }
+
+// ---------------------------------------------------------------------------
+// Repost (Echo) Handlers
+// ---------------------------------------------------------------------------
+
+// RegisterRepostRoutes adds repost-specific routes.
+func (h *Handler) RegisterRepostRoutes(r *gin.Engine) {
+	v1 := r.Group("/v1/posts")
+	{
+		v1.POST("/:postId/repost", h.CreateRepost)
+		v1.DELETE("/:postId/repost", h.UndoRepost)
+		v1.GET("/:postId/repost/me", h.GetRepostState)
+		v1.GET("/:postId/reposters", h.ListReposters)
+	}
+
+	r.GET("/v1/users/:userId/reposts", h.ListUserReposts)
+}
+
+type CreateRepostRequest struct {
+	Type              string  `json:"type" binding:"required,oneof=plain quote"`
+	QuoteText         string  `json:"quote_text"`
+	SourceContextType string  `json:"source_context_type"`
+	SourceContextID   *string `json:"source_context_id"`
+}
+
+func (h *Handler) CreateRepost(c *gin.Context) {
+	userIDStr := c.GetHeader("X-User-Id")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	postID, err := uuid.Parse(c.Param("postId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		return
+	}
+
+	var req CreateRepostRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+
+	var sourceCtxID *uuid.UUID
+	if req.SourceContextID != nil && *req.SourceContextID != "" {
+		parsed, err := uuid.Parse(*req.SourceContextID)
+		if err == nil {
+			sourceCtxID = &parsed
+		}
+	}
+
+	result, err := h.svc.CreateRepost(c.Request.Context(), service.CreateRepostInput{
+		UserID:            userID,
+		PostID:            postID,
+		Type:              req.Type,
+		QuoteText:         req.QuoteText,
+		SourceContextType: req.SourceContextType,
+		SourceContextID:   sourceCtxID,
+	})
+	if err != nil {
+		switch err.Error() {
+		case "RATE_LIMITED":
+			api.Error(c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many reposts, please slow down", nil, nil)
+		case "POST_NOT_FOUND":
+			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Post not found", nil, nil)
+		case "NOT_ELIGIBLE":
+			api.Error(c.Writer, http.StatusForbidden, "NOT_ELIGIBLE", "This post cannot be reposted", nil, nil)
+		case "ALREADY_REPOSTED":
+			api.Error(c.Writer, http.StatusConflict, "ALREADY_REPOSTED", "You already reposted this post", nil, nil)
+		case "QUOTE_TEXT_REQUIRED":
+			api.Error(c.Writer, http.StatusUnprocessableEntity, "QUOTE_TEXT_REQUIRED", "Add your thoughts to quote repost", nil, nil)
+		case "QUOTE_TEXT_TOO_LONG":
+			api.Error(c.Writer, http.StatusUnprocessableEntity, "QUOTE_TEXT_TOO_LONG", "Quote text must be 500 characters or fewer", nil, nil)
+		default:
+			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		}
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusCreated, result, nil)
+}
+
+func (h *Handler) UndoRepost(c *gin.Context) {
+	userIDStr := c.GetHeader("X-User-Id")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	postID, err := uuid.Parse(c.Param("postId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		return
+	}
+
+	err = h.svc.UndoRepost(c.Request.Context(), userID, postID)
+	if err != nil {
+		switch err.Error() {
+		case "REPOST_NOT_FOUND":
+			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "No active repost found", nil, nil)
+		default:
+			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		}
+		return
+	}
+
+	c.Writer.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) GetRepostState(c *gin.Context) {
+	userIDStr := c.GetHeader("X-User-Id")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	postID, err := uuid.Parse(c.Param("postId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		return
+	}
+
+	result, err := h.svc.GetRepostState(c.Request.Context(), userID, postID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, result, nil)
+}
+
+func (h *Handler) ListReposters(c *gin.Context) {
+	postID, err := uuid.Parse(c.Param("postId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		return
+	}
+
+	limit := 20
+	if l := c.Query("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 50 {
+			limit = parsed
+		}
+	}
+	cursor := c.Query("cursor")
+
+	result, err := h.svc.ListReposters(c.Request.Context(), postID, limit, cursor)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, result, nil)
+}
+
+func (h *Handler) ListUserReposts(c *gin.Context) {
+	userID, err := uuid.Parse(c.Param("userId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil, nil)
+		return
+	}
+
+	limit := 20
+	if l := c.Query("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 50 {
+			limit = parsed
+		}
+	}
+	cursor := c.Query("cursor")
+
+	result, err := h.svc.ListUserReposts(c.Request.Context(), userID, limit, cursor)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, result, nil)
+}

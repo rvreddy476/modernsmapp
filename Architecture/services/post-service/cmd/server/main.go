@@ -197,6 +197,7 @@ func main() {
 	postHandler.RegisterCrosspostRoutes(r)
 	postHandler.RegisterMyUploadsRoutes(r)
 	postHandler.RegisterAudioRoutes(r)
+	postHandler.RegisterRepostRoutes(r)
 
 	// 12b. Scheduled draft publish worker (every 60 seconds)
 	go func() {

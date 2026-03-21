@@ -85,10 +85,14 @@ github.com/goccy/go-json/internal/errors
 github.com/goccy/go-json/internal/runtime
 # github.com/gocql/gocql v1.6.0
 ## explicit; go 1.13
+# github.com/gocql/gocql v1.7.0
+## explicit; go 1.13
 github.com/gocql/gocql
 github.com/gocql/gocql/internal/lru
 github.com/gocql/gocql/internal/murmur
 github.com/gocql/gocql/internal/streams
+# github.com/golang/snappy v0.0.3
+## explicit
 # github.com/golang/snappy v0.0.4
 ## explicit
 github.com/golang/snappy

@@ -44,8 +44,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.POST("/:channelId/updates/:updateId/stash", h.StashUpdate)
 		v1.DELETE("/:channelId/updates/:updateId/stash", h.UnstashUpdate)
 		v1.POST("/:channelId/updates/:updateId/echo", h.EchoUpdate)
+		v1.DELETE("/:channelId/updates/:updateId/echo", h.UnechoUpdate)
 		v1.POST("/:channelId/updates/:updateId/view", h.RecordView)
 		v1.GET("/:channelId/updates/:updateId/comments", h.ListComments)
+		v1.GET("/:channelId/updates/:updateId/comments/delta", h.ListCommentsDelta)
 		v1.POST("/:channelId/updates/:updateId/comments", h.AddComment)
 		v1.DELETE("/:channelId/updates/:updateId/comments/:commentId", h.DeleteComment)
 		v1.POST("/:channelId/updates/:updateId/comments/:commentId/pin", h.PinComment)
@@ -519,7 +521,13 @@ func (h *Handler) GetMyChannels(c *gin.Context) {
 
 func (h *Handler) DiscoverChannels(c *gin.Context) {
 	limit, offset := parsePagination(c)
-	channels, err := h.svc.DiscoverChannels(c.Request.Context(), limit, offset)
+
+	var viewerID *uuid.UUID
+	if uid, err := uuid.Parse(c.GetHeader("X-User-Id")); err == nil {
+		viewerID = &uid
+	}
+
+	channels, err := h.svc.DiscoverChannels(c.Request.Context(), viewerID, limit, offset)
 	if err != nil {
 		handleServiceError(c, err)
 		return

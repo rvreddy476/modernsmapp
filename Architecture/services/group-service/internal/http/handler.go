@@ -95,6 +95,33 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.POST("/:groupId/wiki", h.CreateWikiPage)
 		v1.PUT("/:groupId/wiki/:pageId", h.UpdateWikiPage)
 		v1.DELETE("/:groupId/wiki/:pageId", h.DeleteWikiPage)
+
+		// V2 Group Posts (rich, native group posts with engagement)
+		v1.POST("/:groupId/posts/v2", h.CreateGroupPostV2)
+		v1.GET("/:groupId/feed/v2", h.GetGroupFeedV2)
+		v1.GET("/:groupId/posts/v2/:postId", h.GetGroupPostV2)
+		v1.DELETE("/:groupId/posts/v2/:postId", h.DeleteGroupPostV2)
+
+		// V2 Post Engagement
+		v1.POST("/:groupId/posts/v2/:postId/spark", h.SparkGroupPost)
+		v1.DELETE("/:groupId/posts/v2/:postId/spark", h.UnsparkGroupPost)
+		v1.POST("/:groupId/posts/v2/:postId/stash", h.StashGroupPost)
+		v1.DELETE("/:groupId/posts/v2/:postId/stash", h.UnstashGroupPost)
+		v1.POST("/:groupId/posts/v2/:postId/view", h.RecordGroupPostView)
+		v1.POST("/:groupId/posts/v2/:postId/echo", h.EchoGroupPost)
+		v1.DELETE("/:groupId/posts/v2/:postId/echo", h.UnechoGroupPost)
+
+		// V2 Post Comments
+		v1.GET("/:groupId/posts/v2/:postId/comments", h.ListGroupPostComments)
+		v1.POST("/:groupId/posts/v2/:postId/comments", h.AddGroupPostComment)
+		v1.DELETE("/:groupId/posts/v2/:postId/comments/:commentId", h.DeleteGroupPostComment)
+
+		// Group Events
+		v1.POST("/:groupId/events", h.CreateGroupEvent)
+		v1.GET("/:groupId/events", h.ListGroupEvents)
+		v1.GET("/:groupId/events/:eventId", h.GetGroupEvent)
+		v1.DELETE("/:groupId/events/:eventId", h.DeleteGroupEvent)
+		v1.POST("/:groupId/events/:eventId/rsvp", h.RSVPGroupEvent)
 	}
 }
 
@@ -1465,6 +1492,469 @@ func (h *Handler) DeleteWikiPage(c *gin.Context) {
 		return
 	}
 	if err := h.svc.DeleteWikiPage(c.Request.Context(), actorID, groupID, pageID); err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
+}
+
+// ── V2 Group Posts ───────────────────────────────────────────
+
+func (h *Handler) CreateGroupPostV2(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid group id", nil, nil)
+		return
+	}
+	var req service.CreateGroupPostV2Params
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "invalid request body", nil, nil)
+		return
+	}
+	post, err := h.svc.CreateGroupPostV2(c.Request.Context(), actorID, groupID, req)
+	if err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusCreated, post, nil)
+}
+
+func (h *Handler) GetGroupFeedV2(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid group id", nil, nil)
+		return
+	}
+	var channelID *uuid.UUID
+	if ch := c.Query("channel_id"); ch != "" {
+		parsed, err := uuid.Parse(ch)
+		if err != nil {
+			api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid channel_id", nil, nil)
+			return
+		}
+		channelID = &parsed
+	}
+	limit, offset := parsePagination(c)
+	posts, err := h.svc.GetGroupFeedV2(c.Request.Context(), actorID, groupID, channelID, limit, offset)
+	if err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, posts, nil)
+}
+
+func (h *Handler) GetGroupPostV2(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid group id", nil, nil)
+		return
+	}
+	postID, err := uuid.Parse(c.Param("postId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid post id", nil, nil)
+		return
+	}
+	post, err := h.svc.GetGroupPostV2(c.Request.Context(), actorID, groupID, postID)
+	if err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, post, nil)
+}
+
+func (h *Handler) DeleteGroupPostV2(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid group id", nil, nil)
+		return
+	}
+	postID, err := uuid.Parse(c.Param("postId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid post id", nil, nil)
+		return
+	}
+	if err := h.svc.DeleteGroupPostV2(c.Request.Context(), actorID, groupID, postID); err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
+}
+
+// ── V2 Engagement ────────────────────────────────────────────
+
+func (h *Handler) SparkGroupPost(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid group id", nil, nil)
+		return
+	}
+	postID, err := uuid.Parse(c.Param("postId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid post id", nil, nil)
+		return
+	}
+	var req struct {
+		IsSupernova bool `json:"is_supernova"`
+	}
+	_ = c.ShouldBindJSON(&req)
+	if err := h.svc.SparkGroupPost(c.Request.Context(), actorID, groupID, postID, req.IsSupernova); err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
+}
+
+func (h *Handler) UnsparkGroupPost(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid group id", nil, nil)
+		return
+	}
+	postID, err := uuid.Parse(c.Param("postId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid post id", nil, nil)
+		return
+	}
+	if err := h.svc.UnsparkGroupPost(c.Request.Context(), actorID, groupID, postID); err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
+}
+
+func (h *Handler) StashGroupPost(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid group id", nil, nil)
+		return
+	}
+	postID, err := uuid.Parse(c.Param("postId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid post id", nil, nil)
+		return
+	}
+	if err := h.svc.StashGroupPost(c.Request.Context(), actorID, groupID, postID); err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
+}
+
+func (h *Handler) UnstashGroupPost(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid group id", nil, nil)
+		return
+	}
+	postID, err := uuid.Parse(c.Param("postId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid post id", nil, nil)
+		return
+	}
+	if err := h.svc.UnstashGroupPost(c.Request.Context(), actorID, groupID, postID); err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
+}
+
+func (h *Handler) RecordGroupPostView(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid group id", nil, nil)
+		return
+	}
+	postID, err := uuid.Parse(c.Param("postId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid post id", nil, nil)
+		return
+	}
+	if err := h.svc.RecordGroupPostView(c.Request.Context(), actorID, groupID, postID); err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
+}
+
+func (h *Handler) EchoGroupPost(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid group id", nil, nil)
+		return
+	}
+	postID, err := uuid.Parse(c.Param("postId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid post id", nil, nil)
+		return
+	}
+	var req struct {
+		EchoType string `json:"echo_type"`
+	}
+	_ = c.ShouldBindJSON(&req)
+	if err := h.svc.EchoGroupPost(c.Request.Context(), actorID, groupID, postID, req.EchoType); err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusCreated, gin.H{"status": "echoed"}, nil)
+}
+
+func (h *Handler) UnechoGroupPost(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid group id", nil, nil)
+		return
+	}
+	postID, err := uuid.Parse(c.Param("postId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid post id", nil, nil)
+		return
+	}
+	if err := h.svc.UnechoGroupPost(c.Request.Context(), actorID, groupID, postID); err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"status": "unechoed"}, nil)
+}
+
+// ── V2 Comments ──────────────────────────────────────────────
+
+func (h *Handler) ListGroupPostComments(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid group id", nil, nil)
+		return
+	}
+	postID, err := uuid.Parse(c.Param("postId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid post id", nil, nil)
+		return
+	}
+	limit, offset := parsePagination(c)
+	comments, err := h.svc.ListGroupPostComments(c.Request.Context(), actorID, groupID, postID, limit, offset)
+	if err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, comments, nil)
+}
+
+func (h *Handler) AddGroupPostComment(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid group id", nil, nil)
+		return
+	}
+	postID, err := uuid.Parse(c.Param("postId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid post id", nil, nil)
+		return
+	}
+	var req struct {
+		Body     string     `json:"body" binding:"required"`
+		ParentID *uuid.UUID `json:"parent_id"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "body is required", nil, nil)
+		return
+	}
+	comment, err := h.svc.AddGroupPostComment(c.Request.Context(), actorID, groupID, postID, req.Body, req.ParentID)
+	if err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusCreated, comment, nil)
+}
+
+func (h *Handler) DeleteGroupPostComment(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid group id", nil, nil)
+		return
+	}
+	postID, err := uuid.Parse(c.Param("postId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid post id", nil, nil)
+		return
+	}
+	commentID, err := uuid.Parse(c.Param("commentId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid comment id", nil, nil)
+		return
+	}
+	if err := h.svc.DeleteGroupPostComment(c.Request.Context(), actorID, groupID, postID, commentID); err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
+}
+
+// ── Group Events ─────────────────────────────────────────────
+
+func (h *Handler) CreateGroupEvent(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid group id", nil, nil)
+		return
+	}
+	var event store.GroupEvent
+	if err := c.ShouldBindJSON(&event); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "invalid request body", nil, nil)
+		return
+	}
+	if err := h.svc.CreateGroupEvent(c.Request.Context(), actorID, groupID, &event); err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusCreated, event, nil)
+}
+
+func (h *Handler) ListGroupEvents(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid group id", nil, nil)
+		return
+	}
+	limit, offset := parsePagination(c)
+	events, err := h.svc.ListGroupEvents(c.Request.Context(), actorID, groupID, limit, offset)
+	if err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, events, nil)
+}
+
+func (h *Handler) GetGroupEvent(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid group id", nil, nil)
+		return
+	}
+	eventID, err := uuid.Parse(c.Param("eventId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid event id", nil, nil)
+		return
+	}
+	event, err := h.svc.GetGroupEvent(c.Request.Context(), actorID, groupID, eventID)
+	if err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, event, nil)
+}
+
+func (h *Handler) DeleteGroupEvent(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid group id", nil, nil)
+		return
+	}
+	eventID, err := uuid.Parse(c.Param("eventId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid event id", nil, nil)
+		return
+	}
+	if err := h.svc.DeleteGroupEvent(c.Request.Context(), actorID, groupID, eventID); err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
+}
+
+func (h *Handler) RSVPGroupEvent(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	groupID, err := uuid.Parse(c.Param("groupId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid group id", nil, nil)
+		return
+	}
+	eventID, err := uuid.Parse(c.Param("eventId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid event id", nil, nil)
+		return
+	}
+	var req struct {
+		Status string `json:"status" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "status is required", nil, nil)
+		return
+	}
+	if err := h.svc.RSVPGroupEvent(c.Request.Context(), actorID, groupID, eventID, req.Status); err != nil {
 		handleServiceError(c, err)
 		return
 	}

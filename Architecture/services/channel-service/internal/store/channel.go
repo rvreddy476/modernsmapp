@@ -318,6 +318,9 @@ func (s *Store) GetUpdate(ctx context.Context, id uuid.UUID) (*ChannelUpdate, er
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("update not found")
 	}
+	if err == nil && u.MediaIDs == nil {
+		u.MediaIDs = []uuid.UUID{}
+	}
 	return u, err
 }
 
@@ -363,6 +366,9 @@ func (s *Store) ListUpdates(ctx context.Context, channelID uuid.UUID, statusFilt
 		); err != nil {
 			return nil, err
 		}
+		if u.MediaIDs == nil {
+			u.MediaIDs = []uuid.UUID{}
+		}
 		updates = append(updates, u)
 	}
 	return updates, rows.Err()
@@ -398,6 +404,9 @@ func (s *Store) PublishScheduledUpdates(ctx context.Context) ([]ChannelUpdate, e
 		); err != nil {
 			return nil, err
 		}
+		if u.MediaIDs == nil {
+			u.MediaIDs = []uuid.UUID{}
+		}
 		updates = append(updates, u)
 	}
 	return updates, rows.Err()
@@ -414,6 +423,30 @@ func (s *Store) GetMyChannels(ctx context.Context, ownerID uuid.UUID, limit, off
 		FROM broadcast_channels WHERE owner_id = $1 AND status != 'deleted'
 		ORDER BY created_at DESC LIMIT $2 OFFSET $3`
 	return s.scanChannels(ctx, query, ownerID, limit, offset)
+}
+
+// GetSubscribedChannels returns channels a user is subscribed to (as member, not owner).
+func (s *Store) GetSubscribedChannels(ctx context.Context, userID uuid.UUID, limit, offset int) ([]BroadcastChannel, error) {
+	query := `SELECT bc.id, bc.owner_id, bc.handle, bc.name, bc.description, bc.avatar_media_id, bc.banner_media_id,
+		bc.channel_type, bc.category, bc.language, bc.comment_mode, bc.reaction_mode,
+		bc.forward_allowed, bc.paid_access, bc.subscription_price_cents,
+		bc.post_schedule_enabled, bc.subscriber_count_visible, bc.allow_preview_posts,
+		bc.is_verified, bc.subscriber_count, bc.update_count, bc.status, bc.created_at, bc.updated_at, bc.deleted_at
+		FROM broadcast_channels bc
+		INNER JOIN channel_members cm ON cm.channel_id = bc.id
+		WHERE cm.user_id = $1 AND bc.status != 'deleted'
+		ORDER BY cm.subscribed_at DESC LIMIT $2 OFFSET $3`
+	return s.scanChannels(ctx, query, userID, limit, offset)
+}
+
+// GetMemberRole returns the role of a user in a channel, or empty string if not a member.
+func (s *Store) GetMemberRole(ctx context.Context, channelID, userID uuid.UUID) string {
+	var role string
+	err := s.db.QueryRow(ctx, `SELECT role FROM channel_members WHERE channel_id = $1 AND user_id = $2`, channelID, userID).Scan(&role)
+	if err != nil {
+		return ""
+	}
+	return role
 }
 
 func (s *Store) DiscoverChannels(ctx context.Context, limit, offset int) ([]BroadcastChannel, error) {
@@ -567,13 +600,33 @@ func (s *Store) UnstashUpdate(ctx context.Context, updateID, userID uuid.UUID) e
 
 func (s *Store) EchoUpdate(ctx context.Context, updateID, userID uuid.UUID, echoType string) error {
 	query := `INSERT INTO update_echoes (id, update_id, user_id, echo_type, created_at)
-		VALUES ($1, $2, $3, $4, NOW())`
-	_, err := s.db.Exec(ctx, query, uuid.New(), updateID, userID, echoType)
+		VALUES ($1, $2, $3, $4, NOW())
+		ON CONFLICT (update_id, user_id) DO NOTHING`
+	tag, err := s.db.Exec(ctx, query, uuid.New(), updateID, userID, echoType)
 	if err != nil {
 		return err
 	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("already echoed")
+	}
 	_, err = s.db.Exec(ctx,
 		`UPDATE channel_updates SET forward_count = forward_count + 1, updated_at = NOW() WHERE id = $1`,
+		updateID)
+	return err
+}
+
+func (s *Store) UnechoUpdate(ctx context.Context, updateID, userID uuid.UUID) error {
+	tag, err := s.db.Exec(ctx,
+		`DELETE FROM update_echoes WHERE update_id = $1 AND user_id = $2`,
+		updateID, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("not found: echo not found")
+	}
+	_, err = s.db.Exec(ctx,
+		`UPDATE channel_updates SET forward_count = GREATEST(forward_count - 1, 0), updated_at = NOW() WHERE id = $1`,
 		updateID)
 	return err
 }
@@ -602,6 +655,28 @@ func (s *Store) ListComments(ctx context.Context, updateID uuid.UUID, sort strin
 		FROM update_comments WHERE update_id = $1
 		ORDER BY %s LIMIT $2 OFFSET $3`, orderClause)
 	rows, err := s.db.Query(ctx, query, updateID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var comments []UpdateComment
+	for rows.Next() {
+		var c UpdateComment
+		if err := rows.Scan(&c.ID, &c.UpdateID, &c.AuthorID, &c.Body, &c.ParentID, &c.IsPinned, &c.CreatedAt); err != nil {
+			return nil, err
+		}
+		comments = append(comments, c)
+	}
+	return comments, rows.Err()
+}
+
+func (s *Store) ListCommentsSince(ctx context.Context, updateID uuid.UUID, since time.Time, limit int) ([]UpdateComment, error) {
+	query := `SELECT id, update_id, author_id, body, parent_id, is_pinned, created_at
+		FROM update_comments
+		WHERE update_id = $1 AND created_at > $2
+		ORDER BY created_at ASC
+		LIMIT $3`
+	rows, err := s.db.Query(ctx, query, updateID, since, limit)
 	if err != nil {
 		return nil, err
 	}

@@ -1321,7 +1321,7 @@ func (s *Service) DeleteGroupPost(ctx context.Context, actorID, groupID, postID 
 	}
 
 	// Author can delete own post, admin/mod/owner can delete any
-	if gp.AuthorID != actorID {
+	if gp.AuthorID != actorID.String() {
 		actor, err := s.store.GetActiveMember(ctx, groupID, actorID)
 		if err != nil {
 			return err
@@ -1827,4 +1827,406 @@ func (s *Service) DeleteWikiPage(ctx context.Context, actorID, groupID, pageID u
 		return fmt.Errorf("forbidden: only admins or moderators can delete wiki pages")
 	}
 	return s.store.DeleteWikiPage(ctx, pageID, groupID)
+}
+
+// ── V2 Group Posts ───────────────────────────────────────────
+
+type CreateGroupPostV2Params struct {
+	Body           string          `json:"body"`
+	Title          string          `json:"title,omitempty"`
+	ContentType    string          `json:"content_type"`
+	ChannelID      *uuid.UUID      `json:"channel_id,omitempty"`
+	TypePayload    json.RawMessage `json:"type_payload,omitempty"`
+	Attachments    json.RawMessage `json:"attachments,omitempty"`
+	IsAnnouncement bool            `json:"is_announcement"`
+}
+
+func (s *Service) CreateGroupPostV2(ctx context.Context, actorID, groupID uuid.UUID, params CreateGroupPostV2Params) (*store.GroupPostV2, error) {
+	g, err := s.store.GetGroupByID(ctx, groupID)
+	if err != nil {
+		return nil, err
+	}
+	if g == nil {
+		return nil, fmt.Errorf("group not found")
+	}
+
+	actor, err := s.store.GetActiveMember(ctx, groupID, actorID)
+	if err != nil {
+		return nil, err
+	}
+	if actor == nil {
+		return nil, fmt.Errorf("forbidden: only members can post in the group")
+	}
+
+	if err := s.checkPermission(g.WhoCanPost, actor.Role); err != nil {
+		return nil, fmt.Errorf("forbidden: %w", err)
+	}
+
+	status := "published"
+	needsApproval := false
+	if g.GroupType == "moderated" && actor.Role == "member" {
+		status = "pending_approval"
+		needsApproval = true
+	}
+
+	contentType := params.ContentType
+	if contentType == "" {
+		contentType = "text"
+	}
+
+	post := &store.GroupPostV2{
+		GroupID:        groupID,
+		AuthorID:       actorID.String(),
+		ContentType:    contentType,
+		Body:           &params.Body,
+		Title:          nilIfEmpty(params.Title),
+		TypePayload:    params.TypePayload,
+		Attachments:    params.Attachments,
+		IsAnnouncement: params.IsAnnouncement,
+		ChannelID:      params.ChannelID,
+		NeedsApproval:  needsApproval,
+		Status:         status,
+	}
+
+	if err := s.store.CreateGroupPostV2(ctx, post); err != nil {
+		return nil, err
+	}
+
+	s.store.IncrementMemberPostCount(ctx, groupID, actorID)
+
+	s.publishEvent(func() error {
+		return s.producer.PublishGroupPostCreated(ctx, groupID, post.ID, actorID)
+	})
+
+	s.invalidateGroupCache(ctx, groupID)
+	return post, nil
+}
+
+func nilIfEmpty(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+func (s *Service) GetGroupFeedV2(ctx context.Context, actorID, groupID uuid.UUID, channelID *uuid.UUID, limit, offset int) ([]store.GroupPostV2, error) {
+	g, err := s.store.GetGroupByID(ctx, groupID)
+	if err != nil {
+		return nil, err
+	}
+	if g == nil {
+		return nil, fmt.Errorf("group not found")
+	}
+
+	if err := s.checkGroupAccess(ctx, g, actorID); err != nil {
+		return nil, err
+	}
+
+	return s.store.ListGroupPostsV2(ctx, groupID, channelID, limit, offset)
+}
+
+func (s *Service) GetGroupPostV2(ctx context.Context, actorID, groupID, postID uuid.UUID) (*store.GroupPostV2, error) {
+	g, err := s.store.GetGroupByID(ctx, groupID)
+	if err != nil {
+		return nil, err
+	}
+	if g == nil {
+		return nil, fmt.Errorf("group not found")
+	}
+	if err := s.checkGroupAccess(ctx, g, actorID); err != nil {
+		return nil, err
+	}
+	p, err := s.store.GetGroupPostV2(ctx, postID)
+	if err != nil {
+		return nil, err
+	}
+	if p.GroupID != groupID {
+		return nil, fmt.Errorf("not found: post not found in this group")
+	}
+	return p, nil
+}
+
+func (s *Service) DeleteGroupPostV2(ctx context.Context, actorID, groupID, postID uuid.UUID) error {
+	p, err := s.store.GetGroupPostV2(ctx, postID)
+	if err != nil {
+		return err
+	}
+	if p.GroupID != groupID {
+		return fmt.Errorf("not found: post not found in this group")
+	}
+
+	// Author can delete own post, admin/mod/owner can delete any
+	if p.AuthorID != actorID.String() {
+		actor, err := s.store.GetActiveMember(ctx, groupID, actorID)
+		if err != nil {
+			return err
+		}
+		g, _ := s.store.GetGroupByID(ctx, groupID)
+		isOwner := g != nil && g.CreatorID == actorID
+		if actor == nil || (!isOwner && actor.Role != "admin" && actor.Role != "moderator") {
+			return fmt.Errorf("forbidden: only post author, admins, or moderators can delete posts")
+		}
+	}
+
+	if err := s.store.DeleteGroupPostV2(ctx, groupID, postID); err != nil {
+		return err
+	}
+	s.publishEvent(func() error {
+		return s.producer.PublishGroupPostDeleted(ctx, groupID, postID, actorID)
+	})
+	s.invalidateGroupCache(ctx, groupID)
+	return nil
+}
+
+// ── V2 Engagement ────────────────────────────────────────────
+
+func (s *Service) SparkGroupPost(ctx context.Context, actorID, groupID, postID uuid.UUID, isSupernova bool) error {
+	p, err := s.store.GetGroupPostV2(ctx, postID)
+	if err != nil {
+		return err
+	}
+	if p.GroupID != groupID {
+		return fmt.Errorf("not found: post not found in this group")
+	}
+	if err := s.store.SparkGroupPost(ctx, postID, actorID.String(), isSupernova); err != nil {
+		return err
+	}
+	s.store.IncrementMemberSparks(ctx, groupID, actorID, 1)
+	return nil
+}
+
+func (s *Service) UnsparkGroupPost(ctx context.Context, actorID, groupID, postID uuid.UUID) error {
+	p, err := s.store.GetGroupPostV2(ctx, postID)
+	if err != nil {
+		return err
+	}
+	if p.GroupID != groupID {
+		return fmt.Errorf("not found: post not found in this group")
+	}
+	return s.store.UnsparkGroupPost(ctx, postID, actorID.String())
+}
+
+func (s *Service) StashGroupPost(ctx context.Context, actorID, groupID, postID uuid.UUID) error {
+	p, err := s.store.GetGroupPostV2(ctx, postID)
+	if err != nil {
+		return err
+	}
+	if p.GroupID != groupID {
+		return fmt.Errorf("not found: post not found in this group")
+	}
+	return s.store.StashGroupPost(ctx, postID, actorID.String())
+}
+
+func (s *Service) UnstashGroupPost(ctx context.Context, actorID, groupID, postID uuid.UUID) error {
+	p, err := s.store.GetGroupPostV2(ctx, postID)
+	if err != nil {
+		return err
+	}
+	if p.GroupID != groupID {
+		return fmt.Errorf("not found: post not found in this group")
+	}
+	return s.store.UnstashGroupPost(ctx, postID, actorID.String())
+}
+
+func (s *Service) RecordGroupPostView(ctx context.Context, actorID, groupID, postID uuid.UUID) error {
+	return s.store.RecordGroupPostView(ctx, postID, actorID.String())
+}
+
+func (s *Service) EchoGroupPost(ctx context.Context, actorID, groupID, postID uuid.UUID, echoType string) error {
+	p, err := s.store.GetGroupPostV2(ctx, postID)
+	if err != nil {
+		return err
+	}
+	if p.GroupID != groupID {
+		return fmt.Errorf("not found: post not found in this group")
+	}
+	if echoType == "" {
+		echoType = "share"
+	}
+	return s.store.EchoGroupPost(ctx, postID, actorID.String(), echoType)
+}
+
+func (s *Service) UnechoGroupPost(ctx context.Context, actorID, groupID, postID uuid.UUID) error {
+	p, err := s.store.GetGroupPostV2(ctx, postID)
+	if err != nil {
+		return err
+	}
+	if p.GroupID != groupID {
+		return fmt.Errorf("not found: post not found in this group")
+	}
+	return s.store.UnechoGroupPost(ctx, postID, actorID.String())
+}
+
+func (s *Service) ListGroupPostComments(ctx context.Context, actorID, groupID, postID uuid.UUID, limit, offset int) ([]store.GroupPostComment, error) {
+	// Use cached post-in-group check (Redis → DB fallback)
+	exists, err := s.store.PostExistsInGroup(ctx, s.rdb, postID, groupID)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, fmt.Errorf("not found: post not found in this group")
+	}
+	return s.store.ListGroupPostComments(ctx, postID, limit, offset)
+}
+
+func (s *Service) AddGroupPostComment(ctx context.Context, actorID, groupID, postID uuid.UUID, body string, parentID *uuid.UUID) (*store.GroupPostComment, error) {
+	if strings.TrimSpace(body) == "" {
+		return nil, fmt.Errorf("body is required")
+	}
+
+	// Use cached post-in-group check (Redis hit = ~0.5ms vs DB = ~15ms)
+	exists, err := s.store.PostExistsInGroup(ctx, s.rdb, postID, groupID)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, fmt.Errorf("not found: post not found in this group")
+	}
+
+	// Use cached membership check (Redis hit = ~0.5ms vs DB = ~15ms)
+	isMember, err := s.store.CheckMembershipCached(ctx, s.rdb, groupID, actorID)
+	if err != nil {
+		return nil, err
+	}
+	if !isMember {
+		return nil, fmt.Errorf("forbidden: only members can comment")
+	}
+
+	// Insert comment (single DB write — count increment is async inside store)
+	comment, err := s.store.AddGroupPostComment(ctx, postID, actorID.String(), body, parentID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Fire-and-forget: publish Kafka event for notifications/realtime
+	go func() {
+		parentStr := ""
+		if parentID != nil {
+			parentStr = parentID.String()
+		}
+		s.publishEvent(func() error {
+			return s.producer.PublishGroupPostCommented(context.Background(), groupID, postID, comment.ID, actorID, body, parentStr)
+		})
+	}()
+
+	return comment, nil
+}
+
+func (s *Service) DeleteGroupPostComment(ctx context.Context, actorID, groupID, postID, commentID uuid.UUID) error {
+	// Check if actor is admin/mod/owner
+	actor, _ := s.store.GetActiveMember(ctx, groupID, actorID)
+	g, _ := s.store.GetGroupByID(ctx, groupID)
+	isOwner := g != nil && g.CreatorID == actorID
+	isPrivileged := isOwner || (actor != nil && (actor.Role == "admin" || actor.Role == "moderator"))
+	err := s.store.DeleteGroupPostComment(ctx, commentID, actorID.String(), isPrivileged)
+	if err != nil {
+		return err
+	}
+
+	// Fire-and-forget: publish realtime delete event
+	go func() {
+		s.publishEvent(func() error {
+			return s.producer.PublishGroupPostCommentDeleted(context.Background(), groupID, postID, commentID, actorID)
+		})
+	}()
+	return nil
+}
+
+// ── V2 Events ────────────────────────────────────────────────
+
+func (s *Service) CreateGroupEvent(ctx context.Context, actorID, groupID uuid.UUID, event *store.GroupEvent) error {
+	actor, err := s.store.GetActiveMember(ctx, groupID, actorID)
+	if err != nil {
+		return err
+	}
+	if actor == nil || (actor.Role != "admin" && actor.Role != "moderator" && actor.Role != "owner") {
+		g, _ := s.store.GetGroupByID(ctx, groupID)
+		if g == nil || g.CreatorID != actorID {
+			return fmt.Errorf("forbidden: only admins or moderators can create events")
+		}
+	}
+	event.GroupID = groupID
+	event.CreatorID = actorID.String()
+	return s.store.CreateGroupEvent(ctx, event)
+}
+
+func (s *Service) ListGroupEvents(ctx context.Context, actorID, groupID uuid.UUID, limit, offset int) ([]store.GroupEvent, error) {
+	g, err := s.store.GetGroupByID(ctx, groupID)
+	if err != nil {
+		return nil, err
+	}
+	if g == nil {
+		return nil, fmt.Errorf("group not found")
+	}
+	if err := s.checkGroupAccess(ctx, g, actorID); err != nil {
+		return nil, err
+	}
+	return s.store.ListGroupEvents(ctx, groupID, limit, offset)
+}
+
+func (s *Service) GetGroupEvent(ctx context.Context, actorID, groupID, eventID uuid.UUID) (*store.GroupEvent, error) {
+	g, err := s.store.GetGroupByID(ctx, groupID)
+	if err != nil {
+		return nil, err
+	}
+	if g == nil {
+		return nil, fmt.Errorf("group not found")
+	}
+	if err := s.checkGroupAccess(ctx, g, actorID); err != nil {
+		return nil, err
+	}
+	e, err := s.store.GetGroupEvent(ctx, eventID)
+	if err != nil {
+		return nil, err
+	}
+	if e.GroupID != groupID {
+		return nil, fmt.Errorf("not found: event not found in this group")
+	}
+	return e, nil
+}
+
+func (s *Service) DeleteGroupEvent(ctx context.Context, actorID, groupID, eventID uuid.UUID) error {
+	actor, err := s.store.GetActiveMember(ctx, groupID, actorID)
+	if err != nil {
+		return err
+	}
+	if actor == nil || (actor.Role != "admin" && actor.Role != "moderator" && actor.Role != "owner") {
+		g, _ := s.store.GetGroupByID(ctx, groupID)
+		if g == nil || g.CreatorID != actorID {
+			return fmt.Errorf("forbidden: only admins or moderators can delete events")
+		}
+	}
+	e, err := s.store.GetGroupEvent(ctx, eventID)
+	if err != nil {
+		return err
+	}
+	if e.GroupID != groupID {
+		return fmt.Errorf("not found: event not found in this group")
+	}
+	return s.store.DeleteGroupEvent(ctx, eventID)
+}
+
+func (s *Service) RSVPGroupEvent(ctx context.Context, actorID, groupID, eventID uuid.UUID, status string) error {
+	if status != "going" && status != "maybe" && status != "not_going" {
+		return fmt.Errorf("invalid RSVP status: %s", status)
+	}
+	// Must be a member
+	isMember, err := s.store.CheckMembership(ctx, groupID, actorID)
+	if err != nil {
+		return err
+	}
+	if !isMember {
+		return fmt.Errorf("forbidden: only members can RSVP")
+	}
+	e, err := s.store.GetGroupEvent(ctx, eventID)
+	if err != nil {
+		return err
+	}
+	if e.GroupID != groupID {
+		return fmt.Errorf("not found: event not found in this group")
+	}
+	if !e.RSVPEnabled {
+		return fmt.Errorf("RSVP is disabled for this event")
+	}
+	return s.store.RSVPGroupEvent(ctx, eventID, actorID.String(), status)
 }

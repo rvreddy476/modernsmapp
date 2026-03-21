@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 )
 
 type Group struct {
@@ -73,10 +74,68 @@ type GroupInvite struct {
 }
 
 type GroupPost struct {
-	GroupID   uuid.UUID `json:"group_id"`
-	PostID    uuid.UUID `json:"post_id"`
-	AuthorID  uuid.UUID `json:"author_id"`
-	CreatedAt time.Time `json:"created_at"`
+	GroupID   uuid.UUID  `json:"group_id"`
+	PostID    *uuid.UUID `json:"post_id,omitempty"`
+	AuthorID  string     `json:"author_id"`
+	CreatedAt time.Time  `json:"created_at"`
+}
+
+// V2 rich group post (migration 006 schema)
+type GroupPostV2 struct {
+	ID             uuid.UUID       `json:"id"`
+	GroupID        uuid.UUID       `json:"group_id"`
+	ChannelID      *uuid.UUID      `json:"channel_id,omitempty"`
+	AuthorID       string          `json:"author_id"`
+	ContentType    string          `json:"content_type"`
+	Title          *string         `json:"title,omitempty"`
+	Body           *string         `json:"body,omitempty"`
+	BodyHTML       *string         `json:"body_html,omitempty"`
+	TypePayload    json.RawMessage `json:"type_payload,omitempty"`
+	Attachments    json.RawMessage `json:"attachments,omitempty"`
+	NeedsApproval  bool            `json:"needs_approval"`
+	IsPinned       bool            `json:"is_pinned"`
+	IsAnnouncement bool            `json:"is_announcement"`
+	Status         string          `json:"status"`
+	SparkCount     int             `json:"spark_count"`
+	CommentCount   int             `json:"comment_count"`
+	EchoCount      int             `json:"echo_count"`
+	ViewCount      int             `json:"view_count"`
+	CreatedAt      time.Time       `json:"created_at"`
+	UpdatedAt      time.Time       `json:"updated_at"`
+}
+
+type GroupPostComment struct {
+	ID         uuid.UUID  `json:"id"`
+	PostID     uuid.UUID  `json:"post_id"`
+	UserID     string     `json:"user_id"`
+	Body       string     `json:"body"`
+	ParentID   *uuid.UUID `json:"parent_id,omitempty"`
+	IsPinned   bool       `json:"is_pinned"`
+	SparkCount int        `json:"spark_count"`
+	CreatedAt  time.Time  `json:"created_at"`
+}
+
+type GroupEvent struct {
+	ID           uuid.UUID  `json:"id"`
+	GroupID      uuid.UUID  `json:"group_id"`
+	PostID       *uuid.UUID `json:"post_id,omitempty"`
+	CreatorID    string     `json:"creator_id"`
+	Title        string     `json:"title"`
+	Description  *string    `json:"description,omitempty"`
+	CoverMediaID *uuid.UUID `json:"cover_media_id,omitempty"`
+	StartAt      time.Time  `json:"start_at"`
+	EndAt        *time.Time `json:"end_at,omitempty"`
+	Timezone     string     `json:"timezone"`
+	IsAllDay     bool       `json:"is_all_day"`
+	LocationType string     `json:"location_type"`
+	Address      *string    `json:"address,omitempty"`
+	OnlineLink   *string    `json:"online_link,omitempty"`
+	RSVPEnabled  bool       `json:"rsvp_enabled"`
+	MaxAttendees int        `json:"max_attendees"`
+	GoingCount   int        `json:"going_count"`
+	MaybeCount   int        `json:"maybe_count"`
+	Status       string     `json:"status"`
+	CreatedAt    time.Time  `json:"created_at"`
 }
 
 type GroupJoinRequest struct {
@@ -853,7 +912,7 @@ func (s *Store) AddGroupPost(ctx context.Context, groupID, postID, authorID uuid
 	_, err = tx.Exec(ctx, `
 		INSERT INTO group_posts (group_id, post_id, author_id)
 		VALUES ($1, $2, $3)
-	`, groupID, postID, authorID)
+	`, groupID, postID, authorID.String())
 	if err != nil {
 		return err
 	}
@@ -1419,4 +1478,493 @@ func (s *Store) ListBannedMembers(ctx context.Context, groupID uuid.UUID, limit,
 		members = append(members, m)
 	}
 	return members, rows.Err()
+}
+
+// ==================== V2 Group Posts ====================
+
+const groupPostV2Columns = `id, group_id, channel_id, author_id, content_type, title, body, body_html,
+	type_payload, attachments, needs_approval, is_pinned, is_announcement, status,
+	spark_count, comment_count, echo_count, view_count, created_at, updated_at`
+
+func scanGroupPostV2(row pgx.Row) (*GroupPostV2, error) {
+	var p GroupPostV2
+	err := row.Scan(&p.ID, &p.GroupID, &p.ChannelID, &p.AuthorID, &p.ContentType,
+		&p.Title, &p.Body, &p.BodyHTML, &p.TypePayload, &p.Attachments,
+		&p.NeedsApproval, &p.IsPinned, &p.IsAnnouncement, &p.Status,
+		&p.SparkCount, &p.CommentCount, &p.EchoCount, &p.ViewCount,
+		&p.CreatedAt, &p.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	if p.TypePayload == nil {
+		p.TypePayload = json.RawMessage(`{}`)
+	}
+	if p.Attachments == nil {
+		p.Attachments = json.RawMessage(`[]`)
+	}
+	return &p, nil
+}
+
+func (s *Store) CreateGroupPostV2(ctx context.Context, p *GroupPostV2) error {
+	p.ID = uuid.New()
+	p.CreatedAt = time.Now()
+	p.UpdatedAt = p.CreatedAt
+	if p.ContentType == "" {
+		p.ContentType = "text"
+	}
+	if p.Status == "" {
+		p.Status = "published"
+	}
+	if p.TypePayload == nil {
+		p.TypePayload = json.RawMessage(`{}`)
+	}
+	if p.Attachments == nil {
+		p.Attachments = json.RawMessage(`[]`)
+	}
+
+	query := `INSERT INTO group_posts (id, group_id, channel_id, author_id, content_type, title, body, body_html,
+		type_payload, attachments, needs_approval, is_pinned, is_announcement, status,
+		spark_count, comment_count, echo_count, view_count, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,0,0,0,0,$15,$16)`
+	_, err := s.db.Exec(ctx, query,
+		p.ID, p.GroupID, p.ChannelID, p.AuthorID, p.ContentType,
+		p.Title, p.Body, p.BodyHTML, p.TypePayload, p.Attachments,
+		p.NeedsApproval, p.IsPinned, p.IsAnnouncement, p.Status,
+		p.CreatedAt, p.UpdatedAt)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(ctx,
+		`UPDATE groups SET post_count = post_count + 1, updated_at = NOW() WHERE id = $1`, p.GroupID)
+	return err
+}
+
+func (s *Store) GetGroupPostV2(ctx context.Context, postID uuid.UUID) (*GroupPostV2, error) {
+	row := s.db.QueryRow(ctx,
+		`SELECT `+groupPostV2Columns+` FROM group_posts WHERE id = $1 AND status != 'deleted'`, postID)
+	return scanGroupPostV2(row)
+}
+
+func (s *Store) ListGroupPostsV2(ctx context.Context, groupID uuid.UUID, channelID *uuid.UUID, limit, offset int) ([]GroupPostV2, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	var rows pgx.Rows
+	var err error
+	if channelID != nil {
+		rows, err = s.db.Query(ctx,
+			`SELECT `+groupPostV2Columns+` FROM group_posts
+			WHERE group_id = $1 AND channel_id = $2 AND status = 'published'
+			ORDER BY is_pinned DESC, created_at DESC LIMIT $3 OFFSET $4`,
+			groupID, *channelID, limit, offset)
+	} else {
+		rows, err = s.db.Query(ctx,
+			`SELECT `+groupPostV2Columns+` FROM group_posts
+			WHERE group_id = $1 AND status = 'published'
+			ORDER BY is_pinned DESC, created_at DESC LIMIT $2 OFFSET $3`,
+			groupID, limit, offset)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var posts []GroupPostV2
+	for rows.Next() {
+		var p GroupPostV2
+		if err := rows.Scan(&p.ID, &p.GroupID, &p.ChannelID, &p.AuthorID, &p.ContentType,
+			&p.Title, &p.Body, &p.BodyHTML, &p.TypePayload, &p.Attachments,
+			&p.NeedsApproval, &p.IsPinned, &p.IsAnnouncement, &p.Status,
+			&p.SparkCount, &p.CommentCount, &p.EchoCount, &p.ViewCount,
+			&p.CreatedAt, &p.UpdatedAt); err != nil {
+			return nil, err
+		}
+		if p.TypePayload == nil {
+			p.TypePayload = json.RawMessage(`{}`)
+		}
+		if p.Attachments == nil {
+			p.Attachments = json.RawMessage(`[]`)
+		}
+		posts = append(posts, p)
+	}
+	return posts, rows.Err()
+}
+
+func (s *Store) DeleteGroupPostV2(ctx context.Context, groupID, postID uuid.UUID) error {
+	tag, err := s.db.Exec(ctx,
+		`UPDATE group_posts SET status = 'deleted', updated_at = NOW()
+		WHERE id = $1 AND group_id = $2 AND status != 'deleted'`,
+		postID, groupID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("not found: post not found")
+	}
+	_, err = s.db.Exec(ctx,
+		`UPDATE groups SET post_count = GREATEST(post_count - 1, 0), updated_at = NOW() WHERE id = $1`, groupID)
+	return err
+}
+
+func (s *Store) PinGroupPostV2(ctx context.Context, postID uuid.UUID) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE group_posts SET is_pinned = TRUE, updated_at = NOW() WHERE id = $1`, postID)
+	return err
+}
+
+func (s *Store) UnpinGroupPostV2(ctx context.Context, postID uuid.UUID) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE group_posts SET is_pinned = FALSE, updated_at = NOW() WHERE id = $1`, postID)
+	return err
+}
+
+// ==================== V2 Engagement ====================
+
+func (s *Store) SparkGroupPost(ctx context.Context, postID uuid.UUID, userID string, isSupernova bool) error {
+	query := `INSERT INTO group_post_sparks (post_id, user_id, is_supernova, created_at)
+		VALUES ($1, $2, $3, NOW()) ON CONFLICT DO NOTHING`
+	tag, err := s.db.Exec(ctx, query, postID, userID, isSupernova)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("already sparked")
+	}
+	weight := 1
+	if isSupernova {
+		weight = 5
+	}
+	_, err = s.db.Exec(ctx,
+		`UPDATE group_posts SET spark_count = spark_count + $2, updated_at = NOW() WHERE id = $1`,
+		postID, weight)
+	return err
+}
+
+func (s *Store) UnsparkGroupPost(ctx context.Context, postID uuid.UUID, userID string) error {
+	var isSupernova bool
+	err := s.db.QueryRow(ctx,
+		`DELETE FROM group_post_sparks WHERE post_id = $1 AND user_id = $2 RETURNING is_supernova`,
+		postID, userID).Scan(&isSupernova)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("not found: spark not found")
+	}
+	if err != nil {
+		return err
+	}
+	weight := 1
+	if isSupernova {
+		weight = 5
+	}
+	_, err = s.db.Exec(ctx,
+		`UPDATE group_posts SET spark_count = GREATEST(spark_count - $2, 0), updated_at = NOW() WHERE id = $1`,
+		postID, weight)
+	return err
+}
+
+func (s *Store) StashGroupPost(ctx context.Context, postID uuid.UUID, userID string) error {
+	query := `INSERT INTO group_post_stashes (post_id, user_id, created_at) VALUES ($1, $2, NOW()) ON CONFLICT DO NOTHING`
+	tag, err := s.db.Exec(ctx, query, postID, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("already stashed")
+	}
+	return nil
+}
+
+func (s *Store) UnstashGroupPost(ctx context.Context, postID uuid.UUID, userID string) error {
+	tag, err := s.db.Exec(ctx,
+		`DELETE FROM group_post_stashes WHERE post_id = $1 AND user_id = $2`,
+		postID, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("not found: stash not found")
+	}
+	return nil
+}
+
+func (s *Store) RecordGroupPostView(ctx context.Context, postID uuid.UUID, userID string) error {
+	query := `INSERT INTO group_post_views (post_id, user_id, viewed_at) VALUES ($1, $2, NOW()) ON CONFLICT DO NOTHING`
+	tag, err := s.db.Exec(ctx, query, postID, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return nil // already viewed
+	}
+	_, err = s.db.Exec(ctx,
+		`UPDATE group_posts SET view_count = view_count + 1, updated_at = NOW() WHERE id = $1`, postID)
+	return err
+}
+
+func (s *Store) EchoGroupPost(ctx context.Context, postID uuid.UUID, userID string, echoType string) error {
+	query := `INSERT INTO group_post_echoes (id, post_id, user_id, echo_type, created_at)
+		VALUES ($1, $2, $3, $4, NOW())
+		ON CONFLICT (post_id, user_id) DO NOTHING`
+	tag, err := s.db.Exec(ctx, query, uuid.New(), postID, userID, echoType)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("already echoed")
+	}
+	_, err = s.db.Exec(ctx,
+		`UPDATE group_posts SET echo_count = echo_count + 1, updated_at = NOW() WHERE id = $1`,
+		postID)
+	return err
+}
+
+func (s *Store) UnechoGroupPost(ctx context.Context, postID uuid.UUID, userID string) error {
+	tag, err := s.db.Exec(ctx,
+		`DELETE FROM group_post_echoes WHERE post_id = $1 AND user_id = $2`,
+		postID, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("not found: echo not found")
+	}
+	_, err = s.db.Exec(ctx,
+		`UPDATE group_posts SET echo_count = GREATEST(echo_count - 1, 0), updated_at = NOW() WHERE id = $1`,
+		postID)
+	return err
+}
+
+func (s *Store) ListGroupPostComments(ctx context.Context, postID uuid.UUID, limit, offset int) ([]GroupPostComment, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	rows, err := s.db.Query(ctx,
+		`SELECT id, post_id, user_id, body, parent_id, is_pinned, spark_count, created_at
+		FROM group_post_comments
+		WHERE post_id = $1
+		ORDER BY is_pinned DESC, created_at ASC
+		LIMIT $2 OFFSET $3`,
+		postID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var comments []GroupPostComment
+	for rows.Next() {
+		var c GroupPostComment
+		if err := rows.Scan(&c.ID, &c.PostID, &c.UserID, &c.Body, &c.ParentID,
+			&c.IsPinned, &c.SparkCount, &c.CreatedAt); err != nil {
+			return nil, err
+		}
+		comments = append(comments, c)
+	}
+	return comments, rows.Err()
+}
+
+func (s *Store) AddGroupPostComment(ctx context.Context, postID uuid.UUID, userID, body string, parentID *uuid.UUID) (*GroupPostComment, error) {
+	c := &GroupPostComment{
+		ID:       uuid.New(),
+		PostID:   postID,
+		UserID:   userID,
+		Body:     body,
+		ParentID: parentID,
+	}
+	query := `INSERT INTO group_post_comments (id, post_id, user_id, body, parent_id, is_pinned, spark_count, created_at)
+		VALUES ($1, $2, $3, $4, $5, false, 0, NOW()) RETURNING created_at`
+	if err := s.db.QueryRow(ctx, query, c.ID, postID, userID, body, parentID).Scan(&c.CreatedAt); err != nil {
+		return nil, err
+	}
+	// Increment comment_count asynchronously — caller doesn't need to wait for this
+	go func() {
+		_, _ = s.db.Exec(context.Background(),
+			`UPDATE group_posts SET comment_count = comment_count + 1, updated_at = NOW() WHERE id = $1`, postID)
+	}()
+	return c, nil
+}
+
+// CheckMembershipCached checks membership using Redis cache first, falling back to DB.
+// Cache TTL of 5 minutes avoids repeated DB hits for active commenters.
+func (s *Store) CheckMembershipCached(ctx context.Context, rdb *redis.Client, groupID, userID uuid.UUID) (bool, error) {
+	cacheKey := fmt.Sprintf("gm:%s:%s", groupID, userID)
+	val, err := rdb.Get(ctx, cacheKey).Result()
+	if err == nil {
+		return val == "1", nil
+	}
+	// Cache miss → query DB
+	isMember, err := s.CheckMembership(ctx, groupID, userID)
+	if err != nil {
+		return false, err
+	}
+	// Cache result for 5 minutes
+	if isMember {
+		rdb.Set(ctx, cacheKey, "1", 5*time.Minute)
+	} else {
+		rdb.Set(ctx, cacheKey, "0", 1*time.Minute)
+	}
+	return isMember, nil
+}
+
+// PostExistsInGroup validates a post belongs to a group using Redis cache.
+func (s *Store) PostExistsInGroup(ctx context.Context, rdb *redis.Client, postID, groupID uuid.UUID) (bool, error) {
+	cacheKey := fmt.Sprintf("gp:%s:%s", postID, groupID)
+	val, err := rdb.Get(ctx, cacheKey).Result()
+	if err == nil {
+		return val == "1", nil
+	}
+	// Cache miss → query DB (lightweight EXISTS check instead of full row scan)
+	var exists bool
+	err = s.db.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM group_posts WHERE id = $1 AND group_id = $2 AND status != 'deleted')`,
+		postID, groupID).Scan(&exists)
+	if err != nil {
+		return false, err
+	}
+	if exists {
+		rdb.Set(ctx, cacheKey, "1", 2*time.Minute)
+	}
+	return exists, nil
+}
+
+func (s *Store) DeleteGroupPostComment(ctx context.Context, commentID uuid.UUID, userID string, isPrivileged bool) error {
+	var query string
+	var args []any
+	if isPrivileged {
+		query = `DELETE FROM group_post_comments WHERE id = $1 RETURNING post_id`
+		args = []any{commentID}
+	} else {
+		query = `DELETE FROM group_post_comments WHERE id = $1 AND user_id = $2 RETURNING post_id`
+		args = []any{commentID, userID}
+	}
+	var postID uuid.UUID
+	err := s.db.QueryRow(ctx, query, args...).Scan(&postID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("not found: comment not found or not authorized")
+	}
+	if err != nil {
+		return err
+	}
+	_, _ = s.db.Exec(ctx,
+		`UPDATE group_posts SET comment_count = GREATEST(comment_count - 1, 0), updated_at = NOW() WHERE id = $1`, postID)
+	return nil
+}
+
+// ==================== V2 Events ====================
+
+func (s *Store) CreateGroupEvent(ctx context.Context, e *GroupEvent) error {
+	e.ID = uuid.New()
+	e.CreatedAt = time.Now()
+	if e.Timezone == "" {
+		e.Timezone = "UTC"
+	}
+	if e.LocationType == "" {
+		e.LocationType = "online"
+	}
+	if e.Status == "" {
+		e.Status = "upcoming"
+	}
+	query := `INSERT INTO group_events (id, group_id, post_id, creator_id, title, description,
+		cover_media_id, start_at, end_at, timezone, is_all_day, location_type, address, online_link,
+		rsvp_enabled, max_attendees, going_count, maybe_count, status, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,0,0,$17,$18)`
+	_, err := s.db.Exec(ctx, query,
+		e.ID, e.GroupID, e.PostID, e.CreatorID, e.Title, e.Description,
+		e.CoverMediaID, e.StartAt, e.EndAt, e.Timezone, e.IsAllDay, e.LocationType,
+		e.Address, e.OnlineLink, e.RSVPEnabled, e.MaxAttendees, e.Status, e.CreatedAt)
+	return err
+}
+
+func (s *Store) GetGroupEvent(ctx context.Context, eventID uuid.UUID) (*GroupEvent, error) {
+	var e GroupEvent
+	err := s.db.QueryRow(ctx,
+		`SELECT id, group_id, post_id, creator_id, title, description, cover_media_id,
+		start_at, end_at, timezone, is_all_day, location_type, address, online_link,
+		rsvp_enabled, max_attendees, going_count, maybe_count, status, created_at
+		FROM group_events WHERE id = $1 AND status != 'cancelled'`, eventID).Scan(
+		&e.ID, &e.GroupID, &e.PostID, &e.CreatorID, &e.Title, &e.Description, &e.CoverMediaID,
+		&e.StartAt, &e.EndAt, &e.Timezone, &e.IsAllDay, &e.LocationType, &e.Address, &e.OnlineLink,
+		&e.RSVPEnabled, &e.MaxAttendees, &e.GoingCount, &e.MaybeCount, &e.Status, &e.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("not found: event not found")
+	}
+	return &e, err
+}
+
+func (s *Store) ListGroupEvents(ctx context.Context, groupID uuid.UUID, limit, offset int) ([]GroupEvent, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	rows, err := s.db.Query(ctx,
+		`SELECT id, group_id, post_id, creator_id, title, description, cover_media_id,
+		start_at, end_at, timezone, is_all_day, location_type, address, online_link,
+		rsvp_enabled, max_attendees, going_count, maybe_count, status, created_at
+		FROM group_events
+		WHERE group_id = $1 AND status != 'cancelled'
+		ORDER BY start_at ASC LIMIT $2 OFFSET $3`,
+		groupID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []GroupEvent
+	for rows.Next() {
+		var e GroupEvent
+		if err := rows.Scan(&e.ID, &e.GroupID, &e.PostID, &e.CreatorID, &e.Title, &e.Description, &e.CoverMediaID,
+			&e.StartAt, &e.EndAt, &e.Timezone, &e.IsAllDay, &e.LocationType, &e.Address, &e.OnlineLink,
+			&e.RSVPEnabled, &e.MaxAttendees, &e.GoingCount, &e.MaybeCount, &e.Status, &e.CreatedAt); err != nil {
+			return nil, err
+		}
+		events = append(events, e)
+	}
+	return events, rows.Err()
+}
+
+func (s *Store) DeleteGroupEvent(ctx context.Context, eventID uuid.UUID) error {
+	tag, err := s.db.Exec(ctx,
+		`UPDATE group_events SET status = 'cancelled' WHERE id = $1 AND status != 'cancelled'`, eventID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("not found: event not found")
+	}
+	return nil
+}
+
+func (s *Store) RSVPGroupEvent(ctx context.Context, eventID uuid.UUID, userID, status string) error {
+	// Get previous RSVP if any
+	var prevStatus *string
+	err := s.db.QueryRow(ctx,
+		`SELECT status FROM group_event_rsvps WHERE event_id = $1 AND user_id = $2`,
+		eventID, userID).Scan(&prevStatus)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+
+	// Upsert RSVP
+	_, err = s.db.Exec(ctx,
+		`INSERT INTO group_event_rsvps (event_id, user_id, status, created_at)
+		VALUES ($1, $2, $3, NOW())
+		ON CONFLICT (event_id, user_id) DO UPDATE SET status = EXCLUDED.status`,
+		eventID, userID, status)
+	if err != nil {
+		return err
+	}
+
+	// Adjust counts: decrement previous, increment new
+	if prevStatus != nil {
+		switch *prevStatus {
+		case "going":
+			s.db.Exec(ctx, `UPDATE group_events SET going_count = GREATEST(going_count - 1, 0) WHERE id = $1`, eventID)
+		case "maybe":
+			s.db.Exec(ctx, `UPDATE group_events SET maybe_count = GREATEST(maybe_count - 1, 0) WHERE id = $1`, eventID)
+		}
+	}
+	switch status {
+	case "going":
+		_, err = s.db.Exec(ctx, `UPDATE group_events SET going_count = going_count + 1 WHERE id = $1`, eventID)
+	case "maybe":
+		_, err = s.db.Exec(ctx, `UPDATE group_events SET maybe_count = maybe_count + 1 WHERE id = $1`, eventID)
+	}
+	return err
 }

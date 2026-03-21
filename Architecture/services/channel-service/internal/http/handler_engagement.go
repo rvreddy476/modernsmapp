@@ -2,6 +2,8 @@ package http
 
 import (
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
@@ -163,11 +165,45 @@ func (h *Handler) EchoUpdate(c *gin.Context) {
 	_ = c.ShouldBindJSON(&req)
 
 	if err := h.svc.EchoUpdate(c.Request.Context(), channelID, updateID, userID, req.EchoType); err != nil {
-		handleServiceError(c, err)
+		msg := err.Error()
+		switch {
+		case contains(msg, "already echoed"):
+			api.Error(c.Writer, http.StatusConflict, "ALREADY_ECHOED", msg, nil, nil)
+		case contains(msg, "forwarding disabled"):
+			api.Error(c.Writer, http.StatusForbidden, "FORWARDING_DISABLED", msg, nil, nil)
+		default:
+			handleServiceError(c, err)
+		}
 		return
 	}
 
 	api.JSON(c.Writer, http.StatusCreated, map[string]string{"status": "echoed"}, nil)
+}
+
+func (h *Handler) UnechoUpdate(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+
+	channelID, err := uuid.Parse(c.Param("channelId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil, nil)
+		return
+	}
+
+	updateID, err := uuid.Parse(c.Param("updateId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid update ID", nil, nil)
+		return
+	}
+
+	if err := h.svc.UnechoUpdate(c.Request.Context(), channelID, updateID, userID); err != nil {
+		handleServiceError(c, err)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "unechoed"}, nil)
 }
 
 func (h *Handler) RecordView(c *gin.Context) {
@@ -407,6 +443,47 @@ func (h *Handler) RSVPEvent(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "rsvp_recorded"}, nil)
+}
+
+func (h *Handler) ListCommentsDelta(c *gin.Context) {
+	channelID, err := uuid.Parse(c.Param("channelId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil, nil)
+		return
+	}
+
+	updateID, err := uuid.Parse(c.Param("updateId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid update ID", nil, nil)
+		return
+	}
+
+	sinceStr := c.Query("since")
+	if sinceStr == "" {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "since query parameter is required (RFC3339 format)", nil, nil)
+		return
+	}
+	since, err := time.Parse(time.RFC3339, sinceStr)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "since must be in RFC3339 format", nil, nil)
+		return
+	}
+
+	limit := 50
+	if l, err := strconv.Atoi(c.DefaultQuery("limit", "50")); err == nil && l > 0 {
+		if l > 200 {
+			l = 200
+		}
+		limit = l
+	}
+
+	comments, err := h.svc.ListCommentsSince(c.Request.Context(), channelID, updateID, since, limit)
+	if err != nil {
+		handleServiceError(c, err)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, comments, nil)
 }
 
 func (h *Handler) ListAttendees(c *gin.Context) {
