@@ -39,7 +39,7 @@ func Load() *Config {
 		KafkaLifecycleTopic:    getEnv("KAFKA_LIFECYCLE_TOPIC", "call.lifecycle"),
 		KafkaNotificationTopic: getEnv("KAFKA_NOTIFICATION_TOPIC", "call.notifications"),
 		KafkaAnalyticsTopic:    getEnv("KAFKA_ANALYTICS_TOPIC", "call.analytics"),
-		JWTSecret:              getEnv("JWT_SECRET", "dev_secret_change_me"),
+		JWTSecret:              getEnv("JWT_SECRET", ""),
 		TrustedProxies:         splitAndClean(getEnv("TRUSTED_PROXIES", "")),
 		OutboxPollInterval:     getEnvDuration("OUTBOX_POLL_INTERVAL", 1*time.Second),
 		LiveKitHost:            getEnv("LIVEKIT_HOST", ""),

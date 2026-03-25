@@ -218,7 +218,16 @@ func (s *Service) MuteUser(ctx context.Context, streamID, userID, mutedBy uuid.U
 	if st.HostID != mutedBy {
 		return fmt.Errorf("only the stream host can mute users")
 	}
-	return s.store.MuteUser(ctx, streamID, userID, mutedBy)
+	if err := s.store.MuteUser(ctx, streamID, userID, mutedBy); err != nil {
+		return err
+	}
+	s.realtime.publishStreamEvent(streamID, "live_user_muted", map[string]any{
+		"user_id":    userID.String(),
+		"muted_by":   mutedBy.String(),
+		"muted_at":   time.Now(),
+		"updated_at": time.Now(),
+	})
+	return nil
 }
 
 // UnmuteUser enforces that only the stream host can unmute users.
@@ -230,7 +239,15 @@ func (s *Service) UnmuteUser(ctx context.Context, streamID, userID, callerID uui
 	if st.HostID != callerID {
 		return fmt.Errorf("only the stream host can unmute users")
 	}
-	return s.store.UnmuteUser(ctx, streamID, userID)
+	if err := s.store.UnmuteUser(ctx, streamID, userID); err != nil {
+		return err
+	}
+	s.realtime.publishStreamEvent(streamID, "live_user_unmuted", map[string]any{
+		"user_id":    userID.String(),
+		"unmuted_by": callerID.String(),
+		"updated_at": time.Now(),
+	})
+	return nil
 }
 
 func (s *Service) GetMutedUsers(ctx context.Context, streamID uuid.UUID) ([]postgres.LiveMute, error) {
@@ -249,7 +266,15 @@ func (s *Service) AddWordFilter(ctx context.Context, streamID uuid.UUID, word st
 	if st.HostID != addedBy {
 		return fmt.Errorf("only the stream host can manage word filters")
 	}
-	return s.store.AddWordFilter(ctx, streamID, word, addedBy)
+	if err := s.store.AddWordFilter(ctx, streamID, word, addedBy); err != nil {
+		return err
+	}
+	s.realtime.publishStreamEvent(streamID, "live_word_filter_added", map[string]any{
+		"word":       word,
+		"added_by":   addedBy.String(),
+		"updated_at": time.Now(),
+	})
+	return nil
 }
 
 // RemoveWordFilter validates that the caller is the host, then removes the word filter.
@@ -261,7 +286,15 @@ func (s *Service) RemoveWordFilter(ctx context.Context, streamID uuid.UUID, word
 	if st.HostID != callerID {
 		return fmt.Errorf("only the stream host can manage word filters")
 	}
-	return s.store.RemoveWordFilter(ctx, streamID, word)
+	if err := s.store.RemoveWordFilter(ctx, streamID, word); err != nil {
+		return err
+	}
+	s.realtime.publishStreamEvent(streamID, "live_word_filter_removed", map[string]any{
+		"word":       word,
+		"removed_by": callerID.String(),
+		"updated_at": time.Now(),
+	})
+	return nil
 }
 
 func (s *Service) GetWordFilters(ctx context.Context, streamID uuid.UUID) ([]postgres.LiveWordFilter, error) {

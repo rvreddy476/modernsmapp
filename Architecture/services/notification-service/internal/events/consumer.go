@@ -36,12 +36,17 @@ type Consumer struct {
 }
 
 func NewConsumer(brokers []string, groupID string, topic string, svc *service.Service) *Consumer {
+	return NewConsumerWithDialer(brokers, groupID, topic, svc, nil)
+}
+
+func NewConsumerWithDialer(brokers []string, groupID string, topic string, svc *service.Service, dialer *kafka.Dialer) *Consumer {
 	reader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:  brokers,
 		GroupID:  groupID,
 		Topic:    topic,
 		MinBytes: 10e3, // 10KB
 		MaxBytes: 10e6, // 10MB
+		Dialer:   dialer,
 	})
 	return &Consumer{
 		reader:  reader,

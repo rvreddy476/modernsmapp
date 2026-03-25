@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/atpost/chat-message-service/database"
 	"github.com/atpost/chat-message-service/internal/config"
 	"github.com/atpost/chat-message-service/internal/events"
 	"github.com/atpost/chat-message-service/internal/http"
@@ -14,10 +15,10 @@ import (
 	pgStore "github.com/atpost/chat-message-service/internal/store/postgres"
 	scyllaStore "github.com/atpost/chat-message-service/internal/store/scylla"
 	"github.com/atpost/chat-shared/logging"
+	"github.com/atpost/chat-shared/transport"
 	"github.com/gin-gonic/gin"
 	"github.com/gocql/gocql"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -40,6 +41,12 @@ func main() {
 		logger.Error("postgres ping failed", "err", err)
 		os.Exit(1)
 	}
+
+	if err := pgStore.BootstrapSchema(ctx, dbPool, database.SetupSQL); err != nil {
+		logger.Error("failed to bootstrap chat schema", "err", err)
+		os.Exit(1)
+	}
+	logger.Info("chat schema ready")
 	logger.Info("connected to Postgres")
 
 	// 2. ScyllaDB
@@ -56,9 +63,11 @@ func main() {
 	logger.Info("connected to ScyllaDB")
 
 	// 3. Redis
-	rdb := redis.NewClient(&redis.Options{
-		Addr: cfg.RedisAddr,
-	})
+	rdb, err := transport.NewRedisClientFromEnv(cfg.RedisAddr)
+	if err != nil {
+		logger.Error("failed to configure redis client", "err", err)
+		os.Exit(1)
+	}
 	defer func() {
 		if err := rdb.Close(); err != nil {
 			logger.Warn("failed to close redis client", "err", err)
@@ -70,8 +79,14 @@ func main() {
 	}
 	logger.Info("connected to Redis")
 
+	kafkaDialer, err := transport.KafkaDialerFromEnv()
+	if err != nil {
+		logger.Error("failed to configure kafka dialer", "err", err)
+		os.Exit(1)
+	}
+
 	// 4. Kafka Producer
-	producer := events.NewProducer(cfg.KafkaBrokers, cfg.KafkaTopic)
+	producer := events.NewProducerWithDialer(cfg.KafkaBrokers, cfg.KafkaTopic, kafkaDialer)
 	defer func() {
 		if err := producer.Close(); err != nil {
 			logger.Warn("failed to close kafka producer", "err", err)
@@ -86,7 +101,7 @@ func main() {
 	handler := http.New(svc, logger)
 
 	// 6. Identity Event Consumer (background)
-	identityConsumer := events.NewIdentityConsumer(cfg.KafkaBrokers, cfg.IdentityKafkaTopic, cfg.IdentityKafkaGroupID, convStore, logger)
+	identityConsumer := events.NewIdentityConsumerWithDialer(cfg.KafkaBrokers, cfg.IdentityKafkaTopic, cfg.IdentityKafkaGroupID, kafkaDialer, convStore, logger)
 	go identityConsumer.Start(ctx)
 
 	// 7. Outbox Relay (background)

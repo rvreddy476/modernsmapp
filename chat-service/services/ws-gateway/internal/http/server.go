@@ -17,6 +17,7 @@ import (
 type ServerOptions struct {
 	JWTSecret      string
 	AllowedOrigins []string
+	AllowQueryToken bool
 	WriteWait      time.Duration
 	PongWait       time.Duration
 	PingPeriod     time.Duration
@@ -55,6 +56,7 @@ func NewServer(rdb *redis.Client, log *slog.Logger, opts ServerOptions) *Server 
 	s.upgrader = websocket.Upgrader{
 		ReadBufferSize:  1024,
 		WriteBufferSize: 1024,
+		Subprotocols:    []string{"bearer", "jwt"},
 		CheckOrigin: func(r *nethttp.Request) bool {
 			return isOriginAllowed(r, opts.AllowedOrigins)
 		},
@@ -76,7 +78,7 @@ func (s *Server) handleHealth(w nethttp.ResponseWriter, _ *nethttp.Request) {
 }
 
 func (s *Server) handleWS(w nethttp.ResponseWriter, r *nethttp.Request) {
-	userID, err := authenticateUserFromJWT(r, s.opts.JWTSecret)
+	userID, err := authenticateUserFromJWT(r, s.opts.JWTSecret, s.opts.AllowQueryToken)
 	if err != nil {
 		s.log.Warn("websocket auth failed", "err", err, "client_ip", readClientIP(r))
 		nethttp.Error(w, "unauthorized", nethttp.StatusUnauthorized)
@@ -242,6 +244,24 @@ func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *
 				channel := fmt.Sprintf("call:%s", callID)
 				if err := pubsub.Unsubscribe(ctx, channel); err != nil {
 					s.log.Warn("call room unsubscribe failed", "err", err, "user_id", userID, "call_id", callID)
+				}
+			}
+			continue
+		case "subscribe_live_stream":
+			streamID, _ := envelope["stream_id"].(string)
+			if streamID != "" {
+				channel := fmt.Sprintf("live:stream:%s", streamID)
+				if err := pubsub.Subscribe(ctx, channel); err != nil {
+					s.log.Warn("live room subscribe failed", "err", err, "user_id", userID, "stream_id", streamID)
+				}
+			}
+			continue
+		case "unsubscribe_live_stream":
+			streamID, _ := envelope["stream_id"].(string)
+			if streamID != "" {
+				channel := fmt.Sprintf("live:stream:%s", streamID)
+				if err := pubsub.Unsubscribe(ctx, channel); err != nil {
+					s.log.Warn("live room unsubscribe failed", "err", err, "user_id", userID, "stream_id", streamID)
 				}
 			}
 			continue

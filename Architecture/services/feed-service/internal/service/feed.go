@@ -84,10 +84,12 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 		return nil, err
 	}
 
-	// Convert to FeedItems, optionally filtering out viewer's own posts
+	// Convert to FeedItems, optionally filtering out viewer's own original posts.
+	// Reposts are kept even when excludeSelf is true — the user wants to see
+	// content they reposted (it's someone else's post they chose to amplify).
 	candidates := make([]FeedItem, 0, len(items))
 	for _, item := range items {
-		if excludeSelf && item.AuthorID == userID {
+		if excludeSelf && item.AuthorID == userID && item.ContentType != "repost" {
 			continue
 		}
 		candidates = append(candidates, FeedItem{

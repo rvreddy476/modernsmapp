@@ -10,6 +10,7 @@ import (
 	"github.com/gocql/gocql"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
+	"github.com/segmentio/kafka-go"
 )
 
 // ScyllaLikeConsumer writes like/unlike events to ScyllaDB (sharded post_likes + user_likes)
@@ -30,8 +31,8 @@ func NewScyllaLikeConsumer(session *gocql.Session, rdb *redis.Client) *ScyllaLik
 }
 
 // Start begins the consumer loop. Blocks until ctx is canceled.
-func (c *ScyllaLikeConsumer) Start(ctx context.Context, brokers []string, topic string) {
-	reader := engagement.NewKafkaReader(brokers, topic, "eng-scylla-like")
+func (c *ScyllaLikeConsumer) Start(ctx context.Context, brokers []string, topic string, dialer *kafka.Dialer) {
+	reader := engagement.NewKafkaReaderWithDialer(brokers, topic, "eng-scylla-like", dialer)
 	defer reader.Close()
 
 	engagement.ConsumerLoop(ctx, reader, c.base, c.handleEvent)

@@ -9,12 +9,7 @@ import 'package:atpost_app/services/auth_service.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
-enum ConnectionState {
-  disconnected,
-  connecting,
-  connected,
-  reconnecting,
-}
+enum ConnectionState { disconnected, connecting, connected, reconnecting }
 
 /// Shared websocket connection used by chat, feed, presence, and call signaling.
 class RealtimeService {
@@ -22,6 +17,9 @@ class RealtimeService {
   final _eventController = StreamController<RealtimeEvent>.broadcast();
   final _stateController = StreamController<ConnectionState>.broadcast();
   StreamSubscription? _subscription;
+  final Set<String> _postSubscriptions = <String>{};
+  final Set<String> _callSubscriptions = <String>{};
+  final Set<String> _liveStreamSubscriptions = <String>{};
 
   ConnectionState _state = ConnectionState.disconnected;
   int _retryCount = 0;
@@ -48,7 +46,10 @@ class RealtimeService {
 
     final token = _auth.token;
     if (token == null || token.isEmpty) {
-      AppLogger.warn('Skipping websocket connect without access token', tag: _tag);
+      AppLogger.warn(
+        'Skipping websocket connect without access token',
+        tag: _tag,
+      );
       _updateState(ConnectionState.disconnected);
       return;
     }
@@ -57,9 +58,7 @@ class RealtimeService {
     AppLogger.info('Establishing websocket connection', tag: _tag);
 
     try {
-      final wsUri = Environment.buildWsGatewayUri({
-        'access_token': token,
-      });
+      final wsUri = Environment.buildWsGatewayUri({'access_token': token});
       _channel = WebSocketChannel.connect(wsUri);
 
       _subscription = _channel!.stream.listen(
@@ -70,6 +69,7 @@ class RealtimeService {
 
       _retryCount = 0;
       _updateState(ConnectionState.connected);
+      _restoreSubscriptions();
       AppLogger.info('Websocket connection established', tag: _tag);
     } catch (error, stackTrace) {
       AppLogger.error(
@@ -87,10 +87,7 @@ class RealtimeService {
       final json = jsonDecode(raw as String) as Map<String, dynamic>;
       final event = RealtimeEvent.fromJson(json);
       _eventController.add(event);
-      AppLogger.debug(
-        'Received realtime event: ${event.eventType}',
-        tag: _tag,
-      );
+      AppLogger.debug('Received realtime event: ${event.eventType}', tag: _tag);
     } catch (_) {
       AppLogger.warn('Failed to parse realtime message: $raw', tag: _tag);
     }
@@ -128,19 +125,45 @@ class RealtimeService {
   }
 
   void subscribeToPost(String postId) {
+    _postSubscriptions.add(postId);
     send({'type': 'subscribe_post', 'post_id': postId});
   }
 
   void unsubscribeFromPost(String postId) {
+    _postSubscriptions.remove(postId);
     send({'type': 'unsubscribe_post', 'post_id': postId});
   }
 
   void subscribeToCall(String callId) {
+    _callSubscriptions.add(callId);
     send({'type': 'subscribe_call', 'call_id': callId});
   }
 
   void unsubscribeFromCall(String callId) {
+    _callSubscriptions.remove(callId);
     send({'type': 'unsubscribe_call', 'call_id': callId});
+  }
+
+  void subscribeToLiveStream(String streamId) {
+    _liveStreamSubscriptions.add(streamId);
+    send({'type': 'subscribe_live_stream', 'stream_id': streamId});
+  }
+
+  void unsubscribeFromLiveStream(String streamId) {
+    _liveStreamSubscriptions.remove(streamId);
+    send({'type': 'unsubscribe_live_stream', 'stream_id': streamId});
+  }
+
+  void _restoreSubscriptions() {
+    for (final postId in _postSubscriptions) {
+      send({'type': 'subscribe_post', 'post_id': postId});
+    }
+    for (final callId in _callSubscriptions) {
+      send({'type': 'subscribe_call', 'call_id': callId});
+    }
+    for (final streamId in _liveStreamSubscriptions) {
+      send({'type': 'subscribe_live_stream', 'stream_id': streamId});
+    }
   }
 
   void _updateState(ConnectionState newState) {

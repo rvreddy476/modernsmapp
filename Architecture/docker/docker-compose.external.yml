@@ -31,15 +31,21 @@ services:
   nextjs:
     image: node:20-alpine
     working_dir: /app
-    command: sh -c "npm install --legacy-peer-deps --production && npm run build && npm start"
+    command: sh -c "npm install --legacy-peer-deps && npm run build && npm start"
     volumes:
       - ../../../postbook-ui:/app
     environment:
       NEXT_PUBLIC_API_BASE_URL: "https://${DOMAIN:-localhost}"
       NEXT_PUBLIC_WS_BASE_URL: "wss://${DOMAIN:-localhost}/v1/ws"
+      CHAT_BACKEND_URL: "http://chat-message-service:8092/v1/chat"
+      AUTH_SERVICE_URL: "http://identity-auth:8081"
+      CHAT_PROXY_SIGNING_SECRET: "${CHAT_PROXY_SIGNING_SECRET:-local_dev_chat_proxy_signing_secret_change_me}"
       PORT: "3000"
     expose:
       - "3000"
+    depends_on:
+      - chat-message-service
+      - identity-auth
 
   # Override API gateway CORS to allow the domain
   api-gateway:
@@ -55,6 +61,14 @@ services:
   media-service:
     environment:
       MINIO_PUBLIC_ENDPOINT: "https://${DOMAIN:-localhost}/storage"
+
+  live-service:
+    environment:
+      LIVE_PLAYBACK_URL_TEMPLATE: "https://${DOMAIN:-localhost}/v1/live/streams/{stream_id}/playback/index.m3u8"
+      LIVE_PLAYBACK_INTERNAL_BASE_URL: "http://mediamtx:8888"
+      LIVE_PLAYBACK_PROTOCOL: "hls"
+      LIVE_INGEST_URL: "rtmp://${DOMAIN:-localhost}:1935/live"
+      LIVE_INGEST_PROTOCOL: "rtmp"
 
 volumes:
   caddy_data:

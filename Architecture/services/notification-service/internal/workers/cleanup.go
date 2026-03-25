@@ -58,30 +58,34 @@ func deleteOldBuckets(session *gocql.Session, maxAgeDays int) int {
 	for i := 1; i <= 12; i++ {
 		bucket := decrementBucket(cutoffBucket, i)
 
-		// Find all distinct user_ids in this bucket and delete their partition.
+		// Scylla requires full partition keys for DISTINCT, so scan row keys and
+		// delete old rows by their full primary key instead of per-partition.
 		iter := session.Query(`
-			SELECT DISTINCT user_id FROM notifications_by_user
+			SELECT user_id, bucket, ts FROM notifications_by_user
 			WHERE bucket = ? ALLOW FILTERING
 		`, bucket).Iter()
 
 		var uid gocql.UUID
-		users := 0
-		for iter.Scan(&uid) {
+		var b int
+		var ts gocql.UUID
+		deletedRows := 0
+		for iter.Scan(&uid, &b, &ts) {
 			err := session.Query(`
 				DELETE FROM notifications_by_user
-				WHERE user_id = ? AND bucket = ?
-			`, uid, bucket).Exec()
+				WHERE user_id = ? AND bucket = ? AND ts = ?
+			`, uid, b, ts).Exec()
 			if err != nil {
-				slog.Warn("cleanup: failed to delete bucket partition",
+				slog.Warn("cleanup: failed to delete old notification row",
 					"bucket", bucket, "user_id", uid, "error", err)
+				continue
 			}
-			users++
+			deletedRows++
 		}
 		if err := iter.Close(); err != nil {
 			slog.Warn("cleanup: failed to scan bucket", "bucket", bucket, "error", err)
 		}
-		if users > 0 {
-			slog.Info("cleanup: cleared old bucket", "bucket", bucket, "users", users)
+		if deletedRows > 0 {
+			slog.Info("cleanup: cleared old bucket", "bucket", bucket, "rows", deletedRows)
 			processed++
 		}
 	}

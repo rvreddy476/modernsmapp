@@ -9,10 +9,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/atpost/chat-shared/transport"
 	"github.com/atpost/chat-shared/logging"
 	"github.com/atpost/chat-ws-gateway/internal/config"
 	httpapi "github.com/atpost/chat-ws-gateway/internal/http"
-	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -23,9 +23,11 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	rdb := redis.NewClient(&redis.Options{
-		Addr: cfg.RedisAddr,
-	})
+	rdb, err := transport.NewRedisClientFromEnv(cfg.RedisAddr)
+	if err != nil {
+		logger.Error("failed to configure redis client", "err", err)
+		os.Exit(1)
+	}
 	defer func() {
 		if err := rdb.Close(); err != nil {
 			logger.Warn("failed to close redis client", "err", err)
@@ -40,6 +42,7 @@ func main() {
 	server := httpapi.NewServer(rdb, logger, httpapi.ServerOptions{
 		JWTSecret:      cfg.JWTSecret,
 		AllowedOrigins: cfg.AllowedOrigins,
+		AllowQueryToken: cfg.WSAllowQueryToken,
 		WriteWait:      cfg.WSWriteWait,
 		PongWait:       cfg.WSPongWait,
 		PingPeriod:     cfg.WSPingPeriod,

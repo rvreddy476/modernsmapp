@@ -7,15 +7,15 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/gin-gonic/gin"
 	"github.com/atpost/identity-shared/logging"
+	"github.com/atpost/identity-shared/transport"
 	"github.com/atpost/identity-user-service/internal/config"
 	"github.com/atpost/identity-user-service/internal/events"
 	"github.com/atpost/identity-user-service/internal/http"
 	"github.com/atpost/identity-user-service/internal/service"
 	"github.com/atpost/identity-user-service/internal/store"
+	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -40,9 +40,11 @@ func main() {
 	logger.Info("connected to Postgres")
 
 	// 2. Redis
-	rdb := redis.NewClient(&redis.Options{
-		Addr: cfg.RedisAddr,
-	})
+	rdb, err := transport.NewRedisClientFromEnv(cfg.RedisAddr)
+	if err != nil {
+		logger.Error("failed to configure redis client", "err", err)
+		os.Exit(1)
+	}
 	defer func() {
 		if err := rdb.Close(); err != nil {
 			logger.Warn("failed to close redis client", "err", err)
@@ -54,13 +56,19 @@ func main() {
 	}
 	logger.Info("connected to Redis")
 
+	kafkaDialer, err := transport.KafkaDialerFromEnv()
+	if err != nil {
+		logger.Error("failed to configure kafka dialer", "err", err)
+		os.Exit(1)
+	}
+
 	// 3. Dependencies
 	userStore := store.New(dbPool)
 	userSvc := service.New(userStore, rdb, cfg, logger)
 	userHandler := http.New(userSvc, logger)
 
 	// 3b. Kafka consumer (inbox-dedup enabled)
-	consumer := events.NewConsumer(cfg.KafkaBrokers, cfg.KafkaTopic, cfg.KafkaGroupID, dbPool, userSvc, logger)
+	consumer := events.NewConsumerWithDialer(cfg.KafkaBrokers, cfg.KafkaTopic, cfg.KafkaGroupID, kafkaDialer, dbPool, userSvc, logger)
 	defer func() {
 		if err := consumer.Close(); err != nil {
 			logger.Warn("failed to close kafka consumer", "err", err)

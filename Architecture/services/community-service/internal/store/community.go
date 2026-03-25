@@ -665,3 +665,46 @@ func (s *Store) CountCommunitiesByOwner(ctx context.Context, ownerID uuid.UUID, 
 	err := s.db.QueryRow(ctx, `SELECT COUNT(*) FROM communities WHERE owner_id = $1 AND created_at >= $2 AND status != 'deleted'`, ownerID, since).Scan(&count)
 	return count, err
 }
+
+// --- Event operations ---
+
+func (s *Store) CreateEvent(ctx context.Context, e *CommunityEvent) error {
+	query := `
+		INSERT INTO community_events (
+			id, community_id, space_id, creator_id, title, description,
+			location, starts_at, ends_at, max_attendees, rsvp_count
+		) VALUES (
+			gen_random_uuid(), $1, $2, $3, $4, $5,
+			$6, $7, $8, $9, 0
+		) RETURNING id, rsvp_count, created_at`
+	return s.db.QueryRow(ctx, query,
+		e.CommunityID, e.SpaceID, e.CreatorID, e.Title, e.Description,
+		e.Location, e.StartsAt, e.EndsAt, e.MaxAttendees,
+	).Scan(&e.ID, &e.RSVPCount, &e.CreatedAt)
+}
+
+func (s *Store) ListEvents(ctx context.Context, communityID uuid.UUID) ([]CommunityEvent, error) {
+	query := `
+		SELECT id, community_id, space_id, creator_id, title, description,
+			location, starts_at, ends_at, max_attendees, rsvp_count, created_at
+		FROM community_events
+		WHERE community_id = $1
+		ORDER BY starts_at ASC`
+	rows, err := s.db.Query(ctx, query, communityID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var events []CommunityEvent
+	for rows.Next() {
+		var e CommunityEvent
+		if err := rows.Scan(
+			&e.ID, &e.CommunityID, &e.SpaceID, &e.CreatorID, &e.Title, &e.Description,
+			&e.Location, &e.StartsAt, &e.EndsAt, &e.MaxAttendees, &e.RSVPCount, &e.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		events = append(events, e)
+	}
+	return events, rows.Err()
+}

@@ -9,15 +9,16 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/gin-gonic/gin"
+	"github.com/atpost/identity-auth-service/database"
 	"github.com/atpost/identity-auth-service/internal/config"
 	"github.com/atpost/identity-auth-service/internal/events"
 	internalhttp "github.com/atpost/identity-auth-service/internal/http"
 	"github.com/atpost/identity-auth-service/internal/service"
 	"github.com/atpost/identity-auth-service/internal/store"
 	"github.com/atpost/identity-shared/logging"
+	"github.com/atpost/identity-shared/transport"
+	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -49,12 +50,21 @@ func main() {
 		logger.Error("database ping failed", "err", err)
 		os.Exit(1)
 	}
+
+	if err := store.BootstrapSchema(ctx, dbPool, database.SetupSQL); err != nil {
+		logger.Error("failed to bootstrap auth schema", "err", err)
+		os.Exit(1)
+	}
+	logger.Info("auth schema ready")
+
 	logger.Info("connected to Postgres")
 
 	// 2. Redis
-	rdb := redis.NewClient(&redis.Options{
-		Addr: cfg.RedisAddr,
-	})
+	rdb, err := transport.NewRedisClientFromEnv(cfg.RedisAddr)
+	if err != nil {
+		logger.Error("failed to configure redis client", "err", err)
+		os.Exit(1)
+	}
 	defer func() {
 		if err := rdb.Close(); err != nil {
 			logger.Warn("failed to close redis client", "err", err)
@@ -66,9 +76,15 @@ func main() {
 	}
 	logger.Info("connected to Redis")
 
+	kafkaDialer, err := transport.KafkaDialerFromEnv()
+	if err != nil {
+		logger.Error("failed to configure kafka dialer", "err", err)
+		os.Exit(1)
+	}
+
 	// 3. Dependencies
 	authStore := store.New(dbPool)
-	authProducer := events.NewProducer(cfg.KafkaBrokers, cfg.KafkaTopic)
+	authProducer := events.NewProducerWithDialer(cfg.KafkaBrokers, cfg.KafkaTopic, kafkaDialer)
 	defer func() {
 		if err := authProducer.Close(); err != nil {
 			logger.Warn("failed to close kafka producer", "err", err)

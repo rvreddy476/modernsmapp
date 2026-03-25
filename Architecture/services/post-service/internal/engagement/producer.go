@@ -17,11 +17,17 @@ type Producer struct {
 
 // NewProducer creates a new engagement event producer.
 func NewProducer(brokers []string, topic string) *Producer {
-	w := &kafka.Writer{
-		Addr:     kafka.TCP(brokers...),
+	return NewProducerWithDialer(brokers, topic, nil)
+}
+
+// NewProducerWithDialer creates a new engagement event producer with an explicit Kafka dialer.
+func NewProducerWithDialer(brokers []string, topic string, dialer *kafka.Dialer) *Producer {
+	w := kafka.NewWriter(kafka.WriterConfig{
+		Brokers:  brokers,
 		Topic:    topic,
 		Balancer: &kafka.LeastBytes{},
-	}
+		Dialer:   dialer,
+	})
 	return &Producer{writer: w}
 }
 

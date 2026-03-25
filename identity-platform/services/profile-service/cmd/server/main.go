@@ -14,8 +14,8 @@ import (
 	"github.com/atpost/identity-profile-service/internal/service"
 	"github.com/atpost/identity-profile-service/internal/store"
 	"github.com/atpost/identity-shared/logging"
+	"github.com/atpost/identity-shared/transport"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -40,9 +40,11 @@ func main() {
 	logger.Info("connected to Postgres")
 
 	// 2. Redis
-	rdb := redis.NewClient(&redis.Options{
-		Addr: cfg.RedisAddr,
-	})
+	rdb, err := transport.NewRedisClientFromEnv(cfg.RedisAddr)
+	if err != nil {
+		logger.Error("failed to configure redis client", "err", err)
+		os.Exit(1)
+	}
 	defer func() {
 		if err := rdb.Close(); err != nil {
 			logger.Warn("failed to close redis client", "err", err)
@@ -54,9 +56,15 @@ func main() {
 	}
 	logger.Info("connected to Redis")
 
+	kafkaDialer, err := transport.KafkaDialerFromEnv()
+	if err != nil {
+		logger.Error("failed to configure kafka dialer", "err", err)
+		os.Exit(1)
+	}
+
 	// 3. Dependencies
 	profileStore := store.New(dbPool)
-	profileProducer := events.NewProducer(cfg.KafkaBrokers, cfg.KafkaTopic)
+	profileProducer := events.NewProducerWithDialer(cfg.KafkaBrokers, cfg.KafkaTopic, kafkaDialer)
 	defer func() {
 		if err := profileProducer.Close(); err != nil {
 			logger.Warn("failed to close kafka producer", "err", err)
@@ -66,7 +74,7 @@ func main() {
 	profileHandler := http.New(profileSvc, logger)
 
 	// 3b. Kafka consumer (inbox-dedup enabled)
-	consumer := events.NewConsumer(cfg.KafkaBrokers, cfg.KafkaTopic, cfg.KafkaGroupID, dbPool, profileSvc, logger)
+	consumer := events.NewConsumerWithDialer(cfg.KafkaBrokers, cfg.KafkaTopic, cfg.KafkaGroupID, kafkaDialer, dbPool, profileSvc, logger)
 	defer func() {
 		if err := consumer.Close(); err != nil {
 			logger.Warn("failed to close kafka consumer", "err", err)

@@ -13,23 +13,27 @@ import (
 var ErrNotFound = errors.New("record not found")
 
 type Stream struct {
-	ID           uuid.UUID  `json:"id"`
-	HostID       uuid.UUID  `json:"host_id"`
-	Title        string     `json:"title"`
-	Description  string     `json:"description"`
-	ThumbnailURL *string    `json:"thumbnail_url,omitempty"`
-	StreamKey    string     `json:"stream_key,omitempty"`
-	Status       string     `json:"status"`
-	Visibility   string     `json:"visibility"`
-	PeakViewers  int        `json:"peak_viewers"`
-	TotalViewers int        `json:"total_viewers"`
-	LikeCount    int        `json:"like_count"`
-	StartedAt    *time.Time `json:"started_at,omitempty"`
-	EndedAt      *time.Time `json:"ended_at,omitempty"`
-	DurationSecs int        `json:"duration_secs"`
-	ReplayURL    *string    `json:"replay_url,omitempty"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
+	ID               uuid.UUID  `json:"id"`
+	HostID           uuid.UUID  `json:"host_id"`
+	Title            string     `json:"title"`
+	Description      string     `json:"description"`
+	ThumbnailURL     *string    `json:"thumbnail_url,omitempty"`
+	StreamKey        string     `json:"stream_key,omitempty"`
+	IngestURL        *string    `json:"ingest_url,omitempty"`
+	IngestProtocol   *string    `json:"ingest_protocol,omitempty"`
+	PlaybackURL      *string    `json:"playback_url,omitempty"`
+	PlaybackProtocol *string    `json:"playback_protocol,omitempty"`
+	Status           string     `json:"status"`
+	Visibility       string     `json:"visibility"`
+	PeakViewers      int        `json:"peak_viewers"`
+	TotalViewers     int        `json:"total_viewers"`
+	LikeCount        int        `json:"like_count"`
+	StartedAt        *time.Time `json:"started_at,omitempty"`
+	EndedAt          *time.Time `json:"ended_at,omitempty"`
+	DurationSecs     int        `json:"duration_secs"`
+	ReplayURL        *string    `json:"replay_url,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
 }
 
 type ChatMessage struct {
@@ -111,7 +115,7 @@ func (s *Store) GetStreamByKey(ctx context.Context, streamKey string) (*Stream, 
 
 func (s *Store) ListLiveStreams(ctx context.Context, limit, offset int) ([]Stream, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, host_id, title, description, thumbnail_url, '', status, visibility,
+		SELECT id, host_id, title, description, thumbnail_url, stream_key, status, visibility,
 		       peak_viewers, total_viewers, like_count, started_at, ended_at, duration_secs, replay_url, created_at, updated_at
 		FROM live.streams WHERE status = 'live'
 		ORDER BY total_viewers DESC, started_at DESC LIMIT $1 OFFSET $2
@@ -120,12 +124,12 @@ func (s *Store) ListLiveStreams(ctx context.Context, limit, offset int) ([]Strea
 		return nil, err
 	}
 	defer rows.Close()
-	return scanStreams(rows)
+	return scanStreams(rows, true)
 }
 
 func (s *Store) ListHostStreams(ctx context.Context, hostID uuid.UUID, limit, offset int) ([]Stream, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, host_id, title, description, thumbnail_url, '', status, visibility,
+		SELECT id, host_id, title, description, thumbnail_url, stream_key, status, visibility,
 		       peak_viewers, total_viewers, like_count, started_at, ended_at, duration_secs, replay_url, created_at, updated_at
 		FROM live.streams WHERE host_id = $1
 		ORDER BY created_at DESC LIMIT $2 OFFSET $3
@@ -134,13 +138,13 @@ func (s *Store) ListHostStreams(ctx context.Context, hostID uuid.UUID, limit, of
 		return nil, err
 	}
 	defer rows.Close()
-	return scanStreams(rows)
+	return scanStreams(rows, true)
 }
 
 func scanStreams(rows interface {
 	Next() bool
 	Scan(dest ...interface{}) error
-}) ([]Stream, error) {
+}, includeStreamKey bool) ([]Stream, error) {
 	var streams []Stream
 	for rows.Next() {
 		var st Stream
@@ -149,7 +153,9 @@ func scanStreams(rows interface {
 			&st.StartedAt, &st.EndedAt, &st.DurationSecs, &st.ReplayURL, &st.CreatedAt, &st.UpdatedAt); err != nil {
 			return nil, err
 		}
-		st.StreamKey = "" // Never expose stream key in list responses
+		if !includeStreamKey {
+			st.StreamKey = ""
+		}
 		streams = append(streams, st)
 	}
 	return streams, nil
@@ -196,6 +202,26 @@ func (s *Store) SendChatMessage(ctx context.Context, msg *ChatMessage) error {
 		VALUES ($1, $2, $3, $4, $5)
 	`, msg.ID, msg.StreamID, msg.UserID, msg.Message, msg.CreatedAt)
 	return err
+}
+
+func (s *Store) GetChatMessage(ctx context.Context, messageID uuid.UUID) (*ChatMessage, error) {
+	var msg ChatMessage
+	err := s.db.QueryRow(ctx, `
+		SELECT id, stream_id, user_id, message, is_pinned, created_at
+		FROM live.chat_messages
+		WHERE id = $1
+	`, messageID).Scan(
+		&msg.ID,
+		&msg.StreamID,
+		&msg.UserID,
+		&msg.Message,
+		&msg.IsPinned,
+		&msg.CreatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &msg, nil
 }
 
 func (s *Store) GetChatMessages(ctx context.Context, streamID uuid.UUID, limit int, before *time.Time) ([]ChatMessage, error) {

@@ -152,8 +152,8 @@ func (h *Handler) ListCommunityPosts(c *gin.Context) {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid community id", nil, nil)
 		return
 	}
-	// List all posts across community (for aggregated feed)
-	posts, err := h.svc.Store().ListFeaturedPosts(c.Request.Context(), communityID, limit)
+	// List all posts across community (aggregated feed)
+	posts, err := h.svc.Store().ListCommunityPosts(c.Request.Context(), communityID, limit, offset)
 	if err != nil {
 		api.Error(c.Writer, http.StatusInternalServerError, "LIST_FAILED", err.Error(), nil, nil)
 		return

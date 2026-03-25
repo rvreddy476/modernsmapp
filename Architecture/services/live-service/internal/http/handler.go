@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/atpost/live-service/internal/service"
+	"github.com/atpost/live-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -26,6 +27,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.POST("/streams", h.CreateStream)
 		v1.GET("/streams", h.ListLiveStreams)
 		v1.GET("/streams/:streamId", h.GetStream)
+		v1.GET("/streams/:streamId/playback/*asset", h.ProxyPlayback)
+		v1.HEAD("/streams/:streamId/playback/*asset", h.ProxyPlayback)
+		v1.OPTIONS("/streams/:streamId/playback/*asset", h.ProxyPlayback)
 		v1.POST("/streams/:streamId/go-live", h.GoLive)
 		v1.POST("/streams/:streamId/end", h.EndStream)
 		v1.GET("/hosts/:hostId/streams", h.ListHostStreams)
@@ -131,11 +135,7 @@ func (h *Handler) GetStream(c *gin.Context) {
 		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "stream not found", nil, nil)
 		return
 	}
-	// Hide stream key from non-hosts
-	requester := c.GetHeader("X-User-Id")
-	if requester != st.HostID.String() {
-		st.StreamKey = ""
-	}
+	sanitizeStreamForRequester(st, c.GetHeader("X-User-Id") == st.HostID.String())
 	api.JSON(c.Writer, http.StatusOK, st, nil)
 }
 
@@ -198,6 +198,7 @@ func (h *Handler) ListHostStreams(c *gin.Context) {
 		api.Error(c.Writer, http.StatusInternalServerError, "LIST_FAILED", err.Error(), nil, nil)
 		return
 	}
+	sanitizeStreamsForRequester(streams, c.GetHeader("X-User-Id") == hostID.String())
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": streams}, nil)
 }
 
@@ -332,13 +333,18 @@ func (h *Handler) PinMessage(c *gin.Context) {
 	if !ok {
 		return
 	}
+	streamID, err := uuid.Parse(c.Param("streamId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid stream id", nil, nil)
+		return
+	}
 	messageID, err := uuid.Parse(c.Param("messageId"))
 	if err != nil {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid message id", nil, nil)
 		return
 	}
 
-	if err := h.svc.PinMessage(c.Request.Context(), messageID, userID); err != nil {
+	if err := h.svc.PinMessage(c.Request.Context(), streamID, messageID, userID); err != nil {
 		api.Error(c.Writer, http.StatusBadRequest, "PIN_FAILED", err.Error(), nil, nil)
 		return
 	}
@@ -423,4 +429,24 @@ func parsePagination(c *gin.Context) (int, int) {
 		}
 	}
 	return limit, offset
+}
+
+func sanitizeStreamForRequester(st *postgres.Stream, requesterIsHost bool) {
+	if requesterIsHost {
+		return
+	}
+	st.StreamKey = ""
+	st.IngestURL = nil
+	st.IngestProtocol = nil
+}
+
+func sanitizeStreamsForRequester(streams []postgres.Stream, requesterIsHost bool) {
+	if requesterIsHost {
+		return
+	}
+	for i := range streams {
+		streams[i].StreamKey = ""
+		streams[i].IngestURL = nil
+		streams[i].IngestProtocol = nil
+	}
 }

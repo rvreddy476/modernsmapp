@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/atpost/shared/events"
+	"github.com/atpost/shared/transport"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 	kafka "github.com/segmentio/kafka-go"
@@ -23,12 +24,18 @@ func NewReelAnalyticsConsumer(db *pgxpool.Pool, rdb *redis.Client) *ReelAnalytic
 }
 
 func (c *ReelAnalyticsConsumer) Start(ctx context.Context, brokers []string, topic string) {
+	dialer, err := transport.KafkaDialerFromEnv()
+	if err != nil {
+		slog.Error("reel analytics: invalid kafka dialer config", "error", err)
+		return
+	}
 	reader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:     brokers,
 		Topic:       topic,
 		GroupID:     "reel-analytics-consumer",
 		StartOffset: kafka.LastOffset,
 		MaxWait:     3 * time.Second,
+		Dialer:      dialer,
 	})
 	defer reader.Close()
 

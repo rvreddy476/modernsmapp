@@ -45,6 +45,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/:communityId/modlog", h.GetModLog)
 	}
 
+	// Events
+	v1.GET("/:communityId/events", h.ListEvents)
+	v1.POST("/:communityId/events", h.CreateEvent)
+
 	// Post, engagement, and wiki routes
 	h.registerPostRoutes(v1)
 }

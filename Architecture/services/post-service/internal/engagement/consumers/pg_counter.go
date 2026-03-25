@@ -7,6 +7,7 @@ import (
 	"github.com/atpost/post-service/internal/engagement"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+	"github.com/segmentio/kafka-go"
 )
 
 // PGCounterConsumer updates PostgreSQL post_engagement_counts table.
@@ -25,8 +26,8 @@ func NewPGCounterConsumer(db *pgxpool.Pool, rdb *redis.Client) *PGCounterConsume
 }
 
 // Start begins the consumer loop. Blocks until ctx is canceled.
-func (c *PGCounterConsumer) Start(ctx context.Context, brokers []string, topic string) {
-	reader := engagement.NewKafkaReader(brokers, topic, "eng-pg-counter")
+func (c *PGCounterConsumer) Start(ctx context.Context, brokers []string, topic string, dialer *kafka.Dialer) {
+	reader := engagement.NewKafkaReaderWithDialer(brokers, topic, "eng-pg-counter", dialer)
 	defer reader.Close()
 
 	engagement.ConsumerLoop(ctx, reader, c.base, c.handleEvent)

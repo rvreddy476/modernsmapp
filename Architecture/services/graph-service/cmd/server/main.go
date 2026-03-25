@@ -16,9 +16,9 @@ import (
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
 	"github.com/atpost/shared/server"
+	"github.com/atpost/shared/transport"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -47,7 +47,11 @@ func main() {
 	slog.Info("connected to postgres")
 
 	// 4. Redis
-	rdb := redis.NewClient(&redis.Options{Addr: redisAddr})
+	rdb, err := transport.NewRedisClientFromEnv(redisAddr)
+	if err != nil {
+		slog.Error("failed to configure redis client", "error", err)
+		os.Exit(1)
+	}
 	if err := rdb.Ping(ctx).Err(); err != nil {
 		slog.Error("redis ping failed", "error", err)
 		os.Exit(1)
@@ -56,7 +60,12 @@ func main() {
 	slog.Info("connected to redis")
 
 	// 5. Kafka Producer
-	producer := events.NewProducer(strings.Split(kafkaBrokers, ","), "social.events.v1")
+	kafkaDialer, err := transport.KafkaDialerFromEnv()
+	if err != nil {
+		slog.Error("failed to configure kafka dialer", "error", err)
+		os.Exit(1)
+	}
+	producer := events.NewProducerWithDialer(strings.Split(kafkaBrokers, ","), "social.events.v1", kafkaDialer)
 	defer producer.Close()
 	slog.Info("kafka producer ready")
 

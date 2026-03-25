@@ -22,7 +22,9 @@ class LiveRepository {
   }
 
   Future<LiveStream> getStream(String streamId) async {
-    final response = await _api.get('${Environment.livePath}/streams/$streamId');
+    final response = await _api.get(
+      '${Environment.livePath}/streams/$streamId',
+    );
     return LiveStream.fromJson(response.data['data'] as Map<String, dynamic>);
   }
 
@@ -54,7 +56,9 @@ class LiveRepository {
   }
 
   Future<int> joinStream(String streamId) async {
-    final response = await _api.post('${Environment.livePath}/streams/$streamId/join');
+    final response = await _api.post(
+      '${Environment.livePath}/streams/$streamId/join',
+    );
     return (response.data['data']?['viewer_count'] as int?) ?? 0;
   }
 
@@ -67,7 +71,9 @@ class LiveRepository {
   }
 
   Future<int> getViewerCount(String streamId) async {
-    final response = await _api.get('${Environment.livePath}/streams/$streamId/viewers');
+    final response = await _api.get(
+      '${Environment.livePath}/streams/$streamId/viewers',
+    );
     return (response.data['data']?['viewer_count'] as int?) ?? 0;
   }
 
@@ -93,12 +99,74 @@ class LiveRepository {
         .toList();
   }
 
-  Future<LiveChatMessage> sendChatMessage(String streamId, String message) async {
+  Future<LiveChatMessage> sendChatMessage(
+    String streamId,
+    String message,
+  ) async {
     final response = await _api.post(
       '${Environment.livePath}/streams/$streamId/chat',
       data: {'message': message},
     );
-    return LiveChatMessage.fromJson(response.data['data'] as Map<String, dynamic>);
+    return LiveChatMessage.fromJson(
+      response.data['data'] as Map<String, dynamic>,
+    );
+  }
+
+  Future<void> pinMessage(String streamId, String messageId) async {
+    await _api.post(
+      '${Environment.livePath}/streams/$streamId/chat/$messageId/pin',
+    );
+  }
+
+  Future<void> muteUser(String streamId, String userId) async {
+    await _api.post(
+      '${Environment.livePath}/streams/$streamId/mutes',
+      data: {'user_id': userId},
+    );
+  }
+
+  Future<void> unmuteUser(String streamId, String userId) async {
+    await _api.delete(
+      '${Environment.livePath}/streams/$streamId/mutes/$userId',
+    );
+  }
+
+  Future<List<LiveMute>> getMutedUsers(String streamId) async {
+    final response = await _api.get(
+      '${Environment.livePath}/streams/$streamId/mutes',
+    );
+    final items =
+        (response.data['data']?['items'] as List<dynamic>?) ??
+        const <dynamic>[];
+    return items
+        .map((item) => LiveMute.fromJson(item as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<void> addWordFilter(String streamId, String word) async {
+    await _api.post(
+      '${Environment.livePath}/streams/$streamId/word-filters',
+      data: {'word': word},
+    );
+  }
+
+  Future<void> removeWordFilter(String streamId, String word) async {
+    await _api.delete(
+      '${Environment.livePath}/streams/$streamId/word-filters',
+      data: {'word': word},
+    );
+  }
+
+  Future<List<LiveWordFilter>> getWordFilters(String streamId) async {
+    final response = await _api.get(
+      '${Environment.livePath}/streams/$streamId/word-filters',
+    );
+    final items =
+        (response.data['data']?['items'] as List<dynamic>?) ??
+        const <dynamic>[];
+    return items
+        .map((item) => LiveWordFilter.fromJson(item as Map<String, dynamic>))
+        .toList();
   }
 }
 

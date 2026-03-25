@@ -8,6 +8,7 @@ import (
 
 	"github.com/atpost/post-service/internal/engagement"
 	"github.com/redis/go-redis/v9"
+	"github.com/segmentio/kafka-go"
 )
 
 // WSBroadcasterConsumer publishes engagement updates to Redis pub/sub
@@ -26,8 +27,8 @@ func NewWSBroadcasterConsumer(rdb *redis.Client) *WSBroadcasterConsumer {
 }
 
 // Start begins the consumer loop. Blocks until ctx is canceled.
-func (c *WSBroadcasterConsumer) Start(ctx context.Context, brokers []string, topic string) {
-	reader := engagement.NewKafkaReader(brokers, topic, "eng-ws-broadcast")
+func (c *WSBroadcasterConsumer) Start(ctx context.Context, brokers []string, topic string, dialer *kafka.Dialer) {
+	reader := engagement.NewKafkaReaderWithDialer(brokers, topic, "eng-ws-broadcast", dialer)
 	defer reader.Close()
 
 	engagement.ConsumerLoop(ctx, reader, c.base, c.handleEvent)

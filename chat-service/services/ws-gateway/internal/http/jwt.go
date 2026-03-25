@@ -11,14 +11,15 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
 )
 
-func authenticateUserFromJWT(r *http.Request, jwtSecret string) (uuid.UUID, error) {
+func authenticateUserFromJWT(r *http.Request, jwtSecret string, allowQueryToken bool) (uuid.UUID, error) {
 	secret := []byte(strings.TrimSpace(jwtSecret))
 	if len(secret) == 0 {
 		return uuid.Nil, errors.New("jwt secret not configured")
 	}
-	token := readBearerToken(r)
+	token := readBearerToken(r, allowQueryToken)
 	if token == "" {
 		return uuid.Nil, errors.New("missing bearer token")
 	}
@@ -29,14 +30,32 @@ func authenticateUserFromJWT(r *http.Request, jwtSecret string) (uuid.UUID, erro
 	return userID, nil
 }
 
-func readBearerToken(r *http.Request) string {
+func readBearerToken(r *http.Request, allowQueryToken bool) string {
 	authz := strings.TrimSpace(r.Header.Get("Authorization"))
 	if strings.HasPrefix(authz, "Bearer ") {
 		return strings.TrimSpace(strings.TrimPrefix(authz, "Bearer "))
 	}
-	// Browser WebSocket clients cannot set Authorization headers, so allow query token.
-	if q := strings.TrimSpace(r.URL.Query().Get("access_token")); q != "" {
-		return q
+
+	if token := readSubprotocolBearerToken(r); token != "" {
+		return token
+	}
+
+	if allowQueryToken {
+		if q := strings.TrimSpace(r.URL.Query().Get("access_token")); q != "" {
+			return q
+		}
+	}
+	return ""
+}
+
+func readSubprotocolBearerToken(r *http.Request) string {
+	for _, protocol := range websocket.Subprotocols(r) {
+		switch {
+		case strings.HasPrefix(protocol, "bearer."):
+			return strings.TrimSpace(strings.TrimPrefix(protocol, "bearer."))
+		case strings.HasPrefix(protocol, "jwt."):
+			return strings.TrimSpace(strings.TrimPrefix(protocol, "jwt."))
+		}
 	}
 	return ""
 }

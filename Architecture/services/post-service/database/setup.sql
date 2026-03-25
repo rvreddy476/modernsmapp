@@ -89,6 +89,7 @@ BEGIN
     RETURN NEW;
 END; $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS trg_create_engagement_counts ON posts;
 CREATE TRIGGER trg_create_engagement_counts
     AFTER INSERT ON posts
     FOR EACH ROW EXECUTE FUNCTION create_engagement_counts();

@@ -3,10 +3,7 @@ abstract class RealtimeEvent {
   final String eventType;
   final dynamic payload;
 
-  const RealtimeEvent({
-    required this.eventType,
-    required this.payload,
-  });
+  const RealtimeEvent({required this.eventType, required this.payload});
 
   factory RealtimeEvent.fromJson(Map<String, dynamic> json) {
     final eventType = json['type'] as String? ?? 'unknown';
@@ -24,6 +21,24 @@ abstract class RealtimeEvent {
         return ReadReceiptEvent(payload: payload);
       case 'presence_update':
         return PresenceUpdateEvent(payload: payload);
+      case 'live_chat_message':
+        return LiveChatMessageEvent(payload: payload);
+      case 'live_stream_viewers':
+        return LiveStreamViewersEvent(payload: payload);
+      case 'live_stream_likes':
+        return LiveStreamLikesEvent(payload: payload);
+      case 'live_message_pinned':
+        return LiveMessagePinnedEvent(payload: payload);
+      case 'live_stream_ended':
+        return LiveStreamEndedEvent(payload: payload);
+      case 'live_user_muted':
+        return LiveUserMutedEvent(payload: payload);
+      case 'live_user_unmuted':
+        return LiveUserUnmutedEvent(payload: payload);
+      case 'live_word_filter_added':
+        return LiveWordFilterAddedEvent(payload: payload);
+      case 'live_word_filter_removed':
+        return LiveWordFilterRemovedEvent(payload: payload);
       case 'call_offer':
       case 'call_answer':
       case 'ice_candidate':
@@ -64,7 +79,9 @@ class ChatMessageEvent extends RealtimeEvent {
   String get senderId => payload['sender_id'] as String? ?? '';
   String get conversationId => payload['conversation_id'] as String? ?? '';
   String get messageType =>
-      payload['type'] as String? ?? payload['content_type'] as String? ?? 'text';
+      payload['type'] as String? ??
+      payload['content_type'] as String? ??
+      'text';
   String get text =>
       payload['text'] as String? ?? payload['content'] as String? ?? '';
   String? get mediaId => payload['media_id'] as String?;
@@ -93,8 +110,7 @@ class TypingEvent extends RealtimeEvent {
 }
 
 class ReadReceiptEvent extends RealtimeEvent {
-  ReadReceiptEvent({required super.payload})
-    : super(eventType: 'read_receipt');
+  ReadReceiptEvent({required super.payload}) : super(eventType: 'read_receipt');
 
   String get conversationId => payload['conversation_id'] as String? ?? '';
   String get userId => payload['user_id'] as String? ?? '';
@@ -109,6 +125,105 @@ class PresenceUpdateEvent extends RealtimeEvent {
 
   String get userId => payload['user_id'] as String? ?? '';
   bool get isOnline => payload['online'] as bool? ?? false;
+}
+
+class LiveChatMessageEvent extends RealtimeEvent {
+  LiveChatMessageEvent({required super.payload})
+    : super(eventType: 'live_chat_message');
+
+  String get streamId => payload['stream_id'] as String? ?? '';
+  String get messageId =>
+      payload['id'] as String? ?? payload['message_id'] as String? ?? '';
+  String get userId => payload['user_id'] as String? ?? '';
+  String get message => payload['message'] as String? ?? '';
+  bool get isPinned => payload['is_pinned'] as bool? ?? false;
+  DateTime get createdAt =>
+      DateTime.tryParse(payload['created_at'] as String? ?? '')?.toLocal() ??
+      DateTime.now();
+}
+
+class LiveStreamViewersEvent extends RealtimeEvent {
+  LiveStreamViewersEvent({required super.payload})
+    : super(eventType: 'live_stream_viewers');
+
+  String get streamId => payload['stream_id'] as String? ?? '';
+  int get viewerCount => payload['viewer_count'] as int? ?? 0;
+  int? get peakViewers => payload['peak_viewers'] as int?;
+  int? get totalViewers => payload['total_viewers'] as int?;
+  String? get reason => payload['reason'] as String?;
+  String? get actorId => payload['actor_id'] as String?;
+}
+
+class LiveStreamLikesEvent extends RealtimeEvent {
+  LiveStreamLikesEvent({required super.payload})
+    : super(eventType: 'live_stream_likes');
+
+  String get streamId => payload['stream_id'] as String? ?? '';
+  int get likeCount => payload['like_count'] as int? ?? 0;
+}
+
+class LiveMessagePinnedEvent extends RealtimeEvent {
+  LiveMessagePinnedEvent({required super.payload})
+    : super(eventType: 'live_message_pinned');
+
+  String get streamId => payload['stream_id'] as String? ?? '';
+  String get messageId => payload['message_id'] as String? ?? '';
+  String get pinnedBy => payload['pinned_by'] as String? ?? '';
+  DateTime get pinnedAt =>
+      DateTime.tryParse(payload['pinned_at'] as String? ?? '')?.toLocal() ??
+      DateTime.now();
+}
+
+class LiveStreamEndedEvent extends RealtimeEvent {
+  LiveStreamEndedEvent({required super.payload})
+    : super(eventType: 'live_stream_ended');
+
+  String get streamId => payload['stream_id'] as String? ?? '';
+  int? get peakViewers => payload['peak_viewers'] as int?;
+  int? get totalViewers => payload['total_viewers'] as int?;
+  int? get durationSeconds => payload['duration_secs'] as int?;
+  DateTime get endedAt =>
+      DateTime.tryParse(payload['ended_at'] as String? ?? '')?.toLocal() ??
+      DateTime.now();
+}
+
+class LiveUserMutedEvent extends RealtimeEvent {
+  LiveUserMutedEvent({required super.payload})
+    : super(eventType: 'live_user_muted');
+
+  String get streamId => payload['stream_id'] as String? ?? '';
+  String get userId => payload['user_id'] as String? ?? '';
+  String get mutedBy => payload['muted_by'] as String? ?? '';
+  DateTime get mutedAt =>
+      DateTime.tryParse(payload['muted_at'] as String? ?? '')?.toLocal() ??
+      DateTime.now();
+}
+
+class LiveUserUnmutedEvent extends RealtimeEvent {
+  LiveUserUnmutedEvent({required super.payload})
+    : super(eventType: 'live_user_unmuted');
+
+  String get streamId => payload['stream_id'] as String? ?? '';
+  String get userId => payload['user_id'] as String? ?? '';
+  String get unmutedBy => payload['unmuted_by'] as String? ?? '';
+}
+
+class LiveWordFilterAddedEvent extends RealtimeEvent {
+  LiveWordFilterAddedEvent({required super.payload})
+    : super(eventType: 'live_word_filter_added');
+
+  String get streamId => payload['stream_id'] as String? ?? '';
+  String get word => payload['word'] as String? ?? '';
+  String get addedBy => payload['added_by'] as String? ?? '';
+}
+
+class LiveWordFilterRemovedEvent extends RealtimeEvent {
+  LiveWordFilterRemovedEvent({required super.payload})
+    : super(eventType: 'live_word_filter_removed');
+
+  String get streamId => payload['stream_id'] as String? ?? '';
+  String get word => payload['word'] as String? ?? '';
+  String get removedBy => payload['removed_by'] as String? ?? '';
 }
 
 class CallSignalEvent extends RealtimeEvent {

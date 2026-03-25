@@ -132,6 +132,31 @@ func (s *Store) ListSpacePosts(ctx context.Context, spaceID uuid.UUID, limit, of
 	return posts, nil
 }
 
+func (s *Store) ListCommunityPosts(ctx context.Context, communityID uuid.UUID, limit, offset int) ([]CommunityPost, error) {
+	rows, err := s.db.Query(ctx, `SELECT id, community_id, space_id, author_id, content_type, title, body,
+		type_payload, attachments, tags, parent_post_id, thread_depth, reply_count,
+		is_pinned, is_announcement, is_featured, is_answered, accepted_answer_id, is_expert_answer,
+		status, spark_count, comment_count, echo_count, view_count, created_at, updated_at
+		FROM community_posts WHERE community_id = $1 AND status = 'published' AND parent_post_id IS NULL
+		ORDER BY is_pinned DESC, created_at DESC LIMIT $2 OFFSET $3`, communityID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var posts []CommunityPost
+	for rows.Next() {
+		var p CommunityPost
+		if err := rows.Scan(&p.ID, &p.CommunityID, &p.SpaceID, &p.AuthorID, &p.ContentType, &p.Title, &p.Body,
+			&p.TypePayload, &p.Attachments, &p.Tags, &p.ParentPostID, &p.ThreadDepth, &p.ReplyCount,
+			&p.IsPinned, &p.IsAnnouncement, &p.IsFeatured, &p.IsAnswered, &p.AcceptedAnswerID, &p.IsExpertAnswer,
+			&p.Status, &p.SparkCount, &p.CommentCount, &p.EchoCount, &p.ViewCount, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			return nil, err
+		}
+		posts = append(posts, p)
+	}
+	return posts, nil
+}
+
 func (s *Store) ListFeaturedPosts(ctx context.Context, communityID uuid.UUID, limit int) ([]CommunityPost, error) {
 	rows, err := s.db.Query(ctx, `SELECT id, community_id, space_id, author_id, content_type, title, body,
 		type_payload, attachments, tags, parent_post_id, thread_depth, reply_count,

@@ -25,6 +25,7 @@ type Storer interface {
 
 	// Chat
 	SendChatMessage(ctx context.Context, msg *postgres.ChatMessage) error
+	GetChatMessage(ctx context.Context, messageID uuid.UUID) (*postgres.ChatMessage, error)
 	GetChatMessages(ctx context.Context, streamID uuid.UUID, limit int, before *time.Time) ([]postgres.ChatMessage, error)
 	PinMessage(ctx context.Context, messageID uuid.UUID) error
 

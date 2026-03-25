@@ -34,13 +34,13 @@ const (
 	FriendRequestAccepted = "FriendRequestAccepted" // payload: FriendRequestAcceptedPayload
 	FriendRequestDeclined = "FriendRequestDeclined" // payload: FriendRequestDeclinedPayload
 	FriendRemoved         = "FriendRemoved"         // payload: FriendRemovedPayload
-	UserBlocked           = "UserBlocked"            // payload: UserBlockedPayload
+	UserBlocked           = "UserBlocked"           // payload: UserBlockedPayload
 
-	GroupCreated      = "GroupCreated"      // payload: GroupCreatedPayload
-	GroupMemberJoined = "GroupMemberJoined" // payload: GroupMemberJoinedPayload
-	GroupMemberLeft   = "GroupMemberLeft"   // payload: GroupMemberLeftPayload
-	GroupPostCreated  = "GroupPostCreated"  // payload: GroupPostCreatedPayload
-	GroupPostDeleted  = "GroupPostDeleted"  // payload: GroupPostDeletedPayload
+	GroupCreated       = "GroupCreated"       // payload: GroupCreatedPayload
+	GroupMemberJoined  = "GroupMemberJoined"  // payload: GroupMemberJoinedPayload
+	GroupMemberLeft    = "GroupMemberLeft"    // payload: GroupMemberLeftPayload
+	GroupPostCreated   = "GroupPostCreated"   // payload: GroupPostCreatedPayload
+	GroupPostDeleted   = "GroupPostDeleted"   // payload: GroupPostDeletedPayload
 	GroupPostPinned    = "GroupPostPinned"    // payload: GroupPostPinnedPayload
 	GroupPostUnpinned  = "GroupPostUnpinned"  // payload: GroupPostUnpinnedPayload
 	GroupPostCommented = "GroupPostCommented" // payload: GroupPostCommentedPayload
@@ -127,22 +127,22 @@ const (
 	EventReelCommented = "reel.commented"
 
 	// Reel Lifecycle (Gold Spec)
-	ReelDraftCreated        = "reel.draft.created"
-	ReelDraftUpdated        = "reel.draft.updated"
-	ReelPublishRequested    = "reel.publish.requested"
-	ReelPublished           = "reel.published"
-	ReelDeleted             = "reel.deleted"
-	ReelViewed              = "reel.viewed"
-	ReelBoostSet            = "reel.boost.set"
-	ReelCommentCreated      = "reel.comment.created"
-	ReelShared              = "reel.shared"
-	ReelSaved               = "reel.saved"
-	AudioTrackCreated       = "audio.track.created"
-	AudioUsageIncremented   = "audio.usage.incremented"
-	MediaProcessingProgress = "media.processing.progress"
+	ReelDraftCreated         = "reel.draft.created"
+	ReelDraftUpdated         = "reel.draft.updated"
+	ReelPublishRequested     = "reel.publish.requested"
+	ReelPublished            = "reel.published"
+	ReelDeleted              = "reel.deleted"
+	ReelViewed               = "reel.viewed"
+	ReelBoostSet             = "reel.boost.set"
+	ReelCommentCreated       = "reel.comment.created"
+	ReelShared               = "reel.shared"
+	ReelSaved                = "reel.saved"
+	AudioTrackCreated        = "audio.track.created"
+	AudioUsageIncremented    = "audio.usage.incremented"
+	MediaProcessingProgress  = "media.processing.progress"
 	MediaProcessingCompleted = "media.processing.completed"
-	CrossPostCreated        = "crosspost.created"
-	CrossPostCompleted      = "crosspost.completed"
+	CrossPostCreated         = "crosspost.created"
+	CrossPostCompleted       = "crosspost.completed"
 
 	// Groups V2 Events
 	GroupUpdated           = "group.updated"
@@ -216,7 +216,7 @@ const (
 	EventCallUpgraded           = "call.upgraded"
 
 	// Post Repost (Echo) Events
-	EventPostReposted    = "post.reposted"
+	EventPostReposted     = "post.reposted"
 	EventPostRepostUndone = "post.repost_undone"
 )
 
@@ -446,17 +446,17 @@ type GroupPostCommentedPayload struct {
 }
 
 type GroupPostSparkedPayload struct {
-	GroupID string    `json:"group_id"`
-	PostID  string    `json:"post_id"`
-	UserID  string    `json:"user_id"`
+	GroupID   string    `json:"group_id"`
+	PostID    string    `json:"post_id"`
+	UserID    string    `json:"user_id"`
 	SparkedAt time.Time `json:"sparked_at"`
 }
 
 type MemberBanLiftedPayload struct {
-	GroupID   string    `json:"group_id"`
-	UserID    string    `json:"user_id"`
-	LiftedBy  string    `json:"lifted_by"`
-	LiftedAt  time.Time `json:"lifted_at"`
+	GroupID  string    `json:"group_id"`
+	UserID   string    `json:"user_id"`
+	LiftedBy string    `json:"lifted_by"`
+	LiftedAt time.Time `json:"lifted_at"`
 }
 
 type StoryCreatedPayload struct {
@@ -489,12 +489,12 @@ type BusinessReviewCreatedPayload struct {
 }
 
 type SubscriptionCreatedPayload struct {
-	SubscriptionID string  `json:"subscription_id"`
-	SubscriberID   string  `json:"subscriber_id"`
-	CreatorID      string  `json:"creator_id"`
-	TierName       string  `json:"tier_name"`
-	Price          float64 `json:"price"`
-	Currency       string  `json:"currency"`
+	SubscriptionID string    `json:"subscription_id"`
+	SubscriberID   string    `json:"subscriber_id"`
+	CreatorID      string    `json:"creator_id"`
+	TierName       string    `json:"tier_name"`
+	Price          float64   `json:"price"`
+	Currency       string    `json:"currency"`
 	CreatedAt      time.Time `json:"created_at"`
 }
 
@@ -660,10 +660,12 @@ type OrderStatusUpdatedPayload struct {
 // --- Live Streaming Payloads ---
 
 type LiveStartedPayload struct {
-	StreamID  string    `json:"stream_id"`
-	HostID    string    `json:"host_id"`
-	Title     string    `json:"title"`
-	StartedAt time.Time `json:"started_at"`
+	StreamID         string    `json:"stream_id"`
+	HostID           string    `json:"host_id"`
+	Title            string    `json:"title"`
+	PlaybackURL      string    `json:"playback_url,omitempty"`
+	PlaybackProtocol string    `json:"playback_protocol,omitempty"`
+	StartedAt        time.Time `json:"started_at"`
 }
 
 type LiveEndedPayload struct {
@@ -897,8 +899,8 @@ type ModuleProfileUpdatedPayload struct {
 
 type HandleChangedPayload struct {
 	UserID      string    `json:"user_id"`
-	OldUsername  string    `json:"old_username"`
-	NewUsername  string    `json:"new_username"`
+	OldUsername string    `json:"old_username"`
+	NewUsername string    `json:"new_username"`
 	ChangedAt   time.Time `json:"changed_at"`
 }
 
@@ -944,11 +946,11 @@ type GroupMemberBannedPayload struct {
 }
 
 type GroupMemberRoleChangedPayload struct {
-	GroupID  string    `json:"group_id"`
-	UserID   string    `json:"user_id"`
-	OldRole  string    `json:"old_role"`
-	NewRole  string    `json:"new_role"`
-	ChangedBy string   `json:"changed_by"`
+	GroupID   string    `json:"group_id"`
+	UserID    string    `json:"user_id"`
+	OldRole   string    `json:"old_role"`
+	NewRole   string    `json:"new_role"`
+	ChangedBy string    `json:"changed_by"`
 	ChangedAt time.Time `json:"changed_at"`
 }
 
@@ -961,23 +963,23 @@ type GroupInviteSentPayload struct {
 }
 
 type GroupInviteAcceptedPayload struct {
-	GroupID   string    `json:"group_id"`
-	InviteID  string    `json:"invite_id"`
-	UserID    string    `json:"user_id"`
+	GroupID    string    `json:"group_id"`
+	InviteID   string    `json:"invite_id"`
+	UserID     string    `json:"user_id"`
 	AcceptedAt time.Time `json:"accepted_at"`
 }
 
 type GroupInviteRejectedPayload struct {
-	GroupID   string    `json:"group_id"`
-	InviteID  string    `json:"invite_id"`
-	UserID    string    `json:"user_id"`
+	GroupID    string    `json:"group_id"`
+	InviteID   string    `json:"invite_id"`
+	UserID     string    `json:"user_id"`
 	RejectedAt time.Time `json:"rejected_at"`
 }
 
 type GroupJoinRequestedPayload struct {
-	GroupID   string    `json:"group_id"`
-	UserID    string    `json:"user_id"`
-	RequestID string    `json:"request_id"`
+	GroupID     string    `json:"group_id"`
+	UserID      string    `json:"user_id"`
+	RequestID   string    `json:"request_id"`
 	RequestedAt time.Time `json:"requested_at"`
 }
 
@@ -1055,16 +1057,16 @@ type ChannelCommentUpdatedPayload struct {
 // --- Post Repost (Echo) Payloads ---
 
 type PostRepostedPayload struct {
-	RepostID         string    `json:"repost_id"`
-	ReposterUserID   string    `json:"reposter_user_id"`
-	OriginalPostID   string    `json:"original_post_id"`
-	OriginalAuthorID string    `json:"original_author_id"`
-	RepostType       string    `json:"repost_type"` // "plain" or "quote"
-	QuoteText        string    `json:"quote_text,omitempty"`
-	Visibility       string    `json:"visibility"`
-	SourceContextType string   `json:"source_context_type,omitempty"`
-	SourceContextID  string    `json:"source_context_id,omitempty"`
-	CreatedAt        time.Time `json:"created_at"`
+	RepostID          string    `json:"repost_id"`
+	ReposterUserID    string    `json:"reposter_user_id"`
+	OriginalPostID    string    `json:"original_post_id"`
+	OriginalAuthorID  string    `json:"original_author_id"`
+	RepostType        string    `json:"repost_type"` // "plain" or "quote"
+	QuoteText         string    `json:"quote_text,omitempty"`
+	Visibility        string    `json:"visibility"`
+	SourceContextType string    `json:"source_context_type,omitempty"`
+	SourceContextID   string    `json:"source_context_id,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
 }
 
 type PostRepostUndonePayload struct {

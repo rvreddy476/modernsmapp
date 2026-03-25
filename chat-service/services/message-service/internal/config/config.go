@@ -31,7 +31,7 @@ func Load() *Config {
 		RedisAddr:            getEnv("REDIS_ADDR", "localhost:6379"),
 		KafkaBrokers:         splitAndClean(getEnv("KAFKA_BROKERS", "localhost:9092")),
 		KafkaTopic:           getEnv("KAFKA_TOPIC", "chat.events.v1"),
-		JWTSecret:            getEnv("JWT_SECRET", "dev_secret_change_me"),
+		JWTSecret:            getEnv("JWT_SECRET", ""),
 		TrustedProxies:       splitAndClean(getEnv("TRUSTED_PROXIES", "")),
 		OutboxPollInterval:   getEnvDuration("OUTBOX_POLL_INTERVAL", 1*time.Second),
 		CacheTTL:             getEnvDuration("CACHE_TTL", 5*time.Minute),

@@ -9,6 +9,8 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,11 +28,11 @@ import (
 // implementations.
 type testStore struct {
 	streams       map[uuid.UUID]*postgres.Stream
-	mutes         map[string]bool        // muteKey → true
-	wordFilters   map[string][]string    // streamID.String() → slice of words
-	pollVotes     map[string]bool        // pollVoteKey → true
+	mutes         map[string]bool     // muteKey → true
+	wordFilters   map[string][]string // streamID.String() → slice of words
+	pollVotes     map[string]bool     // pollVoteKey → true
 	polls         map[uuid.UUID]*postgres.LivePoll
-	guestStatuses map[string]string      // guestKey → status
+	guestStatuses map[string]string // guestKey → status
 }
 
 func newTestStore() *testStore {
@@ -95,12 +97,18 @@ func (s *testStore) EndStream(ctx context.Context, id uuid.UUID) error {
 
 // --- Viewer / Chat / Likes ---
 
-func (s *testStore) UpdateViewerCount(_ context.Context, _ uuid.UUID, _ int) error  { return nil }
-func (s *testStore) IncrementLikes(_ context.Context, _ uuid.UUID) error             { return nil }
-func (s *testStore) JoinStream(_ context.Context, _, _ uuid.UUID) error              { return nil }
-func (s *testStore) LeaveStream(_ context.Context, _, _ uuid.UUID) error             { return nil }
+func (s *testStore) UpdateViewerCount(_ context.Context, _ uuid.UUID, _ int) error    { return nil }
+func (s *testStore) IncrementLikes(_ context.Context, _ uuid.UUID) error              { return nil }
+func (s *testStore) JoinStream(_ context.Context, _, _ uuid.UUID) error               { return nil }
+func (s *testStore) LeaveStream(_ context.Context, _, _ uuid.UUID) error              { return nil }
 func (s *testStore) GetActiveViewerCount(_ context.Context, _ uuid.UUID) (int, error) { return 1, nil }
 func (s *testStore) SendChatMessage(_ context.Context, _ *postgres.ChatMessage) error { return nil }
+func (s *testStore) GetChatMessage(_ context.Context, _ uuid.UUID) (*postgres.ChatMessage, error) {
+	return &postgres.ChatMessage{
+		ID:       uuid.New(),
+		StreamID: uuid.New(),
+	}, nil
+}
 func (s *testStore) GetChatMessages(_ context.Context, _ uuid.UUID, _ int, _ *time.Time) ([]postgres.ChatMessage, error) {
 	return nil, nil
 }
@@ -118,10 +126,26 @@ func (s *testStore) GetStreamByKey(_ context.Context, _ string) (*postgres.Strea
 	return nil, postgres.ErrNotFound
 }
 func (s *testStore) ListLiveStreams(_ context.Context, _, _ int) ([]postgres.Stream, error) {
-	return nil, nil
+	streams := make([]postgres.Stream, 0, len(s.streams))
+	for _, st := range s.streams {
+		if st.Status != "live" {
+			continue
+		}
+		cp := *st
+		streams = append(streams, cp)
+	}
+	return streams, nil
 }
-func (s *testStore) ListHostStreams(_ context.Context, _ uuid.UUID, _, _ int) ([]postgres.Stream, error) {
-	return nil, nil
+func (s *testStore) ListHostStreams(_ context.Context, hostID uuid.UUID, _, _ int) ([]postgres.Stream, error) {
+	streams := make([]postgres.Stream, 0, len(s.streams))
+	for _, st := range s.streams {
+		if st.HostID != hostID {
+			continue
+		}
+		cp := *st
+		streams = append(streams, cp)
+	}
+	return streams, nil
 }
 
 // --- Mutes ---
@@ -231,7 +255,7 @@ func (s *testStore) UpdateAudioRoomStatus(_ context.Context, _ uuid.UUID, _ stri
 	return nil
 }
 func (s *testStore) JoinAudioRoom(_ context.Context, _, _ uuid.UUID, _ string) error { return nil }
-func (s *testStore) LeaveAudioRoom(_ context.Context, _, _ uuid.UUID) error           { return nil }
+func (s *testStore) LeaveAudioRoom(_ context.Context, _, _ uuid.UUID) error          { return nil }
 func (s *testStore) GetAudioRoomMembers(_ context.Context, _ uuid.UUID) ([]postgres.AudioRoomMember, error) {
 	return nil, nil
 }
@@ -247,6 +271,10 @@ func (s *testStore) ListLiveAudioRooms(_ context.Context, _ int) ([]postgres.Aud
 // Because the test is in package service (not package service_test), it can
 // directly assign the unexported store field.
 func newServiceWithStore(ts *testStore) *Service {
+	return newServiceWithStoreAndConfig(ts, StreamMediaConfig{})
+}
+
+func newServiceWithStoreAndConfig(ts *testStore, cfg StreamMediaConfig) *Service {
 	// Build a no-op Kafka writer (will not establish a connection during tests)
 	w := &kafka.Writer{
 		Addr:     kafka.TCP("localhost:9092"),
@@ -254,8 +282,9 @@ func newServiceWithStore(ts *testStore) *Service {
 		Balancer: &kafka.LeastBytes{},
 	}
 	return &Service{
-		store:  ts,
-		writer: w,
+		store:       ts,
+		writer:      w,
+		mediaConfig: cfg.withDefaults(),
 	}
 }
 
@@ -529,5 +558,173 @@ func TestGuestStateTransitions(t *testing.T) {
 	}
 	if ts.guestStatuses[ts.guestKey(st.ID, guestID2)] != "declined" {
 		t.Errorf("expected declined status, got %q", ts.guestStatuses[ts.guestKey(st.ID, guestID2)])
+	}
+}
+
+func TestGetStreamDecoratesPlaybackAndIngestForHost(t *testing.T) {
+	ctx := context.Background()
+	ts := newTestStore()
+	hostID := uuid.New()
+	st := mustLiveStream(ts, hostID)
+
+	svc := newServiceWithStoreAndConfig(ts, StreamMediaConfig{
+		PlaybackURLTemplate: "https://stream.cleestudio.com/live/{stream_id}/index.m3u8",
+		IngestURL:           "rtmps://stream.cleestudio.com/live",
+	})
+
+	got, err := svc.GetStream(ctx, st.ID)
+	if err != nil {
+		t.Fatalf("GetStream failed: %v", err)
+	}
+
+	if got.PlaybackURL == nil {
+		t.Fatal("expected playback URL to be populated for a live stream")
+	}
+	if want := "https://stream.cleestudio.com/live/" + st.ID.String() + "/index.m3u8"; *got.PlaybackURL != want {
+		t.Fatalf("expected playback URL %q, got %q", want, *got.PlaybackURL)
+	}
+	if strings.Contains(*got.PlaybackURL, st.StreamKey) {
+		t.Fatalf("playback URL must not leak the secret stream key: %q", *got.PlaybackURL)
+	}
+	if got.PlaybackProtocol == nil || *got.PlaybackProtocol != "hls" {
+		t.Fatalf("expected playback protocol hls, got %#v", got.PlaybackProtocol)
+	}
+	if got.IngestURL == nil || *got.IngestURL != "rtmps://stream.cleestudio.com/live" {
+		t.Fatalf("expected ingest URL to be exposed to the host, got %#v", got.IngestURL)
+	}
+	if got.IngestProtocol == nil || *got.IngestProtocol != "rtmp" {
+		t.Fatalf("expected ingest protocol rtmp, got %#v", got.IngestProtocol)
+	}
+}
+
+func TestListHostStreamsDecoratesWithoutLeakingSecretsIntoPlayback(t *testing.T) {
+	ctx := context.Background()
+	ts := newTestStore()
+	hostID := uuid.New()
+	st := mustLiveStream(ts, hostID)
+
+	svc := newServiceWithStoreAndConfig(ts, StreamMediaConfig{
+		PlaybackBaseURL: "https://stream.cleestudio.com/live",
+		IngestURL:       "rtmps://stream.cleestudio.com/live",
+	})
+
+	streams, err := svc.ListHostStreams(ctx, hostID, 10, 0)
+	if err != nil {
+		t.Fatalf("ListHostStreams failed: %v", err)
+	}
+	if len(streams) != 1 {
+		t.Fatalf("expected one host stream, got %d", len(streams))
+	}
+
+	got := streams[0]
+	if got.StreamKey != st.StreamKey {
+		t.Fatalf("expected host list to retain stream key, got %q", got.StreamKey)
+	}
+	if got.PlaybackURL == nil || strings.Contains(*got.PlaybackURL, st.StreamKey) {
+		t.Fatalf("expected public playback URL without stream key, got %#v", got.PlaybackURL)
+	}
+	if got.IngestURL == nil {
+		t.Fatal("expected host list item to include ingest URL")
+	}
+}
+
+func TestEndedStreamOmitsActiveTransportFields(t *testing.T) {
+	ctx := context.Background()
+	ts := newTestStore()
+	hostID := uuid.New()
+	st := mustEndedStream(ts, hostID)
+	replayURL := "https://cdn.cleestudio.com/replays/" + st.ID.String() + ".m3u8"
+	st.ReplayURL = &replayURL
+
+	svc := newServiceWithStoreAndConfig(ts, StreamMediaConfig{
+		PlaybackBaseURL: "https://stream.cleestudio.com/live",
+		IngestURL:       "rtmps://stream.cleestudio.com/live",
+	})
+
+	got, err := svc.GetStream(ctx, st.ID)
+	if err != nil {
+		t.Fatalf("GetStream failed: %v", err)
+	}
+	if got.PlaybackURL != nil {
+		t.Fatalf("expected ended stream to omit playback URL, got %q", *got.PlaybackURL)
+	}
+	if got.IngestURL != nil {
+		t.Fatalf("expected ended stream to omit ingest URL, got %q", *got.IngestURL)
+	}
+	if got.ReplayURL == nil || *got.ReplayURL != replayURL {
+		t.Fatalf("expected replay URL to be preserved, got %#v", got.ReplayURL)
+	}
+}
+
+func TestListLiveStreamsUsesPublicStreamIDPlaybackURL(t *testing.T) {
+	ctx := context.Background()
+	ts := newTestStore()
+	hostID := uuid.New()
+	st := mustLiveStream(ts, hostID)
+
+	svc := newServiceWithStoreAndConfig(ts, StreamMediaConfig{
+		PlaybackURLTemplate: "https://cleestudio.com/v1/live/streams/{stream_id}/playback/index.m3u8",
+	})
+
+	streams, err := svc.ListLiveStreams(ctx, 10, 0)
+	if err != nil {
+		t.Fatalf("ListLiveStreams failed: %v", err)
+	}
+	if len(streams) != 1 {
+		t.Fatalf("expected one live stream, got %d", len(streams))
+	}
+
+	got := streams[0]
+	if got.PlaybackURL == nil {
+		t.Fatal("expected playback URL to be populated")
+	}
+	if want := "https://cleestudio.com/v1/live/streams/" + st.ID.String() + "/playback/index.m3u8"; *got.PlaybackURL != want {
+		t.Fatalf("expected playback URL %q, got %q", want, *got.PlaybackURL)
+	}
+	if strings.Contains(*got.PlaybackURL, st.StreamKey) {
+		t.Fatalf("public playback URL must not leak stream key, got %q", *got.PlaybackURL)
+	}
+	if got.StreamKey != "" {
+		t.Fatalf("expected public live list to scrub stream key, got %q", got.StreamKey)
+	}
+}
+
+func TestResolvePlaybackAssetURLUsesInternalOriginAndSecretKey(t *testing.T) {
+	ctx := context.Background()
+	ts := newTestStore()
+	hostID := uuid.New()
+	st := mustLiveStream(ts, hostID)
+
+	svc := newServiceWithStoreAndConfig(ts, StreamMediaConfig{
+		PlaybackURLTemplate:     "https://cleestudio.com/v1/live/streams/{stream_id}/playback/index.m3u8",
+		PlaybackInternalBaseURL: "http://mediamtx:8888",
+	})
+
+	target, err := svc.ResolvePlaybackAssetURL(ctx, st.ID, "/segment-001.ts")
+	if err != nil {
+		t.Fatalf("ResolvePlaybackAssetURL failed: %v", err)
+	}
+
+	if want := "http://mediamtx:8888/" + st.StreamKey + "/segment-001.ts"; target.String() != want {
+		t.Fatalf("expected internal playback asset URL %q, got %q", want, target.String())
+	}
+	if strings.Contains(target.String(), st.ID.String()) {
+		t.Fatalf("internal playback asset URL should resolve by stream key, got %q", target.String())
+	}
+}
+
+func TestResolvePlaybackAssetURLRejectsTraversal(t *testing.T) {
+	ctx := context.Background()
+	ts := newTestStore()
+	hostID := uuid.New()
+	st := mustLiveStream(ts, hostID)
+
+	svc := newServiceWithStoreAndConfig(ts, StreamMediaConfig{
+		PlaybackInternalBaseURL: "http://mediamtx:8888",
+	})
+
+	_, err := svc.ResolvePlaybackAssetURL(ctx, st.ID, "/../secret.txt")
+	if !errors.Is(err, ErrInvalidPlaybackAssetPath) {
+		t.Fatalf("expected ErrInvalidPlaybackAssetPath, got %v", err)
 	}
 }

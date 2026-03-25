@@ -41,12 +41,18 @@ type ChannelUpdateConsumer struct {
 
 // NewChannelUpdateConsumer creates a consumer for channel update feed injection.
 func NewChannelUpdateConsumer(brokers []string, timelineStore *scylla.TimelineStore, rdb *redis.Client) *ChannelUpdateConsumer {
+	return NewChannelUpdateConsumerWithDialer(brokers, timelineStore, rdb, nil)
+}
+
+// NewChannelUpdateConsumerWithDialer creates a consumer for channel update feed injection.
+func NewChannelUpdateConsumerWithDialer(brokers []string, timelineStore *scylla.TimelineStore, rdb *redis.Client, dialer *kafka.Dialer) *ChannelUpdateConsumer {
 	reader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:  brokers,
 		GroupID:  "feed-channel-inject-group",
 		Topic:    "atpost.channel.feed-inject",
 		MinBytes: 10e3, // 10KB
 		MaxBytes: 10e6, // 10MB
+		Dialer:   dialer,
 	})
 	return &ChannelUpdateConsumer{
 		reader:        reader,

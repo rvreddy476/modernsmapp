@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"strings"
 	"time"
 
+	"github.com/atpost/shared/transport"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	kafka "github.com/segmentio/kafka-go"
@@ -50,12 +52,23 @@ func New(db *pgxpool.Pool, cfg Config) *Publisher {
 
 // Run starts the polling loop; blocks until ctx is cancelled.
 func (p *Publisher) Run(ctx context.Context) {
-	writer := &kafka.Writer{
-		Addr:         kafka.TCP(p.cfg.KafkaBrokers),
+	dialer, err := transport.KafkaDialerFromEnv()
+	if err != nil {
+		slog.Error("outbox publisher kafka config invalid", "table", p.table, "error", err)
+		return
+	}
+	brokers := splitAndClean(p.cfg.KafkaBrokers)
+	if len(brokers) == 0 {
+		slog.Error("outbox publisher kafka brokers not configured", "table", p.table)
+		return
+	}
+	writer := kafka.NewWriter(kafka.WriterConfig{
+		Brokers:      brokers,
 		Topic:        p.cfg.DefaultTopic,
 		Balancer:     &kafka.LeastBytes{},
-		RequiredAcks: kafka.RequireOne,
-	}
+		RequiredAcks: int(kafka.RequireOne),
+		Dialer:       dialer,
+	})
 	defer writer.Close()
 
 	ticker := time.NewTicker(p.cfg.PollInterval)
@@ -173,4 +186,16 @@ func (q *Queuer) EnqueuePool(ctx context.Context, db *pgxpool.Pool, eventType, p
 		eventType, partitionKey, payload,
 	)
 	return err
+}
+
+func splitAndClean(raw string) []string {
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }

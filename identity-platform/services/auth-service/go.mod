@@ -3,10 +3,10 @@ module github.com/atpost/identity-auth-service
 go 1.24.0
 
 require (
+	github.com/atpost/identity-shared v0.0.0
 	github.com/gin-gonic/gin v1.9.1
 	github.com/golang-jwt/jwt/v5 v5.2.1
 	github.com/google/uuid v1.6.0
-	github.com/atpost/identity-shared v0.0.0
 	github.com/jackc/pgx/v5 v5.5.3
 	github.com/pquerna/otp v1.4.0
 	github.com/redis/go-redis/v9 v9.5.1
@@ -43,6 +43,9 @@ require (
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.2.11 // indirect
+	github.com/xdg-go/pbkdf2 v1.0.0 // indirect
+	github.com/xdg-go/scram v1.1.2 // indirect
+	github.com/xdg-go/stringprep v1.0.4 // indirect
 	golang.org/x/arch v0.3.0 // indirect
 	golang.org/x/net v0.48.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect

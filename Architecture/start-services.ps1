@@ -11,9 +11,11 @@ $Env:KAFKA_BROKERS = "localhost:9092"
 $Env:SCYLLA_HOSTS = "localhost"
 $Env:MINIO_ENDPOINT = "localhost:9000"
 $Env:MINIO_ACCESS_KEY = "minio"
-$Env:MINIO_SECRET_KEY = "minio12345"
+$Env:MINIO_SECRET_KEY = "local_dev_minio_password_change_me"
 $Env:MINIO_BUCKET = "media"
 $Env:OPENSEARCH_URL = "http://localhost:9200"
+$Env:JWT_SECRET = "local_dev_jwt_change_me"
+$Env:INTERNAL_SERVICE_KEY = "local_dev_internal_service_key_change_me"
 
 # Function to start a service in a new window
 function Start-ServiceWindow {

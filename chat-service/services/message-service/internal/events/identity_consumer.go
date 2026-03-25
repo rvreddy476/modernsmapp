@@ -47,6 +47,10 @@ type IdentityConsumer struct {
 }
 
 func NewIdentityConsumer(brokers []string, topic, groupID string, store ProfileUpserter, logger *slog.Logger) *IdentityConsumer {
+	return NewIdentityConsumerWithDialer(brokers, topic, groupID, nil, store, logger)
+}
+
+func NewIdentityConsumerWithDialer(brokers []string, topic, groupID string, dialer *kafka.Dialer, store ProfileUpserter, logger *slog.Logger) *IdentityConsumer {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -54,6 +58,7 @@ func NewIdentityConsumer(brokers []string, topic, groupID string, store ProfileU
 		Brokers: brokers,
 		Topic:   topic,
 		GroupID: groupID,
+		Dialer:  dialer,
 	})
 	return &IdentityConsumer{reader: r, store: store, log: logger}
 }

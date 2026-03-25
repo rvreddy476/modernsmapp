@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/post-service/database"
 	"github.com/atpost/post-service/internal/engagement"
 	"github.com/atpost/post-service/internal/engagement/consumers"
 	postEvents "github.com/atpost/post-service/internal/events"
@@ -19,10 +20,10 @@ import (
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
 	"github.com/atpost/shared/server"
+	"github.com/atpost/shared/transport"
 	"github.com/gin-gonic/gin"
 	"github.com/gocql/gocql"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -51,6 +52,12 @@ func main() {
 	}
 	slog.Info("connected to postgres")
 
+	if err := postgres.BootstrapSchema(ctx, dbPool, database.SetupSQL); err != nil {
+		slog.Error("failed to bootstrap post schema", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("post schema ready")
+
 	// Auto-migrate engagement tables (idempotent -- uses IF NOT EXISTS)
 	ensureSchema(ctx, dbPool)
 
@@ -72,15 +79,23 @@ func main() {
 	}
 
 	// 5. Redis
-	rdb := redis.NewClient(&redis.Options{
-		Addr: redisAddr,
-	})
+	rdb, err := transport.NewRedisClientFromEnv(redisAddr)
+	if err != nil {
+		slog.Error("failed to configure redis client", "error", err)
+		os.Exit(1)
+	}
 	if err := rdb.Ping(ctx).Err(); err != nil {
 		slog.Error("redis ping failed", "error", err)
 		os.Exit(1)
 	}
 	defer rdb.Close()
 	slog.Info("connected to redis")
+
+	kafkaDialer, err := transport.KafkaDialerFromEnv()
+	if err != nil {
+		slog.Error("failed to configure kafka dialer", "error", err)
+		os.Exit(1)
+	}
 
 	// 6. Dependencies
 	pgStore := postgres.New(dbPool)
@@ -89,11 +104,11 @@ func main() {
 
 	// 7. Kafka producers
 	brokers := strings.Split(kafkaBrokers, ",")
-	legacyProducer := postEvents.NewProducer(brokers, "social.events.v1")
+	legacyProducer := postEvents.NewProducerWithDialer(brokers, "social.events.v1", kafkaDialer)
 	defer legacyProducer.Close()
 	postSvc.SetProducer(legacyProducer)
 
-	engProducer := engagement.NewProducer(brokers, "social.events.v1")
+	engProducer := engagement.NewProducerWithDialer(brokers, "social.events.v1", kafkaDialer)
 	defer engProducer.Close()
 	postSvc.SetEngagementProducer(engProducer)
 	postSvc.SetScyllaSession(scyllaSession)
@@ -121,13 +136,13 @@ func main() {
 	engTopic := "social.events.v1"
 
 	scyllaConsumer := consumers.NewScyllaLikeConsumer(scyllaSession, rdb)
-	go scyllaConsumer.Start(consumerCtx, brokers, engTopic)
+	go scyllaConsumer.Start(consumerCtx, brokers, engTopic, kafkaDialer)
 
 	pgCounterConsumer := consumers.NewPGCounterConsumer(dbPool, rdb)
-	go pgCounterConsumer.Start(consumerCtx, brokers, engTopic)
+	go pgCounterConsumer.Start(consumerCtx, brokers, engTopic, kafkaDialer)
 
 	wsBroadcaster := consumers.NewWSBroadcasterConsumer(rdb)
-	go wsBroadcaster.Start(consumerCtx, brokers, engTopic)
+	go wsBroadcaster.Start(consumerCtx, brokers, engTopic, kafkaDialer)
 
 	reelAnalytics := consumers.NewReelAnalyticsConsumer(dbPool, rdb)
 	go reelAnalytics.Start(consumerCtx, brokers, engTopic)

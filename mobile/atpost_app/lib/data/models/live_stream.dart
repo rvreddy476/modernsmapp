@@ -5,6 +5,10 @@ class LiveStream {
   final String description;
   final String? thumbnailUrl;
   final String? streamKey;
+  final String? ingestUrl;
+  final String? ingestProtocol;
+  final String? playbackUrl;
+  final String? playbackProtocol;
   final String? replayUrl;
   final String status;
   final String visibility;
@@ -24,6 +28,10 @@ class LiveStream {
     required this.description,
     this.thumbnailUrl,
     this.streamKey,
+    this.ingestUrl,
+    this.ingestProtocol,
+    this.playbackUrl,
+    this.playbackProtocol,
     this.replayUrl,
     required this.status,
     required this.visibility,
@@ -45,6 +53,10 @@ class LiveStream {
       description: json['description'] as String? ?? '',
       thumbnailUrl: json['thumbnail_url'] as String?,
       streamKey: json['stream_key'] as String?,
+      ingestUrl: json['ingest_url'] as String?,
+      ingestProtocol: json['ingest_protocol'] as String?,
+      playbackUrl: json['playback_url'] as String?,
+      playbackProtocol: json['playback_protocol'] as String?,
       replayUrl: json['replay_url'] as String?,
       status: json['status'] as String? ?? 'idle',
       visibility: json['visibility'] as String? ?? 'public',
@@ -60,6 +72,53 @@ class LiveStream {
   }
 
   bool get isLive => status == 'live';
+  bool get isEnded => status == 'ended';
+  bool get hasLivePlayback => (playbackUrl ?? '').isNotEmpty;
+  bool get hasReplay => (replayUrl ?? '').isNotEmpty;
+  String? get preferredVideoUrl => isLive
+      ? hasLivePlayback
+            ? playbackUrl
+            : hasReplay
+            ? replayUrl
+            : null
+      : hasReplay
+      ? replayUrl
+      : hasLivePlayback
+      ? playbackUrl
+      : null;
+
+  LiveStream copyWith({
+    String? status,
+    int? peakViewers,
+    int? totalViewers,
+    int? likeCount,
+    DateTime? endedAt,
+    DateTime? updatedAt,
+  }) {
+    return LiveStream(
+      id: id,
+      hostId: hostId,
+      title: title,
+      description: description,
+      thumbnailUrl: thumbnailUrl,
+      streamKey: streamKey,
+      ingestUrl: ingestUrl,
+      ingestProtocol: ingestProtocol,
+      playbackUrl: playbackUrl,
+      playbackProtocol: playbackProtocol,
+      replayUrl: replayUrl,
+      status: status ?? this.status,
+      visibility: visibility,
+      peakViewers: peakViewers ?? this.peakViewers,
+      totalViewers: totalViewers ?? this.totalViewers,
+      likeCount: likeCount ?? this.likeCount,
+      startedAt: startedAt,
+      endedAt: endedAt ?? this.endedAt,
+      durationSeconds: durationSeconds,
+      createdAt: createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
+    );
+  }
 }
 
 class LiveChatMessage {
@@ -81,12 +140,66 @@ class LiveChatMessage {
 
   factory LiveChatMessage.fromJson(Map<String, dynamic> json) {
     return LiveChatMessage(
-      id: json['id'] as String? ?? '',
+      id: json['id'] as String? ?? json['message_id'] as String? ?? '',
       streamId: json['stream_id'] as String? ?? '',
       userId: json['user_id'] as String? ?? '',
       message: json['message'] as String? ?? '',
       isPinned: json['is_pinned'] as bool? ?? false,
       createdAt: _parseDateTime(json['created_at']) ?? DateTime.now(),
+    );
+  }
+
+  LiveChatMessage copyWith({bool? isPinned}) {
+    return LiveChatMessage(
+      id: id,
+      streamId: streamId,
+      userId: userId,
+      message: message,
+      isPinned: isPinned ?? this.isPinned,
+      createdAt: createdAt,
+    );
+  }
+}
+
+class LiveMute {
+  final String streamId;
+  final String userId;
+  final String mutedBy;
+  final DateTime mutedAt;
+
+  const LiveMute({
+    required this.streamId,
+    required this.userId,
+    required this.mutedBy,
+    required this.mutedAt,
+  });
+
+  factory LiveMute.fromJson(Map<String, dynamic> json) {
+    return LiveMute(
+      streamId: json['stream_id'] as String? ?? '',
+      userId: json['user_id'] as String? ?? '',
+      mutedBy: json['muted_by'] as String? ?? '',
+      mutedAt: _parseDateTime(json['muted_at']) ?? DateTime.now(),
+    );
+  }
+}
+
+class LiveWordFilter {
+  final String streamId;
+  final String word;
+  final String addedBy;
+
+  const LiveWordFilter({
+    required this.streamId,
+    required this.word,
+    required this.addedBy,
+  });
+
+  factory LiveWordFilter.fromJson(Map<String, dynamic> json) {
+    return LiveWordFilter(
+      streamId: json['stream_id'] as String? ?? '',
+      word: json['word'] as String? ?? '',
+      addedBy: json['added_by'] as String? ?? '',
     );
   }
 }

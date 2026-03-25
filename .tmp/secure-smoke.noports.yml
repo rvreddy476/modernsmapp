@@ -1,0 +1,73 @@
+services:
+  postgres:
+    ports: !reset []
+
+  redis:
+    ports: !reset []
+
+  scylla:
+    ports: !reset []
+
+  redpanda:
+    ports: !reset []
+
+  mediamtx:
+    ports: !reset []
+
+  identity-auth:
+    ports: !reset []
+
+  identity-user:
+    ports: !reset []
+
+  identity-profile:
+    ports: !reset []
+
+  graph-service:
+    ports: !reset []
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  post-service:
+    ports: !reset []
+    environment:
+      SCYLLA_HOSTS: host.docker.internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  chat-message-service:
+    ports: !reset []
+    environment:
+      SCYLLA_HOSTS: host.docker.internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  feed-service:
+    environment:
+      SCYLLA_HOSTS: host.docker.internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  notification-service:
+    environment:
+      SCYLLA_HOSTS: host.docker.internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  analytics-service:
+    environment:
+      SCYLLA_HOSTS: host.docker.internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  suggestion-service:
+    environment:
+      SCYLLA_HOSTS: host.docker.internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  chat-ws-gateway:
+    ports: !reset []
+
+  live-service:
+    ports: !reset []

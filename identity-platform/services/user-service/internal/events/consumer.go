@@ -28,6 +28,10 @@ const userConsumerName = "user-service"
 
 // NewConsumer constructs a Kafka consumer for the user-service.
 func NewConsumer(brokers []string, topic, groupID string, db *pgxpool.Pool, handler UserHandler, logger *slog.Logger) *Consumer {
+	return NewConsumerWithDialer(brokers, topic, groupID, nil, db, handler, logger)
+}
+
+func NewConsumerWithDialer(brokers []string, topic, groupID string, dialer *kafka.Dialer, db *pgxpool.Pool, handler UserHandler, logger *slog.Logger) *Consumer {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -35,6 +39,7 @@ func NewConsumer(brokers []string, topic, groupID string, db *pgxpool.Pool, hand
 		Brokers: brokers,
 		Topic:   topic,
 		GroupID: groupID,
+		Dialer:  dialer,
 	})
 	return &Consumer{reader: r, db: db, handler: handler, log: logger}
 }

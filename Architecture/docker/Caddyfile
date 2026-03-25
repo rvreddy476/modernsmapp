@@ -1,5 +1,5 @@
 {$DOMAIN:localhost} {
-	# ── Frontend (Next.js) ──
+	# Frontend (Next.js)
 	handle / {
 		reverse_proxy nextjs:3000
 	}
@@ -10,23 +10,23 @@
 		reverse_proxy nextjs:3000
 	}
 
-	# ── WebSocket gateway (upgrade-aware) ──
+	# WebSocket gateway
 	handle /v1/ws/* {
 		reverse_proxy chat-ws-gateway:8093
 	}
 
-	# ── MinIO object storage (media files) ──
+	# MinIO object storage
 	handle /storage/* {
 		uri strip_prefix /storage
 		reverse_proxy minio:9000
 	}
 
-	# ── API Gateway (all /v1/* routes) ──
+	# API gateway
 	handle /v1/* {
 		reverse_proxy api-gateway:8080
 	}
 
-	# ── Everything else → frontend ──
+	# Everything else -> frontend
 	handle {
 		reverse_proxy nextjs:3000
 	}

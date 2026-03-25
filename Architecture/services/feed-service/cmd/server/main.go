@@ -19,10 +19,10 @@ import (
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
 	"github.com/atpost/shared/server"
+	"github.com/atpost/shared/transport"
 	"github.com/gin-gonic/gin"
 	"github.com/gocql/gocql"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -64,15 +64,23 @@ func main() {
 	slog.Info("connected to scylladb")
 
 	// 5. Redis
-	rdb := redis.NewClient(&redis.Options{
-		Addr: redisAddr,
-	})
+	rdb, err := transport.NewRedisClientFromEnv(redisAddr)
+	if err != nil {
+		slog.Error("failed to configure redis client", "error", err)
+		os.Exit(1)
+	}
 	if err := rdb.Ping(ctx).Err(); err != nil {
 		slog.Error("redis ping failed", "error", err)
 		os.Exit(1)
 	}
 	defer rdb.Close()
 	slog.Info("connected to redis")
+
+	kafkaDialer, err := transport.KafkaDialerFromEnv()
+	if err != nil {
+		slog.Error("failed to configure kafka dialer", "error", err)
+		os.Exit(1)
+	}
 
 	// 6. Prometheus metrics
 	httpMetrics := metrics.NewHTTPMetrics("feed-service")
@@ -120,22 +128,24 @@ func main() {
 	feedHandler := http.New(feedSvc)
 
 	// 11. Kafka Consumer (now also handles PostReacted and CommentCreated)
-	consumer := events.NewConsumer(
+	consumer := events.NewConsumerWithDialer(
 		[]string{kafkaBrokers},
 		"feed-service-group",
 		"social.events.v1",
 		feedSvc,
 		rdb,
 		timelineStore,
+		kafkaDialer,
 	)
 	go consumer.Start(ctx)
 	defer consumer.Close()
 
 	// 11b. Channel update feed-inject consumer
-	channelConsumer := consumers.NewChannelUpdateConsumer(
+	channelConsumer := consumers.NewChannelUpdateConsumerWithDialer(
 		[]string{kafkaBrokers},
 		timelineStore,
 		rdb,
+		kafkaDialer,
 	)
 	go channelConsumer.Start(ctx)
 	defer channelConsumer.Close()

@@ -38,6 +38,12 @@ type HydratedPost struct {
 	ShareToPostbook bool            `json:"share_to_postbook"`
 	Score           float64         `json:"score,omitempty"`
 	VideoMetadata   json.RawMessage `json:"video_metadata,omitempty"`
+	RichText        json.RawMessage `json:"rich_text,omitempty"`
+
+	// Repost metadata — populated when this entry is a repost in someone's timeline
+	IsRepost        bool       `json:"is_repost,omitempty"`
+	RepostedBy      *uuid.UUID `json:"reposted_by,omitempty"`
+	FeedContentType string     `json:"feed_content_type,omitempty"` // "post", "repost", "reel", etc.
 }
 
 // HydratePosts calls post-service's batch endpoint to enrich timeline entries
@@ -101,11 +107,15 @@ func (s *Service) HydratePosts(ctx context.Context, items []FeedItem, viewerID u
 		return nil, fmt.Errorf("unmarshal batch response: %w", err)
 	}
 
-	// 5. Merge: preserve feed ordering, attach ranking score, skip missing/duplicate posts
+	// 5. Merge: preserve feed ordering, attach ranking score, skip missing posts.
+	// Reposts are allowed through even if the original post already appeared
+	// (a repost is a distinct feed event — "User X reposted this").
 	hydrated := make([]HydratedPost, 0, len(items))
 	emitted := make(map[uuid.UUID]bool, len(items))
 	for _, item := range items {
-		if emitted[item.PostID] {
+		isRepost := item.ContentType == "repost"
+		// Deduplicate regular posts but allow reposts of already-seen posts
+		if emitted[item.PostID] && !isRepost {
 			continue
 		}
 		post, ok := envelope.Data[item.PostID.String()]
@@ -114,6 +124,12 @@ func (s *Service) HydratePosts(ctx context.Context, items []FeedItem, viewerID u
 			continue
 		}
 		post.Score = item.Score
+		post.FeedContentType = item.ContentType
+		if isRepost {
+			post.IsRepost = true
+			authorID := item.AuthorID // reposter's ID
+			post.RepostedBy = &authorID
+		}
 		hydrated = append(hydrated, post)
 		emitted[item.PostID] = true
 	}

@@ -87,6 +87,11 @@ func ConsumerLoop(ctx context.Context, reader *kafka.Reader, base *BaseConsumer,
 
 // NewKafkaReader creates a Kafka reader for a consumer group on the engagement topic.
 func NewKafkaReader(brokers []string, topic, groupID string) *kafka.Reader {
+	return NewKafkaReaderWithDialer(brokers, topic, groupID, nil)
+}
+
+// NewKafkaReaderWithDialer creates a Kafka reader with an explicit dialer.
+func NewKafkaReaderWithDialer(brokers []string, topic, groupID string, dialer *kafka.Dialer) *kafka.Reader {
 	return kafka.NewReader(kafka.ReaderConfig{
 		Brokers:        brokers,
 		Topic:          topic,
@@ -95,5 +100,6 @@ func NewKafkaReader(brokers []string, topic, groupID string) *kafka.Reader {
 		MaxBytes:       10e6,
 		CommitInterval: time.Second,
 		StartOffset:    kafka.LastOffset,
+		Dialer:         dialer,
 	})
 }

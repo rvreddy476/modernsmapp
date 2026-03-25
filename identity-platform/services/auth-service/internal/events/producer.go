@@ -16,12 +16,16 @@ type Producer struct {
 }
 
 func NewProducer(brokers []string, topic string) *Producer {
-	w := &kafka.Writer{
-		Addr:     kafka.TCP(brokers...),
+	return NewProducerWithDialer(brokers, topic, nil)
+}
+
+func NewProducerWithDialer(brokers []string, topic string, dialer *kafka.Dialer) *Producer {
+	return &Producer{writer: kafka.NewWriter(kafka.WriterConfig{
+		Brokers:  brokers,
 		Topic:    topic,
 		Balancer: &kafka.LeastBytes{},
-	}
-	return &Producer{writer: w}
+		Dialer:   dialer,
+	})}
 }
 
 func (p *Producer) PublishUserRegistered(ctx context.Context, userID uuid.UUID, phone string, email *string, firstName, lastName, dob, gender string) error {

@@ -378,7 +378,7 @@ func (s *Store) FindScheduledStreamsForReminder(ctx context.Context, windowMinut
 		WHERE stream_id IS NULL
 		  AND reminder_sent = FALSE
 		  AND scheduled_at > NOW()
-		  AND scheduled_at <= NOW() + ($1 || ' minutes')::INTERVAL
+		  AND scheduled_at <= NOW() + ($1 * INTERVAL '1 minute')
 	`, windowMinutes)
 	if err != nil {
 		return nil, err
@@ -444,7 +444,7 @@ func (s *Store) EndStaleViewerSessions(ctx context.Context, maxAgeHours int) (in
 		SET left_at = NOW(),
 		    duration_secs = EXTRACT(EPOCH FROM (NOW() - joined_at))::int
 		WHERE left_at IS NULL
-		  AND joined_at < NOW() - ($1 || ' hours')::INTERVAL
+		  AND joined_at < NOW() - ($1 * INTERVAL '1 hour')
 	`, maxAgeHours)
 	if err != nil {
 		return 0, err
@@ -459,7 +459,7 @@ func (s *Store) EndIdleAudioRooms(ctx context.Context, idleMinutes int) ([]uuid.
 		SET status = 'ended', ended_at = NOW()
 		WHERE status = 'live'
 		  AND listener_count = 0
-		  AND started_at < NOW() - ($1 || ' minutes')::INTERVAL
+		  AND started_at < NOW() - ($1 * INTERVAL '1 minute')
 		RETURNING id
 	`, idleMinutes)
 	if err != nil {

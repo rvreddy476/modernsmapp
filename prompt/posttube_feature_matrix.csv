@@ -1,0 +1,55 @@
+Area,Feature,Backend evidence,UI evidence,Status,Notes
+Discovery,PostTube home feed,"feed-service /v1/feed/videos, /v1/feed/flicks",src/features/posttube/components/HomePage.tsx + usePosttubeHome,Implemented,Home page loads long videos + flicks from dedicated PostTube endpoints.
+Discovery,Flicks feed,feed-service GetFlickFeed,getFlicksFeed + FlicksRow,Implemented,Dedicated flick feed is wired.
+Discovery,Long video feed,feed-service GetLongVideoFeed,getLongVideosFeed + VideoCard grid,Implemented,Dedicated long-video feed is wired.
+Discovery,Recommended / related videos,feed-service /v1/feed/reels used as recommended source,WatchPage sidebar via getCategoryFeed('recommended'),Implemented,"Basic related videos surface exists, recommendation quality not assessed."
+Discovery,Search / trending / suggestions,"search-service /v1/search, /v1/discover/trending, /v1/discover/suggested",useSearch / useSearchExtras / discover page,Implemented,Search and discovery plumbing exists.
+Watch,Video watch page,post-service /v1/posts/:postId,src/features/posttube/components/WatchPage.tsx,Implemented,Main watch surface loads post + video metadata.
+Watch,Trim-aware playback,post metadata includes trim_start_ms / trim_end_ms,WatchPage seeks to trim start and stops at trim end,Implemented,Playback respects saved trim metadata.
+Watch,Comments list/add/reply/edit/delete,post-service /v1/posts/:id/comments + /v1/comments/:id/*,CommentSection + usePostComments,Implemented,Full comment CRUD is wired.
+Watch,Comment like / dislike,post-service comment endpoints,useToggleCommentLike / useToggleCommentDislike,Implemented,Comment reactions are wired.
+Watch,Report video,post-service POST /v1/reports,useSubmitReport in WatchPage,Implemented,Reporting dialog is wired.
+Watch,Like / dislike / save / share buttons,Backend APIs exist in post-service and reelsApi helpers,WatchPage uses local state toggles only,Partial,Buttons visually work but are not wired on the PostTube watch page.
+Watch,Channel subscribe button on watch page,user-service /v1/channels/:id/subscribe exists,WatchPage toggles local subscribed state only,Partial,"Backend exists, watch page button is not wired."
+Upload,Media upload init + confirm,media-service /v1/media/init + /v1/media/confirm,reelsApi uploadMedia(),Implemented,3-step upload pipeline is wired.
+Upload,Upload progress UI,Media upload pipeline supports progress,VideoStep / useUploadStudio,Implemented,Client upload progress is shown.
+Upload,Draft create / update / publish,post-service /v1/reels/drafts/*,useUploadStudio createDraft/updateDraft/publishDraft,Implemented,Draft flow is wired.
+Upload,Processing status polling,Processing status endpoint used from reelsApi,useUploadStudio polling loop,Implemented,UI waits for media readiness.
+Upload,Custom cover image,Upload cover image through media pipeline,useUploadStudio custom cover flow,Implemented,Custom cover upload exists.
+Upload,Extract cover from video frame,cover upload path + local frame extraction,extractFrameClientSide + uploadCoverDataUrl,Implemented,Frame-based cover selection exists.
+Upload,Video classification flick vs long,Backend supports content_type; UI classifies before draft/save/publish,useUploadStudio classifyVideo(),Implemented,Auto classification is wired.
+Upload,Schedule publish,post-service PublishDraft accepts schedule_at,PublishStep + useUploadStudio,Partial,"Scheduling exists, but mainly through draft publish path."
+Upload,"Advanced metadata (kids, paid promotion, altered content, license, comments, remix, locations)",Draft/update payload supports many fields,Upload steps collect many fields,Partial,"Large set of metadata fields exists, but not all are visibly surfaced after publish."
+Studio,Trim controls UI,post-service PATCH /v1/videos/:id/trim,TrimControls component exists,Partial,Component exists but I did not find it mounted in a page.
+Studio,Category override UI,post-service PATCH /v1/videos/:id/category,CategoryOverride component exists,Partial,Component exists but I did not find it mounted in a page.
+Studio,Cover frame selector UI,post-service /v1/videos/:id/cover-frame + media suggested frames,CoverFrameSelector component exists,Partial,Component exists but I did not find it mounted in a page.
+Creator,My uploads dashboard,post-service /v1/uploads/videos|flicks|counts|DELETE,useMyUploads + /posttube/uploads,Implemented,My uploads surfaces are wired.
+Creator,Ensure publisher / auto channel creation,user-service POST /v1/onboarding/ensure-publisher,useEnsurePublisherOnMount,Implemented,User/channel onboarding is wired.
+Creator,Channel CRUD,user-service /v1/users/me/channels + /v1/channels/:id,useChannels + channel create/edit pages,Implemented,Channel creation and management are wired.
+Creator,Public channel page,user-service channel fetch + user channels,src/app/posttube/channel/[handle]/page.tsx and channel pages,Implemented,Channel pages exist.
+Creator,Channel settings,Backend channel CRUD exists,useChannelSettings uses /v1/channel/me + /v1/handle/check + /v1/handle/change,Partial,Settings UI exists but some routes do not match observed backend routes.
+Creator,Channel subscribe / subscriber lists,user-service subscribe/status/subscribers endpoints,No clear PostTube wiring found,Partial,Backend exists; PostTube UI wiring is incomplete.
+Playlist & Series,Playlists,post-service /v1/playlists/* + /v1/creators/:creatorId/playlists,No clear PostTube UI found,Backend only,Playlist backend exists but no obvious UI surface.
+Playlist & Series,Video series,post-service /v1/video-series/*,No clear PostTube UI found,Backend only,Video-series backend exists.
+Playlist & Series,Flick series,post-service /v1/series/*,No clear PostTube UI found,Backend only,Flick-series backend exists.
+Video tools,Chapters,post-service /v1/posts/:postId/chapters,No clear mounted UI found; upload has auto_chapters flag only,Backend only,Storage endpoints exist but author-facing UI is missing.
+Video tools,End screens,post-service /v1/posts/:postId/end-screens,No clear UI found,Backend only,Backend exists.
+Video tools,Video cards,post-service /v1/posts/:postId/cards,No clear UI found,Backend only,Backend exists.
+Watch history,Watch progress save / delete,post-service /v1/videos/:videoId/progress,No clear PostTube UI usage found,Backend only,Progress endpoints exist.
+Watch history,Continue watching,post-service /v1/videos/continue-watching,No clear PostTube UI usage found,Backend only,Endpoint exists but UI not found.
+Live,Live stream lifecycle,live-service /v1/live/streams*,src/app/live/start/page.tsx exists,Partial,"Backend is strong, but start page looks mostly static and not clearly wired."
+Live,Live chat / guests / polls / gifts / moderation,live-service has endpoints for all,No clear wired PostTube live UI found,Backend only,Advanced live backend exists.
+Analytics,Creator analytics dashboard,analytics-service /v1/analytics/dashboard/*,useCreatorAnalytics + /monetization/analytics page,Implemented,Overview/content/trend analytics are wired.
+Analytics,Event ingest / realtime views,analytics-service /v1/analytics/events + /content/:id/views,useVideoTracker exists; used on reels,Partial,"Analytics pipeline exists, but I did not see it wired into the PostTube watch page."
+Monetization,Wallet / transactions / payouts / payout methods,monetization-service /v1/monetization/*,useMonetization + monetization pages,Implemented,Core monetization dashboard and payout flows are wired.
+Monetization,Creator tiers / subscribe,monetization-service tier + subscribe endpoints,tiers page + SubscribeButton,Implemented,Tier management exists.
+Monetization,Tax profile,Backend has /v1/monetization/tax-profile and /tax-info,settings/tax-profile page calls /v1/users/me/tax-profile,Partial,Observed route mismatch likely breaks this settings page.
+Monetization,Affiliate links / conversions,monetization-service affiliate endpoints,No clear UI found,Backend only,Backend exists.
+Monetization,Fundraisers,monetization-service fundraiser endpoints,No clear UI found,Backend only,Backend exists.
+Monetization,Disputes / refunds / fraud review,monetization-service dispute/refund/fraud endpoints,No clear UI found,Backend only,Mainly backend/admin features right now.
+Media platform,Resumable upload,media-service /v1/media/upload/*,No clear UI found,Backend only,Backend exists for larger/reliable uploads.
+Media platform,Media slots,media-service /v1/media/slots/*,No clear UI found,Backend only,Useful for structured media attachment workflows.
+Media platform,Creative studio assets (stickers/templates/sessions),media-service /v1/media/studio/*,No clear UI found,Backend only,Studio backend exists.
+Media platform,Audio library / tracks,media-service /v1/audio* + post-service /v1/audio/tracks,No clear PostTube UI found,Backend only,Audio backend exists.
+Media platform,Subtitles,media-service /v1/subtitles,Upload step accepts subtitle file but no clear final wiring found,Partial,"UI asks for subtitle file, but end-to-end subtitle management is not obvious."
+Media platform,Clips,media-service /v1/clips,No clear UI found,Backend only,Clip backend exists.

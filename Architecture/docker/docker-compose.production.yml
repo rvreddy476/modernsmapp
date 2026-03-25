@@ -1,0 +1,225 @@
+x-transport-certs: &transport_certs
+  volumes:
+    - ${TRANSPORT_CERTS_DIR:?set TRANSPORT_CERTS_DIR}:/run/transport-certs:ro
+
+services:
+  postgres:
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+
+  redis:
+    <<: *transport_certs
+    entrypoint: ["/bin/sh", "/usr/local/bin/redis-secure-entrypoint.sh"]
+    volumes:
+      - ${TRANSPORT_CERTS_DIR:?set TRANSPORT_CERTS_DIR}:/run/transport-certs:ro
+      - ./redis/secure-entrypoint.sh:/usr/local/bin/redis-secure-entrypoint.sh:ro
+      - ./redis/healthcheck.sh:/usr/local/bin/redis-secure-healthcheck.sh:ro
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD}
+      REDIS_TLS_CERT_FILE: ${REDIS_TLS_CERT_FILE:?set REDIS_TLS_CERT_FILE}
+      REDIS_TLS_KEY_FILE: ${REDIS_TLS_KEY_FILE:?set REDIS_TLS_KEY_FILE}
+      REDIS_TLS_CA_CERT_FILE: ${REDIS_TLS_CA_CERT_FILE:?set REDIS_TLS_CA_CERT_FILE}
+      REDIS_TLS_AUTH_CLIENTS: ${REDIS_TLS_AUTH_CLIENTS:-no}
+    healthcheck:
+      test: ["CMD", "/bin/sh", "/usr/local/bin/redis-secure-healthcheck.sh"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redpanda:
+    <<: *transport_certs
+    entrypoint: ["/bin/bash", "/usr/local/bin/redpanda-production-entrypoint.sh"]
+    command: []
+    ports:
+      - "9093:9093"
+      - "9644:9644"
+    volumes:
+      - ${TRANSPORT_CERTS_DIR:?set TRANSPORT_CERTS_DIR}:/run/transport-certs:ro
+      - ./redpanda/production-entrypoint.sh:/usr/local/bin/redpanda-production-entrypoint.sh:ro
+    environment:
+      REDPANDA_SUPERUSER_USERNAME: ${REDPANDA_SUPERUSER_USERNAME:?set REDPANDA_SUPERUSER_USERNAME}
+      REDPANDA_SUPERUSER_PASSWORD: ${REDPANDA_SUPERUSER_PASSWORD:?set REDPANDA_SUPERUSER_PASSWORD}
+      REDPANDA_TLS_CERT_FILE: ${REDPANDA_TLS_CERT_FILE:?set REDPANDA_TLS_CERT_FILE}
+      REDPANDA_TLS_KEY_FILE: ${REDPANDA_TLS_KEY_FILE:?set REDPANDA_TLS_KEY_FILE}
+      REDPANDA_TLS_CA_CERT_FILE: ${REDPANDA_TLS_CA_CERT_FILE:?set REDPANDA_TLS_CA_CERT_FILE}
+      REDPANDA_ADVERTISED_KAFKA_ADDRESS: redpanda
+      REDPANDA_ADVERTISED_ADMIN_ADDRESS: redpanda
+      REDPANDA_ADVERTISED_RPC_ADDRESS: redpanda
+      REDPANDA_KAFKA_TLS_PORT: "9093"
+      REDPANDA_ADMIN_TLS_PORT: "9644"
+
+  redpanda-init:
+    <<: *transport_certs
+    environment:
+      KAFKA_BROKERS: redpanda:9093
+      KAFKA_TLS_ENABLED: "true"
+      KAFKA_TLS_SERVER_NAME: ${KAFKA_TLS_SERVER_NAME:?set KAFKA_TLS_SERVER_NAME}
+      KAFKA_CA_CERT_FILE: ${KAFKA_CA_CERT_FILE:?set KAFKA_CA_CERT_FILE}
+      KAFKA_SASL_MECHANISM: ${KAFKA_SASL_MECHANISM:?set KAFKA_SASL_MECHANISM}
+      KAFKA_SASL_USERNAME: ${KAFKA_SASL_USERNAME:?set KAFKA_SASL_USERNAME}
+      KAFKA_SASL_PASSWORD: ${KAFKA_SASL_PASSWORD:?set KAFKA_SASL_PASSWORD}
+      REDPANDA_SUPERUSER_USERNAME: ${REDPANDA_SUPERUSER_USERNAME:?set REDPANDA_SUPERUSER_USERNAME}
+      REDPANDA_SUPERUSER_PASSWORD: ${REDPANDA_SUPERUSER_PASSWORD:?set REDPANDA_SUPERUSER_PASSWORD}
+      REDPANDA_ADMIN_HOSTS: redpanda:9644
+      REDPANDA_ADMIN_TLS_ENABLED: "true"
+      REDPANDA_ADMIN_TLS_CA_CERT_FILE: ${KAFKA_CA_CERT_FILE:?set KAFKA_CA_CERT_FILE}
+
+  redpanda-console:
+    profiles: ["devtools"]
+
+  minio:
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
+
+  opensearch:
+    environment:
+      OPENSEARCH_INITIAL_ADMIN_PASSWORD: ${OPENSEARCH_INITIAL_ADMIN_PASSWORD:?set OPENSEARCH_INITIAL_ADMIN_PASSWORD}
+
+  api-gateway:
+    environment:
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:?set INTERNAL_SERVICE_KEY}
+
+  identity-auth:
+    <<: *transport_certs
+    environment:
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:?set INTERNAL_SERVICE_KEY}
+      KAFKA_BROKERS: redpanda:9093
+
+  identity-user:
+    <<: *transport_certs
+    environment:
+      KAFKA_BROKERS: redpanda:9093
+
+  identity-profile:
+    <<: *transport_certs
+    environment:
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      KAFKA_BROKERS: redpanda:9093
+
+  user-service:
+    <<: *transport_certs
+    environment:
+      KAFKA_BROKERS: redpanda:9093
+
+  graph-service:
+    <<: *transport_certs
+    environment:
+      KAFKA_BROKERS: redpanda:9093
+
+  group-service:
+    <<: *transport_certs
+
+  post-service:
+    <<: *transport_certs
+    environment:
+      KAFKA_BROKERS: redpanda:9093
+
+  feed-service:
+    <<: *transport_certs
+    environment:
+      KAFKA_BROKERS: redpanda:9093
+
+  media-service:
+    <<: *transport_certs
+    environment:
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?set MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?set MINIO_SECRET_KEY}
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:?set INTERNAL_SERVICE_KEY}
+      KAFKA_BROKERS: redpanda:9093
+
+  media-worker:
+    <<: *transport_certs
+    environment:
+      KAFKA_BROKERS: redpanda:9093
+
+  notification-service:
+    <<: *transport_certs
+    environment:
+      KAFKA_BROKERS: redpanda:9093
+
+  search-service:
+    <<: *transport_certs
+    environment:
+      KAFKA_BROKERS: redpanda:9093
+
+  trust-safety-service:
+    <<: *transport_certs
+    environment:
+      KAFKA_BROKERS: redpanda:9093
+
+  chat-message-service:
+    <<: *transport_certs
+    environment:
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      KAFKA_BROKERS: redpanda:9093
+
+  chat-ws-gateway:
+    <<: *transport_certs
+    environment:
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?set ALLOWED_ORIGINS}
+      WS_ALLOW_QUERY_TOKEN: "false"
+
+  call-service:
+    <<: *transport_certs
+    environment:
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      KAFKA_BROKERS: redpanda:9093
+
+  monetization-service:
+    <<: *transport_certs
+
+  analytics-service:
+    <<: *transport_certs
+    environment:
+      KAFKA_BROKERS: redpanda:9093
+
+  feature-flag-service:
+    <<: *transport_certs
+
+  admin-service:
+    <<: *transport_certs
+    environment:
+      KAFKA_BROKERS: redpanda:9093
+
+  orders-service:
+    <<: *transport_certs
+    environment:
+      KAFKA_BROKERS: redpanda:9093
+
+  payments-service:
+    <<: *transport_certs
+    environment:
+      KAFKA_BROKERS: redpanda:9093
+
+  suggestion-service:
+    <<: *transport_certs
+    environment:
+      KAFKA_BROKERS: redpanda:9093
+
+  shop-service:
+    <<: *transport_certs
+    environment:
+      KAFKA_BROKERS: redpanda:9093
+
+  live-service:
+    <<: *transport_certs
+    environment:
+      KAFKA_BROKERS: redpanda:9093
+
+  channel-service:
+    <<: *transport_certs
+    environment:
+      KAFKA_BROKERS: redpanda:9093
+
+  community-service:
+    <<: *transport_certs
+    environment:
+      KAFKA_BROKERS: redpanda:9093
+
+  nextjs:
+    environment:
+      CHAT_PROXY_SIGNING_SECRET: ${CHAT_PROXY_SIGNING_SECRET:?set CHAT_PROXY_SIGNING_SECRET}

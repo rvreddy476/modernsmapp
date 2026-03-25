@@ -1,0 +1,956 @@
+openapi: 3.0.3
+info:
+  title: AtPost Mobile Integration API
+  version: 2026-03-19
+  description: >
+    Curated machine-readable subset of the current mobile-facing API contract.
+    This spec favors verified backend handlers over stale client references.
+    For the broader mobile route matrix and mismatch notes, see
+    `endpoints-by-service.md`.
+servers:
+  - url: https://cleestudio.com
+    description: Current external mobile target
+  - url: http://localhost:8080
+    description: Local HTTP gateway
+tags:
+  - name: Auth
+  - name: Users
+  - name: Graph
+  - name: Feed
+  - name: Posts
+  - name: Stories
+  - name: Media
+  - name: Notifications
+  - name: Search
+  - name: Chat
+  - name: Calls
+  - name: Groups
+  - name: Communities
+  - name: Broadcast Channels
+  - name: Live
+  - name: Memories
+  - name: Shop
+  - name: Apps
+  - name: Analytics
+  - name: AI
+paths:
+  /v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: Login with identifier and password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [identifier, password]
+              properties:
+                identifier:
+                  type: string
+                password:
+                  type: string
+      responses:
+        '200':
+          description: Auth response with tokens and user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthEnvelope'
+        '401':
+          $ref: '#/components/responses/ErrorEnvelope'
+  /v1/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Refresh access token
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refresh_token:
+                  type: string
+      responses:
+        '200':
+          description: Refreshed auth response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthEnvelope'
+  /v1/users/me:
+    get:
+      tags: [Users]
+      security: [{ bearerAuth: [] }]
+      summary: Get current user
+      responses:
+        '200':
+          description: Current user profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObjectEnvelope'
+    put:
+      tags: [Users]
+      security: [{ bearerAuth: [] }]
+      summary: Update current user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: Updated user profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObjectEnvelope'
+  /v1/users/{userId}:
+    get:
+      tags: [Users]
+      security: [{ bearerAuth: [] }]
+      summary: Get user by ID
+      parameters:
+        - $ref: '#/components/parameters/UserIdPath'
+      responses:
+        '200':
+          description: User profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObjectEnvelope'
+  /v1/profiles/batch:
+    post:
+      tags: [Users]
+      security: [{ bearerAuth: [] }]
+      summary: Batch profile lookup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_ids]
+              properties:
+                user_ids:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+      responses:
+        '200':
+          description: Raw map keyed by user ID
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: object
+                  additionalProperties: true
+  /v1/graph/follow:
+    post:
+      tags: [Graph]
+      security: [{ bearerAuth: [] }]
+      summary: Follow a user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserIdRequest'
+      responses:
+        '200':
+          description: Follow status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusEnvelope'
+  /v1/feed/home:
+    get:
+      tags: [Feed]
+      security: [{ bearerAuth: [] }]
+      summary: Get home feed
+      parameters:
+        - $ref: '#/components/parameters/LimitQuery'
+        - in: query
+          name: feed_mode
+          schema:
+            type: string
+        - in: query
+          name: exclude_self
+          schema:
+            type: boolean
+        - in: query
+          name: circle_only
+          schema:
+            type: boolean
+        - in: query
+          name: platform
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Feed items
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArrayEnvelope'
+  /v1/posts:
+    post:
+      tags: [Posts]
+      security: [{ bearerAuth: [] }]
+      summary: Create post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [visibility]
+              properties:
+                text:
+                  type: string
+                visibility:
+                  type: string
+                content_type:
+                  type: string
+                media_ids:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+              additionalProperties: true
+      responses:
+        '201':
+          description: Created post
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObjectEnvelope'
+  /v1/posts/{postId}:
+    get:
+      tags: [Posts]
+      security: [{ bearerAuth: [] }]
+      summary: Get post detail
+      parameters:
+        - $ref: '#/components/parameters/PostIdPath'
+      responses:
+        '200':
+          description: Post detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObjectEnvelope'
+  /v1/posts/{postId}/comments:
+    get:
+      tags: [Posts]
+      security: [{ bearerAuth: [] }]
+      summary: List comments
+      parameters:
+        - $ref: '#/components/parameters/PostIdPath'
+      responses:
+        '200':
+          description: Comment list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArrayEnvelope'
+    post:
+      tags: [Posts]
+      security: [{ bearerAuth: [] }]
+      summary: Add comment
+      parameters:
+        - $ref: '#/components/parameters/PostIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+      responses:
+        '201':
+          description: Created comment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObjectEnvelope'
+  /v1/stories:
+    post:
+      tags: [Stories]
+      security: [{ bearerAuth: [] }]
+      summary: Create story
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [media_id, media_type]
+              properties:
+                media_id:
+                  type: string
+                  format: uuid
+                media_type:
+                  type: string
+                text:
+                  type: string
+      responses:
+        '201':
+          description: Created story
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObjectEnvelope'
+  /v1/stories/feed:
+    get:
+      tags: [Stories]
+      security: [{ bearerAuth: [] }]
+      summary: Get story feed
+      responses:
+        '200':
+          description: Story feed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArrayEnvelope'
+  /v1/media/init:
+    post:
+      tags: [Media]
+      security: [{ bearerAuth: [] }]
+      summary: Initialize media upload
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [file_type, mime_type, file_size_bytes]
+              properties:
+                file_type:
+                  type: string
+                  enum: [image, video]
+                media_subtype:
+                  type: string
+                mime_type:
+                  type: string
+                file_size_bytes:
+                  type: integer
+                  format: int64
+                alt_text:
+                  type: string
+      responses:
+        '200':
+          description: Upload init payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObjectEnvelope'
+  /v1/media/upload/presigned:
+    post:
+      tags: [Media]
+      security: [{ bearerAuth: [] }]
+      summary: Create presigned upload URL
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [filename, content_type]
+              properties:
+                filename:
+                  type: string
+                content_type:
+                  type: string
+      responses:
+        '200':
+          description: Upload URL metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObjectEnvelope'
+  /v1/media/confirm:
+    post:
+      tags: [Media]
+      security: [{ bearerAuth: [] }]
+      summary: Confirm uploaded media
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [media_id]
+              properties:
+                media_id:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: Confirmed media
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObjectEnvelope'
+  /v1/notifications:
+    get:
+      tags: [Notifications]
+      security: [{ bearerAuth: [] }]
+      summary: Get notifications
+      parameters:
+        - $ref: '#/components/parameters/LimitQuery'
+        - in: query
+          name: cursor
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Notification page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArrayEnvelope'
+  /v1/notifications/unread-count:
+    get:
+      tags: [Notifications]
+      security: [{ bearerAuth: [] }]
+      summary: Get unread count
+      responses:
+        '200':
+          description: Unread count
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObjectEnvelope'
+  /v1/search/users:
+    get:
+      tags: [Search]
+      security: [{ bearerAuth: [] }]
+      summary: Search users
+      parameters:
+        - in: query
+          name: q
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/LimitQuery'
+      responses:
+        '200':
+          description: User search result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObjectEnvelope'
+  /v1/chat/conversations:
+    get:
+      tags: [Chat]
+      security: [{ bearerAuth: [] }]
+      summary: List conversations
+      parameters:
+        - $ref: '#/components/parameters/LimitQuery'
+        - in: query
+          name: cursor
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Conversation list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArrayEnvelope'
+  /v1/chat/conversations/direct:
+    post:
+      tags: [Chat]
+      security: [{ bearerAuth: [] }]
+      summary: Create direct conversation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [other_user_id]
+              properties:
+                other_user_id:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: Conversation detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObjectEnvelope'
+  /v1/chat/conversations/{conversationId}/messages:
+    get:
+      tags: [Chat]
+      security: [{ bearerAuth: [] }]
+      summary: List messages
+      parameters:
+        - $ref: '#/components/parameters/ConversationIdPath'
+        - $ref: '#/components/parameters/LimitQuery'
+        - in: query
+          name: cursor
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Message list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArrayEnvelope'
+    post:
+      tags: [Chat]
+      security: [{ bearerAuth: [] }]
+      summary: Send message
+      parameters:
+        - $ref: '#/components/parameters/ConversationIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type]
+              properties:
+                type:
+                  type: string
+                  enum: [text, media]
+                text:
+                  type: string
+                media_id:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: Sent message
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObjectEnvelope'
+  /v1/calls:
+    post:
+      tags: [Calls]
+      security: [{ bearerAuth: [] }]
+      summary: Create call
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [call_type, source_type, target_user_ids]
+              properties:
+                call_type:
+                  type: string
+                source_type:
+                  type: string
+                source_id:
+                  type: string
+                  format: uuid
+                target_user_ids:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+                audio_only:
+                  type: boolean
+                max_participants:
+                  type: integer
+                idempotency_key:
+                  type: string
+      responses:
+        '201':
+          description: Created call
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObjectEnvelope'
+  /v1/calls/{callId}/join:
+    post:
+      tags: [Calls]
+      security: [{ bearerAuth: [] }]
+      summary: Join call
+      parameters:
+        - $ref: '#/components/parameters/CallIdPath'
+      responses:
+        '200':
+          description: Join result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObjectEnvelope'
+  /v1/groups/my:
+    get:
+      tags: [Groups]
+      security: [{ bearerAuth: [] }]
+      summary: Get current user's groups
+      responses:
+        '200':
+          description: Group list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArrayEnvelope'
+  /v1/communities/my:
+    get:
+      tags: [Communities]
+      security: [{ bearerAuth: [] }]
+      summary: Get current user's communities
+      responses:
+        '200':
+          description: Raw community list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+  /v1/broadcast-channels/my:
+    get:
+      tags: [Broadcast Channels]
+      security: [{ bearerAuth: [] }]
+      summary: Get current user's broadcast channels
+      responses:
+        '200':
+          description: Channel list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArrayEnvelope'
+  /v1/live/streams:
+    get:
+      tags: [Live]
+      security: [{ bearerAuth: [] }]
+      summary: List live streams
+      responses:
+        '200':
+          description: Live stream list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObjectEnvelope'
+    post:
+      tags: [Live]
+      security: [{ bearerAuth: [] }]
+      summary: Create live stream
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '201':
+          description: Created stream
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObjectEnvelope'
+  /v1/memories/on-this-day:
+    get:
+      tags: [Memories]
+      security: [{ bearerAuth: [] }]
+      summary: Get On This Day memories
+      responses:
+        '200':
+          description: Memory list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObjectEnvelope'
+  /v1/shop/products:
+    get:
+      tags: [Shop]
+      security: [{ bearerAuth: [] }]
+      summary: List products
+      parameters:
+        - in: query
+          name: category
+          schema:
+            type: string
+        - $ref: '#/components/parameters/LimitQuery'
+        - $ref: '#/components/parameters/OffsetQuery'
+      responses:
+        '200':
+          description: Product list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObjectEnvelope'
+  /v1/shop/cart:
+    get:
+      tags: [Shop]
+      security: [{ bearerAuth: [] }]
+      summary: Get cart
+      responses:
+        '200':
+          description: Cart items
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObjectEnvelope'
+    post:
+      tags: [Shop]
+      security: [{ bearerAuth: [] }]
+      summary: Add to cart
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                product_id:
+                  type: string
+                  format: uuid
+                quantity:
+                  type: integer
+      responses:
+        '200':
+          description: Add-to-cart status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusEnvelope'
+  /v1/apps:
+    get:
+      tags: [Apps]
+      security: [{ bearerAuth: [] }]
+      summary: List mini apps
+      responses:
+        '200':
+          description: Mini app list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArrayEnvelope'
+  /v1/apps/{id}:
+    get:
+      tags: [Apps]
+      security: [{ bearerAuth: [] }]
+      summary: Get mini app detail
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Mini app detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObjectEnvelope'
+  /v1/analytics/creator/me:
+    get:
+      tags: [Analytics]
+      security: [{ bearerAuth: [] }]
+      summary: Get creator analytics
+      parameters:
+        - in: query
+          name: period
+          schema:
+            type: string
+            example: 30d
+      responses:
+        '200':
+          description: Raw creator analytics object
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /v1/ai/caption/suggest:
+    post:
+      tags: [AI]
+      security: [{ bearerAuth: [] }]
+      summary: Caption suggestions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [draft_id]
+              properties:
+                draft_id:
+                  type: string
+                  format: uuid
+                text:
+                  type: string
+      responses:
+        '200':
+          description: Raw caption suggestion response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  suggestions:
+                    type: array
+                    items:
+                      type: string
+                  cached:
+                    type: boolean
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    UserIdPath:
+      in: path
+      name: userId
+      required: true
+      schema:
+        type: string
+        format: uuid
+    PostIdPath:
+      in: path
+      name: postId
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ConversationIdPath:
+      in: path
+      name: conversationId
+      required: true
+      schema:
+        type: string
+        format: uuid
+    CallIdPath:
+      in: path
+      name: callId
+      required: true
+      schema:
+        type: string
+        format: uuid
+    LimitQuery:
+      in: query
+      name: limit
+      schema:
+        type: integer
+        minimum: 1
+    OffsetQuery:
+      in: query
+      name: offset
+      schema:
+        type: integer
+        minimum: 0
+  responses:
+    ErrorEnvelope:
+      description: Standard error envelope
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              data:
+                nullable: true
+              error:
+                $ref: '#/components/schemas/Error'
+              meta:
+                $ref: '#/components/schemas/Meta'
+  schemas:
+    Error:
+      type: object
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          nullable: true
+    Meta:
+      type: object
+      properties:
+        request_id:
+          type: string
+        next_cursor:
+          type: string
+    AuthEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            tokens:
+              type: object
+              properties:
+                access_token:
+                  type: string
+                refresh_token:
+                  type: string
+                expires_at:
+                  type: string
+                  format: date-time
+            user:
+              type: object
+              additionalProperties: true
+            session_id:
+              type: string
+              format: uuid
+          additionalProperties: true
+        error:
+          $ref: '#/components/schemas/Error'
+        meta:
+          $ref: '#/components/schemas/Meta'
+    StatusEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            status:
+              type: string
+          additionalProperties: true
+        error:
+          $ref: '#/components/schemas/Error'
+        meta:
+          $ref: '#/components/schemas/Meta'
+    ObjectEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          additionalProperties: true
+        error:
+          $ref: '#/components/schemas/Error'
+        meta:
+          $ref: '#/components/schemas/Meta'
+    ArrayEnvelope:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        error:
+          $ref: '#/components/schemas/Error'
+        meta:
+          $ref: '#/components/schemas/Meta'
+    UserIdRequest:
+      type: object
+      required: [user_id]
+      properties:
+        user_id:
+          type: string
+          format: uuid

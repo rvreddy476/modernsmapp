@@ -63,7 +63,9 @@ class _LiveScreenState extends ConsumerState<LiveScreen> {
     setState(() => _joiningStreamIds.add(stream.id));
     try {
       if (!mounted) return;
-      context.push('/live/broadcast/${stream.id}?title=${Uri.encodeComponent(stream.title)}');
+      context.push(
+        '/live/broadcast/${stream.id}?title=${Uri.encodeComponent(stream.title)}',
+      );
     } finally {
       if (mounted) {
         setState(() => _joiningStreamIds.remove(stream.id));
@@ -258,7 +260,9 @@ class _LiveScreenState extends ConsumerState<LiveScreen> {
       _streams = [stream, ..._streams];
     });
 
-    context.push('/live/broadcast/${stream.id}?title=${Uri.encodeComponent(stream.title)}');
+    context.push(
+      '/live/broadcast/${stream.id}?title=${Uri.encodeComponent(stream.title)}',
+    );
   }
 
   @override
@@ -465,6 +469,7 @@ class _LiveStreamCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final videoUrl = stream.preferredVideoUrl;
     return Container(
       decoration: BoxDecoration(
         color: AppColors.bgCard,
@@ -475,9 +480,7 @@ class _LiveStreamCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           ClipRRect(
-            borderRadius: const BorderRadius.vertical(
-              top: Radius.circular(16),
-            ),
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
             child: AspectRatio(
               aspectRatio: 16 / 9,
               child: Stack(
@@ -485,23 +488,23 @@ class _LiveStreamCard extends StatelessWidget {
                   // Video layer: real player if stream URL available,
                   // thumbnail if available, gradient fallback otherwise.
                   Positioned.fill(
-                    child: (stream.replayUrl ?? '').isNotEmpty
+                    child: (videoUrl ?? '').isNotEmpty
                         ? VideoPlayerWidget(
-                            videoUrl: stream.replayUrl!,
+                            videoUrl: videoUrl!,
                             autoPlay: true,
                             looping: false,
                             showControls: false,
                             placeholder: _streamPlaceholder(),
                           )
                         : (stream.thumbnailUrl ?? '').isNotEmpty
-                            ? Image.network(
-                                stream.thumbnailUrl!,
-                                fit: BoxFit.cover,
-                                width: double.infinity,
-                                height: double.infinity,
-                                errorBuilder: (_, _, _) => _streamPlaceholder(),
-                              )
-                            : _streamPlaceholder(),
+                        ? Image.network(
+                            stream.thumbnailUrl!,
+                            fit: BoxFit.cover,
+                            width: double.infinity,
+                            height: double.infinity,
+                            errorBuilder: (_, _, _) => _streamPlaceholder(),
+                          )
+                        : _streamPlaceholder(),
                   ),
                   // LIVE badge.
                   Positioned(
@@ -557,7 +560,7 @@ class _LiveStreamCard extends StatelessWidget {
                     ),
                   ),
                   // "Stream starting..." overlay when no stream URL.
-                  if ((stream.replayUrl ?? '').isEmpty)
+                  if ((videoUrl ?? '').isEmpty)
                     Center(
                       child: Container(
                         padding: const EdgeInsets.symmetric(
@@ -569,7 +572,11 @@ class _LiveStreamCard extends StatelessWidget {
                           borderRadius: BorderRadius.circular(12),
                         ),
                         child: Text(
-                          'Stream starting...',
+                          stream.isLive
+                              ? 'Live video unavailable'
+                              : stream.isEnded
+                              ? 'Replay unavailable'
+                              : 'Stream starting...',
                           style: AppTextStyles.label.copyWith(
                             color: Colors.white70,
                           ),
@@ -654,21 +661,13 @@ class _LiveStreamCard extends StatelessWidget {
     return Container(
       decoration: const BoxDecoration(
         gradient: LinearGradient(
-          colors: [
-            Color(0x33111111),
-            Color(0x33FF3366),
-            Color(0x334ECDC4),
-          ],
+          colors: [Color(0x33111111), Color(0x33FF3366), Color(0x334ECDC4)],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
       ),
       child: const Center(
-        child: Icon(
-          Icons.play_circle_outline,
-          size: 56,
-          color: Colors.white60,
-        ),
+        child: Icon(Icons.play_circle_outline, size: 56, color: Colors.white60),
       ),
     );
   }
@@ -691,4 +690,3 @@ class _LiveStreamCard extends StatelessWidget {
     return 'just now';
   }
 }
-

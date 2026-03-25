@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/atpost/shared/transport"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
@@ -29,7 +30,11 @@ func main() {
 	}
 	defer db.Close()
 
-	rdb := redis.NewClient(&redis.Options{Addr: redisAddr})
+	rdb, err := transport.NewRedisClientFromEnv(redisAddr)
+	if err != nil {
+		slog.Error("failed to configure redis client", "err", err)
+		os.Exit(1)
+	}
 	defer rdb.Close()
 
 	slog.Info("scheduled post worker started")

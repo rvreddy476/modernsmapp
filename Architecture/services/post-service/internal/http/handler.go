@@ -77,6 +77,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// Tune (private negative signal)
 		v1.POST("/:postId/tune", h.CreateTune)
 		v1.DELETE("/:postId/tune", h.DeleteTune)
+		v1.GET("/:postId/tune/me", h.GetTune)
 	}
 
 	// Events
@@ -1766,6 +1767,25 @@ func (h *Handler) DeleteTune(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]bool{"ok": true}, nil)
+}
+
+func (h *Handler) GetTune(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+	postID, err := uuid.Parse(c.Param("postId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		return
+	}
+	tuned, err := h.svc.HasTune(c.Request.Context(), userID, postID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]bool{"tuned": tuned}, nil)
 }
 
 // ============================================================

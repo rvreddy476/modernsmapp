@@ -19,12 +19,17 @@ type CallConsumer struct {
 }
 
 func NewCallConsumer(brokers []string, groupID string, topic string, svc *service.Service) *CallConsumer {
+	return NewCallConsumerWithDialer(brokers, groupID, topic, svc, nil)
+}
+
+func NewCallConsumerWithDialer(brokers []string, groupID string, topic string, svc *service.Service, dialer *kafka.Dialer) *CallConsumer {
 	reader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:  brokers,
 		GroupID:  groupID,
 		Topic:    topic,
 		MinBytes: 10e3,
 		MaxBytes: 10e6,
+		Dialer:   dialer,
 	})
 	return &CallConsumer{
 		reader:  reader,

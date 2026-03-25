@@ -1,0 +1,12 @@
+logLevel: info
+
+rtmp: yes
+rtmpAddress: :1935
+
+hls: yes
+hlsAddress: :8888
+hlsAlwaysRemux: yes
+hlsAllowOrigins:
+  - "*"
+
+pathDefaults:

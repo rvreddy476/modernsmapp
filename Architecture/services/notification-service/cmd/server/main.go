@@ -18,10 +18,10 @@ import (
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
 	"github.com/atpost/shared/server"
+	"github.com/atpost/shared/transport"
 	"github.com/gin-gonic/gin"
 	"github.com/gocql/gocql"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -49,15 +49,23 @@ func main() {
 	slog.Info("connected to scylla")
 
 	// 4. Redis
-	rdb := redis.NewClient(&redis.Options{
-		Addr: redisAddr,
-	})
+	rdb, err := transport.NewRedisClientFromEnv(redisAddr)
+	if err != nil {
+		slog.Error("failed to configure redis client", "error", err)
+		os.Exit(1)
+	}
 	if err := rdb.Ping(ctx).Err(); err != nil {
 		slog.Error("redis ping failed", "error", err)
 		os.Exit(1)
 	}
 	defer rdb.Close()
 	slog.Info("connected to redis")
+
+	kafkaDialer, err := transport.KafkaDialerFromEnv()
+	if err != nil {
+		slog.Error("failed to configure kafka dialer", "error", err)
+		os.Exit(1)
+	}
 
 	// 5. Database (Postgres -- for preferences & devices)
 	pgDSN := os.Getenv("POSTGRES_DSN")
@@ -109,20 +117,22 @@ func main() {
 	notifHandler := http.New(notifSvc, rdb)
 
 	// 9. Kafka Consumers
-	consumer := events.NewConsumer(
+	consumer := events.NewConsumerWithDialer(
 		strings.Split(kafkaBrokers, ","),
 		"notification-service-group",
 		"social.events.v1",
 		notifSvc,
+		kafkaDialer,
 	)
 	go consumer.Start(ctx)
 	slog.Info("kafka consumer started", "topic", "social.events.v1")
 
-	callConsumer := events.NewCallConsumer(
+	callConsumer := events.NewCallConsumerWithDialer(
 		strings.Split(kafkaBrokers, ","),
 		"notification-service-calls-group",
 		env("KAFKA_CALL_NOTIFICATIONS_TOPIC", "call.notifications"),
 		notifSvc,
+		kafkaDialer,
 	)
 	go callConsumer.Start(ctx)
 	slog.Info("kafka call consumer started", "topic", "call.notifications")

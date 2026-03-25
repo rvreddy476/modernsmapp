@@ -15,6 +15,7 @@ type Config struct {
 	RedisAddr        string
 	JWTSecret        string
 	AllowedOrigins   []string
+	WSAllowQueryToken bool
 	WSWriteWait      time.Duration
 	WSPongWait       time.Duration
 	WSPingPeriod     time.Duration
@@ -30,8 +31,9 @@ func Load() *Config {
 		HTTPWriteTimeout: getEnvDuration("HTTP_WRITE_TIMEOUT", 15*time.Second),
 		HTTPIdleTimeout:  getEnvDuration("HTTP_IDLE_TIMEOUT", 60*time.Second),
 		RedisAddr:        getEnv("REDIS_ADDR", "localhost:6379"),
-		JWTSecret:        getEnv("JWT_SECRET", "dev_secret_change_me"),
+		JWTSecret:        getEnv("JWT_SECRET", ""),
 		AllowedOrigins:   splitAndClean(getEnv("ALLOWED_ORIGINS", "")),
+		WSAllowQueryToken: getEnvBool("WS_ALLOW_QUERY_TOKEN", true),
 		WSWriteWait:      getEnvDuration("WS_WRITE_WAIT", 10*time.Second),
 		WSPongWait:       pongWait,
 		WSPingPeriod:     pingPeriod,
@@ -58,6 +60,16 @@ func getEnvDuration(key string, def time.Duration) time.Duration {
 func getEnvInt64(key string, def int64) int64 {
 	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
 		parsed, err := strconv.ParseInt(v, 10, 64)
+		if err == nil {
+			return parsed
+		}
+	}
+	return def
+}
+
+func getEnvBool(key string, def bool) bool {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		parsed, err := strconv.ParseBool(v)
 		if err == nil {
 			return parsed
 		}

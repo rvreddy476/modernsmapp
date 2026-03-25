@@ -1,9 +1,10 @@
 services:
+  # Shared secure client env for Redis/Kafka.
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: chat_db
     ports:
       - "5432:5432"
@@ -77,14 +78,33 @@ services:
     ports:
       - "8092:8092"
     environment:
+      REDIS_USERNAME: "${REDIS_USERNAME:-}"
+      REDIS_PASSWORD: "${REDIS_PASSWORD:-}"
+      REDIS_DB: "${REDIS_DB:-0}"
+      REDIS_TLS_ENABLED: "${REDIS_TLS_ENABLED:-false}"
+      REDIS_TLS_INSECURE_SKIP_VERIFY: "${REDIS_TLS_INSECURE_SKIP_VERIFY:-false}"
+      REDIS_TLS_SERVER_NAME: "${REDIS_TLS_SERVER_NAME:-}"
+      REDIS_CA_CERT_FILE: "${REDIS_CA_CERT_FILE:-}"
+      REDIS_CLIENT_CERT_FILE: "${REDIS_CLIENT_CERT_FILE:-}"
+      REDIS_CLIENT_KEY_FILE: "${REDIS_CLIENT_KEY_FILE:-}"
+      KAFKA_TLS_ENABLED: "${KAFKA_TLS_ENABLED:-false}"
+      KAFKA_TLS_INSECURE_SKIP_VERIFY: "${KAFKA_TLS_INSECURE_SKIP_VERIFY:-false}"
+      KAFKA_TLS_SERVER_NAME: "${KAFKA_TLS_SERVER_NAME:-}"
+      KAFKA_CA_CERT_FILE: "${KAFKA_CA_CERT_FILE:-}"
+      KAFKA_CLIENT_CERT_FILE: "${KAFKA_CLIENT_CERT_FILE:-}"
+      KAFKA_CLIENT_KEY_FILE: "${KAFKA_CLIENT_KEY_FILE:-}"
+      KAFKA_SASL_MECHANISM: "${KAFKA_SASL_MECHANISM:-}"
+      KAFKA_SASL_USERNAME: "${KAFKA_SASL_USERNAME:-}"
+      KAFKA_SASL_PASSWORD: "${KAFKA_SASL_PASSWORD:-}"
+      KAFKA_DIAL_TIMEOUT: "${KAFKA_DIAL_TIMEOUT:-10s}"
       HTTP_PORT: "8092"
-      POSTGRES_DSN: "postgres://postgres:postgres@postgres:5432/chat_db?sslmode=disable"
+      POSTGRES_DSN: "postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/chat_db?sslmode=disable"
       SCYLLA_HOSTS: "scylladb"
       SCYLLA_KEYSPACE: "chatservice"
       REDIS_ADDR: "redis:6379"
       KAFKA_BROKERS: "redpanda:9092"
       KAFKA_TOPIC: "chat.events.v1"
-      JWT_SECRET: "dev_secret_change_me"
+      JWT_SECRET: "${JWT_SECRET:-local_dev_jwt_change_me}"
       OUTBOX_POLL_INTERVAL: "1s"
       CACHE_TTL: "5m"
       GIN_MODE: "release"
@@ -105,12 +125,64 @@ services:
     ports:
       - "8093:8093"
     environment:
+      REDIS_USERNAME: "${REDIS_USERNAME:-}"
+      REDIS_PASSWORD: "${REDIS_PASSWORD:-}"
+      REDIS_DB: "${REDIS_DB:-0}"
+      REDIS_TLS_ENABLED: "${REDIS_TLS_ENABLED:-false}"
+      REDIS_TLS_INSECURE_SKIP_VERIFY: "${REDIS_TLS_INSECURE_SKIP_VERIFY:-false}"
+      REDIS_TLS_SERVER_NAME: "${REDIS_TLS_SERVER_NAME:-}"
+      REDIS_CA_CERT_FILE: "${REDIS_CA_CERT_FILE:-}"
+      REDIS_CLIENT_CERT_FILE: "${REDIS_CLIENT_CERT_FILE:-}"
+      REDIS_CLIENT_KEY_FILE: "${REDIS_CLIENT_KEY_FILE:-}"
       HTTP_PORT: "8093"
       REDIS_ADDR: "redis:6379"
-      JWT_SECRET: "dev_secret_change_me"
-      ALLOWED_ORIGINS: "*"
+      JWT_SECRET: "${JWT_SECRET:-local_dev_jwt_change_me}"
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-*}"
+      WS_ALLOW_QUERY_TOKEN: "${WS_ALLOW_QUERY_TOKEN:-true}"
     depends_on:
       redis:
+        condition: service_healthy
+
+  call-service:
+    build:
+      context: .
+      dockerfile: services/call-service/Dockerfile
+    ports:
+      - "8097:8097"
+    environment:
+      REDIS_USERNAME: "${REDIS_USERNAME:-}"
+      REDIS_PASSWORD: "${REDIS_PASSWORD:-}"
+      REDIS_DB: "${REDIS_DB:-0}"
+      REDIS_TLS_ENABLED: "${REDIS_TLS_ENABLED:-false}"
+      REDIS_TLS_INSECURE_SKIP_VERIFY: "${REDIS_TLS_INSECURE_SKIP_VERIFY:-false}"
+      REDIS_TLS_SERVER_NAME: "${REDIS_TLS_SERVER_NAME:-}"
+      REDIS_CA_CERT_FILE: "${REDIS_CA_CERT_FILE:-}"
+      REDIS_CLIENT_CERT_FILE: "${REDIS_CLIENT_CERT_FILE:-}"
+      REDIS_CLIENT_KEY_FILE: "${REDIS_CLIENT_KEY_FILE:-}"
+      KAFKA_TLS_ENABLED: "${KAFKA_TLS_ENABLED:-false}"
+      KAFKA_TLS_INSECURE_SKIP_VERIFY: "${KAFKA_TLS_INSECURE_SKIP_VERIFY:-false}"
+      KAFKA_TLS_SERVER_NAME: "${KAFKA_TLS_SERVER_NAME:-}"
+      KAFKA_CA_CERT_FILE: "${KAFKA_CA_CERT_FILE:-}"
+      KAFKA_CLIENT_CERT_FILE: "${KAFKA_CLIENT_CERT_FILE:-}"
+      KAFKA_CLIENT_KEY_FILE: "${KAFKA_CLIENT_KEY_FILE:-}"
+      KAFKA_SASL_MECHANISM: "${KAFKA_SASL_MECHANISM:-}"
+      KAFKA_SASL_USERNAME: "${KAFKA_SASL_USERNAME:-}"
+      KAFKA_SASL_PASSWORD: "${KAFKA_SASL_PASSWORD:-}"
+      KAFKA_DIAL_TIMEOUT: "${KAFKA_DIAL_TIMEOUT:-10s}"
+      HTTP_PORT: "8097"
+      POSTGRES_DSN: "postgres://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/call_db?sslmode=disable"
+      REDIS_ADDR: "redis:6379"
+      KAFKA_BROKERS: "redpanda:9092"
+      JWT_SECRET: "${JWT_SECRET:-local_dev_jwt_change_me}"
+      KAFKA_LIFECYCLE_TOPIC: "call.lifecycle"
+      KAFKA_NOTIFICATION_TOPIC: "call.notifications"
+      KAFKA_ANALYTICS_TOPIC: "call.analytics"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      redpanda:
         condition: service_healthy
 
 volumes:

@@ -11,6 +11,7 @@ import (
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
 	"github.com/atpost/shared/o11y/trace"
+	"github.com/atpost/shared/transport"
 	"github.com/redis/go-redis/v9"
 	kafkago "github.com/segmentio/kafka-go"
 )
@@ -59,21 +60,28 @@ func NewConsumer(
 		cfg.DedupTTL = 24 * time.Hour
 	}
 
+	dialer, err := transport.KafkaDialerFromEnv()
+	if err != nil {
+		panic(fmt.Sprintf("kafka consumer dialer config invalid: %v", err))
+	}
+
 	reader := kafkago.NewReader(kafkago.ReaderConfig{
 		Brokers:  cfg.Brokers,
 		GroupID:  cfg.GroupID,
 		Topic:    cfg.Topic,
 		MinBytes: 1,
 		MaxBytes: 10e6,
+		Dialer:   dialer,
 	})
 
 	var writer *kafkago.Writer
 	if cfg.DLQTopic != "" {
-		writer = &kafkago.Writer{
-			Addr:     kafkago.TCP(cfg.Brokers...),
+		writer = kafkago.NewWriter(kafkago.WriterConfig{
+			Brokers:  cfg.Brokers,
 			Topic:    cfg.DLQTopic,
 			Balancer: &kafkago.LeastBytes{},
-		}
+			Dialer:   dialer,
+		})
 	}
 
 	return &Consumer{
