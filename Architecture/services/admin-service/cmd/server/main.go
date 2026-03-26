@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/atpost/admin-service/database"
 	"github.com/atpost/admin-service/internal/http"
 	"github.com/atpost/admin-service/internal/service"
 	"github.com/atpost/admin-service/internal/store/postgres"
@@ -14,6 +15,7 @@ import (
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
 	"github.com/atpost/shared/server"
+	"github.com/atpost/shared/transport"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -29,7 +31,16 @@ func main() {
 
 	// 3. Database
 	ctx := context.Background()
-	dbPool, err := pgxpool.New(ctx, pgDSN)
+	poolCfg, err := pgxpool.ParseConfig(pgDSN)
+	if err != nil {
+		slog.Error("parse db config", "error", err)
+		os.Exit(1)
+	}
+	poolCfg.MaxConns = 25
+	poolCfg.MinConns = 5
+	poolCfg.MaxConnLifetime = 15 * time.Minute
+	poolCfg.MaxConnIdleTime = 5 * time.Minute
+	dbPool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
 		slog.Error("failed to connect to postgres", "error", err)
 		os.Exit(1)
@@ -42,6 +53,18 @@ func main() {
 	}
 	slog.Info("connected to postgres")
 
+	if err := postgres.BootstrapSchema(ctx, dbPool, database.SetupSQL); err != nil {
+		slog.Error("failed to bootstrap admin schema", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("admin schema ready")
+
+	kafkaDialer, err := transport.KafkaDialerFromEnv()
+	if err != nil {
+		slog.Error("failed to configure kafka dialer", "error", err)
+		os.Exit(1)
+	}
+
 	// 4. Prometheus metrics
 	httpMetrics := metrics.NewHTTPMetrics("admin-service")
 	dbMetrics := metrics.NewDBPoolMetrics("admin-service", "postgres")
@@ -53,7 +76,7 @@ func main() {
 
 	// 6. Dependencies
 	store := postgres.New(dbPool)
-	svc := service.New(store, kafkaBrokers)
+	svc := service.NewWithDialer(store, kafkaBrokers, kafkaDialer)
 	handler := http.New(svc)
 
 	// 7. Gin with middleware stack

@@ -25,9 +25,9 @@ void main() {
               }));
 
       final posts = await repo.getHomeFeed();
-      expect(posts.length, 2);
-      expect(posts[0].id, 'p1');
-      expect(posts[1].content, 'World');
+      expect(posts.items.length, 2);
+      expect(posts.items[0].id, 'p1');
+      expect(posts.items[1].content, 'World');
     });
 
     test('parses {"data": {"items": [...]}} format', () async {
@@ -41,8 +41,8 @@ void main() {
               }));
 
       final posts = await repo.getHomeFeed();
-      expect(posts.length, 1);
-      expect(posts[0].content, 'Nested');
+      expect(posts.items.length, 1);
+      expect(posts.items[0].content, 'Nested');
     });
 
     test('returns empty list for null data', () async {
@@ -50,7 +50,7 @@ void main() {
           .thenAnswer((_) async => mockResponse(data: {'data': null}));
 
       final posts = await repo.getHomeFeed();
-      expect(posts, isEmpty);
+      expect(posts.items, isEmpty);
     });
 
     test('passes cursor and feedMode as query params', () async {

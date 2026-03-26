@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/message-service/database"
 	apihttp "github.com/atpost/message-service/internal/http"
 	"github.com/atpost/message-service/internal/kafka"
 	"github.com/atpost/message-service/internal/policy"
@@ -19,10 +20,10 @@ import (
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
 	"github.com/atpost/shared/server"
+	"github.com/atpost/shared/transport"
 	"github.com/gin-gonic/gin"
 	"github.com/gocql/gocql"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -41,7 +42,16 @@ func main() {
 	ctx := context.Background()
 
 	// 3. Database (Postgres)
-	pgPool, err := pgxpool.New(ctx, pgDSN)
+	poolCfg, err := pgxpool.ParseConfig(pgDSN)
+	if err != nil {
+		slog.Error("parse db config", "error", err)
+		os.Exit(1)
+	}
+	poolCfg.MaxConns = 25
+	poolCfg.MinConns = 5
+	poolCfg.MaxConnLifetime = 15 * time.Minute
+	poolCfg.MaxConnIdleTime = 5 * time.Minute
+	pgPool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
 		slog.Error("failed to connect to postgres", "error", err)
 		os.Exit(1)
@@ -53,6 +63,12 @@ func main() {
 		os.Exit(1)
 	}
 	slog.Info("connected to postgres")
+
+	if err := postgres.BootstrapSchema(ctx, pgPool, database.SetupSQL); err != nil {
+		slog.Error("failed to bootstrap message schema", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("message schema ready")
 
 	// 3b. Schema migration -- pinned message columns (idempotent via ADD COLUMN IF NOT EXISTS)
 	_, err = pgPool.Exec(ctx, `
@@ -72,6 +88,8 @@ func main() {
 	cluster.Keyspace = "postbook"
 	cluster.Consistency = gocql.Quorum
 	cluster.Timeout = 5 * time.Second
+	cluster.NumConns = 10
+	cluster.MaxPreparedStmts = 1000
 	session, err := cluster.CreateSession()
 	if err != nil {
 		slog.Error("failed to connect to scylladb", "error", err, "hosts", scyllaHosts)
@@ -81,9 +99,11 @@ func main() {
 	slog.Info("connected to scylladb", "keyspace", "postbook")
 
 	// 5. Redis
-	rdb := redis.NewClient(&redis.Options{
-		Addr: redisAddr,
-	})
+	rdb, err := transport.NewRedisClientFromEnv(redisAddr)
+	if err != nil {
+		slog.Error("failed to configure redis client", "error", err)
+		os.Exit(1)
+	}
 	if err := rdb.Ping(ctx).Err(); err != nil {
 		slog.Error("failed to connect to redis", "error", err, "addr", redisAddr)
 		os.Exit(1)
@@ -92,7 +112,12 @@ func main() {
 	slog.Info("connected to redis")
 
 	// 6. Kafka Producer
-	kp := kafka.NewProducer(strings.Split(kafkaBrokers, ","), "postbook-messages")
+	kafkaDialer, err := transport.KafkaDialerFromEnv()
+	if err != nil {
+		slog.Error("failed to configure kafka dialer", "error", err)
+		os.Exit(1)
+	}
+	kp := kafka.NewProducerWithDialer(strings.Split(kafkaBrokers, ","), "postbook-messages", kafkaDialer)
 	defer kp.Close()
 	slog.Info("connected to kafka", "topic", "postbook-messages")
 

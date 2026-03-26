@@ -20,10 +20,10 @@ import (
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
 	"github.com/atpost/shared/server"
+	"github.com/atpost/shared/transport"
 	"github.com/gin-gonic/gin"
 	"github.com/gocql/gocql"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/redis/go-redis/v9"
 	"github.com/segmentio/kafka-go"
 )
 
@@ -42,7 +42,16 @@ func main() {
 	ctx := context.Background()
 
 	// 3. PostgreSQL
-	dbPool, err := pgxpool.New(ctx, pgDSN)
+	poolCfg, err := pgxpool.ParseConfig(pgDSN)
+	if err != nil {
+		slog.Error("parse db config", "error", err)
+		os.Exit(1)
+	}
+	poolCfg.MaxConns = 25
+	poolCfg.MinConns = 5
+	poolCfg.MaxConnLifetime = 15 * time.Minute
+	poolCfg.MaxConnIdleTime = 5 * time.Minute
+	dbPool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
 		slog.Error("failed to connect to postgres", "error", err)
 		os.Exit(1)
@@ -52,11 +61,21 @@ func main() {
 	ensureSchema(ctx, dbPool)
 
 	// 4. Redis
-	rdb := redis.NewClient(&redis.Options{Addr: redisAddr})
+	rdb, err := transport.NewRedisClientFromEnv(redisAddr)
+	if err != nil {
+		slog.Error("failed to configure redis client", "error", err)
+		os.Exit(1)
+	}
 	if err := rdb.Ping(ctx).Err(); err != nil {
 		slog.Warn("redis not reachable (continuing without real-time counters)", "error", err)
 	}
 	defer rdb.Close()
+
+	kafkaDialer, err := transport.KafkaDialerFromEnv()
+	if err != nil {
+		slog.Error("failed to configure kafka dialer", "error", err)
+		os.Exit(1)
+	}
 
 	// 5. ScyllaDB
 	var watchStore *scyllaStore.WatchStore
@@ -68,6 +87,8 @@ func main() {
 		cluster.Consistency = gocql.LocalQuorum
 		cluster.ConnectTimeout = 10_000_000_000 // 10s
 		cluster.Timeout = 5_000_000_000         // 5s
+		cluster.NumConns = 10
+		cluster.MaxPreparedStmts = 1000
 		sess, err := cluster.CreateSession()
 		if err != nil {
 			slog.Warn("scylladb not reachable (continuing without watch sessions)", "error", err)
@@ -90,11 +111,12 @@ func main() {
 	// 6. Kafka producer (for publishing video events to downstream consumers)
 	var kafkaWriter *kafka.Writer
 	if kafkaBrokers != "" {
-		kafkaWriter = &kafka.Writer{
-			Addr:     kafka.TCP(strings.Split(kafkaBrokers, ",")...),
+		kafkaWriter = kafka.NewWriter(kafka.WriterConfig{
+			Brokers:  strings.Split(kafkaBrokers, ","),
 			Topic:    kafkaTopic,
 			Balancer: &kafka.LeastBytes{},
-		}
+			Dialer:   kafkaDialer,
+		})
 		defer kafkaWriter.Close()
 	}
 
@@ -129,14 +151,14 @@ func main() {
 	// 10. Start Kafka consumer for real-time video view counting
 	if kafkaBrokers != "" && watchStore != nil {
 		videoConsumer := consumers.NewVideoViewConsumer(watchStore, rdb)
-		go videoConsumer.Start(workerCtx, strings.Split(kafkaBrokers, ","), kafkaTopic)
+		go videoConsumer.Start(workerCtx, strings.Split(kafkaBrokers, ","), kafkaTopic, kafkaDialer)
 		slog.Info("video view consumer started")
 	}
 
 	// 10b. Start engagement consumer for CQS recalculation on likes/comments
 	if kafkaBrokers != "" {
 		engagementConsumer := consumers.NewEngagementConsumer(dbPool, rdb)
-		go engagementConsumer.Start(workerCtx, strings.Split(kafkaBrokers, ","), kafkaTopic)
+		go engagementConsumer.Start(workerCtx, strings.Split(kafkaBrokers, ","), kafkaTopic, kafkaDialer)
 		slog.Info("engagement analytics consumer started")
 	}
 

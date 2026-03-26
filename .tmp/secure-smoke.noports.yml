@@ -11,7 +11,16 @@ services:
   redpanda:
     ports: !reset []
 
+  minio:
+    ports: !reset []
+
+  opensearch:
+    ports: !reset []
+
   mediamtx:
+    ports: !reset []
+
+  media-service:
     ports: !reset []
 
   identity-auth:
@@ -23,10 +32,16 @@ services:
   identity-profile:
     ports: !reset []
 
+  user-service:
+    ports: !reset []
+
   graph-service:
     ports: !reset []
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+  group-service:
+    ports: !reset []
 
   post-service:
     ports: !reset []
@@ -43,31 +58,73 @@ services:
       - "host.docker.internal:host-gateway"
 
   feed-service:
+    ports: !reset []
     environment:
       SCYLLA_HOSTS: host.docker.internal
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
   notification-service:
+    ports: !reset []
     environment:
       SCYLLA_HOSTS: host.docker.internal
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
   analytics-service:
+    ports: !reset []
     environment:
       SCYLLA_HOSTS: host.docker.internal
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
   suggestion-service:
+    ports: !reset []
     environment:
       SCYLLA_HOSTS: host.docker.internal
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  trust-safety-service:
+    ports: !reset []
+
+  monetization-service:
+    ports: !reset []
+
+  feature-flag-service:
+    ports: !reset []
+
+  search-service:
+    ports: !reset []
+
+  admin-service:
+    ports: !reset []
+
+  orders-service:
+    ports: !reset []
+
+  payments-service:
+    ports: !reset []
+
+  shop-service:
+    ports: !reset []
+
+  memories-service:
+    ports: !reset []
+  channel-service:
+    ports: !reset []
+
+  community-service:
+    ports: !reset []
+
   chat-ws-gateway:
+    ports: !reset []
+
+  call-service:
     ports: !reset []
 
   live-service:
     ports: !reset []
+
+
+

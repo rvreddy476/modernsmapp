@@ -39,7 +39,16 @@ func main() {
 	defer stop()
 
 	// 1. Database
-	dbPool, err := pgxpool.New(ctx, cfg.PostgresDSN)
+	poolCfg, err := pgxpool.ParseConfig(cfg.PostgresDSN)
+	if err != nil {
+		slog.Error("parse db config", "error", err)
+		os.Exit(1)
+	}
+	poolCfg.MaxConns = 25
+	poolCfg.MinConns = 5
+	poolCfg.MaxConnLifetime = 15 * time.Minute
+	poolCfg.MaxConnIdleTime = 5 * time.Minute
+	dbPool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
 		logger.Error("unable to connect to database", "err", err)
 		os.Exit(1)

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/feature-flag-service/database"
 	"github.com/atpost/feature-flag-service/internal/http"
 	"github.com/atpost/feature-flag-service/internal/service"
 	"github.com/atpost/feature-flag-service/internal/store/postgres"
@@ -15,9 +16,9 @@ import (
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
 	"github.com/atpost/shared/server"
+	"github.com/atpost/shared/transport"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/redis/go-redis/v9"
 	"github.com/segmentio/kafka-go"
 )
 
@@ -32,7 +33,16 @@ func main() {
 
 	// 3. Database
 	ctx := context.Background()
-	dbPool, err := pgxpool.New(ctx, pgDSN)
+	poolCfg, err := pgxpool.ParseConfig(pgDSN)
+	if err != nil {
+		slog.Error("parse db config", "error", err)
+		os.Exit(1)
+	}
+	poolCfg.MaxConns = 25
+	poolCfg.MinConns = 5
+	poolCfg.MaxConnLifetime = 15 * time.Minute
+	poolCfg.MaxConnIdleTime = 5 * time.Minute
+	dbPool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
 		slog.Error("failed to connect to postgres", "error", err)
 		os.Exit(1)
@@ -45,12 +55,21 @@ func main() {
 	}
 	slog.Info("connected to postgres")
 
+	if err := postgres.BootstrapSchema(ctx, dbPool, database.SetupSQL); err != nil {
+		slog.Error("failed to bootstrap feature-flag schema", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("feature-flag schema ready")
+
 	// 4. Redis
-	rdb := redis.NewClient(&redis.Options{
-		Addr: redisAddr,
-	})
+	rdb, err := transport.NewRedisClientFromEnv(redisAddr)
+	if err != nil {
+		slog.Error("failed to configure redis client", "error", err)
+		os.Exit(1)
+	}
 	if err := rdb.Ping(ctx).Err(); err != nil {
-		slog.Warn("redis not connected", "error", err)
+		slog.Error("redis ping failed", "error", err)
+		os.Exit(1)
 	}
 	defer rdb.Close()
 	slog.Info("connected to redis")
@@ -70,11 +89,17 @@ func main() {
 
 	// 7. Kafka writer
 	kafkaBrokers := env("KAFKA_BROKERS", "localhost:9092")
-	kafkaWriter := &kafka.Writer{
-		Addr:     kafka.TCP(strings.Split(kafkaBrokers, ",")...),
+	kafkaDialer, err := transport.KafkaDialerFromEnv()
+	if err != nil {
+		slog.Error("failed to configure kafka dialer", "error", err)
+		os.Exit(1)
+	}
+	kafkaWriter := kafka.NewWriter(kafka.WriterConfig{
+		Brokers:  strings.Split(kafkaBrokers, ","),
 		Topic:    "social.events.v1",
 		Balancer: &kafka.LeastBytes{},
-	}
+		Dialer:   kafkaDialer,
+	})
 	defer kafkaWriter.Close()
 
 	// 8. Dependencies

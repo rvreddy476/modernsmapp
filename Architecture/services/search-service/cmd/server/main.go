@@ -15,8 +15,8 @@ import (
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
 	"github.com/atpost/shared/server"
+	"github.com/atpost/shared/transport"
 	"github.com/gin-gonic/gin"
-	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -39,9 +39,11 @@ func main() {
 
 	// 4. Redis
 	ctx := context.Background()
-	rdb := redis.NewClient(&redis.Options{
-		Addr: redisAddr,
-	})
+	rdb, err := transport.NewRedisClientFromEnv(redisAddr)
+	if err != nil {
+		slog.Error("failed to configure redis client", "error", err)
+		os.Exit(1)
+	}
 	if err := rdb.Ping(ctx).Err(); err != nil {
 		slog.Error("redis ping failed", "error", err)
 		os.Exit(1)
@@ -49,12 +51,19 @@ func main() {
 	defer rdb.Close()
 	slog.Info("connected to redis")
 
+	kafkaDialer, err := transport.KafkaDialerFromEnv()
+	if err != nil {
+		slog.Error("failed to configure kafka dialer", "error", err)
+		os.Exit(1)
+	}
+
 	// 5. Kafka Consumer
-	consumer := events.NewConsumer(
+	consumer := events.NewConsumerWithDialer(
 		strings.Split(kafkaBrokers, ","),
 		"search-service-group",
 		"social.events.v1",
 		searchStore,
+		kafkaDialer,
 	)
 	consumerCtx, consumerCancel := context.WithCancel(ctx)
 	defer consumerCancel()

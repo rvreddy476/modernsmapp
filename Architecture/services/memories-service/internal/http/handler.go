@@ -7,23 +7,49 @@ import (
 	"github.com/atpost/memories-service/internal/service"
 	"github.com/atpost/memories-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
+	sharedmiddleware "github.com/atpost/shared/middleware"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
 type Handler struct {
-	svc *service.Service
+	svc         *service.Service
+	internalKey string
 }
 
 func New(svc *service.Service) *Handler {
 	return &Handler{svc: svc}
 }
 
+func (h *Handler) WithInternalKey(key string) *Handler {
+	h.internalKey = key
+	return h
+}
+
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
+	if h.internalKey != "" {
+		r.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
+	}
 	v1 := r.Group("/v1/memories")
 	{
 		// On This Day
 		v1.GET("/on-this-day", h.GetOnThisDay)
+
+		// SlamBooks
+		v1.GET("/slambook-template-packs", h.ListSlambookTemplatePacks)
+		v1.POST("/slambooks", h.CreateSlambook)
+		v1.GET("/slambooks", h.ListSlambooks)
+		v1.GET("/slambooks/:slambookId", h.GetSlambook)
+		v1.POST("/slambooks/:slambookId/share-link", h.CreateSlambookShareLink)
+		v1.POST("/slambooks/:slambookId/invites", h.CreateSlambookInvites)
+		v1.POST("/slambooks/:slambookId/responses", h.SaveSlambookResponse)
+		v1.GET("/slambooks/:slambookId/opinion-space", h.ListSlambookOpinionSpace)
+		v1.GET("/slambooks/:slambookId/moderation", h.ListSlambookModerationQueue)
+		v1.POST("/slambooks/:slambookId/moderation/:sessionId", h.ModerateSlambookSession)
+		v1.POST("/slambooks/:slambookId/opinion-space/:itemId/pin", h.SetSlambookOpinionPinned)
+		v1.POST("/slambooks/:slambookId/opinion-space/reorder", h.ReorderSlambookOpinionItems)
+		v1.POST("/slambooks/:slambookId/archive", h.ArchiveSlambook)
+		v1.GET("/share/:token", h.GetSlambookByShareToken)
 
 		// Collections
 		v1.POST("/collections", h.CreateCollection)

@@ -71,20 +71,28 @@ type FanoutWorker struct {
 	db       *pgxpool.Pool
 	brokers  []string
 	producer *kafka.Writer
+	dialer   *kafka.Dialer
 	logger   *slog.Logger
 }
 
 // NewFanoutWorker creates a FanoutWorker with a Kafka producer for writing
 // fanout messages to notification and feed topics.
 func NewFanoutWorker(db *pgxpool.Pool, brokers []string, logger *slog.Logger) *FanoutWorker {
-	writer := &kafka.Writer{
-		Addr:     kafka.TCP(brokers...),
+	return NewFanoutWorkerWithDialer(db, brokers, logger, nil)
+}
+
+// NewFanoutWorkerWithDialer creates a FanoutWorker with an explicit Kafka dialer.
+func NewFanoutWorkerWithDialer(db *pgxpool.Pool, brokers []string, logger *slog.Logger, dialer *kafka.Dialer) *FanoutWorker {
+	writer := kafka.NewWriter(kafka.WriterConfig{
+		Brokers:  brokers,
 		Balancer: &kafka.LeastBytes{},
-	}
+		Dialer:   dialer,
+	})
 	return &FanoutWorker{
 		db:       db,
 		brokers:  brokers,
 		producer: writer,
+		dialer:   dialer,
 		logger:   logger,
 	}
 }
@@ -98,6 +106,7 @@ func (w *FanoutWorker) Start(ctx context.Context) {
 		Topic:    "atpost.channel.updates",
 		MinBytes: 10e3,
 		MaxBytes: 10e6,
+		Dialer:   w.dialer,
 	})
 
 	w.logger.Info("fanout worker listening on atpost.channel.updates")
@@ -111,8 +120,8 @@ func (w *FanoutWorker) Start(ctx context.Context) {
 				return
 			}
 			w.logger.Error("fanout worker read error", "error", err)
-			_ = reader.Close()
-			return
+			time.Sleep(2 * time.Second)
+			continue
 		}
 
 		var event UpdatePublishedEvent

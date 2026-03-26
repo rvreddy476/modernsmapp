@@ -116,6 +116,14 @@ class ChatRepository {
     return data.map((key, value) => MapEntry(key, value == true));
   }
 
+  /// Get unread chat message count.
+  Future<int> getUnreadCount() async {
+    final response = await _api.get(
+      '${Environment.chatPath}/unread-count',
+    );
+    return (response.data['data']?['count'] as int?) ?? 0;
+  }
+
   String _idempotencyKey() {
     final timestamp = DateTime.now().microsecondsSinceEpoch.toRadixString(16);
     final randomPart = _random.nextInt(1 << 32).toRadixString(16);

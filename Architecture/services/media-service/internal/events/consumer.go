@@ -20,12 +20,18 @@ type Consumer struct {
 // NewConsumer creates a Consumer that connects to the given Kafka brokers,
 // joining the specified consumer group and reading from topic.
 func NewConsumer(brokers []string, groupID, topic string, store *postgres.MediaAssetStore) *Consumer {
+	return NewConsumerWithDialer(brokers, groupID, topic, store, nil)
+}
+
+// NewConsumerWithDialer creates a Consumer with an explicit Kafka dialer.
+func NewConsumerWithDialer(brokers []string, groupID, topic string, store *postgres.MediaAssetStore, dialer *kafka.Dialer) *Consumer {
 	reader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:  brokers,
 		GroupID:  groupID,
 		Topic:    topic,
 		MinBytes: 10e3,
 		MaxBytes: 10e6,
+		Dialer:   dialer,
 	})
 	return &Consumer{reader: reader, store: store}
 }

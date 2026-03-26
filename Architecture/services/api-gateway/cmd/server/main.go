@@ -146,8 +146,20 @@ func main() {
 	handler := corsMiddleware(allowedOrigins,
 		requestIDMiddleware(jwtExtractMiddleware(jwtSecret, rateLimitMiddleware(injectInternalKeyMiddleware(internalKey, coreHandler)))))
 
+	// Add a recovery middleware wrapper
+	recoveryHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if err := recover(); err != nil {
+				slog.Error("panic recovered", "error", err, "path", r.URL.Path)
+				w.WriteHeader(http.StatusInternalServerError)
+				w.Write([]byte(`{"error":"internal server error"}`))
+			}
+		}()
+		handler.ServeHTTP(w, r)
+	})
+
 	log.Printf("API Gateway listening on :%s", port)
-	log.Fatal(http.ListenAndServe(":"+port, handler))
+	log.Fatal(http.ListenAndServe(":"+port, recoveryHandler))
 }
 
 // jwtExtractMiddleware inspects the Authorization: Bearer <token> header,

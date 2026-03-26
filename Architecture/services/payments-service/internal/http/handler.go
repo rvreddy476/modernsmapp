@@ -7,19 +7,29 @@ import (
 
 	"github.com/atpost/payments-service/internal/service"
 	"github.com/atpost/shared/api"
+	sharedmiddleware "github.com/atpost/shared/middleware"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
 type Handler struct {
-	svc *service.Service
+	svc         *service.Service
+	internalKey string
 }
 
 func New(svc *service.Service) *Handler {
 	return &Handler{svc: svc}
 }
 
+func (h *Handler) WithInternalKey(key string) *Handler {
+	h.internalKey = key
+	return h
+}
+
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
+	if h.internalKey != "" {
+		r.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
+	}
 	v1 := r.Group("/v1/payments")
 	{
 		v1.POST("/intents", h.InitiatePayment)

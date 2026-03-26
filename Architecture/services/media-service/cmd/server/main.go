@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/media-service/database"
 	mediaEvents "github.com/atpost/media-service/internal/events"
 	mediaHttp "github.com/atpost/media-service/internal/http"
 	"github.com/atpost/media-service/internal/service"
@@ -17,9 +18,9 @@ import (
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
 	"github.com/atpost/shared/server"
+	"github.com/atpost/shared/transport"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -52,7 +53,16 @@ func main() {
 
 	// 3. Database (Postgres)
 	ctx := context.Background()
-	dbPool, err := pgxpool.New(ctx, pgDSN)
+	poolCfg, err := pgxpool.ParseConfig(pgDSN)
+	if err != nil {
+		slog.Error("parse db config", "error", err)
+		os.Exit(1)
+	}
+	poolCfg.MaxConns = 25
+	poolCfg.MinConns = 5
+	poolCfg.MaxConnLifetime = 15 * time.Minute
+	poolCfg.MaxConnIdleTime = 5 * time.Minute
+	dbPool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
 		slog.Error("failed to connect to postgres", "error", err)
 		os.Exit(1)
@@ -65,6 +75,12 @@ func main() {
 	}
 	slog.Info("connected to postgres")
 
+	if err := postgres.BootstrapSchema(ctx, dbPool, database.SetupSQL); err != nil {
+		slog.Error("failed to bootstrap media schema", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("media schema ready")
+
 	// 4. Blob Store (MinIO)
 	blobStore, err := blob.NewWithPublicEndpoint(minioEndpoint, minioAccessKey, minioSecretKey, minioBucket, minioUseSSL, minioPublicEndpoint)
 	if err != nil {
@@ -75,12 +91,22 @@ func main() {
 
 	// 4b. Redis (for upload rate limiting)
 	redisAddr := env("REDIS_ADDR", "redis:6379")
-	rdb := redis.NewClient(&redis.Options{Addr: redisAddr})
-	if err := rdb.Ping(ctx).Err(); err != nil {
+	rdb, err := transport.NewRedisClientFromEnv(redisAddr)
+	if err != nil {
+		slog.Warn("redis transport config invalid, upload rate limiting disabled", "error", err)
+		rdb = nil
+	} else if err := rdb.Ping(ctx).Err(); err != nil {
 		slog.Warn("redis not available, upload rate limiting disabled", "error", err)
+		_ = rdb.Close()
 		rdb = nil
 	} else {
 		slog.Info("connected to redis", "addr", redisAddr)
+	}
+
+	kafkaDialer, err := transport.KafkaDialerFromEnv()
+	if err != nil {
+		slog.Error("failed to configure kafka dialer", "error", err)
+		os.Exit(1)
 	}
 
 	// 5. Dependencies
@@ -92,7 +118,7 @@ func main() {
 
 	// 6. Kafka producer for video transcode events
 	brokers := strings.Split(kafkaBrokers, ",")
-	producer := mediaEvents.NewProducer(brokers, "media.events")
+	producer := mediaEvents.NewProducerWithDialer(brokers, "media.events", kafkaDialer)
 	defer producer.Close()
 	mediaSvc.SetProducer(producer)
 	slog.Info("kafka producer initialized")
@@ -134,6 +160,9 @@ func main() {
 		Port:            port,
 		ShutdownTimeout: 10 * time.Second,
 		OnShutdown: func() {
+			if rdb != nil {
+				_ = rdb.Close()
+			}
 			producer.Close()
 			dbPool.Close()
 			slog.Info("cleanup completed")

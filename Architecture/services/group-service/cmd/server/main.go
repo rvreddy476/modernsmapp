@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/group-service/database"
 	groupevents "github.com/atpost/group-service/internal/events"
 	"github.com/atpost/group-service/internal/http"
 	"github.com/atpost/group-service/internal/service"
@@ -16,9 +17,9 @@ import (
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
 	"github.com/atpost/shared/server"
+	"github.com/atpost/shared/transport"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -51,10 +52,18 @@ func main() {
 	}
 	slog.Info("connected to postgres")
 
+	if err := store.BootstrapSchema(ctx, dbPool, database.SetupSQL); err != nil {
+		slog.Error("failed to bootstrap group schema", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("group schema ready")
+
 	// 4. Redis
-	rdb := redis.NewClient(&redis.Options{
-		Addr: redisAddr,
-	})
+	rdb, err := transport.NewRedisClientFromEnv(redisAddr)
+	if err != nil {
+		slog.Error("failed to configure redis client", "error", err)
+		os.Exit(1)
+	}
 	if err := rdb.Ping(ctx).Err(); err != nil {
 		slog.Error("redis ping failed", "error", err)
 		os.Exit(1)
@@ -80,12 +89,18 @@ func main() {
 	groupSvc := service.New(groupStore, rdb, msgURL, postURL, userURL, jwtSecret)
 
 	// 8. Kafka producer
-	producer := groupevents.NewProducer(kafkaBrokers, kafkaTopic, rdb)
+	kafkaDialer, err := transport.KafkaDialerFromEnv()
+	if err != nil {
+		slog.Error("failed to configure kafka dialer", "error", err)
+		os.Exit(1)
+	}
+
+	producer := groupevents.NewProducerWithDialer(kafkaBrokers, kafkaTopic, rdb, kafkaDialer)
 	groupSvc.SetProducer(producer)
 	slog.Info("kafka producer initialized", "topic", kafkaTopic)
 
 	// 9. Kafka consumer (GDPR + cache invalidation)
-	consumer := groupevents.NewConsumer(kafkaBrokers, "group-service-consumer", groupStore, rdb)
+	consumer := groupevents.NewConsumerWithDialer(kafkaBrokers, "group-service-consumer", groupStore, rdb, kafkaDialer)
 	consumerCtx, cancelConsumer := context.WithCancel(ctx)
 	go consumer.Start(consumerCtx)
 	slog.Info("kafka consumer started")

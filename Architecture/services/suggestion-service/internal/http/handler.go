@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
+	sharedmiddleware "github.com/atpost/shared/middleware"
 	"github.com/atpost/suggestion-service/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -11,7 +12,8 @@ import (
 
 // Handler manages HTTP routes for the suggestion service.
 type Handler struct {
-	svc *service.Service
+	svc         *service.Service
+	internalKey string
 }
 
 // New creates a new Handler.
@@ -19,8 +21,17 @@ func New(svc *service.Service) *Handler {
 	return &Handler{svc: svc}
 }
 
+// WithInternalKey sets the internal service key.
+func (h *Handler) WithInternalKey(key string) *Handler {
+	h.internalKey = key
+	return h
+}
+
 // RegisterRoutes registers all suggestion endpoints.
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
+	if h.internalKey != "" {
+		r.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
+	}
 	v1 := r.Group("/v1/suggestions")
 	{
 		v1.GET("", h.GetSuggestions)

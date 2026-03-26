@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS community_members (
     ban_reason TEXT,
     PRIMARY KEY (community_id, user_id)
 );
-CREATE INDEX IF NOT EXISTS idx_cm_user ON community_members(user_id);
+CREATE INDEX IF NOT EXISTS idx_community_members_user ON community_members(user_id);
 
 -- Community spaces (linked groups/channels/etc)
 CREATE TABLE IF NOT EXISTS community_spaces (

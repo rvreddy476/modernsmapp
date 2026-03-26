@@ -32,13 +32,14 @@ func NewEngagementConsumer(pg *pgxpool.Pool, rdb *redis.Client) *EngagementConsu
 }
 
 // Start launches the Kafka consumer loop. Blocks until ctx is cancelled.
-func (c *EngagementConsumer) Start(ctx context.Context, brokers []string, topic string) {
+func (c *EngagementConsumer) Start(ctx context.Context, brokers []string, topic string, dialer *kafka.Dialer) {
 	reader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:  brokers,
 		GroupID:  "analytics-engagement",
 		Topic:    topic,
 		MinBytes: 1,
 		MaxBytes: 10e6, // 10 MB
+		Dialer:   dialer,
 	})
 	defer reader.Close()
 

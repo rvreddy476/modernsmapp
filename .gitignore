@@ -20,3 +20,9 @@ go.work.sum
 Thumbs.db
 .claude/worktrees/
 technicaldesign/
+
+# Temp files
+.tmp/
+
+# Prompt/spec files
+prompt/

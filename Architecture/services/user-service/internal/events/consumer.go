@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"time"
 
 	"github.com/atpost/shared/events"
 	"github.com/atpost/user-service/internal/service"
@@ -17,10 +18,15 @@ type Consumer struct {
 }
 
 func NewConsumer(brokers []string, topic string, svc *service.Service) *Consumer {
+	return NewConsumerWithDialer(brokers, topic, svc, nil)
+}
+
+func NewConsumerWithDialer(brokers []string, topic string, svc *service.Service, dialer *kafka.Dialer) *Consumer {
 	r := kafka.NewReader(kafka.ReaderConfig{
 		Brokers: brokers,
 		Topic:   topic,
 		GroupID: "user-service-group",
+		Dialer:  dialer,
 	})
 	return &Consumer{reader: r, svc: svc}
 }
@@ -30,8 +36,13 @@ func (c *Consumer) Start(ctx context.Context) {
 	for {
 		m, err := c.reader.ReadMessage(ctx)
 		if err != nil {
+			if ctx.Err() != nil {
+				log.Println("Kafka consumer shutting down")
+				return
+			}
 			log.Printf("Error reading message: %v\n", err)
-			break
+			time.Sleep(2 * time.Second)
+			continue
 		}
 
 		var envelope events.EventEnvelope

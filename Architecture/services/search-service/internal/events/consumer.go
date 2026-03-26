@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/atpost/search-service/internal/store/search"
 	"github.com/atpost/shared/events"
@@ -41,12 +42,17 @@ type Consumer struct {
 }
 
 func NewConsumer(brokers []string, groupID string, topic string, store *search.Store) *Consumer {
+	return NewConsumerWithDialer(brokers, groupID, topic, store, nil)
+}
+
+func NewConsumerWithDialer(brokers []string, groupID string, topic string, store *search.Store, dialer *kafka.Dialer) *Consumer {
 	reader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:  brokers,
 		GroupID:  groupID,
 		Topic:    topic,
 		MinBytes: 10e3,
 		MaxBytes: 10e6,
+		Dialer:   dialer,
 	})
 	return &Consumer{reader: reader, store: store}
 }
@@ -55,8 +61,13 @@ func (c *Consumer) Start(ctx context.Context) {
 	for {
 		m, err := c.reader.ReadMessage(ctx)
 		if err != nil {
+			if ctx.Err() != nil {
+				slog.Info("search consumer shutting down")
+				return
+			}
 			slog.Error("kafka consumer error", "error", err)
-			break
+			time.Sleep(2 * time.Second)
+			continue
 		}
 
 		if err := c.processMessage(ctx, m); err != nil {
@@ -179,3 +190,4 @@ func unmarshalPayload(raw json.RawMessage, v interface{}) error {
 func (c *Consumer) Close() error {
 	return c.reader.Close()
 }
+

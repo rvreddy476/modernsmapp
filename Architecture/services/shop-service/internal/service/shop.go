@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/atpost/shared/events"
@@ -21,16 +22,21 @@ type Service struct {
 }
 
 func New(store *postgres.Store, kafkaBrokers string) *Service {
-	w := &kafka.Writer{
-		Addr:     kafka.TCP(kafkaBrokers),
+	return NewWithDialer(store, kafkaBrokers, nil)
+}
+
+func NewWithDialer(store *postgres.Store, kafkaBrokers string, dialer *kafka.Dialer) *Service {
+	w := kafka.NewWriter(kafka.WriterConfig{
+		Brokers:  strings.Split(kafkaBrokers, ","),
 		Topic:    "social.events.v1",
 		Balancer: &kafka.LeastBytes{},
-	}
+		Dialer:   dialer,
+	})
 	return &Service{store: store, writer: w}
 }
 
 func NewWithRedis(store *postgres.Store, kafkaBrokers string, rdb *redis.Client) *Service {
-	svc := New(store, kafkaBrokers)
+	svc := NewWithDialer(store, kafkaBrokers, nil)
 	svc.rdb = rdb
 	return svc
 }
@@ -88,7 +94,6 @@ func (s *Service) CreateProduct(ctx context.Context, input *CreateProductInput) 
 		return nil, err
 	}
 
-	// Publish ProductListed event
 	go s.publishEvent(ctx, "ProductListed", &input.SellerID, events.ProductListedPayload{
 		ProductID: p.ID.String(),
 		SellerID:  p.SellerID.String(),
@@ -130,7 +135,6 @@ type UpdateProductInput struct {
 }
 
 func (s *Service) UpdateProduct(ctx context.Context, productID, sellerID uuid.UUID, input *UpdateProductInput) error {
-	// Verify ownership
 	p, err := s.store.GetProduct(ctx, productID)
 	if err != nil {
 		return err
@@ -153,7 +157,6 @@ func (s *Service) AddToCart(ctx context.Context, userID, productID uuid.UUID, qu
 	if quantity <= 0 {
 		return fmt.Errorf("quantity must be positive")
 	}
-	// Verify product exists and is active
 	p, err := s.store.GetProduct(ctx, productID)
 	if err != nil {
 		return fmt.Errorf("product not found")
@@ -182,7 +185,6 @@ func (s *Service) ClearCart(ctx context.Context, userID uuid.UUID) error {
 // --- Orders ---
 
 func (s *Service) Checkout(ctx context.Context, buyerID uuid.UUID) (*postgres.Order, error) {
-	// Get cart items
 	items, err := s.store.GetCart(ctx, buyerID)
 	if err != nil {
 		return nil, err
@@ -191,7 +193,6 @@ func (s *Service) Checkout(ctx context.Context, buyerID uuid.UUID) (*postgres.Or
 		return nil, fmt.Errorf("cart is empty")
 	}
 
-	// Group by seller
 	sellerItems := make(map[uuid.UUID][]postgres.CartItem)
 	for _, item := range items {
 		if item.Product == nil {
@@ -200,7 +201,6 @@ func (s *Service) Checkout(ctx context.Context, buyerID uuid.UUID) (*postgres.Or
 		sellerItems[item.Product.SellerID] = append(sellerItems[item.Product.SellerID], item)
 	}
 
-	// For simplicity, create one order per seller
 	var lastOrder *postgres.Order
 	for sellerID, cartItems := range sellerItems {
 		var total float64
@@ -235,7 +235,6 @@ func (s *Service) Checkout(ctx context.Context, buyerID uuid.UUID) (*postgres.Or
 			return nil, err
 		}
 
-		// Publish OrderCreated event
 		go s.publishEvent(ctx, "OrderCreated", &buyerID, events.OrderCreatedPayload{
 			OrderID:   order.ID.String(),
 			BuyerID:   order.BuyerID.String(),
@@ -249,7 +248,6 @@ func (s *Service) Checkout(ctx context.Context, buyerID uuid.UUID) (*postgres.Or
 		lastOrder = order
 	}
 
-	// Clear the cart
 	_ = s.store.ClearCart(ctx, buyerID)
 
 	return lastOrder, nil
@@ -260,7 +258,6 @@ func (s *Service) GetOrder(ctx context.Context, orderID, userID uuid.UUID) (*pos
 	if err != nil {
 		return nil, err
 	}
-	// Only buyer or seller can view order
 	if order.BuyerID != userID && order.SellerID != userID {
 		return nil, fmt.Errorf("not authorized to view this order")
 	}
@@ -284,12 +281,12 @@ func (s *Service) UpdateOrderStatus(ctx context.Context, orderID, sellerID uuid.
 	}
 
 	validTransitions := map[string][]string{
-		"pending":    {"confirmed", "cancelled"},
-		"confirmed":  {"shipped", "cancelled"},
-		"shipped":    {"delivered"},
-		"delivered":  {"completed"},
-		"cancelled":  {},
-		"completed":  {},
+		"pending":   {"confirmed", "cancelled"},
+		"confirmed": {"shipped", "cancelled"},
+		"shipped":   {"delivered"},
+		"delivered": {"completed"},
+		"cancelled": {},
+		"completed": {},
 	}
 	allowed := validTransitions[order.Status]
 	valid := false
@@ -307,7 +304,6 @@ func (s *Service) UpdateOrderStatus(ctx context.Context, orderID, sellerID uuid.
 		return err
 	}
 
-	// Publish OrderStatusUpdated event
 	go s.publishEvent(ctx, "OrderStatusUpdated", &sellerID, events.OrderStatusUpdatedPayload{
 		OrderID:   orderID.String(),
 		BuyerID:   order.BuyerID.String(),

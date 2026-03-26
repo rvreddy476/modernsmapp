@@ -7,13 +7,15 @@ import (
 	"github.com/atpost/ai-service/internal/service"
 	"github.com/atpost/ai-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
+	sharedmiddleware "github.com/atpost/shared/middleware"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
 // Handler holds HTTP handler dependencies for the ai-service.
 type Handler struct {
-	svc *service.Service
+	svc         *service.Service
+	internalKey string
 }
 
 // New returns a new Handler.
@@ -21,8 +23,21 @@ func New(svc *service.Service) *Handler {
 	return &Handler{svc: svc}
 }
 
+// WithInternalKey sets the internal service key used to authenticate
+// service-to-service requests via the X-Internal-Service-Key header.
+func (h *Handler) WithInternalKey(key string) *Handler {
+	h.internalKey = key
+	return h
+}
+
 // RegisterRoutes registers all AI service routes on the given Gin engine.
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
+	// Apply internal service key enforcement to all /v1 routes.
+	// Health and metrics endpoints registered outside this group remain public.
+	if h.internalKey != "" {
+		r.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
+	}
+
 	v1 := r.Group("/v1/ai")
 	{
 		v1.POST("/jobs", h.EnqueueJob)

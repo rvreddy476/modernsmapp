@@ -1,6 +1,5 @@
 import 'dart:io';
 import 'package:atpost_app/core/config/environment.dart';
-import 'package:atpost_app/core/errors/app_exception.dart';
 import 'package:atpost_app/core/errors/error_handler.dart';
 import 'package:atpost_app/core/utils/app_logger.dart';
 import 'package:atpost_app/services/auth_service.dart';

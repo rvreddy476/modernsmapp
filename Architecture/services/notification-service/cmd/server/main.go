@@ -40,6 +40,8 @@ func main() {
 	cluster := gocql.NewCluster(strings.Split(scyllaHosts, ",")...)
 	cluster.Keyspace = "social_notify"
 	cluster.Consistency = gocql.Quorum
+	cluster.NumConns = 10
+	cluster.MaxPreparedStmts = 1000
 	session, err := cluster.CreateSession()
 	if err != nil {
 		slog.Error("failed to connect to scylla", "error", err)
@@ -72,18 +74,27 @@ func main() {
 	var pgStore *postgres.Store
 	var dbPool *pgxpool.Pool
 	if pgDSN != "" {
-		pool, err := pgxpool.New(ctx, pgDSN)
+		pgPoolCfg, err := pgxpool.ParseConfig(pgDSN)
 		if err != nil {
-			slog.Warn("unable to connect to postgres (preferences disabled)", "error", err)
+			slog.Warn("unable to parse postgres config (preferences disabled)", "error", err)
 		} else {
-			dbPool = pool
-			defer dbPool.Close()
-			if err := dbPool.Ping(ctx); err != nil {
-				slog.Warn("postgres ping failed", "error", err)
+			pgPoolCfg.MaxConns = 25
+			pgPoolCfg.MinConns = 5
+			pgPoolCfg.MaxConnLifetime = 15 * time.Minute
+			pgPoolCfg.MaxConnIdleTime = 5 * time.Minute
+			pool, err := pgxpool.NewWithConfig(ctx, pgPoolCfg)
+			if err != nil {
+				slog.Warn("unable to connect to postgres (preferences disabled)", "error", err)
 			} else {
-				slog.Info("connected to postgres")
-				pgStore = postgres.New(dbPool)
-				ensureNotifSchema(ctx, dbPool)
+				dbPool = pool
+				defer dbPool.Close()
+				if err := dbPool.Ping(ctx); err != nil {
+					slog.Warn("postgres ping failed", "error", err)
+				} else {
+					slog.Info("connected to postgres")
+					pgStore = postgres.New(dbPool)
+					ensureNotifSchema(ctx, dbPool)
+				}
 			}
 		}
 	}

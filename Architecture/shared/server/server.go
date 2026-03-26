@@ -24,8 +24,13 @@ func Run(handler http.Handler, cfg Config) error {
 	}
 
 	srv := &http.Server{
-		Addr:    ":" + cfg.Port,
-		Handler: handler,
+		Addr:              ":" + cfg.Port,
+		Handler:           handler,
+		ReadTimeout:       15 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       90 * time.Second,
+		MaxHeaderBytes:    1 << 20, // 1 MB
 	}
 
 	errCh := make(chan error, 1)

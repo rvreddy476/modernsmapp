@@ -11,6 +11,8 @@ import (
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
 	"github.com/atpost/shared/server"
+	"github.com/atpost/shared/transport"
+	"github.com/atpost/trust-safety-service/database"
 	"github.com/atpost/trust-safety-service/internal/http"
 	"github.com/atpost/trust-safety-service/internal/service"
 	"github.com/atpost/trust-safety-service/internal/store/postgres"
@@ -30,7 +32,16 @@ func main() {
 
 	// 3. Database
 	ctx := context.Background()
-	dbPool, err := pgxpool.New(ctx, pgDSN)
+	poolCfg, err := pgxpool.ParseConfig(pgDSN)
+	if err != nil {
+		slog.Error("parse db config", "error", err)
+		os.Exit(1)
+	}
+	poolCfg.MaxConns = 25
+	poolCfg.MinConns = 5
+	poolCfg.MaxConnLifetime = 15 * time.Minute
+	poolCfg.MaxConnIdleTime = 5 * time.Minute
+	dbPool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
 		slog.Error("failed to connect to postgres", "error", err)
 		os.Exit(1)
@@ -43,12 +54,24 @@ func main() {
 	}
 	slog.Info("connected to postgres")
 
+	if err := postgres.BootstrapSchema(ctx, dbPool, database.SetupSQL); err != nil {
+		slog.Error("failed to bootstrap trust-safety schema", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("trust-safety schema ready")
+
 	// 4. Kafka writer
-	kafkaWriter := &kafka.Writer{
-		Addr:     kafka.TCP(kafkaBrokers),
+	kafkaDialer, err := transport.KafkaDialerFromEnv()
+	if err != nil {
+		slog.Error("failed to configure kafka dialer", "error", err)
+		os.Exit(1)
+	}
+	kafkaWriter := kafka.NewWriter(kafka.WriterConfig{
+		Brokers:  []string{kafkaBrokers},
 		Topic:    "social.events.v1",
 		Balancer: &kafka.LeastBytes{},
-	}
+		Dialer:   kafkaDialer,
+	})
 	defer kafkaWriter.Close()
 
 	// 5. Prometheus metrics

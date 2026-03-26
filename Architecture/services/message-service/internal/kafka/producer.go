@@ -14,14 +14,19 @@ type Producer struct {
 }
 
 func NewProducer(brokers []string, topic string) *Producer {
+	return NewProducerWithDialer(brokers, topic, nil)
+}
+
+func NewProducerWithDialer(brokers []string, topic string, dialer *kafka.Dialer) *Producer {
 	return &Producer{
-		writer: &kafka.Writer{
-			Addr:         kafka.TCP(brokers...),
+		writer: kafka.NewWriter(kafka.WriterConfig{
+			Brokers:      brokers,
 			Topic:        topic,
 			Balancer:     &kafka.LeastBytes{},
 			WriteTimeout: 10 * time.Second,
 			ReadTimeout:  10 * time.Second,
-		},
+			Dialer:       dialer,
+		}),
 	}
 }
 

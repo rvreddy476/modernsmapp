@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/atpost/orders-service/database"
 	nethttp "github.com/atpost/orders-service/internal/http"
 	"github.com/atpost/orders-service/internal/service"
 	"github.com/atpost/orders-service/internal/store/postgres"
@@ -14,6 +15,7 @@ import (
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
 	sharedserver "github.com/atpost/shared/server"
+	"github.com/atpost/shared/transport"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -34,7 +36,16 @@ func main() {
 
 	ctx := context.Background()
 
-	dbPool, err := pgxpool.New(ctx, pgDSN)
+	poolCfg, err := pgxpool.ParseConfig(pgDSN)
+	if err != nil {
+		slog.Error("parse db config", "error", err)
+		os.Exit(1)
+	}
+	poolCfg.MaxConns = 25
+	poolCfg.MinConns = 5
+	poolCfg.MaxConnLifetime = 15 * time.Minute
+	poolCfg.MaxConnIdleTime = 5 * time.Minute
+	dbPool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
 		slog.Error("failed to connect to postgres", "error", err)
 		os.Exit(1)
@@ -46,6 +57,18 @@ func main() {
 		os.Exit(1)
 	}
 	slog.Info("connected to postgres")
+
+	if err := postgres.BootstrapSchema(ctx, dbPool, database.SetupSQL); err != nil {
+		slog.Error("failed to bootstrap orders schema", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("orders schema ready")
+
+	kafkaDialer, err := transport.KafkaDialerFromEnv()
+	if err != nil {
+		slog.Error("failed to configure kafka dialer", "error", err)
+		os.Exit(1)
+	}
 
 	httpMetrics := metrics.NewHTTPMetrics("orders-service")
 	dbMetrics := metrics.NewDBPoolMetrics("orders-service", "postgres")
@@ -73,7 +96,7 @@ func main() {
 	checker.Register("postgres", health.PingCheck(dbPool))
 
 	store := postgres.New(dbPool)
-	svc := service.New(store, kafkaBrokers)
+	svc := service.NewWithDialer(store, kafkaBrokers, kafkaDialer)
 	handler := nethttp.New(svc)
 
 	gin.SetMode(gin.ReleaseMode)

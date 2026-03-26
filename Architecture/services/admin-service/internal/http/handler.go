@@ -1,7 +1,7 @@
 package http
 
 import (
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -106,7 +106,7 @@ func (h *Handler) TakedownContent(c *gin.Context) {
 	adminActor := "system-admin"
 
 	if err := h.svc.TakedownContent(c.Request.Context(), adminActor, req.EntityType, req.EntityID, req.Reason); err != nil {
-		log.Printf("Takedown error: %v", err)
+		slog.Error("Takedown error", "error", err)
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Takedown failed", nil, nil)
 		return
 	}
@@ -140,7 +140,7 @@ func (h *Handler) SuspendUser(c *gin.Context) {
 	adminActor := "system-admin"
 
 	if err := h.svc.SuspendUser(c.Request.Context(), adminActor, userID, req.Until, req.Reason); err != nil {
-		log.Printf("Suspend error: %v", err)
+		slog.Error("Suspend error", "error", err)
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Suspension failed", nil, nil)
 		return
 	}
@@ -156,7 +156,7 @@ func (h *Handler) GetDashboard(c *gin.Context) {
 
 	stats, err := h.svc.GetDashboard(c.Request.Context())
 	if err != nil {
-		log.Printf("Dashboard error: %v", err)
+		slog.Error("Dashboard error", "error", err)
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to load dashboard", nil, nil)
 		return
 	}
@@ -173,7 +173,7 @@ func (h *Handler) GetAuditLog(c *gin.Context) {
 
 	logs, total, err := h.svc.GetAuditLogs(c.Request.Context(), limit, offset)
 	if err != nil {
-		log.Printf("Audit log error: %v", err)
+		slog.Error("Audit log error", "error", err)
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to load audit log", nil, nil)
 		return
 	}
@@ -197,7 +197,7 @@ func (h *Handler) ListReports(c *gin.Context) {
 
 	reports, total, err := h.svc.ListReports(c.Request.Context(), status, limit, offset)
 	if err != nil {
-		log.Printf("List reports error: %v", err)
+		slog.Error("List reports error", "error", err)
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to load reports", nil, nil)
 		return
 	}
@@ -220,7 +220,7 @@ func (h *Handler) ListSuspensions(c *gin.Context) {
 
 	suspensions, total, err := h.svc.ListSuspensions(c.Request.Context(), limit, offset)
 	if err != nil {
-		log.Printf("List suspensions error: %v", err)
+		slog.Error("List suspensions error", "error", err)
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to load suspensions", nil, nil)
 		return
 	}
@@ -249,7 +249,7 @@ func (h *Handler) UnsuspendUser(c *gin.Context) {
 	adminActor := "system-admin"
 
 	if err := h.svc.UnsuspendUser(c.Request.Context(), adminActor, userID); err != nil {
-		log.Printf("Unsuspend error: %v", err)
+		slog.Error("Unsuspend error", "error", err)
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Unsuspend failed", nil, nil)
 		return
 	}
@@ -284,7 +284,7 @@ func (h *Handler) RequestDataExport(c *gin.Context) {
 
 	req, err := h.svc.RequestDataExport(c.Request.Context(), userID)
 	if err != nil {
-		log.Printf("RequestDataExport error: %v", err)
+		slog.Error("RequestDataExport error", "error", err)
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to create export request", nil, nil)
 		return
 	}

@@ -19,11 +19,16 @@ type Producer struct {
 }
 
 func NewProducer(brokers []string, topic string, rdb *redis.Client) *Producer {
-	w := &kafka.Writer{
-		Addr:     kafka.TCP(brokers...),
+	return NewProducerWithDialer(brokers, topic, rdb, nil)
+}
+
+func NewProducerWithDialer(brokers []string, topic string, rdb *redis.Client, dialer *kafka.Dialer) *Producer {
+	w := kafka.NewWriter(kafka.WriterConfig{
+		Brokers:  brokers,
 		Topic:    topic,
 		Balancer: &kafka.LeastBytes{},
-	}
+		Dialer:   dialer,
+	})
 	return &Producer{writer: w, rdb: rdb}
 }
 

@@ -3,6 +3,7 @@ import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/models/memory.dart';
 import 'package:atpost_app/data/repositories/memories_repository.dart';
+import 'package:atpost_app/features/memories/slambooks_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -31,6 +32,14 @@ class _MemoriesScreenState extends ConsumerState<MemoriesScreen> {
   Future<void> _refresh() async {
     ref.invalidate(onThisDayProvider);
     ref.invalidate(memoryCollectionsProvider);
+  }
+
+  Future<void> _openSlambooks() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => const SlambooksScreen(),
+      ),
+    );
   }
 
   Future<void> _createCollection() async {
@@ -226,6 +235,7 @@ class _MemoriesScreenState extends ConsumerState<MemoriesScreen> {
                       _MemoriesHero(
                         onRefresh: _refresh,
                         onCreateCollection: _createCollection,
+                        onOpenSlambooks: _openSlambooks,
                       ),
                       const SizedBox(height: 20),
                       Row(
@@ -374,10 +384,12 @@ class _MemoriesHero extends StatelessWidget {
   const _MemoriesHero({
     required this.onRefresh,
     required this.onCreateCollection,
+    required this.onOpenSlambooks,
   });
 
   final VoidCallback onRefresh;
   final VoidCallback onCreateCollection;
+  final VoidCallback onOpenSlambooks;
 
   @override
   Widget build(BuildContext context) {
@@ -423,6 +435,18 @@ class _MemoriesHero extends StatelessWidget {
               const _MiniChip(icon: Icons.calendar_today, text: 'On this day'),
               const SizedBox(width: 8),
               const _MiniChip(icon: Icons.collections, text: 'Collections'),
+              const SizedBox(width: 8),
+              Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: onOpenSlambooks,
+                  borderRadius: BorderRadius.circular(999),
+                  child: const _MiniChip(
+                    icon: Icons.auto_stories_outlined,
+                    text: 'SlamBooks',
+                  ),
+                ),
+              ),
               const Spacer(),
               OutlinedButton.icon(
                 onPressed: onCreateCollection,
@@ -434,6 +458,45 @@ class _MemoriesHero extends StatelessWidget {
                 label: const Text('New'),
               ),
             ],
+          ),
+          const SizedBox(height: 12),
+          Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: onOpenSlambooks,
+              borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
+              child: Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: AppColors.bgCard,
+                  borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
+                  border: Border.all(color: AppColors.borderSubtle),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(
+                      Icons.auto_stories_outlined,
+                      color: AppColors.postbookPrimary,
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Open SlamBooks', style: AppTextStyles.h3),
+                          const SizedBox(height: 2),
+                          Text(
+                            'Create prompt books, moderate replies, and pin the opinion board.',
+                            style: AppTextStyles.bodySmall,
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Icon(Icons.chevron_right_rounded),
+                  ],
+                ),
+              ),
+            ),
           ),
         ],
       ),

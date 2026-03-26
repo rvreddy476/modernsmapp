@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"fmt"
-	"log"
 	"log/slog"
 	"strings"
 	"time"
@@ -244,7 +243,7 @@ func (s *Service) ConfirmUpload(ctx context.Context, mediaID uuid.UUID, userID u
 		// Emit MediaTranscodeRequested to Kafka for the worker to pick up
 		if s.producer != nil {
 			if err := s.producer.PublishTranscodeRequested(ctx, media.ID, media.UploaderID, media.StorageKey, media.MimeType); err != nil {
-				log.Printf("Warning: failed to publish transcode event for %s: %v", media.ID, err)
+				slog.Warn("Failed to publish transcode event", "media_id", media.ID, "error", err)
 			}
 		}
 	}
@@ -489,7 +488,7 @@ func (s *Service) DeleteMedia(ctx context.Context, mediaID uuid.UUID, userID uui
 	// 3. Delete blobs from storage (best-effort, don't fail the request)
 	for _, key := range objectKeys {
 		if err := s.blobStore.DeleteObject(ctx, key); err != nil {
-			log.Printf("Warning: failed to delete blob %s: %v", key, err)
+			slog.Warn("Failed to delete blob", "key", key, "error", err)
 		}
 	}
 
@@ -529,7 +528,7 @@ func (s *Service) GetMediaStatus(ctx context.Context, mediaID uuid.UUID) (*Media
 	if media.FileType == "video" {
 		jobs, err := s.pgStore.GetTranscodingJobs(ctx, mediaID)
 		if err != nil {
-			log.Printf("Warning: failed to fetch transcoding jobs for %s: %v", mediaID, err)
+			slog.Warn("Failed to fetch transcoding jobs", "media_id", mediaID, "error", err)
 		} else {
 			resp.TranscodingJobs = jobs
 		}
@@ -555,7 +554,7 @@ func (s *Service) populateMediaURLs(ctx context.Context, media *postgres.MediaAs
 	}
 
 	if err := s.pgStore.UpdateMediaURLs(ctx, media.ID, &originalURL, &cdnURL, thumbnailURL); err != nil {
-		log.Printf("Warning: failed to update media URLs for %s: %v", media.ID, err)
+		slog.Warn("Failed to update media URLs", "media_id", media.ID, "error", err)
 	}
 }
 

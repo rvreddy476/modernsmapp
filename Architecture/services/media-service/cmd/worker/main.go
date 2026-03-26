@@ -12,13 +12,16 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
-	"github.com/buckket/go-blurhash"
+	"github.com/atpost/media-service/database"
 	mediaEvents "github.com/atpost/media-service/internal/events"
 	"github.com/atpost/media-service/internal/processing"
 	"github.com/atpost/media-service/internal/store/blob"
 	"github.com/atpost/media-service/internal/store/postgres"
 	"github.com/atpost/shared/events"
+	"github.com/atpost/shared/transport"
+	"github.com/buckket/go-blurhash"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/segmentio/kafka-go"
@@ -50,7 +53,15 @@ func main() {
 	defer cancel()
 
 	// Database
-	dbPool, err := pgxpool.New(ctx, pgDSN)
+	poolCfg, err := pgxpool.ParseConfig(pgDSN)
+	if err != nil {
+		log.Fatalf("Unable to parse Postgres config: %v\n", err)
+	}
+	poolCfg.MaxConns = 25
+	poolCfg.MinConns = 5
+	poolCfg.MaxConnLifetime = 15 * time.Minute
+	poolCfg.MaxConnIdleTime = 5 * time.Minute
+	dbPool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
 		log.Fatalf("Unable to connect to Postgres: %v\n", err)
 	}
@@ -61,6 +72,11 @@ func main() {
 	}
 	log.Println("Connected to Postgres")
 
+	if err := postgres.BootstrapSchema(ctx, dbPool, database.SetupSQL); err != nil {
+		log.Fatalf("Failed to bootstrap media schema: %v\n", err)
+	}
+	log.Println("Media schema ready")
+
 	// Blob Store
 	blobStore, err := blob.New(minioEndpoint, minioAccessKey, minioSecretKey, minioBucket, minioUseSSL)
 	if err != nil {
@@ -69,7 +85,11 @@ func main() {
 	log.Println("Connected to MinIO")
 
 	pgStore := postgres.New(dbPool)
-	producer := mediaEvents.NewProducer(brokers, "media.events")
+	kafkaDialer, err := transport.KafkaDialerFromEnv()
+	if err != nil {
+		log.Fatalf("Failed to configure Kafka dialer: %v\n", err)
+	}
+	producer := mediaEvents.NewProducerWithDialer(brokers, "media.events", kafkaDialer)
 
 	// Kafka consumer
 	reader := kafka.NewReader(kafka.ReaderConfig{
@@ -78,6 +98,7 @@ func main() {
 		Topic:    "media.events",
 		MinBytes: 10e3,
 		MaxBytes: 10e6,
+		Dialer:   kafkaDialer,
 	})
 
 	// Graceful shutdown

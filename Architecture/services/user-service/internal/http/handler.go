@@ -10,6 +10,7 @@ import (
 
 	"github.com/atpost/shared/api"
 	"github.com/atpost/shared/httpclient"
+	sharedmiddleware "github.com/atpost/shared/middleware"
 	"github.com/atpost/user-service/internal/presence"
 	"github.com/atpost/user-service/internal/service"
 	"github.com/atpost/user-service/internal/store"
@@ -22,6 +23,7 @@ type Handler struct {
 	graphURL      string
 	presenceStore *presence.Store
 	graphClient   *http.Client
+	internalKey   string
 }
 
 func New(svc *service.Service, presenceStore *presence.Store) *Handler {
@@ -34,7 +36,15 @@ func New(svc *service.Service, presenceStore *presence.Store) *Handler {
 	return h
 }
 
+func (h *Handler) WithInternalKey(key string) *Handler {
+	h.internalKey = key
+	return h
+}
+
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
+	if h.internalKey != "" {
+		r.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
+	}
 	v1 := r.Group("/v1/users")
 	{
 		v1.GET("/by-username/:username", h.GetUserByUsername)

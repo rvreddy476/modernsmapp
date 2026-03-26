@@ -11,21 +11,31 @@ import (
 	"github.com/atpost/message-service/internal/service"
 	pgstore "github.com/atpost/message-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
+	sharedmiddleware "github.com/atpost/shared/middleware"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type Handler struct {
-	svc *service.Service
-	db  *pgxpool.Pool
+	svc         *service.Service
+	db          *pgxpool.Pool
+	internalKey string
 }
 
 func New(svc *service.Service, db *pgxpool.Pool) *Handler {
 	return &Handler{svc: svc, db: db}
 }
 
+func (h *Handler) WithInternalKey(key string) *Handler {
+	h.internalKey = key
+	return h
+}
+
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
+	if h.internalKey != "" {
+		r.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
+	}
 	v1 := r.Group("/v1/chat")
 	{
 		// Legacy direct message endpoints

@@ -24,12 +24,18 @@ type Consumer struct {
 
 // NewConsumer creates a new event consumer.
 func NewConsumer(brokers []string, groupID, topic string, rdb *redis.Client, svc *service.Service, st *store.Store) *Consumer {
+	return NewConsumerWithDialer(brokers, groupID, topic, rdb, svc, st, nil)
+}
+
+// NewConsumerWithDialer creates a new event consumer with an explicit Kafka dialer.
+func NewConsumerWithDialer(brokers []string, groupID, topic string, rdb *redis.Client, svc *service.Service, st *store.Store, dialer *kafka.Dialer) *Consumer {
 	reader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:  brokers,
 		GroupID:  groupID,
 		Topic:    topic,
 		MinBytes: 10e3,
 		MaxBytes: 10e6,
+		Dialer:   dialer,
 	})
 	return &Consumer{reader: reader, rdb: rdb, svc: svc, store: st}
 }

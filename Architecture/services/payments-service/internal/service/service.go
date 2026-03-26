@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/atpost/payments-service/internal/gateway"
 	"github.com/atpost/payments-service/internal/store/postgres"
@@ -19,13 +20,18 @@ type Service struct {
 }
 
 func New(store *postgres.Store, kafkaBrokers string, gw gateway.PaymentGateway) *Service {
+	return NewWithDialer(store, kafkaBrokers, gw, nil)
+}
+
+func NewWithDialer(store *postgres.Store, kafkaBrokers string, gw gateway.PaymentGateway, dialer *kafka.Dialer) *Service {
 	return &Service{
 		store: store,
-		writer: &kafka.Writer{
-			Addr:     kafka.TCP(kafkaBrokers),
+		writer: kafka.NewWriter(kafka.WriterConfig{
+			Brokers:  strings.Split(kafkaBrokers, ","),
 			Topic:    "social.events.v1",
 			Balancer: &kafka.LeastBytes{},
-		},
+			Dialer:   dialer,
+		}),
 		gateway: gw,
 	}
 }
@@ -53,13 +59,11 @@ func (s *Service) InitiatePayment(ctx context.Context, in InitiateInput) (*postg
 		in.IdempotencyKey = uuid.New().String()
 	}
 
-	// Attempt to create a gateway order for non-COD, non-wallet methods.
 	var providerRef string
 	if in.Method != "cod" && in.Method != "wallet" && s.gateway != nil {
 		order, err := s.gateway.CreateOrder(ctx, int64(in.Amount), "INR", in.IdempotencyKey)
 		if err != nil {
 			slog.Error("payment: gateway CreateOrder failed", "error", err)
-			// Continue with pending state; provider_ref will be empty
 		} else {
 			providerRef = order.ID
 		}
@@ -80,19 +84,16 @@ func (s *Service) InitiatePayment(ctx context.Context, in InitiateInput) (*postg
 		return nil, err
 	}
 
-	// Idempotent replay: the intent already existed; skip event publishing.
 	if res.WasExisting {
 		return res.Intent, nil
 	}
 
-	// For escrow payments, create a hold record.
 	if in.Method == "escrow" {
 		if holdErr := s.store.CreateHold(ctx, res.Intent.ID, int64(in.Amount), orDefault(in.Currency, "INR"), "order_delivered"); holdErr != nil {
 			slog.Error("payment: CreateHold failed", "intent_id", res.Intent.ID, "error", holdErr)
 		}
 	}
 
-	// New intent: publish event to Kafka.
 	s.publishEvent(ctx, "payment.initiated", res.Intent.PayerID.String(), res.Intent)
 	return res.Intent, nil
 }
@@ -142,12 +143,10 @@ func (s *Service) ListByReference(ctx context.Context, refType string, refID uui
 	return s.store.ListByReference(ctx, refType, refID)
 }
 
-// ReleaseHold releases an escrow hold for the given intent.
 func (s *Service) ReleaseHold(ctx context.Context, intentID uuid.UUID, releasedBy string) error {
 	return s.store.ReleaseHold(ctx, intentID, releasedBy)
 }
 
-// UpdateStatusByProviderRef updates an intent's status matched by its gateway order ID.
 func (s *Service) UpdateStatusByProviderRef(ctx context.Context, providerRef, newStatus, paymentID string) {
 	if err := s.store.UpdateStatusByProviderRef(ctx, providerRef, newStatus, paymentID); err != nil {
 		slog.Error("payment: UpdateStatusByProviderRef failed", "provider_ref", providerRef, "error", err)
@@ -161,8 +160,8 @@ func (s *Service) publishEvent(ctx context.Context, eventType, key string, paylo
 		return
 	}
 	if err := s.writer.WriteMessages(ctx, kafka.Message{
-		Key:   []byte(key),
-		Value: data,
+		Key:     []byte(key),
+		Value:   data,
 		Headers: []kafka.Header{{Key: "event_type", Value: []byte(eventType)}},
 	}); err != nil {
 		slog.Error("failed to publish event", "event_type", eventType, "error", err)

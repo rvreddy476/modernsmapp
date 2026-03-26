@@ -30,13 +30,14 @@ func NewCreatorAnalyticsConsumer(pg *pgxpool.Pool, rdb *redis.Client) *CreatorAn
 }
 
 // Start launches the Kafka consumer loop. Blocks until ctx is cancelled.
-func (c *CreatorAnalyticsConsumer) Start(ctx context.Context, brokers []string, topic string) {
+func (c *CreatorAnalyticsConsumer) Start(ctx context.Context, brokers []string, topic string, dialer *kafka.Dialer) {
 	reader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:  brokers,
 		GroupID:  "analytics-creator",
 		Topic:    topic,
 		MinBytes: 1,
 		MaxBytes: 10e6, // 10 MB
+		Dialer:   dialer,
 	})
 	defer reader.Close()
 

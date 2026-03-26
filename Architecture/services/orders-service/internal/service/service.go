@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/atpost/orders-service/internal/store/postgres"
@@ -30,13 +31,18 @@ type Service struct {
 }
 
 func New(store *postgres.Store, kafkaBrokers string) *Service {
+	return NewWithDialer(store, kafkaBrokers, nil)
+}
+
+func NewWithDialer(store *postgres.Store, kafkaBrokers string, dialer *kafka.Dialer) *Service {
 	return &Service{
 		store: store,
-		writer: &kafka.Writer{
-			Addr:     kafka.TCP(kafkaBrokers),
+		writer: kafka.NewWriter(kafka.WriterConfig{
+			Brokers:  strings.Split(kafkaBrokers, ","),
 			Topic:    "social.events.v1",
 			Balancer: &kafka.LeastBytes{},
-		},
+			Dialer:   dialer,
+		}),
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 	}
 }
@@ -207,7 +213,6 @@ func (s *Service) UpdateBookingStatus(ctx context.Context, bookingID, actorID uu
 }
 
 func (s *Service) OpenDispute(ctx context.Context, orderID, openedBy uuid.UUID, reason string, evidenceURLs []string) (*postgres.Dispute, error) {
-	// Atomically mark order as having a dispute; prevents double-disputes.
 	opened, err := s.store.MarkDisputeOpened(ctx, orderID)
 	if err != nil {
 		return nil, err
@@ -216,7 +221,6 @@ func (s *Service) OpenDispute(ctx context.Context, orderID, openedBy uuid.UUID, 
 		return nil, ErrDisputeAlreadyOpen
 	}
 
-	// Transition order status to disputed
 	if err := s.store.UpdateOrderStatus(ctx, orderID, openedBy, "disputed"); err != nil {
 		return nil, err
 	}
@@ -240,15 +244,12 @@ func (s *Service) ResolveDispute(ctx context.Context, disputeID uuid.UUID, resol
 		return ErrDisputeNotFound
 	}
 
-	// Update dispute status
 	if err := s.store.UpdateDisputeStatus(ctx, disputeID, "resolved", resolution); err != nil {
 		return err
 	}
 
-	// Trigger refund if requested
 	if refundAmount > 0 && dispute.PaymentIntentID != "" {
-		refundURL := fmt.Sprintf("%s/v1/payments/intents/%s/refund",
-			s.paymentsServiceURL, dispute.PaymentIntentID)
+		refundURL := fmt.Sprintf("%s/v1/payments/intents/%s/refund", s.paymentsServiceURL, dispute.PaymentIntentID)
 		body, _ := json.Marshal(map[string]interface{}{"amount": refundAmount})
 		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, refundURL, bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
@@ -261,7 +262,6 @@ func (s *Service) ResolveDispute(ctx context.Context, disputeID uuid.UUID, resol
 		}
 	}
 
-	// Publish dispute.resolved event
 	s.publishEvent(ctx, "dispute.resolved", disputeID.String(), map[string]interface{}{
 		"dispute_id":    disputeID,
 		"resolution":    resolution,
@@ -284,8 +284,8 @@ func (s *Service) publishEvent(ctx context.Context, eventType, key string, paylo
 		return
 	}
 	if err := s.writer.WriteMessages(ctx, kafka.Message{
-		Key:   []byte(key),
-		Value: data,
+		Key:     []byte(key),
+		Value:   data,
 		Headers: []kafka.Header{{Key: "event_type", Value: []byte(eventType)}},
 	}); err != nil {
 		slog.Error("failed to publish event", "event_type", eventType, "error", err)

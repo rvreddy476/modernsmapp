@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/atpost/admin-service/internal/store/postgres"
@@ -18,11 +19,20 @@ type Service struct {
 }
 
 func New(store *postgres.Store, kafkaBrokers string) *Service {
-	w := &kafka.Writer{
-		Addr:     kafka.TCP(kafkaBrokers),
+	return NewWithDialer(store, kafkaBrokers, nil)
+}
+
+func NewWithDialer(store *postgres.Store, kafkaBrokers string, dialer *kafka.Dialer) *Service {
+	brokers := strings.Split(kafkaBrokers, ",")
+	cfg := kafka.WriterConfig{
+		Brokers:  brokers,
 		Topic:    "social.events.v1",
 		Balancer: &kafka.LeastBytes{},
 	}
+	if dialer != nil {
+		cfg.Dialer = dialer
+	}
+	w := kafka.NewWriter(cfg)
 	return &Service{store: store, kafkaWriter: w}
 }
 

@@ -16,11 +16,16 @@ type Producer struct {
 }
 
 func NewProducer(brokers []string, topic string) *Producer {
-	w := &kafka.Writer{
-		Addr:     kafka.TCP(brokers...),
+	return NewProducerWithDialer(brokers, topic, nil)
+}
+
+func NewProducerWithDialer(brokers []string, topic string, dialer *kafka.Dialer) *Producer {
+	w := kafka.NewWriter(kafka.WriterConfig{
+		Brokers:  brokers,
 		Topic:    topic,
 		Balancer: &kafka.LeastBytes{},
-	}
+		Dialer:   dialer,
+	})
 	return &Producer{writer: w}
 }
 
@@ -116,9 +121,9 @@ func (p *Producer) PublishSpaceRemoved(ctx context.Context, communityID, spaceID
 
 func (p *Producer) PublishSpaceQuarantined(ctx context.Context, communityID, spaceID, actorID uuid.UUID) error {
 	payload := CommunitySpaceQuarantinedPayload{
-		CommunityID:  communityID.String(),
-		SpaceID:      spaceID.String(),
-		ActorID:      actorID.String(),
+		CommunityID:   communityID.String(),
+		SpaceID:       spaceID.String(),
+		ActorID:       actorID.String(),
 		QuarantinedAt: time.Now(),
 	}
 	return p.publish(ctx, EventCommunitySpaceQuarantined, &actorID, payload)

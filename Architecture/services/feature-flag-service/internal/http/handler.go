@@ -2,13 +2,14 @@ package http
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 
 	"github.com/atpost/feature-flag-service/internal/service"
 	"github.com/atpost/feature-flag-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
+	sharedmiddleware "github.com/atpost/shared/middleware"
 	"github.com/gin-gonic/gin"
 )
 
@@ -23,14 +24,28 @@ func hasScope(scopes, target string) bool {
 }
 
 type Handler struct {
-	svc *service.Evaluator
+	svc         *service.Evaluator
+	internalKey string
 }
 
 func New(svc *service.Evaluator) *Handler {
 	return &Handler{svc: svc}
 }
 
+// WithInternalKey sets the internal service key used to authenticate
+// service-to-service requests via the X-Internal-Service-Key header.
+func (h *Handler) WithInternalKey(key string) *Handler {
+	h.internalKey = key
+	return h
+}
+
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
+	// Apply internal service key enforcement to all /v1 routes.
+	// Health and metrics endpoints registered outside this group remain public.
+	if h.internalKey != "" {
+		r.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
+	}
+
 	v1 := r.Group("/v1")
 	{
 		v1.GET("/flags/me", h.EvaluateMe)
@@ -100,7 +115,7 @@ func (h *Handler) UpsertFlag(c *gin.Context) {
 	ctx := context.WithValue(c.Request.Context(), "actor_user_id", actor) //nolint:staticcheck
 
 	if err := h.svc.UpsertFlag(ctx, &flag); err != nil {
-		log.Printf("Upsert error: %v", err)
+		slog.Error("Upsert error", "error", err)
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to upsert flag", nil, nil)
 		return
 	}

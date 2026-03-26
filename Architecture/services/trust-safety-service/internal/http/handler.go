@@ -1,7 +1,7 @@
 package http
 
 import (
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -107,7 +107,7 @@ func (h *Handler) FileReport(c *gin.Context) {
 
 	report, err := h.svc.FileReport(c.Request.Context(), userID, entityID, req.EntityType, req.Reason, req.Details)
 	if err != nil {
-		log.Printf("FileReport error: %v", err)
+		slog.Error("FileReport error", "error", err)
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to file report", nil, nil)
 		return
 	}
@@ -138,7 +138,7 @@ func (h *Handler) ListReports(c *gin.Context) {
 
 	reports, err := h.svc.ListReports(c.Request.Context(), limit, offset)
 	if err != nil {
-		log.Printf("ListReports error: %v", err)
+		slog.Error("ListReports error", "error", err)
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list reports", nil, nil)
 		return
 	}
@@ -202,7 +202,7 @@ func (h *Handler) UpdateReport(c *gin.Context) {
 	}
 	report, err := h.svc.UpdateReport(c.Request.Context(), actorID, reportID, req.Status, assignedTo, req.ResolutionNotes)
 	if err != nil {
-		log.Printf("UpdateReport error: %v", err)
+		slog.Error("UpdateReport error", "error", err)
 		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
 		return
 	}

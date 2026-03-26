@@ -31,7 +31,15 @@ class FeedRepository {
       final response = await _api.get('/v1/feed/home', queryParameters: params);
 
       // Parse using the standard Envelope pattern (data, meta)
-      final rawData = response.data['data'] as List<dynamic>? ?? [];
+      final data = response.data['data'];
+      final List<dynamic> rawData;
+      if (data is List) {
+        rawData = data;
+      } else if (data is Map && data['items'] is List) {
+        rawData = data['items'] as List<dynamic>;
+      } else {
+        rawData = [];
+      }
       final posts = rawData.map((e) => Post.fromJson(e as Map<String, dynamic>)).toList();
 
       final meta = response.data['meta'] as Map<String, dynamic>?;
@@ -64,8 +72,8 @@ class FeedRepository {
   }
 
   /// Alias for compatibility with older tests.
-  Future<FeedPage> getHomeFeed({int limit = 20, String? cursor}) =>
-      getHomeFeedPage(limit: limit, cursor: cursor);
+  Future<FeedPage> getHomeFeed({int limit = 20, String? cursor, String feedMode = 'ranked'}) =>
+      getHomeFeedPage(limit: limit, cursor: cursor, feedMode: feedMode);
 
   /// Fetch specialized feeds (Reels, Videos).
   /// (Note: These might use specific paths based on the spec extension)

@@ -38,6 +38,9 @@ import 'package:atpost_app/features/chat/chat_list_screen.dart';
 import 'package:atpost_app/features/live/live_screen.dart';
 import 'package:atpost_app/features/live/broadcast_screen.dart';
 import 'package:atpost_app/features/memories/memories_screen.dart';
+import 'package:atpost_app/features/memories/slambook_detail_screen.dart';
+import 'package:atpost_app/features/memories/slambook_share_screen.dart';
+import 'package:atpost_app/features/memories/slambooks_screen.dart';
 import 'package:atpost_app/features/notifications/notifications_screen.dart';
 import 'package:atpost_app/features/profile/profile_detail_screen.dart';
 import 'package:atpost_app/features/social/followers_screen.dart';
@@ -183,6 +186,22 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/memories',
         builder: (context, state) => const MemoriesScreen(),
+      ),
+      GoRoute(
+        path: '/memories/slambooks',
+        builder: (context, state) => const SlambooksScreen(),
+      ),
+      GoRoute(
+        path: '/memories/slambooks/:slambookId',
+        builder: (context, state) => SlambookDetailScreen(
+          slambookId: state.pathParameters['slambookId']!,
+        ),
+      ),
+      GoRoute(
+        path: '/memories/slambooks/share/:token',
+        builder: (context, state) => SlambookShareScreen(
+          shareToken: state.pathParameters['token']!,
+        ),
       ),
       GoRoute(path: '/live', builder: (context, state) => const LiveScreen()),
       GoRoute(
@@ -412,3 +431,4 @@ final appRouterProvider = Provider<GoRouter>((ref) {
     ],
   );
 });
+

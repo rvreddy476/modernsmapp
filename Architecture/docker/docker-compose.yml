@@ -54,6 +54,14 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '1.0'
+          memory: 1G
 
   redis:
     image: redis:7
@@ -64,6 +72,14 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '1.0'
+          memory: 1G
 
   scylla:
     image: scylladb/scylla:5.4
@@ -77,6 +93,14 @@ services:
       interval: 20s
       timeout: 10s
       retries: 30
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '1.0'
+          memory: 1G
 
   scylla-init:
     image: scylladb/scylla:5.4
@@ -88,6 +112,14 @@ services:
     entrypoint: ["/bin/bash", "-lc"]
     command: >
       "cqlsh scylla 9042 -f /schema.cql && echo 'Scylla schema applied'"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
 
   redpanda:
     image: redpandadata/redpanda:latest
@@ -110,6 +142,14 @@ services:
       - PLAINTEXT://redpanda:9092
     ports:
       - "9092:9092"
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '1.0'
+          memory: 1G
 
   redpanda-init:
     image: redpandadata/redpanda:latest
@@ -121,6 +161,14 @@ services:
       - ./init-topics.sh:/init-topics.sh:ro
     entrypoint: ["/bin/bash", "/init-topics.sh"]
     restart: "no"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
 
   redpanda-console:
     image: redpandadata/console:latest
@@ -130,6 +178,14 @@ services:
       - "8085:8080"
     depends_on:
       - redpanda
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
 
   minio:
     image: minio/minio:latest
@@ -142,6 +198,19 @@ services:
       - "9001:9001"
     volumes:
       - miniodata:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '1.0'
+          memory: 1G
 
   opensearch:
     image: opensearchproject/opensearch:2
@@ -152,6 +221,14 @@ services:
       OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
     ports:
       - "9200:9200"
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '1.0'
+          memory: 1G
 
   # ─── API Gateway ────────────────────────────────────────────
 
@@ -194,6 +271,14 @@ services:
       - identity-auth
       - user-service
       - post-service
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
 
   # ─── Identity Platform Services ─────────────────────────────
 
@@ -218,6 +303,14 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
 
   identity-user:
     build:
@@ -236,6 +329,14 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
 
   identity-profile:
     build:
@@ -255,6 +356,14 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
 
   # ─── Architecture Services ──────────────────────────────────
 
@@ -263,6 +372,7 @@ services:
       context: ..
       dockerfile: services/user-service/Dockerfile
     environment:
+      <<: [*redis_client_env, *kafka_client_env]
       HTTP_PORT: "8082"
       POSTGRES_DSN: *app_postgres_dsn
       REDIS_ADDR: redis:6379
@@ -276,6 +386,14 @@ services:
         condition: service_healthy
       redpanda:
         condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
 
   graph-service:
     build:
@@ -298,15 +416,25 @@ services:
         condition: service_healthy
       redpanda:
         condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
 
   group-service:
     build:
       context: ..
       dockerfile: services/group-service/Dockerfile
     environment:
+      <<: [*redis_client_env, *kafka_client_env]
       HTTP_PORT: "8090"
       POSTGRES_DSN: *app_postgres_dsn
       REDIS_ADDR: redis:6379
+      KAFKA_BROKERS: redpanda:9092
       MESSAGE_SERVICE_URL: http://chat-message-service:8092
       POST_SERVICE_URL: http://post-service:8084
     ports:
@@ -316,6 +444,14 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
 
   post-service:
     build:
@@ -342,6 +478,14 @@ services:
         condition: service_healthy
       redpanda:
         condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
 
   feed-service:
     build:
@@ -368,12 +512,21 @@ services:
         condition: service_healthy
       redpanda:
         condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
 
   media-service:
     build:
       context: ..
       dockerfile: services/media-service/Dockerfile
     environment:
+      <<: [*redis_client_env, *kafka_client_env]
       HTTP_PORT: "8087"
       POSTGRES_DSN: *app_postgres_dsn
       JWT_SECRET: ${JWT_SECRET:-local_dev_jwt_change_me}
@@ -386,21 +539,31 @@ services:
       MEDIA_SCANNER_ENABLED: ${MEDIA_SCANNER_ENABLED:-false}
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
+      REDIS_ADDR: redis:6379
     ports:
       - "8087:8087"
     depends_on:
       postgres:
         condition: service_healthy
       minio:
-        condition: service_started
+        condition: service_healthy
       redpanda:
         condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
 
   media-worker:
     build:
       context: ..
       dockerfile: services/media-service/Dockerfile.worker
     environment:
+      <<: [*kafka_client_env]
       POSTGRES_DSN: *app_postgres_dsn
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: *minio_access_key
@@ -412,9 +575,17 @@ services:
       postgres:
         condition: service_healthy
       minio:
-        condition: service_started
+        condition: service_healthy
       redpanda:
         condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
 
   mediamtx:
     image: bluenviron/mediamtx:latest
@@ -425,6 +596,14 @@ services:
       - "1935:1935"
     expose:
       - "8888"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
 
   notification-service:
     build:
@@ -455,15 +634,25 @@ services:
         condition: service_healthy
       redpanda:
         condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
 
   search-service:
     build:
       context: ..
       dockerfile: services/search-service/Dockerfile
     environment:
+      <<: [*redis_client_env, *kafka_client_env]
       HTTP_PORT: "8089"
       POSTGRES_DSN: *app_postgres_dsn
       OPENSEARCH_URL: http://opensearch:9200
+      REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
@@ -476,12 +665,21 @@ services:
         condition: service_started
       redpanda:
         condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
 
   trust-safety-service:
     build:
       context: ..
       dockerfile: services/trust-safety-service/Dockerfile
     environment:
+      <<: *kafka_client_env
       HTTP_PORT: "8091"
       POSTGRES_DSN: *app_postgres_dsn
       KAFKA_BROKERS: redpanda:9092
@@ -493,6 +691,14 @@ services:
         condition: service_healthy
       redpanda:
         condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
 
   # ─── Chat Service (independent) ─────────────────────────────
 
@@ -526,6 +732,14 @@ services:
         condition: service_started
       graph-service:
         condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
 
   chat-ws-gateway:
     build:
@@ -543,6 +757,14 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
 
   call-service:
     build:
@@ -567,15 +789,25 @@ services:
         condition: service_healthy
       redpanda:
         condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
 
   monetization-service:
     build:
       context: ..
       dockerfile: services/monetization-service/Dockerfile
     environment:
+      <<: [*redis_client_env, *kafka_client_env]
       HTTP_PORT: "8099"
       POSTGRES_DSN: *app_postgres_dsn
       REDIS_ADDR: redis:6379
+      KAFKA_BROKERS: redpanda:9092
     ports:
       - "8099:8099"
     depends_on:
@@ -583,12 +815,22 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-
+      redpanda:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
   analytics-service:
     build:
       context: ..
       dockerfile: services/analytics-service/Dockerfile
     environment:
+      <<: [*redis_client_env, *kafka_client_env]
       HTTP_PORT: "8094"
       POSTGRES_DSN: *app_postgres_dsn
       REDIS_ADDR: redis:6379
@@ -607,15 +849,25 @@ services:
         condition: service_completed_successfully
       redpanda:
         condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
 
   feature-flag-service:
     build:
       context: ..
       dockerfile: services/feature-flag-service/Dockerfile
     environment:
+      <<: [*redis_client_env, *kafka_client_env]
       HTTP_PORT: "8095"
       POSTGRES_DSN: *app_postgres_dsn
       REDIS_ADDR: redis:6379
+      KAFKA_BROKERS: redpanda:9092
     ports:
       - "8095:8095"
     depends_on:
@@ -623,12 +875,21 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
 
   admin-service:
     build:
       context: ..
       dockerfile: services/admin-service/Dockerfile
     environment:
+      <<: *kafka_client_env
       HTTP_PORT: "8096"
       POSTGRES_DSN: *app_postgres_dsn
       KAFKA_BROKERS: redpanda:9092
@@ -640,6 +901,14 @@ services:
         condition: service_healthy
       redpanda:
         condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
 
   # ─── Commerce Services (v2.1) ────────────────────────────────
 
@@ -648,6 +917,7 @@ services:
       context: ..
       dockerfile: services/orders-service/Dockerfile
     environment:
+      <<: *kafka_client_env
       HTTP_PORT: "8101"
       POSTGRES_DSN: *commerce_postgres_dsn
       KAFKA_BROKERS: redpanda:9092
@@ -660,12 +930,21 @@ services:
         condition: service_healthy
       redpanda:
         condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
 
   payments-service:
     build:
       context: ..
       dockerfile: services/payments-service/Dockerfile
     environment:
+      <<: *kafka_client_env
       HTTP_PORT: "8102"
       POSTGRES_DSN: *commerce_postgres_dsn
       KAFKA_BROKERS: redpanda:9092
@@ -680,12 +959,21 @@ services:
         condition: service_healthy
       redpanda:
         condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
 
   suggestion-service:
     build:
       context: ..
       dockerfile: services/suggestion-service/Dockerfile
     environment:
+      <<: [*redis_client_env, *kafka_client_env]
       HTTP_PORT: "8100"
       POSTGRES_DSN: *app_postgres_dsn
       IDENTITY_POSTGRES_DSN: *identity_postgres_dsn
@@ -703,12 +991,21 @@ services:
         condition: service_started
       scylla-init:
         condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
 
   shop-service:
     build:
       context: ..
       dockerfile: services/shop-service/Dockerfile
     environment:
+      <<: *kafka_client_env
       HTTP_PORT: "8105"
       POSTGRES_DSN: *commerce_postgres_dsn
       KAFKA_BROKERS: redpanda:9092
@@ -719,6 +1016,14 @@ services:
         condition: service_healthy
       redpanda:
         condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
 
   live-service:
     build:
@@ -748,6 +1053,14 @@ services:
         condition: service_completed_successfully
       mediamtx:
         condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
 
   memories-service:
     build:
@@ -761,12 +1074,21 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
 
   channel-service:
     build:
       context: ..
       dockerfile: services/channel-service/Dockerfile
     environment:
+      <<: [*redis_client_env, *kafka_client_env]
       HTTP_PORT: "8106"
       POSTGRES_DSN: *app_postgres_dsn
       REDIS_ADDR: redis:6379
@@ -778,12 +1100,21 @@ services:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
       redpanda: { condition: service_started }
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
 
   community-service:
     build:
       context: ..
       dockerfile: services/community-service/Dockerfile
     environment:
+      <<: [*redis_client_env, *kafka_client_env]
       HTTP_PORT: "8107"
       POSTGRES_DSN: *app_postgres_dsn
       REDIS_ADDR: redis:6379
@@ -795,8 +1126,18 @@ services:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
       redpanda: { condition: service_started }
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
 
 volumes:
   pgdata:
   miniodata:
   scylladata:
+
+

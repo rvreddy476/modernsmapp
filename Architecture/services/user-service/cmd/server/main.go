@@ -6,11 +6,13 @@ import (
 	"os"
 	"time"
 
+	"github.com/atpost/shared/transport"
 	"github.com/atpost/shared/health"
 	"github.com/atpost/shared/middleware"
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
 	"github.com/atpost/shared/server"
+	"github.com/atpost/user-service/database"
 	"github.com/atpost/user-service/internal/events"
 	"github.com/atpost/user-service/internal/http"
 	"github.com/atpost/user-service/internal/presence"
@@ -18,7 +20,6 @@ import (
 	"github.com/atpost/user-service/internal/store"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -33,7 +34,16 @@ func main() {
 
 	// 3. Database
 	ctx := context.Background()
-	dbPool, err := pgxpool.New(ctx, pgDSN)
+	poolCfg, err := pgxpool.ParseConfig(pgDSN)
+	if err != nil {
+		slog.Error("parse db config", "error", err)
+		os.Exit(1)
+	}
+	poolCfg.MaxConns = 25
+	poolCfg.MinConns = 5
+	poolCfg.MaxConnLifetime = 15 * time.Minute
+	poolCfg.MaxConnIdleTime = 5 * time.Minute
+	dbPool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
 		slog.Error("failed to connect to postgres", "error", err)
 		os.Exit(1)
@@ -46,10 +56,18 @@ func main() {
 	}
 	slog.Info("connected to postgres")
 
+	if err := store.BootstrapSchema(ctx, dbPool, database.SetupSQL); err != nil {
+		slog.Error("failed to bootstrap user schema", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("user schema ready")
+
 	// 4. Redis
-	rdb := redis.NewClient(&redis.Options{
-		Addr: redisAddr,
-	})
+	rdb, err := transport.NewRedisClientFromEnv(redisAddr)
+	if err != nil {
+		slog.Error("failed to configure redis client", "error", err)
+		os.Exit(1)
+	}
 	if err := rdb.Ping(ctx).Err(); err != nil {
 		slog.Error("redis ping failed", "error", err)
 		os.Exit(1)
@@ -80,7 +98,13 @@ func main() {
 	userHandler := http.New(userSvc, presenceStore)
 
 	// 8. Kafka Consumer
-	consumer := events.NewConsumer([]string{kafkaBrokers}, "social.events.v1", userSvc)
+	kafkaDialer, err := transport.KafkaDialerFromEnv()
+	if err != nil {
+		slog.Error("failed to configure kafka dialer", "error", err)
+		os.Exit(1)
+	}
+
+	consumer := events.NewConsumerWithDialer([]string{kafkaBrokers}, "social.events.v1", userSvc, kafkaDialer)
 	go consumer.Start(ctx)
 
 	// Status expiry cleanup (every 5 min)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"time"
 
 	"github.com/atpost/channel-service/internal/store"
 	"github.com/atpost/shared/events"
@@ -19,12 +20,17 @@ type Consumer struct {
 }
 
 func NewConsumer(brokers []string, groupID string, s *store.Store, rdb *redis.Client) *Consumer {
+	return NewConsumerWithDialer(brokers, groupID, s, rdb, nil)
+}
+
+func NewConsumerWithDialer(brokers []string, groupID string, s *store.Store, rdb *redis.Client, dialer *kafka.Dialer) *Consumer {
 	reader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:  brokers,
 		GroupID:  groupID,
 		Topic:    "platform-events",
 		MinBytes: 10e3,
 		MaxBytes: 10e6,
+		Dialer:   dialer,
 	})
 	return &Consumer{reader: reader, store: s, rdb: rdb}
 }
@@ -39,7 +45,8 @@ func (c *Consumer) Start(ctx context.Context) {
 				return
 			}
 			slog.Error("consumer read error", "error", err)
-			return
+			time.Sleep(2 * time.Second)
+			continue
 		}
 		if err := c.processMessage(ctx, m); err != nil {
 			slog.Warn("failed to process message", "error", err)

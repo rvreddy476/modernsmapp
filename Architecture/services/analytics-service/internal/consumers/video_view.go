@@ -33,13 +33,14 @@ func NewVideoViewConsumer(watch *scylla.WatchStore, rdb *redis.Client) *VideoVie
 }
 
 // Start launches the Kafka consumer loop. Blocks until ctx is cancelled.
-func (c *VideoViewConsumer) Start(ctx context.Context, brokers []string, topic string) {
+func (c *VideoViewConsumer) Start(ctx context.Context, brokers []string, topic string, dialer *kafka.Dialer) {
 	reader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:  brokers,
 		GroupID:  "analytics-video-view",
 		Topic:    topic,
 		MinBytes: 1,
 		MaxBytes: 10e6, // 10 MB
+		Dialer:   dialer,
 	})
 	defer reader.Close()
 

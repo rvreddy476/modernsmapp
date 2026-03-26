@@ -111,6 +111,8 @@ services:
 
   group-service:
     <<: *transport_certs
+    environment:
+      KAFKA_BROKERS: redpanda:9093
 
   post-service:
     <<: *transport_certs
@@ -171,6 +173,8 @@ services:
 
   monetization-service:
     <<: *transport_certs
+    environment:
+      KAFKA_BROKERS: redpanda:9093
 
   analytics-service:
     <<: *transport_certs
@@ -179,6 +183,8 @@ services:
 
   feature-flag-service:
     <<: *transport_certs
+    environment:
+      KAFKA_BROKERS: redpanda:9093
 
   admin-service:
     <<: *transport_certs

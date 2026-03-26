@@ -120,7 +120,7 @@ class CallNotifier extends StateNotifier<CallInfo?> {
       models.CallSession? session;
       models.JoinResponse? joinResponse;
       if (_callsRepo != null) {
-        session = await _callsRepo!.createCall(
+        session = await _callsRepo.createCall(
           callType: _callTypeForRest(type),
           sourceType: 'direct',
           audioOnly: type == CallType.audio,
@@ -128,7 +128,7 @@ class CallNotifier extends StateNotifier<CallInfo?> {
           maxParticipants: 2,
           idempotencyKey: _idempotencyKey(),
         );
-        joinResponse = await _callsRepo!.joinCall(session.id);
+        joinResponse = await _callsRepo.joinCall(session.id);
       }
 
       if (state == null || state!.state != CallState.outgoing) return;
@@ -188,12 +188,12 @@ class CallNotifier extends StateNotifier<CallInfo?> {
       if (_callsRepo != null && callId != null) {
         if (inviteId != null && inviteId.isNotEmpty) {
           try {
-            await _callsRepo!.acceptInvite(callId, inviteId);
+            await _callsRepo.acceptInvite(callId, inviteId);
           } catch (_) {
             // Joining the call can still succeed even if invite acceptance was not provided.
           }
         }
-        joinResponse = await _callsRepo!.joinCall(callId);
+        joinResponse = await _callsRepo.joinCall(callId);
       }
 
       final stream = await _getMedia(state!.type);
@@ -246,7 +246,7 @@ class CallNotifier extends StateNotifier<CallInfo?> {
     );
 
     if (_callsRepo != null && callId != null && inviteId != null) {
-      unawaited(_callsRepo!.declineInvite(callId, inviteId));
+      unawaited(_callsRepo.declineInvite(callId, inviteId));
     }
     _cleanup();
   }
@@ -267,9 +267,9 @@ class CallNotifier extends StateNotifier<CallInfo?> {
 
     if (_callsRepo != null && callId != null) {
       if (info.isInitiator) {
-        unawaited(_callsRepo!.endCall(callId));
+        unawaited(_callsRepo.endCall(callId));
       } else {
-        unawaited(_callsRepo!.leaveCall(callId));
+        unawaited(_callsRepo.leaveCall(callId));
       }
     }
     _cleanup();
