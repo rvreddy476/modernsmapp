@@ -14,15 +14,16 @@ import (
 )
 
 type Service struct {
-	store       *postgres.Store
-	kafkaWriter *kafka.Writer
+	store              *postgres.Store
+	kafkaWriter        *kafka.Writer
+	miniAppSessionAuth MiniAppSessionIssuer
 }
 
-func New(store *postgres.Store, kafkaBrokers string) *Service {
-	return NewWithDialer(store, kafkaBrokers, nil)
+func New(store *postgres.Store, kafkaBrokers string, miniAppSessionAuth MiniAppSessionIssuer) *Service {
+	return NewWithDialer(store, kafkaBrokers, nil, miniAppSessionAuth)
 }
 
-func NewWithDialer(store *postgres.Store, kafkaBrokers string, dialer *kafka.Dialer) *Service {
+func NewWithDialer(store *postgres.Store, kafkaBrokers string, dialer *kafka.Dialer, miniAppSessionAuth MiniAppSessionIssuer) *Service {
 	brokers := strings.Split(kafkaBrokers, ",")
 	cfg := kafka.WriterConfig{
 		Brokers:  brokers,
@@ -33,7 +34,11 @@ func NewWithDialer(store *postgres.Store, kafkaBrokers string, dialer *kafka.Dia
 		cfg.Dialer = dialer
 	}
 	w := kafka.NewWriter(cfg)
-	return &Service{store: store, kafkaWriter: w}
+	return &Service{
+		store:              store,
+		kafkaWriter:        w,
+		miniAppSessionAuth: miniAppSessionAuth,
+	}
 }
 
 // TakedownContent

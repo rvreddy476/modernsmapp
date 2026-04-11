@@ -8,5 +8,21 @@ hlsAddress: :8888
 hlsAlwaysRemux: yes
 hlsAllowOrigins:
   - "*"
+# Low-latency HLS: shorter segments, more in the playlist, larger buffer
+hlsSegmentCount: 7
+hlsSegmentDuration: 1s
+hlsPartDuration: 200ms
+hlsSegmentMaxSize: 50M
+
+webrtc: yes
+webrtcAddress: :8889
+webrtcEncryption: no
+webrtcAllowOrigins:
+  - "*"
+webrtcLocalUDPAddress: :8189
+webrtcLocalTCPAddress: :8189
 
 pathDefaults:
+
+paths:
+  all_others:

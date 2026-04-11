@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -13,6 +14,28 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
+
+type adminService interface {
+	TakedownContent(ctx context.Context, actor string, entityType, entityID, reason string) error
+	SuspendUser(ctx context.Context, actor string, userID uuid.UUID, until time.Time, reason string) error
+	GetDashboard(ctx context.Context) (*postgres.DashboardStats, error)
+	GetAuditLogs(ctx context.Context, limit, offset int) ([]postgres.AuditLog, int, error)
+	ListReports(ctx context.Context, status string, limit, offset int) ([]postgres.Report, int, error)
+	ListSuspensions(ctx context.Context, limit, offset int) ([]postgres.Suspension, int, error)
+	UnsuspendUser(ctx context.Context, actor string, userID uuid.UUID) error
+	RequestDataExport(ctx context.Context, userID uuid.UUID) (*postgres.DataExportRequest, error)
+	GetDataExportStatus(ctx context.Context, id, userID uuid.UUID) (*postgres.DataExportRequest, error)
+	CreateMiniApp(ctx context.Context, app *postgres.MiniApp) error
+	ListMiniApps(ctx context.Context, category string, limit, offset int) ([]postgres.MiniApp, error)
+	GetMiniApp(ctx context.Context, id uuid.UUID) (*postgres.MiniApp, error)
+	UpdateMiniAppStatus(ctx context.Context, id uuid.UUID, status string) error
+	InstallApp(ctx context.Context, appID, userID uuid.UUID, permissions []string) (*postgres.AppInstallation, error)
+	UninstallApp(ctx context.Context, appID, userID uuid.UUID) error
+	GetUserInstalledApps(ctx context.Context, userID uuid.UUID) ([]postgres.MiniApp, error)
+	CreateMiniAppSession(ctx context.Context, appID, userID uuid.UUID) (*service.MiniAppSession, error)
+	CreateOAuthClient(ctx context.Context, client *postgres.OAuthClient) error
+	GetOAuthClientByClientID(ctx context.Context, clientID string) (*postgres.OAuthClient, error)
+}
 
 // hasScope reports whether the space-separated scopes string contains the exact target scope.
 func hasScope(scopes, target string) bool {
@@ -41,10 +64,10 @@ func requireAnyScope(c *gin.Context, scopes ...string) bool {
 }
 
 type Handler struct {
-	svc *service.Service
+	svc adminService
 }
 
-func New(svc *service.Service) *Handler {
+func New(svc adminService) *Handler {
 	return &Handler{svc: svc}
 }
 
@@ -70,6 +93,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		apps.POST("", h.CreateMiniApp)
 		apps.GET("", h.ListMiniApps)
 		apps.GET("/installed", h.GetUserInstalledApps)
+		apps.GET("/:id/session", h.GetMiniAppSession)
 		apps.GET("/:id", h.GetMiniApp)
 		apps.PATCH("/:id/status", h.UpdateMiniAppStatus)
 		apps.POST("/:id/install", h.InstallApp)
@@ -464,6 +488,10 @@ func (h *Handler) InstallApp(c *gin.Context) {
 			api.Error(c.Writer, http.StatusBadRequest, "APP_NOT_AVAILABLE", "App is not available for installation", nil, nil)
 			return
 		}
+		if err.Error() == "INVALID_PERMISSIONS" {
+			api.Error(c.Writer, http.StatusBadRequest, "INVALID_PERMISSIONS", "Granted permissions must be a subset of the app permissions", nil, nil)
+			return
+		}
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
 		return
 	}
@@ -509,6 +537,40 @@ func (h *Handler) GetUserInstalledApps(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, apps, nil)
+}
+
+func (h *Handler) GetMiniAppSession(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	appID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid app ID", nil, nil)
+		return
+	}
+
+	session, err := h.svc.CreateMiniAppSession(c.Request.Context(), appID, userID)
+	if err != nil {
+		switch err.Error() {
+		case "APP_NOT_INSTALLED":
+			api.Error(c.Writer, http.StatusForbidden, "APP_NOT_INSTALLED", "App must be installed before requesting a session", nil, nil)
+			return
+		case "APP_NOT_AVAILABLE":
+			api.Error(c.Writer, http.StatusBadRequest, "APP_NOT_AVAILABLE", "App is not available for runtime sessions", nil, nil)
+			return
+		case "SESSION_UNAVAILABLE":
+			api.Error(c.Writer, http.StatusServiceUnavailable, "SESSION_UNAVAILABLE", "Mini app sessions are not configured on this environment", nil, nil)
+			return
+		default:
+			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+			return
+		}
+	}
+
+	api.JSON(c.Writer, http.StatusOK, session, nil)
 }
 
 // --- OAuth ---
@@ -599,4 +661,3 @@ func (h *Handler) OAuthToken(c *gin.Context) {
 		"expires_in":   3600,
 	}, nil)
 }
-

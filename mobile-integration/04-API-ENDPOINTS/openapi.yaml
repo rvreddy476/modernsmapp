@@ -736,26 +736,108 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ArrayEnvelope'
+                $ref: '#/components/schemas/MiniAppArrayEnvelope'
+  /v1/apps/installed:
+    get:
+      tags: [Apps]
+      security: [{ bearerAuth: [] }]
+      summary: List installed mini apps
+      responses:
+        '200':
+          description: Installed mini app list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MiniAppArrayEnvelope'
   /v1/apps/{id}:
     get:
       tags: [Apps]
       security: [{ bearerAuth: [] }]
       summary: Get mini app detail
       parameters:
-        - in: path
-          name: id
-          required: true
-          schema:
-            type: string
-            format: uuid
+        - $ref: '#/components/parameters/AppIdPath'
       responses:
         '200':
           description: Mini app detail
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ObjectEnvelope'
+                $ref: '#/components/schemas/MiniAppEnvelope'
+  /v1/apps/{id}/install:
+    post:
+      tags: [Apps]
+      security: [{ bearerAuth: [] }]
+      summary: Install mini app
+      parameters:
+        - $ref: '#/components/parameters/AppIdPath'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MiniAppInstallRequest'
+            example:
+              granted_permissions:
+                - clipboard.write
+                - user.profile.read
+      responses:
+        '201':
+          description: Mini app installation created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MiniAppInstallationEnvelope'
+              example:
+                data:
+                  app_id: 550e8400-e29b-41d4-a716-446655440000
+                  user_id: 4d3f5a7e-6e6d-4a93-b548-1af7d6f36a19
+                  granted_permissions:
+                    - clipboard.write
+                    - user.profile.read
+                  installed_at: '2026-04-08T10:15:00Z'
+                error: null
+                meta: null
+    delete:
+      tags: [Apps]
+      security: [{ bearerAuth: [] }]
+      summary: Uninstall mini app
+      parameters:
+        - $ref: '#/components/parameters/AppIdPath'
+      responses:
+        '200':
+          description: Mini app uninstalled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusEnvelope'
+  /v1/apps/{id}/session:
+    get:
+      tags: [Apps]
+      security: [{ bearerAuth: [] }]
+      summary: Get mini app runtime session
+      parameters:
+        - $ref: '#/components/parameters/AppIdPath'
+      responses:
+        '200':
+          description: Mini app runtime session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MiniAppSessionEnvelope'
+              example:
+                data:
+                  app_id: 550e8400-e29b-41d4-a716-446655440000
+                  user_id: 4d3f5a7e-6e6d-4a93-b548-1af7d6f36a19
+                  token_type: Bearer
+                  access_token: eyJhbGciOiJSUzI1NiIsImtpZCI6Im1pbmktYXBwLXNlc3Npb24tMSJ9...
+                  expires_at: '2026-04-08T10:20:00Z'
+                  expires_in: 300
+                  issuer: atpost-mini-app-runtime
+                  audience: mini-app:550e8400-e29b-41d4-a716-446655440000
+                  granted_permissions:
+                    - clipboard.write
+                    - user.profile.read
+                error: null
+                meta: null
   /v1/analytics/creator/me:
     get:
       tags: [Analytics]
@@ -838,6 +920,13 @@ components:
     CallIdPath:
       in: path
       name: callId
+      required: true
+      schema:
+        type: string
+        format: uuid
+    AppIdPath:
+      in: path
+      name: id
       required: true
       schema:
         type: string
@@ -943,6 +1032,155 @@ components:
           items:
             type: object
             additionalProperties: true
+        error:
+          $ref: '#/components/schemas/Error'
+        meta:
+          $ref: '#/components/schemas/Meta'
+    MiniApp:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        developer_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        icon_url:
+          type: string
+          nullable: true
+        manifest_url:
+          type: string
+          format: uri
+        permissions:
+          type: array
+          items:
+            type: string
+        granted_permissions:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+        category:
+          type: string
+          nullable: true
+        install_count:
+          type: integer
+          format: int64
+        created_at:
+          type: string
+          format: date-time
+    MiniAppInstallRequest:
+      type: object
+      properties:
+        granted_permissions:
+          type: array
+          items:
+            type: string
+      example:
+        granted_permissions:
+          - clipboard.write
+          - user.profile.read
+    MiniAppInstallation:
+      type: object
+      properties:
+        app_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        granted_permissions:
+          type: array
+          items:
+            type: string
+        installed_at:
+          type: string
+          format: date-time
+      example:
+        app_id: 550e8400-e29b-41d4-a716-446655440000
+        user_id: 4d3f5a7e-6e6d-4a93-b548-1af7d6f36a19
+        granted_permissions:
+          - clipboard.write
+          - user.profile.read
+        installed_at: '2026-04-08T10:15:00Z'
+    MiniAppSession:
+      type: object
+      properties:
+        app_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        token_type:
+          type: string
+        access_token:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+        expires_in:
+          type: integer
+          format: int64
+        issuer:
+          type: string
+        audience:
+          type: string
+        granted_permissions:
+          type: array
+          items:
+            type: string
+      example:
+        app_id: 550e8400-e29b-41d4-a716-446655440000
+        user_id: 4d3f5a7e-6e6d-4a93-b548-1af7d6f36a19
+        token_type: Bearer
+        access_token: eyJhbGciOiJSUzI1NiIsImtpZCI6Im1pbmktYXBwLXNlc3Npb24tMSJ9...
+        expires_at: '2026-04-08T10:20:00Z'
+        expires_in: 300
+        issuer: atpost-mini-app-runtime
+        audience: mini-app:550e8400-e29b-41d4-a716-446655440000
+        granted_permissions:
+          - clipboard.write
+          - user.profile.read
+    MiniAppEnvelope:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/MiniApp'
+        error:
+          $ref: '#/components/schemas/Error'
+        meta:
+          $ref: '#/components/schemas/Meta'
+    MiniAppArrayEnvelope:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/MiniApp'
+        error:
+          $ref: '#/components/schemas/Error'
+        meta:
+          $ref: '#/components/schemas/Meta'
+    MiniAppInstallationEnvelope:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/MiniAppInstallation'
+        error:
+          $ref: '#/components/schemas/Error'
+        meta:
+          $ref: '#/components/schemas/Meta'
+    MiniAppSessionEnvelope:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/MiniAppSession'
         error:
           $ref: '#/components/schemas/Error'
         meta:

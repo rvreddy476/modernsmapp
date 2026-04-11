@@ -40,6 +40,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/streams/:streamId/playback/*asset", h.ProxyPlayback)
 		v1.HEAD("/streams/:streamId/playback/*asset", h.ProxyPlayback)
 		v1.OPTIONS("/streams/:streamId/playback/*asset", h.ProxyPlayback)
+		v1.POST("/streams/:streamId/publish/whip", h.ProxyPublishWHIP)
+		v1.OPTIONS("/streams/:streamId/publish/whip", h.ProxyPublishWHIP)
 		v1.POST("/streams/:streamId/go-live", h.GoLive)
 		v1.POST("/streams/:streamId/end", h.EndStream)
 		v1.GET("/hosts/:hostId/streams", h.ListHostStreams)
@@ -448,6 +450,8 @@ func sanitizeStreamForRequester(st *postgres.Stream, requesterIsHost bool) {
 	st.StreamKey = ""
 	st.IngestURL = nil
 	st.IngestProtocol = nil
+	st.PublishURL = nil
+	st.PublishProtocol = nil
 }
 
 func sanitizeStreamsForRequester(streams []postgres.Stream, requesterIsHost bool) {
@@ -458,5 +462,7 @@ func sanitizeStreamsForRequester(streams []postgres.Stream, requesterIsHost bool
 		streams[i].StreamKey = ""
 		streams[i].IngestURL = nil
 		streams[i].IngestProtocol = nil
+		streams[i].PublishURL = nil
+		streams[i].PublishProtocol = nil
 	}
 }

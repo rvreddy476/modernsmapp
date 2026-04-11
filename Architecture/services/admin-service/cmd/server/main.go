@@ -76,8 +76,15 @@ func main() {
 
 	// 6. Dependencies
 	store := postgres.New(dbPool)
-	svc := service.NewWithDialer(store, kafkaBrokers, kafkaDialer)
+	internalKey := env("INTERNAL_SERVICE_KEY", "")
+	authURL := env("AUTH_SERVICE_URL", "http://identity-auth:8081")
+	authClient := service.NewAuthClient(authURL, internalKey)
+	svc := service.NewWithDialer(store, kafkaBrokers, kafkaDialer, authClient)
 	handler := http.New(svc)
+
+	// Commerce client for seller/product approval proxying
+	commerceURL := env("COMMERCE_SERVICE_URL", "http://commerce-service:8109")
+	commerceClient := service.NewCommerceClient(commerceURL, internalKey)
 
 	// 7. Gin with middleware stack
 	gin.SetMode(gin.ReleaseMode)
@@ -91,6 +98,7 @@ func main() {
 	checker.RegisterRoutes(r)
 	r.GET("/metrics", metrics.Handler())
 	handler.RegisterRoutes(r)
+	handler.RegisterCommerceRoutes(r, commerceClient)
 
 	// 8. Graceful shutdown
 	if err := server.Run(r, server.Config{

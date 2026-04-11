@@ -22,7 +22,7 @@ class CallsRepository {
       if (sourceId != null && sourceId.isNotEmpty) 'source_id': sourceId,
       'audio_only': audioOnly,
       'target_user_ids': targetUserIds,
-      if (maxParticipants != null) 'max_participants': maxParticipants,
+      'max_participants': ?maxParticipants,
       if (idempotencyKey != null && idempotencyKey.isNotEmpty)
         'idempotency_key': idempotencyKey,
     });

@@ -3,6 +3,7 @@ package http
 import (
 	"errors"
 	"io"
+	"log/slog"
 	stdhttp "net/http"
 	"strings"
 	"time"
@@ -56,6 +57,7 @@ func (h *Handler) ProxyPlayback(c *gin.Context) {
 		return
 	}
 	target.RawQuery = c.Request.URL.RawQuery
+	slog.Info("playback proxy", "target", target.String(), "stream_id", streamID.String(), "asset", c.Param("asset"))
 
 	req, err := stdhttp.NewRequestWithContext(c.Request.Context(), c.Request.Method, target.String(), nil)
 	if err != nil {

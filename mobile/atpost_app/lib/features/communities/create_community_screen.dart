@@ -3,6 +3,7 @@ import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/repositories/communities_repository.dart';
 import 'package:atpost_app/providers/communities_provider.dart';
+import 'package:atpost_app/providers/qa_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -15,14 +16,15 @@ class CreateCommunityScreen extends ConsumerStatefulWidget {
       _CreateCommunityScreenState();
 }
 
-class _CreateCommunityScreenState
-    extends ConsumerState<CreateCommunityScreen> {
+class _CreateCommunityScreenState extends ConsumerState<CreateCommunityScreen> {
   final _formKey = GlobalKey<FormState>();
   final _nameCtrl = TextEditingController();
   final _handleCtrl = TextEditingController();
   final _descCtrl = TextEditingController();
+  final _topicCtrl = TextEditingController();
   String _communityType = 'public';
   bool _creating = false;
+  final Set<String> _topicTags = <String>{};
 
   static const _communityTypes = [
     'public',
@@ -40,6 +42,7 @@ class _CreateCommunityScreenState
     _nameCtrl.dispose();
     _handleCtrl.dispose();
     _descCtrl.dispose();
+    _topicCtrl.dispose();
     super.dispose();
   }
 
@@ -53,8 +56,9 @@ class _CreateCommunityScreenState
         handle: _handleCtrl.text.trim(),
         communityType: _communityType,
         description: _descCtrl.text.trim(),
+        topicTags: _topicTags.toList(),
       );
-      ref.invalidate(myCommunitiesProvider);
+      ref.invalidate(communitiesProvider);
       if (mounted) context.pop();
     } catch (e) {
       if (mounted) {
@@ -67,8 +71,24 @@ class _CreateCommunityScreenState
     }
   }
 
+  void _addTopicTag(String rawValue) {
+    final normalized = rawValue
+        .trim()
+        .replaceFirst(RegExp(r'^#+'), '')
+        .toLowerCase();
+    if (normalized.isEmpty) return;
+    setState(() => _topicTags.add(normalized));
+    _topicCtrl.clear();
+  }
+
+  void _removeTopicTag(String tag) {
+    setState(() => _topicTags.remove(tag));
+  }
+
   @override
   Widget build(BuildContext context) {
+    final topicsAsync = ref.watch(qaTopicsProvider);
+
     return Scaffold(
       backgroundColor: AppColors.bgPrimary,
       appBar: AppBar(
@@ -90,8 +110,7 @@ class _CreateCommunityScreenState
             const SizedBox(height: 6),
             TextFormField(
               controller: _nameCtrl,
-              style:
-                  AppTextStyles.body.copyWith(color: AppColors.textPrimary),
+              style: AppTextStyles.body.copyWith(color: AppColors.textPrimary),
               decoration: _inputDecoration('e.g. Flutter Developers'),
               validator: (v) =>
                   (v == null || v.trim().isEmpty) ? 'Name is required' : null,
@@ -104,12 +123,10 @@ class _CreateCommunityScreenState
             const SizedBox(height: 6),
             TextFormField(
               controller: _handleCtrl,
-              style:
-                  AppTextStyles.body.copyWith(color: AppColors.textPrimary),
+              style: AppTextStyles.body.copyWith(color: AppColors.textPrimary),
               decoration: _inputDecoration('@flutter-devs'),
-              validator: (v) => (v == null || v.trim().isEmpty)
-                  ? 'Handle is required'
-                  : null,
+              validator: (v) =>
+                  (v == null || v.trim().isEmpty) ? 'Handle is required' : null,
             ),
 
             const SizedBox(height: 18),
@@ -121,8 +138,7 @@ class _CreateCommunityScreenState
               padding: const EdgeInsets.symmetric(horizontal: 12),
               decoration: BoxDecoration(
                 color: AppColors.bgCard,
-                borderRadius:
-                    BorderRadius.circular(AppSpacing.radiusMedium),
+                borderRadius: BorderRadius.circular(AppSpacing.radiusMedium),
                 border: Border.all(color: AppColors.borderSubtle),
               ),
               child: DropdownButtonHideUnderline(
@@ -130,14 +146,16 @@ class _CreateCommunityScreenState
                   value: _communityType,
                   isExpanded: true,
                   dropdownColor: AppColors.bgSecondary,
-                  style: AppTextStyles.body
-                      .copyWith(color: AppColors.textPrimary),
+                  style: AppTextStyles.body.copyWith(
+                    color: AppColors.textPrimary,
+                  ),
                   items: _communityTypes
-                      .map((t) => DropdownMenuItem(
-                            value: t,
-                            child:
-                                Text(t[0].toUpperCase() + t.substring(1)),
-                          ))
+                      .map(
+                        (t) => DropdownMenuItem(
+                          value: t,
+                          child: Text(t[0].toUpperCase() + t.substring(1)),
+                        ),
+                      )
                       .toList(),
                   onChanged: (v) {
                     if (v != null) setState(() => _communityType = v);
@@ -153,11 +171,104 @@ class _CreateCommunityScreenState
             const SizedBox(height: 6),
             TextFormField(
               controller: _descCtrl,
-              style:
-                  AppTextStyles.body.copyWith(color: AppColors.textPrimary),
+              style: AppTextStyles.body.copyWith(color: AppColors.textPrimary),
               maxLines: 4,
-              decoration:
-                  _inputDecoration('What is this community about?'),
+              decoration: _inputDecoration('What is this community about?'),
+            ),
+
+            const SizedBox(height: 18),
+
+            Text('Topic Tags', style: AppTextStyles.label),
+            const SizedBox(height: 6),
+            TextFormField(
+              controller: _topicCtrl,
+              style: AppTextStyles.body.copyWith(color: AppColors.textPrimary),
+              onFieldSubmitted: _addTopicTag,
+              decoration: _inputDecoration('Add #flutter, #ai, #design')
+                  .copyWith(
+                    suffixIcon: IconButton(
+                      onPressed: () => _addTopicTag(_topicCtrl.text),
+                      icon: const Icon(
+                        Icons.add_rounded,
+                        color: AppColors.postbookPrimary,
+                      ),
+                    ),
+                  ),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'Communities are scoped under topics. Add a few tags so they can be discovered from topic pages.',
+              style: AppTextStyles.bodySmall.copyWith(
+                color: AppColors.textSecondary,
+              ),
+            ),
+            if (_topicTags.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: _topicTags
+                    .map(
+                      (tag) => InputChip(
+                        label: Text('#$tag'),
+                        onDeleted: () => _removeTopicTag(tag),
+                        backgroundColor: AppColors.postbookPrimary.withValues(
+                          alpha: 0.14,
+                        ),
+                        side: const BorderSide(color: AppColors.borderSubtle),
+                        labelStyle: AppTextStyles.label.copyWith(
+                          color: AppColors.postbookPrimary,
+                        ),
+                        deleteIconColor: AppColors.postbookPrimary,
+                      ),
+                    )
+                    .toList(),
+              ),
+            ],
+            const SizedBox(height: 14),
+            topicsAsync.when(
+              loading: () => const SizedBox.shrink(),
+              error: (_, _) => const SizedBox.shrink(),
+              data: (topics) {
+                final suggestions = topics
+                    .where((topic) => !_topicTags.contains(topic.slug))
+                    .take(8)
+                    .toList();
+                if (suggestions.isEmpty) {
+                  return const SizedBox.shrink();
+                }
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Suggested topics',
+                      style: AppTextStyles.labelSmall.copyWith(
+                        color: AppColors.textMuted,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: suggestions
+                          .map(
+                            (topic) => ActionChip(
+                              onPressed: () => _addTopicTag(topic.slug),
+                              label: Text('#${topic.slug}'),
+                              backgroundColor: AppColors.bgCard,
+                              side: const BorderSide(
+                                color: AppColors.borderSubtle,
+                              ),
+                              labelStyle: AppTextStyles.labelSmall.copyWith(
+                                color: AppColors.textSecondary,
+                              ),
+                            ),
+                          )
+                          .toList(),
+                    ),
+                  ],
+                );
+              },
             ),
 
             const SizedBox(height: 28),
@@ -168,8 +279,7 @@ class _CreateCommunityScreenState
               child: Container(
                 decoration: BoxDecoration(
                   gradient: AppColors.postbookGradient,
-                  borderRadius:
-                      BorderRadius.circular(AppSpacing.radiusMedium),
+                  borderRadius: BorderRadius.circular(AppSpacing.radiusMedium),
                 ),
                 child: ElevatedButton(
                   onPressed: _creating ? null : _submit,
@@ -179,7 +289,8 @@ class _CreateCommunityScreenState
                     padding: const EdgeInsets.symmetric(vertical: 14),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(
-                          AppSpacing.radiusMedium),
+                        AppSpacing.radiusMedium,
+                      ),
                     ),
                   ),
                   child: _creating
@@ -191,9 +302,12 @@ class _CreateCommunityScreenState
                             color: Colors.white,
                           ),
                         )
-                      : Text('Create Community',
-                          style: AppTextStyles.label
-                              .copyWith(color: Colors.white)),
+                      : Text(
+                          'Create Community',
+                          style: AppTextStyles.label.copyWith(
+                            color: Colors.white,
+                          ),
+                        ),
                 ),
               ),
             ),
@@ -221,8 +335,7 @@ class _CreateCommunityScreenState
         borderRadius: BorderRadius.circular(AppSpacing.radiusMedium),
         borderSide: const BorderSide(color: AppColors.postbookPrimary),
       ),
-      contentPadding:
-          const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
     );
   }
 }

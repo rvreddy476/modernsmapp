@@ -49,16 +49,19 @@ scrape_configs:
       - targets: ['admin-service:8096']
   - job_name: 'shop-service'
     static_configs:
-      - targets: ['shop-service:8097']
+      - targets: ['shop-service:8105']
   - job_name: 'memories-service'
     static_configs:
-      - targets: ['memories-service:8098']
+      - targets: ['memories-service:8104']
   - job_name: 'live-service'
     static_configs:
-      - targets: ['live-service:8099']
+      - targets: ['live-service:8103']
   - job_name: 'suggestion-service'
     static_configs:
       - targets: ['suggestion-service:8100']
+  - job_name: 'qa-service'
+    static_configs:
+      - targets: ['qa-service:8108']
   - job_name: 'user-service'
     static_configs:
       - targets: ['user-service:8082']

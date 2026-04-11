@@ -276,9 +276,34 @@ func (s *Service) CreateBusinessPage(ctx context.Context, p *store.BusinessPage)
 	return s.store.CreateBusinessPage(ctx, p)
 }
 
-// GetBusinessPage returns a business page by handle.
-func (s *Service) GetBusinessPage(ctx context.Context, handle string) (*store.BusinessPage, error) {
-	return s.store.GetBusinessPageByHandle(ctx, handle)
+// GetBusinessPage returns a business page by handle OR UUID, with optional viewer follow status.
+// Accepting both forms keeps the public `:id` route flexible: clients can deep-link by handle
+// while internal flows (e.g. onboarding wizard) can address pages by their stable UUID.
+func (s *Service) GetBusinessPage(ctx context.Context, idOrHandle string, viewerID *uuid.UUID) (*store.BusinessPage, error) {
+	if pageID, err := uuid.Parse(idOrHandle); err == nil {
+		return s.store.GetBusinessPageByID(ctx, pageID, viewerID)
+	}
+	return s.store.GetBusinessPageByHandle(ctx, idOrHandle, viewerID)
+}
+
+// DeleteBusinessPage hard-deletes a page owned by the caller.
+func (s *Service) DeleteBusinessPage(ctx context.Context, pageID, userID uuid.UUID) error {
+	return s.store.DeleteBusinessPage(ctx, pageID, userID)
+}
+
+// DiscoverPages returns pages filtered by category/search with pagination.
+func (s *Service) DiscoverPages(ctx context.Context, category, search string, limit, offset int) ([]store.BusinessPage, error) {
+	return s.store.DiscoverPages(ctx, category, search, limit, offset)
+}
+
+// FollowPage follows a business page.
+func (s *Service) FollowPage(ctx context.Context, pageID, userID uuid.UUID) error {
+	return s.store.FollowPage(ctx, pageID, userID)
+}
+
+// UnfollowPage unfollows a business page.
+func (s *Service) UnfollowPage(ctx context.Context, pageID, userID uuid.UUID) error {
+	return s.store.UnfollowPage(ctx, pageID, userID)
 }
 
 // UpdateBusinessPage updates a business page.
@@ -299,6 +324,16 @@ func (s *Service) SubmitReview(ctx context.Context, r *store.BusinessReview) err
 // GetUserBusinessPages returns all business pages for a user.
 func (s *Service) GetUserBusinessPages(ctx context.Context, userID uuid.UUID) ([]store.BusinessPage, error) {
 	return s.store.GetUserBusinessPages(ctx, userID)
+}
+
+// SetBusinessPageSellerID links a seller to a business page.
+func (s *Service) SetBusinessPageSellerID(ctx context.Context, pageID, sellerID uuid.UUID) error {
+	return s.store.SetBusinessPageSellerID(ctx, pageID, sellerID)
+}
+
+// ActivateBusinessPage sets a business page status to active.
+func (s *Service) ActivateBusinessPage(ctx context.Context, pageID uuid.UUID) error {
+	return s.store.ActivateBusinessPage(ctx, pageID)
 }
 
 // --- Reputation & Endorsements ---

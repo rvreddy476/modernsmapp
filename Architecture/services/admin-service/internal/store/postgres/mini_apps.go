@@ -10,17 +10,18 @@ import (
 
 // MiniApp represents a third-party app on the AtPost platform.
 type MiniApp struct {
-	ID           uuid.UUID `json:"id"`
-	DeveloperID  uuid.UUID `json:"developer_id"`
-	Name         string    `json:"name"`
-	Description  string    `json:"description"`
-	IconURL      string    `json:"icon_url,omitempty"`
-	ManifestURL  string    `json:"manifest_url"`
-	Permissions  []string  `json:"permissions"`
-	Status       string    `json:"status"`
-	Category     string    `json:"category,omitempty"`
-	InstallCount int64     `json:"install_count"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID                 uuid.UUID `json:"id"`
+	DeveloperID        uuid.UUID `json:"developer_id"`
+	Name               string    `json:"name"`
+	Description        string    `json:"description"`
+	IconURL            string    `json:"icon_url,omitempty"`
+	ManifestURL        string    `json:"manifest_url"`
+	Permissions        []string  `json:"permissions"`
+	GrantedPermissions []string  `json:"granted_permissions,omitempty"`
+	Status             string    `json:"status"`
+	Category           string    `json:"category,omitempty"`
+	InstallCount       int64     `json:"install_count"`
+	CreatedAt          time.Time `json:"created_at"`
 }
 
 // AppInstallation represents a user installing a mini app.
@@ -78,6 +79,29 @@ func (s *Store) GetMiniApp(ctx context.Context, id uuid.UUID) (*MiniApp, error) 
 		FROM mini_apps WHERE id = $1
 	`, id).Scan(&app.ID, &app.DeveloperID, &app.Name, &app.Description, &app.IconURL, &app.ManifestURL,
 		&app.Permissions, &app.Status, &app.Category, &app.InstallCount, &app.CreatedAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &app, nil
+}
+
+// GetInstalledMiniApp returns a mini app only if the user has it installed.
+func (s *Store) GetInstalledMiniApp(ctx context.Context, appID, userID uuid.UUID) (*MiniApp, error) {
+	var app MiniApp
+	err := s.db.QueryRow(ctx, `
+		SELECT m.id, m.developer_id, m.name, m.description, COALESCE(m.icon_url,''), m.manifest_url,
+		       m.permissions, ai.granted_permissions, m.status, COALESCE(m.category,''), m.install_count, m.created_at
+		FROM mini_apps m
+		JOIN app_installations ai ON ai.app_id = m.id
+		WHERE m.id = $1 AND ai.user_id = $2
+	`, appID, userID).Scan(
+		&app.ID, &app.DeveloperID, &app.Name, &app.Description, &app.IconURL,
+		&app.ManifestURL, &app.Permissions, &app.GrantedPermissions, &app.Status,
+		&app.Category, &app.InstallCount, &app.CreatedAt,
+	)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, nil
@@ -160,7 +184,7 @@ func (s *Store) UninstallApp(ctx context.Context, appID, userID uuid.UUID) error
 func (s *Store) GetUserInstalledApps(ctx context.Context, userID uuid.UUID) ([]MiniApp, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT m.id, m.developer_id, m.name, m.description, COALESCE(m.icon_url,''), m.manifest_url,
-		       m.permissions, m.status, COALESCE(m.category,''), m.install_count, m.created_at
+		       m.permissions, ai.granted_permissions, m.status, COALESCE(m.category,''), m.install_count, m.created_at
 		FROM mini_apps m
 		JOIN app_installations ai ON ai.app_id = m.id
 		WHERE ai.user_id = $1
@@ -175,7 +199,7 @@ func (s *Store) GetUserInstalledApps(ctx context.Context, userID uuid.UUID) ([]M
 	for rows.Next() {
 		var app MiniApp
 		if err := rows.Scan(&app.ID, &app.DeveloperID, &app.Name, &app.Description, &app.IconURL,
-			&app.ManifestURL, &app.Permissions, &app.Status, &app.Category, &app.InstallCount, &app.CreatedAt); err != nil {
+			&app.ManifestURL, &app.Permissions, &app.GrantedPermissions, &app.Status, &app.Category, &app.InstallCount, &app.CreatedAt); err != nil {
 			return nil, err
 		}
 		apps = append(apps, app)

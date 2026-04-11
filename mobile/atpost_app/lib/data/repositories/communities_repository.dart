@@ -60,13 +60,18 @@ class CommunitiesRepository {
     required String handle,
     required String communityType,
     String description = '',
+    List<String> topicTags = const [],
   }) async {
-    final response = await _api.post('/v1/communities', data: {
-      'name': name,
-      'handle': handle,
-      'community_type': communityType,
-      'description': description,
-    });
+    final response = await _api.post(
+      '/v1/communities',
+      data: {
+        'name': name,
+        'handle': handle,
+        'community_type': communityType,
+        'description': description,
+        'topic_tags': topicTags,
+      },
+    );
     final data = response.data;
     if (data is Map<String, dynamic>) {
       final payload = data['data'] as Map<String, dynamic>? ?? data;

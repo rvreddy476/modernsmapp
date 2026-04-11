@@ -5,6 +5,7 @@ use (
 	./services/admin-service
 	./services/channel-service
 	./services/community-service
+	./services/qa-service
 	./services/analytics-service
 	./services/api-gateway
 	./services/feature-flag-service
@@ -21,6 +22,7 @@ use (
 	./services/payments-service
 	./services/post-service
 	./services/search-service
+	./services/commerce-service
 	./services/shop-service
 	./services/suggestion-service
 	./services/trust-safety-service

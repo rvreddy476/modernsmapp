@@ -54,6 +54,7 @@ topics=(
   "atpost.channel.updates"
   "atpost.channel.notifications"
   "atpost.channel.feed-inject"
+  "qa-events"
 )
 
 rpk cluster config set kafka_enable_authorization true >/dev/null 2>&1 || true

@@ -11,6 +11,7 @@ class Community {
   final int spaceCount;
   final bool isVerified;
   final String? viewerRole;
+  final List<String> topicTags;
   final DateTime createdAt;
 
   const Community({
@@ -26,10 +27,12 @@ class Community {
     this.spaceCount = 0,
     this.isVerified = false,
     this.viewerRole,
+    this.topicTags = const [],
     required this.createdAt,
   });
 
   factory Community.fromJson(Map<String, dynamic> json) {
+    final topicTagsJson = json['topic_tags'] as List<dynamic>? ?? const [];
     return Community(
       id: json['id'] as String? ?? '',
       name: json['name'] as String? ?? '',
@@ -39,15 +42,25 @@ class Community {
       status: json['status'] as String? ?? 'active',
       avatarMediaId: json['avatar_media_id'] as String?,
       bannerMediaId: json['banner_media_id'] as String?,
-      memberCount: json['member_count'] as int? ?? 0,
-      spaceCount: json['space_count'] as int? ?? 0,
+      memberCount: _asInt(json['member_count']),
+      spaceCount: _asInt(json['space_count']),
       isVerified: json['is_verified'] as bool? ?? false,
       viewerRole: json['viewer_role'] as String?,
+      topicTags: topicTagsJson
+          .map((item) => item.toString().trim())
+          .where((item) => item.isNotEmpty)
+          .toList(),
       createdAt: json['created_at'] != null
           ? DateTime.parse(json['created_at'] as String)
           : DateTime.now(),
     );
   }
+}
+
+int _asInt(dynamic value) {
+  if (value is int) return value;
+  if (value is num) return value.toInt();
+  return int.tryParse(value?.toString() ?? '') ?? 0;
 }
 
 class CommunitySpace {

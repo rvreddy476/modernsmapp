@@ -39,6 +39,7 @@ services:
 
   postgres:
     image: postgres:16
+    command: ["postgres", "-c", "max_connections=500"]
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
@@ -83,7 +84,7 @@ services:
 
   scylla:
     image: scylladb/scylla:5.4
-    command: ["--overprovisioned", "1", "--smp", "1", "--memory", "2048M"]
+    command: ["--overprovisioned", "1", "--smp", "1", "--memory", "512M", "--developer-mode", "1"]
     ports:
       - "9042:9042"
     volumes:
@@ -96,11 +97,11 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '2.0'
-          memory: 2G
-        reservations:
           cpus: '1.0'
           memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
 
   scylla-init:
     image: scylladb/scylla:5.4
@@ -217,7 +218,7 @@ services:
     environment:
       discovery.type: single-node
       plugins.security.disabled: "true"
-      OPENSEARCH_INITIAL_ADMIN_PASSWORD: ${OPENSEARCH_INITIAL_ADMIN_PASSWORD:-local_dev_opensearch_admin_password_change_me}
+      OPENSEARCH_INITIAL_ADMIN_PASSWORD: ${OPENSEARCH_INITIAL_ADMIN_PASSWORD:-LocalDev@OpenSearch2024}
       OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
     ports:
       - "9200:9200"
@@ -265,6 +266,8 @@ services:
       MEMORIES_SERVICE_URL: http://memories-service:8104
       CHANNEL_SERVICE_URL: http://channel-service:8106
       COMMUNITY_SERVICE_URL: http://community-service:8107
+      QA_SERVICE_URL: http://qa-service:8108
+      COMMERCE_SERVICE_URL: http://commerce-service:8109
     ports:
       - "8080:8080"
     depends_on:
@@ -592,10 +595,15 @@ services:
     command: ["/mediamtx.yml"]
     volumes:
       - ./mediamtx.yml:/mediamtx.yml:ro
+    environment:
+      MTX_WEBRTCADDITIONALHOSTS: ${LIVE_WEBRTC_ADDITIONAL_HOSTS:-localhost,127.0.0.1}
     ports:
       - "1935:1935"
+      - "8189:8189/tcp"
+      - "8189:8189/udp"
     expose:
       - "8888"
+      - "8889"
     deploy:
       resources:
         limits:
@@ -1025,6 +1033,35 @@ services:
           cpus: '0.25'
           memory: 256M
 
+  commerce-service:
+    build:
+      context: ..
+      dockerfile: services/commerce-service/Dockerfile
+    environment:
+      <<: [*redis_client_env, *kafka_client_env]
+      HTTP_PORT: "8109"
+      POSTGRES_DSN: *commerce_postgres_dsn
+      REDIS_ADDR: redis:6379
+      KAFKA_BROKERS: redpanda:9092
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+    ports:
+      - "8109:8109"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      redpanda:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
   live-service:
     build:
       context: ..
@@ -1038,6 +1075,9 @@ services:
       LIVE_PLAYBACK_URL_TEMPLATE: ${LIVE_PLAYBACK_URL_TEMPLATE:-http://localhost:8103/v1/live/streams/{stream_id}/playback/index.m3u8}
       LIVE_PLAYBACK_INTERNAL_BASE_URL: ${LIVE_PLAYBACK_INTERNAL_BASE_URL:-http://mediamtx:8888}
       LIVE_PLAYBACK_PROTOCOL: ${LIVE_PLAYBACK_PROTOCOL:-hls}
+      LIVE_PUBLISH_URL_TEMPLATE: ${LIVE_PUBLISH_URL_TEMPLATE:-http://localhost:8103/v1/live/streams/{stream_id}/publish/whip}
+      LIVE_PUBLISH_INTERNAL_BASE_URL: ${LIVE_PUBLISH_INTERNAL_BASE_URL:-http://mediamtx:8889}
+      LIVE_PUBLISH_PROTOCOL: ${LIVE_PUBLISH_PROTOCOL:-whip}
       LIVE_INGEST_URL: ${LIVE_INGEST_URL:-rtmp://localhost:1935/live}
       LIVE_INGEST_PROTOCOL: ${LIVE_INGEST_PROTOCOL:-rtmp}
     ports:
@@ -1122,6 +1162,32 @@ services:
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
     ports:
       - "8107:8107"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      redpanda: { condition: service_started }
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+  qa-service:
+    build:
+      context: ..
+      dockerfile: services/qa-service/Dockerfile
+    environment:
+      <<: [*redis_client_env, *kafka_client_env]
+      HTTP_PORT: "8108"
+      POSTGRES_DSN: *app_postgres_dsn
+      REDIS_ADDR: redis:6379
+      KAFKA_BROKERS: redpanda:9092
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+    ports:
+      - "8108:8108"
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }

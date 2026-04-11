@@ -2,6 +2,7 @@ import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/repositories/user_repository.dart';
+import 'package:atpost_app/features/discover/qa_topics_screen.dart';
 import 'package:atpost_app/services/api_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -166,6 +167,13 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
   Widget build(BuildContext context) {
     final features = <_RouteFeature>[
       const _RouteFeature(
+        title: 'Topics',
+        subtitle: 'Q&A graph',
+        icon: Icons.tag_rounded,
+        route: '/qa/topics',
+        colors: [AppColors.postgramPrimary, AppColors.posttubePrimary],
+      ),
+      const _RouteFeature(
         title: 'Groups',
         subtitle: 'Communities',
         icon: Icons.groups_rounded,
@@ -244,7 +252,8 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
                           style: AppTextStyles.body,
                           decoration: InputDecoration(
                             border: InputBorder.none,
-                            hintText: 'Search topics, users, and tags',
+                            hintText:
+                                'Search topics, users, communities, and tags',
                             hintStyle: AppTextStyles.bodySmall,
                             prefixIcon: const Icon(
                               Icons.search,
@@ -261,7 +270,7 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
                         ),
                       ),
                       const SizedBox(height: 20),
-                      Text('Discover Channels', style: AppTextStyles.h2),
+                      Text('Explore', style: AppTextStyles.h2),
                       const SizedBox(height: 10),
                       LayoutBuilder(
                         builder: (context, constraints) {
@@ -284,7 +293,18 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
                                     width: width,
                                     child: _FeatureCard(
                                       feature: feature,
-                                      onTap: () => context.push(feature.route),
+                                      onTap: () {
+                                        if (feature.route == '/qa/topics') {
+                                          Navigator.of(context).push(
+                                            MaterialPageRoute<void>(
+                                              builder: (_) =>
+                                                  const QaTopicsScreen(),
+                                            ),
+                                          );
+                                          return;
+                                        }
+                                        context.push(feature.route);
+                                      },
                                     ),
                                   ),
                                 )

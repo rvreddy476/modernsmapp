@@ -6,12 +6,14 @@ import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/models/live_stream.dart';
 import 'package:atpost_app/data/models/realtime_event.dart';
 import 'package:atpost_app/data/repositories/live_repository.dart';
+import 'package:atpost_app/features/live/live_whip_publisher.dart';
 import 'package:atpost_app/services/auth_service.dart';
 import 'package:atpost_app/services/realtime_service.dart';
 import 'package:atpost_app/shared/widgets/glass_icon_button.dart';
 import 'package:atpost_app/shared/widgets/video_player_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:go_router/go_router.dart';
 
 enum _LiveMessageAction { pin, mute }
@@ -34,6 +36,7 @@ class _BroadcastScreenState extends ConsumerState<BroadcastScreen> {
   final TextEditingController _chatController = TextEditingController();
   final TextEditingController _wordFilterController = TextEditingController();
   final ScrollController _chatScrollController = ScrollController();
+  final LiveWhipPublisher _publisher = LiveWhipPublisher();
   StreamSubscription<RealtimeEvent>? _realtimeSub;
 
   LiveStream? _stream;
@@ -51,16 +54,25 @@ class _BroadcastScreenState extends ConsumerState<BroadcastScreen> {
   String? _pinnedMessageId;
 
   String? get _currentUserId => ref.read(authServiceProvider).userId;
+  bool get _hostCanStart =>
+      _stream != null &&
+      _isHost(_stream!) &&
+      !_stream!.isEnded &&
+      !_publisher.isPublishing &&
+      !_publisher.isBusy &&
+      _stream!.canPublishFromMobile;
 
   @override
   void initState() {
     super.initState();
+    _publisher.addListener(_handlePublisherChanged);
     _subscribeToRealtime();
     unawaited(_initialize());
   }
 
   @override
   void dispose() {
+    _publisher.removeListener(_handlePublisherChanged);
     _realtimeSub?.cancel();
     ref
         .read(realtimeServiceProvider)
@@ -72,13 +84,18 @@ class _BroadcastScreenState extends ConsumerState<BroadcastScreen> {
     if (stream != null && !_isHost(stream) && _joinedAsViewer) {
       unawaited(ref.read(liveRepositoryProvider).leaveStream(stream.id));
     }
+    unawaited(_publisher.disposeAsync());
     super.dispose();
   }
 
   Future<void> _initialize() async {
     await _refresh();
     final stream = _stream;
-    if (stream == null || _isHost(stream)) return;
+    if (stream == null) return;
+    if (_isHost(stream)) {
+      unawaited(_prepareHostPublisher(stream));
+      return;
+    }
 
     try {
       final viewerCount = await ref
@@ -102,6 +119,11 @@ class _BroadcastScreenState extends ConsumerState<BroadcastScreen> {
     realtime.subscribeToLiveStream(widget.streamId);
     _realtimeSub?.cancel();
     _realtimeSub = realtime.events.listen(_handleRealtimeEvent);
+  }
+
+  void _handlePublisherChanged() {
+    if (!mounted) return;
+    setState(() {});
   }
 
   Future<void> _refresh({bool showLoader = true}) async {
@@ -137,6 +159,9 @@ class _BroadcastScreenState extends ConsumerState<BroadcastScreen> {
         _loading = false;
         _error = null;
       });
+      if (_isHost(stream)) {
+        unawaited(_prepareHostPublisher(stream));
+      }
       _scrollChatToBottom(jump: true);
     } catch (error) {
       if (!mounted) return;
@@ -144,6 +169,24 @@ class _BroadcastScreenState extends ConsumerState<BroadcastScreen> {
         _loading = false;
         _error = _errorText(error, 'Could not load the live session.');
       });
+    }
+  }
+
+  Future<void> _prepareHostPublisher(LiveStream stream) async {
+    if (!_isHost(stream) ||
+        stream.isEnded ||
+        !stream.canPublishFromMobile ||
+        _publisher.hasPreview ||
+        _publisher.isPreparingPreview) {
+      return;
+    }
+    try {
+      await _publisher.ensurePreview(stream);
+    } catch (error) {
+      if (!mounted) return;
+      _showSnack(
+        _errorText(error, 'Camera preview could not be initialized.'),
+      );
     }
   }
 
@@ -438,6 +481,99 @@ class _BroadcastScreenState extends ConsumerState<BroadcastScreen> {
     }
   }
 
+  Future<void> _startHostBroadcast() async {
+    final stream = _stream;
+    if (stream == null ||
+        !_isHost(stream) ||
+        stream.isEnded ||
+        _publisher.isBusy ||
+        _publisher.isPublishing) {
+      return;
+    }
+
+    final repo = ref.read(liveRepositoryProvider);
+    try {
+      await _prepareHostPublisher(stream);
+      await _publisher.startPublishing(stream: stream, repository: repo);
+      if (!stream.isLive) {
+        await repo.goLive(stream.id);
+      }
+      if (!mounted) return;
+      setState(() {
+        _stream = stream.copyWith(
+          status: 'live',
+          startedAt: stream.startedAt ?? DateTime.now(),
+        );
+      });
+      _showSnack('Mobile live publishing started.');
+    } catch (error) {
+      try {
+        await _publisher.stopPublishing(
+          stream: stream,
+          repository: repo,
+          preservePreview: true,
+        );
+      } catch (_) {}
+      if (!mounted) return;
+      _showSnack(_errorText(error, 'Could not start mobile live publishing.'));
+    }
+  }
+
+  Future<void> _stopHostBroadcast({bool preservePreview = false}) async {
+    final stream = _stream;
+    if (stream == null || !_isHost(stream) || _publisher.isBusy) return;
+
+    final repo = ref.read(liveRepositoryProvider);
+    Object? publishError;
+
+    try {
+      await _publisher.stopPublishing(
+        stream: stream,
+        repository: repo,
+        preservePreview: preservePreview,
+      );
+    } catch (error) {
+      publishError = error;
+    }
+
+    try {
+      if (stream.isLive) {
+        await repo.endStream(stream.id);
+      }
+      if (!mounted) return;
+      setState(() {
+        _stream = stream.copyWith(
+          status: 'ended',
+          endedAt: DateTime.now(),
+        );
+      });
+      if (publishError == null) {
+        _showSnack('Live broadcast stopped.');
+      }
+    } catch (error) {
+      if (!mounted) return;
+      _showSnack(_errorText(error, 'Could not end this live stream.'));
+      return;
+    }
+
+    if (publishError != null && mounted) {
+      _showSnack(
+        _errorText(
+          publishError,
+          'The stream ended, but the publisher session did not close cleanly.',
+        ),
+      );
+    }
+  }
+
+  void _toggleHostMic() {
+    _publisher.toggleAudioEnabled();
+  }
+
+  void _toggleHostCamera() {
+    _publisher.toggleVideoEnabled();
+  }
+
   Future<void> _endOrLeave() async {
     final stream = _stream;
     if (stream == null || _ending) return;
@@ -446,6 +582,17 @@ class _BroadcastScreenState extends ConsumerState<BroadcastScreen> {
     try {
       final repo = ref.read(liveRepositoryProvider);
       if (_isHost(stream)) {
+        if (_publisher.isPublishing || _publisher.hasSession) {
+          try {
+            await _publisher.stopPublishing(
+              stream: stream,
+              repository: repo,
+              preservePreview: false,
+            );
+          } catch (_) {}
+        } else {
+          await _publisher.disposeAsync();
+        }
         await repo.endStream(stream.id);
       } else if (_joinedAsViewer) {
         await repo.leaveStream(stream.id);
@@ -701,7 +848,56 @@ class _BroadcastScreenState extends ConsumerState<BroadcastScreen> {
       borderRadius: BorderRadius.circular(18),
       child: AspectRatio(
         aspectRatio: 16 / 9,
-        child: videoUrl != null && videoUrl.isNotEmpty
+        child: _isHost(stream) && _publisher.hasPreview
+            ? Stack(
+                fit: StackFit.expand,
+                children: [
+                  RTCVideoView(
+                    _publisher.previewRenderer,
+                    mirror: true,
+                    objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+                  ),
+                  Positioned(
+                    left: 12,
+                    top: 12,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.45),
+                        borderRadius: BorderRadius.circular(999),
+                        border: Border.all(color: Colors.white24),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            _publisher.isPublishing
+                                ? Icons.radio_button_checked
+                                : Icons.videocam,
+                            size: 14,
+                            color: _publisher.isPublishing
+                                ? AppColors.liveRed
+                                : Colors.white70,
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            _publisher.isPublishing
+                                ? 'Camera live from mobile'
+                                : 'Camera preview ready',
+                            style: AppTextStyles.labelSmall.copyWith(
+                              color: Colors.white,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              )
+            : videoUrl != null && videoUrl.isNotEmpty
             ? VideoPlayerWidget(
                 videoUrl: videoUrl,
                 autoPlay: true,
@@ -737,7 +933,11 @@ class _BroadcastScreenState extends ConsumerState<BroadcastScreen> {
                       const SizedBox(height: 8),
                       Text(
                         _isHost(stream)
-                            ? stream.hasLivePlayback
+                            ? _publisher.hasPreview
+                                  ? _publisher.isPublishing
+                                        ? 'Your phone camera and microphone are publishing directly into this live room. Viewer playback appears as soon as the playback manifest is ready.'
+                                        : 'Your phone camera preview is ready. Start mobile publishing below to send this camera feed into the live room.'
+                                  : stream.hasLivePlayback
                                   ? 'Ingest is configured and viewer playback is now exposed for this live room. Chat, viewer counts, likes, and moderation update in real time.'
                                   : 'Use your broadcaster with the ingest details below. Chat, viewer counts, likes, and moderation update in real time even if this environment has no active live playback origin yet.'
                             : stream.isEnded
@@ -873,6 +1073,78 @@ class _BroadcastScreenState extends ConsumerState<BroadcastScreen> {
               ),
             ],
           ),
+          if (_isHost(stream) && stream.canPublishFromMobile) ...[
+            const SizedBox(height: 14),
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: [
+                ElevatedButton.icon(
+                  onPressed: _hostCanStart ? _startHostBroadcast : null,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.postbookPrimary,
+                    foregroundColor: Colors.white,
+                  ),
+                  icon: _publisher.isBusy && !_publisher.isPublishing
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Icon(Icons.broadcast_on_personal_rounded),
+                  label: Text(
+                    _publisher.isPublishing
+                        ? 'Publishing from phone'
+                        : 'Start mobile camera',
+                  ),
+                ),
+                OutlinedButton.icon(
+                  onPressed: _publisher.isPublishing && !_publisher.isBusy
+                      ? _stopHostBroadcast
+                      : null,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.white,
+                    side: const BorderSide(color: Colors.white24),
+                  ),
+                  icon: const Icon(Icons.stop_circle_outlined),
+                  label: const Text('Stop mobile live'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: _publisher.hasPreview ? _toggleHostMic : null,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.white,
+                    side: const BorderSide(color: Colors.white24),
+                  ),
+                  icon: Icon(
+                    _publisher.isAudioEnabled ? Icons.mic : Icons.mic_off,
+                  ),
+                  label: Text(
+                    _publisher.isAudioEnabled ? 'Mute mic' : 'Unmute mic',
+                  ),
+                ),
+                OutlinedButton.icon(
+                  onPressed: _publisher.hasPreview ? _toggleHostCamera : null,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.white,
+                    side: const BorderSide(color: Colors.white24),
+                  ),
+                  icon: Icon(
+                    _publisher.isVideoEnabled
+                        ? Icons.videocam
+                        : Icons.videocam_off,
+                  ),
+                  label: Text(
+                    _publisher.isVideoEnabled
+                        ? 'Camera on'
+                        : 'Camera off',
+                  ),
+                ),
+              ],
+            ),
+          ],
         ],
       ),
     );

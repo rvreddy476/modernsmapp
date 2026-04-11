@@ -10,14 +10,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/identity-auth-service/internal/config"
+	"github.com/atpost/identity-auth-service/internal/middleware"
+	"github.com/atpost/identity-auth-service/internal/service"
+	"github.com/atpost/identity-auth-service/internal/store"
+	"github.com/atpost/identity-shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
-	"github.com/atpost/identity-auth-service/internal/config"
-	"github.com/atpost/identity-auth-service/internal/middleware"
-	"github.com/atpost/identity-auth-service/internal/store"
-	"github.com/atpost/identity-auth-service/internal/service"
-	"github.com/atpost/identity-shared/api"
 )
 
 const (
@@ -67,6 +67,9 @@ type AuthService interface {
 	RemoveTrustedDevice(ctx context.Context, userID, deviceID uuid.UUID) error
 	// GDPR
 	ExportUserData(ctx context.Context, userID string) (*service.DataExport, error)
+	// Mini app sessions
+	IssueMiniAppSession(ctx context.Context, appID, userID uuid.UUID, grantedPermissions []string) (*service.MiniAppSessionResponse, error)
+	MiniAppJWKS(ctx context.Context) (*service.JSONWebKeySet, error)
 }
 
 func New(svc AuthService, cfg *config.Config, logger *slog.Logger, rdb *redis.Client) *Handler {
@@ -95,10 +98,14 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 		v1.GET("/oauth/:provider", h.OAuthRedirect)
 		v1.GET("/oauth/:provider/callback", h.OAuthCallback)
 		v1.POST("/oauth/:provider/token", h.OAuthToken)
+		v1.GET("/.well-known/jwks.json", h.MiniAppJWKS)
 
 		// Password reset (public)
 		v1.POST("/forgot-password", h.ForgotPassword)
 		v1.POST("/reset-password", h.ResetPassword)
+
+		// Token introspection — auth only (no CSRF; safe GET used by server-side proxies)
+		v1.GET("/me", authMW, h.Me)
 
 		// Protected routes (require auth + CSRF)
 		protected := v1.Group("", authMW, csrfMW)
@@ -126,11 +133,77 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 			// GDPR data portability
 			protected.GET("/data-export", h.ExportUserData)
 		}
+
+		internal := v1.Group("/internal", RequireInternalServiceKey(h.cfg.InternalServiceKey))
+		{
+			internal.POST("/mini-app-session", h.CreateMiniAppSession)
+		}
 	}
 }
 
 func (h *Handler) Health(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+// Me returns the authenticated user's ID. Used by server-side proxies (e.g. chat proxy)
+// to validate a bearer token and retrieve the corresponding user identity.
+func (h *Handler) Me(c *gin.Context) {
+	// X-User-Id is set by AuthMiddleware after validating the JWT.
+	userID := c.GetHeader("X-User-Id")
+	if userID == "" {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing user identity", nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{
+		"id":      userID,
+		"user_id": userID,
+	}, nil)
+}
+
+func (h *Handler) MiniAppJWKS(c *gin.Context) {
+	jwks, err := h.svc.MiniAppJWKS(c.Request.Context())
+	if err != nil {
+		api.Error(c.Writer, http.StatusServiceUnavailable, "JWKS_UNAVAILABLE", "Mini app JWKS is not configured", nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, jwks, nil)
+}
+
+type CreateMiniAppSessionRequest struct {
+	AppID              string   `json:"app_id" binding:"required"`
+	UserID             string   `json:"user_id" binding:"required"`
+	GrantedPermissions []string `json:"granted_permissions"`
+}
+
+func (h *Handler) CreateMiniAppSession(c *gin.Context) {
+	var req CreateMiniAppSessionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+
+	appID, err := uuid.Parse(req.AppID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "Invalid app_id", nil, nil)
+		return
+	}
+	userID, err := uuid.Parse(req.UserID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "Invalid user_id", nil, nil)
+		return
+	}
+
+	resp, err := h.svc.IssueMiniAppSession(c.Request.Context(), appID, userID, req.GrantedPermissions)
+	if err != nil {
+		if err.Error() == "MINI_APP_SESSION_UNAVAILABLE" {
+			api.Error(c.Writer, http.StatusServiceUnavailable, "SESSION_UNAVAILABLE", "Mini app session issuance is not configured", nil, nil)
+			return
+		}
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to issue mini app session", nil, nil)
+		return
+	}
+
+	api.JSON(c.Writer, http.StatusOK, resp, nil)
 }
 
 type RequestOTPRequest struct {
@@ -362,13 +435,13 @@ func (h *Handler) ListSessions(c *gin.Context) {
 
 	// Scrub refresh token hashes from response
 	type sessionResponse struct {
-		ID        uuid.UUID  `json:"id"`
-		DeviceID  string     `json:"device_id"`
-		Platform  string     `json:"platform"`
-		IP        string     `json:"ip"`
-		UserAgent string     `json:"user_agent"`
-		CreatedAt time.Time  `json:"created_at"`
-		ExpiresAt time.Time  `json:"expires_at"`
+		ID        uuid.UUID `json:"id"`
+		DeviceID  string    `json:"device_id"`
+		Platform  string    `json:"platform"`
+		IP        string    `json:"ip"`
+		UserAgent string    `json:"user_agent"`
+		CreatedAt time.Time `json:"created_at"`
+		ExpiresAt time.Time `json:"expires_at"`
 	}
 	result := make([]sessionResponse, 0, len(sessions))
 	for _, s := range sessions {

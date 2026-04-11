@@ -84,6 +84,13 @@ SERVICE_PORT[channel-service]=8106
 SERVICE_DIR[community-service]="Architecture/services/community-service"
 SERVICE_PORT[community-service]=8107
 
+SERVICE_DIR[qa-service]="Architecture/services/qa-service"
+SERVICE_PORT[qa-service]=8108
+
+SERVICE_DIR[commerce-service]="Architecture/services/commerce-service"
+SERVICE_PORT[commerce-service]=8109
+SERVICE_DSN[commerce-service]="$COMMERCE_POSTGRES_DSN"
+
 # Commerce services (v2.1)
 SERVICE_DIR[orders-service]="Architecture/services/orders-service"
 SERVICE_PORT[orders-service]=8101

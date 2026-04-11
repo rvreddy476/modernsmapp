@@ -1,14 +1,16 @@
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
-import 'package:atpost_app/services/api_client.dart';
+import 'package:atpost_app/data/models/mini_app.dart';
+import 'package:atpost_app/features/mini_apps/mini_app_permission_prompt.dart';
+import 'package:atpost_app/providers/mini_apps_provider.dart';
+import 'package:atpost_app/shared/widgets/glass_icon_button.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-// ---------------------------------------------------------------------------
-// MiniAppsScreen
-// ---------------------------------------------------------------------------
-
+/// A modern, elegant Mini Apps store designed for production scale.
+/// Features: Immersive UI, optimistic installations, and category-based discovery.
 class MiniAppsScreen extends ConsumerStatefulWidget {
   const MiniAppsScreen({super.key});
 
@@ -17,284 +19,206 @@ class MiniAppsScreen extends ConsumerStatefulWidget {
 }
 
 class _MiniAppsScreenState extends ConsumerState<MiniAppsScreen> {
-  static const _categoryLabels = [
-    'Games',
-    'Booking',
-    'Learning',
-    'Shopping',
-    'Tools',
-    'Entertainment',
+  bool _showInstalledOnly = false;
+
+  final List<Map<String, String>> _categories = [
+    {'label': 'All', 'value': 'all'},
+    {'label': 'Games', 'value': 'games'},
+    {'label': 'Booking', 'value': 'booking'},
+    {'label': 'Learning', 'value': 'learning'},
+    {'label': 'Shopping', 'value': 'shopping'},
+    {'label': 'Tools', 'value': 'tools'},
+    {'label': 'Entertainment', 'value': 'entertainment'},
   ];
-  static const _categoryValues = [
-    'games',
-    'booking',
-    'learning',
-    'shopping',
-    'tools',
-    'entertainment',
-  ];
-
-  String? _selectedCategory;
-  bool _showInstalled = false;
-  List<Map<String, dynamic>> _apps = [];
-  List<Map<String, dynamic>> _installedApps = [];
-  final Set<String> _loadingIds = {};
-  bool _isLoading = true;
-  String? _error;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadData();
-  }
-
-  Future<void> _loadData() async {
-    setState(() {
-      _isLoading = true;
-      _error = null;
-    });
-    try {
-      final params = <String, dynamic>{'limit': 20};
-      if (_selectedCategory != null) params['category'] = _selectedCategory;
-      final appsRes = await ref
-          .read(apiClientProvider)
-          .get('/v1/apps', queryParameters: params);
-      final installedRes =
-          await ref.read(apiClientProvider).get('/v1/apps/installed');
-
-      final appsData = appsRes.data['data'] ?? appsRes.data;
-      final installedData =
-          installedRes.data['data'] ?? installedRes.data;
-
-      setState(() {
-        _apps = List<Map<String, dynamic>>.from(
-          appsData is List ? appsData : (appsData['items'] ?? []),
-        );
-        _installedApps = List<Map<String, dynamic>>.from(
-          installedData is List
-              ? installedData
-              : (installedData['items'] ?? []),
-        );
-        _isLoading = false;
-      });
-    } catch (e) {
-      setState(() {
-        _error = e.toString();
-        _isLoading = false;
-      });
-    }
-  }
-
-  Future<void> _installApp(String appId) async {
-    setState(() => _loadingIds.add(appId));
-    try {
-      await ref.read(apiClientProvider).post(
-        '/v1/apps/$appId/install',
-        data: {'granted_permissions': <String>[]},
-      );
-      await _loadData();
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('App installed!')),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Install failed: $e')),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _loadingIds.remove(appId));
-    }
-  }
-
-  Future<void> _uninstallApp(String appId) async {
-    setState(() => _loadingIds.add(appId));
-    try {
-      await ref.read(apiClientProvider).delete('/v1/apps/$appId/install');
-      await _loadData();
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('App uninstalled')),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Uninstall failed: $e')),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _loadingIds.remove(appId));
-    }
-  }
-
-  Set<String> get _installedIds =>
-      _installedApps.map((a) => a['id']?.toString() ?? '').toSet();
-
-  List<Map<String, dynamic>> get _displayedApps {
-    if (_showInstalled) {
-      final ids = _installedIds;
-      return _apps.where((a) => ids.contains(a['id']?.toString() ?? '')).toList();
-    }
-    return _apps;
-  }
 
   @override
   Widget build(BuildContext context) {
+    final state = ref.watch(miniAppsProvider);
+
     return Scaffold(
-      backgroundColor: AppColors.bgPrimary,
-      appBar: AppBar(
-        backgroundColor: AppColors.bgPrimary,
-        foregroundColor: AppColors.textPrimary,
-        elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new, color: AppColors.textPrimary),
-          onPressed: () => context.pop(),
+      backgroundColor: Colors.black,
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xFF0F111A), Color(0xFF090A11), Color(0xFF1A1D2E)],
+          ),
         ),
-        title: Text('Mini Apps', style: AppTextStyles.h2),
-        actions: [
-          IconButton(
-            icon: Badge(
-              isLabelVisible: _installedApps.isNotEmpty,
-              label: Text('${_installedApps.length}'),
-              child: const Icon(Icons.download_done_outlined),
+        child: SafeArea(
+          child: Column(
+            children: [
+              _buildHeader(
+                context,
+                state.valueOrNull?.installedApps.length ?? 0,
+              ),
+              _buildCategoryBar(state.valueOrNull?.selectedCategory),
+              Expanded(
+                child: state.when(
+                  loading: () => const Center(
+                    child: CircularProgressIndicator(
+                      color: AppColors.postbookPrimary,
+                    ),
+                  ),
+                  error: (e, _) => _buildErrorState(),
+                  data: (data) => _buildAppGrid(data),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHeader(BuildContext context, int installedCount) {
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Row(
+        children: [
+          GlassIconButton(
+            icon: Icons.arrow_back_ios_new,
+            tooltip: 'Back',
+            onPressed: () => context.pop(),
+          ),
+          const SizedBox(width: 12),
+          Text('App Store', style: AppTextStyles.h1),
+          const Spacer(),
+          GestureDetector(
+            onTap: () =>
+                setState(() => _showInstalledOnly = !_showInstalledOnly),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: _showInstalledOnly
+                    ? AppColors.postbookPrimary.withValues(alpha: 0.2)
+                    : Colors.white.withValues(alpha: 0.05),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                  color: _showInstalledOnly
+                      ? AppColors.postbookPrimary
+                      : Colors.white10,
+                ),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    _showInstalledOnly ? Icons.download_done : Icons.apps,
+                    size: 16,
+                    color: _showInstalledOnly
+                        ? AppColors.postbookPrimary
+                        : Colors.white70,
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    _showInstalledOnly
+                        ? 'Installed $installedCount'
+                        : 'Explore',
+                    style: AppTextStyles.labelSmall.copyWith(
+                      color: _showInstalledOnly
+                          ? AppColors.postbookPrimary
+                          : Colors.white70,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
             ),
-            onPressed: () => setState(() => _showInstalled = !_showInstalled),
           ),
         ],
       ),
-      body: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Category filter bar
-          SizedBox(
-            height: 48,
-            child: ListView.builder(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              itemCount: _categoryLabels.length + 1,
-              itemBuilder: (context, index) {
-                if (index == 0) {
-                  final selected = _selectedCategory == null;
-                  return Padding(
-                    padding: const EdgeInsets.only(right: 8),
-                    child: FilterChip(
-                      label: const Text('All'),
-                      selected: selected,
-                      onSelected: (_) {
-                        setState(() => _selectedCategory = null);
-                        _loadData();
-                      },
-                      selectedColor: AppColors.postbookPrimary.withValues(alpha: 0.25),
-                      checkmarkColor: AppColors.postbookPrimary,
-                      labelStyle: AppTextStyles.labelSmall.copyWith(
-                        color: selected
-                            ? AppColors.postbookPrimary
-                            : AppColors.textSecondary,
-                      ),
-                      side: BorderSide(
-                        color: selected
-                            ? AppColors.postbookPrimary
-                            : AppColors.borderSubtle,
-                      ),
-                    ),
-                  );
-                }
-                final i = index - 1;
-                final value = _categoryValues[i];
-                final label = _categoryLabels[i];
-                final selected = _selectedCategory == value;
-                return Padding(
-                  padding: const EdgeInsets.only(right: 8),
-                  child: FilterChip(
-                    label: Text(label),
-                    selected: selected,
-                    onSelected: (_) {
-                      setState(() =>
-                          _selectedCategory = selected ? null : value);
-                      _loadData();
-                    },
-                    selectedColor:
-                        AppColors.postbookPrimary.withValues(alpha: 0.25),
-                    checkmarkColor: AppColors.postbookPrimary,
-                    labelStyle: AppTextStyles.labelSmall.copyWith(
-                      color: selected
-                          ? AppColors.postbookPrimary
-                          : AppColors.textSecondary,
-                    ),
-                    side: BorderSide(
-                      color: selected
-                          ? AppColors.postbookPrimary
-                          : AppColors.borderSubtle,
-                    ),
-                  ),
-                );
+    );
+  }
+
+  Widget _buildCategoryBar(String? selected) {
+    return Container(
+      height: 50,
+      margin: const EdgeInsets.only(bottom: 8),
+      child: ListView.builder(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        itemCount: _categories.length,
+        itemBuilder: (context, index) {
+          final cat = _categories[index];
+          final isSelected =
+              (selected == null && cat['value'] == 'all') ||
+              (selected == cat['value']);
+          return Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: ChoiceChip(
+              label: Text(cat['label']!),
+              selected: isSelected,
+              onSelected: (_) {
+                ref
+                    .read(miniAppsProvider.notifier)
+                    .setCategory(cat['value'] == 'all' ? null : cat['value']);
               },
+              selectedColor: AppColors.postbookPrimary.withValues(alpha: 0.2),
+              backgroundColor: Colors.white.withValues(alpha: 0.03),
+              labelStyle: TextStyle(
+                color: isSelected ? AppColors.postbookPrimary : Colors.white38,
+                fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                fontSize: 13,
+              ),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(20),
+              ),
+              side: BorderSide(
+                color: isSelected ? AppColors.postbookPrimary : Colors.white10,
+              ),
+              showCheckmark: false,
             ),
-          ),
-          // Content area
-          Expanded(
-            child: _isLoading
-                ? const Center(child: CircularProgressIndicator())
-                : _error != null
-                    ? Center(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.error_outline,
-                                color: AppColors.textMuted, size: 48),
-                            const SizedBox(height: 12),
-                            Text('Failed to load apps',
-                                style: AppTextStyles.bodySmall),
-                            const SizedBox(height: 8),
-                            TextButton(
-                              onPressed: _loadData,
-                              child: const Text('Retry'),
-                            ),
-                          ],
-                        ),
-                      )
-                    : _displayedApps.isEmpty
-                        ? Center(
-                            child: Text(
-                              _showInstalled
-                                  ? 'No installed apps'
-                                  : 'No apps found',
-                              style: AppTextStyles.bodySmall,
-                            ),
-                          )
-                        : GridView.builder(
-                            padding: const EdgeInsets.all(12),
-                            gridDelegate:
-                                const SliverGridDelegateWithFixedCrossAxisCount(
-                              crossAxisCount: 2,
-                              mainAxisSpacing: 12,
-                              crossAxisSpacing: 12,
-                              childAspectRatio: 0.72,
-                            ),
-                            itemCount: _displayedApps.length,
-                            itemBuilder: (context, i) {
-                              final app = _displayedApps[i];
-                              final appId = app['id']?.toString() ?? '';
-                              final isInstalled =
-                                  _installedIds.contains(appId);
-                              final isLoading = _loadingIds.contains(appId);
-                              return GestureDetector(
-                                onTap: appId.isNotEmpty
-                                    ? () => context.push('/apps/$appId')
-                                    : null,
-                                child: _AppCard(
-                                  app: app,
-                                  isInstalled: isInstalled,
-                                  isLoading: isLoading,
-                                  onInstall: () => _installApp(appId),
-                                  onUninstall: () => _uninstallApp(appId),
-                                ),
-                              );
-                            },
-                          ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildAppGrid(MiniAppsState data) {
+    final apps = _showInstalledOnly ? data.installedApps : data.allApps;
+
+    if (apps.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.cloud_off, size: 48, color: Colors.white10),
+            const SizedBox(height: 16),
+            Text(
+              _showInstalledOnly
+                  ? 'No apps installed yet'
+                  : 'No apps found in this category',
+              style: AppTextStyles.bodySmall.copyWith(color: Colors.white24),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return GridView.builder(
+      padding: const EdgeInsets.all(16),
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: 2,
+        mainAxisSpacing: 16,
+        crossAxisSpacing: 16,
+        childAspectRatio: 0.75,
+      ),
+      itemCount: apps.length,
+      itemBuilder: (context, index) => _MiniAppGlassCard(app: apps[index]),
+    );
+  }
+
+  Widget _buildErrorState() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(Icons.error_outline, color: Colors.redAccent, size: 40),
+          const SizedBox(height: 16),
+          Text('Failed to load apps', style: AppTextStyles.body),
+          TextButton(
+            onPressed: () => ref.refresh(miniAppsProvider),
+            child: const Text('Retry'),
           ),
         ],
       ),
@@ -302,154 +226,124 @@ class _MiniAppsScreenState extends ConsumerState<MiniAppsScreen> {
   }
 }
 
-// ---------------------------------------------------------------------------
-// _AppCard
-// ---------------------------------------------------------------------------
-
-class _AppCard extends StatelessWidget {
-  const _AppCard({
-    required this.app,
-    required this.isInstalled,
-    required this.isLoading,
-    required this.onInstall,
-    required this.onUninstall,
-  });
-
-  final Map<String, dynamic> app;
-  final bool isInstalled;
-  final bool isLoading;
-  final VoidCallback onInstall;
-  final VoidCallback onUninstall;
-
-  Color _colorForName(String name) {
-    const colors = [
-      Colors.blue,
-      Colors.green,
-      Colors.orange,
-      Colors.purple,
-      Colors.teal,
-      Colors.indigo,
-    ];
-    return colors[name.hashCode.abs() % colors.length];
-  }
-
-  String _formatCount(dynamic count) {
-    final n =
-        count is int ? count : int.tryParse(count.toString()) ?? 0;
-    if (n >= 1000) return '${(n / 1000).toStringAsFixed(1)}k';
-    return n.toString();
-  }
+class _MiniAppGlassCard extends ConsumerWidget {
+  final MiniApp app;
+  const _MiniAppGlassCard({required this.app});
 
   @override
-  Widget build(BuildContext context) {
-    final name = app['name'] as String? ?? '';
-    final description = app['description']?.toString() ?? '';
-    final category = app['category']?.toString();
-    final installCount = app['install_count'];
+  Widget build(BuildContext context, WidgetRef ref) {
+    return RepaintBoundary(
+          child: GestureDetector(
+            onTap: () => context.push('/apps/${app.id}'),
+            child: Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.03),
+                borderRadius: BorderRadius.circular(24),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _buildAppIcon(),
+                  const SizedBox(height: 12),
+                  Text(
+                    app.name,
+                    style: AppTextStyles.label.copyWith(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 15,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    app.description,
+                    style: AppTextStyles.labelTiny.copyWith(
+                      color: Colors.white38,
+                    ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const Spacer(),
+                  _buildInstallButton(context, ref),
+                ],
+              ),
+            ),
+          ),
+        )
+        .animate()
+        .fadeIn(duration: 300.ms)
+        .scale(begin: const Offset(0.95, 0.95), end: const Offset(1, 1));
+  }
 
-    return Card(
-      color: AppColors.bgCard,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: const BorderSide(color: AppColors.borderSubtle),
+  Widget _buildAppIcon() {
+    return Container(
+      width: 56,
+      height: 56,
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(18),
+        image: app.iconUrl != null
+            ? DecorationImage(
+                image: NetworkImage(app.iconUrl!),
+                fit: BoxFit.cover,
+              )
+            : null,
       ),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // App icon
-            CircleAvatar(
-              radius: 28,
-              backgroundColor:
-                  name.isNotEmpty ? _colorForName(name) : Colors.grey,
+      child: app.iconUrl == null
+          ? Center(
               child: Text(
-                name.isNotEmpty
-                    ? name.substring(0, 1).toUpperCase()
-                    : '?',
+                app.name[0].toUpperCase(),
                 style: const TextStyle(
                   color: Colors.white,
-                  fontSize: 22,
+                  fontSize: 24,
                   fontWeight: FontWeight.bold,
                 ),
               ),
-            ),
-            const SizedBox(height: 8),
-            // Name
-            Text(
-              name,
-              style: AppTextStyles.label
-                  .copyWith(fontWeight: FontWeight.bold),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-            const SizedBox(height: 4),
-            // Description
-            Text(
-              description,
-              style: TextStyle(
-                fontSize: 12,
-                color: Colors.grey[600],
-              ),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-            ),
-            const Spacer(),
-            // Category chip
-            if (category != null && category.isNotEmpty)
-              Chip(
-                label: Text(
-                  category,
-                  style: const TextStyle(fontSize: 10),
-                ),
-                padding: EdgeInsets.zero,
-                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              ),
-            const SizedBox(height: 4),
-            // Install count
-            Text(
-              '${_formatCount(installCount ?? 0)} installs',
-              style: const TextStyle(fontSize: 11, color: Colors.grey),
-            ),
-            const SizedBox(height: 8),
-            // Install / Uninstall button
-            SizedBox(
-              width: double.infinity,
-              child: isLoading
-                  ? const Center(
-                      child: SizedBox(
-                        width: 20,
-                        height: 20,
-                        child:
-                            CircularProgressIndicator(strokeWidth: 2),
-                      ),
-                    )
-                  : isInstalled
-                      ? OutlinedButton(
-                          onPressed: onUninstall,
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: const Color(0xFFD8103F),
-                            side: const BorderSide(
-                                color: Color(0xFFD8103F)),
-                          ),
-                          child: const Text(
-                            'Uninstall',
-                            style: TextStyle(fontSize: 12),
-                          ),
-                        )
-                      : ElevatedButton(
-                          onPressed: onInstall,
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFFD8103F),
-                            foregroundColor: Colors.white,
-                          ),
-                          child: const Text(
-                            'Install',
-                            style: TextStyle(fontSize: 12),
-                          ),
-                        ),
-            ),
-          ],
+            )
+          : null,
+    );
+  }
+
+  Widget _buildInstallButton(BuildContext context, WidgetRef ref) {
+    return SizedBox(
+      width: double.infinity,
+      child: ElevatedButton(
+        onPressed: () async {
+          if (app.isInstalled) {
+            context.push('/apps/sandbox/${app.id}');
+            return;
+          }
+
+          final grantedPermissions = await showMiniAppPermissionPrompt(
+            context: context,
+            appName: app.name,
+            requestedPermissions: app.permissions,
+          );
+          if (grantedPermissions == null) return;
+
+          await ref
+              .read(miniAppsProvider.notifier)
+              .installApp(app.id, grantedPermissions: grantedPermissions);
+        },
+        style: ElevatedButton.styleFrom(
+          backgroundColor: app.isInstalled
+              ? Colors.white.withValues(alpha: 0.05)
+              : AppColors.postbookPrimary,
+          foregroundColor: app.isInstalled ? Colors.white70 : Colors.white,
+          elevation: 0,
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+            side: app.isInstalled
+                ? BorderSide(color: Colors.white.withValues(alpha: 0.1))
+                : BorderSide.none,
+          ),
+        ),
+        child: Text(
+          app.isInstalled ? 'Open' : 'Get',
+          style: AppTextStyles.labelSmall.copyWith(fontWeight: FontWeight.bold),
         ),
       ),
     );

@@ -7,6 +7,13 @@
 #   2. Forward ports 80 and 443 on your router to this machine
 #   3. Set DOMAIN in your shell:  export DOMAIN=yourdomain.com
 #
+# Live streaming:
+#   RTMP ingest requires direct TCP access (Cloudflare does not proxy port 1935).
+#   Set LIVE_INGEST_HOST separately — your public IP or a DNS-only subdomain:
+#     export LIVE_INGEST_HOST=rtmp.yourdomain.com   # or your public IP
+#   If unset, defaults to DOMAIN (works only if port 1935 is directly reachable).
+#   For the current cleestudio.com deployment, default ingest is rtmp.cleestudio.com.
+#
 # Caddy auto-provisions Let's Encrypt TLS certs — no manual SSL setup needed.
 # WebRTC (getUserMedia) REQUIRES HTTPS, so this is mandatory for call testing.
 
@@ -21,7 +28,7 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     environment:
-      DOMAIN: ${DOMAIN:-localhost}
+      DOMAIN: ${DOMAIN:-cleestudio.com}
     depends_on:
       - api-gateway
       - chat-ws-gateway
@@ -35,14 +42,15 @@ services:
     volumes:
       - ../../../postbook-ui:/app
     environment:
-      NEXT_PUBLIC_API_BASE_URL: "https://${DOMAIN:-localhost}"
-      NEXT_PUBLIC_WS_BASE_URL: "wss://${DOMAIN:-localhost}/v1/ws"
+      NEXT_PUBLIC_API_BASE_URL: "https://${DOMAIN:-cleestudio.com}"
+      NEXT_PUBLIC_WS_BASE_URL: "wss://${DOMAIN:-cleestudio.com}/v1/ws"
+      API_GATEWAY_URL: "http://api-gateway:8080"
       CHAT_BACKEND_URL: "http://chat-message-service:8092/v1/chat"
       AUTH_SERVICE_URL: "http://identity-auth:8081"
-      CHAT_PROXY_SIGNING_SECRET: "${CHAT_PROXY_SIGNING_SECRET:-local_dev_chat_proxy_signing_secret_change_me}"
+      CHAT_PROXY_SIGNING_SECRET: "${JWT_SECRET:-local_dev_jwt_change_me}"
       PORT: "3000"
-    expose:
-      - "3000"
+    ports:
+      - "3000:3000"
     depends_on:
       - chat-message-service
       - identity-auth
@@ -50,25 +58,32 @@ services:
   # Override API gateway CORS to allow the domain
   api-gateway:
     environment:
-      CORS_ORIGINS: "https://${DOMAIN:-localhost},http://localhost:3000"
+      CORS_ORIGINS: "https://${DOMAIN:-cleestudio.com},http://localhost:3000"
 
   # Override WS gateway allowed origins
   chat-ws-gateway:
     environment:
-      ALLOWED_ORIGINS: "https://${DOMAIN:-localhost},http://localhost:3000"
+      ALLOWED_ORIGINS: "https://${DOMAIN:-cleestudio.com},http://localhost:3000"
 
   # Override media public endpoint for external access
   media-service:
     environment:
-      MINIO_PUBLIC_ENDPOINT: "https://${DOMAIN:-localhost}/storage"
+      MINIO_PUBLIC_ENDPOINT: "https://${DOMAIN:-cleestudio.com}"
 
   live-service:
     environment:
-      LIVE_PLAYBACK_URL_TEMPLATE: "https://${DOMAIN:-localhost}/v1/live/streams/{stream_id}/playback/index.m3u8"
+      LIVE_PLAYBACK_URL_TEMPLATE: "https://${DOMAIN:-cleestudio.com}/v1/live/streams/{stream_id}/playback/index.m3u8"
       LIVE_PLAYBACK_INTERNAL_BASE_URL: "http://mediamtx:8888"
       LIVE_PLAYBACK_PROTOCOL: "hls"
-      LIVE_INGEST_URL: "rtmp://${DOMAIN:-localhost}:1935/live"
+      LIVE_PUBLISH_URL_TEMPLATE: "https://${DOMAIN:-cleestudio.com}/v1/live/streams/{stream_id}/publish/whip"
+      LIVE_PUBLISH_INTERNAL_BASE_URL: "http://mediamtx:8889"
+      LIVE_PUBLISH_PROTOCOL: "whip"
+      LIVE_INGEST_URL: "rtmp://${LIVE_INGEST_HOST:-rtmp.cleestudio.com}:1935/live"
       LIVE_INGEST_PROTOCOL: "rtmp"
+
+  mediamtx:
+    environment:
+      MTX_WEBRTCADDITIONALHOSTS: "${LIVE_WEBRTC_ADDITIONAL_HOSTS:-cleestudio.com,localhost,127.0.0.1}"
 
 volumes:
   caddy_data:

@@ -1,16 +1,17 @@
 package http
 
 import (
+	"crypto/hmac"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
 	"strings"
 	"time"
 
+	"github.com/atpost/identity-shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
-	"github.com/atpost/identity-shared/api"
 )
 
 type AccessClaims struct {
@@ -171,6 +172,25 @@ func CORSMiddleware() gin.HandlerFunc {
 
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(204)
+			return
+		}
+
+		c.Next()
+	}
+}
+
+func RequireInternalServiceKey(secret string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if secret == "" {
+			api.Error(c.Writer, http.StatusServiceUnavailable, "INTERNAL_KEY_UNAVAILABLE", "Internal service authentication is not configured", nil, nil)
+			c.Abort()
+			return
+		}
+
+		key := c.GetHeader("X-Internal-Service-Key")
+		if !hmac.Equal([]byte(key), []byte(secret)) {
+			api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "internal service key required", nil, nil)
+			c.Abort()
 			return
 		}
 

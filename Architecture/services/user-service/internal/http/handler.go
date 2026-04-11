@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"strconv"
 	"time"
 
 	"github.com/atpost/shared/api"
@@ -109,16 +108,17 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// Onboarding
 	r.POST("/v1/onboarding/ensure-publisher", h.EnsurePublisher)
 
-	// Business Pages
+	// Business Pages — use :id for all sub-paths (Gin requires uniform wildcard names)
 	pages := r.Group("/v1/pages")
 	{
-		pages.GET("/:handle", h.GetBusinessPage)
-		pages.PATCH("/:handle", h.UpdateBusinessPage)
-	}
-	pageReviews := r.Group("/v1/pages/:handle/reviews")
-	{
-		pageReviews.GET("", h.GetPageReviews)
-		pageReviews.POST("", h.SubmitReview)
+		pages.GET("", h.DiscoverPages)
+		pages.GET("/:id", h.GetBusinessPage)
+		pages.PATCH("/:id", h.UpdateBusinessPage)
+		pages.DELETE("/:id", h.DeleteBusinessPage)
+		pages.POST("/:id/follow", h.FollowPage)
+		pages.DELETE("/:id/follow", h.UnfollowPage)
+		pages.GET("/:id/reviews", h.GetPageReviews)
+		pages.POST("/:id/reviews", h.SubmitReview)
 	}
 	myPages := r.Group("/v1/users/me/pages")
 	{
@@ -855,223 +855,6 @@ func (h *Handler) EnsurePublisher(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, result, nil)
-}
-
-// --- Business Pages ---
-
-type CreateBusinessPageRequest struct {
-	PageHandle    string          `json:"page_handle" binding:"required"`
-	PageName      string          `json:"page_name" binding:"required"`
-	Category      string          `json:"category" binding:"required"`
-	Description   string          `json:"description"`
-	Address       string          `json:"address"`
-	Lat           *float64        `json:"lat"`
-	Lng           *float64        `json:"lng"`
-	BusinessHours json.RawMessage `json:"business_hours"`
-	Phone         string          `json:"phone"`
-	Whatsapp      string          `json:"whatsapp"`
-	BusinessEmail string          `json:"business_email"`
-	Services      json.RawMessage `json:"services"`
-	PriceRange    string          `json:"price_range"`
-	BookingURL    string          `json:"booking_url"`
-	MenuURLs      json.RawMessage `json:"menu_urls"`
-	FAQ           json.RawMessage `json:"faq"`
-}
-
-func (h *Handler) CreateBusinessPage(c *gin.Context) {
-	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
-	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
-		return
-	}
-
-	var req CreateBusinessPageRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
-		return
-	}
-
-	p := &store.BusinessPage{
-		UserID:        userID,
-		PageHandle:    req.PageHandle,
-		PageName:      req.PageName,
-		Category:      req.Category,
-		Description:   req.Description,
-		Address:       req.Address,
-		Lat:           req.Lat,
-		Lng:           req.Lng,
-		BusinessHours: req.BusinessHours,
-		Phone:         req.Phone,
-		Whatsapp:      req.Whatsapp,
-		BusinessEmail: req.BusinessEmail,
-		Services:      req.Services,
-		PriceRange:    req.PriceRange,
-		BookingURL:    req.BookingURL,
-		MenuURLs:      req.MenuURLs,
-		FAQ:           req.FAQ,
-	}
-
-	if err := h.svc.CreateBusinessPage(c.Request.Context(), p); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
-		return
-	}
-	api.JSON(c.Writer, http.StatusCreated, p, nil)
-}
-
-func (h *Handler) GetBusinessPage(c *gin.Context) {
-	handle := c.Param("handle")
-	page, err := h.svc.GetBusinessPage(c.Request.Context(), handle)
-	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Business page not found", nil, nil)
-		return
-	}
-	api.JSON(c.Writer, http.StatusOK, page, nil)
-}
-
-func (h *Handler) UpdateBusinessPage(c *gin.Context) {
-	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
-	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
-		return
-	}
-	pageID, err := uuid.Parse(c.Param("handle"))
-	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid page ID", nil, nil)
-		return
-	}
-
-	var req CreateBusinessPageRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
-		return
-	}
-
-	p := &store.BusinessPage{
-		ID:            pageID,
-		UserID:        userID,
-		PageName:      req.PageName,
-		Category:      req.Category,
-		Description:   req.Description,
-		Address:       req.Address,
-		Lat:           req.Lat,
-		Lng:           req.Lng,
-		BusinessHours: req.BusinessHours,
-		Phone:         req.Phone,
-		Whatsapp:      req.Whatsapp,
-		BusinessEmail: req.BusinessEmail,
-		Services:      req.Services,
-		PriceRange:    req.PriceRange,
-		BookingURL:    req.BookingURL,
-		MenuURLs:      req.MenuURLs,
-		FAQ:           req.FAQ,
-	}
-
-	if err := h.svc.UpdateBusinessPage(c.Request.Context(), p); err != nil {
-		if err.Error() == "PAGE_NOT_FOUND" {
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Page not found or not owned by you", nil, nil)
-			return
-		}
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
-		return
-	}
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "updated"}, nil)
-}
-
-func (h *Handler) GetPageReviews(c *gin.Context) {
-	pageID, err := uuid.Parse(c.Param("handle"))
-	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid page ID", nil, nil)
-		return
-	}
-
-	cursor := time.Now()
-	if cursorStr := c.Query("cursor"); cursorStr != "" {
-		if t, err := time.Parse(time.RFC3339Nano, cursorStr); err == nil {
-			cursor = t
-		}
-	}
-	limit := 20
-	if limitStr := c.Query("limit"); limitStr != "" {
-		if n, err := strconv.Atoi(limitStr); err == nil {
-			limit = n
-		}
-	}
-
-	reviews, err := h.svc.GetPageReviews(c.Request.Context(), pageID, cursor, limit)
-	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
-		return
-	}
-	if reviews == nil {
-		reviews = []store.BusinessReview{}
-	}
-
-	var meta *api.Meta
-	if len(reviews) == limit {
-		meta = &api.Meta{NextCursor: reviews[len(reviews)-1].CreatedAt.Format(time.RFC3339Nano)}
-	}
-
-	api.JSON(c.Writer, http.StatusOK, reviews, meta)
-}
-
-type SubmitReviewRequest struct {
-	Rating     int    `json:"rating" binding:"required"`
-	ReviewText string `json:"review_text"`
-}
-
-func (h *Handler) SubmitReview(c *gin.Context) {
-	reviewerID, err := uuid.Parse(c.GetHeader("X-User-Id"))
-	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
-		return
-	}
-	pageID, err := uuid.Parse(c.Param("handle"))
-	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid page ID", nil, nil)
-		return
-	}
-
-	var req SubmitReviewRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
-		return
-	}
-
-	if req.Rating < 1 || req.Rating > 5 {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_RATING", "Rating must be between 1 and 5", nil, nil)
-		return
-	}
-
-	r := &store.BusinessReview{
-		PageID:     pageID,
-		ReviewerID: reviewerID,
-		Rating:     req.Rating,
-		ReviewText: req.ReviewText,
-	}
-
-	if err := h.svc.SubmitReview(c.Request.Context(), r); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
-		return
-	}
-	api.JSON(c.Writer, http.StatusCreated, r, nil)
-}
-
-func (h *Handler) ListMyBusinessPages(c *gin.Context) {
-	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
-	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
-		return
-	}
-
-	pages, err := h.svc.GetUserBusinessPages(c.Request.Context(), userID)
-	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
-		return
-	}
-	if pages == nil {
-		pages = []store.BusinessPage{}
-	}
-	api.JSON(c.Writer, http.StatusOK, pages, nil)
 }
 
 // --- Presence ---

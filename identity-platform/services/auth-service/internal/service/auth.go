@@ -15,11 +15,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
-	"github.com/google/uuid"
 	"github.com/atpost/identity-auth-service/internal/config"
 	"github.com/atpost/identity-auth-service/internal/store"
 	"github.com/atpost/identity-shared/events"
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
@@ -27,11 +27,12 @@ import (
 )
 
 type Service struct {
-	store    Store
-	producer Producer
-	cfg      *config.Config
-	log      *slog.Logger
-	rdb      *redis.Client
+	store                Store
+	producer             Producer
+	cfg                  *config.Config
+	log                  *slog.Logger
+	rdb                  *redis.Client
+	miniAppSessionSigner *MiniAppSessionSigner
 }
 
 type Store interface {
@@ -92,11 +93,18 @@ type Producer interface {
 	PublishRaw(ctx context.Context, eventType string, partitionKey string, payloadBytes json.RawMessage) error
 }
 
-func New(store Store, producer Producer, cfg *config.Config, logger *slog.Logger, rdb *redis.Client) *Service {
+func New(store Store, producer Producer, cfg *config.Config, logger *slog.Logger, rdb *redis.Client, miniAppSessionSigner *MiniAppSessionSigner) *Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Service{store: store, producer: producer, cfg: cfg, log: logger, rdb: rdb}
+	return &Service{
+		store:                store,
+		producer:             producer,
+		cfg:                  cfg,
+		log:                  logger,
+		rdb:                  rdb,
+		miniAppSessionSigner: miniAppSessionSigner,
+	}
 }
 
 type TokenPair struct {

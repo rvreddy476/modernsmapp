@@ -78,6 +78,38 @@ func main() {
 	// Auto-migrate Phase 6 tables
 	ensurePhase6Schema(ctx, dbPool)
 
+	// Migration 006 — business_pages followers, media, website columns
+	for _, stmt := range []string{
+		`ALTER TABLE business_pages ADD COLUMN IF NOT EXISTS follower_count INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE business_pages ADD COLUMN IF NOT EXISTS cover_media_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE business_pages ADD COLUMN IF NOT EXISTS avatar_media_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE business_pages ADD COLUMN IF NOT EXISTS website TEXT NOT NULL DEFAULT ''`,
+		`CREATE TABLE IF NOT EXISTS page_followers (
+			page_id UUID NOT NULL REFERENCES business_pages(id) ON DELETE CASCADE,
+			user_id UUID NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (page_id, user_id))`,
+		`CREATE INDEX IF NOT EXISTS idx_page_followers_user ON page_followers (user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_business_pages_category ON business_pages (category)`,
+	} {
+		if _, err := dbPool.Exec(ctx, stmt); err != nil {
+			slog.Warn("migration 006", "error", err)
+		}
+	}
+	slog.Info("migration 006 applied")
+
+	// Migration 007 — seller_id + status on business_pages
+	for _, stmt := range []string{
+		`ALTER TABLE business_pages ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('draft','active','suspended'))`,
+		`ALTER TABLE business_pages ADD COLUMN IF NOT EXISTS seller_id UUID`,
+		`CREATE INDEX IF NOT EXISTS idx_business_pages_seller ON business_pages(seller_id) WHERE seller_id IS NOT NULL`,
+	} {
+		if _, err := dbPool.Exec(ctx, stmt); err != nil {
+			slog.Warn("migration 007", "error", err)
+		}
+	}
+	slog.Info("migration 007 applied")
+
 	// 5. Prometheus metrics
 	httpMetrics := metrics.NewHTTPMetrics("user-service")
 	dbMetrics := metrics.NewDBPoolMetrics("user-service", "postgres")

@@ -569,6 +569,7 @@ func TestGetStreamDecoratesPlaybackAndIngestForHost(t *testing.T) {
 
 	svc := newServiceWithStoreAndConfig(ts, StreamMediaConfig{
 		PlaybackURLTemplate: "https://stream.cleestudio.com/live/{stream_id}/index.m3u8",
+		PublishURLTemplate:  "https://stream.cleestudio.com/v1/live/streams/{stream_id}/publish/whip",
 		IngestURL:           "rtmps://stream.cleestudio.com/live",
 	})
 
@@ -595,6 +596,12 @@ func TestGetStreamDecoratesPlaybackAndIngestForHost(t *testing.T) {
 	if got.IngestProtocol == nil || *got.IngestProtocol != "rtmp" {
 		t.Fatalf("expected ingest protocol rtmp, got %#v", got.IngestProtocol)
 	}
+	if got.PublishURL == nil || *got.PublishURL != "https://stream.cleestudio.com/v1/live/streams/"+st.ID.String()+"/publish/whip" {
+		t.Fatalf("expected publish URL to be exposed to the host, got %#v", got.PublishURL)
+	}
+	if got.PublishProtocol == nil || *got.PublishProtocol != "whip" {
+		t.Fatalf("expected publish protocol whip, got %#v", got.PublishProtocol)
+	}
 }
 
 func TestListHostStreamsDecoratesWithoutLeakingSecretsIntoPlayback(t *testing.T) {
@@ -604,8 +611,9 @@ func TestListHostStreamsDecoratesWithoutLeakingSecretsIntoPlayback(t *testing.T)
 	st := mustLiveStream(ts, hostID)
 
 	svc := newServiceWithStoreAndConfig(ts, StreamMediaConfig{
-		PlaybackBaseURL: "https://stream.cleestudio.com/live",
-		IngestURL:       "rtmps://stream.cleestudio.com/live",
+		PlaybackBaseURL:    "https://stream.cleestudio.com/live",
+		PublishURLTemplate: "https://stream.cleestudio.com/v1/live/streams/{stream_id}/publish/whip",
+		IngestURL:          "rtmps://stream.cleestudio.com/live",
 	})
 
 	streams, err := svc.ListHostStreams(ctx, hostID, 10, 0)
@@ -626,6 +634,9 @@ func TestListHostStreamsDecoratesWithoutLeakingSecretsIntoPlayback(t *testing.T)
 	if got.IngestURL == nil {
 		t.Fatal("expected host list item to include ingest URL")
 	}
+	if got.PublishURL == nil {
+		t.Fatal("expected host list item to include publish URL")
+	}
 }
 
 func TestEndedStreamOmitsActiveTransportFields(t *testing.T) {
@@ -637,8 +648,9 @@ func TestEndedStreamOmitsActiveTransportFields(t *testing.T) {
 	st.ReplayURL = &replayURL
 
 	svc := newServiceWithStoreAndConfig(ts, StreamMediaConfig{
-		PlaybackBaseURL: "https://stream.cleestudio.com/live",
-		IngestURL:       "rtmps://stream.cleestudio.com/live",
+		PlaybackBaseURL:    "https://stream.cleestudio.com/live",
+		PublishURLTemplate: "https://stream.cleestudio.com/v1/live/streams/{stream_id}/publish/whip",
+		IngestURL:          "rtmps://stream.cleestudio.com/live",
 	})
 
 	got, err := svc.GetStream(ctx, st.ID)
@@ -650,6 +662,9 @@ func TestEndedStreamOmitsActiveTransportFields(t *testing.T) {
 	}
 	if got.IngestURL != nil {
 		t.Fatalf("expected ended stream to omit ingest URL, got %q", *got.IngestURL)
+	}
+	if got.PublishURL != nil {
+		t.Fatalf("expected ended stream to omit publish URL, got %q", *got.PublishURL)
 	}
 	if got.ReplayURL == nil || *got.ReplayURL != replayURL {
 		t.Fatalf("expected replay URL to be preserved, got %#v", got.ReplayURL)
@@ -664,6 +679,7 @@ func TestListLiveStreamsUsesPublicStreamIDPlaybackURL(t *testing.T) {
 
 	svc := newServiceWithStoreAndConfig(ts, StreamMediaConfig{
 		PlaybackURLTemplate: "https://cleestudio.com/v1/live/streams/{stream_id}/playback/index.m3u8",
+		PublishURLTemplate:  "https://cleestudio.com/v1/live/streams/{stream_id}/publish/whip",
 	})
 
 	streams, err := svc.ListLiveStreams(ctx, 10, 0)
@@ -686,6 +702,9 @@ func TestListLiveStreamsUsesPublicStreamIDPlaybackURL(t *testing.T) {
 	}
 	if got.StreamKey != "" {
 		t.Fatalf("expected public live list to scrub stream key, got %q", got.StreamKey)
+	}
+	if got.PublishURL != nil {
+		t.Fatalf("expected public live list to scrub publish URL, got %#v", got.PublishURL)
 	}
 }
 
@@ -726,5 +745,45 @@ func TestResolvePlaybackAssetURLRejectsTraversal(t *testing.T) {
 	_, err := svc.ResolvePlaybackAssetURL(ctx, st.ID, "/../secret.txt")
 	if !errors.Is(err, ErrInvalidPlaybackAssetPath) {
 		t.Fatalf("expected ErrInvalidPlaybackAssetPath, got %v", err)
+	}
+}
+
+func TestResolvePublishEndpointURLUsesInternalOriginAndSecretKey(t *testing.T) {
+	ctx := context.Background()
+	ts := newTestStore()
+	hostID := uuid.New()
+	st := mustLiveStream(ts, hostID)
+
+	svc := newServiceWithStoreAndConfig(ts, StreamMediaConfig{
+		PublishInternalBaseURL: "http://mediamtx:8889",
+		IngestURL:              "rtmp://localhost:1935/live",
+	})
+
+	target, err := svc.ResolvePublishEndpointURL(ctx, st.ID, hostID)
+	if err != nil {
+		t.Fatalf("ResolvePublishEndpointURL failed: %v", err)
+	}
+
+	if want := "http://mediamtx:8889/live/" + st.StreamKey + "/whip"; target.String() != want {
+		t.Fatalf("expected internal publish URL %q, got %q", want, target.String())
+	}
+	if strings.Contains(target.String(), st.ID.String()) {
+		t.Fatalf("internal publish URL should resolve by stream key, got %q", target.String())
+	}
+}
+
+func TestResolvePublishEndpointURLRejectsNonHost(t *testing.T) {
+	ctx := context.Background()
+	ts := newTestStore()
+	hostID := uuid.New()
+	st := mustLiveStream(ts, hostID)
+
+	svc := newServiceWithStoreAndConfig(ts, StreamMediaConfig{
+		PublishInternalBaseURL: "http://mediamtx:8889",
+	})
+
+	_, err := svc.ResolvePublishEndpointURL(ctx, st.ID, uuid.New())
+	if !errors.Is(err, postgres.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for non-host publish attempt, got %v", err)
 	}
 }

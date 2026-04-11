@@ -1,61 +1,119 @@
 import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/models/group.dart';
-import 'package:atpost_app/data/repositories/groups_repository.dart';
 import 'package:atpost_app/providers/groups_provider.dart';
+import 'package:atpost_app/shared/widgets/glass_icon_button.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:flutter_animate/flutter_animate.dart';
 
 class GroupsListScreen extends ConsumerWidget {
   const GroupsListScreen({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final repo = ref.read(groupsRepositoryProvider);
+    final groupsState = ref.watch(groupsProvider);
 
     return DefaultTabController(
       length: 2,
       child: Scaffold(
-        backgroundColor: AppColors.bgPrimary,
-        appBar: AppBar(
-          backgroundColor: AppColors.bgPrimary,
-          elevation: 0,
-          leading: IconButton(
-            icon: const Icon(Icons.arrow_back, color: AppColors.textPrimary),
-            onPressed: () => context.pop(),
-          ),
-          title: Text('Groups', style: AppTextStyles.h2),
-          actions: [
-            IconButton(
-              icon: const Icon(Icons.add, color: AppColors.postbookPrimary),
-              onPressed: () => context.push('/groups/create'),
+        backgroundColor: Colors.black,
+        body: Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [Color(0xFF0F111A), Color(0xFF090A11)],
             ),
-          ],
-          bottom: TabBar(
-            labelColor: AppColors.postbookPrimary,
-            unselectedLabelColor: AppColors.textDim,
-            indicatorColor: AppColors.postbookPrimary,
-            labelStyle: AppTextStyles.label,
-            tabs: const [
-              Tab(text: 'My Groups'),
-              Tab(text: 'Discover'),
-            ],
+          ),
+          child: SafeArea(
+            child: Column(
+              children: [
+                _buildHeader(context),
+                _buildTabBar(),
+                Expanded(
+                  child: TabBarView(
+                    children: [
+                      _GroupsList(
+                        groups: groupsState.valueOrNull?.myGroups ?? [],
+                        isLoading: groupsState.isLoading,
+                        emptyMessage: 'You haven\'t joined any groups yet.',
+                      ),
+                      _GroupsList(
+                        groups: groupsState.valueOrNull?.discoveredGroups ?? [],
+                        isLoading: groupsState.isLoading,
+                        emptyMessage: 'No public groups found.',
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
-        body: TabBarView(
-          children: [
-            _GroupsList(
-              provider: myGroupsProvider,
-              repo: repo,
-              emptyMessage: 'You have not joined any groups yet.',
+      ),
+    );
+  }
+
+  Widget _buildHeader(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Row(
+        children: [
+          GlassIconButton(
+            icon: Icons.arrow_back_ios_new,
+            tooltip: 'Back',
+            onPressed: () => context.pop(),
+          ),
+          const SizedBox(width: 12),
+          Text('Groups', style: AppTextStyles.h1),
+          const Spacer(),
+          GestureDetector(
+            onTap: () => context.push('/groups/create'),
+            child: Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                gradient: AppColors.ctaGradient,
+                shape: BoxShape.circle,
+                boxShadow: [
+                  BoxShadow(
+                    color: AppColors.postbookPrimary.withOpacity(0.3),
+                    blurRadius: 12,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: const Icon(Icons.add, color: Colors.white, size: 20),
             ),
-            _GroupsList(
-              provider: discoverGroupsProvider,
-              repo: repo,
-              emptyMessage: 'No public groups found.',
-            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTabBar() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Container(
+        padding: const EdgeInsets.all(4),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.05),
+          borderRadius: BorderRadius.circular(30),
+        ),
+        child: TabBar(
+          indicator: BoxDecoration(
+            color: AppColors.postbookPrimary,
+            borderRadius: BorderRadius.circular(26),
+          ),
+          indicatorSize: TabBarIndicatorSize.tab,
+          labelColor: Colors.white,
+          unselectedLabelColor: Colors.white38,
+          labelStyle: AppTextStyles.label.copyWith(fontWeight: FontWeight.bold),
+          dividerColor: Colors.transparent,
+          tabs: const [
+            Tab(text: 'My Groups'),
+            Tab(text: 'Discover'),
           ],
         ),
       ),
@@ -64,195 +122,127 @@ class GroupsListScreen extends ConsumerWidget {
 }
 
 class _GroupsList extends ConsumerWidget {
-  final ProviderBase<AsyncValue<List<Group>>> provider;
-  final GroupsRepository repo;
+  final List<Group> groups;
+  final bool isLoading;
   final String emptyMessage;
 
   const _GroupsList({
-    required this.provider,
-    required this.repo,
+    required this.groups,
+    required this.isLoading,
     required this.emptyMessage,
   });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final async = ref.watch(provider);
-    return async.when(
-      loading: () => const Center(
-        child: CircularProgressIndicator(color: AppColors.postbookPrimary),
-      ),
-      error: (_, _) => Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.error_outline, color: AppColors.textDim, size: 40),
-            const SizedBox(height: 12),
-            Text('Failed to load groups', style: AppTextStyles.body),
-            const SizedBox(height: 8),
-            TextButton(
-              onPressed: () => ref.invalidate(provider),
-              child: Text('Retry',
-                  style: AppTextStyles.label
-                      .copyWith(color: AppColors.postbookPrimary)),
-            ),
-          ],
-        ),
-      ),
-      data: (groups) {
-        if (groups.isEmpty) {
-          return Center(
-            child: Text(emptyMessage,
-                style:
-                    AppTextStyles.body.copyWith(color: AppColors.textSecondary)),
-          );
-        }
-        return ListView.separated(
-          padding: AppSpacing.pagePadding.copyWith(top: 12, bottom: 100),
-          itemCount: groups.length,
-          separatorBuilder: (_, _) => const SizedBox(height: 8),
-          itemBuilder: (context, index) =>
-              _GroupTile(group: groups[index], repo: repo),
+    if (isLoading && groups.isEmpty) {
+      return const Center(child: CircularProgressIndicator(color: AppColors.postbookPrimary));
+    }
+
+    if (groups.isEmpty) {
+      return Center(
+        child: Text(emptyMessage, style: AppTextStyles.bodySmall.copyWith(color: Colors.white24)),
+      );
+    }
+
+    return ListView.builder(
+      padding: const EdgeInsets.all(16),
+      itemCount: groups.length,
+      itemBuilder: (context, index) {
+        final group = groups[index];
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: _GroupGlassTile(group: group),
         );
       },
     );
   }
 }
 
-class _GroupTile extends StatefulWidget {
+class _GroupGlassTile extends ConsumerWidget {
   final Group group;
-  final GroupsRepository repo;
-
-  const _GroupTile({required this.group, required this.repo});
+  const _GroupGlassTile({required this.group});
 
   @override
-  State<_GroupTile> createState() => _GroupTileState();
-}
-
-class _GroupTileState extends State<_GroupTile> {
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      color: AppColors.bgCard,
-      margin: EdgeInsets.zero,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(AppSpacing.radiusXL),
-        side: const BorderSide(color: AppColors.borderSubtle),
-      ),
-      child: ListTile(
-        contentPadding:
-            const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-        leading: Container(
-          width: 48,
-          height: 48,
+  Widget build(BuildContext context, WidgetRef ref) {
+    return RepaintBoundary(
+      child: GestureDetector(
+        onTap: () => context.push('/groups/${group.id}'),
+        child: Container(
+          padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
-            gradient: AppColors.postbookGradient,
-            borderRadius: BorderRadius.circular(12),
+            color: Colors.white.withOpacity(0.03),
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(color: Colors.white.withOpacity(0.05)),
           ),
-          child: const Icon(Icons.group, color: Colors.white, size: 24),
+          child: Row(
+            children: [
+              _buildAvatar(),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(group.name, style: AppTextStyles.h3),
+                    const SizedBox(height: 4),
+                    Text(
+                      '${group.memberCount} members · ${group.privacy}',
+                      style: AppTextStyles.labelSmall.copyWith(color: Colors.white38),
+                    ),
+                  ],
+                ),
+              ),
+              _JoinButton(groupId: group.id, isMember: group.isMember),
+            ],
+          ),
         ),
-        title: Text(widget.group.name, style: AppTextStyles.h3),
-        subtitle: Text(
-          '${widget.group.memberCount} members · ${widget.group.privacy}',
-          style: AppTextStyles.labelSmall
-              .copyWith(color: AppColors.textSecondary),
-        ),
-        trailing: _JoinButton(group: widget.group, repo: widget.repo),
-        onTap: () => context.push('/groups/${widget.group.id}'),
       ),
+    ).animate().fadeIn(duration: 300.ms).slideX(begin: 0.1, end: 0);
+  }
+
+  Widget _buildAvatar() {
+    return Container(
+      width: 52,
+      height: 52,
+      decoration: BoxDecoration(
+        gradient: AppColors.postbookGradient,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.2),
+            blurRadius: 8,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: const Icon(Icons.group, color: Colors.white, size: 26),
     );
   }
 }
 
-class _JoinButton extends StatefulWidget {
-  final Group group;
-  final GroupsRepository repo;
+class _JoinButton extends ConsumerWidget {
+  final String groupId;
+  final bool isMember;
 
-  const _JoinButton({required this.group, required this.repo});
-
-  @override
-  State<_JoinButton> createState() => _JoinButtonState();
-}
-
-class _JoinButtonState extends State<_JoinButton> {
-  late bool _joined;
-  bool _loading = false;
+  const _JoinButton({required this.groupId, required this.isMember});
 
   @override
-  void initState() {
-    super.initState();
-    _joined = widget.group.isMember;
-  }
-
-  Future<void> _toggle() async {
-    if (_loading) return;
-    final wasJoined = _joined;
-    setState(() {
-      _joined = !_joined;
-      _loading = true;
-    });
-    try {
-      if (wasJoined) {
-        await widget.repo.leaveGroup(widget.group.id);
-      } else {
-        await widget.repo.joinGroup(widget.group.id);
-      }
-    } catch (_) {
-      if (mounted) {
-        setState(() => _joined = wasJoined);
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _loading = false);
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (_loading) {
-      return const SizedBox(
-        width: 20,
-        height: 20,
-        child: CircularProgressIndicator(
-          strokeWidth: 2,
-          color: AppColors.postbookPrimary,
+  Widget build(BuildContext context, WidgetRef ref) {
+    return ElevatedButton(
+      onPressed: () => ref.read(groupsProvider.notifier).toggleJoin(groupId),
+      style: ElevatedButton.styleFrom(
+        backgroundColor: isMember ? Colors.white.withOpacity(0.05) : AppColors.postbookPrimary,
+        foregroundColor: isMember ? Colors.white70 : Colors.white,
+        elevation: 0,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        minimumSize: Size.zero,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+          side: isMember ? BorderSide(color: Colors.white.withOpacity(0.1)) : BorderSide.none,
         ),
-      );
-    }
-    if (_joined) {
-      return OutlinedButton(
-        onPressed: _toggle,
-        style: OutlinedButton.styleFrom(
-          foregroundColor: AppColors.textSecondary,
-          side: const BorderSide(color: AppColors.borderSubtle),
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-          minimumSize: Size.zero,
-          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-          ),
-        ),
-        child: Text('Joined', style: AppTextStyles.labelSmall),
-      );
-    }
-    return Container(
-      decoration: BoxDecoration(
-        gradient: AppColors.postbookGradient,
-        borderRadius: BorderRadius.circular(20),
       ),
-      child: OutlinedButton(
-        onPressed: _toggle,
-        style: OutlinedButton.styleFrom(
-          foregroundColor: Colors.white,
-          side: BorderSide.none,
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-          minimumSize: Size.zero,
-          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-          ),
-        ),
-        child: Text('Join', style: AppTextStyles.labelSmall),
+      child: Text(
+        isMember ? 'Joined' : 'Join',
+        style: AppTextStyles.labelSmall.copyWith(fontWeight: FontWeight.bold),
       ),
     );
   }

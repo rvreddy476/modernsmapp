@@ -40,11 +40,13 @@ func (p *Producer) PublishCommunityCreated(ctx context.Context, communityID, own
 	return p.publish(ctx, EventCommunityCreated, &ownerID, payload)
 }
 
-func (p *Producer) PublishCommunityUpdated(ctx context.Context, communityID, actorID uuid.UUID) error {
+func (p *Producer) PublishCommunityUpdated(ctx context.Context, communityID, actorID uuid.UUID, name, communityType string) error {
 	payload := CommunityUpdatedPayload{
-		CommunityID: communityID.String(),
-		ActorID:     actorID.String(),
-		UpdatedAt:   time.Now(),
+		CommunityID:   communityID.String(),
+		ActorID:       actorID.String(),
+		Name:          name,
+		CommunityType: communityType,
+		UpdatedAt:     time.Now(),
 	}
 	return p.publish(ctx, EventCommunityUpdated, &actorID, payload)
 }
@@ -184,9 +186,11 @@ type CommunityCreatedPayload struct {
 }
 
 type CommunityUpdatedPayload struct {
-	CommunityID string    `json:"community_id"`
-	ActorID     string    `json:"actor_id"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	CommunityID   string    `json:"community_id"`
+	ActorID       string    `json:"actor_id"`
+	Name          string    `json:"name,omitempty"`
+	CommunityType string    `json:"community_type,omitempty"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 type CommunityDeletedPayload struct {

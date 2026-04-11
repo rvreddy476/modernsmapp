@@ -7,6 +7,10 @@ class LiveStream {
   final String? streamKey;
   final String? ingestUrl;
   final String? ingestProtocol;
+  final String? publishUrl;
+  final String? publishProtocol;
+  final Map<String, String> publishHeaders;
+  final List<LiveIceServer> publishIceServers;
   final String? playbackUrl;
   final String? playbackProtocol;
   final String? replayUrl;
@@ -30,6 +34,10 @@ class LiveStream {
     this.streamKey,
     this.ingestUrl,
     this.ingestProtocol,
+    this.publishUrl,
+    this.publishProtocol,
+    this.publishHeaders = const <String, String>{},
+    this.publishIceServers = const <LiveIceServer>[],
     this.playbackUrl,
     this.playbackProtocol,
     this.replayUrl,
@@ -46,6 +54,37 @@ class LiveStream {
   });
 
   factory LiveStream.fromJson(Map<String, dynamic> json) {
+    final publishConfig = _asMap(json['publish']);
+    final rawPublishUrl =
+        json['publish_url'] ??
+        json['whip_url'] ??
+        publishConfig?['url'] ??
+        publishConfig?['publish_url'] ??
+        publishConfig?['whip_url'];
+    final rawPublishProtocol =
+        json['publish_protocol'] ??
+        json['whip_protocol'] ??
+        publishConfig?['protocol'] ??
+        publishConfig?['publish_protocol'] ??
+        publishConfig?['whip_protocol'];
+    final publishHeaders =
+        _parseStringMap(
+          json['publish_headers'] ??
+              json['whip_headers'] ??
+              publishConfig?['headers'] ??
+              publishConfig?['publish_headers'] ??
+              publishConfig?['whip_headers'],
+        ) ??
+        const <String, String>{};
+    final publishIceServers =
+        _parseIceServers(
+          json['publish_ice_servers'] ??
+              json['ice_servers'] ??
+              publishConfig?['ice_servers'] ??
+              publishConfig?['publish_ice_servers'],
+        ) ??
+        const <LiveIceServer>[];
+
     return LiveStream(
       id: json['id'] as String? ?? '',
       hostId: json['host_id'] as String? ?? '',
@@ -55,17 +94,21 @@ class LiveStream {
       streamKey: json['stream_key'] as String?,
       ingestUrl: json['ingest_url'] as String?,
       ingestProtocol: json['ingest_protocol'] as String?,
+      publishUrl: rawPublishUrl as String?,
+      publishProtocol: rawPublishProtocol as String?,
+      publishHeaders: publishHeaders,
+      publishIceServers: publishIceServers,
       playbackUrl: json['playback_url'] as String?,
       playbackProtocol: json['playback_protocol'] as String?,
       replayUrl: json['replay_url'] as String?,
       status: json['status'] as String? ?? 'idle',
       visibility: json['visibility'] as String? ?? 'public',
-      peakViewers: json['peak_viewers'] as int? ?? 0,
-      totalViewers: json['total_viewers'] as int? ?? 0,
-      likeCount: json['like_count'] as int? ?? 0,
+      peakViewers: _parseInt(json['peak_viewers']),
+      totalViewers: _parseInt(json['total_viewers']),
+      likeCount: _parseInt(json['like_count']),
       startedAt: _parseDateTime(json['started_at']),
       endedAt: _parseDateTime(json['ended_at']),
-      durationSeconds: json['duration_secs'] as int? ?? 0,
+      durationSeconds: _parseInt(json['duration_secs']),
       createdAt: _parseDateTime(json['created_at']) ?? DateTime.now(),
       updatedAt: _parseDateTime(json['updated_at']),
     );
@@ -75,6 +118,10 @@ class LiveStream {
   bool get isEnded => status == 'ended';
   bool get hasLivePlayback => (playbackUrl ?? '').isNotEmpty;
   bool get hasReplay => (replayUrl ?? '').isNotEmpty;
+  bool get hasPublishTarget => (publishUrl ?? '').isNotEmpty;
+  bool get canPublishFromMobile =>
+      hasPublishTarget &&
+      ((publishProtocol ?? 'whip').toLowerCase() == 'whip');
   String? get preferredVideoUrl => isLive
       ? hasLivePlayback
             ? playbackUrl
@@ -92,6 +139,7 @@ class LiveStream {
     int? peakViewers,
     int? totalViewers,
     int? likeCount,
+    DateTime? startedAt,
     DateTime? endedAt,
     DateTime? updatedAt,
   }) {
@@ -104,6 +152,10 @@ class LiveStream {
       streamKey: streamKey,
       ingestUrl: ingestUrl,
       ingestProtocol: ingestProtocol,
+      publishUrl: publishUrl,
+      publishProtocol: publishProtocol,
+      publishHeaders: publishHeaders,
+      publishIceServers: publishIceServers,
       playbackUrl: playbackUrl,
       playbackProtocol: playbackProtocol,
       replayUrl: replayUrl,
@@ -112,13 +164,57 @@ class LiveStream {
       peakViewers: peakViewers ?? this.peakViewers,
       totalViewers: totalViewers ?? this.totalViewers,
       likeCount: likeCount ?? this.likeCount,
-      startedAt: startedAt,
+      startedAt: startedAt ?? this.startedAt,
       endedAt: endedAt ?? this.endedAt,
       durationSeconds: durationSeconds,
       createdAt: createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
     );
   }
+}
+
+class LiveIceServer {
+  final List<String> urls;
+  final String? username;
+  final String? credential;
+
+  const LiveIceServer({
+    required this.urls,
+    this.username,
+    this.credential,
+  });
+
+  factory LiveIceServer.fromJson(Map<String, dynamic> json) {
+    final rawUrls = json['urls'];
+    final urls = switch (rawUrls) {
+      String value => <String>[value],
+      List<dynamic> value => value.whereType<String>().toList(growable: false),
+      _ => const <String>[],
+    };
+    return LiveIceServer(
+      urls: urls,
+      username: json['username'] as String?,
+      credential: json['credential'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toRtcConfiguration() {
+    return <String, dynamic>{
+      'urls': urls,
+      if ((username ?? '').isNotEmpty) 'username': username,
+      if ((credential ?? '').isNotEmpty) 'credential': credential,
+    };
+  }
+}
+
+class LivePublishSession {
+  final String answerSdp;
+  final String? sessionUrl;
+
+  const LivePublishSession({
+    required this.answerSdp,
+    this.sessionUrl,
+  });
 }
 
 class LiveChatMessage {
@@ -208,4 +304,38 @@ DateTime? _parseDateTime(dynamic value) {
   if (value == null) return null;
   if (value is String) return DateTime.tryParse(value)?.toLocal();
   return null;
+}
+
+Map<String, dynamic>? _asMap(dynamic value) {
+  if (value is Map<String, dynamic>) return value;
+  if (value is Map) {
+    return value.map(
+      (key, item) => MapEntry(key.toString(), item),
+    );
+  }
+  return null;
+}
+
+Map<String, String>? _parseStringMap(dynamic value) {
+  final map = _asMap(value);
+  if (map == null) return null;
+  return map.map(
+    (key, item) => MapEntry(key, item?.toString() ?? ''),
+  );
+}
+
+List<LiveIceServer>? _parseIceServers(dynamic value) {
+  if (value is! List) return null;
+  return value
+      .map((item) => _asMap(item))
+      .whereType<Map<String, dynamic>>()
+      .map(LiveIceServer.fromJson)
+      .where((server) => server.urls.isNotEmpty)
+      .toList(growable: false);
+}
+
+int _parseInt(dynamic value) {
+  if (value is int) return value;
+  if (value is num) return value.toInt();
+  return 0;
 }

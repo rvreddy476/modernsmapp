@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"log/slog"
 	"time"
 
 	"github.com/atpost/shared/events"
@@ -58,6 +59,8 @@ func (c *Consumer) Start(ctx context.Context) {
 			c.handleUserEndorsed(ctx, envelope.Payload)
 		case events.EventUserDeletionRequested:
 			c.handleUserDeletionRequested(ctx, envelope.Payload)
+		case events.EventSellerApproved:
+			c.handleSellerApproved(ctx, envelope.Payload)
 		default:
 			// Ignore other events
 		}
@@ -140,5 +143,42 @@ func (c *Consumer) handleUserEndorsed(ctx context.Context, payload json.RawMessa
 
 	if newScore != rep.TrustScore {
 		log.Printf("Reputation recalc for %s: endorsements=%d, trust_score=%.2f\n", toUserID, rep.EndorsementCount, newScore)
+	}
+}
+
+// handleSellerApproved activates the linked business page + sets seller_id on it.
+func (c *Consumer) handleSellerApproved(ctx context.Context, payload json.RawMessage) {
+	var p struct {
+		SellerID       string `json:"seller_id"`
+		BusinessPageID string `json:"business_page_id"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		slog.Error("unmarshal seller.approved", "error", err)
+		return
+	}
+
+	if p.BusinessPageID == "" {
+		return // seller has no linked page — nothing to activate
+	}
+
+	pageID, err := uuid.Parse(p.BusinessPageID)
+	if err != nil {
+		slog.Error("invalid business_page_id in seller.approved", "value", p.BusinessPageID)
+		return
+	}
+	sellerID, err := uuid.Parse(p.SellerID)
+	if err != nil {
+		slog.Error("invalid seller_id in seller.approved", "value", p.SellerID)
+		return
+	}
+
+	// Link seller → page and activate it
+	if err := c.svc.SetBusinessPageSellerID(ctx, pageID, sellerID); err != nil {
+		slog.Error("set seller_id on page", "page_id", pageID, "error", err)
+	}
+	if err := c.svc.ActivateBusinessPage(ctx, pageID); err != nil {
+		slog.Error("activate business page", "page_id", pageID, "error", err)
+	} else {
+		slog.Info("activated business page after seller approval", "page_id", pageID, "seller_id", sellerID)
 	}
 }

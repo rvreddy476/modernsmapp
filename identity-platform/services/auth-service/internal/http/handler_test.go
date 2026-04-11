@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"github.com/atpost/identity-auth-service/internal/config"
 	"github.com/atpost/identity-auth-service/internal/service"
 	"github.com/atpost/identity-auth-service/internal/store"
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 type stubAuthService struct {
@@ -22,6 +22,8 @@ type stubAuthService struct {
 	loginWithPassFn    func(identifier, password, deviceID, platform, ip, userAgent string) (*service.AuthResponse, error)
 	refreshSessionFn   func(refreshToken, ip, userAgent string) (*service.AuthResponse, error)
 	logoutFn           func(refreshToken string) error
+	issueMiniAppFn     func(appID, userID uuid.UUID, grantedPermissions []string) (*service.MiniAppSessionResponse, error)
+	miniAppJWKSFn      func() (*service.JSONWebKeySet, error)
 }
 
 func (s *stubAuthService) RequestOTP(ctx context.Context, phone, purpose string) error {
@@ -98,7 +100,7 @@ func (s *stubAuthService) HandleOAuthToken(_ context.Context, _, _ string) (*ser
 //func (s *stubAuthService) ResetPassword(_ context.Context, _, _, _ string) error { return nil }
 
 // Password reset stubs
-func (s *stubAuthService) ForgotPassword(_ context.Context, _ string) error { return nil }
+func (s *stubAuthService) ForgotPassword(_ context.Context, _ string) error      { return nil }
 func (s *stubAuthService) ResetPassword(_ context.Context, _, _, _ string) error { return nil }
 
 // Email/Phone verification stubs
@@ -119,6 +121,26 @@ func (s *stubAuthService) RemoveTrustedDevice(_ context.Context, _, _ uuid.UUID)
 // GDPR stub
 func (s *stubAuthService) ExportUserData(_ context.Context, _ string) (*service.DataExport, error) {
 	return &service.DataExport{}, nil
+}
+func (s *stubAuthService) IssueMiniAppSession(_ context.Context, appID, userID uuid.UUID, grantedPermissions []string) (*service.MiniAppSessionResponse, error) {
+	if s.issueMiniAppFn != nil {
+		return s.issueMiniAppFn(appID, userID, grantedPermissions)
+	}
+	return &service.MiniAppSessionResponse{
+		AppID:              appID.String(),
+		UserID:             userID.String(),
+		TokenType:          "Bearer",
+		AccessToken:        "stub",
+		GrantedPermissions: grantedPermissions,
+	}, nil
+}
+func (s *stubAuthService) MiniAppJWKS(_ context.Context) (*service.JSONWebKeySet, error) {
+	if s.miniAppJWKSFn != nil {
+		return s.miniAppJWKSFn()
+	}
+	return &service.JSONWebKeySet{
+		Keys: []service.JSONWebKey{{Kty: "RSA", Kid: "stub", Alg: "RS256"}},
+	}, nil
 }
 
 func noopMiddleware() gin.HandlerFunc {
@@ -217,4 +239,109 @@ func TestRegisterSetsCookies(t *testing.T) {
 	if !foundAccess || !foundRefresh {
 		t.Fatalf("expected access and refresh cookies to be set")
 	}
+}
+
+func TestMiniAppJWKSPublicRoute(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	h := New(&stubAuthService{}, &config.Config{}, nil, nil)
+	h.RegisterRoutes(r, noopMiddleware(), noopMiddleware())
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/auth/.well-known/jwks.json", nil)
+	resp := httptest.NewRecorder()
+	r.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, resp.Code)
+	}
+}
+
+func TestCreateMiniAppSessionRequiresInternalServiceKey(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	h := New(&stubAuthService{}, &config.Config{InternalServiceKey: "test-internal-key"}, nil, nil)
+	h.RegisterRoutes(r, noopMiddleware(), noopMiddleware())
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/internal/mini-app-session", bytes.NewBufferString(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	r.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status %d, got %d", http.StatusUnauthorized, resp.Code)
+	}
+}
+
+func TestCreateMiniAppSessionSuccess(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	appID := uuid.New()
+	userID := uuid.New()
+	called := false
+
+	h := New(&stubAuthService{
+		issueMiniAppFn: func(gotAppID, gotUserID uuid.UUID, grantedPermissions []string) (*service.MiniAppSessionResponse, error) {
+			called = true
+			if gotAppID != appID {
+				t.Fatalf("unexpected app id: %s", gotAppID)
+			}
+			if gotUserID != userID {
+				t.Fatalf("unexpected user id: %s", gotUserID)
+			}
+			if len(grantedPermissions) != 1 || grantedPermissions[0] != "clipboard.write" {
+				t.Fatalf("unexpected granted permissions: %#v", grantedPermissions)
+			}
+			return &service.MiniAppSessionResponse{
+				AppID:              gotAppID.String(),
+				UserID:             gotUserID.String(),
+				TokenType:          "Bearer",
+				AccessToken:        "mini-app-token",
+				GrantedPermissions: grantedPermissions,
+			}, nil
+		},
+	}, &config.Config{InternalServiceKey: "test-internal-key"}, nil, nil)
+	h.RegisterRoutes(r, noopMiddleware(), noopMiddleware())
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/internal/mini-app-session", bytes.NewBufferString(`{"app_id":"`+appID.String()+`","user_id":"`+userID.String()+`","granted_permissions":["clipboard.write"]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Internal-Service-Key", "test-internal-key")
+	resp := httptest.NewRecorder()
+	r.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, resp.Code)
+	}
+	if !called {
+		t.Fatal("expected IssueMiniAppSession to be called")
+	}
+}
+
+func TestCreateMiniAppSessionMapsUnavailable(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	appID := uuid.New()
+	userID := uuid.New()
+
+	h := New(&stubAuthService{
+		issueMiniAppFn: func(gotAppID, gotUserID uuid.UUID, grantedPermissions []string) (*service.MiniAppSessionResponse, error) {
+			return nil, serviceErr("MINI_APP_SESSION_UNAVAILABLE")
+		},
+	}, &config.Config{InternalServiceKey: "test-internal-key"}, nil, nil)
+	h.RegisterRoutes(r, noopMiddleware(), noopMiddleware())
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/internal/mini-app-session", bytes.NewBufferString(`{"app_id":"`+appID.String()+`","user_id":"`+userID.String()+`"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Internal-Service-Key", "test-internal-key")
+	resp := httptest.NewRecorder()
+	r.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status %d, got %d", http.StatusServiceUnavailable, resp.Code)
+	}
+}
+
+type serviceErr string
+
+func (e serviceErr) Error() string {
+	return string(e)
 }

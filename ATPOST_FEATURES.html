@@ -1,0 +1,1492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AtPost Platform — Complete Feature Document</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Inter', sans-serif; background: #FAFAFA; color: #1A1A2E; line-height: 1.6; }
+
+  /* ── Cover Page ── */
+  .cover {
+    min-height: 100vh;
+    background: linear-gradient(135deg, #0F0D15 0%, #1A1A2E 40%, #2D1B69 70%, #7C5CFC 100%);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    color: white; text-align: center; padding: 60px 40px; position: relative; overflow: hidden;
+  }
+  .cover::before {
+    content: ''; position: absolute; top: -50%; right: -30%; width: 80%; height: 200%;
+    background: radial-gradient(ellipse, rgba(124,92,252,0.15) 0%, transparent 70%);
+  }
+  .cover-logo {
+    width: 100px; height: 100px; border-radius: 28px;
+    background: white; display: flex; align-items: center; justify-content: center;
+    font-size: 42px; font-weight: 900; color: #7C5CFC; margin-bottom: 32px;
+    box-shadow: 0 20px 60px rgba(124,92,252,0.4); position: relative;
+  }
+  .cover h1 { font-size: 56px; font-weight: 900; letter-spacing: -1.5px; margin-bottom: 16px; position: relative; }
+  .cover h1 span { color: #F59E0B; }
+  .cover p.sub { font-size: 20px; color: rgba(255,255,255,0.7); max-width: 600px; margin-bottom: 48px; position: relative; }
+  .cover-meta { display: flex; gap: 40px; position: relative; }
+  .cover-meta div { text-align: center; }
+  .cover-meta .num { font-size: 36px; font-weight: 800; color: #F59E0B; }
+  .cover-meta .lbl { font-size: 12px; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 1.5px; }
+  .cover-date { position: absolute; bottom: 32px; font-size: 13px; color: rgba(255,255,255,0.35); }
+
+  /* ── Table of Contents ── */
+  .toc {
+    max-width: 900px; margin: 80px auto; padding: 0 40px;
+  }
+  .toc h2 { font-size: 32px; font-weight: 800; margin-bottom: 32px; color: #1A1A2E; }
+  .toc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
+  .toc-card {
+    background: white; border: 1px solid #EEEDF5; border-radius: 16px; padding: 20px;
+    text-decoration: none; color: inherit; transition: all 0.2s;
+    display: flex; align-items: center; gap: 16px;
+  }
+  .toc-card:hover { border-color: #7C5CFC; box-shadow: 0 4px 20px rgba(124,92,252,0.1); transform: translateY(-2px); }
+  .toc-num {
+    width: 40px; height: 40px; border-radius: 12px; display: flex; align-items: center; justify-content: center;
+    font-weight: 800; font-size: 14px; color: white; flex-shrink: 0;
+  }
+  .toc-card .title { font-weight: 600; font-size: 14px; }
+  .toc-card .count { font-size: 11px; color: #8B8B9E; margin-top: 2px; }
+
+  /* ── Section Styles ── */
+  .section {
+    max-width: 900px; margin: 0 auto 80px; padding: 0 40px;
+  }
+  .section-header {
+    padding: 32px 0; border-bottom: 3px solid; margin-bottom: 32px;
+  }
+  .section-header .tag {
+    display: inline-block; padding: 4px 14px; border-radius: 99px; font-size: 11px;
+    font-weight: 700; text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 12px;
+    color: white;
+  }
+  .section-header h2 { font-size: 36px; font-weight: 800; letter-spacing: -0.5px; }
+  .section-header p { font-size: 15px; color: #6B6980; margin-top: 8px; max-width: 650px; }
+
+  /* Feature cards */
+  .feature-grid { display: grid; grid-template-columns: 1fr; gap: 20px; }
+  .feature-card {
+    background: white; border: 1px solid #EEEDF5; border-radius: 16px; padding: 28px;
+    transition: all 0.2s;
+  }
+  .feature-card:hover { box-shadow: 0 8px 30px rgba(0,0,0,0.06); }
+  .feature-card h3 { font-size: 18px; font-weight: 700; margin-bottom: 8px; display: flex; align-items: center; gap: 10px; }
+  .feature-card h3 .icon { font-size: 22px; }
+  .feature-card p { font-size: 13px; color: #6B6980; margin-bottom: 12px; }
+  .feature-card .tech-row { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
+    display: inline-block; padding: 3px 10px; border-radius: 6px; font-size: 11px;
+    font-weight: 600; background: #F0EEFF; color: #5B3FD4;
+  }
+  .chip.be { background: #E8F5E9; color: #2E7D32; }
+  .chip.fe { background: #FFF3E0; color: #E65100; }
+  .chip.mob { background: #E3F2FD; color: #1565C0; }
+  .chip.infra { background: #FCE4EC; color: #C62828; }
+  .chip.db { background: #F3E5F5; color: #6A1B9A; }
+
+  /* Detail lists */
+  .detail-list { list-style: none; padding: 0; margin-top: 10px; }
+  .detail-list li {
+    padding: 6px 0; font-size: 13px; color: #4A4A5A; border-bottom: 1px solid #F5F5F5;
+    display: flex; align-items: baseline; gap: 8px;
+  }
+  .detail-list li::before { content: ''; width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; margin-top: 5px; }
+  .detail-list li:last-child { border-bottom: none; }
+
+  /* Platform badges */
+  .platforms { display: flex; gap: 8px; margin-top: 12px; }
+  .platform-badge {
+    padding: 4px 12px; border-radius: 8px; font-size: 11px; font-weight: 600;
+    border: 1px solid #EEEDF5;
+  }
+  .platform-badge.web { background: #FFF7ED; color: #C2410C; border-color: #FFEDD5; }
+  .platform-badge.mobile { background: #EFF6FF; color: #1D4ED8; border-color: #DBEAFE; }
+  .platform-badge.api { background: #F0FDF4; color: #15803D; border-color: #DCFCE7; }
+
+  /* Stats bar */
+  .stats-bar {
+    display: flex; gap: 24px; flex-wrap: wrap; padding: 20px 0; margin-top: 16px;
+    border-top: 1px solid #EEEDF5;
+  }
+  .stat { }
+  .stat .val { font-size: 20px; font-weight: 800; }
+  .stat .lbl { font-size: 11px; color: #8B8B9E; text-transform: uppercase; letter-spacing: 1px; }
+
+  /* Color themes per section */
+  .c-violet .section-header { border-color: #7C5CFC; }
+  .c-violet .section-header .tag { background: #7C5CFC; }
+  .c-violet .detail-list li::before { background: #7C5CFC; }
+
+  .c-amber .section-header { border-color: #F59E0B; }
+  .c-amber .section-header .tag { background: #F59E0B; }
+  .c-amber .detail-list li::before { background: #F59E0B; }
+
+  .c-teal .section-header { border-color: #14B8A6; }
+  .c-teal .section-header .tag { background: #14B8A6; }
+  .c-teal .detail-list li::before { background: #14B8A6; }
+
+  .c-rose .section-header { border-color: #F43F5E; }
+  .c-rose .section-header .tag { background: #F43F5E; }
+  .c-rose .detail-list li::before { background: #F43F5E; }
+
+  .c-blue .section-header { border-color: #3B82F6; }
+  .c-blue .section-header .tag { background: #3B82F6; }
+  .c-blue .detail-list li::before { background: #3B82F6; }
+
+  .c-emerald .section-header { border-color: #10B981; }
+  .c-emerald .section-header .tag { background: #10B981; }
+  .c-emerald .detail-list li::before { background: #10B981; }
+
+  .c-orange .section-header { border-color: #F97316; }
+  .c-orange .section-header .tag { background: #F97316; }
+  .c-orange .detail-list li::before { background: #F97316; }
+
+  .c-indigo .section-header { border-color: #6366F1; }
+  .c-indigo .section-header .tag { background: #6366F1; }
+  .c-indigo .detail-list li::before { background: #6366F1; }
+
+  .c-pink .section-header { border-color: #EC4899; }
+  .c-pink .section-header .tag { background: #EC4899; }
+  .c-pink .detail-list li::before { background: #EC4899; }
+
+  .c-cyan .section-header { border-color: #06B6D4; }
+  .c-cyan .section-header .tag { background: #06B6D4; }
+  .c-cyan .detail-list li::before { background: #06B6D4; }
+
+  .c-slate .section-header { border-color: #64748B; }
+  .c-slate .section-header .tag { background: #64748B; }
+  .c-slate .detail-list li::before { background: #64748B; }
+
+  .c-lime .section-header { border-color: #84CC16; }
+  .c-lime .section-header .tag { background: #84CC16; }
+  .c-lime .detail-list li::before { background: #84CC16; }
+
+  .c-fuchsia .section-header { border-color: #D946EF; }
+  .c-fuchsia .section-header .tag { background: #D946EF; }
+  .c-fuchsia .detail-list li::before { background: #D946EF; }
+
+  .c-red .section-header { border-color: #EF4444; }
+  .c-red .section-header .tag { background: #EF4444; }
+  .c-red .detail-list li::before { background: #EF4444; }
+
+  .c-sky .section-header { border-color: #0EA5E9; }
+  .c-sky .section-header .tag { background: #0EA5E9; }
+  .c-sky .detail-list li::before { background: #0EA5E9; }
+
+  .c-warmrose .section-header { border-color: #E11D48; }
+  .c-warmrose .section-header .tag { background: linear-gradient(135deg, #E11D48, #F97316); }
+  .c-warmrose .detail-list li::before { background: #E11D48; }
+
+  /* Architecture diagram */
+  .arch-diagram {
+    background: #0F0D15; border-radius: 16px; padding: 40px; margin: 40px 0;
+    color: #EEEDF5; overflow-x: auto;
+  }
+  .arch-diagram h3 { font-size: 16px; font-weight: 700; margin-bottom: 24px; color: #F59E0B; }
+  .arch-table { width: 100%; border-collapse: collapse; }
+  .arch-table th { text-align: left; padding: 10px 16px; font-size: 11px; color: #8B8B9E; text-transform: uppercase; letter-spacing: 1px; border-bottom: 1px solid #2A2740; }
+  .arch-table td { padding: 10px 16px; font-size: 13px; border-bottom: 1px solid #1C1A28; }
+  .arch-table tr:hover td { background: rgba(124,92,252,0.05); }
+  .port { color: #F59E0B; font-weight: 600; font-family: monospace; }
+  .svc-name { color: #7C5CFC; font-weight: 600; }
+
+  /* Footer */
+  .footer {
+    text-align: center; padding: 48px 40px; border-top: 1px solid #EEEDF5;
+    color: #8B8B9E; font-size: 13px;
+  }
+
+  @media print {
+    .cover { page-break-after: always; }
+    .section { page-break-inside: avoid; }
+  }
+  @media (max-width: 600px) {
+    .cover h1 { font-size: 32px; }
+    .toc-grid { grid-template-columns: 1fr; }
+    .cover-meta { gap: 20px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     COVER PAGE
+     ══════════════════════════════════════════════════════════════════ -->
+<div class="cover">
+  <div class="cover-logo">AP</div>
+  <h1>AtPost <span>Platform</span></h1>
+  <p class="sub">Complete Feature Document — every module, service, and screen designed and built from day one.</p>
+  <div class="cover-meta">
+    <div><div class="num">29+</div><div class="lbl">Microservices</div></div>
+    <div><div class="num">70+</div><div class="lbl">Frontend Pages</div></div>
+    <div><div class="num">55+</div><div class="lbl">Mobile Screens</div></div>
+    <div><div class="num">5</div><div class="lbl">Data Stores</div></div>
+    <div><div class="num">2</div><div class="lbl">Products</div></div>
+  </div>
+  <div class="cover-date">April 2026 &middot; v1.0</div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     TABLE OF CONTENTS
+     ══════════════════════════════════════════════════════════════════ -->
+<div class="toc">
+  <h2>Table of Contents</h2>
+  <div class="toc-grid">
+    <a class="toc-card" href="#auth"><div class="toc-num" style="background:#7C5CFC">01</div><div><div class="title">Authentication & Identity</div><div class="count">3 services &middot; 8 features</div></div></a>
+    <a class="toc-card" href="#social"><div class="toc-num" style="background:#F59E0B">02</div><div><div class="title">Social Graph & Profiles</div><div class="count">2 services &middot; 10 features</div></div></a>
+    <a class="toc-card" href="#content"><div class="toc-num" style="background:#14B8A6">03</div><div><div class="title">Posts & Content</div><div class="count">1 service &middot; 9 features</div></div></a>
+    <a class="toc-card" href="#feed"><div class="toc-num" style="background:#F43F5E">04</div><div><div class="title">Feed Engine</div><div class="count">1 service &middot; 6 features</div></div></a>
+    <a class="toc-card" href="#posttube"><div class="toc-num" style="background:#3B82F6">05</div><div><div class="title">PostTube (Video)</div><div class="count">Channel service &middot; 7 features</div></div></a>
+    <a class="toc-card" href="#reels"><div class="toc-num" style="background:#10B981">06</div><div><div class="title">Reels / Flicks</div><div class="count">Short-form video &middot; 4 features</div></div></a>
+    <a class="toc-card" href="#stories"><div class="toc-num" style="background:#F97316">07</div><div><div class="title">Stories</div><div class="count">Ephemeral content &middot; 3 features</div></div></a>
+    <a class="toc-card" href="#messaging"><div class="toc-num" style="background:#6366F1">08</div><div><div class="title">Messaging & Chat</div><div class="count">2 services &middot; 6 features</div></div></a>
+    <a class="toc-card" href="#groups"><div class="toc-num" style="background:#EC4899">09</div><div><div class="title">Groups</div><div class="count">1 service &middot; 6 features</div></div></a>
+    <a class="toc-card" href="#communities"><div class="toc-num" style="background:#06B6D4">10</div><div><div class="title">Communities</div><div class="count">1 service &middot; 5 features</div></div></a>
+    <a class="toc-card" href="#channels"><div class="toc-num" style="background:#64748B">11</div><div><div class="title">Channels (Broadcast)</div><div class="count">1 service &middot; 5 features</div></div></a>
+    <a class="toc-card" href="#commerce"><div class="toc-num" style="background:#84CC16">12</div><div><div class="title">Commerce & Seller Platform</div><div class="count">4 services &middot; 12 features</div></div></a>
+    <a class="toc-card" href="#media"><div class="toc-num" style="background:#D946EF">13</div><div><div class="title">Media Pipeline</div><div class="count">1 service &middot; 6 features</div></div></a>
+    <a class="toc-card" href="#search"><div class="toc-num" style="background:#EF4444">14</div><div><div class="title">Search & Discovery</div><div class="count">2 services &middot; 5 features</div></div></a>
+    <a class="toc-card" href="#notifications"><div class="toc-num" style="background:#0EA5E9">15</div><div><div class="title">Notifications & Push</div><div class="count">1 service &middot; 5 features</div></div></a>
+    <a class="toc-card" href="#live"><div class="toc-num" style="background:#7C5CFC">16</div><div><div class="title">Live Streaming</div><div class="count">1 service &middot; 5 features</div></div></a>
+    <a class="toc-card" href="#qa"><div class="toc-num" style="background:#F59E0B">17</div><div><div class="title">Q&A Platform</div><div class="count">1 service &middot; 6 features</div></div></a>
+    <a class="toc-card" href="#memories"><div class="toc-num" style="background:#14B8A6">18</div><div><div class="title">Memories & Slambooks</div><div class="count">1 service &middot; 4 features</div></div></a>
+    <a class="toc-card" href="#monetization"><div class="toc-num" style="background:#F43F5E">19</div><div><div class="title">Creator Monetization</div><div class="count">1 service &middot; 5 features</div></div></a>
+    <a class="toc-card" href="#admin"><div class="toc-num" style="background:#3B82F6">20</div><div><div class="title">Admin & Moderation</div><div class="count">2 services &middot; 7 features</div></div></a>
+    <a class="toc-card" href="#analytics"><div class="toc-num" style="background:#10B981">21</div><div><div class="title">Analytics & Insights</div><div class="count">1 service &middot; 4 features</div></div></a>
+    <a class="toc-card" href="#infra"><div class="toc-num" style="background:#64748B">22</div><div><div class="title">Infrastructure & Platform</div><div class="count">Gateway, Kafka, Observability</div></div></a>
+    <a class="toc-card" href="#miniapps"><div class="toc-num" style="background:#EC4899">23</div><div><div class="title">Mini Apps Platform</div><div class="count">Extensibility &middot; 3 features</div></div></a>
+    <a class="toc-card" href="#settings"><div class="toc-num" style="background:#F97316">24</div><div><div class="title">Settings & Preferences</div><div class="count">10 settings pages</div></div></a>
+    <a class="toc-card" href="#dating"><div class="toc-num" style="background:linear-gradient(135deg,#E11D48,#F97316)">25</div><div><div class="title">Dating App (Trust-First)</div><div class="count">7 modules &middot; 31 endpoints &middot; Standalone</div></div></a>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     ARCHITECTURE OVERVIEW
+     ══════════════════════════════════════════════════════════════════ -->
+<div class="section">
+  <div class="arch-diagram">
+    <h3>Service Architecture Overview</h3>
+    <table class="arch-table">
+      <thead><tr><th>Port</th><th>Service</th><th>Workspace</th><th>Data Store</th></tr></thead>
+      <tbody>
+        <tr><td class="port">8080</td><td class="svc-name">API Gateway</td><td>Architecture</td><td>-</td></tr>
+        <tr><td class="port">8081</td><td class="svc-name">Auth Service</td><td>identity-platform</td><td>identity_db (Postgres)</td></tr>
+        <tr><td class="port">8082</td><td class="svc-name">User Service</td><td>Architecture</td><td>app_db (Postgres)</td></tr>
+        <tr><td class="port">8083</td><td class="svc-name">Graph Service</td><td>Architecture</td><td>app_db (Postgres) + Redis</td></tr>
+        <tr><td class="port">8084</td><td class="svc-name">Post Service</td><td>Architecture</td><td>app_db (Postgres)</td></tr>
+        <tr><td class="port">8086</td><td class="svc-name">Feed Service</td><td>Architecture</td><td>feed_db (Postgres) + ScyllaDB + Redis</td></tr>
+        <tr><td class="port">8087</td><td class="svc-name">Media Service</td><td>Architecture</td><td>app_db + MinIO (S3)</td></tr>
+        <tr><td class="port">8088</td><td class="svc-name">Notification Service</td><td>Architecture</td><td>app_db + ScyllaDB + Redis</td></tr>
+        <tr><td class="port">8089</td><td class="svc-name">Search Service</td><td>Architecture</td><td>OpenSearch</td></tr>
+        <tr><td class="port">8090</td><td class="svc-name">Commerce Service</td><td>Architecture</td><td>commerce_db (Postgres)</td></tr>
+        <tr><td class="port">8091</td><td class="svc-name">Live Service</td><td>Architecture</td><td>app_db + MediaMTX</td></tr>
+        <tr><td class="port">8092</td><td class="svc-name">Message Service</td><td>chat-service</td><td>chat_db (Postgres)</td></tr>
+        <tr><td class="port">8093</td><td class="svc-name">WebSocket Gateway</td><td>chat-service</td><td>Redis (pub/sub)</td></tr>
+        <tr><td class="port">-</td><td class="svc-name">Analytics Service</td><td>Architecture</td><td>ScyllaDB + Redis</td></tr>
+        <tr><td class="port">-</td><td class="svc-name">Channel Service</td><td>Architecture</td><td>app_db (Postgres)</td></tr>
+        <tr><td class="port">-</td><td class="svc-name">Community Service</td><td>Architecture</td><td>app_db (Postgres)</td></tr>
+        <tr><td class="port">-</td><td class="svc-name">Group Service</td><td>Architecture</td><td>app_db (Postgres)</td></tr>
+        <tr><td class="port">-</td><td class="svc-name">QA Service</td><td>Architecture</td><td>app_db (Postgres)</td></tr>
+        <tr><td class="port">-</td><td class="svc-name">Memories Service</td><td>Architecture</td><td>app_db (Postgres)</td></tr>
+        <tr><td class="port">-</td><td class="svc-name">Monetization Service</td><td>Architecture</td><td>commerce_db (Postgres)</td></tr>
+        <tr><td class="port">-</td><td class="svc-name">Shop Service</td><td>Architecture</td><td>commerce_db (Postgres)</td></tr>
+        <tr><td class="port">-</td><td class="svc-name">Orders Service</td><td>Architecture</td><td>commerce_db (Postgres)</td></tr>
+        <tr><td class="port">-</td><td class="svc-name">Payments Service</td><td>Architecture</td><td>commerce_db (Postgres)</td></tr>
+        <tr><td class="port">-</td><td class="svc-name">Feature Flag Service</td><td>Architecture</td><td>app_db + Redis</td></tr>
+        <tr><td class="port">-</td><td class="svc-name">Trust & Safety Service</td><td>Architecture</td><td>app_db (Postgres)</td></tr>
+        <tr><td class="port">-</td><td class="svc-name">Admin Service</td><td>Architecture</td><td>app_db (Postgres)</td></tr>
+        <tr><td class="port">-</td><td class="svc-name">Suggestion Service</td><td>Architecture</td><td>app_db + Redis</td></tr>
+        <tr><td class="port">-</td><td class="svc-name">AI Service</td><td>Architecture</td><td>-</td></tr>
+        <tr><td class="port">-</td><td class="svc-name">Profile Service</td><td>identity-platform</td><td>identity_db (Postgres)</td></tr>
+        <tr style="border-top: 2px solid #7C5CFC"><td class="port">8080</td><td class="svc-name">Dating App (Monolith)</td><td>dating-app (standalone)</td><td>dating_db (Postgres) + Redis + MinIO</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     01 — AUTHENTICATION & IDENTITY
+     ══════════════════════════════════════════════════════════════════ -->
+<div class="section c-violet" id="auth">
+  <div class="section-header">
+    <span class="tag">01</span>
+    <h2>Authentication & Identity</h2>
+    <p>Secure, multi-factor authentication with OTP, JWT tokens, and anomaly detection across 3 dedicated services.</p>
+  </div>
+  <div class="feature-grid">
+    <div class="feature-card">
+      <h3><span class="icon">🔐</span> Phone OTP Authentication</h3>
+      <p>Primary login via OTP sent to phone number. Rate limited to 5 OTPs per phone per 10 minutes.</p>
+      <ul class="detail-list">
+        <li>OTP generation, delivery, and verification</li>
+        <li>Redis-backed sliding window rate limiting (INCR + EXPIRE)</li>
+        <li>Configurable OTP expiry and retry limits</li>
+      </ul>
+      <div class="platforms">
+        <span class="platform-badge web">Web</span>
+        <span class="platform-badge mobile">Mobile</span>
+        <span class="platform-badge api">API</span>
+      </div>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">🔑</span> Email + Password Login</h3>
+      <p>Secure password-based authentication with strict policy enforcement.</p>
+      <ul class="detail-list">
+        <li>Password policy: 8+ chars, uppercase, digit, special character</li>
+        <li>Login rate limit: 10/IP/15min + 5/identifier/15min</li>
+        <li>Forgot password flow with email verification</li>
+      </ul>
+      <div class="platforms">
+        <span class="platform-badge web">Web</span>
+        <span class="platform-badge mobile">Mobile</span>
+      </div>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">🛡️</span> JWT Token Management</h3>
+      <p>Stateless authentication with access + refresh token pairs and session tracking.</p>
+      <ul class="detail-list">
+        <li>Short-lived access tokens + long-lived refresh tokens</li>
+        <li>Active session management with revocation</li>
+        <li>X-User-Id header injection by API Gateway</li>
+      </ul>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">🕵️</span> Login Anomaly Detection</h3>
+      <p>Detects suspicious login patterns using IP-based heuristics and emits security events.</p>
+      <ul class="detail-list">
+        <li>Redis <code>last_ip:{userID}</code> tracking</li>
+        <li>Emits <code>user.login_anomaly</code> Kafka event on new IP</li>
+        <li>Foundation for future geo-fencing and device fingerprinting</li>
+      </ul>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">📧</span> Email Verification & 2FA</h3>
+      <p>Multi-step email verification and two-factor authentication setup.</p>
+      <ul class="detail-list">
+        <li>Email verification link flow</li>
+        <li>2FA setup page at <code>/auth/2fa</code></li>
+        <li>OAuth callback handling at <code>/auth/callback</code></li>
+      </ul>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">📦</span> GDPR Data Export</h3>
+      <p>Users can export all their personal data in compliance with data protection regulations.</p>
+      <ul class="detail-list">
+        <li><code>GET /v1/auth/data-export</code> endpoint</li>
+        <li>Downloads consolidated personal data archive</li>
+        <li>UI: "Download My Data" button in Settings</li>
+      </ul>
+    </div>
+  </div>
+  <div class="stats-bar">
+    <div class="stat"><div class="val" style="color:#7C5CFC">3</div><div class="lbl">Services</div></div>
+    <div class="stat"><div class="val" style="color:#7C5CFC">24</div><div class="lbl">Unit Tests</div></div>
+    <div class="stat"><div class="val" style="color:#7C5CFC">6</div><div class="lbl">Frontend Pages</div></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     02 — SOCIAL GRAPH & PROFILES
+     ══════════════════════════════════════════════════════════════════ -->
+<div class="section c-amber" id="social">
+  <div class="section-header">
+    <span class="tag">02</span>
+    <h2>Social Graph & Profiles</h2>
+    <p>Complete social networking layer — follow, friend, block, mute with batch APIs and real-time Kafka events.</p>
+  </div>
+  <div class="feature-grid">
+    <div class="feature-card">
+      <h3><span class="icon">👤</span> User Profiles</h3>
+      <p>Rich user profiles with bio, avatar, cover photo, verification status, and reputation scores.</p>
+      <ul class="detail-list">
+        <li>Profile view at <code>/u/[username]</code> and <code>/profile</code> (self)</li>
+        <li>Edit profile with avatar/cover upload</li>
+        <li>Endorsement-based trust score (0.50 base + 0.05/endorsement, cap 1.00)</li>
+        <li>Batch profile fetch: <code>POST /v1/profiles/batch</code></li>
+      </ul>
+      <div class="platforms">
+        <span class="platform-badge web">Web</span>
+        <span class="platform-badge mobile">Mobile</span>
+      </div>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">🤝</span> Follow / Friend System</h3>
+      <p>Asymmetric follows and symmetric friend requests with real-time event propagation.</p>
+      <ul class="detail-list">
+        <li>Follow / Unfollow with Kafka events (<code>user.followed</code>, <code>user.unfollowed</code>)</li>
+        <li>Friend request → accept/reject flow</li>
+        <li>Followers, following, friends, friend requests screens (mobile + web)</li>
+        <li>Counter reconciliation goroutines for accuracy</li>
+      </ul>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">🚫</span> Block & Mute</h3>
+      <p>Users can block or mute others, filtering them from feeds, search, and interactions.</p>
+      <ul class="detail-list">
+        <li>Mute/Unmute endpoints in graph service</li>
+        <li>Block/mute filtering applied in feed, search, and notifications</li>
+        <li>Batch relationships: <code>POST /v1/graph/relationships/batch</code></li>
+        <li><code>GetBlockedAndMuted</code> aggregated endpoint</li>
+      </ul>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">🏢</span> Business Pages</h3>
+      <p>Dedicated business profiles with reviews, ratings, followers, and category discovery.</p>
+      <ul class="detail-list">
+        <li>Create, update, delete business pages</li>
+        <li>Follow/unfollow pages with follower counts</li>
+        <li>Review and rating system with average scores</li>
+        <li>Category-based discovery with search</li>
+        <li>Draft/active/suspended status lifecycle</li>
+        <li>ID or handle-based lookup (flexible routing)</li>
+      </ul>
+      <div class="platforms">
+        <span class="platform-badge web">Web: /pages, /page/[handle]</span>
+        <span class="platform-badge mobile">Mobile</span>
+      </div>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">🔎</span> Relationship Circles</h3>
+      <p>Visual representation of social connections and close friends at <code>/circle</code>.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     03 — POSTS & CONTENT
+     ══════════════════════════════════════════════════════════════════ -->
+<div class="section c-teal" id="content">
+  <div class="section-header">
+    <span class="tag">03</span>
+    <h2>Posts & Content</h2>
+    <p>Rich content creation with text, images, videos, rich text, hashtags, mentions, reposts, bookmarks, and draft support.</p>
+  </div>
+  <div class="feature-grid">
+    <div class="feature-card">
+      <h3><span class="icon">📝</span> Post Creation & Management</h3>
+      <p>Full-featured post composer with media attachments, hashtags, mentions, and visibility controls.</p>
+      <ul class="detail-list">
+        <li>Text posts with rich_text formatting support</li>
+        <li>Image and video attachments via media service</li>
+        <li>Hashtag extraction and linking (<code>/hashtag/[tag]</code>)</li>
+        <li>User mentions with <code>user.mentioned</code> event</li>
+        <li>Draft system: save drafts, publish later with cover media</li>
+        <li>Post detail view at <code>/post/[postId]</code></li>
+      </ul>
+      <div class="platforms">
+        <span class="platform-badge web">Web: /create/post</span>
+        <span class="platform-badge mobile">Mobile: create_post_screen</span>
+      </div>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">💬</span> Comments & Engagement</h3>
+      <p>Nested comment threads with likes, replies, and real-time updates.</p>
+      <ul class="detail-list">
+        <li>Comment creation and threaded replies</li>
+        <li>Like/unlike on posts and comments</li>
+        <li>Comment count and engagement metrics</li>
+      </ul>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">🔄</span> Reposts</h3>
+      <p>Share others' content with attribution and feed fanout.</p>
+      <ul class="detail-list">
+        <li>Repost with optional quote text</li>
+        <li>Feed fanout for reposts to followers</li>
+        <li>Repost count tracking on original post</li>
+      </ul>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">🔖</span> Bookmarks / Saved Posts</h3>
+      <p>Save posts for later viewing in a personal collection.</p>
+      <ul class="detail-list">
+        <li>Save/unsave any post</li>
+        <li>Dedicated saved posts page at <code>/saved</code></li>
+        <li>Mobile bookmarks screen</li>
+      </ul>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">🛡️</span> Spam Detection & Content Safety</h3>
+      <p>Automated spam filtering with review queue for flagged content.</p>
+      <ul class="detail-list">
+        <li>Spam detector with scoring heuristics</li>
+        <li><code>review_status</code> column on posts for moderation queue</li>
+        <li>Emits <code>content.spam_detected</code> Kafka event</li>
+        <li>CSAM scanner interface in media pipeline</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     04 — FEED ENGINE
+     ══════════════════════════════════════════════════════════════════ -->
+<div class="section c-rose" id="feed">
+  <div class="section-header">
+    <span class="tag">04</span>
+    <h2>Feed Engine</h2>
+    <p>Real-time, personalized feed powered by Kafka fanout, ScyllaDB timelines, and block/mute filtering.</p>
+  </div>
+  <div class="feature-grid">
+    <div class="feature-card">
+      <h3><span class="icon">📰</span> Home Feed</h3>
+      <p>Personalized timeline of posts from followed users with real-time updates.</p>
+      <ul class="detail-list">
+        <li>Kafka-driven fanout: post published &rarr; feed entries for all followers</li>
+        <li>ScyllaDB for time-series feed reads</li>
+        <li>Block and mute filtering applied at read time</li>
+        <li>Feed hydration with user profiles, media, and engagement counts</li>
+        <li>rich_text field support in hydrated posts</li>
+        <li>Repost fanout included</li>
+      </ul>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">🔥</span> Discover / Trending</h3>
+      <p>Curated content discovery with trending posts, hashtags, and suggested accounts.</p>
+      <ul class="detail-list">
+        <li>Discover page at <code>/discover</code></li>
+        <li>Trending content ranking</li>
+        <li>Suggestion service for "who to follow"</li>
+      </ul>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">🗑️</span> GDPR Feed Deletion</h3>
+      <p>When a user requests deletion, their feed entries are purged across all follower timelines.</p>
+      <ul class="detail-list">
+        <li>Kafka consumer for <code>user.deletion_requested</code></li>
+        <li>Cascading deletion in feed, notification, search, analytics, media services</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     05 — POSTTUBE (VIDEO)
+     ══════════════════════════════════════════════════════════════════ -->
+<div class="section c-blue" id="posttube">
+  <div class="section-header">
+    <span class="tag">05</span>
+    <h2>PostTube — Video Platform</h2>
+    <p>Full YouTube-like video experience with channels, uploads, watch pages, and a custom violet/amber design system.</p>
+  </div>
+  <div class="feature-grid">
+    <div class="feature-card">
+      <h3><span class="icon">🎬</span> Video Upload Studio</h3>
+      <p>Multi-step upload workflow with cover poster extraction, details editing, and HLS transcoding.</p>
+      <ul class="detail-list">
+        <li>Upload at <code>/posttube/upload</code> with drag-and-drop</li>
+        <li>Content step: video preview + local cover extraction (canvas &rarr; data URL)</li>
+        <li>Details step: title, description, tags, custom cover image upload</li>
+        <li>HLS adaptive streaming output: 360p / 720p / 1080p</li>
+        <li>My uploads management at <code>/posttube/uploads</code></li>
+      </ul>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">📺</span> Watch Page</h3>
+      <p>Video player with recommendations, comments, and engagement actions.</p>
+      <ul class="detail-list">
+        <li>Route: <code>/posttube/watch/[videoId]</code></li>
+        <li>HLS playback with quality selector</li>
+        <li>Like, share, bookmark quick actions</li>
+      </ul>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">🏠</span> PostTube Home</h3>
+      <p>Browse page with filter chips, video grid, Flicks row, and Spotlight hover preview.</p>
+      <ul class="detail-list">
+        <li>Violet/amber design system (no red — YouTube uses red)</li>
+        <li>Spotlight Preview: hover 200ms &rarr; video plays inline</li>
+        <li>Quick Actions overlay: Spark, Stash, Echo on hover</li>
+        <li>3-tier thumbnail fallback: image &rarr; video first-frame &rarr; gradient</li>
+        <li>Single API call on mount (down from 7)</li>
+      </ul>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">📡</span> Channel System</h3>
+      <p>Creator channels with subscriber counts, video catalogs, and customization.</p>
+      <ul class="detail-list">
+        <li>Channel detail page at <code>/posttube/channel/[handle]</code></li>
+        <li>Channel settings at <code>/settings/channel</code></li>
+        <li>Subscribe/unsubscribe with Kafka events</li>
+      </ul>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">🌓</span> Dark Mode</h3>
+      <p>Full dark theme with localStorage persistence and smooth transitions.</p>
+      <ul class="detail-list">
+        <li>Toggle: Moon/Sun button in header</li>
+        <li>Persists to <code>localStorage</code> key <code>posttube-dark</code></li>
+        <li>Tailwind <code>darkMode: 'class'</code> implementation</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     06 — REELS / FLICKS
+     ══════════════════════════════════════════════════════════════════ -->
+<div class="section c-emerald" id="reels">
+  <div class="section-header">
+    <span class="tag">06</span>
+    <h2>Reels / Flicks</h2>
+    <p>Short-form vertical video with swipe navigation, creation tools, and engagement actions.</p>
+  </div>
+  <div class="feature-grid">
+    <div class="feature-card">
+      <h3><span class="icon">🎞️</span> Reels Viewer</h3>
+      <p>Full-screen vertical video feed with swipe-to-navigate and auto-play.</p>
+      <ul class="detail-list">
+        <li>Vertical scroll feed at <code>/reels</code></li>
+        <li>Like, comment, share, bookmark overlays</li>
+        <li>Kafka events: <code>reel.liked</code>, <code>reel.commented</code></li>
+      </ul>
+      <div class="platforms">
+        <span class="platform-badge web">Web</span>
+        <span class="platform-badge mobile">Mobile: reels_screen</span>
+      </div>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">✂️</span> Flicks Editor</h3>
+      <p>In-app short video creation with captions and upload progress.</p>
+      <ul class="detail-list">
+        <li>Create at <code>/reels/create</code></li>
+        <li>Mobile: flicks_editor_screen + flicks_caption_screen</li>
+        <li>Upload progress screen with status tracking</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     07 — STORIES
+     ══════════════════════════════════════════════════════════════════ -->
+<div class="section c-orange" id="stories">
+  <div class="section-header">
+    <span class="tag">07</span>
+    <h2>Stories</h2>
+    <p>24-hour ephemeral content with timer-animated viewing and story creation.</p>
+  </div>
+  <div class="feature-grid">
+    <div class="feature-card">
+      <h3><span class="icon">⭕</span> Story Viewer</h3>
+      <p>Auto-advancing story viewer with progress bars and tap-to-skip navigation.</p>
+      <ul class="detail-list">
+        <li>Timer.periodic for auto-advance with mounted guard</li>
+        <li>Progress bar segments per story item</li>
+        <li>Tap left/right to navigate</li>
+      </ul>
+      <div class="platforms">
+        <span class="platform-badge mobile">Mobile: story_viewer_screen</span>
+      </div>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">📸</span> Create Story</h3>
+      <p>Capture or select media to post as a story with optional text overlays.</p>
+      <ul class="detail-list">
+        <li>Camera/gallery picker (image_picker plugin)</li>
+        <li>Mobile: create_story_screen</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     08 — MESSAGING & CHAT
+     ══════════════════════════════════════════════════════════════════ -->
+<div class="section c-indigo" id="messaging">
+  <div class="section-header">
+    <span class="tag">08</span>
+    <h2>Messaging & Chat</h2>
+    <p>Real-time messaging with WebSocket gateway, E2E encryption stubs, and key bundle management.</p>
+  </div>
+  <div class="feature-grid">
+    <div class="feature-card">
+      <h3><span class="icon">💬</span> Direct Messages</h3>
+      <p>One-to-one and group messaging with real-time delivery via WebSocket.</p>
+      <ul class="detail-list">
+        <li>Message service (port 8092) for persistence</li>
+        <li>WebSocket gateway (port 8093) for real-time delivery</li>
+        <li>Redis pub/sub for multi-instance fan-out</li>
+        <li>Messenger UI at <code>/messenger</code></li>
+      </ul>
+      <div class="platforms">
+        <span class="platform-badge web">Web: /messenger</span>
+        <span class="platform-badge mobile">Mobile: chat_list + chat_detail</span>
+      </div>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">🔒</span> E2E Encryption (Stub)</h3>
+      <p>Signal Protocol-inspired E2E encryption interface with key bundle storage.</p>
+      <ul class="detail-list">
+        <li>E2E stub: <code>message-service/internal/crypto/e2e.go</code></li>
+        <li>Key bundles table: identity key, signed pre-key, one-time pre-keys</li>
+        <li>Ready for full Signal Protocol implementation</li>
+      </ul>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">📞</span> Voice/Video Calls</h3>
+      <p>Call screen foundation in mobile app.</p>
+      <ul class="detail-list">
+        <li>Mobile: call_screen.dart</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     09 — GROUPS
+     ══════════════════════════════════════════════════════════════════ -->
+<div class="section c-pink" id="groups">
+  <div class="section-header">
+    <span class="tag">09</span>
+    <h2>Groups</h2>
+    <p>Private and public groups with events, RSVPs, admin management, and group-specific post composition.</p>
+  </div>
+  <div class="feature-grid">
+    <div class="feature-card">
+      <h3><span class="icon">👥</span> Group Features</h3>
+      <ul class="detail-list">
+        <li>Create groups with privacy settings (public/private)</li>
+        <li>Group detail with member list at <code>/groups/[groupId]</code></li>
+        <li>Group post composer for group-specific content</li>
+        <li>Group admin panel with member management</li>
+        <li>Group events with RSVPs (Kafka events)</li>
+        <li>Browse and discover groups at <code>/groups</code></li>
+      </ul>
+      <div class="platforms">
+        <span class="platform-badge web">Web: /groups</span>
+        <span class="platform-badge mobile">Mobile: 5 screens</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     10 — COMMUNITIES
+     ══════════════════════════════════════════════════════════════════ -->
+<div class="section c-cyan" id="communities">
+  <div class="section-header">
+    <span class="tag">10</span>
+    <h2>Communities</h2>
+    <p>Topic-based communities with threaded discussions, spaces, and event-driven notifications.</p>
+  </div>
+  <div class="feature-grid">
+    <div class="feature-card">
+      <h3><span class="icon">🏘️</span> Community Features</h3>
+      <ul class="detail-list">
+        <li>Create communities at <code>/communities/create</code></li>
+        <li>Community detail with posts at <code>/communities/[communityId]</code></li>
+        <li>Community spaces for sub-topic discussions</li>
+        <li>Join/leave with event publishing via Kafka</li>
+        <li>Mobile: communities_list, community_detail, community_space, create_community</li>
+      </ul>
+      <div class="platforms">
+        <span class="platform-badge web">Web</span>
+        <span class="platform-badge mobile">Mobile: 4 screens</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     11 — CHANNELS (BROADCAST)
+     ══════════════════════════════════════════════════════════════════ -->
+<div class="section c-slate" id="channels">
+  <div class="section-header">
+    <span class="tag">11</span>
+    <h2>Channels (Broadcast)</h2>
+    <p>One-to-many broadcast channels for announcements, newsletters, and content distribution.</p>
+  </div>
+  <div class="feature-grid">
+    <div class="feature-card">
+      <h3><span class="icon">📢</span> Channel Features</h3>
+      <ul class="detail-list">
+        <li>Create channels at <code>/channels/create</code></li>
+        <li>Channel detail at <code>/channels/[channelId]</code></li>
+        <li>Subscribe/unsubscribe with Kafka events</li>
+        <li>Kafka events: <code>channel.created</code>, <code>channel.subscribed</code>, <code>channel.unsubscribed</code></li>
+        <li>Channel engagement metrics</li>
+      </ul>
+      <div class="platforms">
+        <span class="platform-badge web">Web</span>
+        <span class="platform-badge mobile">Mobile: 3 screens</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     12 — COMMERCE & SELLER PLATFORM
+     ══════════════════════════════════════════════════════════════════ -->
+<div class="section c-lime" id="commerce">
+  <div class="section-header">
+    <span class="tag">12</span>
+    <h2>Commerce & Seller Platform</h2>
+    <p>Complete e-commerce engine — seller onboarding, product catalog, orders, payments, escrow, disputes, and refunds.</p>
+  </div>
+  <div class="feature-grid">
+    <div class="feature-card">
+      <h3><span class="icon">🏪</span> Seller Onboarding (5-Step Wizard)</h3>
+      <p>Guided business page creation and seller verification with draft-first architecture.</p>
+      <ul class="detail-list">
+        <li>Step 1: Basic business info — creates draft business_page + draft seller</li>
+        <li>Step 2: Branding — tagline, support contact, page customization</li>
+        <li>Step 3: KYC details — owner info, document upload (PAN, Aadhaar, GST)</li>
+        <li>Step 4: Delivery & payout — shipping modes, COD, bank details</li>
+        <li>Step 5: Review & submit — summary, terms acceptance</li>
+        <li>Smart routing: auth check &rarr; draft resume &rarr; status redirect</li>
+        <li>Cross-service linking: business_page (user-service) ↔ seller (commerce-service)</li>
+        <li>Kafka event on approval activates business page for public discovery</li>
+      </ul>
+      <div class="platforms">
+        <span class="platform-badge web">Web: /seller/onboarding</span>
+      </div>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">📋</span> Application Status</h3>
+      <p>Post-submission tracking with status-specific messaging and actions.</p>
+      <ul class="detail-list">
+        <li>States: submitted, under_review, changes_required, rejected, suspended</li>
+        <li>Smart redirects: approved &rarr; dashboard, draft &rarr; onboarding</li>
+        <li>"Make Changes" button for changes_required status</li>
+      </ul>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">📦</span> Product Management</h3>
+      <p>Seller product catalog with approval workflow and inventory tracking.</p>
+      <ul class="detail-list">
+        <li>Product CRUD with draft/submit/approve lifecycle</li>
+        <li>Seller dashboard at <code>/seller/dashboard</code></li>
+        <li>Product list at <code>/seller/products</code></li>
+        <li>New product at <code>/seller/products/new</code></li>
+        <li>Atomic stock reservation: <code>UPDATE WHERE stock >= qty</code></li>
+      </ul>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">🛒</span> Orders & Fulfillment</h3>
+      <p>Order lifecycle from placement to delivery with status tracking.</p>
+      <ul class="detail-list">
+        <li>Order creation with Kafka event publishing</li>
+        <li>Order status changes with event notifications</li>
+        <li>Returns and refund processing</li>
+        <li>Mobile: orders_screen + order_detail_screen</li>
+      </ul>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">💳</span> Payments & Escrow</h3>
+      <p>Payment processing with Razorpay integration, escrow holds, and dispute resolution.</p>
+      <ul class="detail-list">
+        <li>Payment gateway interface + RazorpayGateway + StubGateway</li>
+        <li>Escrow holds table with release/refund lifecycle</li>
+        <li>Dispute opening and resolution flow</li>
+        <li>Kafka events: <code>payment.succeeded</code>, <code>payment.failed</code>, <code>payment.refunded</code></li>
+      </ul>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">🛍️</span> Commerce Landing Page</h3>
+      <p>Marketing page for seller acquisition with CTA, how-it-works, benefits, and FAQ sections.</p>
+      <ul class="detail-list">
+        <li>Warm earth-tone design (<code>#F5F0EB</code>, <code>#8B5E3C</code>)</li>
+        <li>"Create Business Page" CTA &rarr; auth-gated onboarding</li>
+        <li>Mobile: shop_screen</li>
+      </ul>
+    </div>
+  </div>
+  <div class="stats-bar">
+    <div class="stat"><div class="val" style="color:#84CC16">4</div><div class="lbl">Services</div></div>
+    <div class="stat"><div class="val" style="color:#84CC16">7</div><div class="lbl">Frontend Pages</div></div>
+    <div class="stat"><div class="val" style="color:#84CC16">5</div><div class="lbl">Kafka Events</div></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     13 — MEDIA PIPELINE
+     ══════════════════════════════════════════════════════════════════ -->
+<div class="section c-fuchsia" id="media">
+  <div class="section-header">
+    <span class="tag">13</span>
+    <h2>Media Pipeline</h2>
+    <p>S3-compatible media storage with presigned uploads, HLS transcoding, and content safety scanning.</p>
+  </div>
+  <div class="feature-grid">
+    <div class="feature-card">
+      <h3><span class="icon">📤</span> 3-Step Upload Flow</h3>
+      <p>Secure, presigned-URL upload with server-side confirmation.</p>
+      <ul class="detail-list">
+        <li>Step 1: <code>POST /v1/media/init</code> — get presigned URL + media_id</li>
+        <li>Step 2: <code>PUT</code> to S3 presigned URL — direct client upload</li>
+        <li>Step 3: <code>POST /v1/media/confirm</code> — server validates and processes</li>
+        <li>Frontend helper: <code>lib/mediaUpload.ts</code></li>
+      </ul>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">🎥</span> HLS Adaptive Streaming</h3>
+      <p>Multi-bitrate video transcoding for optimal playback across devices.</p>
+      <ul class="detail-list">
+        <li>Output variants: 360p, 720p, 1080p</li>
+        <li>HLS manifest generation</li>
+        <li>Migration: <code>media-service/database/migrations/003_hls.sql</code></li>
+      </ul>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">🛡️</span> CSAM Scanner</h3>
+      <p>Content safety scanning interface with pluggable backends.</p>
+      <ul class="detail-list">
+        <li>Scanner interface + StubScanner for development</li>
+        <li>Configurable via <code>MEDIA_SCANNER_ENABLED</code> env var</li>
+        <li>3 unit tests</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     14 — SEARCH & DISCOVERY
+     ══════════════════════════════════════════════════════════════════ -->
+<div class="section c-red" id="search">
+  <div class="section-header">
+    <span class="tag">14</span>
+    <h2>Search & Discovery</h2>
+    <p>Full-text search powered by OpenSearch with autocomplete, hashtag pages, and real-time index updates.</p>
+  </div>
+  <div class="feature-grid">
+    <div class="feature-card">
+      <h3><span class="icon">🔍</span> Search Features</h3>
+      <ul class="detail-list">
+        <li>Full-text search at <code>/search</code> with debounced input</li>
+        <li>Autocomplete: <code>GET /v1/search/autocomplete</code> with dropdown UI</li>
+        <li>Hashtag pages at <code>/hashtag/[tag]</code></li>
+        <li>Search deletion on post/user removal events</li>
+        <li>Mobile: search_results_screen with Posts/People/Tags tabs</li>
+      </ul>
+      <div class="platforms">
+        <span class="platform-badge web">Web: /search</span>
+        <span class="platform-badge mobile">Mobile</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     15 — NOTIFICATIONS & PUSH
+     ══════════════════════════════════════════════════════════════════ -->
+<div class="section c-sky" id="notifications">
+  <div class="section-header">
+    <span class="tag">15</span>
+    <h2>Notifications & Push</h2>
+    <p>Multi-channel notification system with in-app, FCM (Android), and APNs (iOS) push delivery.</p>
+  </div>
+  <div class="feature-grid">
+    <div class="feature-card">
+      <h3><span class="icon">🔔</span> Notification Features</h3>
+      <ul class="detail-list">
+        <li>In-app notification feed with ScyllaDB storage</li>
+        <li>FCM push dispatcher for Android</li>
+        <li>APNs push dispatcher for iOS</li>
+        <li>Multi-provider dispatcher with fallback</li>
+        <li>User mention notifications from <code>user.mentioned</code> events</li>
+        <li>Notification preferences management</li>
+      </ul>
+      <div class="platforms">
+        <span class="platform-badge web">Web</span>
+        <span class="platform-badge mobile">Mobile: notifications_screen</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     16 — LIVE STREAMING
+     ══════════════════════════════════════════════════════════════════ -->
+<div class="section c-violet" id="live">
+  <div class="section-header">
+    <span class="tag">16</span>
+    <h2>Live Streaming</h2>
+    <p>RTMP ingest via OBS/external encoders with MediaMTX relay, HLS playback, and live chat.</p>
+  </div>
+  <div class="feature-grid">
+    <div class="feature-card">
+      <h3><span class="icon">📡</span> Live Features</h3>
+      <ul class="detail-list">
+        <li>Start live stream at <code>/live/start</code> — OBS stream key generation</li>
+        <li>RTMP ingest &rarr; MediaMTX &rarr; HLS playback</li>
+        <li>Live stream discovery at <code>/live</code></li>
+        <li>Playback proxy for HLS segments</li>
+        <li>v1 architecture: OBS/ffmpeg external encoders</li>
+        <li>Phase 2 planned: browser-native WebRTC/WHIP</li>
+      </ul>
+      <div class="platforms">
+        <span class="platform-badge web">Web: /live</span>
+        <span class="platform-badge mobile">Mobile: broadcast + live screens</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     17 — Q&A PLATFORM
+     ══════════════════════════════════════════════════════════════════ -->
+<div class="section c-amber" id="qa">
+  <div class="section-header">
+    <span class="tag">17</span>
+    <h2>Q&A Platform</h2>
+    <p>Stack Overflow-style knowledge sharing with topics, voting, leaderboards, and unanswered queues.</p>
+  </div>
+  <div class="feature-grid">
+    <div class="feature-card">
+      <h3><span class="icon">❓</span> Q&A Features</h3>
+      <ul class="detail-list">
+        <li>Ask questions at <code>/qa/ask</code></li>
+        <li>Question detail with answers at <code>/qa/questions/[id]</code></li>
+        <li>Topic-based browsing at <code>/qa/topics</code> and <code>/qa/topics/[slug]</code></li>
+        <li>Unanswered questions queue at <code>/qa/unanswered</code></li>
+        <li>Leaderboard at <code>/qa/leaderboard</code></li>
+        <li>User Q&A profile at <code>/qa/profile/[userId]</code></li>
+      </ul>
+      <div class="platforms">
+        <span class="platform-badge web">Web: 7 pages</span>
+        <span class="platform-badge mobile">Mobile: qa_topics, question_detail, topic_detail</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     18 — MEMORIES & SLAMBOOKS
+     ══════════════════════════════════════════════════════════════════ -->
+<div class="section c-teal" id="memories">
+  <div class="section-header">
+    <span class="tag">18</span>
+    <h2>Memories & Slambooks</h2>
+    <p>Nostalgia features — "On This Day" throwbacks and interactive slambook questionnaires with sharing.</p>
+  </div>
+  <div class="feature-grid">
+    <div class="feature-card">
+      <h3><span class="icon">📅</span> Memories Features</h3>
+      <ul class="detail-list">
+        <li>Memories hub at <code>/memories</code></li>
+        <li>"On This Day" throwbacks at <code>/memories/on-this-day</code></li>
+        <li>Slambooks: compose, fill, view, share</li>
+        <li>Mobile: 6 screens (memories, slambook_compose, slambook_detail, slambook_response, slambook_share, slambooks)</li>
+      </ul>
+      <div class="platforms">
+        <span class="platform-badge web">Web: 3 pages</span>
+        <span class="platform-badge mobile">Mobile: 6 screens</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     19 — CREATOR MONETIZATION
+     ══════════════════════════════════════════════════════════════════ -->
+<div class="section c-rose" id="monetization">
+  <div class="section-header">
+    <span class="tag">19</span>
+    <h2>Creator Monetization</h2>
+    <p>Revenue tools for creators — subscription tiers, payout management, analytics dashboard, and tax profiles.</p>
+  </div>
+  <div class="feature-grid">
+    <div class="feature-card">
+      <h3><span class="icon">💰</span> Monetization Features</h3>
+      <ul class="detail-list">
+        <li>Monetization dashboard at <code>/monetization</code></li>
+        <li>Subscription tier management at <code>/monetization/tiers</code></li>
+        <li>Payout history and settings at <code>/monetization/payouts</code></li>
+        <li>Creator analytics at <code>/monetization/analytics</code></li>
+        <li>Tax profile at <code>/settings/tax-profile</code></li>
+      </ul>
+      <div class="platforms">
+        <span class="platform-badge web">Web: 4 pages</span>
+        <span class="platform-badge mobile">Mobile: 4 screens</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     20 — ADMIN & MODERATION
+     ══════════════════════════════════════════════════════════════════ -->
+<div class="section c-blue" id="admin">
+  <div class="section-header">
+    <span class="tag">20</span>
+    <h2>Admin & Moderation</h2>
+    <p>Multi-tier admin system with seller queue, product approval, content moderation, feature flags, and A/B testing.</p>
+  </div>
+  <div class="feature-grid">
+    <div class="feature-card">
+      <h3><span class="icon">⚙️</span> Admin Features</h3>
+      <ul class="detail-list">
+        <li>Role tiers: moderator / admin / superadmin with per-endpoint enforcement</li>
+        <li>Admin dashboard at <code>/admin</code></li>
+        <li>Seller approval queue with approve/reject/request-changes/suspend</li>
+        <li>Product review queue with approve/reject</li>
+        <li>User grievance handling at <code>/grievance</code></li>
+      </ul>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">🏳️</span> Feature Flags & A/B Testing</h3>
+      <ul class="detail-list">
+        <li>Feature flag service with Redis-backed evaluation</li>
+        <li>Flag audit log table for change tracking</li>
+        <li>A/B experiment lifecycle: draft &rarr; running &rarr; concluded</li>
+        <li>Conversion tracking table + experiment results endpoint</li>
+        <li>Kafka event: <code>flag.evaluated</code></li>
+      </ul>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">🛡️</span> Trust & Safety</h3>
+      <p>Dedicated trust and safety service for content moderation workflows.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     21 — ANALYTICS & INSIGHTS
+     ══════════════════════════════════════════════════════════════════ -->
+<div class="section c-emerald" id="analytics">
+  <div class="section-header">
+    <span class="tag">21</span>
+    <h2>Analytics & Insights</h2>
+    <p>Creator and platform analytics powered by ScyllaDB with reconciliation goroutines for accuracy.</p>
+  </div>
+  <div class="feature-grid">
+    <div class="feature-card">
+      <h3><span class="icon">📊</span> Analytics Features</h3>
+      <ul class="detail-list">
+        <li>Creator analytics API: views, engagement, follower growth</li>
+        <li>Counter reconciliation goroutines in graph-service and post-service</li>
+        <li>ScyllaDB for time-series analytics data</li>
+        <li>Seller dashboard stats: products, orders, revenue</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     22 — INFRASTRUCTURE & PLATFORM
+     ══════════════════════════════════════════════════════════════════ -->
+<div class="section c-slate" id="infra">
+  <div class="section-header">
+    <span class="tag">22</span>
+    <h2>Infrastructure & Platform</h2>
+    <p>API gateway, Kafka event bus, observability stack, internal service auth, and Docker orchestration.</p>
+  </div>
+  <div class="feature-grid">
+    <div class="feature-card">
+      <h3><span class="icon">🌐</span> API Gateway</h3>
+      <p>Single entry point for all client requests with JWT validation, routing, and header injection.</p>
+      <ul class="detail-list">
+        <li>Port 8080 — routes to all backend services</li>
+        <li>JWT validation and X-User-Id header injection</li>
+        <li>Request ID and tracing propagation</li>
+      </ul>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">📨</span> Kafka Event Bus (Redpanda)</h3>
+      <p>70+ event types with reliable delivery, deduplication, and dead letter queues.</p>
+      <ul class="detail-list">
+        <li>EventEnvelope struct with event_id, event_type, payload, occurred_at</li>
+        <li>Consumer groups per service with Redis-backed deduplication</li>
+        <li>Dead letter queue (DLQ) for failed messages</li>
+        <li>Transactional outbox pattern for reliable publishing</li>
+      </ul>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">🔭</span> Observability</h3>
+      <ul class="detail-list">
+        <li>Structured logging with <code>log/slog</code> across all services</li>
+        <li>OpenTelemetry tracing stub with middleware</li>
+        <li>Prometheus metrics collection</li>
+        <li>Health check helpers for Postgres, Redis, ScyllaDB</li>
+      </ul>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">🔑</span> Internal Service Auth</h3>
+      <p><code>X-Internal-Service-Key</code> header enforced by shared middleware on all service-to-service calls.</p>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">🐳</span> Docker Compose</h3>
+      <p>Full-stack orchestration with infrastructure and application services.</p>
+      <ul class="detail-list">
+        <li>Infrastructure-only mode: <code>docker-compose.infra.yml</code></li>
+        <li>Full stack: <code>docker-compose.yml</code></li>
+        <li><code>run-local.sh</code> for running specific services against Docker infra</li>
+        <li>Multi-stage Alpine Docker builds for all services</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     23 — MINI APPS PLATFORM
+     ══════════════════════════════════════════════════════════════════ -->
+<div class="section c-pink" id="miniapps">
+  <div class="section-header">
+    <span class="tag">23</span>
+    <h2>Mini Apps Platform</h2>
+    <p>Extensible mini-app framework for third-party integrations and embedded experiences.</p>
+  </div>
+  <div class="feature-grid">
+    <div class="feature-card">
+      <h3><span class="icon">🧩</span> Mini Apps Features</h3>
+      <ul class="detail-list">
+        <li>Mini apps discovery at <code>/apps</code></li>
+        <li>App detail view</li>
+        <li>Sandboxed execution environment</li>
+        <li>Admin service manages mini app lifecycle</li>
+      </ul>
+      <div class="platforms">
+        <span class="platform-badge web">Web: /apps</span>
+        <span class="platform-badge mobile">Mobile: mini_apps, detail, sandbox</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     24 — SETTINGS & PREFERENCES
+     ══════════════════════════════════════════════════════════════════ -->
+<div class="section c-orange" id="settings">
+  <div class="section-header">
+    <span class="tag">24</span>
+    <h2>Settings & Preferences</h2>
+    <p>Comprehensive settings hub with 10 dedicated pages covering every aspect of the user experience.</p>
+  </div>
+  <div class="feature-grid">
+    <div class="feature-card">
+      <h3><span class="icon">⚙️</span> Settings Pages</h3>
+      <ul class="detail-list">
+        <li><code>/settings</code> — Account Settings hub with "Download My Data"</li>
+        <li><code>/settings/profile</code> — Edit profile details</li>
+        <li><code>/settings/security</code> — Password, 2FA, active sessions</li>
+        <li><code>/settings/privacy</code> — Visibility, blocked users</li>
+        <li><code>/settings/notifications</code> — Push and email notification preferences</li>
+        <li><code>/settings/channel</code> — PostTube channel customization</li>
+        <li><code>/settings/modules</code> — Enable/disable platform modules</li>
+        <li><code>/settings/social-preferences</code> — Feed and social settings</li>
+        <li><code>/settings/tax-profile</code> — Tax information for monetization</li>
+        <li><code>/settings/verification</code> — Identity verification</li>
+        <li><code>/settings/wellbeing</code> — Digital wellbeing controls</li>
+        <li><code>/settings/data</code> — Data management and export</li>
+      </ul>
+      <div class="platforms">
+        <span class="platform-badge web">Web: 12 pages</span>
+        <span class="platform-badge mobile">Mobile: 7 screens</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     25 — DATING APP (TRUST-FIRST)
+     ══════════════════════════════════════════════════════════════════ -->
+<div class="section c-warmrose" id="dating">
+  <div class="section-header">
+    <span class="tag">25</span>
+    <h2>Dating App — Trust-First Platform</h2>
+    <p>A standalone trust-first dating platform built as a Go modular monolith. Separate repo (<code>dating-app/</code>), reuses AtPost tech stack patterns. Designed for authenticity over swiping.</p>
+  </div>
+  <div class="feature-grid">
+    <div class="feature-card">
+      <h3><span class="icon">💜</span> OTP Authentication & JWT Sessions</h3>
+      <p>Phone-based OTP login with JWT access + refresh token pairs. Designed for a mobile-first dating experience.</p>
+      <ul class="detail-list">
+        <li>6-digit OTP via Redis with 5-minute TTL</li>
+        <li>Rate limited: 5 OTPs/phone/10min, 10 verifications/IP/15min</li>
+        <li>Configurable bypass code for dev/testing environments</li>
+        <li>Refresh token rotation stored in Redis</li>
+      </ul>
+      <div class="tech-row">
+        <span class="chip be">Go/Gin</span>
+        <span class="chip db">Redis OTP</span>
+        <span class="chip">JWT HS256</span>
+      </div>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">👤</span> Profile Onboarding & Completion Tracking</h3>
+      <p>Rich dating profiles with 25+ fields, automatic completion percentage, and strict 18+ age validation.</p>
+      <ul class="detail-list">
+        <li>Profile fields: name, DOB, gender, looking_for, bio, occupation, education, city, location, religion, lifestyle</li>
+        <li>Automatic completion % calculation (weighted per field)</li>
+        <li>18+ age enforcement at service layer</li>
+        <li>Onboarding status machine: started → auth_complete → profile_started → ready</li>
+      </ul>
+      <div class="tech-row">
+        <span class="chip be">Go/Gin</span>
+        <span class="chip db">PostgreSQL</span>
+        <span class="chip">Gin Binding Validation</span>
+      </div>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">🎯</span> Preferences & Dealbreakers</h3>
+      <p>Granular match preferences with age range, distance, gender, intent, lifestyle filters, and hard dealbreakers.</p>
+      <ul class="detail-list">
+        <li>Min/max age (floor: 18), distance in km, gender preference</li>
+        <li>Relationship intent: long_term, marriage, casual, figuring_out</li>
+        <li>Lifestyle preferences: smoking, drinking, wants_children, religion</li>
+        <li>JSON dealbreakers array for hard-filter exclusions</li>
+      </ul>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">📸</span> Photo Upload (MinIO Presigned URLs)</h3>
+      <p>Secure presigned URL upload flow for profile photos. Max 6 photos per user with auto-primary assignment.</p>
+      <ul class="detail-list">
+        <li>Init upload → presigned PUT URL → complete upload (3-step flow)</li>
+        <li>Allowed types: JPEG, PNG, WebP (max 20MB)</li>
+        <li>Auto-approve moderation for MVP; visibility: public/blurred/private/reveal_after_match</li>
+        <li>Primary photo auto-set on first upload</li>
+      </ul>
+      <div class="tech-row">
+        <span class="chip be">Go/Gin</span>
+        <span class="chip infra">MinIO S3</span>
+        <span class="chip">Presigned URLs</span>
+      </div>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">🔍</span> Discovery Feed & Weighted Scoring</h3>
+      <p>Intelligent candidate ranking using a multi-factor compatibility score. Hard filters exclude blocked, decided, and banned users.</p>
+      <ul class="detail-list">
+        <li>Score formula: 20% age_fit + 15% distance_fit + 20% intent_fit + 15% lifestyle_fit + 10% trust + 10% profile_quality + 10% freshness</li>
+        <li>Haversine distance calculation for geo-matching</li>
+        <li>Hard exclusions: blocked (bidirectional), already decided, banned/suspended</li>
+        <li>Gender filter, over-fetch + sort for optimal page quality</li>
+      </ul>
+      <div class="tech-row">
+        <span class="chip be">Go Scoring Engine</span>
+        <span class="chip db">PostgreSQL</span>
+        <span class="chip">Haversine</span>
+      </div>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">💕</span> Like/Match System & Decisions</h3>
+      <p>Like, pass, or super_like. Mutual likes auto-create a match and conversation instantly.</p>
+      <ul class="detail-list">
+        <li>Decisions: like, pass, super_like (extensible: reveal_request, focus_unlock)</li>
+        <li>Mutual like detection → instant match creation</li>
+        <li>UUID ordering: always store lower UUID as user_a_id for consistency</li>
+        <li>Match response includes match_id + conversation_id for immediate chat</li>
+      </ul>
+      <div class="tech-row">
+        <span class="chip be">Go/Gin</span>
+        <span class="chip db">PostgreSQL</span>
+        <span class="chip">UUID Ordering</span>
+      </div>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">💬</span> Chat (REST MVP)</h3>
+      <p>Direct messaging between matched users. Auto-created on match, with cursor pagination and membership checks.</p>
+      <ul class="detail-list">
+        <li>Auto-conversation creation when match happens</li>
+        <li>Message types: text, image, icebreaker</li>
+        <li>Membership verification on every read/write</li>
+        <li>Conversation closes on unmatch or block</li>
+      </ul>
+      <div class="tech-row">
+        <span class="chip be">Go/Gin</span>
+        <span class="chip db">PostgreSQL</span>
+      </div>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">🛡️</span> Reports, Blocks & Safety</h3>
+      <p>Full safety system with categorized reports, bidirectional blocks, safety events, and auto-priority escalation.</p>
+      <ul class="detail-list">
+        <li>Report categories: fake_profile, scam, harassment, underage, violence, etc.</li>
+        <li>Urgent auto-escalation for underage/violence/sexual_content reports</li>
+        <li>Block → close active match + close conversation (atomic)</li>
+        <li>Safety events table with severity tracking</li>
+      </ul>
+      <div class="tech-row">
+        <span class="chip be">Go/Gin</span>
+        <span class="chip db">PostgreSQL</span>
+        <span class="chip">Audit Logs</span>
+      </div>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">👑</span> Admin Moderation Queue</h3>
+      <p>Role-based admin panel (API) with report queue, user lookup, suspend/ban actions — all audit-logged.</p>
+      <ul class="detail-list">
+        <li>Role middleware: admin, moderator — DB-backed role loading</li>
+        <li>Priority-sorted moderation queue (urgent → high → normal)</li>
+        <li>Resolution actions: dismissed, warned, suspended, banned</li>
+        <li>Every admin action → audit_logs table for compliance</li>
+      </ul>
+      <div class="tech-row">
+        <span class="chip be">Go/Gin</span>
+        <span class="chip db">PostgreSQL</span>
+        <span class="chip">Role-Based Access</span>
+      </div>
+    </div>
+    <div class="feature-card">
+      <h3><span class="icon">🏗️</span> Architecture & Schema</h3>
+      <p>Modular monolith with clean domain boundaries. 23 PostgreSQL tables, idempotent schema bootstrap, seed data.</p>
+      <ul class="detail-list">
+        <li>Single binary, 7 domain modules: auth, profiles, media, discovery, matching, chat, moderation</li>
+        <li>23 tables + 18 indexes — runs <code>CREATE TABLE IF NOT EXISTS</code> on every startup</li>
+        <li>Seed data: 6 profile prompts, 3 subscription plans (Free/Plus/Premium)</li>
+        <li>Module dependency graph: services take interfaces, main.go wires concrete types</li>
+        <li>14 unit tests covering scoring, OTP, UUID ordering, API responses, profile completion</li>
+      </ul>
+      <div class="tech-row">
+        <span class="chip be">Go 1.24</span>
+        <span class="chip db">PostgreSQL 16</span>
+        <span class="chip infra">Redis 7</span>
+        <span class="chip infra">MinIO</span>
+        <span class="chip infra">Docker Compose</span>
+      </div>
+    </div>
+  </div>
+  <div class="stats-bar">
+    <div class="stat"><div class="val" style="color:#E11D48">7</div><div class="lbl">Domain Modules</div></div>
+    <div class="stat"><div class="val" style="color:#E11D48">31</div><div class="lbl">API Endpoints</div></div>
+    <div class="stat"><div class="val" style="color:#E11D48">23</div><div class="lbl">DB Tables</div></div>
+    <div class="stat"><div class="val" style="color:#E11D48">52</div><div class="lbl">Go Files</div></div>
+    <div class="stat"><div class="val" style="color:#E11D48">4,090</div><div class="lbl">Lines of Code</div></div>
+    <div class="stat"><div class="val" style="color:#E11D48">14</div><div class="lbl">Unit Tests</div></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     TECH STACK SUMMARY
+     ══════════════════════════════════════════════════════════════════ -->
+<div class="section">
+  <div class="arch-diagram">
+    <h3>Technology Stack</h3>
+    <table class="arch-table">
+      <thead><tr><th>Layer</th><th>Technology</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr><td class="svc-name">Backend</td><td>Go 1.24, Gin, pgx/v5</td><td>29 microservices across 3 workspaces</td></tr>
+        <tr><td class="svc-name">Web Frontend</td><td>Next.js 15, React 19, TanStack Query</td><td>70+ pages, SSR/SSG hybrid</td></tr>
+        <tr><td class="svc-name">Mobile</td><td>Flutter, Riverpod, Dio, GoRouter</td><td>55+ screens, iOS + Android</td></tr>
+        <tr><td class="svc-name">Primary DB</td><td>PostgreSQL (5 databases)</td><td>Transactional data, migrations auto-run</td></tr>
+        <tr><td class="svc-name">Time-Series DB</td><td>ScyllaDB</td><td>Feeds, notifications, analytics</td></tr>
+        <tr><td class="svc-name">Cache</td><td>Redis</td><td>Rate limiting, dedup, counters, sessions</td></tr>
+        <tr><td class="svc-name">Object Storage</td><td>MinIO (S3-compatible)</td><td>Media files, HLS segments</td></tr>
+        <tr><td class="svc-name">Search</td><td>OpenSearch</td><td>Full-text search, autocomplete</td></tr>
+        <tr><td class="svc-name">Event Bus</td><td>Kafka (Redpanda)</td><td>70+ event types, cross-service communication</td></tr>
+        <tr><td class="svc-name">Live Ingest</td><td>MediaMTX</td><td>RTMP ingest, HLS relay</td></tr>
+        <tr><td class="svc-name">Orchestration</td><td>Docker Compose</td><td>Full-stack local development</td></tr>
+        <tr><td class="svc-name">Payments</td><td>Razorpay</td><td>Payment processing, escrow</td></tr>
+        <tr><td class="svc-name">Dating App</td><td>Go 1.24, Gin, pgx/v5, Redis, MinIO</td><td>Standalone trust-first dating platform (modular monolith)</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     FOOTER
+     ══════════════════════════════════════════════════════════════════ -->
+<div class="footer">
+  <p><strong>AtPost Platform + Dating App</strong> &middot; Complete Feature Document &middot; April 2026</p>
+  <p style="margin-top: 8px;">29+ Microservices &middot; 70+ Web Pages &middot; 55+ Mobile Screens &middot; 5 Data Stores &middot; 70+ Kafka Events &middot; 25 Feature Areas &middot; 2 Products</p>
+</div>
+
+</body>
+</html>

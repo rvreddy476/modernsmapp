@@ -1,6 +1,7 @@
 import 'package:atpost_app/core/config/environment.dart';
 import 'package:atpost_app/data/models/live_stream.dart';
 import 'package:atpost_app/services/api_client.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 class LiveRepository {
@@ -168,8 +169,66 @@ class LiveRepository {
         .map((item) => LiveWordFilter.fromJson(item as Map<String, dynamic>))
         .toList();
   }
+
+  Future<LivePublishSession> createPublishSession({
+    required String publishUrl,
+    required String sdpOffer,
+    Map<String, String> headers = const <String, String>{},
+  }) async {
+    final response = await _api.post<String>(
+      publishUrl,
+      data: sdpOffer,
+      options: Options(
+        headers: <String, dynamic>{
+          'Content-Type': 'application/sdp',
+          'Accept': 'application/sdp',
+          ...headers,
+        },
+        contentType: 'application/sdp',
+        responseType: ResponseType.plain,
+        validateStatus: (status) => status != null && status >= 200 && status < 400,
+      ),
+    );
+
+    final locationHeader =
+        response.headers.value('location') ?? response.headers.value('Location');
+    final resolvedSessionUrl =
+        locationHeader == null || locationHeader.isEmpty
+        ? null
+        : Uri.parse(publishUrl).resolve(locationHeader).toString();
+
+    return LivePublishSession(
+      answerSdp: _responseAsText(response.data),
+      sessionUrl: resolvedSessionUrl,
+    );
+  }
+
+  Future<void> deletePublishSession(
+    String sessionUrl, {
+    Map<String, String> headers = const <String, String>{},
+  }) async {
+    await _api.delete(
+      sessionUrl,
+      options: Options(
+        headers: <String, dynamic>{
+          'Accept': 'application/json, text/plain, */*',
+          ...headers,
+        },
+        responseType: ResponseType.plain,
+        validateStatus: (status) =>
+            status != null && (status == 200 || status == 202 || status == 204 || status == 404),
+      ),
+    );
+  }
 }
 
 final liveRepositoryProvider = Provider<LiveRepository>((ref) {
   return LiveRepository(ref.watch(apiClientProvider));
 });
+
+String _responseAsText(dynamic value) {
+  if (value == null) return '';
+  if (value is String) return value;
+  if (value is List<int>) return String.fromCharCodes(value);
+  return value.toString();
+}

@@ -110,6 +110,15 @@ const (
 	EventDisputeOpened           = "dispute.opened"
 	EventDisputeResolved         = "dispute.resolved"
 
+	// Commerce — Seller lifecycle
+	EventSellerSubmitted = "commerce.seller.submitted"
+	EventSellerApproved  = "commerce.seller.approved"
+	EventSellerRejected  = "commerce.seller.rejected"
+	EventSellerSuspended = "commerce.seller.suspended"
+
+	// Commerce — Product lifecycle
+	EventProductApproved = "commerce.product.approved"
+
 	// Feature Flags
 	EventFlagEvaluated = "flag.evaluated" // payload: FlagEvaluatedPayload
 
@@ -218,6 +227,24 @@ const (
 	// Post Repost (Echo) Events
 	EventPostReposted     = "post.reposted"
 	EventPostRepostUndone = "post.repost_undone"
+
+	// Q&A Events
+	EventQAQuestionCreated      = "qa.question.created"
+	EventQAQuestionUpdated      = "qa.question.updated"
+	EventQAQuestionDeleted      = "qa.question.deleted"
+	EventQAQuestionClosed       = "qa.question.closed"
+	EventQAAnswerCreated        = "qa.answer.created"
+	EventQAAnswerUpdated        = "qa.answer.updated"
+	EventQAAnswerDeleted        = "qa.answer.deleted"
+	EventQABestAnswerSelected   = "qa.answer.best_selected"
+	EventQAAnswerCommentCreated = "qa.answer.comment.created"
+	EventQAQuestionVoted        = "qa.question.voted"
+	EventQAAnswerVoted          = "qa.answer.voted"
+	EventQAAnswerRequested      = "qa.answer.requested"
+	EventQAReputationChanged    = "qa.reputation.changed"
+	EventQAQuestionReported     = "qa.question.reported"
+	EventQAAnswerReported       = "qa.answer.reported"
+	EventQAModerationAction     = "qa.moderation.action"
 )
 
 // EventEnvelope is the CloudEvents-ish structure we use on Kafka.

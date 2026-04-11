@@ -21,6 +21,8 @@ type Stream struct {
 	StreamKey        string     `json:"stream_key,omitempty"`
 	IngestURL        *string    `json:"ingest_url,omitempty"`
 	IngestProtocol   *string    `json:"ingest_protocol,omitempty"`
+	PublishURL       *string    `json:"publish_url,omitempty"`
+	PublishProtocol  *string    `json:"publish_protocol,omitempty"`
 	PlaybackURL      *string    `json:"playback_url,omitempty"`
 	PlaybackProtocol *string    `json:"playback_protocol,omitempty"`
 	Status           string     `json:"status"`

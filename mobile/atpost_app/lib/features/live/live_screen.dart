@@ -176,6 +176,11 @@ class _LiveScreenState extends ConsumerState<LiveScreen> {
                       }).toList(),
                     ),
                     const SizedBox(height: 16),
+                    Text(
+                      'You will enter the live studio first to enable camera and microphone before the stream goes live.',
+                      style: AppTextStyles.bodySmall,
+                    ),
+                    const SizedBox(height: 16),
                     SizedBox(
                       width: double.infinity,
                       child: ElevatedButton.icon(
@@ -203,7 +208,6 @@ class _LiveScreenState extends ConsumerState<LiveScreen> {
                                         .trim(),
                                     visibility: visibility,
                                   );
-                                  await repo.goLive(created.id);
                                   if (!context.mounted) return;
                                   Navigator.of(context).pop(created);
                                 } catch (_) {
@@ -211,7 +215,7 @@ class _LiveScreenState extends ConsumerState<LiveScreen> {
                                   ScaffoldMessenger.of(context).showSnackBar(
                                     const SnackBar(
                                       content: Text(
-                                        'Could not start live stream.',
+                                        'Could not create live stream.',
                                       ),
                                     ),
                                   );
@@ -239,7 +243,7 @@ class _LiveScreenState extends ConsumerState<LiveScreen> {
                                 ),
                               )
                             : const Icon(Icons.videocam_rounded),
-                        label: const Text('Go Live'),
+                        label: const Text('Open live studio'),
                       ),
                     ),
                   ],

@@ -100,7 +100,13 @@ func main() {
 		}
 	}()
 
-	authSvc := service.New(authStore, authProducer, cfg, logger, rdb)
+	miniAppSessionSigner, err := service.NewMiniAppSessionSigner(cfg, logger)
+	if err != nil {
+		logger.Error("failed to configure mini app session signer", "err", err)
+		os.Exit(1)
+	}
+
+	authSvc := service.New(authStore, authProducer, cfg, logger, rdb, miniAppSessionSigner)
 	authHandler := internalhttp.New(authSvc, cfg, logger, rdb)
 
 	// 4. Outbox Relay

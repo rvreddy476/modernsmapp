@@ -240,24 +240,24 @@ func (s *Service) GetCommunity(ctx context.Context, communityID uuid.UUID, viewe
 }
 
 type UpdateCommunityParams struct {
-	Name            *string          `json:"name"`
-	Description     *string          `json:"description"`
-	AvatarMediaID   *uuid.UUID       `json:"avatar_media_id"`
-	BannerMediaID   *uuid.UUID       `json:"banner_media_id"`
-	CommunityType   *string          `json:"community_type"`
-	Category        *string          `json:"category"`
-	Language        *string          `json:"language"`
-	JoinMode        *string          `json:"join_mode"`
-	EmailDomainGate *string          `json:"email_domain_gate"`
-	JoinQuestions   json.RawMessage  `json:"join_questions"`
-	MemberDirectory *bool            `json:"member_directory"`
-	CrossSpaceBans  *bool            `json:"cross_space_bans"`
-	MaxSubSpaces    *int             `json:"max_sub_spaces"`
-	Latitude        *float64         `json:"latitude"`
-	Longitude       *float64         `json:"longitude"`
-	LocationName    *string          `json:"location_name"`
-	Rules           []string         `json:"rules"`
-	TopicTags       []string         `json:"topic_tags"`
+	Name            *string         `json:"name"`
+	Description     *string         `json:"description"`
+	AvatarMediaID   *uuid.UUID      `json:"avatar_media_id"`
+	BannerMediaID   *uuid.UUID      `json:"banner_media_id"`
+	CommunityType   *string         `json:"community_type"`
+	Category        *string         `json:"category"`
+	Language        *string         `json:"language"`
+	JoinMode        *string         `json:"join_mode"`
+	EmailDomainGate *string         `json:"email_domain_gate"`
+	JoinQuestions   json.RawMessage `json:"join_questions"`
+	MemberDirectory *bool           `json:"member_directory"`
+	CrossSpaceBans  *bool           `json:"cross_space_bans"`
+	MaxSubSpaces    *int            `json:"max_sub_spaces"`
+	Latitude        *float64        `json:"latitude"`
+	Longitude       *float64        `json:"longitude"`
+	LocationName    *string         `json:"location_name"`
+	Rules           []string        `json:"rules"`
+	TopicTags       []string        `json:"topic_tags"`
 }
 
 func (s *Service) UpdateCommunity(ctx context.Context, communityID, actorID uuid.UUID, params UpdateCommunityParams) (*store.Community, error) {
@@ -340,7 +340,7 @@ func (s *Service) UpdateCommunity(ctx context.Context, communityID, actorID uuid
 	}
 
 	if s.producer != nil {
-		if err := s.producer.PublishCommunityUpdated(ctx, communityID, actorID); err != nil {
+		if err := s.producer.PublishCommunityUpdated(ctx, communityID, actorID, c.Name, c.CommunityType); err != nil {
 			slog.Warn("failed to publish community.updated event", "error", err)
 		}
 	}
