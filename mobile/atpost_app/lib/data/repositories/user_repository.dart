@@ -30,10 +30,32 @@ class UserRepository {
   Future<List<User>> getUsersBatch(List<String> userIds) async {
     if (userIds.isEmpty) return [];
     final response = await _api.post('/v1/profiles/batch', data: {'user_ids': userIds});
+    final body = response.data;
 
-    // The spec returns a map keyed by user ID
-    final rawMap = response.data as Map<String, dynamic>;
-    return rawMap.values.map((e) => User.fromJson(e as Map<String, dynamic>)).toList();
+    if (body is Map<String, dynamic>) {
+      final profiles = body['profiles'];
+      if (profiles is List) {
+        return profiles
+            .whereType<Map>()
+            .map((e) => User.fromJson(Map<String, dynamic>.from(e)))
+            .toList();
+      }
+
+      final data = body['data'];
+      if (data is Map<String, dynamic>) {
+        return data.values
+            .whereType<Map>()
+            .map((e) => User.fromJson(Map<String, dynamic>.from(e)))
+            .toList();
+      }
+
+      return body.values
+          .whereType<Map>()
+          .map((e) => User.fromJson(Map<String, dynamic>.from(e)))
+          .toList();
+    }
+
+    return [];
   }
 
   /// Follow a user using the verified UserIdRequest schema.
@@ -43,9 +65,9 @@ class UserRepository {
   }
 
   /// Unfollow a user.
-  /// Synchronized with DELETE /v1/graph/unfollow/{userId}
+  /// Synchronized with POST /v1/graph/unfollow
   Future<void> unfollowUser(String userId) async {
-    await _api.delete('/v1/graph/unfollow/$userId');
+    await _api.post('/v1/graph/unfollow', data: {'user_id': userId});
   }
 
   /// Mute a user.
@@ -55,9 +77,9 @@ class UserRepository {
   }
 
   /// Unmute a user.
-  /// Synchronized with DELETE /v1/graph/unmute/{userId}
+  /// Synchronized with DELETE /v1/graph/mute
   Future<void> unmuteUser(String userId) async {
-    await _api.delete('/v1/graph/unmute/$userId');
+    await _api.delete('/v1/graph/mute', data: {'user_id': userId});
   }
 
   /// Block a user.

@@ -147,6 +147,10 @@ class _CallOverlayState extends ConsumerState<CallOverlay> {
         const Spacer(flex: 2),
         _buildAvatar(info),
         const SizedBox(height: 24),
+        if (info.joinResponse?.usesStubSfu ?? false) ...[
+          _buildSfuWarning(),
+          const SizedBox(height: 16),
+        ],
         Text(
           info.peerName.isNotEmpty ? info.peerName : 'Unknown',
           style: AppTextStyles.h1.copyWith(color: AppColors.textPrimary),
@@ -176,6 +180,10 @@ class _CallOverlayState extends ConsumerState<CallOverlay> {
         const Spacer(flex: 2),
         _buildAvatar(info),
         const SizedBox(height: 24),
+        if (info.joinResponse?.usesStubSfu ?? false) ...[
+          _buildSfuWarning(),
+          const SizedBox(height: 16),
+        ],
         Text(
           info.peerName.isNotEmpty ? info.peerName : 'Unknown',
           style: AppTextStyles.h1.copyWith(color: AppColors.textPrimary),
@@ -245,6 +253,14 @@ class _CallOverlayState extends ConsumerState<CallOverlay> {
           ),
 
         // Video call: timer + name overlay at top
+        if (isVideo && (info.joinResponse?.usesStubSfu ?? false))
+          Positioned(
+            top: 64,
+            left: 16,
+            right: 16,
+            child: _buildSfuWarning(),
+          ),
+
         if (isVideo)
           Positioned(
             top: 16,
@@ -430,6 +446,23 @@ class _CallOverlayState extends ConsumerState<CallOverlay> {
           style: AppTextStyles.labelSmall.copyWith(color: AppColors.textTertiary),
         ),
       ],
+    );
+  }
+
+  Widget _buildSfuWarning() {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 24),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.amber.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.amber.withValues(alpha: 0.35)),
+      ),
+      child: Text(
+        'Development SFU active. Configure LiveKit for production media relay.',
+        textAlign: TextAlign.center,
+        style: AppTextStyles.bodySmall.copyWith(color: Colors.amber),
+      ),
     );
   }
 

@@ -3,6 +3,7 @@ import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/providers/feed_provider.dart';
 import 'package:atpost_app/providers/notification_provider.dart';
+import 'package:atpost_app/providers/stories_provider.dart';
 import 'package:atpost_app/shared/widgets/badge_icon_button.dart';
 import 'package:atpost_app/shared/widgets/content_cards.dart';
 import 'package:atpost_app/shared/widgets/filter_pills.dart';
@@ -20,6 +21,38 @@ class HomeFeedScreen extends ConsumerStatefulWidget {
 
 class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
   int feedTab = 0;
+  final ScrollController _scrollController = ScrollController();
+
+  @override
+  void initState() {
+    super.initState();
+    _scrollController.addListener(_maybeLoadMore);
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  void _maybeLoadMore() {
+    if (!_scrollController.hasClients) return;
+    if (_scrollController.position.extentAfter > 700) return;
+
+    final state = ref.read(homeFeedProvider).valueOrNull;
+    if (state == null || state.posts.isEmpty || state.hasReachedEnd) return;
+
+    ref
+        .read(homeFeedProvider.notifier)
+        .onListItemVisible(state.posts.length - 1);
+  }
+
+  Future<void> _refreshHome() async {
+    ref.invalidate(feedStoriesProvider);
+    ref.invalidate(unreadNotificationCountProvider);
+    ref.invalidate(unreadChatCountProvider);
+    await ref.read(homeFeedProvider.notifier).fetchFirstPage();
+  }
 
   String _formatCount(int count) {
     if (count >= 1000000) return '${(count / 1000000).toStringAsFixed(1)}M';
@@ -43,8 +76,19 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
   @override
   Widget build(BuildContext context) {
     final feedAsync = ref.watch(homeFeedProvider);
+    final storiesAsync = ref.watch(feedStoriesProvider);
+    final stories = storiesAsync.valueOrNull ?? const [];
+
     return SafeArea(
-      child: CustomScrollView(
+      child: RefreshIndicator(
+        color: AppColors.postbookPrimary,
+        backgroundColor: AppColors.bgSecondary,
+        onRefresh: _refreshHome,
+        child: CustomScrollView(
+        controller: _scrollController,
+        physics: const AlwaysScrollableScrollPhysics(
+          parent: BouncingScrollPhysics(),
+        ),
         slivers: [
           SliverToBoxAdapter(
             child: Padding(
@@ -88,6 +132,7 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
                                 .watch(unreadNotificationCountProvider)
                                 .valueOrNull ??
                             0,
+                        onPressed: () => context.push('/notifications'),
                       ),
                       const SizedBox(width: 8),
                       BadgeIconButton(
@@ -121,6 +166,51 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
                             label: 'Live',
                             isLive: true,
                           ),
+                        ),
+                        for (final story in stories.take(12)) ...[
+                          const SizedBox(width: 10),
+                          GestureDetector(
+                            onTap: () => context.push('/stories/${story.authorId}'),
+                            child: StoryRing(
+                              initials: _initialsFor(story.authorName),
+                              label: story.authorName.isEmpty
+                                  ? 'Story'
+                                  : story.authorName,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  SizedBox(
+                    height: 80,
+                    child: ListView(
+                      scrollDirection: Axis.horizontal,
+                      children: [
+                        _FeatureShortcut(
+                          icon: Icons.question_answer_rounded,
+                          label: 'Q&A',
+                          color: AppColors.postbookPrimary,
+                          onTap: () => context.push('/qa'),
+                        ),
+                        _FeatureShortcut(
+                          icon: Icons.extension_rounded,
+                          label: 'Apps',
+                          color: AppColors.accentPurple,
+                          onTap: () => context.push('/apps'),
+                        ),
+                        _FeatureShortcut(
+                          icon: Icons.favorite_rounded,
+                          label: 'Match',
+                          color: AppColors.postgramPrimary,
+                          onTap: () => context.push('/postmatch'),
+                        ),
+                        _FeatureShortcut(
+                          icon: Icons.storefront_rounded,
+                          label: 'Shop',
+                          color: AppColors.postbookSecondary,
+                          onTap: () => context.push('/shop'),
                         ),
                       ],
                     ),
@@ -165,6 +255,16 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
                 padding: AppSpacing.pagePadding.copyWith(bottom: 130),
                 sliver: SliverList(
                   delegate: SliverChildBuilderDelegate((context, index) {
+                    if (index >= feedState.posts.length) {
+                      return const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 18),
+                        child: Center(
+                          child: CircularProgressIndicator(
+                            color: AppColors.postbookPrimary,
+                          ),
+                        ),
+                      );
+                    }
                     final post = feedState.posts[index];
                     if (post.isReel) {
                       return ReelCard(
@@ -183,12 +283,88 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
                       );
                     }
                     return PostCard(post: post);
-                  }, childCount: feedState.posts.length),
+                  },
+                      childCount:
+                          feedState.posts.length +
+                          (feedState.isLoadingMore ? 1 : 0)),
                 ),
               ),
             ],
           ),
         ],
+      ),
+      ),
+    );
+  }
+}
+
+String _initialsFor(String name) {
+  final parts = name
+      .trim()
+      .split(RegExp(r'\s+'))
+      .where((part) => part.isNotEmpty)
+      .toList();
+  if (parts.isEmpty) return '?';
+  if (parts.length == 1) return parts.first[0].toUpperCase();
+  return '${parts[0][0]}${parts[1][0]}'.toUpperCase();
+}
+
+class _FeatureShortcut extends StatelessWidget {
+  const _FeatureShortcut({
+    required this.icon,
+    required this.label,
+    required this.color,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final Color color;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(right: 10),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
+          child: Ink(
+            width: 94,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: AppColors.bgCard,
+              borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
+              border: Border.all(color: AppColors.borderSubtle),
+            ),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Container(
+                  width: 34,
+                  height: 34,
+                  decoration: BoxDecoration(
+                    color: color.withValues(alpha: 0.18),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Icon(icon, color: color, size: 19),
+                ),
+                const SizedBox(height: 7),
+                Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppTextStyles.labelSmall.copyWith(
+                    color: AppColors.textPrimary,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }

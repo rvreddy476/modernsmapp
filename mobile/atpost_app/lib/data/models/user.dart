@@ -1,5 +1,8 @@
 import 'package:atpost_app/core/config/environment.dart';
+import 'package:atpost_app/core/utils/app_logger.dart';
 
+/// Production-ready User model with "Total Resilience" parsing.
+/// Designed to prevent app crashes from malformed backend JSON.
 class User {
   final String id;
   final String username;
@@ -30,21 +33,32 @@ class User {
   });
 
   factory User.fromJson(Map<String, dynamic> json) {
-    return User(
-      id: json['id'] as String? ?? json['user_id'] as String? ?? '',
-      username: json['username'] as String? ?? '',
-      displayName: json['display_name'] as String? ?? json['name'] as String? ?? '',
-      bio: json['bio'] as String?,
-      pronouns: json['pronouns'] as String?,
-      avatarMediaId: json['avatar_media_id'] as String?,
-      location: json['location'] as String?,
-      profession: json['profession'] as String?,
-      isVerified: json['is_verified'] as bool? ?? false,
-      followerCount: json['follower_count'] as int? ?? 0,
-      followingCount: json['following_count'] as int? ?? 0,
-      friendCount: json['friend_count'] as int? ?? 0,
-    );
+    try {
+      return User(
+        id: (json['id'] ?? json['user_id'] ?? '').toString(),
+        username: (json['username'] ?? '').toString(),
+        displayName: (json['display_name'] ?? json['name'] ?? 'User').toString(),
+        bio: json['bio']?.toString(),
+        pronouns: json['pronouns']?.toString(),
+        avatarMediaId: json['avatar_media_id']?.toString(),
+        location: json['location']?.toString(),
+        profession: json['profession']?.toString(),
+        isVerified: _toBool(json['is_verified']),
+        followerCount: _toInt(json['follower_count']),
+        followingCount: _toInt(json['following_count']),
+        friendCount: _toInt(json['friend_count']),
+      );
+    } catch (e, st) {
+      AppLogger.error('User.fromJson failed', error: e, stackTrace: st);
+      return User.empty();
+    }
   }
+
+  static User empty() => const User(
+        id: '',
+        username: 'unknown',
+        displayName: 'User',
+      );
 
   /// Whether this user has a real avatar uploaded.
   bool get hasAvatar => avatarMediaId != null && avatarMediaId!.isNotEmpty;
@@ -53,4 +67,20 @@ class User {
   String get avatarUrl => hasAvatar
       ? '${Environment.apiBaseUrl}/v1/media/$avatarMediaId/serve'
       : 'https://api.dicebear.com/7.x/avataaars/svg?seed=$id';
+}
+
+// --- Resilience Helpers ---
+
+int _toInt(dynamic data) {
+  if (data is int) return data;
+  if (data is double) return data.toInt();
+  if (data is String) return int.tryParse(data) ?? 0;
+  return 0;
+}
+
+bool _toBool(dynamic data) {
+  if (data is bool) return data;
+  if (data is int) return data == 1;
+  if (data is String) return data.toLowerCase() == 'true';
+  return false;
 }

@@ -81,6 +81,7 @@ class HomeFeedNotifier extends StateNotifier<AsyncValue<FeedState>> {
     try {
       final page = await ErrorHandler.retry(() => _repo.getHomeFeedPage(
         feedMode: _filterToMode(_currentFilter),
+        circleOnly: _currentFilter == 'Following',
       ));
 
       state = AsyncValue.data(FeedState(
@@ -112,6 +113,7 @@ class HomeFeedNotifier extends StateNotifier<AsyncValue<FeedState>> {
       final page = await ErrorHandler.retry(() => _repo.getHomeFeedPage(
         cursor: currentState.nextCursor,
         feedMode: _filterToMode(_currentFilter),
+        circleOnly: _currentFilter == 'Following',
       ));
 
       List<Post> newPosts = [...currentState.posts, ...page.items];
@@ -193,8 +195,8 @@ class HomeFeedNotifier extends StateNotifier<AsyncValue<FeedState>> {
 
   String _filterToMode(String filter) {
     switch (filter) {
-      case 'Following': return 'following';
-      case 'Trending': return 'trending';
+      case 'Following': return 'chronological';
+      case 'Trending': return 'ranked';
       default: return 'ranked';
     }
   }

@@ -1,3 +1,5 @@
+import 'package:atpost_app/core/utils/app_logger.dart';
+
 class ConversationMember {
   final String userId;
   final String role;
@@ -15,11 +17,11 @@ class ConversationMember {
 
   factory ConversationMember.fromJson(Map<String, dynamic> json) {
     return ConversationMember(
-      userId: json['user_id'] as String? ?? '',
-      role: json['role'] as String? ?? 'member',
-      joinedAt: _parseDateTime(json['joined_at']),
-      displayName: json['display_name'] as String?,
-      avatarMediaId: json['avatar_media_id'] as String?,
+      userId: (json['user_id'] ?? '').toString(),
+      role: (json['role'] ?? 'member').toString(),
+      joinedAt: _parseDateNullable(json['joined_at']),
+      displayName: json['display_name']?.toString(),
+      avatarMediaId: json['avatar_media_id']?.toString(),
     );
   }
 }
@@ -54,110 +56,47 @@ class Conversation {
   });
 
   factory Conversation.fromJson(Map<String, dynamic> json) {
-    final members =
-        (json['members'] as List<dynamic>?)
-            ?.map(
-              (member) =>
-                  ConversationMember.fromJson(member as Map<String, dynamic>),
-            )
-            .toList() ??
-        const <ConversationMember>[];
+    try {
+      final members = (json['members'] as List? ?? [])
+          .map((m) => ConversationMember.fromJson(Map<String, dynamic>.from(m)))
+          .toList();
 
-    final participantIds =
-        (json['participant_ids'] as List<dynamic>?)?.cast<String>() ??
-        members.map((member) => member.userId).toList();
-    final fallbackName =
-        members
-            .map((member) => (member.displayName ?? member.userId).trim())
-            .where((value) => value.isNotEmpty)
-            .cast<String>()
-            .toList();
+      final participantIds = (json['participant_ids'] as List? ?? [])
+          .map((e) => e.toString())
+          .toList();
 
-    return Conversation(
-      id: json['id'] as String? ?? json['conversation_id'] as String? ?? '',
-      type: json['type'] as String? ?? 'direct',
-      name:
-          json['name'] as String? ??
-          json['title'] as String? ??
-          (fallbackName.isNotEmpty ? fallbackName.first : null),
-      title: json['title'] as String? ?? json['name'] as String?,
-      createdBy: json['created_by'] as String?,
-      members: members,
-      participantIds: participantIds,
-      lastMessage:
-          json['last_message'] as String? ??
-          json['latest_message'] as String? ??
-          json['preview'] as String?,
-      lastMessageAt:
-          _parseDateTime(json['last_message_at']) ??
-          _parseDateTime(json['updated_at']),
-      createdAt: _parseDateTime(json['created_at']),
-      updatedAt: _parseDateTime(json['updated_at']),
-      unreadCount: json['unread_count'] as int? ?? 0,
-    );
+      return Conversation(
+        id: (json['id'] ?? json['conversation_id'] ?? '').toString(),
+        type: (json['type'] ?? 'direct').toString(),
+        name: (json['name'] ?? json['title'] ?? '').toString(),
+        title: json['title']?.toString(),
+        createdBy: json['created_by']?.toString(),
+        members: members,
+        participantIds: participantIds.isNotEmpty ? participantIds : members.map((m) => m.userId).toList(),
+        lastMessage: (json['last_message'] ?? json['latest_message'] ?? json['preview'] ?? '').toString(),
+        lastMessageAt: _parseDateNullable(json['last_message_at'] ?? json['updated_at']),
+        createdAt: _parseDateNullable(json['created_at']),
+        updatedAt: _parseDateNullable(json['updated_at']),
+        unreadCount: _toInt(json['unread_count']),
+      );
+    } catch (e, st) {
+      AppLogger.error('Conversation.fromJson failed', error: e, stackTrace: st);
+      return Conversation.empty();
+    }
   }
 
+  static Conversation empty() => Conversation(id: 'err_${DateTime.now().ms}', members: const []);
+
   String displayNameFor(String? currentUserId) {
-    final explicitName = (title ?? name ?? '').trim();
-    if (explicitName.isNotEmpty) {
-      return explicitName;
-    }
-
-    final otherMembers =
-        members
-            .where(
-              (member) =>
-                  currentUserId == null || member.userId != currentUserId,
-            )
-            .toList();
-    final names =
-        otherMembers
-            .map((member) => (member.displayName ?? member.userId).trim())
-            .where((value) => value.isNotEmpty)
-            .toList();
-
-    if (names.isEmpty) {
-      return type == 'group' ? 'Group Chat' : 'Direct Message';
-    }
-    if (type == 'group') {
-      return names.join(', ');
-    }
-    return names.first;
+    if ((title ?? name ?? '').isNotEmpty) return (title ?? name)!;
+    final others = members.where((m) => m.userId != currentUserId).map((m) => m.displayName ?? 'User').toList();
+    if (others.isEmpty) return type == 'group' ? 'Group Chat' : 'Direct Message';
+    return type == 'group' ? others.join(', ') : others.first;
   }
 
   String? directPeerId(String? currentUserId) {
     if (type == 'group') return null;
-
-    for (final member in members) {
-      if (member.userId.isNotEmpty && member.userId != currentUserId) {
-        return member.userId;
-      }
-    }
-    for (final participantId in participantIds) {
-      if (participantId.isNotEmpty && participantId != currentUserId) {
-        return participantId;
-      }
-    }
-    return null;
-  }
-}
-
-class MessageReaction {
-  final String emoji;
-  final List<String> userIds;
-
-  const MessageReaction({
-    required this.emoji,
-    this.userIds = const [],
-  });
-
-  factory MessageReaction.fromJson(Map<String, dynamic> json) {
-    return MessageReaction(
-      emoji: json['emoji'] as String? ?? '',
-      userIds:
-          (json['user_ids'] as List<dynamic>?)?.cast<String>() ??
-          const <String>[],
-    );
+    return participantIds.firstWhere((id) => id != currentUserId, orElse: () => '');
   }
 }
 
@@ -169,10 +108,7 @@ class Message {
   final String content;
   final String contentType;
   final String? mediaId;
-  final String? bucket;
-  final DateTime? ts;
   final DateTime createdAt;
-  final List<MessageReaction> reactions;
 
   const Message({
     required this.id,
@@ -182,61 +118,54 @@ class Message {
     required this.content,
     this.contentType = 'text',
     this.mediaId,
-    this.bucket,
-    this.ts,
     required this.createdAt,
-    this.reactions = const [],
   });
 
   factory Message.fromJson(Map<String, dynamic> json) {
-    return Message(
-      id:
-          json['msg_id'] as String? ??
-          json['message_id'] as String? ??
-          json['id'] as String? ??
-          '',
-      conversationId: json['conversation_id'] as String? ?? '',
-      senderId: json['sender_id'] as String? ?? '',
-      senderName:
-          json['sender_display_name'] as String? ??
-          json['sender_name'] as String?,
-      content:
-          json['text'] as String? ??
-          json['content'] as String? ??
-          '',
-      contentType:
-          json['type'] as String? ?? json['content_type'] as String? ?? 'text',
-      mediaId: json['media_id'] as String?,
-      bucket: json['bucket'] as String?,
-      ts: _parseDateTime(json['ts']),
-      createdAt:
-          _parseDateTime(json['created_at']) ??
-          _parseDateTime(json['ts']) ??
-          DateTime.now(),
-      reactions:
-          (json['reactions'] as List<dynamic>?)
-              ?.map(
-                (reaction) =>
-                    MessageReaction.fromJson(reaction as Map<String, dynamic>),
-              )
-              .toList() ??
-          const <MessageReaction>[],
-    );
+    try {
+      return Message(
+        id: (json['msg_id'] ?? json['message_id'] ?? json['id'] ?? '').toString(),
+        conversationId: (json['conversation_id'] ?? '').toString(),
+        senderId: (json['sender_id'] ?? '').toString(),
+        senderName: json['sender_display_name']?.toString() ?? json['sender_name']?.toString(),
+        content: (json['text'] ?? json['content'] ?? '').toString(),
+        contentType: (json['type'] ?? json['content_type'] ?? 'text').toString(),
+        mediaId: json['media_id']?.toString(),
+        createdAt: _parseDate(json['created_at'] ?? json['ts']),
+      );
+    } catch (e, st) {
+      AppLogger.error('Message.fromJson failed', error: e, stackTrace: st);
+      return Message.empty();
+    }
   }
 
+  static Message empty() => Message(id: '', conversationId: '', senderId: '', content: 'Unavailable', createdAt: DateTime.now());
+
   String get previewText {
-    if (content.trim().isNotEmpty) {
-      return content.trim();
-    }
-    if (mediaId != null && mediaId!.isNotEmpty) {
-      return 'Attachment';
-    }
+    if (content.isNotEmpty) return content;
+    if (mediaId != null) return 'Attachment';
     return '';
   }
 }
 
-DateTime? _parseDateTime(dynamic value) {
-  if (value == null) return null;
-  if (value is String) return DateTime.tryParse(value)?.toLocal();
-  return null;
+// --- Resilience Helpers ---
+
+DateTime _parseDate(dynamic data) {
+  if (data is String) return DateTime.tryParse(data) ?? DateTime.now();
+  return DateTime.now();
+}
+
+DateTime? _parseDateNullable(dynamic data) {
+  if (data == null) return null;
+  return _parseDate(data);
+}
+
+int _toInt(dynamic data) {
+  if (data is int) return data;
+  if (data is String) return int.tryParse(data) ?? 0;
+  return 0;
+}
+
+extension on DateTime {
+  String get ms => millisecondsSinceEpoch.toString();
 }

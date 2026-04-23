@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_app/data/models/monetization.dart';
 import 'package:atpost_app/providers/monetization_provider.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
@@ -312,7 +313,9 @@ class _ViewsLineChart extends StatelessWidget {
       return FlSpot(entry.key.toDouble(), entry.value.views.toDouble());
     }).toList();
 
-    final maxY = dailyStats.map((s) => s.views).reduce(max).toDouble();
+    final maxY = dailyStats.isEmpty
+        ? 0.0
+        : dailyStats.map((s) => s.views).reduce(max).toDouble();
     final yMax = maxY == 0 ? 100.0 : maxY * 1.2;
 
     return Container(

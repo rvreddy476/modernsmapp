@@ -27,6 +27,51 @@ class GroupDetailScreen extends ConsumerStatefulWidget {
 }
 
 class _GroupDetailScreenState extends ConsumerState<GroupDetailScreen> {
+  Future<void> _inviteUser() async {
+    final controller = TextEditingController();
+    final userId = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.bgSecondary,
+        title: Text('Invite user', style: AppTextStyles.h3),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          style: AppTextStyles.body,
+          decoration: const InputDecoration(
+            labelText: 'User ID',
+            hintText: 'Paste the user ID to invite',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(controller.text.trim()),
+            child: const Text('Invite'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (userId == null || userId.isEmpty) return;
+
+    try {
+      await ref.read(groupsRepositoryProvider).inviteUser(widget.groupId, userId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Invite sent.')),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not send invite.')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final groupAsync = ref.watch(groupDetailProvider(widget.groupId));
@@ -310,13 +355,7 @@ class _GroupDetailBodyState extends ConsumerState<_GroupDetailBody> {
                           ),
                           const SizedBox(width: 8),
                           OutlinedButton.icon(
-                            onPressed: () {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text('Invite flow coming soon.'),
-                                ),
-                              );
-                            },
+                            onPressed: _inviteUser,
                             style: OutlinedButton.styleFrom(
                               foregroundColor: AppColors.textSecondary,
                               side: const BorderSide(

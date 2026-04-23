@@ -43,6 +43,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	v1.POST("/sellers/onboard", h.OnboardSeller)
 	v1.GET("/sellers/me", h.GetMySellerProfile)
 	v1.GET("/sellers/:sellerId/products", h.ListSellerProducts)
+	v1.GET("/seller/orders", h.ListMySellerOrders)
 
 	// ── Cart ─────────────────────────────────────────────────
 	v1.GET("/cart", h.GetCart)
@@ -65,6 +66,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 	// ── Payout preview ───────────────────────────────────────
 	v1.GET("/payout/preview", h.PayoutPreview)
+
+	// ── Shipments + Invoices ─────────────────────────────────
+	h.RegisterShipmentRoutes(v1)
 }
 
 // ─── helpers ─────────────────────────────────────────────────────
@@ -317,6 +321,27 @@ func (h *Handler) GetMySellerProfile(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, seller, nil)
+}
+
+// ListMySellerOrders returns orders for the authenticated seller's store.
+func (h *Handler) ListMySellerOrders(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	seller, err := h.svc.GetSellerProfile(c.Request.Context(), userID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil, nil)
+		return
+	}
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	orders, err := h.svc.ListSellerOrders(c.Request.Context(), seller.ID, limit, offset)
+	if err != nil {
+		handleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, orders, nil)
 }
 
 func (h *Handler) ListSellerProducts(c *gin.Context) {

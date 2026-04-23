@@ -14,6 +14,7 @@ import (
 	"github.com/atpost/notification-service/internal/store/scylla"
 	"github.com/atpost/notification-service/internal/workers"
 	"github.com/atpost/shared/health"
+	"github.com/atpost/shared/mailer"
 	"github.com/atpost/shared/middleware"
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
@@ -125,6 +126,23 @@ func main() {
 	if pgStore != nil {
 		notifSvc.SetPGStore(pgStore)
 	}
+
+	// Transactional email transport. Uses SMTP when configured, otherwise logs.
+	if smtpHost := os.Getenv("SMTP_HOST"); smtpHost != "" {
+		notifSvc.SetMailer(&mailer.SMTPMailer{
+			Host:     smtpHost,
+			Port:     env("SMTP_PORT", "587"),
+			Username: os.Getenv("SMTP_USERNAME"),
+			Password: os.Getenv("SMTP_PASSWORD"),
+			FromName: env("SMTP_FROM_NAME", "Postbook"),
+			FromAddr: env("SMTP_FROM_ADDR", "no-reply@postbook.app"),
+		})
+		slog.Info("smtp mailer configured", "host", smtpHost)
+	} else {
+		notifSvc.SetMailer(mailer.NoopMailer{})
+		slog.Info("smtp not configured; using noop mailer")
+	}
+
 	notifHandler := http.New(notifSvc, rdb)
 
 	// 9. Kafka Consumers

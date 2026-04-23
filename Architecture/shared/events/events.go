@@ -119,6 +119,13 @@ const (
 	// Commerce — Product lifecycle
 	EventProductApproved = "commerce.product.approved"
 
+	// Commerce — Fulfillment lifecycle
+	EventCommerceOrderPaid      = "commerce.order.paid"
+	EventCommerceOrderShipped   = "commerce.order.shipped"
+	EventCommerceOrderDelivered = "commerce.order.delivered"
+	EventCommerceInvoiceIssued  = "commerce.invoice.issued"
+	EventCommerceSellerNewOrder = "commerce.seller.new_order"
+
 	// Feature Flags
 	EventFlagEvaluated = "flag.evaluated" // payload: FlagEvaluatedPayload
 

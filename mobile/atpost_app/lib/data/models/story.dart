@@ -16,14 +16,28 @@ class Story {
   });
 
   factory Story.fromJson(Map<String, dynamic> json) {
+    final rawItems = json['items'] as List<dynamic>?;
+    final items = rawItems == null
+        ? [
+            StoryItem.fromJson({
+              'id': json['id'],
+              'media_url': json['media_url'],
+              'media_id': json['media_url'],
+              'media_type': json['media_type'],
+              'text': json['caption'],
+              'expires_at': json['expires_at'],
+            }),
+          ]
+        : rawItems
+            .map((e) => StoryItem.fromJson(e as Map<String, dynamic>))
+            .toList();
+
     return Story(
       id: json['id'] as String? ?? '',
       authorId: json['author_id'] as String? ?? '',
-      authorName: json['author_name'] as String? ?? '',
+      authorName: (json['author_name'] ?? json['display_name'])?.toString() ?? '',
       avatarMediaId: json['avatar_media_id'] as String?,
-      items: ((json['items'] as List<dynamic>?) ?? [])
-          .map((e) => StoryItem.fromJson(e as Map<String, dynamic>))
-          .toList(),
+      items: items,
       createdAt: json['created_at'] != null
           ? DateTime.parse(json['created_at'] as String)
           : DateTime.now(),
@@ -49,7 +63,7 @@ class StoryItem {
   factory StoryItem.fromJson(Map<String, dynamic> json) {
     return StoryItem(
       id: json['id'] as String? ?? '',
-      mediaId: json['media_id'] as String? ?? '',
+      mediaId: (json['media_url'] ?? json['media_id']) as String? ?? '',
       mediaType: json['media_type'] as String? ?? 'image',
       text: json['text'] as String?,
       expiresAt: json['expires_at'] != null

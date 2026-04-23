@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/commerce-service/internal/courier"
+	"github.com/atpost/commerce-service/internal/identity"
 	"github.com/atpost/commerce-service/internal/store/postgres"
 	"github.com/atpost/shared/events"
 	"github.com/google/uuid"
@@ -18,9 +20,12 @@ import (
 
 // Service is the main commerce service.
 type Service struct {
-	store  *postgres.Store
-	rdb    *redis.Client
-	writer *kafka.Writer
+	store    *postgres.Store
+	rdb      *redis.Client
+	writer   *kafka.Writer
+	courier  courier.Provider
+	blob     BlobStore
+	identity *identity.Client
 }
 
 func New(store *postgres.Store, rdb *redis.Client, kafkaBrokers string) *Service {
@@ -234,6 +239,13 @@ func (s *Service) ListSellerProducts(ctx context.Context, sellerID uuid.UUID, li
 
 func (s *Service) ListOrders(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*postgres.Order, error) {
 	orders, _, err := s.store.GetOrdersByCustomer(ctx, userID, limit, offset)
+	return orders, err
+}
+
+// ListSellerOrders returns orders for a seller — used by the seller fulfillment dashboard.
+// Authorization: caller must own the seller account (verified in handler).
+func (s *Service) ListSellerOrders(ctx context.Context, sellerID uuid.UUID, limit, offset int) ([]*postgres.Order, error) {
+	orders, _, err := s.store.GetOrdersBySeller(ctx, sellerID, limit, offset)
 	return orders, err
 }
 
@@ -453,9 +465,17 @@ func (s *Service) Checkout(ctx context.Context, in CheckoutInput) (*postgres.Ord
 		idempKey = fmt.Sprintf("%s-%d", in.UserID, time.Now().UnixNano())
 	}
 
-	// 5. Create order (idempotent)
+	// 5. Create order (idempotent).
+	// COD orders skip the gateway: confirmed immediately, payment_status=cod_pending.
 	addrSnapshot, _ := json.Marshal(map[string]any{"address_id": in.AddressID})
 	pm := in.PaymentMethod
+	isCOD := strings.EqualFold(pm, "cod")
+	paymentStatus := "pending"
+	orderStatus := "payment_pending"
+	if isCOD {
+		paymentStatus = "cod_pending"
+		orderStatus = "confirmed"
+	}
 	order := &postgres.Order{
 		CustomerUserID:          in.UserID,
 		Subtotal:                subtotal,
@@ -467,11 +487,11 @@ func (s *Service) Checkout(ctx context.Context, in CheckoutInput) (*postgres.Ord
 		FinalAmount:             finalAmount,
 		CurrencyCode:            "INR",
 		PaymentMethod:           &pm,
-		PaymentStatus:           "pending",
+		PaymentStatus:           paymentStatus,
 		DeliveryAddressID:       &in.AddressID,
 		DeliveryAddressSnapshot: addrSnapshot,
 		GiftMessage:             in.GiftMessage,
-		Status:                  "payment_pending",
+		Status:                  orderStatus,
 		IdempotencyKey:          &idempKey,
 	}
 
@@ -479,8 +499,14 @@ func (s *Service) Checkout(ctx context.Context, in CheckoutInput) (*postgres.Ord
 		return nil, fmt.Errorf("create order: %w", err)
 	}
 
-	// 6. Hard-reserve inventory
+	// 6. Hard-reserve inventory (COD: immediately deduct since there is no gateway step).
 	for _, ci := range cartItems {
+		if isCOD {
+			if err := s.store.DeductStock(ctx, ci.VariantID, ci.Quantity, order.ID); err != nil {
+				slog.Warn("failed to deduct stock for COD", "variant", ci.VariantID, "error", err)
+			}
+			continue
+		}
 		if err := s.store.ReserveStock(ctx, ci.VariantID, in.UserID, ci.Quantity, &order.ID, "order", 30*time.Minute); err != nil {
 			slog.Warn("failed to reserve stock", "variant", ci.VariantID, "error", err)
 		}
@@ -496,11 +522,52 @@ func (s *Service) Checkout(ctx context.Context, in CheckoutInput) (*postgres.Ord
 		}
 	}
 
+	buyerEmail, buyerName := s.resolveBuyer(ctx, in.UserID)
+	// Resolve seller contact for seller-side notifications.
+	var sellerEmail, sellerName string
+	if len(orderItems) > 0 {
+		if seller, err := s.store.GetSellerByID(ctx, orderItems[0].SellerID); err == nil {
+			sellerEmail, sellerName = s.resolveSeller(seller)
+		}
+	}
+
 	s.publish(ctx, "commerce.order.created", map[string]any{
 		"order_id": order.ID, "user_id": in.UserID,
 		"order_number": order.OrderNumber, "amount": order.FinalAmount,
+		"payment_method": pm,
+		"buyer_email":    buyerEmail,
+		"buyer_name":     buyerName,
 	})
+	s.publish(ctx, events.EventCommerceSellerNewOrder, map[string]any{
+		"order_id":     order.ID,
+		"order_number": order.OrderNumber,
+		"seller_id":    sellerIDOrNil(orderItems),
+		"amount":       order.FinalAmount,
+		"seller_email": sellerEmail,
+		"seller_name":  sellerName,
+	})
+	if isCOD {
+		// COD is a zero-step payment: signal downstream so invoice + shipment
+		// and seller notifications fire the same way as paid orders.
+		s.publish(ctx, events.EventCommerceOrderPaid, map[string]any{
+			"order_id":       order.ID,
+			"order_number":   order.OrderNumber,
+			"user_id":        in.UserID,
+			"amount":         order.FinalAmount,
+			"payment_method": "cod",
+			"buyer_email":    buyerEmail,
+			"buyer_name":     buyerName,
+		})
+		go s.fulfillPaidOrder(order.ID)
+	}
 	return order, nil
+}
+
+func sellerIDOrNil(items []*postgres.OrderItem) *uuid.UUID {
+	if len(items) == 0 {
+		return nil
+	}
+	return &items[0].SellerID
 }
 
 // ConfirmPayment is called after successful payment gateway callback.
@@ -520,10 +587,43 @@ func (s *Service) ConfirmPayment(ctx context.Context, orderID uuid.UUID, payment
 		}
 	}
 
-	s.publish(ctx, "commerce.order.paid", map[string]any{
-		"order_id": orderID, "payment_id": paymentID,
+	order, _ := s.store.GetOrderByID(ctx, orderID)
+	var buyerEmail, orderNumber string
+	var amount float64
+	if order != nil {
+		buyerEmail, _ = s.resolveBuyer(ctx, order.CustomerUserID)
+		orderNumber = order.OrderNumber
+		amount = order.FinalAmount
+	}
+	s.publish(ctx, events.EventCommerceOrderPaid, map[string]any{
+		"order_id":     orderID,
+		"order_number": orderNumber,
+		"amount":       amount,
+		"payment_id":   paymentID,
+		"buyer_email":  buyerEmail,
 	})
+
+	// Best-effort fulfillment automation. Run in a detached goroutine so a slow
+	// courier API or invoice render doesn't stall the payment callback.
+	go s.fulfillPaidOrder(orderID)
 	return nil
+}
+
+// fulfillPaidOrder issues the invoice and books a shipment once payment is settled.
+// Uses a fresh context so it survives the caller's deadline.
+func (s *Service) fulfillPaidOrder(orderID uuid.UUID) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if s.blob != nil {
+		if _, err := s.IssueInvoice(ctx, orderID); err != nil {
+			slog.Warn("auto invoice failed", "order_id", orderID, "error", err)
+		}
+	}
+	if s.courier != nil {
+		if _, err := s.CreateShipmentForOrder(ctx, orderID); err != nil {
+			slog.Warn("auto shipment failed", "order_id", orderID, "error", err)
+		}
+	}
 }
 
 // CancelOrder cancels an order that hasn't shipped yet.

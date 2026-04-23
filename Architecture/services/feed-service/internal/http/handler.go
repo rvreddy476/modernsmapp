@@ -88,7 +88,17 @@ func (h *Handler) GetHomeFeed(c *gin.Context) {
 	circleOnly := c.DefaultQuery("circle_only", "") == "true"
 	platform := c.DefaultQuery("platform", "") // "postbook" | "posttube" | ""
 
-	feedItems, err := h.svc.GetHomeFeed(c.Request.Context(), userID, limit, feedMode, excludeSelf, circleOnly)
+	var cursor *time.Time
+	if rawCursor := c.Query("cursor"); rawCursor != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, rawCursor)
+		if err != nil {
+			api.Error(c.Writer, http.StatusBadRequest, "INVALID_CURSOR", "Invalid cursor", nil, nil)
+			return
+		}
+		cursor = &parsed
+	}
+
+	feedItems, err := h.svc.GetHomeFeed(c.Request.Context(), userID, limit, feedMode, excludeSelf, circleOnly, cursor)
 	if err != nil {
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
 		return
@@ -99,8 +109,12 @@ func (h *Handler) GetHomeFeed(c *gin.Context) {
 	if err != nil {
 		// Log but don't fail — return raw feed items as fallback
 		log.Printf("Warning: post hydration failed: %v", err)
+		var meta *api.Meta
+		if len(feedItems) >= limit {
+			meta = &api.Meta{NextCursor: feedItems[len(feedItems)-1].CreatedAt.UTC().Format(time.RFC3339Nano)}
+		}
 		c.Writer.Header().Set("X-Feed-Mode", feedMode)
-		api.JSON(c.Writer, http.StatusOK, feedItems, nil)
+		api.JSON(c.Writer, http.StatusOK, feedItems, meta)
 		return
 	}
 
@@ -123,7 +137,11 @@ func (h *Handler) GetHomeFeed(c *gin.Context) {
 	}
 
 	c.Writer.Header().Set("X-Feed-Mode", feedMode)
-	api.JSON(c.Writer, http.StatusOK, hydrated, nil)
+	var meta *api.Meta
+	if len(feedItems) >= limit {
+		meta = &api.Meta{NextCursor: feedItems[len(feedItems)-1].CreatedAt.UTC().Format(time.RFC3339Nano)}
+	}
+	api.JSON(c.Writer, http.StatusOK, hydrated, meta)
 }
 
 func (h *Handler) GetReelFeed(c *gin.Context) {

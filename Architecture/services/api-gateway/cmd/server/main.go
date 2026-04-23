@@ -126,7 +126,7 @@ func main() {
 
 	coreHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Health check
-		if r.URL.Path == "/health" {
+		if r.URL.Path == "/health" || r.URL.Path == "/v1/health" {
 			w.Header().Set("Content-Type", "application/json")
 			w.Write([]byte(`{"status":"ok"}`))
 			return

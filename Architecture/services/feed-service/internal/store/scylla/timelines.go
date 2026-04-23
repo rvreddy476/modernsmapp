@@ -92,6 +92,39 @@ func (s *TimelineStore) GetHomeTimeline(ctx context.Context, userID uuid.UUID, l
 	return items, nil
 }
 
+// GetHomeTimelineBefore returns timeline items older than the provided timestamp.
+func (s *TimelineStore) GetHomeTimelineBefore(ctx context.Context, userID uuid.UUID, before time.Time, limit int) ([]FeedItem, error) {
+	b := bucket(before.UTC())
+
+	iter := s.session.Query(`
+		SELECT post_id, author_id, created_at, content_type FROM home_timeline_by_user
+		WHERE user_id = ? AND bucket = ? AND ts < ?
+		ORDER BY ts DESC
+		LIMIT ?
+	`, toGocql(userID), b, gocql.UUIDFromTime(before.UTC()), limit).Iter()
+
+	var items []FeedItem
+	var pid, aid gocql.UUID
+	var createdAt time.Time
+	var contentType *string
+	for iter.Scan(&pid, &aid, &createdAt, &contentType) {
+		ct := "post"
+		if contentType != nil && *contentType != "" {
+			ct = *contentType
+		}
+		items = append(items, FeedItem{
+			PostID:      uuid.UUID(pid),
+			AuthorID:    uuid.UUID(aid),
+			CreatedAt:   createdAt,
+			ContentType: ct,
+		})
+	}
+	if err := iter.Close(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 // GetHomeTimelineByContentType returns timeline items filtered to a single
 // content_type. Over-fetches and filters in Go since content_type is not a
 // clustering key. The partition scan is bounded by (user_id, bucket).

@@ -246,9 +246,35 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
     return ListView.builder(
       controller: _scrollController,
       padding: AppSpacing.pagePadding.copyWith(bottom: 14),
-      itemCount: state.messages.length,
+      itemCount: state.messages.length + (state.hasReachedEnd ? 0 : 1),
       itemBuilder: (context, index) {
-        final message = state.messages[index];
+        if (!state.hasReachedEnd && index == 0) {
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Center(
+              child: TextButton.icon(
+                onPressed: state.isLoadingOlder
+                    ? null
+                    : () => ref
+                        .read(chatMessagesProvider(widget.conversationId).notifier)
+                        .loadOlderMessages(),
+                icon: state.isLoadingOlder
+                    ? const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.keyboard_arrow_up_rounded),
+                label: Text(
+                  state.isLoadingOlder ? 'Loading' : 'Older messages',
+                ),
+              ),
+            ),
+          );
+        }
+
+        final messageIndex = state.hasReachedEnd ? index : index - 1;
+        final message = state.messages[messageIndex];
         final isMine = message.senderId == currentUserId;
         return RepaintBoundary(
           child: Padding(

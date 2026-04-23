@@ -206,6 +206,43 @@ var Templates = map[string]NotificationTemplate{
 		EventType: "system.report_result", TitleTemplate: "Your report has been reviewed",
 		Icon: "system", Priority: "medium", PushEligible: true, CanAggregate: false,
 	},
+
+	// === Commerce ===
+	"commerce.order.created": {
+		EventType: "commerce.order.created", TitleTemplate: "Order {order_number} placed",
+		BodyTemplate: "We've received your order. Total: ₹{amount}.",
+		Icon: "system", Priority: "high", PushEligible: true, CanAggregate: false,
+	},
+	"commerce.order.paid": {
+		EventType: "commerce.order.paid", TitleTemplate: "Payment received for order {order_number}",
+		BodyTemplate: "Your payment of ₹{amount} was successful.",
+		Icon: "system", Priority: "high", PushEligible: true, CanAggregate: false,
+	},
+	"commerce.order.shipped": {
+		EventType: "commerce.order.shipped", TitleTemplate: "Order {order_number} is on its way",
+		BodyTemplate: "Tracking: {tracking_number} via {courier}.",
+		Icon: "system", Priority: "high", PushEligible: true, CanAggregate: false,
+	},
+	"commerce.order.delivered": {
+		EventType: "commerce.order.delivered", TitleTemplate: "Order {order_number} delivered",
+		BodyTemplate: "Enjoy! Tap to review.",
+		Icon: "system", Priority: "high", PushEligible: true, CanAggregate: false,
+	},
+	"commerce.invoice.issued": {
+		EventType: "commerce.invoice.issued", TitleTemplate: "Invoice {invoice_number} issued",
+		BodyTemplate: "Your invoice for order {order_number} is ready.",
+		Icon: "system", Priority: "medium", PushEligible: false, CanAggregate: false,
+	},
+	"commerce.seller.new_order": {
+		EventType: "commerce.seller.new_order", TitleTemplate: "New order {order_number}",
+		BodyTemplate: "You have a new order worth ₹{amount}. Start packing!",
+		Icon: "system", Priority: "high", PushEligible: true, CanAggregate: false,
+	},
+	"commerce.return.requested": {
+		EventType: "commerce.return.requested", TitleTemplate: "Return requested for order {order_number}",
+		BodyTemplate: "Reason: {reason}",
+		Icon: "system", Priority: "medium", PushEligible: true, CanAggregate: false,
+	},
 }
 
 // GetTemplate returns the template for an event type, or a sensible default.

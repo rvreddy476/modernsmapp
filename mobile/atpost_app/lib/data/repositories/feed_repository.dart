@@ -19,11 +19,17 @@ class FeedRepository {
   Future<FeedPage> getHomeFeedPage({
     int limit = 20,
     String feedMode = 'ranked',
+    String platform = 'postbook',
+    bool excludeSelf = false,
+    bool circleOnly = false,
     String? cursor,
   }) async {
     final params = <String, dynamic>{
       'limit': limit,
       'feed_mode': feedMode,
+      'platform': platform,
+      if (excludeSelf) 'exclude_self': true,
+      if (circleOnly) 'circle_only': true,
     };
     if (cursor != null) params['cursor'] = cursor;
 
@@ -72,8 +78,22 @@ class FeedRepository {
   }
 
   /// Alias for compatibility with older tests.
-  Future<FeedPage> getHomeFeed({int limit = 20, String? cursor, String feedMode = 'ranked'}) =>
-      getHomeFeedPage(limit: limit, cursor: cursor, feedMode: feedMode);
+  Future<FeedPage> getHomeFeed({
+    int limit = 20,
+    String? cursor,
+    String feedMode = 'ranked',
+    String platform = 'postbook',
+    bool excludeSelf = false,
+    bool circleOnly = false,
+  }) =>
+      getHomeFeedPage(
+        limit: limit,
+        cursor: cursor,
+        feedMode: feedMode,
+        platform: platform,
+        excludeSelf: excludeSelf,
+        circleOnly: circleOnly,
+      );
 
   /// Fetch specialized feeds (Reels, Videos).
   /// (Note: These might use specific paths based on the spec extension)

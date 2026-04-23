@@ -140,6 +140,7 @@ class JoinResponse {
   final String callId;
   final String sfuToken;
   final String sfuRoomName;
+  final String sfuProvider;
   final List<ICEServer> iceServers;
   final String signalingEndpoint;
   final int reconnectGraceSeconds;
@@ -148,16 +149,24 @@ class JoinResponse {
     required this.callId,
     required this.sfuToken,
     required this.sfuRoomName,
+    required this.sfuProvider,
     required this.iceServers,
     required this.signalingEndpoint,
     required this.reconnectGraceSeconds,
   });
+
+  bool get usesStubSfu {
+    return sfuProvider == 'stub' ||
+        sfuToken.startsWith('stub-token-') ||
+        sfuRoomName.startsWith('stub-room-');
+  }
 
   factory JoinResponse.fromJson(Map<String, dynamic> json) {
     return JoinResponse(
       callId: json['call_id'] as String? ?? '',
       sfuToken: json['sfu_token'] as String? ?? '',
       sfuRoomName: json['sfu_room_name'] as String? ?? '',
+      sfuProvider: json['sfu_provider'] as String? ?? '',
       iceServers:
           (json['ice_servers'] as List<dynamic>?)
               ?.map((item) => ICEServer.fromJson(item as Map<String, dynamic>))

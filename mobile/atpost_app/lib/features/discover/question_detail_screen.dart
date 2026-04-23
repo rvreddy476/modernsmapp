@@ -16,12 +16,7 @@ class QuestionDetailScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final questionAsync = ref.watch(qaQuestionDetailProvider(questionId));
-    final answersAsync = ref.watch(
-      qaQuestionAnswersProvider(
-        QaQuestionAnswersParams(questionId: questionId),
-      ),
-    );
+    final detailAsync = ref.watch(questionDetailProvider(questionId));
 
     return Scaffold(
       backgroundColor: AppColors.bgPrimary,
@@ -30,152 +25,131 @@ class QuestionDetailScreen extends ConsumerWidget {
         foregroundColor: AppColors.textPrimary,
         title: Text('Question', style: AppTextStyles.h3),
       ),
-      body: questionAsync.when(
+      body: detailAsync.when(
         loading: () => const Center(
           child: CircularProgressIndicator(color: AppColors.postbookPrimary),
         ),
         error: (_, _) => Center(
           child: Text('Could not load question', style: AppTextStyles.body),
         ),
-        data: (question) => RefreshIndicator(
-          color: AppColors.postbookPrimary,
-          onRefresh: () async {
-            ref.invalidate(qaQuestionDetailProvider(questionId));
-            ref.invalidate(
-              qaQuestionAnswersProvider(
-                QaQuestionAnswersParams(questionId: questionId),
-              ),
-            );
-          },
-          child: ListView(
-            padding: AppSpacing.pagePadding.copyWith(bottom: 120, top: 12),
-            children: [
-              if (question.community != null)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 10),
-                  child: Wrap(
+        data: (detail) {
+          final question = detail.question;
+          final answers = detail.answers;
+
+          return RefreshIndicator(
+            color: AppColors.postbookPrimary,
+            onRefresh: () async {
+              ref.invalidate(questionDetailProvider(questionId));
+            },
+            child: ListView(
+              padding: AppSpacing.pagePadding.copyWith(bottom: 120, top: 12),
+              children: [
+                if (question.community != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        _LinkChip(
+                          label: question.community!.name,
+                          color: AppColors.posttubePrimary,
+                          onTap: () => context.push(
+                            '/communities/${question.community!.id}',
+                          ),
+                        ),
+                        _LinkChip(
+                          label: question.status,
+                          color: question.isAnswered
+                              ? AppColors.statusSuccess
+                              : AppColors.accentPurple,
+                        ),
+                      ],
+                    ),
+                  ),
+                Text(question.title, style: AppTextStyles.h1),
+                const SizedBox(height: 12),
+                Text(
+                  _questionBody(question.body, question.bodyHtml),
+                  style: AppTextStyles.body.copyWith(
+                    color: AppColors.textPrimary,
+                    height: 1.65,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                if (question.topicObjects.isNotEmpty)
+                  Wrap(
                     spacing: 8,
                     runSpacing: 8,
+                    children: question.topicObjects
+                        .map(
+                          (topic) => _LinkChip(
+                            label: '#${topic.slug}',
+                            color: AppColors.postbookPrimary,
+                            onTap: () {
+                              Navigator.of(context).push(
+                                MaterialPageRoute<void>(
+                                  builder: (_) =>
+                                      TopicDetailScreen(topicId: topic.id),
+                                ),
+                              );
+                            },
+                          ),
+                        )
+                        .toList(),
+                  ),
+                const SizedBox(height: 18),
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: AppColors.bgCard,
+                    borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
+                    border: Border.all(color: AppColors.borderSubtle),
+                  ),
+                  child: Row(
                     children: [
-                      _LinkChip(
-                        label: question.community!.name,
-                        color: AppColors.posttubePrimary,
-                        onTap: () => context.push(
-                          '/communities/${question.community!.id}',
-                        ),
+                      _QuestionStat(
+                        label: 'Score',
+                        value: question.voteScore.toString(),
                       ),
-                      _LinkChip(
-                        label: question.status,
-                        color: question.isAnswered
-                            ? AppColors.statusSuccess
-                            : AppColors.accentPurple,
+                      _QuestionStat(
+                        label: 'Answers',
+                        value: question.answerCount.toString(),
+                      ),
+                      _QuestionStat(
+                        label: 'Views',
+                        value: question.viewCount.toString(),
+                      ),
+                      const Spacer(),
+                      Text(
+                        relativeQaTime(question.createdAt),
+                        style: AppTextStyles.labelSmall.copyWith(
+                          color: AppColors.textMuted,
+                        ),
                       ),
                     ],
                   ),
                 ),
-              Text(question.title, style: AppTextStyles.h1),
-              const SizedBox(height: 12),
-              Text(
-                _questionBody(question.body, question.bodyHtml),
-                style: AppTextStyles.body.copyWith(
-                  color: AppColors.textPrimary,
-                  height: 1.65,
-                ),
-              ),
-              const SizedBox(height: 16),
-              if (question.topics.isNotEmpty)
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: question.topics
-                      .map(
-                        (topic) => _LinkChip(
-                          label: '#${topic.slug}',
-                          color: AppColors.postbookPrimary,
-                          onTap: () {
-                            Navigator.of(context).push(
-                              MaterialPageRoute<void>(
-                                builder: (_) =>
-                                    TopicDetailScreen(topicId: topic.id),
-                              ),
-                            );
-                          },
-                        ),
-                      )
-                      .toList(),
-                ),
-              const SizedBox(height: 18),
-              Container(
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: AppColors.bgCard,
-                  borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
-                  border: Border.all(color: AppColors.borderSubtle),
-                ),
-                child: Row(
-                  children: [
-                    _QuestionStat(
-                      label: 'Score',
-                      value: question.voteScore.toString(),
-                    ),
-                    _QuestionStat(
-                      label: 'Answers',
-                      value: question.answerCount.toString(),
-                    ),
-                    _QuestionStat(
-                      label: 'Views',
-                      value: question.viewCount.toString(),
-                    ),
-                    const Spacer(),
-                    Text(
-                      relativeQaTime(question.createdAt),
-                      style: AppTextStyles.labelSmall.copyWith(
-                        color: AppColors.textMuted,
+                const SizedBox(height: 22),
+                Text('Answers', style: AppTextStyles.h2),
+                const SizedBox(height: 12),
+                if (answers.isEmpty)
+                  Container(
+                    padding: const EdgeInsets.all(18),
+                    decoration: BoxDecoration(
+                      color: AppColors.bgCard,
+                      borderRadius: BorderRadius.circular(
+                        AppSpacing.radiusLarge,
                       ),
+                      border: Border.all(color: AppColors.borderSubtle),
                     ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 22),
-              Text('Answers', style: AppTextStyles.h2),
-              const SizedBox(height: 12),
-              answersAsync.when(
-                loading: () => const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 20),
-                  child: Center(
-                    child: CircularProgressIndicator(
-                      color: AppColors.postbookPrimary,
-                    ),
-                  ),
-                ),
-                error: (_, _) => Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 20),
-                  child: Center(
                     child: Text(
-                      'Could not load answers',
+                      'No answers yet. This question is still waiting for the right contributor.',
                       style: AppTextStyles.body,
                     ),
-                  ),
-                ),
-                data: (answers) {
-                  if (answers.isEmpty) {
-                    return Container(
-                      padding: const EdgeInsets.all(18),
-                      decoration: BoxDecoration(
-                        color: AppColors.bgCard,
-                        borderRadius: BorderRadius.circular(
-                          AppSpacing.radiusLarge,
-                        ),
-                        border: Border.all(color: AppColors.borderSubtle),
-                      ),
-                      child: Text(
-                        'No answers yet. This question is still waiting for the right contributor.',
-                        style: AppTextStyles.body,
-                      ),
-                    );
-                  }
-
-                  return Column(
+                  )
+                else
+                  Column(
                     children: answers
                         .map(
                           (answer) => Padding(
@@ -184,12 +158,11 @@ class QuestionDetailScreen extends ConsumerWidget {
                           ),
                         )
                         .toList(),
-                  );
-                },
-              ),
-            ],
-          ),
-        ),
+                  ),
+              ],
+            ),
+          );
+        },
       ),
     );
   }
@@ -250,7 +223,7 @@ class _QuestionStat extends StatelessWidget {
 }
 
 class _AnswerCard extends StatelessWidget {
-  final QaAnswer answer;
+  final Answer answer;
 
   const _AnswerCard({required this.answer});
 
@@ -264,7 +237,7 @@ class _AnswerCard extends StatelessWidget {
         color: AppColors.bgCard,
         borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
         border: Border.all(
-          color: answer.isBest == true
+          color: answer.isAccepted
               ? AppColors.statusSuccess.withValues(alpha: 0.35)
               : AppColors.borderSubtle,
         ),
@@ -276,7 +249,7 @@ class _AnswerCard extends StatelessWidget {
             spacing: 8,
             runSpacing: 8,
             children: [
-              if (answer.isBest == true)
+              if (answer.isAccepted)
                 const _LinkChip(
                   label: 'Best answer',
                   color: AppColors.statusSuccess,

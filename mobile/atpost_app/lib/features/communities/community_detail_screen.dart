@@ -5,13 +5,14 @@ import 'package:atpost_app/data/models/community.dart';
 import 'package:atpost_app/data/models/qa.dart';
 import 'package:atpost_app/data/repositories/communities_repository.dart';
 import 'package:atpost_app/data/repositories/community_posts_repository.dart';
-import 'package:atpost_app/features/discover/question_detail_screen.dart';
+import 'package:atpost_app/features/qa/question_detail_screen.dart';
 import 'package:atpost_app/features/discover/qa_question_tile.dart';
 import 'package:atpost_app/providers/communities_provider.dart';
 import 'package:atpost_app/providers/community_posts_provider.dart';
 import 'package:atpost_app/providers/qa_provider.dart';
 import 'package:atpost_app/shared/widgets/community_post_card.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -311,10 +312,11 @@ class _CommunityDetailScreenState extends ConsumerState<CommunityDetailScreen>
                       _ActionIconButton(
                         icon: Icons.notifications_outlined,
                         onTap: () {
+                          context.push('/settings/notifications');
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(
                               content: Text(
-                                'Notification preferences coming soon.',
+                                'Opened notification settings.',
                               ),
                             ),
                           );
@@ -323,10 +325,16 @@ class _CommunityDetailScreenState extends ConsumerState<CommunityDetailScreen>
                       const SizedBox(width: 8),
                       _ActionIconButton(
                         icon: Icons.repeat_rounded,
-                        onTap: () {
+                        onTap: () async {
+                          await Clipboard.setData(
+                            ClipboardData(
+                              text: 'https://cleestudio.com/communities/${community.handle}',
+                            ),
+                          );
+                          if (!context.mounted) return;
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(
-                              content: Text('Echo community coming soon.'),
+                              content: Text('Community link copied.'),
                             ),
                           );
                         },
@@ -776,7 +784,7 @@ class _CommunityQuestionsViewState
                         (question) => Padding(
                           padding: const EdgeInsets.only(bottom: 12),
                           child: QaQuestionTile(
-                            question: question,
+                            question: question.toSummary(),
                             onTap: () {
                               Navigator.of(context).push(
                                 MaterialPageRoute<void>(

@@ -351,6 +351,7 @@ func (s *Service) JoinCall(ctx context.Context, userID, callID uuid.UUID) (*Join
 		CallID:                callID,
 		SFUToken:              token,
 		SFURoomName:           room.ProviderRoomName,
+		SFUProvider:           room.Provider,
 		ICEServers:            s.sfuProvider.GetICEServers(),
 		SignalingEndpoint:     s.signalingEndpoint,
 		ReconnectGraceSeconds: s.reconnectGraceSeconds,

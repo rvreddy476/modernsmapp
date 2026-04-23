@@ -24,5 +24,12 @@ technicaldesign/
 # Temp files
 .tmp/
 
+# Build caches
+.gocache/
+__pycache__/
+
+# Environment files
+Architecture/docker/.env
+
 # Prompt/spec files
 prompt/

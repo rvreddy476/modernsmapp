@@ -83,9 +83,29 @@ class _CommentsScreenState extends ConsumerState<CommentsScreen> {
       ),
     );
     if (confirmed == true) {
-      // NOTE: delete comment endpoint not yet exposed in PostRepository.
-      // Invalidate to refresh after any future deletion.
+      try {
+        await ref.read(postRepositoryProvider).deleteComment(comment.id);
+        ref.invalidate(commentsProvider(widget.postId));
+      } catch (_) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Failed to delete comment.')),
+          );
+        }
+      }
+    }
+  }
+
+  Future<void> _toggleCommentLike(Comment comment) async {
+    try {
+      await ref.read(postRepositoryProvider).toggleCommentLike(comment.id);
       ref.invalidate(commentsProvider(widget.postId));
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Failed to update comment reaction.')),
+        );
+      }
     }
   }
 
@@ -163,21 +183,33 @@ class _CommentsScreenState extends ConsumerState<CommentsScreen> {
                   const SizedBox(height: AppSpacing.s),
 
                   // Like count
-                  if (comment.likeCount > 0)
-                    Row(
-                      children: [
-                        const Icon(
-                          Icons.favorite_rounded,
-                          size: 13,
-                          color: AppColors.postgramPrimary,
-                        ),
-                        const SizedBox(width: AppSpacing.xs),
-                        Text(
-                          '${comment.likeCount}',
-                          style: AppTextStyles.labelSmall,
-                        ),
-                      ],
+                  InkWell(
+                    onTap: () => _toggleCommentLike(comment),
+                    borderRadius: BorderRadius.circular(999),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 2,
+                        vertical: 4,
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(
+                            Icons.favorite_border_rounded,
+                            size: 14,
+                            color: AppColors.textMuted,
+                          ),
+                          if (comment.likeCount > 0) ...[
+                            const SizedBox(width: AppSpacing.xs),
+                            Text(
+                              '${comment.likeCount}',
+                              style: AppTextStyles.labelSmall,
+                            ),
+                          ],
+                        ],
+                      ),
                     ),
+                  ),
                 ],
               ),
             ),

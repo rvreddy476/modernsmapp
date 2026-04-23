@@ -59,7 +59,7 @@ void main() {
 
       await repo.followUser('target-user');
 
-      verify(() => mockApi.post(any(), data: {'followee_id': 'target-user'})).called(1);
+      verify(() => mockApi.post('/v1/graph/follow', data: {'user_id': 'target-user'})).called(1);
     });
 
     test('unfollowUser calls correct endpoint with data', () async {
@@ -68,12 +68,12 @@ void main() {
 
       await repo.unfollowUser('target-user');
 
-      verify(() => mockApi.post(any(), data: {'followee_id': 'target-user'})).called(1);
+      verify(() => mockApi.post('/v1/graph/unfollow', data: {'user_id': 'target-user'})).called(1);
     });
   });
 
   group('getUsersBatch', () {
-    test('returns list of users from batch endpoint', () async {
+    test('returns list of users from legacy profiles list response', () async {
       when(() => mockApi.post(any(), data: any(named: 'data')))
           .thenAnswer((_) async => mockResponse(data: {
                 'profiles': [
@@ -87,7 +87,19 @@ void main() {
       expect(users[0].id, 'u1');
     });
 
-    test('returns empty list when profiles is null', () async {
+    test('returns list of users from raw map response', () async {
+      when(() => mockApi.post(any(), data: any(named: 'data')))
+          .thenAnswer((_) async => mockResponse(data: {
+                'u1': {'id': 'u1', 'username': 'a', 'display_name': 'A'},
+                'u2': {'id': 'u2', 'username': 'b', 'display_name': 'B'},
+              }));
+
+      final users = await repo.getUsersBatch(['u1', 'u2']);
+      expect(users.length, 2);
+      expect(users[1].id, 'u2');
+    });
+
+    test('returns empty list when profiles are missing', () async {
       when(() => mockApi.post(any(), data: any(named: 'data')))
           .thenAnswer((_) async => mockResponse(data: {}));
 

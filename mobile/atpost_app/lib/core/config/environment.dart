@@ -12,6 +12,7 @@ class Environment {
   /// Set to a domain (e.g. "cleestudio.com") to use external HTTPS endpoints.
   /// Leave null for local development with direct service ports.
   static String? externalDomain = 'cleestudio.com';
+  static String? postMatchBaseUrlOverride;
 
   // Resolve host: Android emulator uses 10.0.2.2, everything else uses localhost
   static String get _host {
@@ -28,20 +29,20 @@ class Environment {
     return 'http://$_host:8080';
   }
 
+  static String get postMatchBaseUrl {
+    final override = postMatchBaseUrlOverride?.trim();
+    if (override != null && override.isNotEmpty) {
+      return override;
+    }
+    if (externalDomain != null) return 'https://$externalDomain';
+    return 'http://$_host:8090';
+  }
+
   static Uri get wsGatewayUri {
     if (externalDomain != null) {
-      return Uri(
-        scheme: 'wss',
-        host: externalDomain!,
-        path: '/v1/ws/connect',
-      );
+      return Uri(scheme: 'wss', host: externalDomain!, path: '/v1/ws/connect');
     }
-    return Uri(
-      scheme: 'ws',
-      host: _host,
-      port: 8093,
-      path: '/v1/ws/connect',
-    );
+    return Uri(scheme: 'ws', host: _host, port: 8093, path: '/v1/ws/connect');
   }
 
   static Uri buildWsGatewayUri([Map<String, String>? queryParameters]) {

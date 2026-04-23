@@ -11,19 +11,21 @@ class ReactionPicker extends StatelessWidget {
   final Function(String emoji) onReactionSelected;
 
   static const List<String> _emojis = [
-    '\u2764\uFE0F', '\uD83D\uDD25', '\uD83D\uDE02', '\uD83D\uDE2E',
-    '\uD83D\uDE22', '\uD83D\uDC4F', '\uD83D\uDE4C', '\uD83D\uDCAF'
+    '\uD83D\uDC4D',
+    '\u2764\uFE0F',
+    '\uD83D\uDE02',
+    '\uD83D\uDE2E',
+    '\uD83D\uDE22',
+    '\uD83D\uDE20',
   ];
 
   static const Map<String, String> _emojiLabels = {
+    '\uD83D\uDC4D': 'Like',
     '\u2764\uFE0F': 'Love',
-    '\uD83D\uDD25': 'Fire',
     '\uD83D\uDE02': 'Laugh',
     '\uD83D\uDE2E': 'Wow',
     '\uD83D\uDE22': 'Sad',
-    '\uD83D\uDC4F': 'Clap',
-    '\uD83D\uDE4C': 'Celebrate',
-    '\uD83D\uDCAF': 'Hundred',
+    '\uD83D\uDE20': 'Angry',
   };
 
   @override

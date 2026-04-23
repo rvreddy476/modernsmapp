@@ -12,6 +12,7 @@ import (
 	"github.com/atpost/notification-service/internal/push"
 	"github.com/atpost/notification-service/internal/store/postgres"
 	"github.com/atpost/notification-service/internal/store/scylla"
+	"github.com/atpost/shared/mailer"
 	"github.com/gocql/gocql"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -22,6 +23,7 @@ type Service struct {
 	pgStore     *postgres.Store
 	rdb         *redis.Client
 	pusher      push.Pusher
+	mail        mailer.Mailer
 }
 
 func New(scyllaStore *scylla.NotificationStore, rdb *redis.Client) *Service {
@@ -38,6 +40,26 @@ func (s *Service) SetPGStore(pg *postgres.Store) {
 // SetPusher sets the push notification dispatcher.
 func (s *Service) SetPusher(p push.Pusher) {
 	s.pusher = p
+}
+
+// SetMailer wires the transactional email transport.
+func (s *Service) SetMailer(m mailer.Mailer) {
+	s.mail = m
+}
+
+// SendEmail renders an HTML template via mailer.Render and dispatches it.
+// Safe no-op when mailer is unconfigured or recipient is empty.
+func (s *Service) SendEmail(ctx context.Context, to, htmlTemplate string, data any) error {
+	if s.mail == nil || to == "" {
+		return nil
+	}
+	subject, body, err := mailer.Render(htmlTemplate, data)
+	if err != nil {
+		return err
+	}
+	return s.mail.Send(ctx, mailer.Message{
+		To: []string{to}, Subject: subject, HTMLBody: body,
+	})
 }
 
 // CreateNotification

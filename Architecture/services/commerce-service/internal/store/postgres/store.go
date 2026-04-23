@@ -509,6 +509,40 @@ func (s *Store) GetOrdersByCustomer(ctx context.Context, userID uuid.UUID, limit
 	return orders, total, nil
 }
 
+// GetOrdersBySeller returns orders containing at least one item sold by the given seller.
+func (s *Store) GetOrdersBySeller(ctx context.Context, sellerID uuid.UUID, limit, offset int) ([]*Order, int, error) {
+	var total int
+	_ = s.db.QueryRow(ctx, `
+		SELECT COUNT(DISTINCT o.id) FROM orders o
+		JOIN order_items oi ON oi.order_id = o.id
+		WHERE oi.seller_id = $1
+	`, sellerID).Scan(&total)
+
+	rows, err := s.db.Query(ctx, `
+		SELECT DISTINCT o.id, o.customer_user_id, o.order_number, o.final_amount, o.currency_code,
+			o.payment_status, o.status, o.created_at, o.updated_at
+		FROM orders o
+		JOIN order_items oi ON oi.order_id = o.id
+		WHERE oi.seller_id = $1
+		ORDER BY o.created_at DESC
+		LIMIT $2 OFFSET $3
+	`, sellerID, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	var orders []*Order
+	for rows.Next() {
+		var o Order
+		if err := rows.Scan(&o.ID, &o.CustomerUserID, &o.OrderNumber, &o.FinalAmount,
+			&o.CurrencyCode, &o.PaymentStatus, &o.Status, &o.CreatedAt, &o.UpdatedAt); err != nil {
+			return nil, 0, err
+		}
+		orders = append(orders, &o)
+	}
+	return orders, total, nil
+}
+
 func (s *Store) UpdateOrderStatus(ctx context.Context, orderID uuid.UUID, toStatus string, actorID *uuid.UUID, actorType, notes string) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -579,6 +613,43 @@ func (s *Store) CreateAddress(ctx context.Context, addr *CustomerAddress) error 
 		addr.AddressType, addr.IsDefault, addr.CreatedAt,
 	)
 	return err
+}
+
+// TaxClass holds GST percentages for a given class (e.g. "GST 18%").
+type TaxClass struct {
+	ID              uuid.UUID `db:"id"`
+	Name            string    `db:"name"`
+	CGSTPercentage  float64   `db:"cgst_percentage"`
+	SGSTPercentage  float64   `db:"sgst_percentage"`
+	IGSTPercentage  float64   `db:"igst_percentage"`
+	CESSPercentage  float64   `db:"cess_percentage"`
+}
+
+func (s *Store) GetTaxClass(ctx context.Context, id uuid.UUID) (*TaxClass, error) {
+	tc := &TaxClass{}
+	err := s.db.QueryRow(ctx, `
+		SELECT id, name, cgst_percentage, sgst_percentage, igst_percentage, cess_percentage
+		FROM tax_classes WHERE id = $1
+	`, id).Scan(&tc.ID, &tc.Name, &tc.CGSTPercentage, &tc.SGSTPercentage, &tc.IGSTPercentage, &tc.CESSPercentage)
+	if err != nil {
+		return nil, err
+	}
+	return tc, nil
+}
+
+func (s *Store) GetAddressByID(ctx context.Context, id uuid.UUID) (*CustomerAddress, error) {
+	a := &CustomerAddress{}
+	err := s.db.QueryRow(ctx, `SELECT id,user_id,label,contact_name,phone,address_line_1,
+		address_line_2,landmark,city,state,country,postal_code,address_type,is_default,created_at
+		FROM customer_addresses WHERE id=$1`, id).Scan(
+		&a.ID, &a.UserID, &a.Label, &a.ContactName, &a.Phone, &a.AddressLine1,
+		&a.AddressLine2, &a.Landmark, &a.City, &a.State, &a.Country, &a.PostalCode,
+		&a.AddressType, &a.IsDefault, &a.CreatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return a, nil
 }
 
 func (s *Store) GetAddressesByUser(ctx context.Context, userID uuid.UUID) ([]*CustomerAddress, error) {

@@ -1,73 +1,50 @@
+import 'package:atpost_app/core/config/environment.dart';
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/models/post.dart';
 import 'package:atpost_app/data/repositories/post_repository.dart';
-import 'package:atpost_app/shared/widgets/reaction_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
-class ActionPillButton extends StatelessWidget {
-  const ActionPillButton({
-    super.key,
-    required this.icon,
-    required this.label,
-    this.active = false,
-    this.onTap,
-    this.onLongPress,
-  });
-
-  final IconData icon;
-  final String label;
-  final bool active;
-  final VoidCallback? onTap;
-  final VoidCallback? onLongPress;
-
-  @override
-  Widget build(BuildContext context) {
-    final color = active ? AppColors.postbookPrimary : AppColors.textMuted;
-    return Semantics(
-      button: true,
-      label: '$label${active ? ", selected" : ""}',
-      child: Tooltip(
-        message: label,
-        child: GestureDetector(
-          onTap: onTap,
-          onLongPress: onLongPress,
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.05),
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: AppColors.borderSubtle),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                ExcludeSemantics(child: Icon(icon, size: 15, color: color)),
-                const SizedBox(width: 6),
-                ExcludeSemantics(
-                  child: Text(label, style: AppTextStyles.label.copyWith(color: color)),
-                ),
-              ],
-            ),
-          )
-              .animate()
-              .scale(duration: 100.ms, begin: const Offset(1, 1), end: const Offset(1.02, 1.02)),
-        ),
-      ),
-    );
-  }
-}
-
-class PostCard extends ConsumerWidget {
-  const PostCard({
-    super.key,
-    required this.post,
-  });
+class PostCard extends ConsumerStatefulWidget {
+  const PostCard({super.key, required this.post});
 
   final Post post;
+
+  @override
+  ConsumerState<PostCard> createState() => _PostCardState();
+}
+
+class _PostCardState extends ConsumerState<PostCard> {
+  late bool _liked;
+  late int _likeCount;
+  late int _shareCount;
+  bool _actionPending = false;
+
+  Post get post => widget.post;
+
+  @override
+  void initState() {
+    super.initState();
+    _liked = post.isLiked;
+    _likeCount = post.likeCount;
+    _shareCount = post.shareCount;
+  }
+
+  @override
+  void didUpdateWidget(PostCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.post.id != widget.post.id) {
+      _liked = widget.post.isLiked;
+      _likeCount = widget.post.likeCount;
+      _shareCount = widget.post.shareCount;
+      _actionPending = false;
+    }
+  }
 
   String _formatCount(int count) {
     if (count >= 1000000) return '${(count / 1000000).toStringAsFixed(1)}M';
@@ -75,12 +52,100 @@ class PostCard extends ConsumerWidget {
     return count.toString();
   }
 
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final repo = ref.watch(postRepositoryProvider);
+  String get _postLink {
+    final base = Environment.externalDomain == null
+        ? Environment.apiBaseUrl
+        : 'https://${Environment.externalDomain}';
+    return '$base/posts/${post.id}';
+  }
 
-    return Semantics(
-      label: 'Post by ${post.authorName ?? "Anonymous"}',
+  Future<void> _toggleReaction() async {
+    if (_actionPending) return;
+
+    final previousLiked = _liked;
+    final previousCount = _likeCount;
+    setState(() {
+      _actionPending = true;
+      _liked = !_liked;
+      _likeCount += _liked ? 1 : -1;
+      if (_likeCount < 0) _likeCount = 0;
+    });
+
+    try {
+      await ref.read(postRepositoryProvider).toggleReaction(post.id);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _liked = previousLiked;
+        _likeCount = previousCount;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not update reaction.')),
+      );
+    } finally {
+      if (mounted) setState(() => _actionPending = false);
+    }
+  }
+
+  Future<void> _sharePost() async {
+    await Clipboard.setData(ClipboardData(text: _postLink));
+    if (!mounted) return;
+
+    setState(() => _shareCount += 1);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Post link copied.')),
+    );
+
+    try {
+      await ref.read(postRepositoryProvider).sharePost(post.id);
+    } catch (_) {
+      if (mounted && _shareCount > 0) setState(() => _shareCount -= 1);
+    }
+  }
+
+  Future<void> _reportPost() async {
+    final reason = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: AppColors.bgSecondary,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: const [
+            _ReportReasonTile(label: 'Spam', value: 'spam'),
+            _ReportReasonTile(label: 'Harassment', value: 'harassment'),
+            _ReportReasonTile(label: 'Hate speech', value: 'hate_speech'),
+            _ReportReasonTile(label: 'Violence', value: 'violence'),
+            _ReportReasonTile(label: 'Nudity', value: 'nudity'),
+            _ReportReasonTile(label: 'Misinformation', value: 'misinformation'),
+            _ReportReasonTile(label: 'Other', value: 'other'),
+          ],
+        ),
+      ),
+    );
+    if (reason == null) return;
+
+    try {
+      await ref.read(postRepositoryProvider).submitReport(
+            targetType: post.isReel ? 'reel' : (post.isVideo ? 'video' : 'post'),
+            targetId: post.id,
+            reason: reason,
+          );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Report submitted.')),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not submit report.')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // PRODUCTION OPTIMIZATION: RepaintBoundary isolates this complex card from other screen repaints.
+    return RepaintBoundary(
       child: Container(
         margin: const EdgeInsets.only(bottom: 14),
         padding: const EdgeInsets.all(16),
@@ -92,113 +157,142 @@ class PostCard extends ConsumerWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                Semantics(
-                  image: true,
-                  label: 'Profile photo of ${post.authorName ?? "user"}',
-                  child: Container(
-                    width: 40,
-                    height: 40,
-                    decoration: BoxDecoration(
-                      color: AppColors.bgTertiary,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Center(
-                      child: post.authorAvatar != null
-                          ? ClipRRect(
-                              borderRadius: BorderRadius.circular(12),
-                              child: Image.network(
-                                post.authorAvatar!,
-                                semanticLabel: 'Profile photo of ${post.authorName ?? "user"}',
-                              ),
-                            )
-                          : ExcludeSemantics(
-                              child: Text(post.authorName?.substring(0, 1) ?? '?', style: AppTextStyles.h3),
-                            ),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(post.authorName ?? 'Anonymous', style: AppTextStyles.h3),
-                      Text(
-                        '@${(post.authorName ?? 'user').toLowerCase().replaceAll(' ', '_')} \u2022 ${_timeAgo(post.createdAt)}',
-                        style: AppTextStyles.bodySmall.copyWith(color: AppColors.textDim),
-                      ),
-                    ],
-                  ),
-                ),
-                Semantics(
-                  button: true,
-                  label: 'More options',
-                  child: const Icon(Icons.more_horiz, color: AppColors.textMuted),
-                ),
-              ],
-            ),
+            _buildHeader(context),
             const SizedBox(height: 12),
             Text(post.content, style: AppTextStyles.body),
-            if (post.tags.isNotEmpty) ...[
-              const SizedBox(height: 10),
-              Wrap(
-                spacing: 8,
-                runSpacing: 6,
-                children: post.tags
-                    .map(
-                      (tag) => Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-                        decoration: BoxDecoration(
-                          color: AppColors.bgCard,
-                          borderRadius: BorderRadius.circular(999),
-                        ),
-                        child: Text(tag, style: AppTextStyles.tag),
-                      ),
-                    )
-                    .toList(),
-              ),
-            ],
+            if (post.tags.isNotEmpty) _buildTags(),
             const SizedBox(height: 12),
-            Row(
-              children: [
-                Builder(
-                  builder: (context) => ActionPillButton(
-                    icon: post.isLiked ? Icons.favorite : Icons.favorite_border,
-                    label: _formatCount(post.likeCount),
-                    active: post.isLiked,
-                    onTap: () => repo.toggleReaction(post.id),
-                    onLongPress: () {
-                      final RenderBox box = context.findRenderObject() as RenderBox;
-                      final position = box.localToGlobal(Offset.zero);
-                      showReactionPicker(context, position, (emoji) {
-                        repo.toggleReaction(post.id, emoji: emoji);
-                      });
-                    },
-                  ),
-                ),
-                const SizedBox(width: 8),
-                ActionPillButton(
-                  icon: Icons.chat_bubble_outline,
-                  label: _formatCount(post.commentCount),
-                  onTap: () {
-                    // Navigate to comments
-                  },
-                ),
-                const SizedBox(width: 8),
-                ActionPillButton(
-                  icon: Icons.reply,
-                  label: 'Share',
-                  onTap: () {
-                    // Share post
-                  },
-                ),
-              ],
-            ),
+            _buildActionRow(),
           ],
         ),
       ),
+    ).animate().fadeIn(duration: 400.ms).slideY(begin: 0.05, end: 0);
+  }
+
+  Widget _buildHeader(BuildContext context) {
+    return Row(
+      children: [
+        CircleAvatar(
+          radius: 20,
+          backgroundColor: AppColors.bgTertiary,
+          backgroundImage: post.authorAvatar != null
+              ? NetworkImage(post.authorAvatar!)
+              : null,
+          child: post.authorAvatar == null
+              ? Text(post.authorName?[0] ?? '?', style: AppTextStyles.h3)
+              : null,
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(post.authorName ?? 'Anonymous', style: AppTextStyles.h3),
+              Text(
+                '@${(post.authorName ?? 'user').toLowerCase().replaceAll(' ', '_')} \u2022 ${_timeAgo(post.createdAt)}',
+                style: AppTextStyles.bodySmall.copyWith(
+                  color: AppColors.textDim,
+                ),
+              ),
+            ],
+          ),
+        ),
+        _buildMoreMenu(context),
+      ],
+    );
+  }
+
+  Widget _buildMoreMenu(BuildContext context) {
+    return PopupMenuButton<String>(
+      color: AppColors.bgSecondary,
+      icon: const Icon(Icons.more_horiz, color: AppColors.textMuted),
+      onSelected: (value) {
+        switch (value) {
+          case 'copy':
+            Clipboard.setData(ClipboardData(text: _postLink));
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Post link copied.')),
+            );
+            return;
+          case 'report':
+            _reportPost();
+            return;
+        }
+      },
+      itemBuilder: (context) => [
+        const PopupMenuItem(value: 'copy', child: Text('Copy link')),
+        const PopupMenuItem(value: 'report', child: Text('Report')),
+      ],
+    );
+  }
+
+  Widget _buildTags() {
+    return Padding(
+      padding: const EdgeInsets.only(top: 10),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 6,
+        children: post.tags
+            .map(
+              (tag) => Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.05),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  '#$tag',
+                  style: AppTextStyles.tag.copyWith(
+                    color: AppColors.postbookPrimary,
+                  ),
+                ),
+              ),
+            )
+            .toList(),
+      ),
+    );
+  }
+
+  Widget _buildActionRow() {
+    return Row(
+      children: [
+        _ActionPill(
+          icon: _liked ? Icons.favorite : Icons.favorite_border,
+          label: _formatCount(_likeCount),
+          active: _liked,
+          onTap: _toggleReaction,
+        ),
+        const SizedBox(width: 8),
+        _ActionPill(
+          icon: Icons.chat_bubble_outline,
+          label: _formatCount(post.commentCount),
+          onTap: () => context.push('/comments/${post.id}'),
+        ),
+        const Spacer(),
+        InkWell(
+          onTap: _sharePost,
+          borderRadius: BorderRadius.circular(999),
+          child: Padding(
+            padding: const EdgeInsets.all(8),
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.share_outlined,
+                  size: 20,
+                  color: AppColors.textMuted,
+                ),
+                if (_shareCount > 0) ...[
+                  const SizedBox(width: 4),
+                  Text(
+                    _formatCount(_shareCount),
+                    style: AppTextStyles.labelSmall,
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -206,113 +300,119 @@ class PostCard extends ConsumerWidget {
     final diff = DateTime.now().difference(dt);
     if (diff.inDays > 0) return '${diff.inDays}d';
     if (diff.inHours > 0) return '${diff.inHours}h';
-    if (diff.inMinutes > 0) return '${diff.inMinutes}m';
-    return 'now';
+    return '${diff.inMinutes}m';
+  }
+}
+
+class _ReportReasonTile extends StatelessWidget {
+  const _ReportReasonTile({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      title: Text(label, style: AppTextStyles.body),
+      onTap: () => Navigator.of(context).pop(value),
+    );
   }
 }
 
 class ReelCard extends StatelessWidget {
+  final String title;
+  final String creator;
+  final String duration;
+  final VoidCallback onTap;
+
   const ReelCard({
     super.key,
     required this.title,
     required this.creator,
     required this.duration,
-    this.onTap,
+    required this.onTap,
   });
-
-  final String title;
-  final String creator;
-  final String duration;
-  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Semantics(
-      label: 'Reel: $title by $creator, $duration',
-      child: GestureDetector(
-        onTap: onTap,
-        child: Container(
-          margin: const EdgeInsets.only(bottom: 14),
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: AppColors.accentPurple.withValues(alpha: 0.08),
-            borderRadius: BorderRadius.circular(AppSpacing.radiusXL),
-            border: Border.all(color: AppColors.accentPurple.withValues(alpha: 0.2)),
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        height: 200,
+        margin: const EdgeInsets.only(bottom: 14),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(AppSpacing.radiusXL),
+          image: const DecorationImage(
+            image: NetworkImage(
+              'https://images.unsplash.com/photo-1611162617474-5b21e879e113?w=800&q=80',
+            ),
+            fit: BoxFit.cover,
           ),
-          child: Row(
-            children: [
-              Container(
-                width: 100,
-                height: 140,
-                decoration: BoxDecoration(
-                  gradient: const LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: [Color(0xFF2A1F3B), Color(0xFF161620)],
-                  ),
-                  borderRadius: BorderRadius.circular(14),
+        ),
+        child: Stack(
+          children: [
+            Container(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(AppSpacing.radiusXL),
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [Colors.transparent, Colors.black.withOpacity(0.8)],
                 ),
-                child: Stack(
-                  children: [
-                    Positioned(
-                      top: 8,
-                      left: 8,
-                      child: Container(
-                        padding:
-                            const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: AppColors.postgramPrimary.withValues(alpha: 0.2),
-                          borderRadius: BorderRadius.circular(999),
-                        ),
-                        child: Text(
-                          'POSTGRAM',
-                          style: AppTextStyles.labelTiny
-                              .copyWith(color: AppColors.postgramPrimary),
+              ),
+            ),
+            Positioned(
+              left: 16,
+              bottom: 16,
+              right: 16,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: AppTextStyles.h3.copyWith(color: Colors.white),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      Text(
+                        creator,
+                        style: AppTextStyles.bodySmall.copyWith(
+                          color: Colors.white70,
                         ),
                       ),
-                    ),
-                    Positioned(
-                      bottom: 8,
-                      right: 8,
-                      child: Container(
-                        padding:
-                            const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      const Spacer(),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 2,
+                        ),
                         decoration: BoxDecoration(
-                          color: Colors.black.withValues(alpha: 0.75),
-                          borderRadius: BorderRadius.circular(8),
+                          color: Colors.black54,
+                          borderRadius: BorderRadius.circular(4),
                         ),
                         child: Text(
                           duration,
-                          style: AppTextStyles.monoSmall.copyWith(
-                            color: Colors.white.withValues(alpha: 0.85),
+                          style: AppTextStyles.labelTiny.copyWith(
+                            color: Colors.white,
                           ),
                         ),
                       ),
-                    ),
-                  ],
-                ),
+                    ],
+                  ),
+                ],
               ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(title, style: AppTextStyles.h2),
-                    const SizedBox(height: 8),
-                    Text(creator, style: AppTextStyles.bodySmall),
-                    const SizedBox(height: 10),
-                    const Row(
-                      children: [
-                        Icon(Icons.favorite_border, size: 16, color: AppColors.textMuted),
-                        SizedBox(width: 4),
-                        Text('17.4K', style: TextStyle(color: AppColors.textMuted)),
-                      ],
-                    ),
-                  ],
-                ),
+            ),
+            const Center(
+              child: Icon(
+                Icons.play_circle_outline,
+                color: Colors.white,
+                size: 50,
               ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
@@ -320,94 +420,115 @@ class ReelCard extends StatelessWidget {
 }
 
 class VideoCard extends StatelessWidget {
+  final String title;
+  final String stats;
+  final VoidCallback onTap;
+
   const VideoCard({
     super.key,
     required this.title,
     required this.stats,
-    this.onTap,
+    required this.onTap,
   });
-
-  final String title;
-  final String stats;
-  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Semantics(
-      label: 'Video: $title, $stats',
-      child: GestureDetector(
-        onTap: onTap,
-        child: Container(
-          margin: const EdgeInsets.only(bottom: 14),
-          decoration: BoxDecoration(
-            color: AppColors.bgCard,
-            borderRadius: BorderRadius.circular(AppSpacing.radiusXL),
-            border: Border.all(color: AppColors.borderSubtle),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                height: 180,
-                decoration: const BoxDecoration(
-                  borderRadius: BorderRadius.vertical(top: Radius.circular(AppSpacing.radiusXL)),
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [Color(0xFF1D3A46), Color(0xFF13131E)],
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            AspectRatio(
+              aspectRatio: 16 / 9,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: AppColors.bgCard,
+                  borderRadius: BorderRadius.circular(AppSpacing.radiusXL),
+                  image: const DecorationImage(
+                    image: NetworkImage(
+                      'https://images.unsplash.com/photo-1492691527719-9d1e07e534b4?w=800&q=80',
+                    ),
+                    fit: BoxFit.cover,
                   ),
                 ),
-                child: Stack(
-                  children: [
-                    Positioned(
-                      top: 10,
-                      left: 10,
-                      child: Container(
-                        padding:
-                            const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: AppColors.posttubePrimary.withValues(alpha: 0.2),
-                          borderRadius: BorderRadius.circular(999),
-                        ),
-                        child: Text(
-                          'POSTTUBE',
-                          style: AppTextStyles.labelTiny
-                              .copyWith(color: AppColors.posttubePrimary),
-                        ),
-                      ),
-                    ),
-                    Center(
-                      child: Semantics(
-                        label: 'Play video',
-                        button: true,
-                        child: Container(
-                          width: 50,
-                          height: 50,
-                          decoration: BoxDecoration(
-                            color: Colors.white.withValues(alpha: 0.15),
-                            shape: BoxShape.circle,
-                            border: Border.all(color: AppColors.borderSubtle),
-                          ),
-                          child: const Icon(Icons.play_arrow, color: Colors.white),
-                        ),
-                      ),
-                    ),
-                  ],
+                child: const Center(
+                  child: Icon(
+                    Icons.play_arrow_rounded,
+                    color: Colors.white,
+                    size: 40,
+                  ),
                 ),
               ),
-              Padding(
-                padding: const EdgeInsets.all(14),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(title, style: AppTextStyles.h2),
-                    const SizedBox(height: 6),
-                    Text(stats, style: AppTextStyles.bodySmall),
-                  ],
-                ),
+            ),
+            const SizedBox(height: 10),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: AppTextStyles.h3,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    stats,
+                    style: AppTextStyles.bodySmall.copyWith(
+                      color: AppColors.textDim,
+                    ),
+                  ),
+                ],
               ),
-            ],
-          ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ActionPill extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final bool active;
+  final VoidCallback onTap;
+
+  const _ActionPill({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.active = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final color = active ? AppColors.postbookPrimary : AppColors.textSecondary;
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: active
+              ? color.withOpacity(0.1)
+              : Colors.white.withOpacity(0.05),
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Row(
+          children: [
+            Icon(icon, size: 16, color: color),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: AppTextStyles.label.copyWith(
+                color: color,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
         ),
       ),
     );

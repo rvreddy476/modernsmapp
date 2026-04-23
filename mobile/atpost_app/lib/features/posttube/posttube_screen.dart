@@ -4,7 +4,6 @@ import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/models/post.dart';
 import 'package:atpost_app/providers/feed_provider.dart';
-import 'package:atpost_app/shared/widgets/content_cards.dart';
 import 'package:atpost_app/shared/widgets/video_player_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -43,9 +42,7 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
   List<_Chapter> get _chapters {
     if (_videos.isEmpty) return [];
     // TODO: Parse chapter markers from video metadata API response.
-    return const [
-      _Chapter(time: '00:00', label: 'Intro'),
-    ];
+    return const [_Chapter(time: '00:00', label: 'Intro')];
   }
 
   @override
@@ -61,7 +58,9 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
       });
     });
 
-    final currentVideo = _videos.isNotEmpty ? _videos[_currentVideoIndex] : null;
+    final currentVideo = _videos.isNotEmpty
+        ? _videos[_currentVideoIndex]
+        : null;
 
     return Scaffold(
       body: SafeArea(
@@ -74,12 +73,15 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     _VideoPanel(
-                      videoUrl: currentVideo != null && currentVideo.firstMediaUrl.isNotEmpty
+                      videoUrl:
+                          currentVideo != null &&
+                              currentVideo.firstMediaUrl.isNotEmpty
                           ? '${Environment.apiBaseUrl}${currentVideo.firstMediaUrl}'
                           : '',
                       progress: _progress,
                       isPlaying: _playing,
-                      onProgressChanged: (value) => setState(() => _progress = value),
+                      onProgressChanged: (value) =>
+                          setState(() => _progress = value),
                       onTogglePlay: () => setState(() => _playing = !_playing),
                     ),
                     const SizedBox(height: 14),
@@ -92,29 +94,47 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
                       currentVideo != null
                           ? '${_formatCount(currentVideo.likeCount)} views  •  ${_timeAgo(currentVideo.createdAt)}'
                           : '',
-                      style: AppTextStyles.bodySmall.copyWith(color: AppColors.textDim),
+                      style: AppTextStyles.bodySmall.copyWith(
+                        color: AppColors.textDim,
+                      ),
                     ),
                     const SizedBox(height: 14),
                     SingleChildScrollView(
                       scrollDirection: Axis.horizontal,
                       child: Row(
-                        children: const [
-                          ActionPillButton(icon: Icons.thumb_up_alt_outlined, label: '2.4K'),
+                        children: [
+                          ActionPillButton(
+                            icon: Icons.thumb_up_alt_outlined,
+                            label: '2.4K',
+                          ),
                           SizedBox(width: 8),
-                          ActionPillButton(icon: Icons.thumb_down_alt_outlined, label: '87'),
+                          ActionPillButton(
+                            icon: Icons.thumb_down_alt_outlined,
+                            label: '87',
+                          ),
                           SizedBox(width: 8),
-                          ActionPillButton(icon: Icons.share_outlined, label: 'Share'),
+                          ActionPillButton(
+                            icon: Icons.share_outlined,
+                            label: 'Share',
+                          ),
                           SizedBox(width: 8),
-                          ActionPillButton(icon: Icons.download_outlined, label: 'Save'),
+                          ActionPillButton(
+                            icon: Icons.download_outlined,
+                            label: 'Save',
+                          ),
                           SizedBox(width: 8),
-                          ActionPillButton(icon: Icons.playlist_add_outlined, label: 'Playlist'),
+                          ActionPillButton(
+                            icon: Icons.playlist_add_outlined,
+                            label: 'Playlist',
+                          ),
                         ],
                       ),
                     ),
                     const SizedBox(height: 16),
                     _ChannelCard(
                       subscribed: _subscribed,
-                      onSubscribeTap: () => setState(() => _subscribed = !_subscribed),
+                      onSubscribeTap: () =>
+                          setState(() => _subscribed = !_subscribed),
                     ),
                     const SizedBox(height: 16),
                     Text('Chapters', style: AppTextStyles.h3),
@@ -128,10 +148,15 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
                         itemBuilder: (context, index) {
                           final chapter = _chapters[index];
                           return Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 11,
+                              vertical: 8,
+                            ),
                             decoration: BoxDecoration(
                               color: AppColors.bgCard,
-                              borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
+                              borderRadius: BorderRadius.circular(
+                                AppSpacing.radiusLarge,
+                              ),
                               border: Border.all(color: AppColors.borderSubtle),
                             ),
                             child: Row(
@@ -144,7 +169,10 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
                                   ),
                                 ),
                                 const SizedBox(width: 6),
-                                Text(chapter.label, style: AppTextStyles.labelSmall),
+                                Text(
+                                  chapter.label,
+                                  style: AppTextStyles.labelSmall,
+                                ),
                               ],
                             ),
                           );
@@ -154,7 +182,9 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
                     const SizedBox(height: 16),
                     _DescriptionCard(
                       expanded: _descriptionExpanded,
-                      onTap: () => setState(() => _descriptionExpanded = !_descriptionExpanded),
+                      onTap: () => setState(
+                        () => _descriptionExpanded = !_descriptionExpanded,
+                      ),
                     ),
                     const SizedBox(height: 16),
                     _ContentTabs(
@@ -166,7 +196,9 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
                       const _CommentsSection()
                     else
                       _UpNextSection(
-                        videos: _videos.length > 1 ? _videos.sublist(1) : const [],
+                        videos: _videos.length > 1
+                            ? _videos.sublist(1)
+                            : const [],
                       ),
                     const SizedBox(height: 100),
                   ],
@@ -219,7 +251,10 @@ class _VideoPanel extends StatelessWidget {
                       looping: false,
                       showControls: true,
                       aspectRatio: 16 / 9,
-                      placeholder: _gradientPlaceholder(onTogglePlay, isPlaying),
+                      placeholder: _gradientPlaceholder(
+                        onTogglePlay,
+                        isPlaying,
+                      ),
                     )
                   : _gradientPlaceholder(onTogglePlay, isPlaying),
             ),
@@ -229,7 +264,10 @@ class _VideoPanel extends StatelessWidget {
     );
   }
 
-  static Widget _gradientPlaceholder(VoidCallback onTogglePlay, bool isPlaying) {
+  static Widget _gradientPlaceholder(
+    VoidCallback onTogglePlay,
+    bool isPlaying,
+  ) {
     return Container(
       decoration: const BoxDecoration(
         gradient: LinearGradient(
@@ -266,7 +304,9 @@ class _VideoPanel extends StatelessWidget {
                 decoration: BoxDecoration(
                   color: Colors.white.withValues(alpha: 0.14),
                   shape: BoxShape.circle,
-                  border: Border.all(color: Colors.white.withValues(alpha: 0.2)),
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.2),
+                  ),
                 ),
                 child: Icon(
                   isPlaying ? Icons.pause : Icons.play_arrow,
@@ -283,10 +323,7 @@ class _VideoPanel extends StatelessWidget {
 }
 
 class _ChannelCard extends StatelessWidget {
-  const _ChannelCard({
-    required this.subscribed,
-    required this.onSubscribeTap,
-  });
+  const _ChannelCard({required this.subscribed, required this.onSubscribeTap});
 
   final bool subscribed;
   final VoidCallback onSubscribeTap;
@@ -308,7 +345,9 @@ class _ChannelCard extends StatelessWidget {
             decoration: BoxDecoration(
               gradient: AppColors.posttubeGradient,
               shape: BoxShape.circle,
-              border: Border.all(color: AppColors.posttubePrimary.withValues(alpha: 0.5)),
+              border: Border.all(
+                color: AppColors.posttubePrimary.withValues(alpha: 0.5),
+              ),
             ),
             child: Center(
               child: Text(
@@ -367,10 +406,7 @@ class _ChannelCard extends StatelessWidget {
 }
 
 class _DescriptionCard extends StatelessWidget {
-  const _DescriptionCard({
-    required this.expanded,
-    required this.onTap,
-  });
+  const _DescriptionCard({required this.expanded, required this.onTap});
 
   final bool expanded;
   final VoidCallback onTap;
@@ -390,18 +426,17 @@ class _DescriptionCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              'Description',
-              style: AppTextStyles.h3,
-            ),
+            Text('Description', style: AppTextStyles.h3),
             const SizedBox(height: 6),
             Text(
               expanded
                   ? 'In this session we break down the gateway, fanout feed write pipeline, '
-                      'ranking refresh strategy, and cache invalidation signals used to keep '
-                      'the home timeline snappy under burst load.'
+                        'ranking refresh strategy, and cache invalidation signals used to keep '
+                        'the home timeline snappy under burst load.'
                   : 'In this session we break down the gateway, fanout feed write pipeline...',
-              style: AppTextStyles.bodySmall.copyWith(color: AppColors.textSecondary),
+              style: AppTextStyles.bodySmall.copyWith(
+                color: AppColors.textSecondary,
+              ),
             ),
             const SizedBox(height: 8),
             Wrap(
@@ -440,10 +475,7 @@ class _TagChip extends StatelessWidget {
 }
 
 class _ContentTabs extends StatelessWidget {
-  const _ContentTabs({
-    required this.activeIndex,
-    required this.onChanged,
-  });
+  const _ContentTabs({required this.activeIndex, required this.onChanged});
 
   final int activeIndex;
   final ValueChanged<int> onChanged;
@@ -587,7 +619,12 @@ class _CommentTile extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 4),
-                Text(text, style: AppTextStyles.bodySmall.copyWith(color: AppColors.textSecondary)),
+                Text(
+                  text,
+                  style: AppTextStyles.bodySmall.copyWith(
+                    color: AppColors.textSecondary,
+                  ),
+                ),
               ],
             ),
           ),
@@ -633,7 +670,8 @@ class _UpNextSection extends StatelessWidget {
                 title: v.content.length > 60
                     ? '${v.content.substring(0, 60)}...'
                     : v.content,
-                stats: '${_formatCount(v.likeCount)} views • ${_timeAgo(v.createdAt)}',
+                stats:
+                    '${_formatCount(v.likeCount)} views • ${_timeAgo(v.createdAt)}',
               ),
             ),
           )
@@ -656,10 +694,7 @@ class _UpNextSection extends StatelessWidget {
 }
 
 class _RelatedVideoTile extends StatelessWidget {
-  const _RelatedVideoTile({
-    required this.title,
-    required this.stats,
-  });
+  const _RelatedVideoTile({required this.title, required this.stats});
 
   final String title;
   final String stats;
@@ -678,7 +713,9 @@ class _RelatedVideoTile extends StatelessWidget {
             width: 120,
             height: 78,
             decoration: const BoxDecoration(
-              borderRadius: BorderRadius.horizontal(left: Radius.circular(AppSpacing.radiusLarge)),
+              borderRadius: BorderRadius.horizontal(
+                left: Radius.circular(AppSpacing.radiusLarge),
+              ),
               gradient: LinearGradient(
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
@@ -686,7 +723,11 @@ class _RelatedVideoTile extends StatelessWidget {
               ),
             ),
             child: const Center(
-              child: Icon(Icons.play_circle_fill, color: Colors.white70, size: 28),
+              child: Icon(
+                Icons.play_circle_fill,
+                color: Colors.white70,
+                size: 28,
+              ),
             ),
           ),
           Expanded(
@@ -695,7 +736,12 @@ class _RelatedVideoTile extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(title, style: AppTextStyles.h3, maxLines: 2, overflow: TextOverflow.ellipsis),
+                  Text(
+                    title,
+                    style: AppTextStyles.h3,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                   const SizedBox(height: 5),
                   Text(stats, style: AppTextStyles.bodySmall),
                 ],
@@ -708,11 +754,34 @@ class _RelatedVideoTile extends StatelessWidget {
   }
 }
 
+class ActionPillButton extends StatelessWidget {
+  const ActionPillButton({super.key, required this.icon, required this.label});
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+      decoration: BoxDecoration(
+        color: AppColors.bgCard,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: AppColors.borderSubtle),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 18, color: AppColors.textPrimary),
+          const SizedBox(width: 8),
+          Text(label, style: AppTextStyles.labelSmall),
+        ],
+      ),
+    );
+  }
+}
+
 class _Chapter {
-  const _Chapter({
-    required this.time,
-    required this.label,
-  });
+  const _Chapter({required this.time, required this.label});
 
   final String time;
   final String label;

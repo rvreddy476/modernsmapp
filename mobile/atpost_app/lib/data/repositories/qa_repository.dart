@@ -2,129 +2,102 @@ import 'package:atpost_app/data/models/qa.dart';
 import 'package:atpost_app/services/api_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-class QaRepository {
+/// Production-ready repository for Q&A operations.
+/// Synchronized with the inferred qa-service contract.
+class QARepository {
   final ApiClient _api;
 
-  QaRepository(this._api);
+  QARepository(this._api);
 
-  Future<List<QaTopic>> listTopics({bool featuredOnly = false}) async {
-    final response = await _api.get(
-      '/v1/qa/topics',
-      queryParameters: featuredOnly ? {'featured': 'true'} : null,
-    );
-    return _extractList(response.data)
-        .whereType<Map>()
-        .map((item) => QaTopic.fromJson(Map<String, dynamic>.from(item)))
-        .toList();
-  }
-
-  Future<QaTopic> getTopic(String topicId) async {
-    final response = await _api.get('/v1/qa/topics/$topicId');
-    return QaTopic.fromJson(_extractMap(response.data));
-  }
-
-  Future<List<QaQuestionSummary>> listQuestions({
-    String? topicSlug,
+  /// Fetch a list of questions with pagination.
+  Future<QAPage> getQuestions({
+    String? topic,
     String? communityId,
-    String? scope,
-    String sort = 'recent',
-    String? status,
+    String sort = 'trending',
+    int limit = 20,
+    String? cursor,
   }) async {
-    final queryParameters = <String, dynamic>{
+    final params = <String, dynamic>{
       'sort': sort,
-      if (topicSlug != null && topicSlug.isNotEmpty) 'topic': topicSlug,
-      if (communityId != null && communityId.isNotEmpty)
-        'community_id': communityId,
-      if (scope != null && scope.isNotEmpty) 'scope': scope,
-      if (status != null && status.isNotEmpty) 'status': status,
+      'limit': limit,
+      'topic': ?topic,
+      'community_id': ?communityId,
+      'cursor': ?cursor,
     };
 
     final response = await _api.get(
       '/v1/qa/questions',
-      queryParameters: queryParameters,
+      queryParameters: params,
     );
-    final payload = _extractMap(response.data);
-    final items = payload['questions'] as List<dynamic>? ?? const [];
-    return items
-        .whereType<Map>()
-        .map(
-          (item) => QaQuestionSummary.fromJson(Map<String, dynamic>.from(item)),
-        )
-        .toList();
+    final data = response.data['data'] as List<dynamic>? ?? [];
+    final meta = response.data['meta'] as Map<String, dynamic>?;
+
+    return QAPage(
+      items: data
+          .map((e) => Question.fromJson(e as Map<String, dynamic>))
+          .toList(),
+      nextCursor: meta?['next_cursor'] as String?,
+    );
   }
 
-  Future<CommunityQuestionsResult> getCommunityQuestions(
-    String communityId, {
-    String? topicSlug,
-    String sort = 'recent',
-    String? status,
-  }) async {
-    final queryParameters = <String, dynamic>{
-      'sort': sort,
-      if (topicSlug != null && topicSlug.isNotEmpty) 'topic': topicSlug,
-      if (status != null && status.isNotEmpty) 'status': status,
-    };
-    final response = await _api.get(
-      '/v1/communities/$communityId/questions',
-      queryParameters: queryParameters,
-    );
-    return CommunityQuestionsResult.fromJson(_extractMap(response.data));
-  }
-
-  Future<QaQuestion> getQuestion(String questionId) async {
+  /// Fetch a single question detail with its answers.
+  Future<QuestionDetail> getQuestionDetail(String questionId) async {
     final response = await _api.get('/v1/qa/questions/$questionId');
-    return QaQuestion.fromJson(_extractMap(response.data));
-  }
+    final data = response.data['data'] as Map<String, dynamic>;
 
-  Future<List<QaAnswer>> getAnswers(
-    String questionId, {
-    String sort = 'votes',
-  }) async {
-    final response = await _api.get(
-      '/v1/qa/questions/$questionId/answers',
-      queryParameters: {'sort': sort},
-    );
-    return _extractList(response.data)
-        .whereType<Map>()
-        .map((item) => QaAnswer.fromJson(Map<String, dynamic>.from(item)))
+    final question = Question.fromJson(data);
+    final answersRaw = data['answers'] as List? ?? [];
+    final answers = answersRaw
+        .map((e) => Answer.fromJson(e as Map<String, dynamic>))
         .toList();
+
+    return QuestionDetail(question: question, answers: answers);
   }
 
-  static List<dynamic> _extractList(dynamic data) {
-    if (data is List<dynamic>) {
-      return data;
-    }
-    if (data is Map<String, dynamic>) {
-      final direct = data['data'];
-      if (direct is List<dynamic>) {
-        return direct;
-      }
-      if (direct is Map<String, dynamic>) {
-        final items = direct['items'];
-        if (items is List<dynamic>) {
-          return items;
-        }
-      }
-      final items = data['items'];
-      if (items is List<dynamic>) {
-        return items;
-      }
-    }
-    return const [];
+  /// Create a new question.
+  Future<Question> createQuestion({
+    required String title,
+    required String body,
+    List<String> topics = const [],
+    String? communityId,
+  }) async {
+    final response = await _api.post(
+      '/v1/qa/questions',
+      data: {
+        'title': title,
+        'body': body,
+        'topics': topics,
+        'community_id': ?communityId,
+      },
+    );
+    final data = response.data['data'] as Map<String, dynamic>;
+    return Question.fromJson(data);
   }
 
-  static Map<String, dynamic> _extractMap(dynamic data) {
-    if (data is Map<String, dynamic>) {
-      final direct = data['data'];
-      if (direct is Map<String, dynamic>) {
-        return direct;
-      }
-      return data;
-    }
-    return const <String, dynamic>{};
+  /// Submit an answer to a question.
+  Future<Answer> submitAnswer(String questionId, String body) async {
+    final response = await _api.post(
+      '/v1/qa/questions/$questionId/answers',
+      data: {'body': body},
+    );
+    final data = response.data['data'] as Map<String, dynamic>;
+    return Answer.fromJson(data);
+  }
+
+  /// Vote on a question (1: up, -1: down, 0: remove).
+  Future<void> voteQuestion(String questionId, int value) async {
+    await _api.post(
+      '/v1/qa/questions/$questionId/vote',
+      data: {'value': value},
+    );
+  }
+
+  /// Vote on an answer.
+  Future<void> voteAnswer(String answerId, int value) async {
+    await _api.post('/v1/qa/answers/$answerId/vote', data: {'value': value});
   }
 }
 
-final qaRepositoryProvider = Provider<QaRepository>((ref) {
-  return QaRepository(ref.watch(apiClientProvider));
+final qaRepositoryProvider = Provider<QARepository>((ref) {
+  return QARepository(ref.watch(apiClientProvider));
 });

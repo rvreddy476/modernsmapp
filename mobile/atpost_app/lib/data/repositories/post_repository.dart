@@ -12,8 +12,7 @@ class PostRepository {
   /// Fetch a single post detail.
   Future<Post> getPostDetail(String postId) async {
     final response = await _api.get('/v1/posts/$postId');
-    final data = response.data['data'] as Map<String, dynamic>;
-    return Post.fromJson(data);
+    return Post.fromJson(_unwrapObjectEnvelope(response.data));
   }
 
   /// Create a new post with verified backend fields.
@@ -44,15 +43,17 @@ class PostRepository {
         'poll': poll,
       },
     );
-    final data = response.data['data'] as Map<String, dynamic>;
-    return Post.fromJson(data);
+    return Post.fromJson(_unwrapObjectEnvelope(response.data));
   }
 
   /// List comments for a post.
   Future<List<Comment>> getComments(String postId) async {
     final response = await _api.get('/v1/posts/$postId/comments');
-    final items = (response.data['data'] as List<dynamic>?) ?? [];
-    return items.map((e) => Comment.fromJson(e as Map<String, dynamic>)).toList();
+    final items = _unwrapListEnvelope(response.data);
+    return items
+        .whereType<Map>()
+        .map((e) => Comment.fromJson(Map<String, dynamic>.from(e)))
+        .toList();
   }
 
   /// Add a comment to a post.
@@ -61,8 +62,7 @@ class PostRepository {
       '/v1/posts/$postId/comments',
       data: {'text': text},
     );
-    final data = response.data['data'] as Map<String, dynamic>;
-    return Comment.fromJson(data);
+    return Comment.fromJson(_unwrapObjectEnvelope(response.data));
   }
 
   /// Get AI-assisted caption suggestions (Sparkles).
@@ -106,13 +106,98 @@ class PostRepository {
   Future<void> toggleReaction(String postId, {String? emoji}) async {
     await _api.post(
       '/v1/posts/$postId/react',
-      data: emoji != null ? {'emoji': emoji} : null,
+      data: {'reaction_type': _reactionTypeFor(emoji)},
     );
   }
 
   Future<void> deletePost(String postId) async {
     await _api.delete('/v1/posts/$postId');
   }
+
+  Future<void> sharePost(String postId) async {
+    await _api.post('/v1/posts/$postId/share');
+  }
+
+  Future<void> deleteComment(String commentId) async {
+    await _api.delete('/v1/comments/$commentId');
+  }
+
+  Future<void> toggleCommentLike(String commentId) async {
+    await _api.post('/v1/comments/$commentId/like');
+  }
+
+  Future<void> submitReport({
+    required String targetType,
+    required String targetId,
+    required String reason,
+    String description = '',
+  }) async {
+    await _api.post(
+      '/v1/reports',
+      data: {
+        'entity_type': targetType,
+        'entity_id': targetId,
+        'reason': reason,
+        'details': description,
+      },
+    );
+  }
+}
+
+Map<String, dynamic> _unwrapObjectEnvelope(dynamic body) {
+  if (body is Map<String, dynamic>) {
+    final data = body['data'];
+    if (data is Map) {
+      return Map<String, dynamic>.from(data);
+    }
+    return body;
+  }
+  return const <String, dynamic>{};
+}
+
+List<dynamic> _unwrapListEnvelope(dynamic body) {
+  if (body is List) {
+    return body;
+  }
+  if (body is Map<String, dynamic>) {
+    final data = body['data'];
+    if (data is List) {
+      return data;
+    }
+    if (data is Map<String, dynamic>) {
+      final items = data['items'];
+      if (items is List) {
+        return items;
+      }
+    }
+  }
+  return const <dynamic>[];
+}
+
+String _reactionTypeFor(String? emoji) {
+  const reactionTypes = <String, String>{
+    'like': 'like',
+    'love': 'love',
+    'haha': 'haha',
+    'wow': 'wow',
+    'sad': 'sad',
+    'angry': 'angry',
+    '': 'like',
+    '\u{1F44D}': 'like',
+    '\u2764\uFE0F': 'love',
+    '\u{1F525}': 'love',
+    '\u{1F602}': 'haha',
+    '\u{1F62E}': 'wow',
+    '\u{1F622}': 'sad',
+    '\u{1F620}': 'angry',
+    '\u{1F44E}': 'angry',
+    '\u{1F44F}': 'like',
+    '\u{1F64C}': 'like',
+    '\u{1F4AF}': 'like',
+  };
+
+  final normalized = emoji?.trim() ?? '';
+  return reactionTypes[normalized] ?? 'like';
 }
 
 final postRepositoryProvider = Provider<PostRepository>((ref) {

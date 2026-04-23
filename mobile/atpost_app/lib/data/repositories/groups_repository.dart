@@ -67,6 +67,13 @@ class GroupsRepository {
     await _api.post('/v1/groups/$groupId/leave');
   }
 
+  Future<void> inviteUser(String groupId, String userId) async {
+    await _api.post(
+      '/v1/groups/$groupId/invite',
+      data: {'user_id': userId},
+    );
+  }
+
   Future<List<Post>> getGroupPosts(String groupId, {int page = 1}) async {
     final response = await _api.get(
       '/v1/groups/$groupId/posts',

@@ -29,6 +29,7 @@ class CreationState {
   final bool allowsMultipleVotes;
   final bool isSubmitting;
   final bool isGeneratingAi;
+  final double uploadProgress;
   final String? error;
 
   const CreationState({
@@ -43,6 +44,7 @@ class CreationState {
     this.allowsMultipleVotes = false,
     this.isSubmitting = false,
     this.isGeneratingAi = false,
+    this.uploadProgress = 0,
     this.error,
   });
 
@@ -58,6 +60,7 @@ class CreationState {
     bool? allowsMultipleVotes,
     bool? isSubmitting,
     bool? isGeneratingAi,
+    double? uploadProgress,
     String? error,
   }) {
     return CreationState(
@@ -72,6 +75,7 @@ class CreationState {
       allowsMultipleVotes: allowsMultipleVotes ?? this.allowsMultipleVotes,
       isSubmitting: isSubmitting ?? this.isSubmitting,
       isGeneratingAi: isGeneratingAi ?? this.isGeneratingAi,
+      uploadProgress: uploadProgress ?? this.uploadProgress,
       error: error,
     );
   }
@@ -145,16 +149,29 @@ class CreationNotifier extends StateNotifier<CreationState> {
   Future<bool> submit() async {
     if (state.isSubmitting) return false;
 
-    state = state.copyWith(isSubmitting: true, error: null);
+    state = state.copyWith(isSubmitting: true, uploadProgress: 0, error: null);
 
     try {
       final mediaIds = <String>[];
-      for (final file in state.files) {
+      final files = state.files;
+      for (var i = 0; i < files.length; i++) {
+        final file = files[i];
         final id = await _apiClient.uploadMedia(
           file,
           type: file.path.contains('.mp4') ? 'video' : 'image',
+          onProgress: (sent, total) {
+            if (total <= 0 || files.isEmpty) return;
+            final fileProgress = sent / total;
+            final overall = (i + fileProgress) / files.length;
+            state = state.copyWith(
+              uploadProgress: overall.clamp(0, 1).toDouble(),
+            );
+          },
         );
         if (id.isNotEmpty) mediaIds.add(id);
+      }
+      if (files.isEmpty) {
+        state = state.copyWith(uploadProgress: 1);
       }
 
       Map<String, dynamic>? pollPayload;
@@ -180,7 +197,11 @@ class CreationNotifier extends StateNotifier<CreationState> {
       reset();
       return true;
     } catch (e) {
-      state = state.copyWith(isSubmitting: false, error: e.toString());
+      state = state.copyWith(
+        isSubmitting: false,
+        uploadProgress: 0,
+        error: e.toString(),
+      );
       return false;
     }
   }

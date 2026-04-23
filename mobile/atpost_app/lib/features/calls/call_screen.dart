@@ -78,6 +78,13 @@ class _CallScreenState extends ConsumerState<CallScreen> {
 
           // 3. Status Overlays
           _buildStatusOverlay(callInfo),
+          if (callInfo.joinResponse?.usesStubSfu ?? false)
+            const Positioned(
+              top: 112,
+              left: 20,
+              right: 20,
+              child: _CallWarningBanner(),
+            ),
 
           // 4. Call Controls
           _buildCallControls(callInfo),
@@ -198,6 +205,40 @@ class _ControlButton extends StatelessWidget {
         const SizedBox(height: 8),
         Text(label, style: const TextStyle(color: Colors.white70, fontSize: 12)),
       ],
+    );
+  }
+}
+
+class _CallWarningBanner extends StatelessWidget {
+  const _CallWarningBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: Colors.amber.withValues(alpha: 0.16),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.amber.withValues(alpha: 0.42)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        child: Row(
+          children: [
+            const Icon(
+              Icons.warning_amber_rounded,
+              color: Colors.amber,
+              size: 18,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Calls are using the development SFU. Media relay is limited until LiveKit is configured.',
+                style: AppTextStyles.bodySmall.copyWith(color: Colors.amber),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

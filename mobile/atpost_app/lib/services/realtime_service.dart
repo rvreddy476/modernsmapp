@@ -58,8 +58,10 @@ class RealtimeService {
     AppLogger.info('Establishing websocket connection', tag: _tag);
 
     try {
-      final wsUri = Environment.buildWsGatewayUri({'access_token': token});
-      _channel = WebSocketChannel.connect(wsUri);
+      _channel = WebSocketChannel.connect(
+        Environment.wsGatewayUri,
+        protocols: ['bearer.$token'],
+      );
 
       _subscription = _channel!.stream.listen(
         _onRawMessage,

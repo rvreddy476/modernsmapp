@@ -642,6 +642,12 @@ type DataExport struct {
 	ExportedAt time.Time   `json:"exported_at"`
 }
 
+// GetUserContact returns the user record for internal service-to-service lookups.
+// Used by commerce, notification, etc. to resolve email/phone.
+func (s *Service) GetUserContact(ctx context.Context, userID uuid.UUID) (*store.User, error) {
+	return s.store.GetUserByID(ctx, userID)
+}
+
 // ExportUserData collects a user's personal data from the auth store for GDPR portability.
 func (s *Service) ExportUserData(ctx context.Context, userID string) (*DataExport, error) {
 	uid, err := uuid.Parse(userID)

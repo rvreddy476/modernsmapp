@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
@@ -16,6 +17,7 @@ class ExploreScreen extends ConsumerStatefulWidget {
 
 class _ExploreScreenState extends ConsumerState<ExploreScreen> {
   final TextEditingController _searchController = TextEditingController();
+  Timer? _debounce;
 
   bool _loading = true;
   bool _loadingAutocomplete = false;
@@ -32,6 +34,7 @@ class _ExploreScreenState extends ConsumerState<ExploreScreen> {
 
   @override
   void dispose() {
+    _debounce?.cancel();
     _searchController.dispose();
     super.dispose();
   }
@@ -64,7 +67,16 @@ class _ExploreScreenState extends ConsumerState<ExploreScreen> {
     }
   }
 
-  Future<void> _onSearchChanged(String raw) async {
+  // PRODUCTION OPTIMIZATION: Debounced search to prevent API spamming
+  void _onSearchChanged(String raw) {
+    if (_debounce?.isActive ?? false) _debounce!.cancel();
+    _debounce = Timer(
+      const Duration(milliseconds: 400),
+      () => _performSearch(raw),
+    );
+  }
+
+  Future<void> _performSearch(String raw) async {
     final query = raw.trim();
     if (query.isEmpty) {
       if (!mounted) return;
@@ -80,13 +92,15 @@ class _ExploreScreenState extends ConsumerState<ExploreScreen> {
       final results = await ref
           .read(userRepositoryProvider)
           .searchAutocomplete(query, limit: 8);
+
       if (!mounted || _searchController.text.trim() != query) return;
+
       setState(() {
         _autocompleteResults = results;
         _loadingAutocomplete = false;
       });
     } catch (_) {
-      if (!mounted || _searchController.text.trim() != query) return;
+      if (!mounted) return;
       setState(() {
         _autocompleteResults = const [];
         _loadingAutocomplete = false;
@@ -192,6 +206,33 @@ class _ExploreScreenState extends ConsumerState<ExploreScreen> {
   @override
   Widget build(BuildContext context) {
     final actions = <_ExploreAction>[
+      const _ExploreAction(
+        icon: Icons.question_answer_rounded,
+        title: 'Q&A',
+        subtitle: 'Ask and answer',
+        route: '/qa',
+        gradient: LinearGradient(
+          colors: [AppColors.postbookPrimary, AppColors.posttubePrimary],
+        ),
+      ),
+      const _ExploreAction(
+        icon: Icons.extension_rounded,
+        title: 'Mini Apps',
+        subtitle: 'Tools and games',
+        route: '/apps',
+        gradient: LinearGradient(
+          colors: [AppColors.accentPurple, AppColors.postbookSecondary],
+        ),
+      ),
+      const _ExploreAction(
+        icon: Icons.favorite_rounded,
+        title: 'PostMatch',
+        subtitle: 'Meet people',
+        route: '/postmatch',
+        gradient: LinearGradient(
+          colors: [AppColors.postgramPrimary, AppColors.liveRed],
+        ),
+      ),
       const _ExploreAction(
         icon: Icons.groups_rounded,
         title: 'Groups',

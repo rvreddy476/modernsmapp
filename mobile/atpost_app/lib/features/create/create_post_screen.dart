@@ -56,8 +56,101 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
     }
   }
 
+  Future<void> _handleCancel(CreationState state) async {
+    final hasDraft = state.text.trim().isNotEmpty || state.files.isNotEmpty;
+    if (!hasDraft) {
+      context.pop();
+      return;
+    }
+
+    final discard = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.bgSecondary,
+        title: Text('Discard post?', style: AppTextStyles.h3),
+        content: Text(
+          'Your current draft will be cleared.',
+          style: AppTextStyles.body,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Keep editing'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Discard'),
+          ),
+        ],
+      ),
+    );
+
+    if (discard == true && mounted) {
+      ref.read(creationProvider.notifier).reset();
+      context.pop();
+    }
+  }
+
+  void _showVisibilityPicker(CreationState state) {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: AppColors.bgSecondary,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _VisibilityOption(
+              icon: Icons.public,
+              label: 'Public',
+              description: 'Anyone can see this post',
+              selected: state.visibility == PostVisibility.public,
+              onTap: () {
+                ref
+                    .read(creationProvider.notifier)
+                    .setVisibility(PostVisibility.public);
+                Navigator.of(ctx).pop();
+              },
+            ),
+            _VisibilityOption(
+              icon: Icons.people,
+              label: 'Followers',
+              description: 'Only your followers can see it',
+              selected: state.visibility == PostVisibility.followers,
+              onTap: () {
+                ref
+                    .read(creationProvider.notifier)
+                    .setVisibility(PostVisibility.followers);
+                Navigator.of(ctx).pop();
+              },
+            ),
+            _VisibilityOption(
+              icon: Icons.lock,
+              label: 'Private',
+              description: 'Only you can see it',
+              selected: state.visibility == PostVisibility.private,
+              onTap: () {
+                ref
+                    .read(creationProvider.notifier)
+                    .setVisibility(PostVisibility.private);
+                Navigator.of(ctx).pop();
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    ref.listen<CreationState>(creationProvider, (previous, next) {
+      if (next.text != _textController.text) {
+        _textController.value = TextEditingValue(
+          text: next.text,
+          selection: TextSelection.collapsed(offset: next.text.length),
+        );
+      }
+    });
     final state = ref.watch(creationProvider);
     final user = ref.watch(currentUserProvider).valueOrNull;
 
@@ -79,6 +172,9 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
                     child: Column(
                       children: [
                         _buildComposerArea(state, user),
+                        if (state.error != null) _buildErrorBanner(state.error!),
+                        if (state.isSubmitting && state.files.isNotEmpty)
+                          _buildUploadProgress(state),
                         if (state.type == PostType.poll) _buildElegantPollEditor(state),
                         if (state.files.isNotEmpty) _buildMediaGrid(state),
                         const SizedBox(height: 120), // Space for toolbar
@@ -118,7 +214,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
           TextButton(
-            onPressed: () => context.pop(),
+            onPressed: state.isSubmitting ? null : () => _handleCancel(state),
             child: Text('Cancel', style: AppTextStyles.body.copyWith(color: Colors.white70)),
           ),
           ElevatedButton(
@@ -126,6 +222,16 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
                 ? () async {
                     final success = await ref.read(creationProvider.notifier).submit();
                     if (success && mounted) context.pop();
+                    if (!success && mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            ref.read(creationProvider).error ??
+                                'Could not publish post.',
+                          ),
+                        ),
+                      );
+                    }
                   }
                 : null,
             style: ElevatedButton.styleFrom(
@@ -204,9 +310,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
 
   Widget _buildVisibilityBadge(CreationState state) {
     return GestureDetector(
-      onTap: () {
-        // Show elegant bottom sheet or popup for visibility
-      },
+      onTap: () => _showVisibilityPicker(state),
       child: Container(
         margin: const EdgeInsets.only(top: 4),
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
@@ -327,6 +431,48 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
       ),
     );
   }
+
+  Widget _buildErrorBanner(String error) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(top: 16),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.redAccent.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.redAccent.withValues(alpha: 0.35)),
+      ),
+      child: Text(
+        error,
+        style: AppTextStyles.bodySmall.copyWith(color: Colors.redAccent),
+      ),
+    );
+  }
+
+  Widget _buildUploadProgress(CreationState state) {
+    final progress = state.uploadProgress.clamp(0, 1).toDouble();
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(top: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          LinearProgressIndicator(
+            value: progress == 0 ? null : progress,
+            color: AppColors.postbookPrimary,
+            backgroundColor: Colors.white10,
+          ),
+          const SizedBox(height: 8),
+          Text(
+            progress == 0
+                ? 'Preparing upload'
+                : 'Uploading ${(progress * 100).round()}%',
+            style: AppTextStyles.labelSmall.copyWith(color: Colors.white54),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _ToolbarIcon extends StatelessWidget {
@@ -345,6 +491,41 @@ class _ToolbarIcon extends StatelessWidget {
         padding: const EdgeInsets.all(10),
         child: Icon(icon, color: color, size: 24),
       ),
+    );
+  }
+}
+
+class _VisibilityOption extends StatelessWidget {
+  const _VisibilityOption({
+    required this.icon,
+    required this.label,
+    required this.description,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final String description;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      leading: Icon(
+        icon,
+        color: selected ? AppColors.postbookPrimary : Colors.white70,
+      ),
+      title: Text(label, style: AppTextStyles.body),
+      subtitle: Text(
+        description,
+        style: AppTextStyles.bodySmall.copyWith(color: Colors.white54),
+      ),
+      trailing: selected
+          ? const Icon(Icons.check, color: AppColors.postbookPrimary)
+          : null,
+      onTap: onTap,
     );
   }
 }

@@ -67,6 +67,8 @@ type AuthService interface {
 	RemoveTrustedDevice(ctx context.Context, userID, deviceID uuid.UUID) error
 	// GDPR
 	ExportUserData(ctx context.Context, userID string) (*service.DataExport, error)
+	// Internal lookup
+	GetUserContact(ctx context.Context, userID uuid.UUID) (*store.User, error)
 	// Mini app sessions
 	IssueMiniAppSession(ctx context.Context, appID, userID uuid.UUID, grantedPermissions []string) (*service.MiniAppSessionResponse, error)
 	MiniAppJWKS(ctx context.Context) (*service.JSONWebKeySet, error)
@@ -137,8 +139,34 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 		internal := v1.Group("/internal", RequireInternalServiceKey(h.cfg.InternalServiceKey))
 		{
 			internal.POST("/mini-app-session", h.CreateMiniAppSession)
+			internal.GET("/users/:userId", h.InternalGetUserContact)
 		}
 	}
+}
+
+// InternalGetUserContact returns contact fields for service-to-service use.
+// Guarded by RequireInternalServiceKey — never expose to end users.
+func (h *Handler) InternalGetUserContact(c *gin.Context) {
+	userID, err := uuid.Parse(c.Param("userId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid user id", nil, nil)
+		return
+	}
+	u, err := h.svc.GetUserContact(c.Request.Context(), userID)
+	if err != nil || u == nil {
+		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "user not found", nil, nil)
+		return
+	}
+	email := ""
+	if u.Email != nil {
+		email = *u.Email
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{
+		"user_id":        u.ID,
+		"email":          email,
+		"phone":          u.Phone,
+		"email_verified": u.EmailVerified,
+	}, nil)
 }
 
 func (h *Handler) Health(c *gin.Context) {

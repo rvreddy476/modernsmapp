@@ -13,11 +13,8 @@ final chatConversationsProvider =
       return repo.getConversations();
     });
 
-final chatConversationProvider =
-    FutureProvider.autoDispose.family<Conversation, String>((
-      ref,
-      conversationId,
-    ) async {
+final chatConversationProvider = FutureProvider.autoDispose
+    .family<Conversation, String>((ref, conversationId) async {
       final conversations = await ref.watch(chatConversationsProvider.future);
       for (final conversation in conversations) {
         if (conversation.id == conversationId) {
@@ -28,35 +25,36 @@ final chatConversationProvider =
       return repo.getConversation(conversationId);
     });
 
-final filteredConversationsProvider =
-    Provider.autoDispose<List<Conversation>>((ref) {
-      final conversationsAsync = ref.watch(chatConversationsProvider);
-      final query = ref.watch(chatSearchQueryProvider).toLowerCase();
-      final activeFilter = ref.watch(chatActiveFilterProvider);
-      final currentUserId = ref.watch(authServiceProvider).userId;
+final filteredConversationsProvider = Provider.autoDispose<List<Conversation>>((
+  ref,
+) {
+  final conversationsAsync = ref.watch(chatConversationsProvider);
+  final query = ref.watch(chatSearchQueryProvider).toLowerCase();
+  final activeFilter = ref.watch(chatActiveFilterProvider);
+  final currentUserId = ref.watch(authServiceProvider).userId;
 
-      return conversationsAsync.when(
-        data: (list) {
-          return list.where((conversation) {
-            final matchesFilter = switch (activeFilter) {
-              0 => true,
-              1 => conversation.unreadCount > 0,
-              2 => conversation.type == 'group',
-              3 => false,
-              _ => true,
-            };
-            if (!matchesFilter) return false;
+  return conversationsAsync.when(
+    data: (list) {
+      return list.where((conversation) {
+        final matchesFilter = switch (activeFilter) {
+          0 => true,
+          1 => conversation.unreadCount > 0,
+          2 => conversation.type == 'group',
+          3 => false,
+          _ => true,
+        };
+        if (!matchesFilter) return false;
 
-            if (query.isEmpty) return true;
-            final name = conversation.displayNameFor(currentUserId).toLowerCase();
-            final lastMessage = (conversation.lastMessage ?? '').toLowerCase();
-            return name.contains(query) || lastMessage.contains(query);
-          }).toList();
-        },
-        loading: () => const <Conversation>[],
-        error: (_, __) => const <Conversation>[],
-      );
-    });
+        if (query.isEmpty) return true;
+        final name = conversation.displayNameFor(currentUserId).toLowerCase();
+        final lastMessage = (conversation.lastMessage ?? '').toLowerCase();
+        return name.contains(query) || lastMessage.contains(query);
+      }).toList();
+    },
+    loading: () => const <Conversation>[],
+    error: (_, _) => const <Conversation>[],
+  );
+});
 
 final chatSearchQueryProvider = StateProvider<String>((ref) => '');
 final chatActiveFilterProvider = StateProvider<int>((ref) => 0);
@@ -64,6 +62,7 @@ final chatActiveFilterProvider = StateProvider<int>((ref) => 0);
 class ChatMessagesState {
   final List<Message> messages;
   final bool isLoading;
+  final bool isLoadingOlder;
   final bool isSending;
   final String? error;
   final bool hasReachedEnd;
@@ -74,6 +73,7 @@ class ChatMessagesState {
   const ChatMessagesState({
     this.messages = const [],
     this.isLoading = false,
+    this.isLoadingOlder = false,
     this.isSending = false,
     this.error,
     this.hasReachedEnd = false,
@@ -85,6 +85,7 @@ class ChatMessagesState {
   ChatMessagesState copyWith({
     List<Message>? messages,
     bool? isLoading,
+    bool? isLoadingOlder,
     bool? isSending,
     String? error,
     bool? hasReachedEnd,
@@ -95,6 +96,7 @@ class ChatMessagesState {
     return ChatMessagesState(
       messages: messages ?? this.messages,
       isLoading: isLoading ?? this.isLoading,
+      isLoadingOlder: isLoadingOlder ?? this.isLoadingOlder,
       isSending: isSending ?? this.isSending,
       error: error,
       hasReachedEnd: hasReachedEnd ?? this.hasReachedEnd,
@@ -144,12 +146,49 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
         nextCursor: page.nextCursor,
         hasReachedEnd: page.nextCursor == null || page.nextCursor!.isEmpty,
       );
-
-      await _markLatestIncomingMessageRead();
     } catch (_) {
       state = state.copyWith(
         isLoading: false,
         error: 'Failed to load messages',
+      );
+      return;
+    }
+
+    try {
+      await _markLatestIncomingMessageRead();
+    } catch (_) {
+      // Keep the loaded message state even if read-receipt persistence fails.
+    }
+  }
+
+  Future<void> loadOlderMessages() async {
+    if (state.isLoadingOlder || state.hasReachedEnd || state.nextCursor == null) {
+      return;
+    }
+
+    state = state.copyWith(isLoadingOlder: true, error: null);
+    try {
+      final page = await _repo.getMessages(
+        conversationId,
+        cursor: state.nextCursor,
+      );
+      final existingIds = state.messages.map((message) => message.id).toSet();
+      final older = page.messages
+          .where((message) => !existingIds.contains(message.id))
+          .toList();
+      final messages = [...older, ...state.messages]
+        ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+
+      state = state.copyWith(
+        messages: messages,
+        nextCursor: page.nextCursor,
+        hasReachedEnd: page.nextCursor == null || page.nextCursor!.isEmpty,
+        isLoadingOlder: false,
+      );
+    } catch (_) {
+      state = state.copyWith(
+        isLoadingOlder: false,
+        error: 'Failed to load older messages',
       );
     }
   }
@@ -165,10 +204,7 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
 
       state = state.copyWith(messages: messages, isSending: false);
     } catch (_) {
-      state = state.copyWith(
-        isSending: false,
-        error: 'Failed to send message',
-      );
+      state = state.copyWith(isSending: false, error: 'Failed to send message');
     }
   }
 
@@ -268,7 +304,12 @@ final chatMessagesProvider = StateNotifierProvider.autoDispose
       final repo = ref.watch(chatRepositoryProvider);
       final realtime = ref.watch(realtimeServiceProvider);
       final currentUserId = ref.watch(authServiceProvider).userId;
-      return ChatMessagesNotifier(repo, realtime, currentUserId, conversationId);
+      return ChatMessagesNotifier(
+        repo,
+        realtime,
+        currentUserId,
+        conversationId,
+      );
     });
 
 class PeerPresenceNotifier extends StateNotifier<AsyncValue<bool>> {
@@ -277,12 +318,14 @@ class PeerPresenceNotifier extends StateNotifier<AsyncValue<bool>> {
   final String userId;
 
   StreamSubscription? _realtimeSub;
+  bool _receivedRealtimeUpdate = false;
 
   PeerPresenceNotifier(this._repo, this._realtime, this.userId)
     : super(const AsyncValue.loading()) {
     _load();
     _realtimeSub = _realtime.events.listen((event) {
       if (event is PresenceUpdateEvent && event.userId == userId) {
+        _receivedRealtimeUpdate = true;
         state = AsyncValue.data(event.isOnline);
       }
     });
@@ -291,8 +334,14 @@ class PeerPresenceNotifier extends StateNotifier<AsyncValue<bool>> {
   Future<void> _load() async {
     try {
       final presence = await _repo.getPresence([userId]);
+      if (_receivedRealtimeUpdate) {
+        return;
+      }
       state = AsyncValue.data(presence[userId] ?? false);
     } catch (error, stackTrace) {
+      if (_receivedRealtimeUpdate) {
+        return;
+      }
       state = AsyncValue.error(error, stackTrace);
     }
   }

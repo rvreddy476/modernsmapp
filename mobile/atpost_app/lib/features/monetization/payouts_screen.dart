@@ -1,6 +1,7 @@
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_app/data/models/monetization.dart';
 import 'package:atpost_app/providers/monetization_provider.dart';
 import 'package:atpost_app/services/api_client.dart';
 import 'package:flutter/material.dart';
@@ -63,10 +64,7 @@ class _PayoutsScreenState extends ConsumerState<PayoutsScreen> {
                         style: AppTextStyles.bodySmall),
                   ),
                   data: (earnings) {
-                    final balance =
-                        earnings['available_balance']?.toString() ??
-                            earnings['pending_payout']?.toString() ??
-                            '0';
+                    final balance = earnings.pendingPayout.toString();
                     return _BalanceCard(
                       balance: balance,
                       onWithdraw: () => _showWithdrawDialog(context),
@@ -316,15 +314,15 @@ class _BalanceCard extends StatelessWidget {
 }
 
 class _PayoutRow extends StatelessWidget {
-  final Map<String, dynamic> payout;
+  final PayoutRecord payout;
 
   const _PayoutRow({required this.payout});
 
   @override
   Widget build(BuildContext context) {
-    final amount = payout['amount']?.toString() ?? '0';
-    final status = payout['status']?.toString() ?? 'pending';
-    final date = payout['created_at']?.toString() ?? '';
+    final amount = payout.amount.toString();
+    final status = payout.status;
+    final date = payout.createdAt.toString();
 
     Color statusColor;
     switch (status.toLowerCase()) {

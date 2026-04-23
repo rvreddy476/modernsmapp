@@ -45,5 +45,13 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>PostMatch uses the camera to capture a live selfie for onboarding verification.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>PostMatch uses your location to suggest nearby matches.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>PostMatch uses your photo library so you can choose profile photos for onboarding.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>PostMatch may save captured media while you complete onboarding.</string>
 </dict>
 </plist>

@@ -268,6 +268,14 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		deepLink := fmt.Sprintf("/post/%s", e.OriginalPostID)
 		return c.service.CreateNotification(ctx, originalAuthorID, reposterID, "post_reposted", "post", originalPostID, deepLink, e.CreatedAt)
 
+	case "commerce.order.created",
+		"commerce.order.paid",
+		"commerce.order.shipped",
+		"commerce.order.delivered",
+		"commerce.invoice.issued",
+		"commerce.seller.new_order":
+		return c.handleCommerceEvent(ctx, envelope.EventType, envelope.Payload)
+
 	default:
 		return nil
 	}

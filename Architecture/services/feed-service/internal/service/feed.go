@@ -65,7 +65,7 @@ type FeedItem struct {
 	ContentType string    `json:"content_type,omitempty"`
 }
 
-func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, feedMode string, excludeSelf bool, circleOnly bool) ([]FeedItem, error) {
+func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, feedMode string, excludeSelf bool, circleOnly bool, before *time.Time) ([]FeedItem, error) {
 	// Over-fetch for ranking headroom: 5x when ranked, normal otherwise
 	// Also over-fetch slightly when excluding self to compensate for filtered items
 	fetchLimit := limit
@@ -79,7 +79,13 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 	}
 
 	// 1. Get Home Timeline candidates
-	items, err := s.scyllaStore.GetHomeTimeline(ctx, userID, fetchLimit)
+	var items []scylla.FeedItem
+	var err error
+	if before != nil {
+		items, err = s.scyllaStore.GetHomeTimelineBefore(ctx, userID, *before, fetchLimit)
+	} else {
+		items, err = s.scyllaStore.GetHomeTimeline(ctx, userID, fetchLimit)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +146,7 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 	}
 
 	// Cold-start fallback: if timeline is empty, fetch recent public posts (only for ranked/discovery feeds)
-	if len(candidates) == 0 && feedMode == "ranked" {
+	if before == nil && len(candidates) == 0 && feedMode == "ranked" {
 		log.Printf("Cold-start fallback triggered for user %s (empty timeline), fetching from %s", userID, s.postServiceURL)
 		coldItems, err := s.getRecentPublicPosts(ctx, limit*2)
 		if err != nil {

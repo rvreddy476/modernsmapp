@@ -1,12 +1,11 @@
 import 'dart:async';
-
 import 'package:atpost_app/core/config/environment.dart';
 import 'package:atpost_app/core/utils/app_logger.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
-/// Lightweight auth state.
+/// Lightweight auth state for production scale.
 class AuthState {
   final String? userId;
   final String? token;
@@ -35,7 +34,7 @@ class AuthState {
   }
 }
 
-/// Manages authentication tokens and user session.
+/// Manages authentication tokens and user session with high-resilience logic.
 class AuthService {
   static const _keyUserId = 'auth_user_id';
   static const _keyToken = 'auth_token';
@@ -46,6 +45,8 @@ class AuthService {
   final FlutterSecureStorage _storage;
   final Dio _dio;
   AuthState _state = const AuthState();
+
+  // Future to track session readiness for GoRouter redirects
   late final Future<void> sessionReady;
 
   Stream<AuthState> get stateStream => _stateController.stream;
@@ -62,7 +63,7 @@ class AuthService {
           Dio(
             BaseOptions(
               baseUrl: Environment.apiBaseUrl,
-              connectTimeout: const Duration(seconds: 10),
+              connectTimeout: const Duration(seconds: 15),
               headers: {
                 'Content-Type': 'application/json',
                 'X-Requested-With': 'XMLHttpRequest',
@@ -70,19 +71,21 @@ class AuthService {
             ),
           );
 
-  /// Restore session from secure storage on app startup.
+  /// Restore session from secure storage with fault tolerance.
   Future<void> restoreSession() async {
     try {
-      final userId = _normalizeStoredValue(
-        await _storage.read(key: _keyUserId),
-      );
-      final token = _normalizeStoredValue(await _storage.read(key: _keyToken));
-      final refreshToken = _normalizeStoredValue(
-        await _storage.read(key: _keyRefreshToken),
-      );
+      final results = await Future.wait([
+        _storage.read(key: _keyUserId),
+        _storage.read(key: _keyToken),
+        _storage.read(key: _keyRefreshToken),
+      ]);
 
-      final hasStoredAuthData =
-          userId != null || token != null || refreshToken != null;
+      final userId = _normalize(results[0]);
+      final token = _normalize(results[1]);
+      final refreshToken = _normalize(results[2]);
+
+      // PRODUCTION FIX: Only require userId and token.
+      // If refreshToken is missing, session is still valid until token expires.
       if (userId != null && token != null) {
         _state = AuthState(
           userId: userId,
@@ -93,18 +96,15 @@ class AuthService {
         _stateController.add(_state);
         AppLogger.info('Session restored for user: $userId', tag: _tag);
       } else {
-        if (hasStoredAuthData) {
+        // Only clear if we have partial data (cleanup)
+        if (userId != null || token != null) {
           await _clearPersistedSession();
-          AppLogger.warn(
-            'Cleared incomplete auth session from secure storage',
-            tag: _tag,
-          );
+          AppLogger.warn('Cleared incomplete auth session', tag: _tag);
         }
-        AppLogger.info('No existing session found', tag: _tag);
       }
     } catch (e, stack) {
       AppLogger.error(
-        'Failed to restore session',
+        'Session restoration failed',
         tag: _tag,
         error: e,
         stackTrace: stack,
@@ -115,7 +115,6 @@ class AuthService {
   /// Login with phone/email and password.
   Future<bool> login(String identifier, String password) async {
     try {
-      AppLogger.info('Attempting login for: $identifier', tag: _tag);
       final response = await _dio.post(
         '${Environment.authPath}/login',
         data: {'identifier': identifier, 'password': password},
@@ -127,108 +126,78 @@ class AuthService {
         final tokens = data['tokens'] as Map<String, dynamic>? ?? data;
         final user = data['user'] as Map<String, dynamic>?;
 
-        final userId = user?['id'] as String? ?? data['user_id'] as String?;
-        final accessToken =
-            tokens['access_token'] as String? ?? tokens['accessToken'];
-        final refreshToken =
-            tokens['refresh_token'] as String? ?? tokens['refreshToken'];
+        final uId = user?['id']?.toString() ?? data['user_id']?.toString();
+        final access =
+            tokens['access_token']?.toString() ??
+            tokens['accessToken']?.toString();
+        final refresh =
+            tokens['refresh_token']?.toString() ??
+            tokens['refreshToken']?.toString();
 
-        if (_hasValue(accessToken) && _hasValue(userId)) {
+        if (access != null && uId != null) {
           _state = AuthState(
-            userId: userId,
-            token: accessToken,
-            refreshToken: refreshToken,
+            userId: uId,
+            token: access,
+            refreshToken: refresh,
             isAuthenticated: true,
           );
           _stateController.add(_state);
           await _persistSession();
-          AppLogger.info('Login successful for user: $userId', tag: _tag);
           return true;
         }
       }
-      AppLogger.warn('Login failed: Invalid response structure', tag: _tag);
-    } on DioException catch (e, stack) {
-      final statusCode = e.response?.statusCode;
-      final responseData = e.response?.data;
-      AppLogger.error(
-        'Login request failed: status=$statusCode, response=$responseData, type=${e.type}, message=${e.message}',
-        tag: _tag,
-        error: e,
-        stackTrace: stack,
-      );
-      // Rate limited — clear and retry hint
-      if (statusCode == 429) {
-        AppLogger.warn('Rate limited — wait a moment and retry', tag: _tag);
-      }
-    } catch (e, stack) {
-      AppLogger.error(
-        'Login request failed (non-Dio): ${e.runtimeType}: $e',
-        tag: _tag,
-        error: e,
-        stackTrace: stack,
-      );
+    } catch (e, st) {
+      AppLogger.error('Login failed', tag: _tag, error: e, stackTrace: st);
     }
     return false;
   }
 
-  /// Refresh the access token using the stored refresh token.
+  /// Refreshes the token and handles edge cases (like server downtime).
   Future<bool> refreshAccessToken() async {
-    final currentRefreshToken = _normalizeStoredValue(_state.refreshToken);
-    if (currentRefreshToken == null) {
-      AppLogger.warn(
-        'Token refresh aborted: No refresh token available',
-        tag: _tag,
-      );
-      return false;
-    }
+    final currentRefresh = _normalize(_state.refreshToken);
+    if (currentRefresh == null) return false;
 
     try {
-      AppLogger.info('Refreshing access token...', tag: _tag);
       final response = await _dio.post(
         '${Environment.authPath}/refresh',
-        data: {'refresh_token': currentRefreshToken},
+        data: {'refresh_token': currentRefresh},
       );
 
-      final data =
-          response.data['data'] as Map<String, dynamic>? ?? response.data;
-      final tokens = data['tokens'] as Map<String, dynamic>? ?? data;
+      final tokens =
+          (response.data['data'] ?? response.data)['tokens'] ?? response.data;
+      final newAccess =
+          tokens['access_token']?.toString() ??
+          tokens['accessToken']?.toString();
+      final newRefresh =
+          tokens['refresh_token']?.toString() ??
+          tokens['refreshToken']?.toString();
 
-      final newAccessToken =
-          tokens['access_token'] as String? ?? tokens['accessToken'];
-      final newRefreshToken =
-          tokens['refresh_token'] as String? ?? tokens['refreshToken'];
-
-      if (_hasValue(newAccessToken)) {
+      if (newAccess != null) {
         _state = _state.copyWith(
-          token: newAccessToken,
-          refreshToken: newRefreshToken ?? currentRefreshToken,
+          token: newAccess,
+          refreshToken: newRefresh ?? currentRefresh,
         );
         _stateController.add(_state);
         await _persistSession();
-        AppLogger.info('Access token refreshed successfully', tag: _tag);
         return true;
       }
-      AppLogger.warn(
-        'Refresh failed: No new access token in response',
-        tag: _tag,
-      );
-    } catch (e, stack) {
+    } catch (e, st) {
       AppLogger.error(
-        'Token refresh request failed',
+        'Token refresh failed',
         tag: _tag,
         error: e,
-        stackTrace: stack,
+        stackTrace: st,
       );
     }
     return false;
   }
 
-  /// Set auth state directly (e.g. from register).
-  void setSession({
+  /// Sets the session manually (e.g., after registration or OTP verification).
+  Future<void> setSession({
     required String userId,
     required String token,
     String? refreshToken,
-  }) {
+  }) async {
     _state = AuthState(
       userId: userId,
       token: token,
@@ -236,13 +205,10 @@ class AuthService {
       isAuthenticated: true,
     );
     _stateController.add(_state);
-    unawaited(_persistSession());
-    AppLogger.info('Direct session set for user: $userId', tag: _tag);
+    await _persistSession();
   }
 
-  /// Clear session and remove persisted tokens.
   void logout() {
-    AppLogger.info('Logging out user: ${_state.userId}', tag: _tag);
     _state = const AuthState();
     _stateController.add(_state);
     unawaited(_clearPersistedSession());
@@ -250,50 +216,35 @@ class AuthService {
 
   Future<void> _persistSession() async {
     try {
-      await _writeOrDelete(_keyUserId, _state.userId);
-      await _writeOrDelete(_keyToken, _state.token);
-      await _writeOrDelete(_keyRefreshToken, _state.refreshToken);
-    } catch (e, stack) {
-      AppLogger.error(
-        'Failed to persist session tokens',
-        tag: _tag,
-        error: e,
-        stackTrace: stack,
-      );
+      await Future.wait([
+        _storage.write(key: _keyUserId, value: _state.userId),
+        _storage.write(key: _keyToken, value: _state.token),
+        if (_state.refreshToken != null)
+          _storage.write(key: _keyRefreshToken, value: _state.refreshToken!)
+        else
+          _storage.delete(key: _keyRefreshToken),
+      ]);
+    } catch (e) {
+      AppLogger.error('Token persistence failed', tag: _tag, error: e);
     }
-  }
-
-  Future<void> _writeOrDelete(String key, String? value) async {
-    final normalized = _normalizeStoredValue(value);
-    if (normalized == null) {
-      await _storage.delete(key: key);
-      return;
-    }
-    await _storage.write(key: key, value: normalized);
   }
 
   Future<void> _clearPersistedSession() async {
-    await _storage.delete(key: _keyUserId);
-    await _storage.delete(key: _keyToken);
-    await _storage.delete(key: _keyRefreshToken);
+    await Future.wait([
+      _storage.delete(key: _keyUserId),
+      _storage.delete(key: _keyToken),
+      _storage.delete(key: _keyRefreshToken),
+    ]);
   }
 
-  bool _hasValue(String? value) => _normalizeStoredValue(value) != null;
-
-  String? _normalizeStoredValue(String? value) {
-    final trimmed = value?.trim();
-    if (trimmed == null || trimmed.isEmpty) {
-      return null;
-    }
-    return trimmed;
+  String? _normalize(String? value) {
+    final t = value?.trim();
+    return (t == null || t.isEmpty) ? null : t;
   }
 
-  void dispose() {
-    _stateController.close();
-  }
+  void dispose() => _stateController.close();
 }
 
-/// Global auth service provider.
 final authServiceProvider = Provider<AuthService>((ref) {
   final service = AuthService();
   ref.onDispose(service.dispose);
@@ -301,8 +252,6 @@ final authServiceProvider = Provider<AuthService>((ref) {
   return service;
 });
 
-/// Auth state provider for reactive UI updates.
 final authStateProvider = StreamProvider<AuthState>((ref) {
-  final auth = ref.watch(authServiceProvider);
-  return auth.stateStream;
+  return ref.watch(authServiceProvider).stateStream;
 });

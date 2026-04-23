@@ -1,7 +1,7 @@
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
-import 'package:atpost_app/features/discover/question_detail_screen.dart';
+import 'package:atpost_app/features/qa/question_detail_screen.dart';
 import 'package:atpost_app/features/discover/qa_question_tile.dart';
 import 'package:atpost_app/providers/qa_provider.dart';
 import 'package:flutter/material.dart';
@@ -159,7 +159,7 @@ class _TopicDetailScreenState extends ConsumerState<TopicDetailScreen> {
                             (question) => Padding(
                               padding: const EdgeInsets.only(bottom: 12),
                               child: QaQuestionTile(
-                                question: question,
+                                question: question.toSummary(),
                                 onTap: () {
                                   Navigator.of(context).push(
                                     MaterialPageRoute<void>(

@@ -28,11 +28,12 @@ type CallResponse struct {
 
 // JoinResponse is returned when a user joins a call.
 type JoinResponse struct {
-	CallID              uuid.UUID      `json:"call_id"`
-	SFUToken            string         `json:"sfu_token"`
-	SFURoomName         string         `json:"sfu_room_name"`
-	ICEServers          []sfu.ICEServer `json:"ice_servers"`
-	SignalingEndpoint   string         `json:"signaling_endpoint"`
+	CallID                uuid.UUID       `json:"call_id"`
+	SFUToken              string          `json:"sfu_token"`
+	SFURoomName           string          `json:"sfu_room_name"`
+	SFUProvider           string          `json:"sfu_provider"`
+	ICEServers            []sfu.ICEServer `json:"ice_servers"`
+	SignalingEndpoint     string          `json:"signaling_endpoint"`
 	ReconnectGraceSeconds int          `json:"reconnect_grace_seconds"`
 }
 
