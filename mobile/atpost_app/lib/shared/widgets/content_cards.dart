@@ -92,9 +92,9 @@ class _PostCardState extends ConsumerState<PostCard> {
     if (!mounted) return;
 
     setState(() => _shareCount += 1);
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Post link copied.')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Post link copied.')));
 
     try {
       await ref.read(postRepositoryProvider).sharePost(post.id);
@@ -125,20 +125,24 @@ class _PostCardState extends ConsumerState<PostCard> {
     if (reason == null) return;
 
     try {
-      await ref.read(postRepositoryProvider).submitReport(
-            targetType: post.isReel ? 'reel' : (post.isVideo ? 'video' : 'post'),
+      await ref
+          .read(postRepositoryProvider)
+          .submitReport(
+            targetType: post.isReel
+                ? 'reel'
+                : (post.isVideo ? 'video' : 'post'),
             targetId: post.id,
             reason: reason,
           );
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Report submitted.')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Report submitted.')));
     } catch (_) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not submit report.')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Could not submit report.')));
     }
   }
 
@@ -210,9 +214,9 @@ class _PostCardState extends ConsumerState<PostCard> {
         switch (value) {
           case 'copy':
             Clipboard.setData(ClipboardData(text: _postLink));
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Post link copied.')),
-            );
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(const SnackBar(content: Text('Post link copied.')));
             return;
           case 'report':
             _reportPost();

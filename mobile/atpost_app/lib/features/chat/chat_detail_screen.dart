@@ -198,7 +198,9 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
       width: 42,
       height: 42,
       decoration: BoxDecoration(
-        gradient: isGroup ? AppColors.posttubeGradient : AppColors.postbookGradient,
+        gradient: isGroup
+            ? AppColors.posttubeGradient
+            : AppColors.postbookGradient,
         borderRadius: BorderRadius.circular(14),
       ),
       child: Center(
@@ -256,8 +258,12 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
                 onPressed: state.isLoadingOlder
                     ? null
                     : () => ref
-                        .read(chatMessagesProvider(widget.conversationId).notifier)
-                        .loadOlderMessages(),
+                          .read(
+                            chatMessagesProvider(
+                              widget.conversationId,
+                            ).notifier,
+                          )
+                          .loadOlderMessages(),
                 icon: state.isLoadingOlder
                     ? const SizedBox(
                         width: 14,
@@ -290,7 +296,10 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
     );
   }
 
-  Widget _buildComposer(ChatMessagesState state, ChatMessagesNotifier notifier) {
+  Widget _buildComposer(
+    ChatMessagesState state,
+    ChatMessagesNotifier notifier,
+  ) {
     final hasText = _composerController.text.trim().isNotEmpty;
 
     return Padding(
@@ -360,18 +369,22 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
     if (peerId == null || peerId.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Audio and video calls are only available in direct chats.'),
+          content: Text(
+            'Audio and video calls are only available in direct chats.',
+          ),
         ),
       );
       return;
     }
 
-    await ref.read(callProvider.notifier).initiateCall(
-      contactId: peerId,
-      contactName: title,
-      contactAvatar: '',
-      type: type,
-    );
+    await ref
+        .read(callProvider.notifier)
+        .initiateCall(
+          contactId: peerId,
+          contactName: title,
+          contactAvatar: '',
+          type: type,
+        );
   }
 
   String _subtitleFor({
@@ -380,7 +393,9 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
     required AsyncValue<bool>? peerPresence,
     required Set<String> typingUserIds,
   }) {
-    final remoteTyping = typingUserIds.where((id) => id != currentUserId).isNotEmpty;
+    final remoteTyping = typingUserIds
+        .where((id) => id != currentUserId)
+        .isNotEmpty;
     if (remoteTyping) {
       return 'Typing...';
     }
@@ -494,10 +509,7 @@ class _MessageBubble extends StatelessWidget {
         ],
       );
     }
-    return Text(
-      text,
-      style: AppTextStyles.body.copyWith(color: Colors.white),
-    );
+    return Text(text, style: AppTextStyles.body.copyWith(color: Colors.white));
   }
 
   String _formatTime(DateTime dt) {

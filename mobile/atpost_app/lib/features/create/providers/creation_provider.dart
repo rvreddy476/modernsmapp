@@ -85,15 +85,19 @@ class CreationNotifier extends StateNotifier<CreationState> {
   final PostRepository _postRepo;
   final ApiClient _apiClient;
 
-  CreationNotifier(this._postRepo, this._apiClient) : super(const CreationState());
+  CreationNotifier(this._postRepo, this._apiClient)
+    : super(const CreationState());
 
   void setType(PostType type) => state = state.copyWith(type: type);
   void setText(String text) => state = state.copyWith(text: text);
-  void setVisibility(PostVisibility visibility) => state = state.copyWith(visibility: visibility);
+  void setVisibility(PostVisibility visibility) =>
+      state = state.copyWith(visibility: visibility);
   void setMood(String? mood) => state = state.copyWith(mood: mood);
-  void setLocation(String? location) => state = state.copyWith(location: location);
+  void setLocation(String? location) =>
+      state = state.copyWith(location: location);
 
-  void addFiles(List<XFile> newFiles) => state = state.copyWith(files: [...state.files, ...newFiles]);
+  void addFiles(List<XFile> newFiles) =>
+      state = state.copyWith(files: [...state.files, ...newFiles]);
   void removeFile(int index) {
     final newFiles = List<XFile>.from(state.files)..removeAt(index);
     state = state.copyWith(files: newFiles);
@@ -117,7 +121,8 @@ class CreationNotifier extends StateNotifier<CreationState> {
     state = state.copyWith(pollOptions: options);
   }
 
-  void setAllowsMultipleVotes(bool value) => state = state.copyWith(allowsMultipleVotes: value);
+  void setAllowsMultipleVotes(bool value) =>
+      state = state.copyWith(allowsMultipleVotes: value);
 
   /// AI content enhancement (The "Sparkle" feature)
   Future<void> enhanceWithAi() async {
@@ -141,7 +146,10 @@ class CreationNotifier extends StateNotifier<CreationState> {
         );
       }
     } catch (e) {
-      state = state.copyWith(isGeneratingAi: false, error: 'AI enhancement failed');
+      state = state.copyWith(
+        isGeneratingAi: false,
+        error: 'AI enhancement failed',
+      );
     }
   }
 
@@ -209,9 +217,10 @@ class CreationNotifier extends StateNotifier<CreationState> {
   void reset() => state = const CreationState();
 }
 
-final creationProvider = StateNotifierProvider.autoDispose<CreationNotifier, CreationState>((ref) {
-  return CreationNotifier(
-    ref.watch(postRepositoryProvider),
-    ref.watch(apiClientProvider),
-  );
-});
+final creationProvider =
+    StateNotifierProvider.autoDispose<CreationNotifier, CreationState>((ref) {
+      return CreationNotifier(
+        ref.watch(postRepositoryProvider),
+        ref.watch(apiClientProvider),
+      );
+    });

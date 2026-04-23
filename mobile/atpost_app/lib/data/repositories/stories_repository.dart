@@ -28,12 +28,15 @@ class StoriesRepository {
     required String mediaType,
     String? text,
   }) async {
-    await _api.post('/v1/stories', data: {
-      'media_url': _mediaUrl(mediaId),
-      'media_type': mediaType,
-      'caption': text,
-      'visibility': 'public',
-    });
+    await _api.post(
+      '/v1/stories',
+      data: {
+        'media_url': _mediaUrl(mediaId),
+        'media_type': mediaType,
+        'caption': text,
+        'visibility': 'public',
+      },
+    );
   }
 }
 

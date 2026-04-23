@@ -115,11 +115,7 @@ class ICEServer {
   final String? username;
   final String? credential;
 
-  const ICEServer({
-    required this.urls,
-    this.username,
-    this.credential,
-  });
+  const ICEServer({required this.urls, this.username, this.credential});
 
   factory ICEServer.fromJson(Map<String, dynamic> json) {
     final rawUrls = json['urls'];
@@ -173,8 +169,7 @@ class JoinResponse {
               .toList() ??
           const <ICEServer>[],
       signalingEndpoint: json['signaling_endpoint'] as String? ?? '',
-      reconnectGraceSeconds:
-          json['reconnect_grace_seconds'] as int? ?? 0,
+      reconnectGraceSeconds: json['reconnect_grace_seconds'] as int? ?? 0,
     );
   }
 }

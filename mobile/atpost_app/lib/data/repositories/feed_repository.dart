@@ -46,7 +46,9 @@ class FeedRepository {
       } else {
         rawData = [];
       }
-      final posts = rawData.map((e) => Post.fromJson(e as Map<String, dynamic>)).toList();
+      final posts = rawData
+          .map((e) => Post.fromJson(e as Map<String, dynamic>))
+          .toList();
 
       final meta = response.data['meta'] as Map<String, dynamic>?;
       final nextCursor = meta?['next_cursor'] as String?;
@@ -85,15 +87,14 @@ class FeedRepository {
     String platform = 'postbook',
     bool excludeSelf = false,
     bool circleOnly = false,
-  }) =>
-      getHomeFeedPage(
-        limit: limit,
-        cursor: cursor,
-        feedMode: feedMode,
-        platform: platform,
-        excludeSelf: excludeSelf,
-        circleOnly: circleOnly,
-      );
+  }) => getHomeFeedPage(
+    limit: limit,
+    cursor: cursor,
+    feedMode: feedMode,
+    platform: platform,
+    excludeSelf: excludeSelf,
+    circleOnly: circleOnly,
+  );
 
   /// Fetch specialized feeds (Reels, Videos).
   /// (Note: These might use specific paths based on the spec extension)
@@ -106,7 +107,9 @@ class FeedRepository {
     final rawData = response.data['data'] as List<dynamic>? ?? [];
 
     return FeedPage(
-      items: rawData.map((e) => Post.fromJson(e as Map<String, dynamic>)).toList(),
+      items: rawData
+          .map((e) => Post.fromJson(e as Map<String, dynamic>))
+          .toList(),
       nextCursor: response.data['meta']?['next_cursor'],
     );
   }
@@ -119,7 +122,9 @@ class FeedRepository {
     final rawData = response.data['data'] as List<dynamic>? ?? [];
 
     return FeedPage(
-      items: rawData.map((e) => Post.fromJson(e as Map<String, dynamic>)).toList(),
+      items: rawData
+          .map((e) => Post.fromJson(e as Map<String, dynamic>))
+          .toList(),
       nextCursor: response.data['meta']?['next_cursor'],
     );
   }

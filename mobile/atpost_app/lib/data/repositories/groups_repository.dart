@@ -45,12 +45,15 @@ class GroupsRepository {
     required String privacy,
     String? coverMediaId,
   }) async {
-    final response = await _api.post('/v1/groups', data: {
-      'name': name,
-      'description': description,
-      'privacy': privacy,
-      'cover_media_id': coverMediaId,
-    });
+    final response = await _api.post(
+      '/v1/groups',
+      data: {
+        'name': name,
+        'description': description,
+        'privacy': privacy,
+        'cover_media_id': coverMediaId,
+      },
+    );
     final data = response.data;
     if (data is Map<String, dynamic>) {
       final payload = data['data'] as Map<String, dynamic>? ?? data;
@@ -68,10 +71,7 @@ class GroupsRepository {
   }
 
   Future<void> inviteUser(String groupId, String userId) async {
-    await _api.post(
-      '/v1/groups/$groupId/invite',
-      data: {'user_id': userId},
-    );
+    await _api.post('/v1/groups/$groupId/invite', data: {'user_id': userId});
   }
 
   Future<List<Post>> getGroupPosts(String groupId, {int page = 1}) async {

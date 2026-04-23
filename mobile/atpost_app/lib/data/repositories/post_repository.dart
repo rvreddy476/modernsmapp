@@ -67,13 +67,13 @@ class PostRepository {
 
   /// Get AI-assisted caption suggestions (Sparkles).
   /// Synchronized with /v1/ai/caption/suggest from OpenAPI spec.
-  Future<List<String>> getAiCaptionSuggestions(String text, {String? draftId}) async {
+  Future<List<String>> getAiCaptionSuggestions(
+    String text, {
+    String? draftId,
+  }) async {
     final response = await _api.post(
       '/v1/ai/caption/suggest',
-      data: {
-        'draft_id': draftId ?? 'new-draft',
-        'text': text,
-      },
+      data: {'draft_id': draftId ?? 'new-draft', 'text': text},
     );
     final data = response.data as Map<String, dynamic>;
     return (data['suggestions'] as List?)?.cast<String>() ?? [];
@@ -87,10 +87,7 @@ class PostRepository {
   }) async {
     final response = await _api.post(
       '/v1/ai/post/suggest',
-      data: {
-        'text': text,
-        'context': context,
-      },
+      data: {'text': text, 'context': context},
     );
     return response.data['data'] as Map<String, dynamic>;
   }

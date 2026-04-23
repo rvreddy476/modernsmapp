@@ -16,16 +16,19 @@ class CallsRepository {
     int? maxParticipants,
     String? idempotencyKey,
   }) async {
-    final response = await _api.post('/v1/calls', data: {
-      'call_type': callType,
-      'source_type': sourceType,
-      if (sourceId != null && sourceId.isNotEmpty) 'source_id': sourceId,
-      'audio_only': audioOnly,
-      'target_user_ids': targetUserIds,
-      if (maxParticipants != null) 'max_participants': maxParticipants,
-      if (idempotencyKey != null && idempotencyKey.isNotEmpty)
-        'idempotency_key': idempotencyKey,
-    });
+    final response = await _api.post(
+      '/v1/calls',
+      data: {
+        'call_type': callType,
+        'source_type': sourceType,
+        if (sourceId != null && sourceId.isNotEmpty) 'source_id': sourceId,
+        'audio_only': audioOnly,
+        'target_user_ids': targetUserIds,
+        if (maxParticipants != null) 'max_participants': maxParticipants,
+        if (idempotencyKey != null && idempotencyKey.isNotEmpty)
+          'idempotency_key': idempotencyKey,
+      },
+    );
     return CallSession.fromJson(response.data['data'] as Map<String, dynamic>);
   }
 
@@ -79,8 +82,12 @@ class CallsRepository {
       params['cursor'] = cursor;
     }
 
-    final response = await _api.get('/v1/calls/history', queryParameters: params);
-    final items = (response.data['data'] as List<dynamic>? ?? const <dynamic>[]);
+    final response = await _api.get(
+      '/v1/calls/history',
+      queryParameters: params,
+    );
+    final items =
+        (response.data['data'] as List<dynamic>? ?? const <dynamic>[]);
     return items
         .map((item) => CallHistoryItem.fromJson(item as Map<String, dynamic>))
         .toList();

@@ -12,10 +12,12 @@ class SecuritySettingsScreen extends ConsumerStatefulWidget {
   const SecuritySettingsScreen({super.key});
 
   @override
-  ConsumerState<SecuritySettingsScreen> createState() => _SecuritySettingsScreenState();
+  ConsumerState<SecuritySettingsScreen> createState() =>
+      _SecuritySettingsScreenState();
 }
 
-class _SecuritySettingsScreenState extends ConsumerState<SecuritySettingsScreen> {
+class _SecuritySettingsScreenState
+    extends ConsumerState<SecuritySettingsScreen> {
   final _formKey = GlobalKey<FormState>();
   final _currentPasswordController = TextEditingController();
   final _newPasswordController = TextEditingController();
@@ -55,7 +57,9 @@ class _SecuritySettingsScreenState extends ConsumerState<SecuritySettingsScreen>
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to ${enable ? 'enable' : 'disable'} 2FA')),
+          SnackBar(
+            content: Text('Failed to ${enable ? 'enable' : 'disable'} 2FA'),
+          ),
         );
       }
     } finally {
@@ -67,13 +71,15 @@ class _SecuritySettingsScreenState extends ConsumerState<SecuritySettingsScreen>
     if (!(_formKey.currentState?.validate() ?? false)) return;
     setState(() => _savingPassword = true);
     try {
-      await ref.read(apiClientProvider).post(
-        '${Environment.authPath}/change-password',
-        data: {
-          'current_password': _currentPasswordController.text,
-          'new_password': _newPasswordController.text,
-        },
-      );
+      await ref
+          .read(apiClientProvider)
+          .post(
+            '${Environment.authPath}/change-password',
+            data: {
+              'current_password': _currentPasswordController.text,
+              'new_password': _newPasswordController.text,
+            },
+          );
       if (mounted) {
         _currentPasswordController.clear();
         _newPasswordController.clear();
@@ -97,15 +103,18 @@ class _SecuritySettingsScreenState extends ConsumerState<SecuritySettingsScreen>
     if (_loadingSessions) return;
     setState(() => _loadingSessions = true);
     try {
-      final response = await ref.read(apiClientProvider).get(
-            '${Environment.authPath}/sessions',
-          );
+      final response = await ref
+          .read(apiClientProvider)
+          .get('${Environment.authPath}/sessions');
       final items = (response.data['data'] as List<dynamic>?) ?? [];
       if (!mounted) return;
       setState(() {
         _sessions = items
             .whereType<Map>()
-            .map((item) => _ActiveSession.fromJson(Map<String, dynamic>.from(item)))
+            .map(
+              (item) =>
+                  _ActiveSession.fromJson(Map<String, dynamic>.from(item)),
+            )
             .toList();
       });
     } catch (_) {
@@ -125,14 +134,14 @@ class _SecuritySettingsScreenState extends ConsumerState<SecuritySettingsScreen>
           .delete('${Environment.authPath}/sessions/$sessionId');
       await _loadSessions();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Session revoked')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Session revoked')));
     } catch (_) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Failed to revoke session')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Failed to revoke session')));
     }
   }
 
@@ -161,7 +170,9 @@ class _SecuritySettingsScreenState extends ConsumerState<SecuritySettingsScreen>
     if (confirmed != true) return;
 
     try {
-      await ref.read(apiClientProvider).post('${Environment.authPath}/logout-all');
+      await ref
+          .read(apiClientProvider)
+          .post('${Environment.authPath}/logout-all');
       ref.read(authServiceProvider).logout();
       if (mounted) context.go('/login');
     } catch (_) {
@@ -180,7 +191,10 @@ class _SecuritySettingsScreenState extends ConsumerState<SecuritySettingsScreen>
         backgroundColor: AppColors.bgPrimary,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new, color: AppColors.textPrimary),
+          icon: const Icon(
+            Icons.arrow_back_ios_new,
+            color: AppColors.textPrimary,
+          ),
           onPressed: () => context.pop(),
         ),
         title: Text('Security', style: AppTextStyles.h2),
@@ -207,9 +221,11 @@ class _SecuritySettingsScreenState extends ConsumerState<SecuritySettingsScreen>
                     controller: _currentPasswordController,
                     label: 'Current Password',
                     obscure: _obscureCurrent,
-                    onToggle: () => setState(() => _obscureCurrent = !_obscureCurrent),
-                    validator: (v) =>
-                        (v == null || v.isEmpty) ? 'Enter your current password' : null,
+                    onToggle: () =>
+                        setState(() => _obscureCurrent = !_obscureCurrent),
+                    validator: (v) => (v == null || v.isEmpty)
+                        ? 'Enter your current password'
+                        : null,
                   ),
                   const SizedBox(height: 14),
                   _PasswordField(
@@ -228,10 +244,13 @@ class _SecuritySettingsScreenState extends ConsumerState<SecuritySettingsScreen>
                     controller: _confirmPasswordController,
                     label: 'Confirm New Password',
                     obscure: _obscureConfirm,
-                    onToggle: () => setState(() => _obscureConfirm = !_obscureConfirm),
+                    onToggle: () =>
+                        setState(() => _obscureConfirm = !_obscureConfirm),
                     validator: (v) {
-                      if (v == null || v.isEmpty) return 'Confirm your new password';
-                      if (v != _newPasswordController.text) return 'Passwords do not match';
+                      if (v == null || v.isEmpty)
+                        return 'Confirm your new password';
+                      if (v != _newPasswordController.text)
+                        return 'Passwords do not match';
                       return null;
                     },
                   ),
@@ -245,7 +264,9 @@ class _SecuritySettingsScreenState extends ConsumerState<SecuritySettingsScreen>
                         foregroundColor: Colors.white,
                         padding: const EdgeInsets.symmetric(vertical: 14),
                         shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
+                          borderRadius: BorderRadius.circular(
+                            AppSpacing.radiusLarge,
+                          ),
                         ),
                       ),
                       child: _savingPassword
@@ -276,12 +297,17 @@ class _SecuritySettingsScreenState extends ConsumerState<SecuritySettingsScreen>
             ),
             child: SwitchListTile(
               contentPadding: const EdgeInsets.symmetric(horizontal: 16),
-              title: Text('Two-Factor Authentication', style: AppTextStyles.body),
+              title: Text(
+                'Two-Factor Authentication',
+                style: AppTextStyles.body,
+              ),
               subtitle: Text(
                 _togglingTwoFactor
                     ? 'Updating...'
                     : 'Add an extra layer of security to your account',
-                style: AppTextStyles.bodySmall.copyWith(color: AppColors.textSecondary),
+                style: AppTextStyles.bodySmall.copyWith(
+                  color: AppColors.textSecondary,
+                ),
               ),
               value: _twoFactorEnabled,
               activeThumbColor: AppColors.postbookPrimary,
@@ -310,7 +336,11 @@ class _SecuritySettingsScreenState extends ConsumerState<SecuritySettingsScreen>
         children: [
           Row(
             children: [
-              const Icon(Icons.devices_outlined, color: AppColors.textMuted, size: 22),
+              const Icon(
+                Icons.devices_outlined,
+                color: AppColors.textMuted,
+                size: 22,
+              ),
               const SizedBox(width: 12),
               Expanded(
                 child: Text('Signed-in devices', style: AppTextStyles.body),
@@ -397,10 +427,13 @@ class _SessionTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final title = session.platform.isEmpty ? 'Unknown device' : session.platform;
+    final title = session.platform.isEmpty
+        ? 'Unknown device'
+        : session.platform;
     final subtitle = [
       if (session.ip.isNotEmpty) session.ip,
-      if (session.expiresAt != null) 'expires ${_dateLabel(session.expiresAt!)}',
+      if (session.expiresAt != null)
+        'expires ${_dateLabel(session.expiresAt!)}',
     ].join(' - ');
 
     return ListTile(
@@ -462,10 +495,15 @@ class _PasswordField extends StatelessWidget {
       style: AppTextStyles.body.copyWith(color: AppColors.textPrimary),
       decoration: InputDecoration(
         labelText: label,
-        labelStyle: AppTextStyles.bodySmall.copyWith(color: AppColors.textSecondary),
+        labelStyle: AppTextStyles.bodySmall.copyWith(
+          color: AppColors.textSecondary,
+        ),
         filled: true,
         fillColor: AppColors.bgSecondary,
-        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 16,
+          vertical: 12,
+        ),
         suffixIcon: IconButton(
           icon: Icon(
             obscure ? Icons.visibility_outlined : Icons.visibility_off_outlined,

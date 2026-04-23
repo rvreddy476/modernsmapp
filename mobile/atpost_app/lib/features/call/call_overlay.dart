@@ -75,9 +75,7 @@ class _CallOverlayState extends ConsumerState<CallOverlay> {
       color: Colors.transparent,
       child: Container(
         color: AppColors.bgPrimary.withValues(alpha: 0.95),
-        child: SafeArea(
-          child: _buildContent(callInfo),
-        ),
+        child: SafeArea(child: _buildContent(callInfo)),
       ),
     );
   }
@@ -113,7 +111,9 @@ class _CallOverlayState extends ConsumerState<CallOverlay> {
         const SizedBox(height: 8),
         Text(
           isVideo ? 'Incoming video call...' : 'Incoming audio call...',
-          style: AppTextStyles.bodySmall.copyWith(color: AppColors.textTertiary),
+          style: AppTextStyles.bodySmall.copyWith(
+            color: AppColors.textTertiary,
+          ),
         ),
         const Spacer(flex: 3),
         Row(
@@ -158,7 +158,9 @@ class _CallOverlayState extends ConsumerState<CallOverlay> {
         const SizedBox(height: 8),
         Text(
           'Calling...',
-          style: AppTextStyles.bodySmall.copyWith(color: AppColors.textTertiary),
+          style: AppTextStyles.bodySmall.copyWith(
+            color: AppColors.textTertiary,
+          ),
         ),
         const Spacer(flex: 3),
         _callActionButton(
@@ -191,7 +193,9 @@ class _CallOverlayState extends ConsumerState<CallOverlay> {
         const SizedBox(height: 8),
         Text(
           'Connecting...',
-          style: AppTextStyles.bodySmall.copyWith(color: AppColors.textTertiary),
+          style: AppTextStyles.bodySmall.copyWith(
+            color: AppColors.textTertiary,
+          ),
         ),
         const SizedBox(height: 16),
         const SizedBox(
@@ -239,14 +243,16 @@ class _CallOverlayState extends ConsumerState<CallOverlay> {
                 const SizedBox(height: 24),
                 Text(
                   info.peerName.isNotEmpty ? info.peerName : 'Unknown',
-                  style:
-                      AppTextStyles.h1.copyWith(color: AppColors.textPrimary),
+                  style: AppTextStyles.h1.copyWith(
+                    color: AppColors.textPrimary,
+                  ),
                 ),
                 const SizedBox(height: 8),
                 Text(
                   _formatDuration(_elapsedSeconds),
-                  style: AppTextStyles.bodySmall
-                      .copyWith(color: AppColors.textTertiary),
+                  style: AppTextStyles.bodySmall.copyWith(
+                    color: AppColors.textTertiary,
+                  ),
                 ),
               ],
             ),
@@ -254,12 +260,7 @@ class _CallOverlayState extends ConsumerState<CallOverlay> {
 
         // Video call: timer + name overlay at top
         if (isVideo && (info.joinResponse?.usesStubSfu ?? false))
-          Positioned(
-            top: 64,
-            left: 16,
-            right: 16,
-            child: _buildSfuWarning(),
-          ),
+          Positioned(top: 64, left: 16, right: 16, child: _buildSfuWarning()),
 
         if (isVideo)
           Positioned(
@@ -304,8 +305,7 @@ class _CallOverlayState extends ConsumerState<CallOverlay> {
                 child: RTCVideoView(
                   _localRenderer,
                   mirror: true,
-                  objectFit:
-                      RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+                  objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
                 ),
               ),
             ),
@@ -324,8 +324,7 @@ class _CallOverlayState extends ConsumerState<CallOverlay> {
                 label: _isMuted ? 'Unmute' : 'Mute',
                 isActive: _isMuted,
                 onPressed: () {
-                  final muted =
-                      ref.read(callProvider.notifier).toggleMute();
+                  final muted = ref.read(callProvider.notifier).toggleMute();
                   setState(() => _isMuted = muted);
                 },
               ),
@@ -347,8 +346,7 @@ class _CallOverlayState extends ConsumerState<CallOverlay> {
                   label: _isCameraOff ? 'Camera On' : 'Camera Off',
                   isActive: _isCameraOff,
                   onPressed: () {
-                    final off =
-                        ref.read(callProvider.notifier).toggleCamera();
+                    final off = ref.read(callProvider.notifier).toggleCamera();
                     setState(() => _isCameraOff = off);
                   },
                 ),
@@ -372,10 +370,7 @@ class _CallOverlayState extends ConsumerState<CallOverlay> {
       child: Center(
         child: Text(
           _initials(info.peerName),
-          style: AppTextStyles.h1.copyWith(
-            color: Colors.white,
-            fontSize: 40,
-          ),
+          style: AppTextStyles.h1.copyWith(color: Colors.white, fontSize: 40),
         ),
       ),
     );
@@ -400,17 +395,16 @@ class _CallOverlayState extends ConsumerState<CallOverlay> {
           child: Container(
             width: 64,
             height: 64,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: color,
-            ),
+            decoration: BoxDecoration(shape: BoxShape.circle, color: color),
             child: Icon(icon, color: Colors.white, size: 32),
           ),
         ),
         const SizedBox(height: 8),
         Text(
           label,
-          style: AppTextStyles.labelSmall.copyWith(color: AppColors.textTertiary),
+          style: AppTextStyles.labelSmall.copyWith(
+            color: AppColors.textTertiary,
+          ),
         ),
       ],
     );
@@ -443,7 +437,9 @@ class _CallOverlayState extends ConsumerState<CallOverlay> {
         const SizedBox(height: 8),
         Text(
           label,
-          style: AppTextStyles.labelSmall.copyWith(color: AppColors.textTertiary),
+          style: AppTextStyles.labelSmall.copyWith(
+            color: AppColors.textTertiary,
+          ),
         ),
       ],
     );
@@ -522,7 +518,9 @@ class _PulsingAvatarState extends State<_PulsingAvatar>
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
                   border: Border.all(
-                    color: AppColors.postbookPrimary.withValues(alpha: opacity * 0.5),
+                    color: AppColors.postbookPrimary.withValues(
+                      alpha: opacity * 0.5,
+                    ),
                     width: 3,
                   ),
                 ),

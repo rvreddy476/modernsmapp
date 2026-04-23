@@ -162,7 +162,9 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
   }
 
   Future<void> loadOlderMessages() async {
-    if (state.isLoadingOlder || state.hasReachedEnd || state.nextCursor == null) {
+    if (state.isLoadingOlder ||
+        state.hasReachedEnd ||
+        state.nextCursor == null) {
       return;
     }
 

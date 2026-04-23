@@ -69,7 +69,9 @@ class _CommentsScreenState extends ConsumerState<CommentsScreen> {
             onPressed: () => Navigator.of(ctx).pop(false),
             child: Text(
               'Cancel',
-              style: AppTextStyles.body.copyWith(color: AppColors.textSecondary),
+              style: AppTextStyles.body.copyWith(
+                color: AppColors.textSecondary,
+              ),
             ),
           ),
           TextButton(
@@ -240,10 +242,7 @@ class _CommentsScreenState extends ConsumerState<CommentsScreen> {
         ),
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(1),
-          child: Container(
-            height: 1,
-            color: AppColors.borderSubtle,
-          ),
+          child: Container(height: 1, color: AppColors.borderSubtle),
         ),
       ),
       body: Column(
@@ -320,8 +319,9 @@ class _CommentsScreenState extends ConsumerState<CommentsScreen> {
                   itemCount: comments.length,
                   separatorBuilder: (_, _) => Container(
                     height: 1,
-                    margin:
-                        const EdgeInsets.symmetric(horizontal: AppSpacing.xxl),
+                    margin: const EdgeInsets.symmetric(
+                      horizontal: AppSpacing.xxl,
+                    ),
                     color: AppColors.borderSubtle,
                   ),
                   itemBuilder: (context, index) =>
@@ -337,14 +337,11 @@ class _CommentsScreenState extends ConsumerState<CommentsScreen> {
               left: AppSpacing.xxl,
               right: AppSpacing.m,
               top: AppSpacing.l,
-              bottom:
-                  MediaQuery.of(context).viewInsets.bottom + AppSpacing.l,
+              bottom: MediaQuery.of(context).viewInsets.bottom + AppSpacing.l,
             ),
             decoration: const BoxDecoration(
               color: AppColors.bgSecondary,
-              border: Border(
-                top: BorderSide(color: AppColors.borderSubtle),
-              ),
+              border: Border(top: BorderSide(color: AppColors.borderSubtle)),
             ),
             child: Row(
               children: [
@@ -352,8 +349,9 @@ class _CommentsScreenState extends ConsumerState<CommentsScreen> {
                   child: Container(
                     decoration: BoxDecoration(
                       color: AppColors.bgTertiary,
-                      borderRadius:
-                          BorderRadius.circular(AppSpacing.radiusLarge),
+                      borderRadius: BorderRadius.circular(
+                        AppSpacing.radiusLarge,
+                      ),
                       border: Border.all(color: AppColors.borderMedium),
                     ),
                     child: TextField(

@@ -56,7 +56,12 @@ class _CallScreenState extends ConsumerState<CallScreen> {
         children: [
           // 1. Remote Video (Full Screen)
           if (callInfo.type == CallType.video && callInfo.remoteStream != null)
-            Positioned.fill(child: RTCVideoView(_remoteRenderer, objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover))
+            Positioned.fill(
+              child: RTCVideoView(
+                _remoteRenderer,
+                objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+              ),
+            )
           else
             _buildAudioCallBackground(callInfo),
 
@@ -71,7 +76,11 @@ class _CallScreenState extends ConsumerState<CallScreen> {
                 borderRadius: BorderRadius.circular(16),
                 child: Container(
                   color: Colors.black54,
-                  child: RTCVideoView(_localRenderer, mirror: true, objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover),
+                  child: RTCVideoView(
+                    _localRenderer,
+                    mirror: true,
+                    objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+                  ),
                 ),
               ),
             ),
@@ -117,16 +126,30 @@ class _CallScreenState extends ConsumerState<CallScreen> {
         children: [
           CircleAvatar(
             radius: 60,
-            backgroundImage: info.peerAvatar.isNotEmpty ? NetworkImage(info.peerAvatar) : null,
-            child: info.peerAvatar.isEmpty ? Text(info.peerName.isNotEmpty ? info.peerName[0] : '?', style: const TextStyle(fontSize: 40)) : null,
+            backgroundImage: info.peerAvatar.isNotEmpty
+                ? NetworkImage(info.peerAvatar)
+                : null,
+            child: info.peerAvatar.isEmpty
+                ? Text(
+                    info.peerName.isNotEmpty ? info.peerName[0] : '?',
+                    style: const TextStyle(fontSize: 40),
+                  )
+                : null,
           ),
           const SizedBox(height: 24),
-          Text(info.peerName, style: AppTextStyles.h1.copyWith(color: Colors.white)),
+          Text(
+            info.peerName,
+            style: AppTextStyles.h1.copyWith(color: Colors.white),
+          ),
           const SizedBox(height: 8),
           Text(
-            info.state == CallState.outgoing ? 'Calling...' :
-            info.state == CallState.incoming ? 'Incoming Call' :
-            info.state == CallState.active ? 'On Call' : 'Connecting...',
+            info.state == CallState.outgoing
+                ? 'Calling...'
+                : info.state == CallState.incoming
+                ? 'Incoming Call'
+                : info.state == CallState.active
+                ? 'On Call'
+                : 'Connecting...',
             style: AppTextStyles.bodyMedium.copyWith(color: Colors.white70),
           ),
         ],
@@ -161,18 +184,43 @@ class _CallScreenState extends ConsumerState<CallScreen> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
-                _ControlButton(icon: Icons.close, color: Colors.red, label: 'Decline', onTap: notifier.declineCall),
-                _ControlButton(icon: Icons.check, color: Colors.green, label: 'Accept', onTap: notifier.acceptCall),
+                _ControlButton(
+                  icon: Icons.close,
+                  color: Colors.red,
+                  label: 'Decline',
+                  onTap: notifier.declineCall,
+                ),
+                _ControlButton(
+                  icon: Icons.check,
+                  color: Colors.green,
+                  label: 'Accept',
+                  onTap: notifier.acceptCall,
+                ),
               ],
             )
           else
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
-                _ControlButton(icon: Icons.mic_off, color: Colors.white24, label: 'Mute', onTap: notifier.toggleMute),
-                _ControlButton(icon: Icons.call_end, color: Colors.red, label: 'End', onTap: notifier.endCall),
+                _ControlButton(
+                  icon: Icons.mic_off,
+                  color: Colors.white24,
+                  label: 'Mute',
+                  onTap: notifier.toggleMute,
+                ),
+                _ControlButton(
+                  icon: Icons.call_end,
+                  color: Colors.red,
+                  label: 'End',
+                  onTap: notifier.endCall,
+                ),
                 if (info.type == CallType.video)
-                  _ControlButton(icon: Icons.videocam_off, color: Colors.white24, label: 'Video', onTap: notifier.toggleCamera),
+                  _ControlButton(
+                    icon: Icons.videocam_off,
+                    color: Colors.white24,
+                    label: 'Video',
+                    onTap: notifier.toggleCamera,
+                  ),
               ],
             ),
         ],
@@ -187,7 +235,12 @@ class _ControlButton extends StatelessWidget {
   final String label;
   final VoidCallback onTap;
 
-  const _ControlButton({required this.icon, required this.color, required this.label, required this.onTap});
+  const _ControlButton({
+    required this.icon,
+    required this.color,
+    required this.label,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -203,7 +256,10 @@ class _ControlButton extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 8),
-        Text(label, style: const TextStyle(color: Colors.white70, fontSize: 12)),
+        Text(
+          label,
+          style: const TextStyle(color: Colors.white70, fontSize: 12),
+        ),
       ],
     );
   }
@@ -259,7 +315,10 @@ class _CallTimerState extends State<_CallTimer> {
   void initState() {
     super.initState();
     _duration = DateTime.now().difference(widget.startTime);
-    _timerStream = Stream.periodic(const Duration(seconds: 1), (_) => DateTime.now().difference(widget.startTime));
+    _timerStream = Stream.periodic(
+      const Duration(seconds: 1),
+      (_) => DateTime.now().difference(widget.startTime),
+    );
   }
 
   @override
@@ -272,7 +331,14 @@ class _CallTimerState extends State<_CallTimer> {
         String twoDigits(int n) => n.toString().padLeft(2, '0');
         final minutes = twoDigits(d.inMinutes.remainder(60));
         final seconds = twoDigits(d.inSeconds.remainder(60));
-        return Text('$minutes:$seconds', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18));
+        return Text(
+          '$minutes:$seconds',
+          style: const TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.bold,
+            fontSize: 18,
+          ),
+        );
       },
     );
   }

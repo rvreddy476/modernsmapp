@@ -29,13 +29,14 @@ class Story {
             }),
           ]
         : rawItems
-            .map((e) => StoryItem.fromJson(e as Map<String, dynamic>))
-            .toList();
+              .map((e) => StoryItem.fromJson(e as Map<String, dynamic>))
+              .toList();
 
     return Story(
       id: json['id'] as String? ?? '',
       authorId: json['author_id'] as String? ?? '',
-      authorName: (json['author_name'] ?? json['display_name'])?.toString() ?? '',
+      authorName:
+          (json['author_name'] ?? json['display_name'])?.toString() ?? '',
       avatarMediaId: json['avatar_media_id'] as String?,
       items: items,
       createdAt: json['created_at'] != null

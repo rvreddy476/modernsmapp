@@ -85,214 +85,220 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
         backgroundColor: AppColors.bgSecondary,
         onRefresh: _refreshHome,
         child: CustomScrollView(
-        controller: _scrollController,
-        physics: const AlwaysScrollableScrollPhysics(
-          parent: BouncingScrollPhysics(),
-        ),
-        slivers: [
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: AppSpacing.pagePadding.copyWith(top: 10),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      ShaderMask(
-                        blendMode: BlendMode.srcIn,
-                        shaderCallback: (rect) => const LinearGradient(
-                          colors: [
-                            AppColors.postbookPrimary,
-                            AppColors.posttubePrimary,
-                          ],
-                        ).createShader(rect),
-                        child: Text('atpost', style: AppTextStyles.logo),
-                      ),
-                      const SizedBox(width: 8),
-                      Container(
-                        width: 8,
-                        height: 8,
-                        decoration: const BoxDecoration(
-                          color: AppColors.posttubePrimary,
-                          shape: BoxShape.circle,
-                        ),
-                      ),
-                      const Spacer(),
-                      BadgeIconButton(
-                        icon: Icons.search,
-                        tooltip: 'Search',
-                        onPressed: () => context.push('/discover'),
-                      ),
-                      const SizedBox(width: 8),
-                      BadgeIconButton(
-                        icon: Icons.notifications_none,
-                        tooltip: 'Notifications',
-                        badgeCount:
-                            ref
-                                .watch(unreadNotificationCountProvider)
-                                .valueOrNull ??
-                            0,
-                        onPressed: () => context.push('/notifications'),
-                      ),
-                      const SizedBox(width: 8),
-                      BadgeIconButton(
-                        icon: Icons.chat_bubble_outline,
-                        tooltip: 'Messages',
-                        badgeCount:
-                            ref.watch(unreadChatCountProvider).valueOrNull ?? 0,
-                        onPressed: () => context.push('/chat'),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                  SizedBox(
-                    height: 98,
-                    child: ListView(
-                      scrollDirection: Axis.horizontal,
+          controller: _scrollController,
+          physics: const AlwaysScrollableScrollPhysics(
+            parent: BouncingScrollPhysics(),
+          ),
+          slivers: [
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: AppSpacing.pagePadding.copyWith(top: 10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
                       children: [
-                        GestureDetector(
-                          onTap: () => context.push('/stories/create'),
-                          child: const StoryRing(
-                            initials: 'Y',
-                            label: 'Your Story',
-                            isOwn: true,
+                        ShaderMask(
+                          blendMode: BlendMode.srcIn,
+                          shaderCallback: (rect) => const LinearGradient(
+                            colors: [
+                              AppColors.postbookPrimary,
+                              AppColors.posttubePrimary,
+                            ],
+                          ).createShader(rect),
+                          child: Text('atpost', style: AppTextStyles.logo),
+                        ),
+                        const SizedBox(width: 8),
+                        Container(
+                          width: 8,
+                          height: 8,
+                          decoration: const BoxDecoration(
+                            color: AppColors.posttubePrimary,
+                            shape: BoxShape.circle,
                           ),
                         ),
-                        const SizedBox(width: 10),
-                        GestureDetector(
-                          onTap: () => context.push('/live'),
-                          child: const StoryRing(
-                            initials: 'L',
-                            label: 'Live',
-                            isLive: true,
-                          ),
+                        const Spacer(),
+                        BadgeIconButton(
+                          icon: Icons.search,
+                          tooltip: 'Search',
+                          onPressed: () => context.push('/discover'),
                         ),
-                        for (final story in stories.take(12)) ...[
-                          const SizedBox(width: 10),
+                        const SizedBox(width: 8),
+                        BadgeIconButton(
+                          icon: Icons.notifications_none,
+                          tooltip: 'Notifications',
+                          badgeCount:
+                              ref
+                                  .watch(unreadNotificationCountProvider)
+                                  .valueOrNull ??
+                              0,
+                          onPressed: () => context.push('/notifications'),
+                        ),
+                        const SizedBox(width: 8),
+                        BadgeIconButton(
+                          icon: Icons.chat_bubble_outline,
+                          tooltip: 'Messages',
+                          badgeCount:
+                              ref.watch(unreadChatCountProvider).valueOrNull ??
+                              0,
+                          onPressed: () => context.push('/chat'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    SizedBox(
+                      height: 98,
+                      child: ListView(
+                        scrollDirection: Axis.horizontal,
+                        children: [
                           GestureDetector(
-                            onTap: () => context.push('/stories/${story.authorId}'),
-                            child: StoryRing(
-                              initials: _initialsFor(story.authorName),
-                              label: story.authorName.isEmpty
-                                  ? 'Story'
-                                  : story.authorName,
+                            onTap: () => context.push('/stories/create'),
+                            child: const StoryRing(
+                              initials: 'Y',
+                              label: 'Your Story',
+                              isOwn: true,
                             ),
                           ),
+                          const SizedBox(width: 10),
+                          GestureDetector(
+                            onTap: () => context.push('/live'),
+                            child: const StoryRing(
+                              initials: 'L',
+                              label: 'Live',
+                              isLive: true,
+                            ),
+                          ),
+                          for (final story in stories.take(12)) ...[
+                            const SizedBox(width: 10),
+                            GestureDetector(
+                              onTap: () =>
+                                  context.push('/stories/${story.authorId}'),
+                              child: StoryRing(
+                                initials: _initialsFor(story.authorName),
+                                label: story.authorName.isEmpty
+                                    ? 'Story'
+                                    : story.authorName,
+                              ),
+                            ),
+                          ],
                         ],
-                      ],
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 14),
-                  SizedBox(
-                    height: 80,
-                    child: ListView(
-                      scrollDirection: Axis.horizontal,
-                      children: [
-                        _FeatureShortcut(
-                          icon: Icons.question_answer_rounded,
-                          label: 'Q&A',
-                          color: AppColors.postbookPrimary,
-                          onTap: () => context.push('/qa'),
-                        ),
-                        _FeatureShortcut(
-                          icon: Icons.extension_rounded,
-                          label: 'Apps',
-                          color: AppColors.accentPurple,
-                          onTap: () => context.push('/apps'),
-                        ),
-                        _FeatureShortcut(
-                          icon: Icons.favorite_rounded,
-                          label: 'Match',
-                          color: AppColors.postgramPrimary,
-                          onTap: () => context.push('/postmatch'),
-                        ),
-                        _FeatureShortcut(
-                          icon: Icons.storefront_rounded,
-                          label: 'Shop',
-                          color: AppColors.postbookSecondary,
-                          onTap: () => context.push('/shop'),
-                        ),
-                      ],
+                    const SizedBox(height: 14),
+                    SizedBox(
+                      height: 80,
+                      child: ListView(
+                        scrollDirection: Axis.horizontal,
+                        children: [
+                          _FeatureShortcut(
+                            icon: Icons.question_answer_rounded,
+                            label: 'Q&A',
+                            color: AppColors.postbookPrimary,
+                            onTap: () => context.push('/qa'),
+                          ),
+                          _FeatureShortcut(
+                            icon: Icons.extension_rounded,
+                            label: 'Apps',
+                            color: AppColors.accentPurple,
+                            onTap: () => context.push('/apps'),
+                          ),
+                          _FeatureShortcut(
+                            icon: Icons.favorite_rounded,
+                            label: 'Match',
+                            color: AppColors.postgramPrimary,
+                            onTap: () => context.push('/postmatch'),
+                          ),
+                          _FeatureShortcut(
+                            icon: Icons.storefront_rounded,
+                            label: 'Shop',
+                            color: AppColors.postbookSecondary,
+                            onTap: () => context.push('/shop'),
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 14),
-                  FilterPills(
-                    labels: const ['For You', 'Following', 'Trending'],
-                    activeIndex: feedTab,
-                    onChanged: (v) {
-                      setState(() => feedTab = v);
-                      ref.read(feedFilterProvider.notifier).state = [
-                        'For You',
-                        'Following',
-                        'Trending',
-                      ][v];
-                    },
-                  ),
-                  const SizedBox(height: 14),
-                ],
+                    const SizedBox(height: 14),
+                    FilterPills(
+                      labels: const ['For You', 'Following', 'Trending'],
+                      activeIndex: feedTab,
+                      onChanged: (v) {
+                        setState(() => feedTab = v);
+                        ref.read(feedFilterProvider.notifier).state = [
+                          'For You',
+                          'Following',
+                          'Trending',
+                        ][v];
+                      },
+                    ),
+                    const SizedBox(height: 14),
+                  ],
+                ),
               ),
             ),
-          ),
-          ...feedAsync.when(
-            loading: () => [
-              const SliverToBoxAdapter(
-                child: Padding(
-                  padding: EdgeInsets.symmetric(vertical: 40),
-                  child: Center(child: CircularProgressIndicator()),
+            ...feedAsync.when(
+              loading: () => [
+                const SliverToBoxAdapter(
+                  child: Padding(
+                    padding: EdgeInsets.symmetric(vertical: 40),
+                    child: Center(child: CircularProgressIndicator()),
+                  ),
                 ),
-              ),
-            ],
-            error: (_, _) => [
-              const SliverToBoxAdapter(
-                child: Padding(
-                  padding: EdgeInsets.symmetric(vertical: 40),
-                  child: Center(child: Text('Could not load feed')),
+              ],
+              error: (_, _) => [
+                const SliverToBoxAdapter(
+                  child: Padding(
+                    padding: EdgeInsets.symmetric(vertical: 40),
+                    child: Center(child: Text('Could not load feed')),
+                  ),
                 ),
-              ),
-            ],
-            data: (feedState) => [
-              SliverPadding(
-                padding: AppSpacing.pagePadding.copyWith(bottom: 130),
-                sliver: SliverList(
-                  delegate: SliverChildBuilderDelegate((context, index) {
-                    if (index >= feedState.posts.length) {
-                      return const Padding(
-                        padding: EdgeInsets.symmetric(vertical: 18),
-                        child: Center(
-                          child: CircularProgressIndicator(
-                            color: AppColors.postbookPrimary,
-                          ),
-                        ),
-                      );
-                    }
-                    final post = feedState.posts[index];
-                    if (post.isReel) {
-                      return ReelCard(
-                        title: post.content,
-                        creator: 'By ${post.authorName ?? 'unknown'}',
-                        duration: _formatDuration(post.durationSeconds ?? 0),
-                        onTap: () => context.push('/reels'),
-                      );
-                    }
-                    if (post.isVideo) {
-                      return VideoCard(
-                        title: post.content,
-                        stats:
-                            '${_formatCount(post.likeCount)} views  -  ${_timeAgo(post.createdAt)}',
-                        onTap: () => context.push('/posttube'),
-                      );
-                    }
-                    return PostCard(post: post);
-                  },
+              ],
+              data: (feedState) => [
+                SliverPadding(
+                  padding: AppSpacing.pagePadding.copyWith(bottom: 130),
+                  sliver: SliverList(
+                    delegate: SliverChildBuilderDelegate(
+                      (context, index) {
+                        if (index >= feedState.posts.length) {
+                          return const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 18),
+                            child: Center(
+                              child: CircularProgressIndicator(
+                                color: AppColors.postbookPrimary,
+                              ),
+                            ),
+                          );
+                        }
+                        final post = feedState.posts[index];
+                        if (post.isReel) {
+                          return ReelCard(
+                            title: post.content,
+                            creator: 'By ${post.authorName ?? 'unknown'}',
+                            duration: _formatDuration(
+                              post.durationSeconds ?? 0,
+                            ),
+                            onTap: () => context.push('/reels'),
+                          );
+                        }
+                        if (post.isVideo) {
+                          return VideoCard(
+                            title: post.content,
+                            stats:
+                                '${_formatCount(post.likeCount)} views  -  ${_timeAgo(post.createdAt)}',
+                            onTap: () => context.push('/posttube'),
+                          );
+                        }
+                        return PostCard(post: post);
+                      },
                       childCount:
                           feedState.posts.length +
-                          (feedState.isLoadingMore ? 1 : 0)),
+                          (feedState.isLoadingMore ? 1 : 0),
+                    ),
+                  ),
                 ),
-              ),
-            ],
-          ),
-        ],
-      ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }

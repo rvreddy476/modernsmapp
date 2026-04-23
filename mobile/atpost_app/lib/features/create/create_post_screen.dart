@@ -172,10 +172,12 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
                     child: Column(
                       children: [
                         _buildComposerArea(state, user),
-                        if (state.error != null) _buildErrorBanner(state.error!),
+                        if (state.error != null)
+                          _buildErrorBanner(state.error!),
                         if (state.isSubmitting && state.files.isNotEmpty)
                           _buildUploadProgress(state),
-                        if (state.type == PostType.poll) _buildElegantPollEditor(state),
+                        if (state.type == PostType.poll)
+                          _buildElegantPollEditor(state),
                         if (state.files.isNotEmpty) _buildMediaGrid(state),
                         const SizedBox(height: 120), // Space for toolbar
                       ],
@@ -215,12 +217,19 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
         children: [
           TextButton(
             onPressed: state.isSubmitting ? null : () => _handleCancel(state),
-            child: Text('Cancel', style: AppTextStyles.body.copyWith(color: Colors.white70)),
+            child: Text(
+              'Cancel',
+              style: AppTextStyles.body.copyWith(color: Colors.white70),
+            ),
           ),
           ElevatedButton(
-            onPressed: (state.text.isNotEmpty || state.files.isNotEmpty) && !state.isSubmitting
+            onPressed:
+                (state.text.isNotEmpty || state.files.isNotEmpty) &&
+                    !state.isSubmitting
                 ? () async {
-                    final success = await ref.read(creationProvider.notifier).submit();
+                    final success = await ref
+                        .read(creationProvider.notifier)
+                        .submit();
                     if (success && mounted) context.pop();
                     if (!success && mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
@@ -237,13 +246,25 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
             style: ElevatedButton.styleFrom(
               backgroundColor: AppColors.postbookPrimary,
               disabledBackgroundColor: Colors.white10,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(24),
+              ),
               padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
               elevation: 0,
             ),
             child: state.isSubmitting
-                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                : Text('Publish', style: AppTextStyles.label.copyWith(color: Colors.white)),
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
+                    ),
+                  )
+                : Text(
+                    'Publish',
+                    style: AppTextStyles.label.copyWith(color: Colors.white),
+                  ),
           ),
         ],
       ),
@@ -258,7 +279,9 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
             CircleAvatar(
               radius: 22,
               backgroundColor: Colors.white10,
-              backgroundImage: user?.avatarUrl != null ? NetworkImage(user!.avatarUrl) : null,
+              backgroundImage: user?.avatarUrl != null
+                  ? NetworkImage(user!.avatarUrl)
+                  : null,
             ),
             const SizedBox(width: 12),
             Column(
@@ -280,10 +303,17 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
             controller: _textController,
             focusNode: _focusNode,
             maxLines: null,
-            style: AppTextStyles.h2.copyWith(fontWeight: FontWeight.w400, color: Colors.white, fontSize: 20),
+            style: AppTextStyles.h2.copyWith(
+              fontWeight: FontWeight.w400,
+              color: Colors.white,
+              fontSize: 20,
+            ),
             decoration: InputDecoration(
               hintText: "What's on your mind?",
-              hintStyle: AppTextStyles.h2.copyWith(color: Colors.white24, fontWeight: FontWeight.w400),
+              hintStyle: AppTextStyles.h2.copyWith(
+                color: Colors.white24,
+                fontWeight: FontWeight.w400,
+              ),
               border: InputBorder.none,
             ),
           ),
@@ -295,16 +325,31 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
   Widget _buildAiMagicButton(CreationState state) {
     return GestureDetector(
       onTap: () => ref.read(creationProvider.notifier).enhanceWithAi(),
-      child: Container(
-        padding: const EdgeInsets.all(10),
-        decoration: BoxDecoration(
-          color: Colors.amber.withOpacity(0.1),
-          shape: BoxShape.circle,
-        ),
-        child: state.isGeneratingAi
-          ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.amber))
-          : const Icon(Icons.auto_awesome, color: Colors.amber, size: 20),
-      ).animate(target: state.isGeneratingAi ? 1 : 0).shimmer(duration: 1.seconds).scale(duration: 200.ms),
+      child:
+          Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: Colors.amber.withOpacity(0.1),
+                  shape: BoxShape.circle,
+                ),
+                child: state.isGeneratingAi
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.amber,
+                        ),
+                      )
+                    : const Icon(
+                        Icons.auto_awesome,
+                        color: Colors.amber,
+                        size: 20,
+                      ),
+              )
+              .animate(target: state.isGeneratingAi ? 1 : 0)
+              .shimmer(duration: 1.seconds)
+              .scale(duration: 200.ms),
     );
   }
 
@@ -322,9 +367,18 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(state.visibility == PostVisibility.public ? Icons.public : Icons.people, size: 10, color: Colors.grey),
+            Icon(
+              state.visibility == PostVisibility.public
+                  ? Icons.public
+                  : Icons.people,
+              size: 10,
+              color: Colors.grey,
+            ),
             const SizedBox(width: 4),
-            Text(state.visibility.name.toUpperCase(), style: AppTextStyles.labelTiny.copyWith(color: Colors.grey)),
+            Text(
+              state.visibility.name.toUpperCase(),
+              style: AppTextStyles.labelTiny.copyWith(color: Colors.grey),
+            ),
             const Icon(Icons.keyboard_arrow_down, size: 12, color: Colors.grey),
           ],
         ),
@@ -340,21 +394,33 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
         physics: const NeverScrollableScrollPhysics(),
         itemCount: state.files.length,
         gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: 2, crossAxisSpacing: 10, mainAxisSpacing: 10,
+          crossAxisCount: 2,
+          crossAxisSpacing: 10,
+          mainAxisSpacing: 10,
         ),
         itemBuilder: (context, index) => Stack(
           children: [
             ClipRRect(
               borderRadius: BorderRadius.circular(16),
-              child: Image.file(File(state.files[index].path), fit: BoxFit.cover, width: double.infinity, height: double.infinity),
+              child: Image.file(
+                File(state.files[index].path),
+                fit: BoxFit.cover,
+                width: double.infinity,
+                height: double.infinity,
+              ),
             ),
             Positioned(
-              right: 8, top: 8,
+              right: 8,
+              top: 8,
               child: GestureDetector(
-                onTap: () => ref.read(creationProvider.notifier).removeFile(index),
+                onTap: () =>
+                    ref.read(creationProvider.notifier).removeFile(index),
                 child: Container(
                   padding: const EdgeInsets.all(4),
-                  decoration: const BoxDecoration(color: Colors.black54, shape: BoxShape.circle),
+                  decoration: const BoxDecoration(
+                    color: Colors.black54,
+                    shape: BoxShape.circle,
+                  ),
                   child: const Icon(Icons.close, size: 14, color: Colors.white),
                 ),
               ),
@@ -377,27 +443,47 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Poll Options', style: AppTextStyles.label.copyWith(color: Colors.white70)),
+          Text(
+            'Poll Options',
+            style: AppTextStyles.label.copyWith(color: Colors.white70),
+          ),
           const SizedBox(height: 16),
-          ...state.pollOptions.asMap().entries.map((e) => Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: TextField(
-              onChanged: (v) => ref.read(creationProvider.notifier).updatePollOption(e.key, v),
-              style: AppTextStyles.body,
-              decoration: InputDecoration(
-                hintText: 'Option ${e.key + 1}',
-                filled: true,
-                fillColor: Colors.white.withOpacity(0.05),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
-                suffixIcon: state.pollOptions.length > 2
-                  ? IconButton(icon: const Icon(Icons.remove_circle_outline, color: Colors.redAccent, size: 20), onPressed: () => ref.read(creationProvider.notifier).removePollOption(e.key))
-                  : null,
+          ...state.pollOptions.asMap().entries.map(
+            (e) => Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: TextField(
+                onChanged: (v) => ref
+                    .read(creationProvider.notifier)
+                    .updatePollOption(e.key, v),
+                style: AppTextStyles.body,
+                decoration: InputDecoration(
+                  hintText: 'Option ${e.key + 1}',
+                  filled: true,
+                  fillColor: Colors.white.withOpacity(0.05),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none,
+                  ),
+                  suffixIcon: state.pollOptions.length > 2
+                      ? IconButton(
+                          icon: const Icon(
+                            Icons.remove_circle_outline,
+                            color: Colors.redAccent,
+                            size: 20,
+                          ),
+                          onPressed: () => ref
+                              .read(creationProvider.notifier)
+                              .removePollOption(e.key),
+                        )
+                      : null,
+                ),
               ),
             ),
-          )),
+          ),
           if (state.pollOptions.length < 5)
             TextButton.icon(
-              onPressed: () => ref.read(creationProvider.notifier).addPollOption(),
+              onPressed: () =>
+                  ref.read(creationProvider.notifier).addPollOption(),
               icon: const Icon(Icons.add_circle_outline, size: 20),
               label: const Text('Add choice'),
             ),
@@ -408,24 +494,55 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
 
   Widget _buildFloatingToolbar(CreationState state) {
     return Positioned(
-      left: 20, right: 20, bottom: 30,
+      left: 20,
+      right: 20,
+      bottom: 30,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         decoration: BoxDecoration(
           color: const Color(0xFF1E2130),
           borderRadius: BorderRadius.circular(30),
-          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.4), blurRadius: 20, offset: const Offset(0, 10))],
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.4),
+              blurRadius: 20,
+              offset: const Offset(0, 10),
+            ),
+          ],
           border: Border.all(color: Colors.white.withOpacity(0.05)),
         ),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceAround,
           children: [
-            _ToolbarIcon(Icons.image_outlined, 'Photos', Colors.blueAccent, () => _pickMedia(false)),
-            _ToolbarIcon(Icons.videocam_outlined, 'Video', Colors.redAccent, () => _pickMedia(true)),
-            _ToolbarIcon(Icons.poll_outlined, 'Poll', Colors.purpleAccent, () => ref.read(creationProvider.notifier).setType(PostType.poll)),
-            _ToolbarIcon(Icons.movie_edit, 'Flicks', Colors.amberAccent, () => context.push('/flicks/editor')),
+            _ToolbarIcon(
+              Icons.image_outlined,
+              'Photos',
+              Colors.blueAccent,
+              () => _pickMedia(false),
+            ),
+            _ToolbarIcon(
+              Icons.videocam_outlined,
+              'Video',
+              Colors.redAccent,
+              () => _pickMedia(true),
+            ),
+            _ToolbarIcon(
+              Icons.poll_outlined,
+              'Poll',
+              Colors.purpleAccent,
+              () => ref.read(creationProvider.notifier).setType(PostType.poll),
+            ),
+            _ToolbarIcon(
+              Icons.movie_edit,
+              'Flicks',
+              Colors.amberAccent,
+              () => context.push('/flicks/editor'),
+            ),
             const VerticalDivider(color: Colors.white10),
-            Text('${state.text.length}/3k', style: AppTextStyles.monoSmall.copyWith(color: Colors.white38)),
+            Text(
+              '${state.text.length}/3k',
+              style: AppTextStyles.monoSmall.copyWith(color: Colors.white38),
+            ),
           ],
         ),
       ),

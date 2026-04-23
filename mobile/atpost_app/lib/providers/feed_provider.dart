@@ -55,9 +55,11 @@ class HomeFeedNotifier extends StateNotifier<AsyncValue<FeedState>> {
   // Production optimization: Keep memory footprint stable.
   // If user scrolls through thousands of posts, we trim the top to save RAM.
   static const int _maxPostsInMemory = 500;
-  static const int _prefetchThreshold = 5; // Start loading next page when 5 items from end
+  static const int _prefetchThreshold =
+      5; // Start loading next page when 5 items from end
 
-  HomeFeedNotifier(this._repo, this._realtime) : super(const AsyncValue.loading()) {
+  HomeFeedNotifier(this._repo, this._realtime)
+    : super(const AsyncValue.loading()) {
     _init();
   }
 
@@ -79,16 +81,20 @@ class HomeFeedNotifier extends StateNotifier<AsyncValue<FeedState>> {
 
     state = const AsyncValue.loading();
     try {
-      final page = await ErrorHandler.retry(() => _repo.getHomeFeedPage(
-        feedMode: _filterToMode(_currentFilter),
-        circleOnly: _currentFilter == 'Following',
-      ));
+      final page = await ErrorHandler.retry(
+        () => _repo.getHomeFeedPage(
+          feedMode: _filterToMode(_currentFilter),
+          circleOnly: _currentFilter == 'Following',
+        ),
+      );
 
-      state = AsyncValue.data(FeedState(
-        posts: page.items,
-        nextCursor: page.nextCursor,
-        hasReachedEnd: page.nextCursor == null,
-      ));
+      state = AsyncValue.data(
+        FeedState(
+          posts: page.items,
+          nextCursor: page.nextCursor,
+          hasReachedEnd: page.nextCursor == null,
+        ),
+      );
     } catch (e, st) {
       state = AsyncValue.error(e, st);
     } finally {
@@ -110,11 +116,13 @@ class HomeFeedNotifier extends StateNotifier<AsyncValue<FeedState>> {
     state = AsyncValue.data(currentState.copyWith(isLoadingMore: true));
 
     try {
-      final page = await ErrorHandler.retry(() => _repo.getHomeFeedPage(
-        cursor: currentState.nextCursor,
-        feedMode: _filterToMode(_currentFilter),
-        circleOnly: _currentFilter == 'Following',
-      ));
+      final page = await ErrorHandler.retry(
+        () => _repo.getHomeFeedPage(
+          cursor: currentState.nextCursor,
+          feedMode: _filterToMode(_currentFilter),
+          circleOnly: _currentFilter == 'Following',
+        ),
+      );
 
       List<Post> newPosts = [...currentState.posts, ...page.items];
 
@@ -122,17 +130,24 @@ class HomeFeedNotifier extends StateNotifier<AsyncValue<FeedState>> {
       // If the list is too long, we drop the oldest items to keep memory usage low.
       if (newPosts.length > _maxPostsInMemory) {
         newPosts = newPosts.sublist(newPosts.length - _maxPostsInMemory);
-        AppLogger.info('Feed memory management: trimmed posts to $_maxPostsInMemory', tag: 'FeedNotifier');
+        AppLogger.info(
+          'Feed memory management: trimmed posts to $_maxPostsInMemory',
+          tag: 'FeedNotifier',
+        );
       }
 
-      state = AsyncValue.data(FeedState(
-        posts: newPosts,
-        nextCursor: page.nextCursor,
-        isLoadingMore: false,
-        hasReachedEnd: page.nextCursor == null,
-      ));
+      state = AsyncValue.data(
+        FeedState(
+          posts: newPosts,
+          nextCursor: page.nextCursor,
+          isLoadingMore: false,
+          hasReachedEnd: page.nextCursor == null,
+        ),
+      );
     } catch (e) {
-      state = AsyncValue.data(currentState.copyWith(isLoadingMore: false, hasError: true));
+      state = AsyncValue.data(
+        currentState.copyWith(isLoadingMore: false, hasError: true),
+      );
     } finally {
       _isFetching = false;
     }
@@ -175,29 +190,40 @@ class HomeFeedNotifier extends StateNotifier<AsyncValue<FeedState>> {
   }
 
   void _handlePostInteraction(PostInteractionEvent event) {
-    _updatePost(event.postId, (post) => post.copyWith(
-      likeCount: event.likes ?? post.likeCount,
-      commentCount: event.comments ?? post.commentCount,
-    ));
+    _updatePost(
+      event.postId,
+      (post) => post.copyWith(
+        likeCount: event.likes ?? post.likeCount,
+        commentCount: event.comments ?? post.commentCount,
+      ),
+    );
   }
 
   void _handlePostLiked(PostLikedEvent event) {
-    _updatePost(event.postId, (post) => post.copyWith(
-      likeCount: event.likeCount ?? (post.likeCount + 1),
-    ));
+    _updatePost(
+      event.postId,
+      (post) =>
+          post.copyWith(likeCount: event.likeCount ?? (post.likeCount + 1)),
+    );
   }
 
   void _handlePostCommented(PostCommentedEvent event) {
-    _updatePost(event.postId, (post) => post.copyWith(
-      commentCount: event.commentCount ?? (post.commentCount + 1),
-    ));
+    _updatePost(
+      event.postId,
+      (post) => post.copyWith(
+        commentCount: event.commentCount ?? (post.commentCount + 1),
+      ),
+    );
   }
 
   String _filterToMode(String filter) {
     switch (filter) {
-      case 'Following': return 'chronological';
-      case 'Trending': return 'ranked';
-      default: return 'ranked';
+      case 'Following':
+        return 'chronological';
+      case 'Trending':
+        return 'ranked';
+      default:
+        return 'ranked';
     }
   }
 
@@ -209,11 +235,14 @@ class HomeFeedNotifier extends StateNotifier<AsyncValue<FeedState>> {
 }
 
 /// Global provider for the home feed state.
-final homeFeedProvider = StateNotifierProvider.autoDispose<HomeFeedNotifier, AsyncValue<FeedState>>((ref) {
-  final repo = ref.watch(feedRepositoryProvider);
-  final realtime = ref.watch(realtimeServiceProvider);
-  return HomeFeedNotifier(repo, realtime);
-});
+final homeFeedProvider =
+    StateNotifierProvider.autoDispose<HomeFeedNotifier, AsyncValue<FeedState>>((
+      ref,
+    ) {
+      final repo = ref.watch(feedRepositoryProvider);
+      final realtime = ref.watch(realtimeServiceProvider);
+      return HomeFeedNotifier(repo, realtime);
+    });
 
 final feedFilterProvider = StateProvider<String>((ref) => 'For You');
 
@@ -233,10 +262,7 @@ final reelFeedProvider = FutureProvider.autoDispose<List<Post>>((ref) async {
 
 // Add copyWith to Post model if not present, otherwise use constructor.
 extension on Post {
-  Post copyWith({
-    int? likeCount,
-    int? commentCount,
-  }) {
+  Post copyWith({int? likeCount, int? commentCount}) {
     return Post(
       id: id,
       authorId: authorId,

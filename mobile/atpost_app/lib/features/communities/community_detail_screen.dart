@@ -315,9 +315,7 @@ class _CommunityDetailScreenState extends ConsumerState<CommunityDetailScreen>
                           context.push('/settings/notifications');
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(
-                              content: Text(
-                                'Opened notification settings.',
-                              ),
+                              content: Text('Opened notification settings.'),
                             ),
                           );
                         },
@@ -328,7 +326,8 @@ class _CommunityDetailScreenState extends ConsumerState<CommunityDetailScreen>
                         onTap: () async {
                           await Clipboard.setData(
                             ClipboardData(
-                              text: 'https://cleestudio.com/communities/${community.handle}',
+                              text:
+                                  'https://cleestudio.com/communities/${community.handle}',
                             ),
                           );
                           if (!context.mounted) return;

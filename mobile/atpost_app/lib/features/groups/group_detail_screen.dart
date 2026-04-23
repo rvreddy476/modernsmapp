@@ -59,16 +59,18 @@ class _GroupDetailScreenState extends ConsumerState<GroupDetailScreen> {
     if (userId == null || userId.isEmpty) return;
 
     try {
-      await ref.read(groupsRepositoryProvider).inviteUser(widget.groupId, userId);
+      await ref
+          .read(groupsRepositoryProvider)
+          .inviteUser(widget.groupId, userId);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Invite sent.')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Invite sent.')));
     } catch (_) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not send invite.')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Could not send invite.')));
     }
   }
 
@@ -394,11 +396,14 @@ class _GroupDetailBodyState extends ConsumerState<_GroupDetailBody> {
                           context.push('/groups/${widget.groupId}/post'),
                       child: Container(
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 14, vertical: 12),
+                          horizontal: 14,
+                          vertical: 12,
+                        ),
                         decoration: BoxDecoration(
                           color: AppColors.bgCard,
-                          borderRadius:
-                              BorderRadius.circular(AppSpacing.radiusLarge),
+                          borderRadius: BorderRadius.circular(
+                            AppSpacing.radiusLarge,
+                          ),
                           border: Border.all(color: AppColors.borderSubtle),
                         ),
                         child: Row(
@@ -407,15 +412,18 @@ class _GroupDetailBodyState extends ConsumerState<_GroupDetailBody> {
                               radius: 14,
                               backgroundColor: AppColors.postbookPrimary
                                   .withValues(alpha: 0.2),
-                              child: const Icon(Icons.edit,
-                                  size: 14,
-                                  color: AppColors.postbookPrimary),
+                              child: const Icon(
+                                Icons.edit,
+                                size: 14,
+                                color: AppColors.postbookPrimary,
+                              ),
                             ),
                             const SizedBox(width: 10),
                             Text(
                               'Write something...',
-                              style: AppTextStyles.body
-                                  .copyWith(color: AppColors.textDim),
+                              style: AppTextStyles.body.copyWith(
+                                color: AppColors.textDim,
+                              ),
                             ),
                           ],
                         ),
@@ -457,8 +465,10 @@ class _GroupDetailBodyState extends ConsumerState<_GroupDetailBody> {
                 onPressed: () =>
                     context.push('/groups/${widget.groupId}/admin'),
                 backgroundColor: AppColors.postbookPrimary,
-                child: const Icon(Icons.admin_panel_settings,
-                    color: Colors.white),
+                child: const Icon(
+                  Icons.admin_panel_settings,
+                  color: Colors.white,
+                ),
               )
             : null,
       ),
@@ -571,9 +581,11 @@ class _GroupFeedTab extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final postsAsync = ref.watch(groupPostsProvider(
-      GroupPostsParams(groupId: groupId, channelId: channelId),
-    ));
+    final postsAsync = ref.watch(
+      groupPostsProvider(
+        GroupPostsParams(groupId: groupId, channelId: channelId),
+      ),
+    );
 
     return postsAsync.when(
       loading: () => const Center(
@@ -584,9 +596,11 @@ class _GroupFeedTab extends ConsumerWidget {
           icon: Icons.article_outlined,
           message: 'Could not load group posts.',
           action: 'Retry',
-          onTap: () => ref.invalidate(groupPostsProvider(
-            GroupPostsParams(groupId: groupId, channelId: channelId),
-          )),
+          onTap: () => ref.invalidate(
+            groupPostsProvider(
+              GroupPostsParams(groupId: groupId, channelId: channelId),
+            ),
+          ),
         ),
       ),
       data: (posts) {
@@ -596,9 +610,11 @@ class _GroupFeedTab extends ConsumerWidget {
               icon: Icons.notes_outlined,
               message: 'No posts have been shared yet.',
               action: 'Refresh',
-              onTap: () => ref.invalidate(groupPostsProvider(
-                GroupPostsParams(groupId: groupId, channelId: channelId),
-              )),
+              onTap: () => ref.invalidate(
+                groupPostsProvider(
+                  GroupPostsParams(groupId: groupId, channelId: channelId),
+                ),
+              ),
             ),
           );
         }
@@ -755,8 +771,18 @@ class _GroupAboutTab extends StatelessWidget {
 
   String _formatDate(DateTime date) {
     final monthNames = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
     ];
     return '${date.day} ${monthNames[date.month - 1]} ${date.year}';
   }
