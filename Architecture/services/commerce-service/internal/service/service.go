@@ -242,6 +242,22 @@ func (s *Service) ListOrders(ctx context.Context, userID uuid.UUID, limit, offse
 	return orders, err
 }
 
+// GetOrderWithItems returns the order and its line items, verifying ownership.
+func (s *Service) GetOrderWithItems(ctx context.Context, orderID, userID uuid.UUID) (*postgres.Order, []*postgres.OrderItem, error) {
+	order, err := s.store.GetOrderByID(ctx, orderID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if order.CustomerUserID != userID {
+		return nil, nil, fmt.Errorf("order not found")
+	}
+	items, err := s.store.GetOrderItems(ctx, orderID)
+	if err != nil {
+		return nil, nil, err
+	}
+	return order, items, nil
+}
+
 // ListSellerOrders returns orders for a seller — used by the seller fulfillment dashboard.
 // Authorization: caller must own the seller account (verified in handler).
 func (s *Service) ListSellerOrders(ctx context.Context, sellerID uuid.UUID, limit, offset int) ([]*postgres.Order, error) {
@@ -716,6 +732,23 @@ func (s *Service) AddAddress(ctx context.Context, addr *postgres.CustomerAddress
 
 func (s *Service) GetAddresses(ctx context.Context, userID uuid.UUID) ([]*postgres.CustomerAddress, error) {
 	return s.store.GetAddressesByUser(ctx, userID)
+}
+
+func (s *Service) UpdateAddress(ctx context.Context, id, userID uuid.UUID, addr *postgres.CustomerAddress) error {
+	return s.store.UpdateAddress(ctx, id, userID, addr)
+}
+
+func (s *Service) DeleteAddress(ctx context.Context, id, userID uuid.UUID) error {
+	return s.store.DeleteAddress(ctx, id, userID)
+}
+
+func (s *Service) SetDefaultAddress(ctx context.Context, id, userID uuid.UUID) error {
+	return s.store.SetDefaultAddress(ctx, id, userID)
+}
+
+// ListMyReturns returns the calling customer's return history.
+func (s *Service) ListMyReturns(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*postgres.ReturnRequest, error) {
+	return s.store.ListReturnsByCustomer(ctx, userID, limit, offset)
 }
 
 // ─── Helpers ─────────────────────────────────────────────────

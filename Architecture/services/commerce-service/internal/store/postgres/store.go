@@ -652,6 +652,57 @@ func (s *Store) GetAddressByID(ctx context.Context, id uuid.UUID) (*CustomerAddr
 	return a, nil
 }
 
+func (s *Store) UpdateAddress(ctx context.Context, id, userID uuid.UUID, addr *CustomerAddress) error {
+	tag, err := s.db.Exec(ctx, `
+		UPDATE customer_addresses SET
+			contact_name=$3, phone=$4, address_line_1=$5, address_line_2=$6,
+			landmark=$7, city=$8, state=$9, country=$10, postal_code=$11,
+			address_type=$12, is_default=$13
+		WHERE id=$1 AND user_id=$2`,
+		id, userID, addr.ContactName, addr.Phone, addr.AddressLine1, addr.AddressLine2,
+		addr.Landmark, addr.City, addr.State, addr.Country, addr.PostalCode,
+		addr.AddressType, addr.IsDefault,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("address not found")
+	}
+	return nil
+}
+
+func (s *Store) DeleteAddress(ctx context.Context, id, userID uuid.UUID) error {
+	tag, err := s.db.Exec(ctx, `DELETE FROM customer_addresses WHERE id=$1 AND user_id=$2`, id, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("address not found")
+	}
+	return nil
+}
+
+// SetDefaultAddress atomically clears any existing default and sets the given address as default.
+func (s *Store) SetDefaultAddress(ctx context.Context, id, userID uuid.UUID) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if _, err := tx.Exec(ctx, `UPDATE customer_addresses SET is_default=false WHERE user_id=$1`, userID); err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, `UPDATE customer_addresses SET is_default=true WHERE id=$1 AND user_id=$2`, id, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("address not found")
+	}
+	return tx.Commit(ctx)
+}
+
 func (s *Store) GetAddressesByUser(ctx context.Context, userID uuid.UUID) ([]*CustomerAddress, error) {
 	rows, err := s.db.Query(ctx, `SELECT id,user_id,label,contact_name,phone,address_line_1,
 		address_line_2,landmark,city,state,country,postal_code,address_type,is_default,created_at
@@ -757,6 +808,33 @@ func (s *Store) CreateReturnRequest(ctx context.Context, r *ReturnRequest) error
 		r.ReasonCode, r.ReasonDescription, r.Status, r.RequestedAt,
 	)
 	return err
+}
+
+// ListReturnsByCustomer returns a customer's return requests across all orders.
+func (s *Store) ListReturnsByCustomer(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*ReturnRequest, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT id, order_id, order_item_id, customer_user_id, seller_id, reason_code,
+			reason_description, status, approved_at, rejected_at, rejection_reason,
+			requested_at
+		FROM return_requests
+		WHERE customer_user_id = $1
+		ORDER BY requested_at DESC
+		LIMIT $2 OFFSET $3`, userID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*ReturnRequest
+	for rows.Next() {
+		var r ReturnRequest
+		if err := rows.Scan(&r.ID, &r.OrderID, &r.OrderItemID, &r.CustomerUserID, &r.SellerID,
+			&r.ReasonCode, &r.ReasonDescription, &r.Status, &r.ApprovedAt, &r.RejectedAt,
+			&r.RejectionReason, &r.RequestedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, &r)
+	}
+	return out, nil
 }
 
 func (s *Store) UpdateReturnStatus(ctx context.Context, id uuid.UUID, status string, actorID *uuid.UUID, rejReason *string) error {

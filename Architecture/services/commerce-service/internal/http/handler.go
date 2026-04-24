@@ -54,6 +54,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	v1.POST("/orders/checkout", h.Checkout)
 	v1.GET("/orders", h.ListOrders)
 	v1.GET("/orders/:orderId", h.GetOrder)
+	v1.GET("/orders/:orderId/items", h.GetOrderItems)
 	v1.POST("/orders/:orderId/cancel", h.CancelOrder)
 	v1.POST("/orders/:orderId/payment/confirm", h.ConfirmPayment)
 
@@ -63,6 +64,12 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// ── Addresses ────────────────────────────────────────────
 	v1.GET("/addresses", h.ListAddresses)
 	v1.POST("/addresses", h.AddAddress)
+	v1.PATCH("/addresses/:addressId", h.UpdateAddress)
+	v1.DELETE("/addresses/:addressId", h.DeleteAddress)
+	v1.POST("/addresses/:addressId/default", h.SetDefaultAddress)
+
+	// ── My returns ───────────────────────────────────────────
+	v1.GET("/me/returns", h.ListMyReturns)
 
 	// ── Payout preview ───────────────────────────────────────
 	v1.GET("/payout/preview", h.PayoutPreview)
@@ -481,6 +488,23 @@ func (h *Handler) GetOrder(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, order, nil)
 }
 
+func (h *Handler) GetOrderItems(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	orderID, ok := parseUUID(c, "orderId")
+	if !ok {
+		return
+	}
+	order, items, err := h.svc.GetOrderWithItems(c.Request.Context(), orderID, userID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "order not found", nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"order": order, "items": items}, nil)
+}
+
 type cancelOrderReq struct {
 	Reason string `json:"reason"`
 }
@@ -626,6 +650,84 @@ func (h *Handler) AddAddress(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, addr, nil)
+}
+
+func (h *Handler) UpdateAddress(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	addrID, ok := parseUUID(c, "addressId")
+	if !ok {
+		return
+	}
+	var req addAddressReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		return
+	}
+	country := req.Country
+	if country == "" {
+		country = "IN"
+	}
+	addr := &postgres.CustomerAddress{
+		AddressType: req.AddressType, ContactName: req.FullName, Phone: req.Phone,
+		AddressLine1: req.AddressLine1, AddressLine2: req.AddressLine2,
+		Landmark: req.Landmark, City: req.City, State: req.State,
+		PostalCode: req.PostalCode, Country: country, IsDefault: req.IsDefault,
+	}
+	if err := h.svc.UpdateAddress(c.Request.Context(), addrID, userID, addr); err != nil {
+		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil, nil)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (h *Handler) DeleteAddress(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	addrID, ok := parseUUID(c, "addressId")
+	if !ok {
+		return
+	}
+	if err := h.svc.DeleteAddress(c.Request.Context(), addrID, userID); err != nil {
+		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil, nil)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (h *Handler) SetDefaultAddress(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	addrID, ok := parseUUID(c, "addressId")
+	if !ok {
+		return
+	}
+	if err := h.svc.SetDefaultAddress(c.Request.Context(), addrID, userID); err != nil {
+		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil, nil)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (h *Handler) ListMyReturns(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	returns, err := h.svc.ListMyReturns(c.Request.Context(), userID, limit, offset)
+	if err != nil {
+		handleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, returns, nil)
 }
 
 // ─── Payout preview handler ──────────────────────────────────────
