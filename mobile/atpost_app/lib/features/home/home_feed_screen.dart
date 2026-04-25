@@ -4,6 +4,7 @@ import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/providers/feed_provider.dart';
 import 'package:atpost_app/providers/notification_provider.dart';
 import 'package:atpost_app/providers/stories_provider.dart';
+import 'package:atpost_app/providers/user_provider.dart';
 import 'package:atpost_app/shared/widgets/badge_icon_button.dart';
 import 'package:atpost_app/shared/widgets/content_cards.dart';
 import 'package:atpost_app/shared/widgets/filter_pills.dart';
@@ -76,8 +77,6 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
   @override
   Widget build(BuildContext context) {
     final feedAsync = ref.watch(homeFeedProvider);
-    final storiesAsync = ref.watch(feedStoriesProvider);
-    final stories = storiesAsync.valueOrNull ?? const [];
 
     return SafeArea(
       child: RefreshIndicator(
@@ -119,13 +118,34 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
                         ),
                         const Spacer(),
                         BadgeIconButton(
-                          icon: Icons.search,
+                          icon: Icons.search_rounded,
                           tooltip: 'Search',
                           onPressed: () => context.push('/discover'),
                         ),
                         const SizedBox(width: 8),
                         BadgeIconButton(
-                          icon: Icons.notifications_none,
+                          icon: Icons.chat_bubble_rounded,
+                          tooltip: 'Messages',
+                          badgeCount:
+                              ref.watch(unreadChatCountProvider).valueOrNull ??
+                              0,
+                          onPressed: () => context.push('/chat'),
+                        ),
+                        const SizedBox(width: 8),
+                        BadgeIconButton(
+                          icon: Icons.storefront_rounded,
+                          tooltip: 'Shop',
+                          onPressed: () => context.push('/shop'),
+                        ),
+                        const SizedBox(width: 8),
+                        BadgeIconButton(
+                          icon: Icons.favorite_rounded,
+                          tooltip: 'Dating app',
+                          onPressed: () => context.push('/postmatch'),
+                        ),
+                        const SizedBox(width: 8),
+                        BadgeIconButton(
+                          icon: Icons.notifications_rounded,
                           tooltip: 'Notifications',
                           badgeCount:
                               ref
@@ -135,98 +155,39 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
                           onPressed: () => context.push('/notifications'),
                         ),
                         const SizedBox(width: 8),
-                        BadgeIconButton(
-                          icon: Icons.chat_bubble_outline,
-                          tooltip: 'Messages',
-                          badgeCount:
-                              ref.watch(unreadChatCountProvider).valueOrNull ??
-                              0,
-                          onPressed: () => context.push('/chat'),
+                        GestureDetector(
+                          onTap: () => context.push('/profile'),
+                          child: Builder(
+                            builder: (_) {
+                              final me = ref.watch(currentUserProvider).valueOrNull;
+                              final avatar = me?.hasAvatar == true ? me!.avatarUrl : null;
+                              return CircleAvatar(
+                                radius: 18,
+                                backgroundColor: AppColors.bgTertiary,
+                                backgroundImage: avatar != null ? NetworkImage(avatar) : null,
+                                child: avatar == null
+                                    ? const Icon(
+                                        Icons.person_rounded,
+                                        size: 20,
+                                        color: AppColors.textDim,
+                                      )
+                                    : null,
+                              );
+                            },
+                          ),
                         ),
                       ],
                     ),
                     const SizedBox(height: 16),
-                    SizedBox(
-                      height: 98,
-                      child: ListView(
-                        scrollDirection: Axis.horizontal,
-                        children: [
-                          GestureDetector(
-                            onTap: () => context.push('/stories/create'),
-                            child: const StoryRing(
-                              initials: 'Y',
-                              label: 'Your Story',
-                              isOwn: true,
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          GestureDetector(
-                            onTap: () => context.push('/live'),
-                            child: const StoryRing(
-                              initials: 'L',
-                              label: 'Live',
-                              isLive: true,
-                            ),
-                          ),
-                          for (final story in stories.take(12)) ...[
-                            const SizedBox(width: 10),
-                            GestureDetector(
-                              onTap: () =>
-                                  context.push('/stories/${story.authorId}'),
-                              child: StoryRing(
-                                initials: _initialsFor(story.authorName),
-                                label: story.authorName.isEmpty
-                                    ? 'Story'
-                                    : story.authorName,
-                              ),
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 14),
-                    SizedBox(
-                      height: 80,
-                      child: ListView(
-                        scrollDirection: Axis.horizontal,
-                        children: [
-                          _FeatureShortcut(
-                            icon: Icons.question_answer_rounded,
-                            label: 'Q&A',
-                            color: AppColors.postbookPrimary,
-                            onTap: () => context.push('/qa'),
-                          ),
-                          _FeatureShortcut(
-                            icon: Icons.extension_rounded,
-                            label: 'Apps',
-                            color: AppColors.accentPurple,
-                            onTap: () => context.push('/apps'),
-                          ),
-                          _FeatureShortcut(
-                            icon: Icons.favorite_rounded,
-                            label: 'Match',
-                            color: AppColors.postgramPrimary,
-                            onTap: () => context.push('/postmatch'),
-                          ),
-                          _FeatureShortcut(
-                            icon: Icons.storefront_rounded,
-                            label: 'Shop',
-                            color: AppColors.postbookSecondary,
-                            onTap: () => context.push('/shop'),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 14),
                     FilterPills(
-                      labels: const ['For You', 'Following', 'Trending'],
+                      labels: const ['For You', 'Following', '#HashTag'],
                       activeIndex: feedTab,
                       onChanged: (v) {
                         setState(() => feedTab = v);
                         ref.read(feedFilterProvider.notifier).state = [
                           'For You',
                           'Following',
-                          'Trending',
+                          'Hashtag',
                         ][v];
                       },
                     ),
@@ -253,6 +214,14 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
                 ),
               ],
               data: (feedState) => [
+                if (feedState.posts.isEmpty)
+                  const SliverToBoxAdapter(
+                    child: Padding(
+                      padding: EdgeInsets.symmetric(vertical: 56),
+                      child: _EmptyFeedState(),
+                    ),
+                  )
+                else
                 SliverPadding(
                   padding: AppSpacing.pagePadding.copyWith(bottom: 130),
                   sliver: SliverList(
@@ -269,25 +238,31 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
                           );
                         }
                         final post = feedState.posts[index];
-                        if (post.isReel) {
-                          return ReelCard(
-                            title: post.content,
-                            creator: 'By ${post.authorName ?? 'unknown'}',
-                            duration: _formatDuration(
-                              post.durationSeconds ?? 0,
-                            ),
-                            onTap: () => context.push('/reels'),
-                          );
-                        }
-                        if (post.isVideo) {
-                          return VideoCard(
-                            title: post.content,
-                            stats:
-                                '${_formatCount(post.likeCount)} views  -  ${_timeAgo(post.createdAt)}',
-                            onTap: () => context.push('/posttube'),
-                          );
-                        }
-                        return PostCard(post: post);
+                        return ConstrainedBox(
+                          constraints: BoxConstraints(
+                            minHeight: MediaQuery.of(context).size.height * 0.7,
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.only(bottom: 16),
+                            child: post.isReel
+                                ? ReelCard(
+                                  title: post.content,
+                                  creator: 'By ${post.authorName ?? 'unknown'}',
+                                  duration: _formatDuration(
+                                    post.durationSeconds ?? 0,
+                                  ),
+                                  onTap: () => context.push('/reels'),
+                                )
+                                : post.isVideo
+                                    ? VideoCard(
+                                      title: post.content,
+                                      stats:
+                                          '${_formatCount(post.likeCount)} views  -  ${_timeAgo(post.createdAt)}',
+                                      onTap: () => context.push('/posttube'),
+                                    )
+                                    : PostCard(post: post),
+                          ),
+                        );
                       },
                       childCount:
                           feedState.posts.length +
@@ -315,63 +290,29 @@ String _initialsFor(String name) {
   return '${parts[0][0]}${parts[1][0]}'.toUpperCase();
 }
 
-class _FeatureShortcut extends StatelessWidget {
-  const _FeatureShortcut({
-    required this.icon,
-    required this.label,
-    required this.color,
-    required this.onTap,
-  });
-
-  final IconData icon;
-  final String label;
-  final Color color;
-  final VoidCallback onTap;
+class _EmptyFeedState extends StatelessWidget {
+  const _EmptyFeedState();
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(right: 10),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
-          child: Ink(
-            width: 94,
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-            decoration: BoxDecoration(
-              color: AppColors.bgCard,
-              borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
-              border: Border.all(color: AppColors.borderSubtle),
-            ),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Container(
-                  width: 34,
-                  height: 34,
-                  decoration: BoxDecoration(
-                    color: color.withValues(alpha: 0.18),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Icon(icon, color: color, size: 19),
-                ),
-                const SizedBox(height: 7),
-                Text(
-                  label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: AppTextStyles.labelSmall.copyWith(
-                    color: AppColors.textPrimary,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ],
-            ),
-          ),
+    return Column(
+      children: [
+        const Icon(
+          Icons.dynamic_feed_outlined,
+          size: 40,
+          color: AppColors.textMuted,
         ),
-      ),
+        const SizedBox(height: 10),
+        Text('No posts yet', style: AppTextStyles.h3),
+        const SizedBox(height: 6),
+        Text(
+          'Follow people or refresh after someone posts.',
+          style: AppTextStyles.bodySmall.copyWith(
+            color: AppColors.textSecondary,
+          ),
+          textAlign: TextAlign.center,
+        ),
+      ],
     );
   }
 }
