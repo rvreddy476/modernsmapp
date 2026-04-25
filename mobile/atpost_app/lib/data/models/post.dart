@@ -55,22 +55,24 @@ class Post {
         authorId: (json['author_id'] ?? '').toString(),
         authorName: json['author_name']?.toString(),
         authorAvatar: json['author_avatar']?.toString(),
-        content: (json['content'] ?? json['text'] ?? '').toString(),
+        content: (json['content'] ?? json['text'] ?? json['title'] ?? '').toString(),
         contentType: (json['content_type'] ?? 'post').toString(),
         visibility: (json['visibility'] ?? 'public').toString(),
-        tags: _parseList<String>(json['tags']),
-        mediaIds: _parseList<String>(json['media_ids']),
+        tags: _parseStringList(json['tags'] ?? json['hashtags']),
+        mediaIds: _parseMediaIds(json['media_ids'] ?? json['media']),
         likeCount: _toInt(json['like_count'] ?? counts['likes']),
         commentCount: _toInt(json['comment_count'] ?? counts['comments']),
         shareCount: _toInt(json['share_count'] ?? counts['shares']),
         durationSeconds: _toIntNullable(json['duration_seconds']),
-        isLiked: _toBool(json['is_liked']),
+        isLiked:
+            _toBool(json['is_liked']) ||
+            (json['viewer_reaction']?.toString().trim().isNotEmpty ?? false),
         isBookmarked: _toBool(json['is_bookmarked']),
         createdAt: _parseDate(json['created_at']),
         feeling: json['feeling']?.toString(),
         activity: json['activity']?.toString(),
         activityDetail: json['activity_detail']?.toString(),
-        locationName: json['location_name']?.toString(),
+        locationName: (json['location_name'] ?? json['location'])?.toString(),
         poll: json['poll'] != null
             ? PollData.fromJson(Map<String, dynamic>.from(json['poll']))
             : null,
@@ -87,6 +89,35 @@ class Post {
         content: 'Content unavailable',
         createdAt: DateTime.now(),
       );
+
+  Post copyWith({
+    String? authorName,
+    String? authorAvatar,
+  }) {
+    return Post(
+      id: id,
+      authorId: authorId,
+      authorName: authorName ?? this.authorName,
+      authorAvatar: authorAvatar ?? this.authorAvatar,
+      content: content,
+      contentType: contentType,
+      visibility: visibility,
+      tags: tags,
+      mediaIds: mediaIds,
+      likeCount: likeCount,
+      commentCount: commentCount,
+      shareCount: shareCount,
+      durationSeconds: durationSeconds,
+      isLiked: isLiked,
+      isBookmarked: isBookmarked,
+      createdAt: createdAt,
+      feeling: feeling,
+      activity: activity,
+      activityDetail: activityDetail,
+      locationName: locationName,
+      poll: poll,
+    );
+  }
 
   bool get isReel => contentType == 'reel';
   bool get isVideo => contentType == 'video';
@@ -237,6 +268,31 @@ class Comment {
 
 List<T> _parseList<T>(dynamic data) {
   if (data is List) return data.cast<T>();
+  return const [];
+}
+
+List<String> _parseStringList(dynamic data) {
+  if (data is List) {
+    return data
+        .map((item) => item?.toString() ?? '')
+        .where((item) => item.isNotEmpty)
+        .toList();
+  }
+  return const [];
+}
+
+List<String> _parseMediaIds(dynamic data) {
+  if (data is List) {
+    return data
+        .map((item) {
+          if (item is Map<String, dynamic>) {
+            return (item['media_id'] ?? item['id'] ?? '').toString();
+          }
+          return item?.toString() ?? '';
+        })
+        .where((item) => item.isNotEmpty)
+        .toList();
+  }
   return const [];
 }
 

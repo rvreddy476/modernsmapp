@@ -2,6 +2,8 @@ import 'package:atpost_app/core/cache/cache_keys.dart';
 import 'package:atpost_app/core/cache/cache_manager.dart';
 import 'package:atpost_app/core/utils/app_logger.dart';
 import 'package:atpost_app/data/models/post.dart';
+import 'package:atpost_app/data/models/user.dart';
+import 'package:atpost_app/data/repositories/user_repository.dart';
 import 'package:atpost_app/services/api_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -10,9 +12,44 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 class FeedRepository {
   final ApiClient _api;
   final CacheManager? _cache;
+  final UserRepository? _users;
   static const _tag = 'FeedRepository';
 
-  FeedRepository(this._api, [this._cache]);
+  FeedRepository(this._api, [this._cache, this._users]);
+
+  /// Hydrate posts with author display name + avatar URL.
+  /// /v1/feed/home returns only author_id; the web app does the same lookup
+  /// via useBatchProfiles. Without this, all posts render as "Anonymous".
+  Future<List<Post>> _hydrateAuthors(List<Post> posts) async {
+    if (_users == null || posts.isEmpty) return posts;
+    final ids = <String>{};
+    for (final p in posts) {
+      final id = p.authorId.trim();
+      if (id.isEmpty) continue;
+      // Only fetch if we don't already have a name (post-service hydration may evolve).
+      if ((p.authorName ?? '').trim().isEmpty) ids.add(id);
+    }
+    if (ids.isEmpty) return posts;
+    try {
+      final users = await _users.getUsersBatch(ids.toList());
+      final byId = <String, User>{for (final u in users) u.id: u};
+      return posts.map((p) {
+        final u = byId[p.authorId];
+        if (u == null) return p;
+        return p.copyWith(
+          authorName: (p.authorName?.trim().isNotEmpty ?? false)
+              ? p.authorName
+              : u.displayName,
+          authorAvatar: (p.authorAvatar?.trim().isNotEmpty ?? false)
+              ? p.authorAvatar
+              : u.avatarUrl,
+        );
+      }).toList();
+    } catch (e) {
+      AppLogger.warn('Author hydration failed: $e', tag: _tag);
+      return posts;
+    }
+  }
 
   /// Fetch home feed with pagination metadata (cursor support).
   /// Synchronized with /v1/feed/home from OpenAPI spec.
@@ -34,6 +71,7 @@ class FeedRepository {
     if (cursor != null) params['cursor'] = cursor;
 
     try {
+      AppLogger.info('Requesting /v1/feed/home with params=$params', tag: _tag);
       final response = await _api.get('/v1/feed/home', queryParameters: params);
 
       // Parse using the standard Envelope pattern (data, meta)
@@ -46,9 +84,14 @@ class FeedRepository {
       } else {
         rawData = [];
       }
-      final posts = rawData
+      final rawPosts = rawData
           .map((e) => Post.fromJson(e as Map<String, dynamic>))
           .toList();
+
+      // Hydrate author display name + avatar from /v1/profiles/batch.
+      // /v1/feed/home only returns author_id; without this every post shows
+      // "Anonymous" with the placeholder avatar.
+      final posts = await _hydrateAuthors(rawPosts);
 
       final meta = response.data['meta'] as Map<String, dynamic>?;
       final nextCursor = meta?['next_cursor'] as String?;
@@ -64,6 +107,10 @@ class FeedRepository {
         );
       }
 
+      AppLogger.info(
+        'Loaded ${posts.length} home feed items, nextCursor=$nextCursor',
+        tag: _tag,
+      );
       return FeedPage(items: posts, nextCursor: nextCursor);
     } catch (e) {
       // Offline fallback: Serve cached feed if available
@@ -137,5 +184,9 @@ class FeedPage {
 }
 
 final feedRepositoryProvider = Provider<FeedRepository>((ref) {
-  return FeedRepository(ref.watch(apiClientProvider));
+  return FeedRepository(
+    ref.watch(apiClientProvider),
+    null,
+    ref.watch(userRepositoryProvider),
+  );
 });
