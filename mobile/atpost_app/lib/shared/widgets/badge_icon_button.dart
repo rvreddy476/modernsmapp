@@ -10,12 +10,17 @@ class BadgeIconButton extends StatelessWidget {
     required this.tooltip,
     this.badgeCount = 0,
     this.onPressed,
+    this.tintColor,
   });
 
   final IconData icon;
   final String tooltip;
   final int badgeCount;
   final VoidCallback? onPressed;
+
+  /// Optional accent colour for the icon's background and glyph. When null,
+  /// the button uses the neutral glass style.
+  final Color? tintColor;
 
   @override
   Widget build(BuildContext context) {
@@ -25,7 +30,12 @@ class BadgeIconButton extends StatelessWidget {
       child: Stack(
         clipBehavior: Clip.none,
         children: [
-          GlassIconButton(icon: icon, tooltip: tooltip, onPressed: onPressed),
+          GlassIconButton(
+            icon: icon,
+            tooltip: tooltip,
+            onPressed: onPressed,
+            tintColor: tintColor,
+          ),
           if (badgeCount > 0)
             Positioned(
               right: -2,

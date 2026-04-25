@@ -1,5 +1,4 @@
 import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 
@@ -11,6 +10,8 @@ class GlassIconButton extends StatelessWidget {
     this.onPressed,
     this.size = 38,
     this.semanticLabel,
+    this.iconColor,
+    this.tintColor,
   });
 
   final IconData icon;
@@ -19,8 +20,21 @@ class GlassIconButton extends StatelessWidget {
   final double size;
   final String? semanticLabel;
 
+  /// Colour of the glyph. Defaults to white when null.
+  final Color? iconColor;
+
+  /// When set, renders a soft tint-coloured background instead of the
+  /// neutral glass card. The glyph also picks this colour up by default
+  /// if [iconColor] is not provided.
+  final Color? tintColor;
+
   @override
   Widget build(BuildContext context) {
+    final hasTint = tintColor != null;
+    final bg = hasTint ? tintColor!.withValues(alpha: 0.18) : AppColors.bgCard;
+    final border = hasTint ? tintColor!.withValues(alpha: 0.32) : AppColors.borderSubtle;
+    final glyph = iconColor ?? (hasTint ? tintColor! : Colors.white);
+
     return Semantics(
       button: true,
       label: semanticLabel ?? tooltip,
@@ -29,15 +43,24 @@ class GlassIconButton extends StatelessWidget {
         child: GestureDetector(
           onTap: onPressed,
           child: Container(
-            width: size,
-            height: size,
-            decoration: BoxDecoration(
-              color: AppColors.bgCard,
-              borderRadius: BorderRadius.circular(AppSpacing.radiusMedium),
-              border: Border.all(color: AppColors.borderSubtle),
-            ),
-            child: Icon(icon, color: AppColors.textSecondary, size: 18),
-          )
+                width: size,
+                height: size,
+                decoration: BoxDecoration(
+                  color: bg,
+                  borderRadius: BorderRadius.circular(99),
+                  border: Border.all(color: border),
+                  boxShadow: [
+                    BoxShadow(
+                      color: hasTint
+                          ? tintColor!.withValues(alpha: 0.22)
+                          : Colors.black.withValues(alpha: 0.1),
+                      blurRadius: hasTint ? 10 : 4,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                ),
+                child: Icon(icon, color: glyph, size: 20),
+              )
               .animate()
               .scale(
                 duration: 120.ms,

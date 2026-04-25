@@ -120,12 +120,14 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
                         BadgeIconButton(
                           icon: Icons.search_rounded,
                           tooltip: 'Search',
+                          tintColor: AppColors.accentPurple,
                           onPressed: () => context.push('/discover'),
                         ),
                         const SizedBox(width: 8),
                         BadgeIconButton(
                           icon: Icons.chat_bubble_rounded,
                           tooltip: 'Messages',
+                          tintColor: AppColors.posttubePrimary,
                           badgeCount:
                               ref.watch(unreadChatCountProvider).valueOrNull ??
                               0,
@@ -135,18 +137,21 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
                         BadgeIconButton(
                           icon: Icons.storefront_rounded,
                           tooltip: 'Shop',
+                          tintColor: AppColors.statusWarning,
                           onPressed: () => context.push('/shop'),
                         ),
                         const SizedBox(width: 8),
                         BadgeIconButton(
                           icon: Icons.favorite_rounded,
                           tooltip: 'Dating app',
+                          tintColor: AppColors.postgramPrimary,
                           onPressed: () => context.push('/postmatch'),
                         ),
                         const SizedBox(width: 8),
                         BadgeIconButton(
                           icon: Icons.notifications_rounded,
                           tooltip: 'Notifications',
+                          tintColor: AppColors.postbookPrimary,
                           badgeCount:
                               ref
                                   .watch(unreadNotificationCountProvider)
@@ -179,9 +184,41 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
                       ],
                     ),
                     const SizedBox(height: 16),
-                    FilterPills(
-                      labels: const ['For You', 'Following', '#HashTag'],
+                    FilterPills.rich(
+                      fillWidth: true,
                       activeIndex: feedTab,
+                      items: const [
+                        FilterPillItem(
+                          label: 'For You',
+                          icon: Icons.auto_awesome_rounded,
+                          activeGradient: LinearGradient(
+                            colors: [
+                              AppColors.postbookPrimary,
+                              AppColors.postgramPrimary,
+                            ],
+                          ),
+                        ),
+                        FilterPillItem(
+                          label: 'Following',
+                          icon: Icons.people_alt_rounded,
+                          activeGradient: LinearGradient(
+                            colors: [
+                              AppColors.posttubePrimary,
+                              AppColors.accentPurple,
+                            ],
+                          ),
+                        ),
+                        FilterPillItem(
+                          label: '#HashTag',
+                          icon: Icons.tag_rounded,
+                          activeGradient: LinearGradient(
+                            colors: [
+                              AppColors.accentPurple,
+                              AppColors.postgramPrimary,
+                            ],
+                          ),
+                        ),
+                      ],
                       onChanged: (v) {
                         setState(() => feedTab = v);
                         ref.read(feedFilterProvider.notifier).state = [
