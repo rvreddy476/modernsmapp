@@ -123,94 +123,94 @@ type OnboardingPayoutInput struct {
 // ─── Product Category ────────────────────────────────────────
 
 type ProductCategory struct {
-	ID           uuid.UUID  `db:"id"`
-	ParentID     *uuid.UUID `db:"parent_id"`
-	Name         string     `db:"name"`
-	Slug         string     `db:"slug"`
-	Description  *string    `db:"description"`
-	DisplayOrder int        `db:"display_order"`
-	IsActive     bool       `db:"is_active"`
-	IsFeatured   bool       `db:"is_featured"`
-	CreatedAt    time.Time  `db:"created_at"`
+	ID           uuid.UUID  `db:"id" json:"id,omitempty"`
+	ParentID     *uuid.UUID `db:"parent_id" json:"parent_id,omitempty"`
+	Name         string     `db:"name" json:"name,omitempty"`
+	Slug         string     `db:"slug" json:"slug,omitempty"`
+	Description  *string    `db:"description" json:"description,omitempty"`
+	DisplayOrder int        `db:"display_order" json:"display_order,omitempty"`
+	IsActive     bool       `db:"is_active" json:"is_active,omitempty"`
+	IsFeatured   bool       `db:"is_featured" json:"is_featured,omitempty"`
+	CreatedAt    time.Time  `db:"created_at" json:"created_at,omitempty"`
 }
 
 // ─── Product ─────────────────────────────────────────────────
 
 type Product struct {
-	ID                   uuid.UUID  `db:"id"`
-	SellerID             uuid.UUID  `db:"seller_id"`
-	CategoryID           *uuid.UUID `db:"category_id"`
-	BrandID              *uuid.UUID `db:"brand_id"`
-	TaxClassID           *uuid.UUID `db:"tax_class_id"`
-	Title                string     `db:"title"`
-	ShortTitle           *string    `db:"short_title"`
-	Slug                 string     `db:"slug"`
-	Description          *string    `db:"description"`
-	ShortDescription     *string    `db:"short_description"`
-	ProductType          string     `db:"product_type"`
-	Condition            string     `db:"condition"`
-	SKURoot              *string    `db:"sku_root"`
-	Status               string     `db:"status"`
-	Visibility           string     `db:"visibility"`
-	ApprovalStatus       string     `db:"approval_status"`
-	RejectionReason      *string    `db:"rejection_reason"`
-	PrimaryImageMediaID  *uuid.UUID `db:"primary_image_media_id"`
-	WeightGrams          *int       `db:"weight_grams"`
-	CountryOfOrigin      *string    `db:"country_of_origin"`
-	WarrantyInfo         *string    `db:"warranty_info"`
-	ReturnPolicyType     string     `db:"return_policy_type"`
-	ReturnPolicyDays     int        `db:"return_policy_days"`
-	HSNCode              *string    `db:"hsn_code"`
-	MetaTitle            *string    `db:"meta_title"`
-	MetaDescription      *string    `db:"meta_description"`
-	AvgRating            float64    `db:"avg_rating"`
-	ReviewCount          int        `db:"review_count"`
-	OrderCount           int        `db:"order_count"`
-	ViewCount            int64      `db:"view_count"`
-	WishlistCount        int        `db:"wishlist_count"`
-	IsFeatured           bool       `db:"is_featured"`
-	CreatedAt            time.Time  `db:"created_at"`
-	UpdatedAt            time.Time  `db:"updated_at"`
-	PublishedAt          *time.Time `db:"published_at"`
+	ID                   uuid.UUID  `db:"id" json:"id,omitempty"`
+	SellerID             uuid.UUID  `db:"seller_id" json:"seller_id,omitempty"`
+	CategoryID           *uuid.UUID `db:"category_id" json:"category_id,omitempty"`
+	BrandID              *uuid.UUID `db:"brand_id" json:"brand_id,omitempty"`
+	TaxClassID           *uuid.UUID `db:"tax_class_id" json:"tax_class_id,omitempty"`
+	Title                string     `db:"title" json:"title,omitempty"`
+	ShortTitle           *string    `db:"short_title" json:"short_title,omitempty"`
+	Slug                 string     `db:"slug" json:"slug,omitempty"`
+	Description          *string    `db:"description" json:"description,omitempty"`
+	ShortDescription     *string    `db:"short_description" json:"short_description,omitempty"`
+	ProductType          string     `db:"product_type" json:"product_type,omitempty"`
+	Condition            string     `db:"condition" json:"condition,omitempty"`
+	SKURoot              *string    `db:"sku_root" json:"sku_root,omitempty"`
+	Status               string     `db:"status" json:"status,omitempty"`
+	Visibility           string     `db:"visibility" json:"visibility,omitempty"`
+	ApprovalStatus       string     `db:"approval_status" json:"approval_status,omitempty"`
+	RejectionReason      *string    `db:"rejection_reason" json:"rejection_reason,omitempty"`
+	PrimaryImageMediaID  *uuid.UUID `db:"primary_image_media_id" json:"primary_image_media_id,omitempty"`
+	WeightGrams          *int       `db:"weight_grams" json:"weight_grams,omitempty"`
+	CountryOfOrigin      *string    `db:"country_of_origin" json:"country_of_origin,omitempty"`
+	WarrantyInfo         *string    `db:"warranty_info" json:"warranty_info,omitempty"`
+	ReturnPolicyType     string     `db:"return_policy_type" json:"return_policy_type,omitempty"`
+	ReturnPolicyDays     int        `db:"return_policy_days" json:"return_policy_days,omitempty"`
+	HSNCode              *string    `db:"hsn_code" json:"hsn_code,omitempty"`
+	MetaTitle            *string    `db:"meta_title" json:"meta_title,omitempty"`
+	MetaDescription      *string    `db:"meta_description" json:"meta_description,omitempty"`
+	AvgRating            float64    `db:"avg_rating" json:"avg_rating,omitempty"`
+	ReviewCount          int        `db:"review_count" json:"review_count,omitempty"`
+	OrderCount           int        `db:"order_count" json:"order_count,omitempty"`
+	ViewCount            int64      `db:"view_count" json:"view_count,omitempty"`
+	WishlistCount        int        `db:"wishlist_count" json:"wishlist_count,omitempty"`
+	IsFeatured           bool       `db:"is_featured" json:"is_featured,omitempty"`
+	CreatedAt            time.Time  `db:"created_at" json:"created_at,omitempty"`
+	UpdatedAt            time.Time  `db:"updated_at" json:"updated_at,omitempty"`
+	PublishedAt          *time.Time `db:"published_at" json:"published_at,omitempty"`
 }
 
 // ─── Product Variant ─────────────────────────────────────────
 
 type ProductVariant struct {
-	ID             uuid.UUID  `db:"id"`
-	ProductID      uuid.UUID  `db:"product_id"`
-	SKU            string     `db:"sku"`
-	Barcode        *string    `db:"barcode"`
-	Option1Name    *string    `db:"option_1_name"`
-	Option1Value   *string    `db:"option_1_value"`
-	Option2Name    *string    `db:"option_2_name"`
-	Option2Value   *string    `db:"option_2_value"`
-	Option3Name    *string    `db:"option_3_name"`
-	Option3Value   *string    `db:"option_3_value"`
-	MRP            float64    `db:"mrp"`
-	SellingPrice   float64    `db:"selling_price"`
-	CostPrice      *float64   `db:"cost_price"`
-	CurrencyCode   string     `db:"currency_code"`
-	Status         string     `db:"status"`
-	ImageMediaID   *uuid.UUID `db:"image_media_id"`
-	WeightGrams    *int       `db:"weight_grams"`
-	CreatedAt      time.Time  `db:"created_at"`
-	UpdatedAt      time.Time  `db:"updated_at"`
+	ID             uuid.UUID  `db:"id" json:"id,omitempty"`
+	ProductID      uuid.UUID  `db:"product_id" json:"product_id,omitempty"`
+	SKU            string     `db:"sku" json:"sku,omitempty"`
+	Barcode        *string    `db:"barcode" json:"barcode,omitempty"`
+	Option1Name    *string    `db:"option_1_name" json:"option_1_name,omitempty"`
+	Option1Value   *string    `db:"option_1_value" json:"option_1_value,omitempty"`
+	Option2Name    *string    `db:"option_2_name" json:"option_2_name,omitempty"`
+	Option2Value   *string    `db:"option_2_value" json:"option_2_value,omitempty"`
+	Option3Name    *string    `db:"option_3_name" json:"option_3_name,omitempty"`
+	Option3Value   *string    `db:"option_3_value" json:"option_3_value,omitempty"`
+	MRP            float64    `db:"mrp" json:"mrp,omitempty"`
+	SellingPrice   float64    `db:"selling_price" json:"selling_price,omitempty"`
+	CostPrice      *float64   `db:"cost_price" json:"cost_price,omitempty"`
+	CurrencyCode   string     `db:"currency_code" json:"currency_code,omitempty"`
+	Status         string     `db:"status" json:"status,omitempty"`
+	ImageMediaID   *uuid.UUID `db:"image_media_id" json:"image_media_id,omitempty"`
+	WeightGrams    *int       `db:"weight_grams" json:"weight_grams,omitempty"`
+	CreatedAt      time.Time  `db:"created_at" json:"created_at,omitempty"`
+	UpdatedAt      time.Time  `db:"updated_at" json:"updated_at,omitempty"`
 }
 
 // ─── Inventory ───────────────────────────────────────────────
 
 type InventoryItem struct {
-	ID            uuid.UUID `db:"id"`
-	VariantID     uuid.UUID `db:"variant_id"`
-	SellerID      uuid.UUID `db:"seller_id"`
-	TotalQty      int       `db:"total_qty"`
-	ReservedQty   int       `db:"reserved_qty"`
-	DamagedQty    int       `db:"damaged_qty"`
-	ReturnedQty   int       `db:"returned_qty"`
-	SafetyStock   int       `db:"safety_stock"`
-	LowStockAlert int       `db:"low_stock_alert"`
-	UpdatedAt     time.Time `db:"updated_at"`
+	ID            uuid.UUID `db:"id" json:"id,omitempty"`
+	VariantID     uuid.UUID `db:"variant_id" json:"variant_id,omitempty"`
+	SellerID      uuid.UUID `db:"seller_id" json:"seller_id,omitempty"`
+	TotalQty      int       `db:"total_qty" json:"total_qty,omitempty"`
+	ReservedQty   int       `db:"reserved_qty" json:"reserved_qty,omitempty"`
+	DamagedQty    int       `db:"damaged_qty" json:"damaged_qty,omitempty"`
+	ReturnedQty   int       `db:"returned_qty" json:"returned_qty,omitempty"`
+	SafetyStock   int       `db:"safety_stock" json:"safety_stock,omitempty"`
+	LowStockAlert int       `db:"low_stock_alert" json:"low_stock_alert,omitempty"`
+	UpdatedAt     time.Time `db:"updated_at" json:"updated_at,omitempty"`
 }
 
 func (i *InventoryItem) AvailableQty() int {
@@ -220,244 +220,244 @@ func (i *InventoryItem) AvailableQty() int {
 // ─── Cart ────────────────────────────────────────────────────
 
 type Cart struct {
-	ID        uuid.UUID  `db:"id"`
-	UserID    uuid.UUID  `db:"user_id"`
-	ExpiresAt *time.Time `db:"expires_at"`
-	UpdatedAt time.Time  `db:"updated_at"`
+	ID        uuid.UUID  `db:"id" json:"id,omitempty"`
+	UserID    uuid.UUID  `db:"user_id" json:"user_id,omitempty"`
+	ExpiresAt *time.Time `db:"expires_at" json:"expires_at,omitempty"`
+	UpdatedAt time.Time  `db:"updated_at" json:"updated_at,omitempty"`
 }
 
 type CartItem struct {
-	ID            uuid.UUID `db:"id"`
-	CartID        uuid.UUID `db:"cart_id"`
-	VariantID     uuid.UUID `db:"variant_id"`
-	ProductID     uuid.UUID `db:"product_id"`
-	Quantity      int       `db:"quantity"`
-	PriceSnapshot float64   `db:"price_snapshot"`
-	AddedAt       time.Time `db:"added_at"`
+	ID            uuid.UUID `db:"id" json:"id,omitempty"`
+	CartID        uuid.UUID `db:"cart_id" json:"cart_id,omitempty"`
+	VariantID     uuid.UUID `db:"variant_id" json:"variant_id,omitempty"`
+	ProductID     uuid.UUID `db:"product_id" json:"product_id,omitempty"`
+	Quantity      int       `db:"quantity" json:"quantity,omitempty"`
+	PriceSnapshot float64   `db:"price_snapshot" json:"price_snapshot,omitempty"`
+	AddedAt       time.Time `db:"added_at" json:"added_at,omitempty"`
 }
 
 // ─── Order ───────────────────────────────────────────────────
 
 type Order struct {
-	ID                      uuid.UUID  `db:"id"`
-	CustomerUserID          uuid.UUID  `db:"customer_user_id"`
-	OrderNumber             string     `db:"order_number"`
-	Subtotal                float64    `db:"subtotal"`
-	DiscountAmount          float64    `db:"discount_amount"`
-	ShippingCharges         float64    `db:"shipping_charges"`
-	TaxAmount               float64    `db:"tax_amount"`
-	CouponCode              *string    `db:"coupon_code"`
-	CouponDiscount          float64    `db:"coupon_discount"`
-	FinalAmount             float64    `db:"final_amount"`
-	CurrencyCode            string     `db:"currency_code"`
-	PaymentMethod           *string    `db:"payment_method"`
-	PaymentStatus           string     `db:"payment_status"`
-	PaymentID               *string    `db:"payment_id"`
-	PaymentGateway          *string    `db:"payment_gateway"`
-	DeliveryAddressID       *uuid.UUID `db:"delivery_address_id"`
-	DeliveryAddressSnapshot []byte     `db:"delivery_address_snapshot"`
-	GiftMessage             *string    `db:"gift_message"`
-	Status                  string     `db:"status"`
-	CancellationReason      *string    `db:"cancellation_reason"`
-	CancelledBy             *string    `db:"cancelled_by"`
-	IdempotencyKey          *string    `db:"idempotency_key"`
-	CreatedAt               time.Time  `db:"created_at"`
-	UpdatedAt               time.Time  `db:"updated_at"`
+	ID                      uuid.UUID  `db:"id" json:"id,omitempty"`
+	CustomerUserID          uuid.UUID  `db:"customer_user_id" json:"customer_user_id,omitempty"`
+	OrderNumber             string     `db:"order_number" json:"order_number,omitempty"`
+	Subtotal                float64    `db:"subtotal" json:"subtotal,omitempty"`
+	DiscountAmount          float64    `db:"discount_amount" json:"discount_amount,omitempty"`
+	ShippingCharges         float64    `db:"shipping_charges" json:"shipping_charges,omitempty"`
+	TaxAmount               float64    `db:"tax_amount" json:"tax_amount,omitempty"`
+	CouponCode              *string    `db:"coupon_code" json:"coupon_code,omitempty"`
+	CouponDiscount          float64    `db:"coupon_discount" json:"coupon_discount,omitempty"`
+	FinalAmount             float64    `db:"final_amount" json:"final_amount,omitempty"`
+	CurrencyCode            string     `db:"currency_code" json:"currency_code,omitempty"`
+	PaymentMethod           *string    `db:"payment_method" json:"payment_method,omitempty"`
+	PaymentStatus           string     `db:"payment_status" json:"payment_status,omitempty"`
+	PaymentID               *string    `db:"payment_id" json:"payment_id,omitempty"`
+	PaymentGateway          *string    `db:"payment_gateway" json:"payment_gateway,omitempty"`
+	DeliveryAddressID       *uuid.UUID `db:"delivery_address_id" json:"delivery_address_id,omitempty"`
+	DeliveryAddressSnapshot []byte     `db:"delivery_address_snapshot" json:"delivery_address_snapshot,omitempty"`
+	GiftMessage             *string    `db:"gift_message" json:"gift_message,omitempty"`
+	Status                  string     `db:"status" json:"status,omitempty"`
+	CancellationReason      *string    `db:"cancellation_reason" json:"cancellation_reason,omitempty"`
+	CancelledBy             *string    `db:"cancelled_by" json:"cancelled_by,omitempty"`
+	IdempotencyKey          *string    `db:"idempotency_key" json:"idempotency_key,omitempty"`
+	CreatedAt               time.Time  `db:"created_at" json:"created_at,omitempty"`
+	UpdatedAt               time.Time  `db:"updated_at" json:"updated_at,omitempty"`
 }
 
 type OrderItem struct {
-	ID                  uuid.UUID  `db:"id"`
-	OrderID             uuid.UUID  `db:"order_id"`
-	ProductID           uuid.UUID  `db:"product_id"`
-	VariantID           uuid.UUID  `db:"variant_id"`
-	SellerID            uuid.UUID  `db:"seller_id"`
-	ProductTitle        string     `db:"product_title"`
-	VariantDetails      []byte     `db:"variant_details"`
-	SKU                 string     `db:"sku"`
-	Quantity            int        `db:"quantity"`
-	UnitMRP             float64    `db:"unit_mrp"`
-	UnitPrice           float64    `db:"unit_price"`
-	DiscountAmount      float64    `db:"discount_amount"`
-	TaxAmount           float64    `db:"tax_amount"`
-	FinalPrice          float64    `db:"final_price"`
-	Status              string     `db:"status"`
-	ShipmentID          *uuid.UUID `db:"shipment_id"`
-	TrackingNumber      *string    `db:"tracking_number"`
-	ReturnEligibleUntil *time.Time `db:"return_eligible_until"`
-	DeliveredAt         *time.Time `db:"delivered_at"`
-	CreatedAt           time.Time  `db:"created_at"`
+	ID                  uuid.UUID  `db:"id" json:"id,omitempty"`
+	OrderID             uuid.UUID  `db:"order_id" json:"order_id,omitempty"`
+	ProductID           uuid.UUID  `db:"product_id" json:"product_id,omitempty"`
+	VariantID           uuid.UUID  `db:"variant_id" json:"variant_id,omitempty"`
+	SellerID            uuid.UUID  `db:"seller_id" json:"seller_id,omitempty"`
+	ProductTitle        string     `db:"product_title" json:"product_title,omitempty"`
+	VariantDetails      []byte     `db:"variant_details" json:"variant_details,omitempty"`
+	SKU                 string     `db:"sku" json:"sku,omitempty"`
+	Quantity            int        `db:"quantity" json:"quantity,omitempty"`
+	UnitMRP             float64    `db:"unit_mrp" json:"unit_mrp,omitempty"`
+	UnitPrice           float64    `db:"unit_price" json:"unit_price,omitempty"`
+	DiscountAmount      float64    `db:"discount_amount" json:"discount_amount,omitempty"`
+	TaxAmount           float64    `db:"tax_amount" json:"tax_amount,omitempty"`
+	FinalPrice          float64    `db:"final_price" json:"final_price,omitempty"`
+	Status              string     `db:"status" json:"status,omitempty"`
+	ShipmentID          *uuid.UUID `db:"shipment_id" json:"shipment_id,omitempty"`
+	TrackingNumber      *string    `db:"tracking_number" json:"tracking_number,omitempty"`
+	ReturnEligibleUntil *time.Time `db:"return_eligible_until" json:"return_eligible_until,omitempty"`
+	DeliveredAt         *time.Time `db:"delivered_at" json:"delivered_at,omitempty"`
+	CreatedAt           time.Time  `db:"created_at" json:"created_at,omitempty"`
 }
 
 type OrderStatusHistory struct {
-	ID         uuid.UUID  `db:"id"`
-	OrderID    uuid.UUID  `db:"order_id"`
-	FromStatus *string    `db:"from_status"`
-	ToStatus   string     `db:"to_status"`
-	ChangedBy  *uuid.UUID `db:"changed_by"`
-	ActorType  string     `db:"actor_type"`
-	Notes      *string    `db:"notes"`
-	CreatedAt  time.Time  `db:"created_at"`
+	ID         uuid.UUID  `db:"id" json:"id,omitempty"`
+	OrderID    uuid.UUID  `db:"order_id" json:"order_id,omitempty"`
+	FromStatus *string    `db:"from_status" json:"from_status,omitempty"`
+	ToStatus   string     `db:"to_status" json:"to_status,omitempty"`
+	ChangedBy  *uuid.UUID `db:"changed_by" json:"changed_by,omitempty"`
+	ActorType  string     `db:"actor_type" json:"actor_type,omitempty"`
+	Notes      *string    `db:"notes" json:"notes,omitempty"`
+	CreatedAt  time.Time  `db:"created_at" json:"created_at,omitempty"`
 }
 
 // ─── Payment ─────────────────────────────────────────────────
 
 type Payment struct {
-	ID              uuid.UUID  `db:"id"`
-	OrderID         uuid.UUID  `db:"order_id"`
-	UserID          uuid.UUID  `db:"user_id"`
-	Amount          float64    `db:"amount"`
-	Currency        string     `db:"currency"`
-	PaymentMethod   string     `db:"payment_method"`
-	Gateway         string     `db:"gateway"`
-	GatewayOrderID  *string    `db:"gateway_order_id"`
-	GatewayTxnID    *string    `db:"gateway_txn_id"`
-	Status          string     `db:"status"`
-	IdempotencyKey  *string    `db:"idempotency_key"`
-	RawResponse     []byte     `db:"raw_response"`
-	FailureReason   *string    `db:"failure_reason"`
-	InitiatedAt     time.Time  `db:"initiated_at"`
-	CompletedAt     *time.Time `db:"completed_at"`
+	ID              uuid.UUID  `db:"id" json:"id,omitempty"`
+	OrderID         uuid.UUID  `db:"order_id" json:"order_id,omitempty"`
+	UserID          uuid.UUID  `db:"user_id" json:"user_id,omitempty"`
+	Amount          float64    `db:"amount" json:"amount,omitempty"`
+	Currency        string     `db:"currency" json:"currency,omitempty"`
+	PaymentMethod   string     `db:"payment_method" json:"payment_method,omitempty"`
+	Gateway         string     `db:"gateway" json:"gateway,omitempty"`
+	GatewayOrderID  *string    `db:"gateway_order_id" json:"gateway_order_id,omitempty"`
+	GatewayTxnID    *string    `db:"gateway_txn_id" json:"gateway_txn_id,omitempty"`
+	Status          string     `db:"status" json:"status,omitempty"`
+	IdempotencyKey  *string    `db:"idempotency_key" json:"idempotency_key,omitempty"`
+	RawResponse     []byte     `db:"raw_response" json:"raw_response,omitempty"`
+	FailureReason   *string    `db:"failure_reason" json:"failure_reason,omitempty"`
+	InitiatedAt     time.Time  `db:"initiated_at" json:"initiated_at,omitempty"`
+	CompletedAt     *time.Time `db:"completed_at" json:"completed_at,omitempty"`
 }
 
 // ─── Shipping ────────────────────────────────────────────────
 
 type ShippingPackage struct {
-	ID                  uuid.UUID  `db:"id"`
-	OrderID             uuid.UUID  `db:"order_id"`
-	SellerID            uuid.UUID  `db:"seller_id"`
-	ShippingPartnerID   *uuid.UUID `db:"shipping_partner_id"`
-	AWBNumber           *string    `db:"awb_number"`
-	TrackingURL         *string    `db:"tracking_url"`
-	WeightGrams         *int       `db:"weight_grams"`
-	CurrentStatus       string     `db:"current_status"`
-	CurrentLocation     *string    `db:"current_location"`
-	EstimatedDelivery   *time.Time `db:"estimated_delivery_date"`
-	DeliveredAt         *time.Time `db:"delivered_at"`
-	PickedUpAt          *time.Time `db:"picked_up_at"`
-	CreatedAt           time.Time  `db:"created_at"`
-	UpdatedAt           time.Time  `db:"updated_at"`
+	ID                  uuid.UUID  `db:"id" json:"id,omitempty"`
+	OrderID             uuid.UUID  `db:"order_id" json:"order_id,omitempty"`
+	SellerID            uuid.UUID  `db:"seller_id" json:"seller_id,omitempty"`
+	ShippingPartnerID   *uuid.UUID `db:"shipping_partner_id" json:"shipping_partner_id,omitempty"`
+	AWBNumber           *string    `db:"awb_number" json:"awb_number,omitempty"`
+	TrackingURL         *string    `db:"tracking_url" json:"tracking_url,omitempty"`
+	WeightGrams         *int       `db:"weight_grams" json:"weight_grams,omitempty"`
+	CurrentStatus       string     `db:"current_status" json:"current_status,omitempty"`
+	CurrentLocation     *string    `db:"current_location" json:"current_location,omitempty"`
+	EstimatedDelivery   *time.Time `db:"estimated_delivery_date" json:"estimated_delivery_date,omitempty"`
+	DeliveredAt         *time.Time `db:"delivered_at" json:"delivered_at,omitempty"`
+	PickedUpAt          *time.Time `db:"picked_up_at" json:"picked_up_at,omitempty"`
+	CreatedAt           time.Time  `db:"created_at" json:"created_at,omitempty"`
+	UpdatedAt           time.Time  `db:"updated_at" json:"updated_at,omitempty"`
 }
 
 // ─── Review ──────────────────────────────────────────────────
 
 type Review struct {
-	ID                  uuid.UUID `db:"id"`
-	ProductID           uuid.UUID `db:"product_id"`
-	SellerID            uuid.UUID `db:"seller_id"`
-	OrderItemID         uuid.UUID `db:"order_item_id"`
-	ReviewerID          uuid.UUID `db:"reviewer_id"`
-	Rating              int       `db:"rating"`
-	Title               *string   `db:"title"`
-	Body                *string   `db:"body"`
-	IsVerifiedPurchase  bool      `db:"is_verified_purchase"`
-	IsPublished         bool      `db:"is_published"`
-	HelpfulCount        int       `db:"helpful_count"`
-	CreatedAt           time.Time `db:"created_at"`
+	ID                  uuid.UUID `db:"id" json:"id,omitempty"`
+	ProductID           uuid.UUID `db:"product_id" json:"product_id,omitempty"`
+	SellerID            uuid.UUID `db:"seller_id" json:"seller_id,omitempty"`
+	OrderItemID         uuid.UUID `db:"order_item_id" json:"order_item_id,omitempty"`
+	ReviewerID          uuid.UUID `db:"reviewer_id" json:"reviewer_id,omitempty"`
+	Rating              int       `db:"rating" json:"rating,omitempty"`
+	Title               *string   `db:"title" json:"title,omitempty"`
+	Body                *string   `db:"body" json:"body,omitempty"`
+	IsVerifiedPurchase  bool      `db:"is_verified_purchase" json:"is_verified_purchase,omitempty"`
+	IsPublished         bool      `db:"is_published" json:"is_published,omitempty"`
+	HelpfulCount        int       `db:"helpful_count" json:"helpful_count,omitempty"`
+	CreatedAt           time.Time `db:"created_at" json:"created_at,omitempty"`
 }
 
 // ─── Return Request ──────────────────────────────────────────
 
 type ReturnRequest struct {
-	ID                uuid.UUID  `db:"id"`
-	OrderID           uuid.UUID  `db:"order_id"`
-	OrderItemID       uuid.UUID  `db:"order_item_id"`
-	CustomerUserID    uuid.UUID  `db:"customer_user_id"`
-	SellerID          uuid.UUID  `db:"seller_id"`
-	ReasonCode        string     `db:"reason_code"`
-	ReasonDescription *string    `db:"reason_description"`
-	Status            string     `db:"status"`
-	RequestedAt       time.Time  `db:"requested_at"`
-	ApprovedAt        *time.Time `db:"approved_at"`
-	RejectedAt        *time.Time `db:"rejected_at"`
-	RejectionReason   *string    `db:"rejection_reason"`
-	RefundAmount      *float64   `db:"refund_amount"`
+	ID                uuid.UUID  `db:"id" json:"id,omitempty"`
+	OrderID           uuid.UUID  `db:"order_id" json:"order_id,omitempty"`
+	OrderItemID       uuid.UUID  `db:"order_item_id" json:"order_item_id,omitempty"`
+	CustomerUserID    uuid.UUID  `db:"customer_user_id" json:"customer_user_id,omitempty"`
+	SellerID          uuid.UUID  `db:"seller_id" json:"seller_id,omitempty"`
+	ReasonCode        string     `db:"reason_code" json:"reason_code,omitempty"`
+	ReasonDescription *string    `db:"reason_description" json:"reason_description,omitempty"`
+	Status            string     `db:"status" json:"status,omitempty"`
+	RequestedAt       time.Time  `db:"requested_at" json:"requested_at,omitempty"`
+	ApprovedAt        *time.Time `db:"approved_at" json:"approved_at,omitempty"`
+	RejectedAt        *time.Time `db:"rejected_at" json:"rejected_at,omitempty"`
+	RejectionReason   *string    `db:"rejection_reason" json:"rejection_reason,omitempty"`
+	RefundAmount      *float64   `db:"refund_amount" json:"refund_amount,omitempty"`
 }
 
 // ─── Coupon ──────────────────────────────────────────────────
 
 type Coupon struct {
-	ID                 uuid.UUID  `db:"id"`
-	SellerID           *uuid.UUID `db:"seller_id"`
-	Code               string     `db:"code"`
-	Description        *string    `db:"description"`
-	DiscountType       string     `db:"discount_type"`
-	DiscountValue      float64    `db:"discount_value"`
-	MaxDiscountAmount  *float64   `db:"max_discount_amount"`
-	MinOrderAmount     float64    `db:"min_order_amount"`
-	MaxUses            *int       `db:"max_uses"`
-	UsesCount          int        `db:"uses_count"`
-	MaxUsesPerUser     int        `db:"max_uses_per_user"`
-	ApplicableTo       string     `db:"applicable_to"`
-	IsActive           bool       `db:"is_active"`
-	StartsAt           time.Time  `db:"starts_at"`
-	ExpiresAt          *time.Time `db:"expires_at"`
+	ID                 uuid.UUID  `db:"id" json:"id,omitempty"`
+	SellerID           *uuid.UUID `db:"seller_id" json:"seller_id,omitempty"`
+	Code               string     `db:"code" json:"code,omitempty"`
+	Description        *string    `db:"description" json:"description,omitempty"`
+	DiscountType       string     `db:"discount_type" json:"discount_type,omitempty"`
+	DiscountValue      float64    `db:"discount_value" json:"discount_value,omitempty"`
+	MaxDiscountAmount  *float64   `db:"max_discount_amount" json:"max_discount_amount,omitempty"`
+	MinOrderAmount     float64    `db:"min_order_amount" json:"min_order_amount,omitempty"`
+	MaxUses            *int       `db:"max_uses" json:"max_uses,omitempty"`
+	UsesCount          int        `db:"uses_count" json:"uses_count,omitempty"`
+	MaxUsesPerUser     int        `db:"max_uses_per_user" json:"max_uses_per_user,omitempty"`
+	ApplicableTo       string     `db:"applicable_to" json:"applicable_to,omitempty"`
+	IsActive           bool       `db:"is_active" json:"is_active,omitempty"`
+	StartsAt           time.Time  `db:"starts_at" json:"starts_at,omitempty"`
+	ExpiresAt          *time.Time `db:"expires_at" json:"expires_at,omitempty"`
 }
 
 // ─── Customer Address ────────────────────────────────────────
 
 type CustomerAddress struct {
-	ID             uuid.UUID `db:"id"`
-	UserID         uuid.UUID `db:"user_id"`
-	Label          string    `db:"label"`
-	ContactName    string    `db:"contact_name"`
-	Phone          string    `db:"phone"`
-	AddressLine1   string    `db:"address_line_1"`
-	AddressLine2   *string   `db:"address_line_2"`
-	Landmark       *string   `db:"landmark"`
-	City           string    `db:"city"`
-	State          string    `db:"state"`
-	Country        string    `db:"country"`
-	PostalCode     string    `db:"postal_code"`
-	AddressType    string    `db:"address_type"`
-	IsDefault      bool      `db:"is_default"`
-	CreatedAt      time.Time `db:"created_at"`
+	ID             uuid.UUID `db:"id" json:"id,omitempty"`
+	UserID         uuid.UUID `db:"user_id" json:"user_id,omitempty"`
+	Label          string    `db:"label" json:"label,omitempty"`
+	ContactName    string    `db:"contact_name" json:"contact_name,omitempty"`
+	Phone          string    `db:"phone" json:"phone,omitempty"`
+	AddressLine1   string    `db:"address_line_1" json:"address_line_1,omitempty"`
+	AddressLine2   *string   `db:"address_line_2" json:"address_line_2,omitempty"`
+	Landmark       *string   `db:"landmark" json:"landmark,omitempty"`
+	City           string    `db:"city" json:"city,omitempty"`
+	State          string    `db:"state" json:"state,omitempty"`
+	Country        string    `db:"country" json:"country,omitempty"`
+	PostalCode     string    `db:"postal_code" json:"postal_code,omitempty"`
+	AddressType    string    `db:"address_type" json:"address_type,omitempty"`
+	IsDefault      bool      `db:"is_default" json:"is_default,omitempty"`
+	CreatedAt      time.Time `db:"created_at" json:"created_at,omitempty"`
 }
 
 // ─── Support Ticket ──────────────────────────────────────────
 
 type SupportTicket struct {
-	ID          uuid.UUID  `db:"id"`
-	UserID      uuid.UUID  `db:"user_id"`
-	SellerID    *uuid.UUID `db:"seller_id"`
-	OrderID     *uuid.UUID `db:"order_id"`
-	Category    string     `db:"category"`
-	Subject     string     `db:"subject"`
-	Description string     `db:"description"`
-	Priority    string     `db:"priority"`
-	Status      string     `db:"status"`
-	AssignedTo  *uuid.UUID `db:"assigned_to"`
-	CreatedAt   time.Time  `db:"created_at"`
-	UpdatedAt   time.Time  `db:"updated_at"`
+	ID          uuid.UUID  `db:"id" json:"id,omitempty"`
+	UserID      uuid.UUID  `db:"user_id" json:"user_id,omitempty"`
+	SellerID    *uuid.UUID `db:"seller_id" json:"seller_id,omitempty"`
+	OrderID     *uuid.UUID `db:"order_id" json:"order_id,omitempty"`
+	Category    string     `db:"category" json:"category,omitempty"`
+	Subject     string     `db:"subject" json:"subject,omitempty"`
+	Description string     `db:"description" json:"description,omitempty"`
+	Priority    string     `db:"priority" json:"priority,omitempty"`
+	Status      string     `db:"status" json:"status,omitempty"`
+	AssignedTo  *uuid.UUID `db:"assigned_to" json:"assigned_to,omitempty"`
+	CreatedAt   time.Time  `db:"created_at" json:"created_at,omitempty"`
+	UpdatedAt   time.Time  `db:"updated_at" json:"updated_at,omitempty"`
 }
 
 // ─── Payout ──────────────────────────────────────────────────
 
 type PayoutBatch struct {
-	ID               uuid.UUID  `db:"id"`
-	BatchDate        time.Time  `db:"batch_date"`
-	CycleStart       time.Time  `db:"payout_cycle_start"`
-	CycleEnd         time.Time  `db:"payout_cycle_end"`
-	TotalSellers     int        `db:"total_sellers"`
-	TotalAmount      float64    `db:"total_amount"`
-	Status           string     `db:"status"`
-	ProcessedAt      *time.Time `db:"processed_at"`
-	CreatedAt        time.Time  `db:"created_at"`
+	ID               uuid.UUID  `db:"id" json:"id,omitempty"`
+	BatchDate        time.Time  `db:"batch_date" json:"batch_date,omitempty"`
+	CycleStart       time.Time  `db:"payout_cycle_start" json:"payout_cycle_start,omitempty"`
+	CycleEnd         time.Time  `db:"payout_cycle_end" json:"payout_cycle_end,omitempty"`
+	TotalSellers     int        `db:"total_sellers" json:"total_sellers,omitempty"`
+	TotalAmount      float64    `db:"total_amount" json:"total_amount,omitempty"`
+	Status           string     `db:"status" json:"status,omitempty"`
+	ProcessedAt      *time.Time `db:"processed_at" json:"processed_at,omitempty"`
+	CreatedAt        time.Time  `db:"created_at" json:"created_at,omitempty"`
 }
 
 type PayoutTransaction struct {
-	ID               uuid.UUID  `db:"id"`
-	BatchID          uuid.UUID  `db:"batch_id"`
-	SellerID         uuid.UUID  `db:"seller_id"`
-	GrossAmount      float64    `db:"gross_amount"`
-	CommissionAmount float64    `db:"commission_amount"`
-	PlatformFee      float64    `db:"platform_fee"`
-	TaxDeducted      float64    `db:"tax_deducted"`
-	AdjustmentAmount float64    `db:"adjustment_amount"`
-	NetAmount        float64    `db:"net_amount"`
-	BankAccountID    *uuid.UUID `db:"bank_account_id"`
-	TransferReference *string   `db:"transfer_reference"`
-	Status           string     `db:"status"`
-	FailureReason    *string    `db:"failure_reason"`
-	InitiatedAt      time.Time  `db:"initiated_at"`
-	CompletedAt      *time.Time `db:"completed_at"`
+	ID               uuid.UUID  `db:"id" json:"id,omitempty"`
+	BatchID          uuid.UUID  `db:"batch_id" json:"batch_id,omitempty"`
+	SellerID         uuid.UUID  `db:"seller_id" json:"seller_id,omitempty"`
+	GrossAmount      float64    `db:"gross_amount" json:"gross_amount,omitempty"`
+	CommissionAmount float64    `db:"commission_amount" json:"commission_amount,omitempty"`
+	PlatformFee      float64    `db:"platform_fee" json:"platform_fee,omitempty"`
+	TaxDeducted      float64    `db:"tax_deducted" json:"tax_deducted,omitempty"`
+	AdjustmentAmount float64    `db:"adjustment_amount" json:"adjustment_amount,omitempty"`
+	NetAmount        float64    `db:"net_amount" json:"net_amount,omitempty"`
+	BankAccountID    *uuid.UUID `db:"bank_account_id" json:"bank_account_id,omitempty"`
+	TransferReference *string   `db:"transfer_reference" json:"transfer_reference,omitempty"`
+	Status           string     `db:"status" json:"status,omitempty"`
+	FailureReason    *string    `db:"failure_reason" json:"failure_reason,omitempty"`
+	InitiatedAt      time.Time  `db:"initiated_at" json:"initiated_at,omitempty"`
+	CompletedAt      *time.Time `db:"completed_at" json:"completed_at,omitempty"`
 }

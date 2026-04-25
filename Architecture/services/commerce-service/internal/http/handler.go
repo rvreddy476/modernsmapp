@@ -670,8 +670,12 @@ func (h *Handler) UpdateAddress(c *gin.Context) {
 	if country == "" {
 		country = "IN"
 	}
+	addressType := req.AddressType
+	if addressType == "" {
+		addressType = "home"
+	}
 	addr := &postgres.CustomerAddress{
-		AddressType: req.AddressType, ContactName: req.FullName, Phone: req.Phone,
+		AddressType: addressType, ContactName: req.FullName, Phone: req.Phone,
 		AddressLine1: req.AddressLine1, AddressLine2: req.AddressLine2,
 		Landmark: req.Landmark, City: req.City, State: req.State,
 		PostalCode: req.PostalCode, Country: country, IsDefault: req.IsDefault,
