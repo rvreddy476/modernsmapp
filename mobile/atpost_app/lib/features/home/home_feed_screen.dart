@@ -1,6 +1,10 @@
+import 'dart:async';
+
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_app/data/models/user.dart';
+import 'package:atpost_app/data/repositories/user_repository.dart';
 import 'package:atpost_app/providers/feed_provider.dart';
 import 'package:atpost_app/providers/notification_provider.dart';
 import 'package:atpost_app/providers/stories_provider.dart';
@@ -24,6 +28,16 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
   int feedTab = 0;
   final ScrollController _scrollController = ScrollController();
 
+  // Inline search state.
+  bool _searchMode = false;
+  final TextEditingController _searchCtrl = TextEditingController();
+  final FocusNode _searchFocus = FocusNode();
+  Timer? _searchDebounce;
+  String _searchQuery = '';
+  List<User> _searchResults = const [];
+  bool _searchLoading = false;
+  String? _searchError;
+
   @override
   void initState() {
     super.initState();
@@ -33,7 +47,68 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
   @override
   void dispose() {
     _scrollController.dispose();
+    _searchCtrl.dispose();
+    _searchFocus.dispose();
+    _searchDebounce?.cancel();
     super.dispose();
+  }
+
+  void _enterSearchMode() {
+    setState(() => _searchMode = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _searchFocus.requestFocus();
+    });
+  }
+
+  void _exitSearchMode() {
+    setState(() {
+      _searchMode = false;
+      _searchCtrl.clear();
+      _searchQuery = '';
+      _searchResults = const [];
+      _searchError = null;
+      _searchLoading = false;
+    });
+    _searchDebounce?.cancel();
+    _searchFocus.unfocus();
+  }
+
+  void _onSearchChanged(String value) {
+    _searchDebounce?.cancel();
+    final q = value.trim();
+    setState(() {
+      _searchQuery = q;
+      _searchError = null;
+    });
+    if (q.length < 2) {
+      setState(() {
+        _searchResults = const [];
+        _searchLoading = false;
+      });
+      return;
+    }
+    setState(() => _searchLoading = true);
+    _searchDebounce = Timer(const Duration(milliseconds: 300), () {
+      _runSearch(q);
+    });
+  }
+
+  Future<void> _runSearch(String query) async {
+    final repo = ref.read(userRepositoryProvider);
+    try {
+      final result = await repo.searchUsers(query, limit: 20);
+      if (!mounted || _searchQuery != query) return;
+      setState(() {
+        _searchResults = result.users;
+        _searchLoading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _searchError = 'Could not search right now.';
+        _searchLoading = false;
+      });
+    }
   }
 
   void _maybeLoadMore() {
@@ -53,6 +128,262 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
     ref.invalidate(unreadNotificationCountProvider);
     ref.invalidate(unreadChatCountProvider);
     await ref.read(homeFeedProvider.notifier).fetchFirstPage();
+  }
+
+  Widget _buildBrandHeader() {
+    return Row(
+      children: [
+        ShaderMask(
+          blendMode: BlendMode.srcIn,
+          shaderCallback: (rect) => const LinearGradient(
+            colors: [AppColors.postbookPrimary, AppColors.posttubePrimary],
+          ).createShader(rect),
+          child: Text('atpost', style: AppTextStyles.logo),
+        ),
+        const SizedBox(width: 8),
+        Container(
+          width: 8,
+          height: 8,
+          decoration: const BoxDecoration(
+            color: AppColors.posttubePrimary,
+            shape: BoxShape.circle,
+          ),
+        ),
+        const Spacer(),
+        BadgeIconButton(
+          icon: Icons.search_rounded,
+          tooltip: 'Search',
+          tintColor: AppColors.accentPurple,
+          onPressed: _enterSearchMode,
+        ),
+        const SizedBox(width: 8),
+        BadgeIconButton(
+          icon: Icons.chat_bubble_rounded,
+          tooltip: 'Messages',
+          tintColor: AppColors.posttubePrimary,
+          badgeCount: ref.watch(unreadChatCountProvider).valueOrNull ?? 0,
+          onPressed: () => context.push('/chat'),
+        ),
+        const SizedBox(width: 8),
+        BadgeIconButton(
+          icon: Icons.storefront_rounded,
+          tooltip: 'Shop',
+          tintColor: AppColors.statusWarning,
+          onPressed: () => context.push('/shop'),
+        ),
+        const SizedBox(width: 8),
+        BadgeIconButton(
+          icon: Icons.favorite_rounded,
+          tooltip: 'Dating app',
+          tintColor: AppColors.postgramPrimary,
+          onPressed: () => context.push('/postmatch'),
+        ),
+        const SizedBox(width: 8),
+        BadgeIconButton(
+          icon: Icons.notifications_rounded,
+          tooltip: 'Notifications',
+          tintColor: AppColors.postbookPrimary,
+          badgeCount:
+              ref.watch(unreadNotificationCountProvider).valueOrNull ?? 0,
+          onPressed: () => context.push('/notifications'),
+        ),
+        const SizedBox(width: 8),
+        GestureDetector(
+          onTap: () => context.push('/profile'),
+          child: Builder(
+            builder: (_) {
+              final me = ref.watch(currentUserProvider).valueOrNull;
+              final avatar = me?.hasAvatar == true ? me!.avatarUrl : null;
+              return CircleAvatar(
+                radius: 18,
+                backgroundColor: AppColors.bgTertiary,
+                backgroundImage:
+                    avatar != null ? NetworkImage(avatar) : null,
+                child: avatar == null
+                    ? const Icon(
+                        Icons.person_rounded,
+                        size: 20,
+                        color: AppColors.textDim,
+                      )
+                    : null,
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSearchHeader() {
+    return Row(
+      children: [
+        Expanded(
+          child: Container(
+            height: 44,
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            decoration: BoxDecoration(
+              color: AppColors.bgCard,
+              borderRadius: BorderRadius.circular(99),
+              border: Border.all(
+                color: AppColors.accentPurple.withValues(alpha: 0.4),
+              ),
+            ),
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.search_rounded,
+                  size: 18,
+                  color: AppColors.accentPurple,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: TextField(
+                    controller: _searchCtrl,
+                    focusNode: _searchFocus,
+                    autofocus: true,
+                    onChanged: _onSearchChanged,
+                    textInputAction: TextInputAction.search,
+                    style: AppTextStyles.body,
+                    cursorColor: AppColors.accentPurple,
+                    decoration: const InputDecoration(
+                      hintText: 'Search people…',
+                      isCollapsed: true,
+                      border: InputBorder.none,
+                      hintStyle: TextStyle(color: AppColors.textDim),
+                    ),
+                  ),
+                ),
+                if (_searchCtrl.text.isNotEmpty)
+                  GestureDetector(
+                    onTap: () {
+                      _searchCtrl.clear();
+                      _onSearchChanged('');
+                    },
+                    child: const Icon(
+                      Icons.close_rounded,
+                      size: 18,
+                      color: AppColors.textMuted,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        TextButton(
+          onPressed: _exitSearchMode,
+          style: TextButton.styleFrom(
+            foregroundColor: AppColors.textSecondary,
+          ),
+          child: const Text('Cancel'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSearchResultsSliver() {
+    if (_searchQuery.length < 2) {
+      return SliverToBoxAdapter(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 40),
+          child: Center(
+            child: Text(
+              'Type at least 2 characters',
+              style: AppTextStyles.bodySmall.copyWith(
+                color: AppColors.textMuted,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+    if (_searchLoading) {
+      return const SliverToBoxAdapter(
+        child: Padding(
+          padding: EdgeInsets.symmetric(vertical: 40),
+          child: Center(child: CircularProgressIndicator()),
+        ),
+      );
+    }
+    if (_searchError != null) {
+      return SliverToBoxAdapter(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 40),
+          child: Center(
+            child: Text(
+              _searchError!,
+              style: AppTextStyles.bodySmall.copyWith(
+                color: AppColors.statusError,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+    if (_searchResults.isEmpty) {
+      return SliverToBoxAdapter(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 40),
+          child: Center(
+            child: Text(
+              'No people found for “$_searchQuery”',
+              style: AppTextStyles.bodySmall.copyWith(
+                color: AppColors.textMuted,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+    return SliverPadding(
+      padding: AppSpacing.pagePadding.copyWith(bottom: 130),
+      sliver: SliverList(
+        delegate: SliverChildBuilderDelegate(
+          (ctx, i) {
+            final user = _searchResults[i];
+            final hasAvatar = user.hasAvatar;
+            return ListTile(
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 4,
+                vertical: 4,
+              ),
+              leading: CircleAvatar(
+                radius: 22,
+                backgroundColor: AppColors.bgTertiary,
+                backgroundImage: hasAvatar ? NetworkImage(user.avatarUrl) : null,
+                child: hasAvatar
+                    ? null
+                    : Text(
+                        user.displayName.isNotEmpty
+                            ? user.displayName[0].toUpperCase()
+                            : '?',
+                        style: AppTextStyles.h3,
+                      ),
+              ),
+              title: Text(
+                user.displayName,
+                style: AppTextStyles.h3,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              subtitle: user.username.isNotEmpty
+                  ? Text(
+                      '@${user.username}',
+                      style: AppTextStyles.bodySmall.copyWith(
+                        color: AppColors.textDim,
+                      ),
+                    )
+                  : null,
+              onTap: () {
+                _exitSearchMode();
+                context.push('/profile/${user.id}');
+              },
+            );
+          },
+          childCount: _searchResults.length,
+        ),
+      ),
+    );
   }
 
   String _formatCount(int count) {
@@ -95,96 +426,9 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Row(
-                      children: [
-                        ShaderMask(
-                          blendMode: BlendMode.srcIn,
-                          shaderCallback: (rect) => const LinearGradient(
-                            colors: [
-                              AppColors.postbookPrimary,
-                              AppColors.posttubePrimary,
-                            ],
-                          ).createShader(rect),
-                          child: Text('atpost', style: AppTextStyles.logo),
-                        ),
-                        const SizedBox(width: 8),
-                        Container(
-                          width: 8,
-                          height: 8,
-                          decoration: const BoxDecoration(
-                            color: AppColors.posttubePrimary,
-                            shape: BoxShape.circle,
-                          ),
-                        ),
-                        const Spacer(),
-                        BadgeIconButton(
-                          icon: Icons.search_rounded,
-                          tooltip: 'Search',
-                          tintColor: AppColors.accentPurple,
-                          onPressed: () => context.push('/discover'),
-                        ),
-                        const SizedBox(width: 8),
-                        BadgeIconButton(
-                          icon: Icons.chat_bubble_rounded,
-                          tooltip: 'Messages',
-                          tintColor: AppColors.posttubePrimary,
-                          badgeCount:
-                              ref.watch(unreadChatCountProvider).valueOrNull ??
-                              0,
-                          onPressed: () => context.push('/chat'),
-                        ),
-                        const SizedBox(width: 8),
-                        BadgeIconButton(
-                          icon: Icons.storefront_rounded,
-                          tooltip: 'Shop',
-                          tintColor: AppColors.statusWarning,
-                          onPressed: () => context.push('/shop'),
-                        ),
-                        const SizedBox(width: 8),
-                        BadgeIconButton(
-                          icon: Icons.favorite_rounded,
-                          tooltip: 'Dating app',
-                          tintColor: AppColors.postgramPrimary,
-                          onPressed: () => context.push('/postmatch'),
-                        ),
-                        const SizedBox(width: 8),
-                        BadgeIconButton(
-                          icon: Icons.notifications_rounded,
-                          tooltip: 'Notifications',
-                          tintColor: AppColors.postbookPrimary,
-                          badgeCount:
-                              ref
-                                  .watch(unreadNotificationCountProvider)
-                                  .valueOrNull ??
-                              0,
-                          onPressed: () => context.push('/notifications'),
-                        ),
-                        const SizedBox(width: 8),
-                        GestureDetector(
-                          onTap: () => context.push('/profile'),
-                          child: Builder(
-                            builder: (_) {
-                              final me = ref.watch(currentUserProvider).valueOrNull;
-                              final avatar = me?.hasAvatar == true ? me!.avatarUrl : null;
-                              return CircleAvatar(
-                                radius: 18,
-                                backgroundColor: AppColors.bgTertiary,
-                                backgroundImage: avatar != null ? NetworkImage(avatar) : null,
-                                child: avatar == null
-                                    ? const Icon(
-                                        Icons.person_rounded,
-                                        size: 20,
-                                        color: AppColors.textDim,
-                                      )
-                                    : null,
-                              );
-                            },
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    FilterPills.rich(
+                    _searchMode ? _buildSearchHeader() : _buildBrandHeader(),
+                    if (!_searchMode) const SizedBox(height: 16),
+                    if (!_searchMode) FilterPills.rich(
                       fillWidth: true,
                       activeIndex: feedTab,
                       items: const [
@@ -228,12 +472,13 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
                         ][v];
                       },
                     ),
-                    const SizedBox(height: 14),
+                    SizedBox(height: _searchMode ? 8 : 14),
                   ],
                 ),
               ),
             ),
-            ...feedAsync.when(
+            if (_searchMode) _buildSearchResultsSliver()
+            else ...feedAsync.when(
               loading: () => [
                 const SliverToBoxAdapter(
                   child: Padding(
@@ -275,14 +520,10 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
                           );
                         }
                         final post = feedState.posts[index];
-                        return ConstrainedBox(
-                          constraints: BoxConstraints(
-                            minHeight: MediaQuery.of(context).size.height * 0.7,
-                          ),
-                          child: Padding(
-                            padding: const EdgeInsets.only(bottom: 16),
-                            child: post.isReel
-                                ? ReelCard(
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 12),
+                          child: post.isReel
+                              ? ReelCard(
                                   title: post.content,
                                   creator: 'By ${post.authorName ?? 'unknown'}',
                                   duration: _formatDuration(
@@ -290,15 +531,14 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
                                   ),
                                   onTap: () => context.push('/reels'),
                                 )
-                                : post.isVideo
-                                    ? VideoCard(
+                              : post.isVideo
+                                  ? VideoCard(
                                       title: post.content,
                                       stats:
                                           '${_formatCount(post.likeCount)} views  -  ${_timeAgo(post.createdAt)}',
                                       onTap: () => context.push('/posttube'),
                                     )
-                                    : PostCard(post: post),
-                          ),
+                                  : PostCard(post: post),
                         );
                       },
                       childCount:

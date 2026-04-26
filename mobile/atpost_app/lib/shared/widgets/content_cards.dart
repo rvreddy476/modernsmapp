@@ -4,6 +4,8 @@ import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/models/post.dart';
 import 'package:atpost_app/data/repositories/post_repository.dart';
+import 'package:atpost_app/providers/feed_provider.dart';
+import 'package:atpost_app/services/auth_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -146,13 +148,80 @@ class _PostCardState extends ConsumerState<PostCard> {
     }
   }
 
+  Future<void> _deletePost() async {
+    final confirmed =
+        await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) {
+            return AlertDialog(
+              backgroundColor: AppColors.bgSecondary,
+              title: const Text('Delete post'),
+              content: const Text(
+                'This removes the post from your feed and profile. This action cannot be undone.',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(false),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  style: FilledButton.styleFrom(backgroundColor: Colors.red),
+                  onPressed: () => Navigator.of(dialogContext).pop(true),
+                  child: const Text('Delete'),
+                ),
+              ],
+            );
+          },
+        ) ??
+        false;
+    if (!confirmed) return;
+
+    try {
+      await ref.read(postRepositoryProvider).deletePost(post.id);
+      ref.read(homeFeedProvider.notifier).removePost(post.id);
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Post deleted.')));
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Could not delete post.')));
+    }
+  }
+
+  // Pick a deterministic gradient for text-only posts based on the author id
+  // so each user's text posts get a stable, recognisable colour.
+  LinearGradient _textPostGradient() {
+    const palette = <List<Color>>[
+      [AppColors.postbookPrimary, AppColors.postgramPrimary],
+      [AppColors.posttubePrimary, AppColors.accentPurple],
+      [AppColors.accentPurple, AppColors.postgramPrimary],
+      [AppColors.postbookPrimary, AppColors.postbookSecondary],
+      [AppColors.postgramSecondary, AppColors.postgramPrimary],
+    ];
+    final seed = (post.authorId.isNotEmpty ? post.authorId : post.id).hashCode;
+    final colours = palette[seed.abs() % palette.length];
+    return LinearGradient(
+      begin: Alignment.topLeft,
+      end: Alignment.bottomRight,
+      colors: colours,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     // PRODUCTION OPTIMIZATION: RepaintBoundary isolates this complex card from other screen repaints.
+    final hasMedia = post.mediaIds.isNotEmpty;
+    final hasContent = post.content.trim().isNotEmpty;
+    final isTextOnly = hasContent && !hasMedia;
+
     return RepaintBoundary(
       child: Container(
         margin: const EdgeInsets.only(bottom: 14),
-        padding: const EdgeInsets.all(16),
+        width: double.infinity,
+        clipBehavior: Clip.antiAlias,
         decoration: BoxDecoration(
           color: AppColors.bgCard,
           borderRadius: BorderRadius.circular(AppSpacing.radiusXL),
@@ -161,29 +230,136 @@ class _PostCardState extends ConsumerState<PostCard> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _buildHeader(context),
-            const SizedBox(height: 12),
-            Text(post.content, style: AppTextStyles.body),
-            if (post.tags.isNotEmpty) _buildTags(),
-            const SizedBox(height: 12),
-            _buildActionRow(),
+            // Header always sits inside padding.
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 14, 8, 12),
+              child: _buildHeader(context),
+            ),
+
+            if (isTextOnly)
+              _buildTextPostBody()
+            else if (hasMedia) ...[
+              if (hasContent)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                  child: Text(post.content, style: AppTextStyles.body),
+                ),
+              _buildMediaBlock(),
+            ] else
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                child: Text(
+                  'Shared a post',
+                  style: AppTextStyles.bodySmall.copyWith(
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+              ),
+
+            if (post.tags.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                child: _buildTags(),
+              ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
+              child: _buildActionRow(),
+            ),
           ],
         ),
       ),
     ).animate().fadeIn(duration: 400.ms).slideY(begin: 0.05, end: 0);
   }
 
+  Widget _buildTextPostBody() {
+    final body = post.content.trim();
+    final isShort = body.length <= 140;
+    return Container(
+      margin: const EdgeInsets.fromLTRB(14, 0, 14, 8),
+      padding: EdgeInsets.symmetric(
+        horizontal: 18,
+        vertical: isShort ? 28 : 22,
+      ),
+      decoration: BoxDecoration(
+        gradient: _textPostGradient(),
+        borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
+      ),
+      child: Text(
+        body,
+        style: AppTextStyles.h2.copyWith(
+          color: Colors.white,
+          fontSize: isShort ? 22 : 17,
+          height: 1.35,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMediaBlock() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 0, 14, 8),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
+        child: AspectRatio(
+          aspectRatio: 4 / 5,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              Image.network(
+                '${Environment.apiBaseUrl}${post.firstMediaUrl}',
+                fit: BoxFit.cover,
+                errorBuilder: (_, _, _) => Container(
+                  color: AppColors.bgTertiary,
+                  alignment: Alignment.center,
+                  child: Text(
+                    'Media unavailable',
+                    style: AppTextStyles.bodySmall.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                ),
+              ),
+              if (post.isVideo || post.isReel)
+                const Center(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: Color(0x66000000),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Padding(
+                      padding: EdgeInsets.all(14),
+                      child: Icon(
+                        Icons.play_arrow_rounded,
+                        color: Colors.white,
+                        size: 36,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildHeader(BuildContext context) {
+    final avatarUrl = (post.authorAvatar ?? '').trim();
+    final authorName = (post.authorName ?? '').trim();
+    final authorInitial = authorName.isNotEmpty
+        ? authorName[0].toUpperCase()
+        : '?';
     return Row(
       children: [
         CircleAvatar(
           radius: 20,
           backgroundColor: AppColors.bgTertiary,
-          backgroundImage: post.authorAvatar != null
-              ? NetworkImage(post.authorAvatar!)
+          backgroundImage: avatarUrl.isNotEmpty
+              ? NetworkImage(avatarUrl)
               : null,
-          child: post.authorAvatar == null
-              ? Text(post.authorName?[0] ?? '?', style: AppTextStyles.h3)
+          child: avatarUrl.isEmpty
+              ? Text(authorInitial, style: AppTextStyles.h3)
               : null,
         ),
         const SizedBox(width: 10),
@@ -191,9 +367,12 @@ class _PostCardState extends ConsumerState<PostCard> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(post.authorName ?? 'Anonymous', style: AppTextStyles.h3),
               Text(
-                '@${(post.authorName ?? 'user').toLowerCase().replaceAll(' ', '_')} \u2022 ${_timeAgo(post.createdAt)}',
+                authorName.isNotEmpty ? authorName : 'Anonymous',
+                style: AppTextStyles.h3,
+              ),
+              Text(
+                '@${(authorName.isNotEmpty ? authorName : 'user').toLowerCase().replaceAll(' ', '_')} \u2022 ${_timeAgo(post.createdAt)}',
                 style: AppTextStyles.bodySmall.copyWith(
                   color: AppColors.textDim,
                 ),
@@ -207,6 +386,10 @@ class _PostCardState extends ConsumerState<PostCard> {
   }
 
   Widget _buildMoreMenu(BuildContext context) {
+    final currentUserId =
+        ref.watch(authStateProvider).valueOrNull?.userId ??
+        ref.read(authServiceProvider).userId;
+    final canDelete = currentUserId == post.authorId;
     return PopupMenuButton<String>(
       color: AppColors.bgSecondary,
       icon: const Icon(Icons.more_horiz, color: AppColors.textMuted),
@@ -221,12 +404,23 @@ class _PostCardState extends ConsumerState<PostCard> {
           case 'report':
             _reportPost();
             return;
+          case 'delete':
+            _deletePost();
+            return;
         }
       },
-      itemBuilder: (context) => [
-        const PopupMenuItem(value: 'copy', child: Text('Copy link')),
-        const PopupMenuItem(value: 'report', child: Text('Report')),
-      ],
+      itemBuilder: (context) {
+        final items = <PopupMenuEntry<String>>[
+          const PopupMenuItem(value: 'copy', child: Text('Copy link')),
+          const PopupMenuItem(value: 'report', child: Text('Report')),
+        ];
+        if (canDelete) {
+          items.add(
+            const PopupMenuItem(value: 'delete', child: Text('Delete')),
+          );
+        }
+        return items;
+      },
     );
   }
 
