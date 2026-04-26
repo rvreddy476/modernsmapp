@@ -4,6 +4,7 @@ import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/models/post.dart';
 import 'package:atpost_app/data/repositories/post_repository.dart';
+import 'package:atpost_app/data/repositories/user_repository.dart';
 import 'package:atpost_app/providers/feed_provider.dart';
 import 'package:atpost_app/services/auth_service.dart';
 import 'package:flutter/material.dart';
@@ -350,6 +351,10 @@ class _PostCardState extends ConsumerState<PostCard> {
     final authorInitial = authorName.isNotEmpty
         ? authorName[0].toUpperCase()
         : '?';
+    final currentUserId =
+        ref.watch(authStateProvider).valueOrNull?.userId ??
+        ref.read(authServiceProvider).userId;
+    final isOwn = currentUserId == post.authorId;
     return Row(
       children: [
         CircleAvatar(
@@ -380,6 +385,11 @@ class _PostCardState extends ConsumerState<PostCard> {
             ],
           ),
         ),
+        if (!isOwn && post.authorId.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(right: 4),
+            child: _FollowButton(authorId: post.authorId),
+          ),
         _buildMoreMenu(context),
       ],
     );
@@ -499,6 +509,91 @@ class _PostCardState extends ConsumerState<PostCard> {
     if (diff.inDays > 0) return '${diff.inDays}d';
     if (diff.inHours > 0) return '${diff.inHours}h';
     return '${diff.inMinutes}m';
+  }
+}
+
+/// Compact follow toggle that lives in a [PostCard] header. Optimistic:
+/// flips local state on tap and reverts on failure. Posts authored by the
+/// current user are filtered upstream so this widget never renders for them.
+class _FollowButton extends ConsumerStatefulWidget {
+  const _FollowButton({required this.authorId});
+  final String authorId;
+
+  @override
+  ConsumerState<_FollowButton> createState() => _FollowButtonState();
+}
+
+class _FollowButtonState extends ConsumerState<_FollowButton> {
+  bool _following = false;
+  bool _busy = false;
+
+  Future<void> _toggle() async {
+    if (_busy) return;
+    final next = !_following;
+    setState(() {
+      _busy = true;
+      _following = next;
+    });
+    final repo = ref.read(userRepositoryProvider);
+    try {
+      if (next) {
+        await repo.followUser(widget.authorId);
+      } else {
+        await repo.unfollowUser(widget.authorId);
+      }
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _following = !next);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(next ? 'Could not follow.' : 'Could not unfollow.'),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final active = _following;
+    return GestureDetector(
+      onTap: _toggle,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOut,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          gradient: active ? null : AppColors.postbookGradient,
+          color: active ? Colors.transparent : null,
+          borderRadius: BorderRadius.circular(99),
+          border: Border.all(
+            color: active
+                ? AppColors.postbookPrimary.withValues(alpha: 0.6)
+                : Colors.transparent,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              active ? Icons.check_rounded : Icons.add_rounded,
+              size: 14,
+              color: active ? AppColors.postbookPrimary : Colors.white,
+            ),
+            const SizedBox(width: 4),
+            Text(
+              active ? 'Following' : 'Follow',
+              style: AppTextStyles.label.copyWith(
+                color: active ? AppColors.postbookPrimary : Colors.white,
+                fontWeight: FontWeight.w700,
+                fontSize: 12,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 

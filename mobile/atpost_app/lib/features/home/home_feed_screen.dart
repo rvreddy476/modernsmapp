@@ -11,7 +11,6 @@ import 'package:atpost_app/providers/stories_provider.dart';
 import 'package:atpost_app/providers/user_provider.dart';
 import 'package:atpost_app/shared/widgets/badge_icon_button.dart';
 import 'package:atpost_app/shared/widgets/content_cards.dart';
-import 'package:atpost_app/shared/widgets/filter_pills.dart';
 import 'package:atpost_app/shared/widgets/story_ring.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -410,145 +409,260 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
     final feedAsync = ref.watch(homeFeedProvider);
 
     return SafeArea(
-      child: RefreshIndicator(
-        color: AppColors.postbookPrimary,
-        backgroundColor: AppColors.bgSecondary,
-        onRefresh: _refreshHome,
-        child: CustomScrollView(
-          controller: _scrollController,
-          physics: const AlwaysScrollableScrollPhysics(
-            parent: BouncingScrollPhysics(),
+      child: Column(
+        children: [
+          // Pinned chrome — does not scroll.
+          Padding(
+            padding: AppSpacing.pagePadding.copyWith(top: 10, bottom: 0),
+            child: _searchMode ? _buildSearchHeader() : _buildBrandHeader(),
           ),
-          slivers: [
-            SliverToBoxAdapter(
-              child: Padding(
-                padding: AppSpacing.pagePadding.copyWith(top: 10),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _searchMode ? _buildSearchHeader() : _buildBrandHeader(),
-                    if (!_searchMode) const SizedBox(height: 16),
-                    if (!_searchMode) FilterPills.rich(
-                      fillWidth: true,
-                      activeIndex: feedTab,
-                      items: const [
-                        FilterPillItem(
-                          label: 'For You',
-                          icon: Icons.auto_awesome_rounded,
-                          activeGradient: LinearGradient(
-                            colors: [
-                              AppColors.postbookPrimary,
-                              AppColors.postgramPrimary,
-                            ],
-                          ),
-                        ),
-                        FilterPillItem(
-                          label: 'Following',
-                          icon: Icons.people_alt_rounded,
-                          activeGradient: LinearGradient(
-                            colors: [
-                              AppColors.posttubePrimary,
-                              AppColors.accentPurple,
-                            ],
-                          ),
-                        ),
-                        FilterPillItem(
-                          label: '#HashTag',
-                          icon: Icons.tag_rounded,
-                          activeGradient: LinearGradient(
-                            colors: [
-                              AppColors.accentPurple,
-                              AppColors.postgramPrimary,
-                            ],
+          if (!_searchMode) ...[
+            const SizedBox(height: 12),
+            _FeedTabStrip(
+              activeIndex: feedTab,
+              onChanged: (v) {
+                setState(() => feedTab = v);
+                ref.read(feedFilterProvider.notifier).state = [
+                  'For You',
+                  'Following',
+                  'Hashtag',
+                ][v];
+              },
+            ),
+          ] else
+            const SizedBox(height: 8),
+
+          // Scrollable region — only this scrolls.
+          Expanded(
+            child: RefreshIndicator(
+              color: AppColors.postbookPrimary,
+              backgroundColor: AppColors.bgSecondary,
+              onRefresh: _refreshHome,
+              child: CustomScrollView(
+                controller: _scrollController,
+                physics: const AlwaysScrollableScrollPhysics(
+                  parent: BouncingScrollPhysics(),
+                ),
+                slivers: [
+                  if (_searchMode)
+                    _buildSearchResultsSliver()
+                  else
+                    ...feedAsync.when(
+                      loading: () => [
+                        const SliverToBoxAdapter(
+                          child: Padding(
+                            padding: EdgeInsets.symmetric(vertical: 40),
+                            child: Center(child: CircularProgressIndicator()),
                           ),
                         ),
                       ],
-                      onChanged: (v) {
-                        setState(() => feedTab = v);
-                        ref.read(feedFilterProvider.notifier).state = [
-                          'For You',
-                          'Following',
-                          'Hashtag',
-                        ][v];
-                      },
-                    ),
-                    SizedBox(height: _searchMode ? 8 : 14),
-                  ],
-                ),
-              ),
-            ),
-            if (_searchMode) _buildSearchResultsSliver()
-            else ...feedAsync.when(
-              loading: () => [
-                const SliverToBoxAdapter(
-                  child: Padding(
-                    padding: EdgeInsets.symmetric(vertical: 40),
-                    child: Center(child: CircularProgressIndicator()),
-                  ),
-                ),
-              ],
-              error: (_, _) => [
-                const SliverToBoxAdapter(
-                  child: Padding(
-                    padding: EdgeInsets.symmetric(vertical: 40),
-                    child: Center(child: Text('Could not load feed')),
-                  ),
-                ),
-              ],
-              data: (feedState) => [
-                if (feedState.posts.isEmpty)
-                  const SliverToBoxAdapter(
-                    child: Padding(
-                      padding: EdgeInsets.symmetric(vertical: 56),
-                      child: _EmptyFeedState(),
-                    ),
-                  )
-                else
-                SliverPadding(
-                  padding: AppSpacing.pagePadding.copyWith(bottom: 130),
-                  sliver: SliverList(
-                    delegate: SliverChildBuilderDelegate(
-                      (context, index) {
-                        if (index >= feedState.posts.length) {
-                          return const Padding(
-                            padding: EdgeInsets.symmetric(vertical: 18),
-                            child: Center(
-                              child: CircularProgressIndicator(
-                                color: AppColors.postbookPrimary,
+                      error: (_, _) => [
+                        const SliverToBoxAdapter(
+                          child: Padding(
+                            padding: EdgeInsets.symmetric(vertical: 40),
+                            child: Center(child: Text('Could not load feed')),
+                          ),
+                        ),
+                      ],
+                      data: (feedState) => [
+                        if (feedState.posts.isEmpty)
+                          const SliverToBoxAdapter(
+                            child: Padding(
+                              padding: EdgeInsets.symmetric(vertical: 56),
+                              child: _EmptyFeedState(),
+                            ),
+                          )
+                        else
+                          SliverPadding(
+                            padding: AppSpacing.pagePadding.copyWith(
+                              top: 12,
+                              bottom: 130,
+                            ),
+                            sliver: SliverList(
+                              delegate: SliverChildBuilderDelegate(
+                                (context, index) {
+                                  if (index >= feedState.posts.length) {
+                                    return const Padding(
+                                      padding: EdgeInsets.symmetric(
+                                        vertical: 18,
+                                      ),
+                                      child: Center(
+                                        child: CircularProgressIndicator(
+                                          color: AppColors.postbookPrimary,
+                                        ),
+                                      ),
+                                    );
+                                  }
+                                  final post = feedState.posts[index];
+                                  return Padding(
+                                    padding: const EdgeInsets.only(bottom: 12),
+                                    child: post.isReel
+                                        ? ReelCard(
+                                            title: post.content,
+                                            creator:
+                                                'By ${post.authorName ?? 'unknown'}',
+                                            duration: _formatDuration(
+                                              post.durationSeconds ?? 0,
+                                            ),
+                                            onTap: () => context.push('/reels'),
+                                          )
+                                        : post.isVideo
+                                            ? VideoCard(
+                                                title: post.content,
+                                                stats:
+                                                    '${_formatCount(post.likeCount)} views  -  ${_timeAgo(post.createdAt)}',
+                                                onTap: () =>
+                                                    context.push('/posttube'),
+                                              )
+                                            : PostCard(post: post),
+                                  );
+                                },
+                                childCount:
+                                    feedState.posts.length +
+                                    (feedState.isLoadingMore ? 1 : 0),
                               ),
                             ),
-                          );
-                        }
-                        final post = feedState.posts[index];
-                        return Padding(
-                          padding: const EdgeInsets.only(bottom: 12),
-                          child: post.isReel
-                              ? ReelCard(
-                                  title: post.content,
-                                  creator: 'By ${post.authorName ?? 'unknown'}',
-                                  duration: _formatDuration(
-                                    post.durationSeconds ?? 0,
-                                  ),
-                                  onTap: () => context.push('/reels'),
-                                )
-                              : post.isVideo
-                                  ? VideoCard(
-                                      title: post.content,
-                                      stats:
-                                          '${_formatCount(post.likeCount)} views  -  ${_timeAgo(post.createdAt)}',
-                                      onTap: () => context.push('/posttube'),
-                                    )
-                                  : PostCard(post: post),
-                        );
-                      },
-                      childCount:
-                          feedState.posts.length +
-                          (feedState.isLoadingMore ? 1 : 0),
+                          ),
+                      ],
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// A tabbed strip that visually anchors the feed region. Each tab takes equal
+/// width; the active tab carries a coloured underline indicator and stronger
+/// text so the strip reads as part of the feed list rather than as floating
+/// buttons.
+class _FeedTabStrip extends StatelessWidget {
+  const _FeedTabStrip({required this.activeIndex, required this.onChanged});
+
+  final int activeIndex;
+  final ValueChanged<int> onChanged;
+
+  static const _items = <_FeedTabSpec>[
+    _FeedTabSpec(
+      label: 'For You',
+      icon: Icons.auto_awesome_rounded,
+      colour: AppColors.postbookPrimary,
+    ),
+    _FeedTabSpec(
+      label: 'Following',
+      icon: Icons.people_alt_rounded,
+      colour: AppColors.posttubePrimary,
+    ),
+    _FeedTabSpec(
+      label: '#HashTag',
+      icon: Icons.tag_rounded,
+      colour: AppColors.accentPurple,
+    ),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: const BoxDecoration(
+        border: Border(
+          bottom: BorderSide(color: AppColors.borderSubtle, width: 1),
+        ),
+      ),
+      child: SizedBox(
+        height: 46,
+        child: Row(
+          children: List.generate(_items.length, (i) {
+            final spec = _items[i];
+            final active = i == activeIndex;
+            return Expanded(
+              child: _FeedTabButton(
+                spec: spec,
+                isActive: active,
+                onTap: () => onChanged(i),
+              ),
+            );
+          }),
+        ),
+      ),
+    );
+  }
+}
+
+class _FeedTabSpec {
+  const _FeedTabSpec({
+    required this.label,
+    required this.icon,
+    required this.colour,
+  });
+  final String label;
+  final IconData icon;
+  final Color colour;
+}
+
+class _FeedTabButton extends StatelessWidget {
+  const _FeedTabButton({
+    required this.spec,
+    required this.isActive,
+    required this.onTap,
+  });
+
+  final _FeedTabSpec spec;
+  final bool isActive;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final tone = isActive ? spec.colour : AppColors.textMuted;
+    return Semantics(
+      selected: isActive,
+      button: true,
+      label: spec.label,
+      child: InkWell(
+        onTap: onTap,
+        child: Stack(
+          children: [
+            Center(
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(spec.icon, size: 16, color: tone),
+                  const SizedBox(width: 6),
+                  Text(
+                    spec.label,
+                    style: AppTextStyles.label.copyWith(
+                      color: tone,
+                      fontWeight:
+                          isActive ? FontWeight.w700 : FontWeight.w500,
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
+            if (isActive)
+              Positioned(
+                left: 24,
+                right: 24,
+                bottom: 0,
+                child: Container(
+                  height: 3,
+                  decoration: BoxDecoration(
+                    color: spec.colour,
+                    borderRadius: const BorderRadius.vertical(
+                      top: Radius.circular(2),
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: spec.colour.withValues(alpha: 0.45),
+                        blurRadius: 8,
+                        offset: const Offset(0, -1),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
           ],
         ),
       ),
