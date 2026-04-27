@@ -5,6 +5,7 @@ import 'package:atpost_app/core/utils/app_logger.dart';
 import 'package:atpost_app/data/models/post.dart';
 import 'package:atpost_app/data/models/realtime_event.dart';
 import 'package:atpost_app/data/repositories/feed_repository.dart';
+import 'package:atpost_app/services/auth_service.dart';
 import 'package:atpost_app/services/realtime_service.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -44,8 +45,10 @@ class FeedState {
 /// Advanced Home Feed Notifier optimized for scale.
 /// Features: Sliding window memory management, Pre-fetching, and Resilient retries.
 class HomeFeedNotifier extends StateNotifier<AsyncValue<FeedState>> {
+  static const _tag = 'FeedNotifier';
   final FeedRepository _repo;
   final RealtimeService _realtime;
+  final AuthService _auth;
   StreamSubscription? _realtimeSub;
   String _currentFilter = 'For You';
 
@@ -57,13 +60,17 @@ class HomeFeedNotifier extends StateNotifier<AsyncValue<FeedState>> {
   static const int _maxPostsInMemory = 500;
   static const int _prefetchThreshold =
       5; // Start loading next page when 5 items from end
+  static const Duration _feedLoadTimeout = Duration(seconds: 20);
 
-  HomeFeedNotifier(this._repo, this._realtime)
+  HomeFeedNotifier(this._repo, this._realtime, this._auth)
     : super(const AsyncValue.loading()) {
     _init();
   }
 
   Future<void> _init() async {
+    AppLogger.info('Waiting for auth session before loading feed', tag: _tag);
+    await _auth.sessionReady;
+    AppLogger.info('Auth session ready. Loading initial feed.', tag: _tag);
     await fetchFirstPage();
     _listenToRealtimeEvents();
   }
@@ -81,12 +88,16 @@ class HomeFeedNotifier extends StateNotifier<AsyncValue<FeedState>> {
 
     state = const AsyncValue.loading();
     try {
+      AppLogger.info(
+        'Fetching first feed page for filter=$_currentFilter',
+        tag: _tag,
+      );
       final page = await ErrorHandler.retry(
         () => _repo.getHomeFeedPage(
           feedMode: _filterToMode(_currentFilter),
-          circleOnly: _currentFilter == 'Following',
+          followingOnly: _currentFilter == 'Following',
         ),
-      );
+      ).timeout(_feedLoadTimeout);
 
       state = AsyncValue.data(
         FeedState(
@@ -95,7 +106,17 @@ class HomeFeedNotifier extends StateNotifier<AsyncValue<FeedState>> {
           hasReachedEnd: page.nextCursor == null,
         ),
       );
+      AppLogger.info(
+        'Loaded ${page.items.length} posts for filter=$_currentFilter',
+        tag: _tag,
+      );
     } catch (e, st) {
+      AppLogger.error(
+        'Initial feed load failed for filter=$_currentFilter',
+        tag: _tag,
+        error: e,
+        stackTrace: st,
+      );
       state = AsyncValue.error(e, st);
     } finally {
       _isFetching = false;
@@ -116,13 +137,17 @@ class HomeFeedNotifier extends StateNotifier<AsyncValue<FeedState>> {
     state = AsyncValue.data(currentState.copyWith(isLoadingMore: true));
 
     try {
+      AppLogger.info(
+        'Fetching next feed page for filter=$_currentFilter cursor=${currentState.nextCursor}',
+        tag: _tag,
+      );
       final page = await ErrorHandler.retry(
         () => _repo.getHomeFeedPage(
           cursor: currentState.nextCursor,
           feedMode: _filterToMode(_currentFilter),
-          circleOnly: _currentFilter == 'Following',
+          followingOnly: _currentFilter == 'Following',
         ),
-      );
+      ).timeout(_feedLoadTimeout);
 
       List<Post> newPosts = [...currentState.posts, ...page.items];
 
@@ -145,6 +170,11 @@ class HomeFeedNotifier extends StateNotifier<AsyncValue<FeedState>> {
         ),
       );
     } catch (e) {
+      AppLogger.warn(
+        'Next feed page failed for filter=$_currentFilter',
+        tag: _tag,
+        error: e,
+      );
       state = AsyncValue.data(
         currentState.copyWith(isLoadingMore: false, hasError: true),
       );
@@ -161,6 +191,22 @@ class HomeFeedNotifier extends StateNotifier<AsyncValue<FeedState>> {
     if (index >= currentState.posts.length - _prefetchThreshold) {
       fetchNextPage();
     }
+  }
+
+  void removePost(String postId) {
+    final currentState = state.value;
+    if (currentState == null) return;
+
+    final nextPosts = currentState.posts
+        .where((post) => post.id != postId)
+        .toList();
+    if (nextPosts.length == currentState.posts.length) {
+      return;
+    }
+
+    state = AsyncValue.data(
+      currentState.copyWith(posts: nextPosts, hasError: false),
+    );
   }
 
   void _listenToRealtimeEvents() {
@@ -241,7 +287,12 @@ final homeFeedProvider =
     ) {
       final repo = ref.watch(feedRepositoryProvider);
       final realtime = ref.watch(realtimeServiceProvider);
-      return HomeFeedNotifier(repo, realtime);
+      final auth = ref.watch(authServiceProvider);
+      final notifier = HomeFeedNotifier(repo, realtime, auth);
+      ref.listen<String>(feedFilterProvider, (_, next) {
+        notifier.updateFilter(next);
+      });
+      return notifier;
     });
 
 final feedFilterProvider = StateProvider<String>((ref) => 'For You');
@@ -259,32 +310,3 @@ final reelFeedProvider = FutureProvider.autoDispose<List<Post>>((ref) async {
   final page = await repo.getReelFeedPage();
   return page.items;
 });
-
-// Add copyWith to Post model if not present, otherwise use constructor.
-extension on Post {
-  Post copyWith({int? likeCount, int? commentCount}) {
-    return Post(
-      id: id,
-      authorId: authorId,
-      authorName: authorName,
-      authorAvatar: authorAvatar,
-      content: content,
-      contentType: contentType,
-      visibility: visibility,
-      tags: tags,
-      mediaIds: mediaIds,
-      likeCount: likeCount ?? this.likeCount,
-      commentCount: commentCount ?? this.commentCount,
-      shareCount: shareCount,
-      durationSeconds: durationSeconds,
-      isLiked: isLiked,
-      isBookmarked: isBookmarked,
-      createdAt: createdAt,
-      feeling: feeling,
-      activity: activity,
-      activityDetail: activityDetail,
-      locationName: locationName,
-      poll: poll,
-    );
-  }
-}

@@ -129,6 +129,22 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
     await ref.read(homeFeedProvider.notifier).fetchFirstPage();
   }
 
+  Future<void> _openHashtagPicker() async {
+    final tag = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: AppColors.bgSecondary,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetCtx) => _HashtagPickerSheet(),
+    );
+    if (!mounted || tag == null) return;
+    final cleaned = tag.replaceAll('#', '').trim();
+    if (cleaned.isEmpty) return;
+    context.push('/hashtag/${Uri.encodeComponent(cleaned)}');
+  }
+
   Widget _buildBrandHeader() {
     return Row(
       children: [
@@ -421,6 +437,10 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
             _FeedTabStrip(
               activeIndex: feedTab,
               onChanged: (v) {
+                if (v == 2) {
+                  _openHashtagPicker();
+                  return;
+                }
                 setState(() => feedTab = v);
                 ref.read(feedFilterProvider.notifier).state = [
                   'For You',
@@ -665,6 +685,141 @@ class _FeedTabButton extends StatelessWidget {
               ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Bottom sheet that lets the user type or pick a hashtag. Returns the
+/// chosen tag (without the leading '#') via Navigator.pop, or null if the
+/// sheet is dismissed.
+class _HashtagPickerSheet extends StatefulWidget {
+  @override
+  State<_HashtagPickerSheet> createState() => _HashtagPickerSheetState();
+}
+
+class _HashtagPickerSheetState extends State<_HashtagPickerSheet> {
+  final TextEditingController _ctrl = TextEditingController();
+
+  // Light, hardcoded suggestions until backend exposes a trending-tags route.
+  static const _suggestions = [
+    'photography',
+    'travel',
+    'food',
+    'fitness',
+    'tech',
+    'music',
+    'art',
+    'gaming',
+  ];
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  void _submit(String value) {
+    final cleaned = value.replaceAll('#', '').trim();
+    if (cleaned.isEmpty) return;
+    Navigator.of(context).pop(cleaned);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final inset = MediaQuery.of(context).viewInsets.bottom;
+    return Padding(
+      padding: EdgeInsets.fromLTRB(20, 16, 20, 20 + inset),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Center(
+            child: Container(
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: AppColors.borderMedium,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              const Icon(
+                Icons.tag_rounded,
+                color: AppColors.accentPurple,
+                size: 22,
+              ),
+              const SizedBox(width: 6),
+              Text('Browse a hashtag', style: AppTextStyles.h2),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            decoration: BoxDecoration(
+              color: AppColors.bgCard,
+              borderRadius: BorderRadius.circular(99),
+              border: Border.all(
+                color: AppColors.accentPurple.withValues(alpha: 0.4),
+              ),
+            ),
+            child: TextField(
+              controller: _ctrl,
+              autofocus: true,
+              onSubmitted: _submit,
+              cursorColor: AppColors.accentPurple,
+              style: AppTextStyles.body,
+              textInputAction: TextInputAction.go,
+              decoration: const InputDecoration(
+                hintText: 'photography',
+                prefixText: '#',
+                prefixStyle: TextStyle(color: AppColors.accentPurple),
+                border: InputBorder.none,
+                hintStyle: TextStyle(color: AppColors.textDim),
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            'Popular',
+            style: AppTextStyles.label.copyWith(color: AppColors.textMuted),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: _suggestions
+                .map(
+                  (tag) => GestureDetector(
+                    onTap: () => _submit(tag),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 8,
+                      ),
+                      decoration: BoxDecoration(
+                        color: AppColors.accentPurple.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(99),
+                        border: Border.all(
+                          color: AppColors.accentPurple.withValues(alpha: 0.3),
+                        ),
+                      ),
+                      child: Text(
+                        '#$tag',
+                        style: AppTextStyles.label.copyWith(
+                          color: AppColors.accentPurple,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ),
+                )
+                .toList(),
+          ),
+        ],
       ),
     );
   }

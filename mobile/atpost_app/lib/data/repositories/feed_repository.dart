@@ -59,6 +59,7 @@ class FeedRepository {
     String platform = 'postbook',
     bool excludeSelf = false,
     bool circleOnly = false,
+    bool followingOnly = false,
     String? cursor,
   }) async {
     final params = <String, dynamic>{
@@ -67,6 +68,7 @@ class FeedRepository {
       'platform': platform,
       if (excludeSelf) 'exclude_self': true,
       if (circleOnly) 'circle_only': true,
+      if (followingOnly) 'following_only': true,
     };
     if (cursor != null) params['cursor'] = cursor;
 

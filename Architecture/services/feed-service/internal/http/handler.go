@@ -86,6 +86,7 @@ func (h *Handler) GetHomeFeed(c *gin.Context) {
 
 	excludeSelf := c.DefaultQuery("exclude_self", "") == "true"
 	circleOnly := c.DefaultQuery("circle_only", "") == "true"
+	followingOnly := c.DefaultQuery("following_only", "") == "true"
 	platform := c.DefaultQuery("platform", "") // "postbook" | "posttube" | ""
 
 	var cursor *time.Time
@@ -98,7 +99,7 @@ func (h *Handler) GetHomeFeed(c *gin.Context) {
 		cursor = &parsed
 	}
 
-	feedItems, err := h.svc.GetHomeFeed(c.Request.Context(), userID, limit, feedMode, excludeSelf, circleOnly, cursor)
+	feedItems, err := h.svc.GetHomeFeed(c.Request.Context(), userID, limit, feedMode, excludeSelf, circleOnly, followingOnly, cursor)
 	if err != nil {
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
 		return

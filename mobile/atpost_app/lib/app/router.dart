@@ -20,6 +20,7 @@ import 'package:atpost_app/features/create/flicks_caption_screen.dart';
 import 'package:atpost_app/features/create/flicks_editor_screen.dart';
 import 'package:atpost_app/features/discover/discover_screen.dart';
 import 'package:atpost_app/features/groups/group_admin_screen.dart';
+import 'package:atpost_app/features/hashtag/hashtag_screen.dart';
 import 'package:atpost_app/features/groups/group_detail_screen.dart';
 import 'package:atpost_app/features/groups/group_post_composer_screen.dart';
 import 'package:atpost_app/features/groups/groups_list_screen.dart';
@@ -73,6 +74,7 @@ import 'package:atpost_app/features/shell/shell_scaffold.dart';
 import 'package:atpost_app/features/shop/shop_screen.dart';
 import 'package:atpost_app/services/auth_service.dart';
 import 'package:atpost_app/services/call_service.dart';
+import 'package:atpost_app/core/utils/app_logger.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -130,7 +132,13 @@ final appRouterProvider = Provider<GoRouter>((ref) {
     refreshListenable: refresh,
     redirect: (context, state) async {
       final path = state.uri.path;
-      await authService.sessionReady;
+
+      try {
+        await authService.sessionReady.timeout(const Duration(seconds: 3));
+      } catch (_) {
+        AppLogger.warn('Router: Session restoration timed out', tag: 'Router');
+      }
+
       final isAuthenticated = authService.isAuthenticated;
       final isPublicRoute = _publicPaths.contains(path);
 
@@ -346,6 +354,12 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: '/discover',
             builder: (context, state) => const DiscoverScreen(),
+          ),
+          GoRoute(
+            path: '/hashtag/:tag',
+            builder: (context, state) => HashtagScreen(
+              tag: state.pathParameters['tag'] ?? '',
+            ),
           ),
           GoRoute(
             path: '/search/results',

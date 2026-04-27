@@ -6,6 +6,7 @@ import 'package:atpost_app/data/models/post.dart';
 import 'package:atpost_app/data/repositories/post_repository.dart';
 import 'package:atpost_app/data/repositories/user_repository.dart';
 import 'package:atpost_app/providers/feed_provider.dart';
+import 'package:atpost_app/providers/following_provider.dart';
 import 'package:atpost_app/services/auth_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -524,16 +525,25 @@ class _FollowButton extends ConsumerStatefulWidget {
 }
 
 class _FollowButtonState extends ConsumerState<_FollowButton> {
-  bool _following = false;
   bool _busy = false;
+
+  bool get _following =>
+      (ref.watch(followingProvider).valueOrNull ?? <String>{})
+          .contains(widget.authorId);
 
   Future<void> _toggle() async {
     if (_busy) return;
-    final next = !_following;
-    setState(() {
-      _busy = true;
-      _following = next;
-    });
+    final wasFollowing = _following;
+    final next = !wasFollowing;
+    setState(() => _busy = true);
+
+    final notifier = ref.read(followingProvider.notifier);
+    if (next) {
+      notifier.markFollowing(widget.authorId);
+    } else {
+      notifier.markUnfollowing(widget.authorId);
+    }
+
     final repo = ref.read(userRepositoryProvider);
     try {
       if (next) {
@@ -542,8 +552,13 @@ class _FollowButtonState extends ConsumerState<_FollowButton> {
         await repo.unfollowUser(widget.authorId);
       }
     } catch (_) {
+      // Revert local set on failure.
+      if (next) {
+        notifier.markUnfollowing(widget.authorId);
+      } else {
+        notifier.markFollowing(widget.authorId);
+      }
       if (!mounted) return;
-      setState(() => _following = !next);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(next ? 'Could not follow.' : 'Could not unfollow.'),

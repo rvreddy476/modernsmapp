@@ -65,7 +65,7 @@ type FeedItem struct {
 	ContentType string    `json:"content_type,omitempty"`
 }
 
-func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, feedMode string, excludeSelf bool, circleOnly bool, before *time.Time) ([]FeedItem, error) {
+func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, feedMode string, excludeSelf bool, circleOnly bool, followingOnly bool, before *time.Time) ([]FeedItem, error) {
 	// Over-fetch for ranking headroom: 5x when ranked, normal otherwise
 	// Also over-fetch slightly when excluding self to compensate for filtered items
 	fetchLimit := limit
@@ -136,6 +136,30 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 			filtered := candidates[:0]
 			for _, c := range candidates {
 				if _, ok := friendSet[c.AuthorID]; ok {
+					filtered = append(filtered, c)
+				}
+			}
+			candidates = filtered
+		} else {
+			candidates = nil
+		}
+	}
+
+	// Filter to following-only (one-way follow) if requested.
+	// Distinct from circle_only, which is mutual friends. Following matches the
+	// "Following" tab semantics: posts authored by users the viewer follows.
+	if followingOnly && len(candidates) > 0 {
+		following, err := s.fetchFollowing(ctx, userID)
+		if err != nil {
+			log.Printf("following_only filter: failed to fetch follows for %s: %v", userID, err)
+		} else if len(following) > 0 {
+			followSet := make(map[uuid.UUID]struct{}, len(following))
+			for _, fid := range following {
+				followSet[fid] = struct{}{}
+			}
+			filtered := candidates[:0]
+			for _, c := range candidates {
+				if _, ok := followSet[c.AuthorID]; ok {
 					filtered = append(filtered, c)
 				}
 			}
@@ -522,6 +546,54 @@ func (s *Service) fetchFollowers(ctx context.Context, userID uuid.UUID) ([]uuid.
 	}
 
 	return allFollowers, nil
+}
+
+// fetchFollowing calls graph-service for the list of user IDs the viewer
+// follows (one-way), used by the home feed's following_only filter.
+func (s *Service) fetchFollowing(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	var allFollowing []uuid.UUID
+	offset := 0
+	limit := 100
+
+	for {
+		url := fmt.Sprintf("%s/v1/graph/following/%s?limit=%d&offset=%d", s.graphURL, userID.String(), limit, offset)
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return nil, fmt.Errorf("create request: %w", err)
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("graph-service request failed: %w", err)
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("read response body: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("graph-service returned %d: %s", resp.StatusCode, string(body))
+		}
+
+		var envelope struct {
+			Data []uuid.UUID `json:"data"`
+		}
+		if err := json.Unmarshal(body, &envelope); err != nil {
+			return nil, fmt.Errorf("unmarshal following: %w", err)
+		}
+
+		allFollowing = append(allFollowing, envelope.Data...)
+
+		if len(envelope.Data) < limit {
+			break
+		}
+		offset += limit
+	}
+
+	return allFollowing, nil
 }
 
 // fetchCircleMembers calls profile-service to get the friends list for a user.
