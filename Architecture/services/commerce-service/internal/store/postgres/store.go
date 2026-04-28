@@ -167,10 +167,14 @@ func (s *Store) ListSellerProducts(ctx context.Context, sellerID uuid.UUID, stat
 }
 
 // ListProducts returns paginated products for the customer-facing browse
-// surface: published + approved only, optionally filtered by category and a
+// surface: active + approved only, optionally filtered by category and a
 // title search. Newest first. Returns total count for pagination.
+//
+// status values per the products_status_check constraint: draft, active,
+// paused, archived. approval_status: draft, submitted, under_review,
+// approved, rejected, live, hidden, archived. We surface active+approved.
 func (s *Store) ListProducts(ctx context.Context, categoryID *uuid.UUID, query string, limit, offset int) ([]*Product, int, error) {
-	conds := []string{"status = 'published'", "approval_status = 'approved'"}
+	conds := []string{"status = 'active'", "approval_status = 'approved'"}
 	args := []any{}
 	idx := 1
 	if categoryID != nil {

@@ -79,7 +79,12 @@ func (s *Service) CreateShipmentForOrder(ctx context.Context, orderID uuid.UUID)
 	if err != nil {
 		return nil, fmt.Errorf("get order: %w", err)
 	}
-	if order.PaymentStatus != "paid" && order.PaymentStatus != "cod_pending" {
+	// Ship if either: gateway has captured (payment_status=paid) OR this is a
+	// COD order whose payment is collected at delivery. COD orders carry
+	// payment_status=pending until the courier confirms collection — see the
+	// note in service.go Checkout() about why cod_pending isn't a real state.
+	isCOD := order.PaymentMethod != nil && *order.PaymentMethod == "cod"
+	if order.PaymentStatus != "paid" && !isCOD {
 		return nil, fmt.Errorf("order not ready to ship (payment_status=%s)", order.PaymentStatus)
 	}
 
@@ -281,7 +286,9 @@ func (s *Service) IssueInvoice(ctx context.Context, orderID uuid.UUID) (*postgre
 	if err != nil {
 		return nil, fmt.Errorf("get order: %w", err)
 	}
-	if order.PaymentStatus != "paid" && order.PaymentStatus != "cod_pending" {
+	// Same payment-state gate as shipment creation — gateway-captured OR COD.
+	isCOD := order.PaymentMethod != nil && *order.PaymentMethod == "cod"
+	if order.PaymentStatus != "paid" && !isCOD {
 		return nil, fmt.Errorf("order not eligible for invoice (payment_status=%s)", order.PaymentStatus)
 	}
 

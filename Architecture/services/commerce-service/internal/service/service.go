@@ -175,7 +175,7 @@ func (s *Service) CreateProduct(ctx context.Context, in CreateProductInput) (*po
 		Condition:        coalesceStr(in.Condition, "new"),
 		Status:           "draft",
 		Visibility:       "public",
-		ApprovalStatus:   "pending",
+		ApprovalStatus:   "draft",
 		ReturnPolicyType: coalesceStr(in.ReturnPolicyType, "7_days"),
 		ReturnPolicyDays: coalesceInt(in.ReturnPolicyDays, 7),
 		HSNCode:          in.HSNCode,
@@ -489,14 +489,17 @@ func (s *Service) Checkout(ctx context.Context, in CheckoutInput) (*postgres.Ord
 	}
 
 	// 5. Create order (idempotent).
-	// COD orders skip the gateway: confirmed immediately, payment_status=cod_pending.
+	// COD orders skip the gateway: confirmed immediately, payment_status stays
+	// "pending" (the orders_payment_status_check constraint allows
+	// pending|processing|paid|failed|refund_pending|refunded|partially_refunded
+	// — there is no cod_pending). Downstream code distinguishes COD by reading
+	// payment_method='cod' instead.
 	addrSnapshot, _ := json.Marshal(map[string]any{"address_id": in.AddressID})
 	pm := in.PaymentMethod
 	isCOD := strings.EqualFold(pm, "cod")
 	paymentStatus := "pending"
 	orderStatus := "payment_pending"
 	if isCOD {
-		paymentStatus = "cod_pending"
 		orderStatus = "confirmed"
 	}
 	order := &postgres.Order{
