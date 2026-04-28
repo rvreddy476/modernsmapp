@@ -1,13 +1,13 @@
-go 1.24.0
+go 1.25.6
 
 use (
-	./services/ai-service
 	./services/admin-service
-	./services/channel-service
-	./services/community-service
-	./services/qa-service
+	./services/ai-service
 	./services/analytics-service
 	./services/api-gateway
+	./services/channel-service
+	./services/commerce-service
+	./services/community-service
 	./services/feature-flag-service
 	./services/feed-service
 	./services/graph-service
@@ -21,11 +21,12 @@ use (
 	./services/orders-service
 	./services/payments-service
 	./services/post-service
+	./services/qa-service
 	./services/search-service
-	./services/commerce-service
 	./services/shop-service
 	./services/suggestion-service
 	./services/trust-safety-service
 	./services/user-service
 	./shared
+	./tools/schemacheck
 )
