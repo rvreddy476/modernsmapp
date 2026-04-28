@@ -784,7 +784,14 @@ func (h *Handler) ListComments(c *gin.Context) {
 		limit = l
 	}
 
-	comments, nextCursor, err := h.svc.ListCommentsPG(c.Request.Context(), postID, cursor, limit)
+	var viewerID *uuid.UUID
+	if v := c.GetHeader("X-User-Id"); v != "" {
+		if id, err := uuid.Parse(v); err == nil {
+			viewerID = &id
+		}
+	}
+
+	comments, nextCursor, err := h.svc.ListCommentsPG(c.Request.Context(), postID, viewerID, cursor, limit)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return

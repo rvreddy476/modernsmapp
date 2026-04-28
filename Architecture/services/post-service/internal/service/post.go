@@ -1363,8 +1363,10 @@ func (s *Service) EditComment(ctx context.Context, commentID, userID uuid.UUID, 
 }
 
 // ListCommentsPG returns paginated threaded comments from PostgreSQL.
-func (s *Service) ListCommentsPG(ctx context.Context, postID uuid.UUID, cursor string, limit int) ([]postgres.Comment, string, error) {
-	return s.pgStore.ListComments(ctx, postID, cursor, limit)
+// viewerID drives moderation visibility: held-for-review comments are
+// only shown to their own author. Pass nil for anonymous viewers.
+func (s *Service) ListCommentsPG(ctx context.Context, postID uuid.UUID, viewerID *uuid.UUID, cursor string, limit int) ([]postgres.Comment, string, error) {
+	return s.pgStore.ListComments(ctx, postID, viewerID, cursor, limit)
 }
 
 // GetCommentsAroundPG returns comments surrounding a target comment for deep-link navigation.

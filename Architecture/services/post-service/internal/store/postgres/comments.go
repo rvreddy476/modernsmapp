@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -193,23 +194,37 @@ func (s *Store) CreateReply(ctx context.Context, commentID, userID uuid.UUID, bo
 }
 
 // ListComments returns paginated top-level comments with their inline replies.
-func (s *Store) ListComments(ctx context.Context, postID uuid.UUID, cursor string, limit int) ([]Comment, string, error) {
+//
+// viewerID is used to enforce moderation visibility:
+//   - 'visible' comments are shown to everyone.
+//   - 'review' comments (auto-flagged, awaiting moderator) are only
+//     shown to the comment's author.
+//   - 'hidden' / 'removed' are filtered out entirely (the moderation
+//     queue endpoint at /v1/admin/comments/moderation surfaces them
+//     for moderators).
+//
+// Pass viewerID == nil for anonymous viewers (visible-only).
+func (s *Store) ListComments(ctx context.Context, postID uuid.UUID, viewerID *uuid.UUID, cursor string, limit int) ([]Comment, string, error) {
 	if limit <= 0 || limit > 50 {
 		limit = 20
 	}
 
-	var args []interface{}
-	args = append(args, postID, limit+1)
+	args := []interface{}{postID, limit + 1}
+	visibilityClause := `AND moderation_status = 'visible'`
+	if viewerID != nil {
+		args = append(args, *viewerID)
+		visibilityClause = `AND (moderation_status = 'visible' OR (moderation_status = 'review' AND author_id = $3))`
+	}
 
 	query := `SELECT id, post_id, author_id, parent_id, body, like_count, dislike_count, reply_count,
 		is_reply, is_deleted, created_at, updated_at
 		FROM comments
-		WHERE post_id = $1 AND parent_id IS NULL AND is_deleted = FALSE`
+		WHERE post_id = $1 AND parent_id IS NULL AND is_deleted = FALSE ` + visibilityClause
 
 	if cursor != "" {
 		cursorTime, err := time.Parse(time.RFC3339Nano, cursor)
 		if err == nil {
-			query += ` AND created_at < $3`
+			query += ` AND created_at < $` + strconv.Itoa(len(args)+1)
 			args = append(args, cursorTime)
 		}
 	}
@@ -244,15 +259,22 @@ func (s *Store) ListComments(ctx context.Context, postID uuid.UUID, cursor strin
 		commentIDs = commentIDs[:limit]
 	}
 
-	// Load inline replies for these comments
+	// Load inline replies for these comments. Same moderation rules
+	// apply — a hidden reply doesn't show under its parent.
 	if len(commentIDs) > 0 {
+		replyArgs := []interface{}{commentIDs}
+		replyVisibility := `AND moderation_status = 'visible'`
+		if viewerID != nil {
+			replyArgs = append(replyArgs, *viewerID)
+			replyVisibility = `AND (moderation_status = 'visible' OR (moderation_status = 'review' AND author_id = $2))`
+		}
 		replyRows, err := s.db.Query(ctx, `
 			SELECT id, post_id, author_id, parent_id, body, like_count, dislike_count, reply_count,
 				is_reply, is_deleted, created_at, updated_at
 			FROM comments
-			WHERE parent_id = ANY($1) AND is_deleted = FALSE
+			WHERE parent_id = ANY($1) AND is_deleted = FALSE `+replyVisibility+`
 			ORDER BY created_at ASC`,
-			commentIDs,
+			replyArgs...,
 		)
 		if err == nil {
 			defer replyRows.Close()
