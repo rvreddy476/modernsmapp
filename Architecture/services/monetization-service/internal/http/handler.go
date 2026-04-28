@@ -121,6 +121,12 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/entitlements", h.CheckEntitlement)
 		v1.POST("/entitlements/check", h.BulkCheckEntitlements)
 
+		// Tips / Super Chat (Tier 3d)
+		v1.POST("/tips", h.SendTip)
+		v1.GET("/tips/sent", h.ListSentTips)
+		v1.GET("/tips/received", h.ListReceivedTips)
+		v1.GET("/tips/post/:postId", h.ListTipsForPost)
+
 		// Creator Fund (Tier 3a)
 		cf := v1.Group("/creator-fund")
 		{
