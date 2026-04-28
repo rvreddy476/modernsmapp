@@ -724,6 +724,8 @@ services:
       KAFKA_BROKERS: redpanda:9092
       KAFKA_TOPIC: chat.events.v1
       JWT_SECRET: ${JWT_SECRET:-local_dev_jwt_change_me}
+      USER_SERVICE_URL: http://user-service:8082
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       IDENTITY_KAFKA_TOPIC: identity.events.v1
       IDENTITY_KAFKA_GROUP_ID: chat-service-identity
       GRAPH_SERVICE_URL: http://graph-service:8083
@@ -788,6 +790,11 @@ services:
       KAFKA_LIFECYCLE_TOPIC: call.lifecycle
       KAFKA_NOTIFICATION_TOPIC: call.notifications
       KAFKA_ANALYTICS_TOPIC: call.analytics
+      LIVEKIT_HOST: ${LIVEKIT_HOST:-}
+      LIVEKIT_URL: ${LIVEKIT_URL:-}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-}
+      ICE_SERVERS_JSON: ${ICE_SERVERS_JSON:-}
     ports:
       - "8097:8097"
     depends_on:

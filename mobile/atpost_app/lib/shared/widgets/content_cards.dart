@@ -5,9 +5,12 @@ import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/models/post.dart';
 import 'package:atpost_app/data/repositories/post_repository.dart';
 import 'package:atpost_app/data/repositories/user_repository.dart';
+import 'package:atpost_app/features/hashtag_feed/state/hashtag_feed_notifier.dart';
+import 'package:atpost_app/features/shell/shell_providers.dart';
 import 'package:atpost_app/providers/feed_provider.dart';
 import 'package:atpost_app/providers/following_provider.dart';
 import 'package:atpost_app/services/auth_service.dart';
+import 'package:atpost_app/shared/widgets/clickable_hashtag_text.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -244,7 +247,15 @@ class _PostCardState extends ConsumerState<PostCard> {
               if (hasContent)
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-                  child: Text(post.content, style: AppTextStyles.body),
+                  child: ClickableHashtagText(
+                    text: post.content,
+                    normalStyle: AppTextStyles.body,
+                    hashtagStyle: AppTextStyles.body.copyWith(
+                      color: AppColors.accentPurple,
+                      fontWeight: FontWeight.w600,
+                    ),
+                    onHashtagTap: _onHashtagTap,
+                  ),
                 ),
               _buildMediaBlock(),
             ] else
@@ -276,6 +287,12 @@ class _PostCardState extends ConsumerState<PostCard> {
   Widget _buildTextPostBody() {
     final body = post.content.trim();
     final isShort = body.length <= 140;
+    final base = AppTextStyles.h2.copyWith(
+      color: Colors.white,
+      fontSize: isShort ? 22 : 17,
+      height: 1.35,
+      fontWeight: FontWeight.w600,
+    );
     return Container(
       margin: const EdgeInsets.fromLTRB(14, 0, 14, 8),
       padding: EdgeInsets.symmetric(
@@ -286,16 +303,33 @@ class _PostCardState extends ConsumerState<PostCard> {
         gradient: _textPostGradient(),
         borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
       ),
-      child: Text(
-        body,
-        style: AppTextStyles.h2.copyWith(
-          color: Colors.white,
-          fontSize: isShort ? 22 : 17,
-          height: 1.35,
-          fontWeight: FontWeight.w600,
+      child: ClickableHashtagText(
+        text: body,
+        normalStyle: base,
+        hashtagStyle: base.copyWith(
+          // Bright but readable on the gradient backgrounds.
+          color: const Color(0xFFFFE9CC),
+          fontWeight: FontWeight.w800,
         ),
+        onHashtagTap: _onHashtagTap,
       ),
     );
+  }
+
+  /// Switch the home feed to the #Hashtag tab and select [normalized].
+  /// Falls back to pushing /hashtag/:tag if the user is currently viewing
+  /// outside the home shell.
+  void _onHashtagTap(String normalized) {
+    final cleaned = normalized.replaceAll('#', '').trim();
+    if (cleaned.isEmpty) return;
+    try {
+      ref.read(homeFeedTabProvider.notifier).state = 2;
+      ref
+          .read(hashtagFeedProvider.notifier)
+          .selectHashtagByName(cleaned);
+    } catch (_) {
+      context.push('/hashtag/${Uri.encodeComponent(cleaned)}');
+    }
   }
 
   Widget _buildMediaBlock() {

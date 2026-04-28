@@ -16,6 +16,9 @@ type SFUProvider interface {
 	// GetICEServers returns STUN/TURN server configurations.
 	GetICEServers() []ICEServer
 
+	// ClientURL returns the URL the frontend should use to connect to the media server.
+	ClientURL() string
+
 	// ProviderName returns "livekit", "janus", or "stub".
 	ProviderName() string
 }

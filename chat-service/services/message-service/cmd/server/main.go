@@ -108,6 +108,7 @@ func main() {
 	convStore := pgStore.New(dbPool)
 	msgStore := scyllaStore.New(scyllaSession)
 	svc := service.New(convStore, msgStore, rdb, producer, logger, cfg.OutboxPollInterval)
+	svc.SetUserDirectory(cfg.UserServiceURL, cfg.InternalServiceKey)
 	handler := http.New(svc, logger)
 
 	// 6. Identity Event Consumer (background)

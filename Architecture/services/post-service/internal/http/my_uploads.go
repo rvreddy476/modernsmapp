@@ -1,9 +1,11 @@
 package http
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
+	"github.com/atpost/post-service/internal/service"
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -118,12 +120,17 @@ func (h *Handler) DeleteUpload(c *gin.Context) {
 
 	err = h.svc.DeleteUploadCascade(c.Request.Context(), postID, userID)
 	if err != nil {
-		if err.Error() == "FORBIDDEN" {
+		switch {
+		case errors.Is(err, service.ErrPostForbidden):
 			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "Cannot delete another user's upload", nil, nil)
 			return
+		case errors.Is(err, service.ErrPostNotFound):
+			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Post not found", nil, nil)
+			return
+		default:
+			api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+			return
 		}
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
-		return
 	}
 
 	c.Status(http.StatusNoContent)

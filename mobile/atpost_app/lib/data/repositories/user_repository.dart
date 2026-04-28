@@ -9,18 +9,20 @@ class UserRepository {
 
   UserRepository(this._api);
 
-  /// Fetch current user profile.
-  /// Synchronized with GET /v1/users/me
+  /// Fetch current user profile from the identity-platform profile-service.
+  /// This is the table the web app writes avatar / cover uploads to via
+  /// PUT /v1/profiles/me/avatar and /v1/profiles/me/cover; reading from the
+  /// app-DB users table (/v1/users/me) returns stale, empty media IDs.
   Future<User> getMe() async {
-    final response = await _api.get('/v1/users/me');
+    final response = await _api.get('/v1/profiles/me');
     final data = response.data['data'] as Map<String, dynamic>;
     return User.fromJson(data);
   }
 
-  /// Fetch user by ID.
-  /// Synchronized with GET /v1/users/{userId}
+  /// Fetch a user's profile by ID from the profile-service for the same
+  /// reason as [getMe].
   Future<User> getUser(String userId) async {
-    final response = await _api.get('/v1/users/$userId');
+    final response = await _api.get('/v1/profiles/$userId');
     final data = response.data['data'] as Map<String, dynamic>;
     return User.fromJson(data);
   }
@@ -117,20 +119,34 @@ class UserRepository {
     return User.fromJson(data);
   }
 
-  /// Fetch followers for a user.
-  /// Synchronized with GET /v1/graph/followers/{userId}
-  Future<List<User>> getFollowers(String userId) async {
+  /// Fetch follower IDs for a user.
+  /// Graph-service returns a flat list of UUID strings.
+  Future<List<String>> getFollowerIds(String userId) async {
     final response = await _api.get('/v1/graph/followers/$userId');
     final items = (response.data['data'] as List<dynamic>?) ?? [];
-    return items.map((e) => User.fromJson(e as Map<String, dynamic>)).toList();
+    return items.whereType<String>().toList();
   }
 
-  /// Fetch users followed by a user.
-  /// Synchronized with GET /v1/graph/following/{userId}
-  Future<List<User>> getFollowing(String userId) async {
+  /// Fetch IDs the given user follows.
+  /// Graph-service returns a flat list of UUID strings.
+  Future<List<String>> getFollowingIds(String userId) async {
     final response = await _api.get('/v1/graph/following/$userId');
     final items = (response.data['data'] as List<dynamic>?) ?? [];
-    return items.map((e) => User.fromJson(e as Map<String, dynamic>)).toList();
+    return items.whereType<String>().toList();
+  }
+
+  /// Fetch followers as fully-hydrated User objects (display name + avatar).
+  Future<List<User>> getFollowers(String userId) async {
+    final ids = await getFollowerIds(userId);
+    if (ids.isEmpty) return const [];
+    return getUsersBatch(ids);
+  }
+
+  /// Fetch followed users as fully-hydrated User objects.
+  Future<List<User>> getFollowing(String userId) async {
+    final ids = await getFollowingIds(userId);
+    if (ids.isEmpty) return const [];
+    return getUsersBatch(ids);
   }
 
   /// Fetch pending friend requests.

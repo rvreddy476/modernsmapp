@@ -1,21 +1,17 @@
 import 'package:atpost_app/data/models/profile_extras.dart';
+import 'package:atpost_app/data/repositories/user_repository.dart';
 import 'package:atpost_app/services/api_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 class ProfileExtrasRepository {
   final ApiClient _api;
+  final UserRepository _users;
 
-  ProfileExtrasRepository(this._api);
+  ProfileExtrasRepository(this._api, this._users);
 
   Future<List<ProfilePin>> getMyPins() async {
-    final response = await _api.get('/v1/users/me/pins');
-    final items =
-        (response.data['data']?['items'] as List<dynamic>?) ??
-        (response.data['data'] as List<dynamic>?) ??
-        [];
-    return items
-        .map((e) => ProfilePin.fromJson(e as Map<String, dynamic>))
-        .toList();
+    final me = await _users.getMe();
+    return getUserPins(me.id);
   }
 
   Future<List<ProfilePin>> getUserPins(String userId) async {
@@ -41,14 +37,8 @@ class ProfileExtrasRepository {
   }
 
   Future<List<PortfolioItem>> getMyPortfolio() async {
-    final response = await _api.get('/v1/users/me/portfolio');
-    final items =
-        (response.data['data']?['items'] as List<dynamic>?) ??
-        (response.data['data'] as List<dynamic>?) ??
-        [];
-    return items
-        .map((e) => PortfolioItem.fromJson(e as Map<String, dynamic>))
-        .toList();
+    final me = await _users.getMe();
+    return getUserPortfolio(me.id);
   }
 
   Future<List<PortfolioItem>> getUserPortfolio(String userId) async {
@@ -96,5 +86,8 @@ class ProfileExtrasRepository {
 
 final profileExtrasRepositoryProvider =
     Provider<ProfileExtrasRepository>((ref) {
-  return ProfileExtrasRepository(ref.watch(apiClientProvider));
+  return ProfileExtrasRepository(
+    ref.watch(apiClientProvider),
+    ref.watch(userRepositoryProvider),
+  );
 });

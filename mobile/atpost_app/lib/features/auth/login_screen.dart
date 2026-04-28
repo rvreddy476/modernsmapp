@@ -89,7 +89,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                     shaderCallback: (bounds) =>
                         AppColors.postbookGradient.createShader(bounds),
                     blendMode: BlendMode.srcIn,
-                    child: Text('AtPost', style: AppTextStyles.logo.copyWith(fontSize: 36)),
+                    child: Text('VChat', style: AppTextStyles.logo.copyWith(fontSize: 36)),
                   ),
                 ),
 

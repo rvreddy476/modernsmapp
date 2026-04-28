@@ -146,6 +146,15 @@ class ChatRepository {
     return {for (final entry in entries) entry.key: entry.value};
   }
 
+  /// Archive or unarchive a conversation.
+  /// Backed by PATCH /v1/chat/conversations/{conversationId}/archive.
+  Future<void> setArchived(String conversationId, bool archived) async {
+    await _api.patch(
+      '/v1/chat/conversations/$conversationId/archive',
+      data: {'is_archived': archived},
+    );
+  }
+
   String _idempotencyKey() {
     final timestamp = DateTime.now().microsecondsSinceEpoch.toRadixString(16);
     final randomPart = _random.nextInt(1 << 32).toRadixString(16);

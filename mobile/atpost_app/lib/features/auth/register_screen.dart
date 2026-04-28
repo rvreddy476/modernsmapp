@@ -143,7 +143,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
 
               // Subheading
               Text(
-                'Join AtPost and connect with the world.',
+                'Join VChat and connect with the world.',
                 style: AppTextStyles.body.copyWith(
                   color: AppColors.textTertiary,
                 ),

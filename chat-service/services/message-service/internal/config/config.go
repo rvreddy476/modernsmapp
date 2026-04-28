@@ -7,15 +7,17 @@ import (
 )
 
 type Config struct {
-	HTTPPort           string
-	PostgresDSN        string
-	ScyllaHosts        []string
-	ScyllaKeyspace     string
-	RedisAddr          string
-	KafkaBrokers       []string
-	KafkaTopic         string
-	JWTSecret          string
-	TrustedProxies     []string
+	HTTPPort             string
+	PostgresDSN          string
+	ScyllaHosts          []string
+	ScyllaKeyspace       string
+	RedisAddr            string
+	KafkaBrokers         []string
+	KafkaTopic           string
+	JWTSecret            string
+	UserServiceURL       string
+	InternalServiceKey   string
+	TrustedProxies       []string
 	OutboxPollInterval   time.Duration
 	CacheTTL             time.Duration
 	IdentityKafkaTopic   string
@@ -32,6 +34,8 @@ func Load() *Config {
 		KafkaBrokers:         splitAndClean(getEnv("KAFKA_BROKERS", "localhost:9092")),
 		KafkaTopic:           getEnv("KAFKA_TOPIC", "chat.events.v1"),
 		JWTSecret:            getEnv("JWT_SECRET", ""),
+		UserServiceURL:       getEnv("USER_SERVICE_URL", "http://user-service:8082"),
+		InternalServiceKey:   getEnv("INTERNAL_SERVICE_KEY", ""),
 		TrustedProxies:       splitAndClean(getEnv("TRUSTED_PROXIES", "")),
 		OutboxPollInterval:   getEnvDuration("OUTBOX_POLL_INTERVAL", 1*time.Second),
 		CacheTTL:             getEnvDuration("CACHE_TTL", 5*time.Minute),

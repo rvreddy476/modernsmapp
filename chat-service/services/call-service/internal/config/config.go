@@ -22,12 +22,13 @@ type Config struct {
 	LiveKitHost      string
 	LiveKitAPIKey    string
 	LiveKitAPISecret string
+	ICEServersJSON   string
 
 	// Call timeouts
-	RingTimeoutSeconds      int
-	InviteExpirySeconds     int
-	MaxCallDurationMinutes  int
-	ReconnectGraceSeconds   int
+	RingTimeoutSeconds     int
+	InviteExpirySeconds    int
+	MaxCallDurationMinutes int
+	ReconnectGraceSeconds  int
 }
 
 func Load() *Config {
@@ -42,9 +43,10 @@ func Load() *Config {
 		JWTSecret:              getEnv("JWT_SECRET", ""),
 		TrustedProxies:         splitAndClean(getEnv("TRUSTED_PROXIES", "")),
 		OutboxPollInterval:     getEnvDuration("OUTBOX_POLL_INTERVAL", 1*time.Second),
-		LiveKitHost:            getEnv("LIVEKIT_HOST", ""),
+		LiveKitHost:            getFirstEnv([]string{"LIVEKIT_HOST", "LIVEKIT_URL"}, ""),
 		LiveKitAPIKey:          getEnv("LIVEKIT_API_KEY", ""),
 		LiveKitAPISecret:       getEnv("LIVEKIT_API_SECRET", ""),
+		ICEServersJSON:         getEnv("ICE_SERVERS_JSON", ""),
 		RingTimeoutSeconds:     getEnvInt("RING_TIMEOUT_SECONDS", 30),
 		InviteExpirySeconds:    getEnvInt("INVITE_EXPIRY_SECONDS", 60),
 		MaxCallDurationMinutes: getEnvInt("MAX_CALL_DURATION_MINUTES", 240),
@@ -55,6 +57,15 @@ func Load() *Config {
 func getEnv(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return def
+}
+
+func getFirstEnv(keys []string, def string) string {
+	for _, key := range keys {
+		if v := os.Getenv(key); v != "" {
+			return v
+		}
 	}
 	return def
 }

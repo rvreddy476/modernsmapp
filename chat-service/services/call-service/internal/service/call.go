@@ -15,19 +15,19 @@ import (
 )
 
 var (
-	ErrCallNotFound        = errors.New("call not found")
-	ErrInviteNotFound      = errors.New("invite not found")
-	ErrNotParticipant      = errors.New("not a participant in this call")
-	ErrNotHost             = errors.New("only the host can perform this action")
-	ErrCallAlreadyEnded    = errors.New("call has already ended")
-	ErrAlreadyInCall       = errors.New("user is already in an active call")
-	ErrAlreadyJoined       = errors.New("user has already joined this call")
-	ErrInviteNotPending    = errors.New("invite is not in pending state")
-	ErrMaxInvitesPerCall   = errors.New("maximum 20 invites per call")
-	ErrCannotInviteSelf    = errors.New("cannot invite yourself")
-	ErrCallNotActive       = errors.New("call is not active")
-	ErrAlreadyAudioVideo   = errors.New("call already has video enabled")
-	ErrMaxParticipants     = errors.New("call has reached maximum participants")
+	ErrCallNotFound      = errors.New("call not found")
+	ErrInviteNotFound    = errors.New("invite not found")
+	ErrNotParticipant    = errors.New("not a participant in this call")
+	ErrNotHost           = errors.New("only the host can perform this action")
+	ErrCallAlreadyEnded  = errors.New("call has already ended")
+	ErrAlreadyInCall     = errors.New("user is already in an active call")
+	ErrAlreadyJoined     = errors.New("user has already joined this call")
+	ErrInviteNotPending  = errors.New("invite is not in pending state")
+	ErrMaxInvitesPerCall = errors.New("maximum 20 invites per call")
+	ErrCannotInviteSelf  = errors.New("cannot invite yourself")
+	ErrCallNotActive     = errors.New("call is not active")
+	ErrAlreadyAudioVideo = errors.New("call already has video enabled")
+	ErrMaxParticipants   = errors.New("call has reached maximum participants")
 )
 
 // Service is the business logic layer for calls.
@@ -66,13 +66,13 @@ func New(
 // ---------------------------------------------------------------------------
 
 type CreateCallRequest struct {
-	CallType      string      `json:"call_type"`
-	SourceType    string      `json:"source_type"`
-	SourceID      *uuid.UUID  `json:"source_id,omitempty"`
-	TargetUserIDs []uuid.UUID `json:"target_user_ids"`
-	AudioOnly     bool        `json:"audio_only"`
-	MaxParticipants int       `json:"max_participants,omitempty"`
-	IdempotencyKey  string    `json:"idempotency_key,omitempty"`
+	CallType        string      `json:"call_type"`
+	SourceType      string      `json:"source_type"`
+	SourceID        *uuid.UUID  `json:"source_id,omitempty"`
+	TargetUserIDs   []uuid.UUID `json:"target_user_ids"`
+	AudioOnly       bool        `json:"audio_only"`
+	MaxParticipants int         `json:"max_participants,omitempty"`
+	IdempotencyKey  string      `json:"idempotency_key,omitempty"`
 }
 
 func (s *Service) CreateCall(ctx context.Context, userID uuid.UUID, req CreateCallRequest) (*CallResponse, error) {
@@ -352,6 +352,8 @@ func (s *Service) JoinCall(ctx context.Context, userID, callID uuid.UUID) (*Join
 		SFUToken:              token,
 		SFURoomName:           room.ProviderRoomName,
 		SFUProvider:           room.Provider,
+		SFUURL:                s.sfuProvider.ClientURL(),
+		ParticipantIdentity:   userID.String(),
 		ICEServers:            s.sfuProvider.GetICEServers(),
 		SignalingEndpoint:     s.signalingEndpoint,
 		ReconnectGraceSeconds: s.reconnectGraceSeconds,

@@ -39,6 +39,7 @@ class Conversation {
   final DateTime? createdAt;
   final DateTime? updatedAt;
   final int unreadCount;
+  final bool isArchived;
 
   const Conversation({
     required this.id,
@@ -53,6 +54,7 @@ class Conversation {
     this.createdAt,
     this.updatedAt,
     this.unreadCount = 0,
+    this.isArchived = false,
   });
 
   factory Conversation.fromJson(Map<String, dynamic> json) {
@@ -78,6 +80,7 @@ class Conversation {
         createdAt: _parseDateNullable(json['created_at']),
         updatedAt: _parseDateNullable(json['updated_at']),
         unreadCount: _toInt(json['unread_count']),
+        isArchived: json['is_archived'] == true,
       );
     } catch (e, st) {
       AppLogger.error('Conversation.fromJson failed', error: e, stackTrace: st);
@@ -88,8 +91,13 @@ class Conversation {
   static Conversation empty() => Conversation(id: 'err_${DateTime.now().ms}', members: const []);
 
   String displayNameFor(String? currentUserId) {
-    if ((title ?? name ?? '').isNotEmpty) return (title ?? name)!;
-    final others = members.where((m) => m.userId != currentUserId).map((m) => m.displayName ?? 'User').toList();
+    final explicitTitle = (title ?? name ?? '').trim();
+    if (explicitTitle.isNotEmpty) return explicitTitle;
+    final others = members
+        .where((m) => m.userId != currentUserId)
+        .map((m) => (m.displayName ?? '').trim())
+        .where((value) => value.isNotEmpty)
+        .toList();
     if (others.isEmpty) return type == 'group' ? 'Group Chat' : 'Direct Message';
     return type == 'group' ? others.join(', ') : others.first;
   }
@@ -97,6 +105,22 @@ class Conversation {
   String? directPeerId(String? currentUserId) {
     if (type == 'group') return null;
     return participantIds.firstWhere((id) => id != currentUserId, orElse: () => '');
+  }
+
+  int participantCountFor(String? currentUserId) {
+    final memberIds = members
+        .map((member) => member.userId)
+        .where((userId) => userId.isNotEmpty)
+        .toSet();
+    if (memberIds.isNotEmpty) {
+      return type == 'group'
+          ? memberIds.length
+          : memberIds.where((userId) => userId != currentUserId).length;
+    }
+    final ids = participantIds.where((userId) => userId.isNotEmpty).toSet();
+    return type == 'group'
+        ? ids.length
+        : ids.where((userId) => userId != currentUserId).length;
   }
 }
 

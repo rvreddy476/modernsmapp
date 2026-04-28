@@ -383,6 +383,8 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
           contactId: peerId,
           contactName: title,
           contactAvatar: '',
+          sourceType: 'chat',
+          sourceId: widget.conversationId,
           type: type,
         );
   }
@@ -403,7 +405,11 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
       return 'Loading conversation...';
     }
     if (conversation.type == 'group') {
-      return '${conversation.members.length} participants';
+      final participantCount = conversation.participantCountFor(currentUserId);
+      if (participantCount <= 0) {
+        return 'Group chat';
+      }
+      return '$participantCount participants';
     }
     return peerPresence?.maybeWhen(
           data: (isOnline) => isOnline ? 'Online' : 'Offline',
@@ -446,7 +452,7 @@ class _MessageBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final alignment = isMine ? Alignment.centerRight : Alignment.centerLeft;
-    final bgColor = isMine ? null : Colors.white.withOpacity(0.06);
+    final bgColor = isMine ? null : Colors.white.withValues(alpha: 0.06);
 
     return Align(
       alignment: alignment,
@@ -593,7 +599,7 @@ class _AttachItem extends StatelessWidget {
           width: 42,
           height: 42,
           decoration: BoxDecoration(
-            color: color.withOpacity(0.18),
+            color: color.withValues(alpha: 0.18),
             borderRadius: BorderRadius.circular(14),
           ),
           child: Icon(icon, color: color, size: 20),

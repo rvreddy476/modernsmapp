@@ -363,7 +363,7 @@ class _ChannelCard extends StatelessWidget {
               children: [
                 Row(
                   children: [
-                    Text('atpost engineering', style: AppTextStyles.h3),
+                    Text('VChat engineering', style: AppTextStyles.h3),
                     const SizedBox(width: 4),
                     const Icon(
                       Icons.verified,

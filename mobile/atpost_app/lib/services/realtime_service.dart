@@ -60,7 +60,7 @@ class RealtimeService {
     try {
       _channel = WebSocketChannel.connect(
         Environment.wsGatewayUri,
-        protocols: ['bearer.$token'],
+        protocols: ['bearer', 'bearer.$token'],
       );
 
       _subscription = _channel!.stream.listen(
@@ -185,6 +185,13 @@ class RealtimeService {
     _retryCount = _maxRetries;
     _closeChannel();
     _updateState(ConnectionState.disconnected);
+  }
+
+  Future<void> reconnect() async {
+    AppLogger.info('Forcing websocket reconnect', tag: _tag);
+    disconnect();
+    _retryCount = 0;
+    await connect();
   }
 
   void dispose() {

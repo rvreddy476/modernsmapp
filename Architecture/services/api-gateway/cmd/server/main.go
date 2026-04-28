@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -156,6 +157,12 @@ func main() {
 	recoveryHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if err := recover(); err != nil {
+				if abortErr, ok := err.(error); ok && errors.Is(abortErr, http.ErrAbortHandler) {
+					// ReverseProxy uses ErrAbortHandler to stop streaming handlers when
+					// the client disconnects. That is not an application error and we
+					// must not overwrite an already-started SSE response with a 500.
+					return
+				}
 				slog.Error("panic recovered", "error", err, "path", r.URL.Path)
 				w.WriteHeader(http.StatusInternalServerError)
 				w.Write([]byte(`{"error":"internal server error"}`))

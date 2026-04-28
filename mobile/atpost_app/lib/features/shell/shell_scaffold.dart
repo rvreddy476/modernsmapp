@@ -1,17 +1,16 @@
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
-import 'package:atpost_app/features/explore/explore_screen.dart';
+import 'package:atpost_app/features/chat/chat_list_screen.dart';
 import 'package:atpost_app/features/home/home_feed_screen.dart';
 import 'package:atpost_app/features/profile/profile_screen.dart';
 import 'package:atpost_app/features/reels/reels_screen.dart';
+import 'package:atpost_app/features/services/explore_bottom_sheet.dart';
+import 'package:atpost_app/features/shell/shell_providers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-
-final shellTabProvider = StateProvider<int>((ref) => 0);
-final createMenuOpenProvider = StateProvider<bool>((ref) => false);
 
 class ShellScaffold extends ConsumerWidget {
   const ShellScaffold({super.key});
@@ -23,7 +22,7 @@ class ShellScaffold extends ConsumerWidget {
 
     final pages = <Widget>[
       const HomeFeedScreen(),
-      const ExploreScreen(),
+      const ChatListScreen(),
       const SizedBox.shrink(),
       const ReelsScreen(),
       const ProfileScreen(),
@@ -85,8 +84,8 @@ class _BottomNav extends ConsumerWidget {
               },
             ),
             _NavItem(
-              icon: Icons.explore,
-              label: 'Explore',
+              icon: Icons.chat_bubble_outline_rounded,
+              label: 'Messenger',
               active: current == 1,
               onTap: () {
                 ref.read(shellTabProvider.notifier).state = 1;
@@ -109,12 +108,12 @@ class _BottomNav extends ConsumerWidget {
               },
             ),
             _NavItem(
-              icon: Icons.person_outline,
-              label: 'Profile',
-              active: current == 4,
+              icon: Icons.explore_outlined,
+              label: 'Explore',
+              active: false,
               onTap: () {
-                ref.read(shellTabProvider.notifier).state = 4;
                 ref.read(createMenuOpenProvider.notifier).state = false;
+                showExploreBottomSheet(context);
               },
             ),
           ],

@@ -14,13 +14,22 @@ class StoriesRepository {
   }
 
   Future<Story> getUserStories(String userId) async {
-    final stories = await getFeedStories();
-    for (final story in stories) {
-      if (story.authorId == userId || story.id == userId) return story;
+    final response = await _api.get('/v1/stories/author/$userId');
+    final items = (response.data['data'] as List<dynamic>?) ?? [];
+    final grouped = _groupFlatStories(items);
+    if (grouped.isNotEmpty) {
+      return grouped.first;
     }
 
-    final response = await _api.get('/v1/stories/$userId');
-    return Story.fromJson(response.data['data'] as Map<String, dynamic>);
+    final stories = await getFeedStories();
+    for (final story in stories) {
+      if (story.authorId == userId || story.id == userId) {
+        return story;
+      }
+    }
+
+    final legacyResponse = await _api.get('/v1/stories/$userId');
+    return Story.fromJson(legacyResponse.data['data'] as Map<String, dynamic>);
   }
 
   Future<void> createStory({

@@ -5,6 +5,8 @@ import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/models/user.dart';
 import 'package:atpost_app/data/repositories/user_repository.dart';
+import 'package:atpost_app/features/hashtag_feed/hashtag_feed_screen.dart';
+import 'package:atpost_app/features/shell/shell_providers.dart';
 import 'package:atpost_app/providers/feed_provider.dart';
 import 'package:atpost_app/providers/notification_provider.dart';
 import 'package:atpost_app/providers/stories_provider.dart';
@@ -24,7 +26,6 @@ class HomeFeedScreen extends ConsumerStatefulWidget {
 }
 
 class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
-  int feedTab = 0;
   final ScrollController _scrollController = ScrollController();
 
   // Inline search state.
@@ -129,22 +130,6 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
     await ref.read(homeFeedProvider.notifier).fetchFirstPage();
   }
 
-  Future<void> _openHashtagPicker() async {
-    final tag = await showModalBottomSheet<String>(
-      context: context,
-      backgroundColor: AppColors.bgSecondary,
-      isScrollControlled: true,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (sheetCtx) => _HashtagPickerSheet(),
-    );
-    if (!mounted || tag == null) return;
-    final cleaned = tag.replaceAll('#', '').trim();
-    if (cleaned.isEmpty) return;
-    context.push('/hashtag/${Uri.encodeComponent(cleaned)}');
-  }
-
   Widget _buildBrandHeader() {
     return Row(
       children: [
@@ -153,7 +138,7 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
           shaderCallback: (rect) => const LinearGradient(
             colors: [AppColors.postbookPrimary, AppColors.posttubePrimary],
           ).createShader(rect),
-          child: Text('atpost', style: AppTextStyles.logo),
+          child: Text('VChat', style: AppTextStyles.logo),
         ),
         const SizedBox(width: 8),
         Container(
@@ -173,25 +158,17 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
         ),
         const SizedBox(width: 8),
         BadgeIconButton(
-          icon: Icons.chat_bubble_rounded,
-          tooltip: 'Messages',
-          tintColor: AppColors.posttubePrimary,
-          badgeCount: ref.watch(unreadChatCountProvider).valueOrNull ?? 0,
-          onPressed: () => context.push('/chat'),
-        ),
-        const SizedBox(width: 8),
-        BadgeIconButton(
           icon: Icons.storefront_rounded,
-          tooltip: 'Shop',
+          tooltip: 'Commerce',
           tintColor: AppColors.statusWarning,
           onPressed: () => context.push('/shop'),
         ),
         const SizedBox(width: 8),
         BadgeIconButton(
-          icon: Icons.favorite_rounded,
-          tooltip: 'Dating app',
-          tintColor: AppColors.postgramPrimary,
-          onPressed: () => context.push('/postmatch'),
+          icon: Icons.live_tv_rounded,
+          tooltip: 'PostTube',
+          tintColor: AppColors.posttubePrimary,
+          onPressed: () => context.push('/posttube'),
         ),
         const SizedBox(width: 8),
         BadgeIconButton(
@@ -204,7 +181,8 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
         ),
         const SizedBox(width: 8),
         GestureDetector(
-          onTap: () => context.push('/profile'),
+          onTap: () =>
+              ref.read(shellTabProvider.notifier).state = 4,
           child: Builder(
             builder: (_) {
               final me = ref.watch(currentUserProvider).valueOrNull;
@@ -435,18 +413,16 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
           if (!_searchMode) ...[
             const SizedBox(height: 12),
             _FeedTabStrip(
-              activeIndex: feedTab,
+              activeIndex: ref.watch(homeFeedTabProvider),
               onChanged: (v) {
-                if (v == 2) {
-                  _openHashtagPicker();
-                  return;
+                ref.read(homeFeedTabProvider.notifier).state = v;
+                if (v != 2) {
+                  ref.read(feedFilterProvider.notifier).state = [
+                    'For You',
+                    'Following',
+                    'Hashtag',
+                  ][v];
                 }
-                setState(() => feedTab = v);
-                ref.read(feedFilterProvider.notifier).state = [
-                  'For You',
-                  'Following',
-                  'Hashtag',
-                ][v];
               },
             ),
           ] else
@@ -454,7 +430,9 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
 
           // Scrollable region — only this scrolls.
           Expanded(
-            child: RefreshIndicator(
+            child: !_searchMode && ref.watch(homeFeedTabProvider) == 2
+                ? const HashtagFeedScreen()
+                : RefreshIndicator(
               color: AppColors.postbookPrimary,
               backgroundColor: AppColors.bgSecondary,
               onRefresh: _refreshHome,
@@ -690,151 +668,6 @@ class _FeedTabButton extends StatelessWidget {
   }
 }
 
-/// Bottom sheet that lets the user type or pick a hashtag. Returns the
-/// chosen tag (without the leading '#') via Navigator.pop, or null if the
-/// sheet is dismissed.
-class _HashtagPickerSheet extends StatefulWidget {
-  @override
-  State<_HashtagPickerSheet> createState() => _HashtagPickerSheetState();
-}
-
-class _HashtagPickerSheetState extends State<_HashtagPickerSheet> {
-  final TextEditingController _ctrl = TextEditingController();
-
-  // Light, hardcoded suggestions until backend exposes a trending-tags route.
-  static const _suggestions = [
-    'photography',
-    'travel',
-    'food',
-    'fitness',
-    'tech',
-    'music',
-    'art',
-    'gaming',
-  ];
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
-
-  void _submit(String value) {
-    final cleaned = value.replaceAll('#', '').trim();
-    if (cleaned.isEmpty) return;
-    Navigator.of(context).pop(cleaned);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final inset = MediaQuery.of(context).viewInsets.bottom;
-    return Padding(
-      padding: EdgeInsets.fromLTRB(20, 16, 20, 20 + inset),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Center(
-            child: Container(
-              width: 36,
-              height: 4,
-              decoration: BoxDecoration(
-                color: AppColors.borderMedium,
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              const Icon(
-                Icons.tag_rounded,
-                color: AppColors.accentPurple,
-                size: 22,
-              ),
-              const SizedBox(width: 6),
-              Text('Browse a hashtag', style: AppTextStyles.h2),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14),
-            decoration: BoxDecoration(
-              color: AppColors.bgCard,
-              borderRadius: BorderRadius.circular(99),
-              border: Border.all(
-                color: AppColors.accentPurple.withValues(alpha: 0.4),
-              ),
-            ),
-            child: TextField(
-              controller: _ctrl,
-              autofocus: true,
-              onSubmitted: _submit,
-              cursorColor: AppColors.accentPurple,
-              style: AppTextStyles.body,
-              textInputAction: TextInputAction.go,
-              decoration: const InputDecoration(
-                hintText: 'photography',
-                prefixText: '#',
-                prefixStyle: TextStyle(color: AppColors.accentPurple),
-                border: InputBorder.none,
-                hintStyle: TextStyle(color: AppColors.textDim),
-              ),
-            ),
-          ),
-          const SizedBox(height: 16),
-          Text(
-            'Popular',
-            style: AppTextStyles.label.copyWith(color: AppColors.textMuted),
-          ),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: _suggestions
-                .map(
-                  (tag) => GestureDetector(
-                    onTap: () => _submit(tag),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 8,
-                      ),
-                      decoration: BoxDecoration(
-                        color: AppColors.accentPurple.withValues(alpha: 0.12),
-                        borderRadius: BorderRadius.circular(99),
-                        border: Border.all(
-                          color: AppColors.accentPurple.withValues(alpha: 0.3),
-                        ),
-                      ),
-                      child: Text(
-                        '#$tag',
-                        style: AppTextStyles.label.copyWith(
-                          color: AppColors.accentPurple,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                  ),
-                )
-                .toList(),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-String _initialsFor(String name) {
-  final parts = name
-      .trim()
-      .split(RegExp(r'\s+'))
-      .where((part) => part.isNotEmpty)
-      .toList();
-  if (parts.isEmpty) return '?';
-  if (parts.length == 1) return parts.first[0].toUpperCase();
-  return '${parts[0][0]}${parts[1][0]}'.toUpperCase();
-}
 
 class _EmptyFeedState extends StatelessWidget {
   const _EmptyFeedState();

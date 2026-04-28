@@ -177,6 +177,11 @@ services:
       KAFKA_LIFECYCLE_TOPIC: "call.lifecycle"
       KAFKA_NOTIFICATION_TOPIC: "call.notifications"
       KAFKA_ANALYTICS_TOPIC: "call.analytics"
+      LIVEKIT_HOST: "${LIVEKIT_HOST:-}"
+      LIVEKIT_URL: "${LIVEKIT_URL:-}"
+      LIVEKIT_API_KEY: "${LIVEKIT_API_KEY:-}"
+      LIVEKIT_API_SECRET: "${LIVEKIT_API_SECRET:-}"
+      ICE_SERVERS_JSON: "${ICE_SERVERS_JSON:-}"
     depends_on:
       postgres:
         condition: service_healthy

@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/atpost/chat-message-service/internal/store/postgres"
@@ -112,12 +115,15 @@ type ConversationCursor struct {
 // --- Service ---
 
 type Service struct {
-	convStore    ConversationStore
-	msgStore     MessageStore
-	rdb          *redis.Client
-	producer     EventProducer
-	log          *slog.Logger
-	pollInterval time.Duration
+	convStore          ConversationStore
+	msgStore           MessageStore
+	rdb                *redis.Client
+	producer           EventProducer
+	log                *slog.Logger
+	pollInterval       time.Duration
+	userServiceURL     string
+	internalServiceKey string
+	httpClient         *http.Client
 }
 
 var (
@@ -137,7 +143,13 @@ func New(convStore ConversationStore, msgStore MessageStore, rdb *redis.Client, 
 		producer:     producer,
 		log:          log,
 		pollInterval: pollInterval,
+		httpClient:   &http.Client{Timeout: 5 * time.Second},
 	}
+}
+
+func (s *Service) SetUserDirectory(userServiceURL, internalServiceKey string) {
+	s.userServiceURL = strings.TrimRight(userServiceURL, "/")
+	s.internalServiceKey = internalServiceKey
 }
 
 // --- Conversations ---
@@ -806,6 +818,17 @@ func (s *Service) enrichMembers(ctx context.Context, members []postgres.Member) 
 		profiles = map[uuid.UUID]postgres.UserProfile{}
 	}
 
+	missingIDs := make([]uuid.UUID, 0, len(members))
+	for _, m := range members {
+		p, ok := profiles[m.UserID]
+		if !ok || strings.TrimSpace(p.DisplayName) == "" {
+			missingIDs = append(missingIDs, m.UserID)
+		}
+	}
+	for id, profile := range s.fetchMissingProfiles(ctx, missingIDs) {
+		profiles[id] = profile
+	}
+
 	out := make([]MemberWithProfile, len(members))
 	for i, m := range members {
 		mwp := MemberWithProfile{
@@ -820,6 +843,85 @@ func (s *Service) enrichMembers(ctx context.Context, members []postgres.Member) 
 		out[i] = mwp
 	}
 	return out
+}
+
+func (s *Service) fetchMissingProfiles(ctx context.Context, userIDs []uuid.UUID) map[uuid.UUID]postgres.UserProfile {
+	if len(userIDs) == 0 || s.userServiceURL == "" {
+		return map[uuid.UUID]postgres.UserProfile{}
+	}
+
+	fetched := make(map[uuid.UUID]postgres.UserProfile, len(userIDs))
+	seen := make(map[uuid.UUID]struct{}, len(userIDs))
+	for _, userID := range userIDs {
+		if _, ok := seen[userID]; ok {
+			continue
+		}
+		seen[userID] = struct{}{}
+
+		profile, ok := s.fetchProfileFromUserService(ctx, userID)
+		if !ok {
+			continue
+		}
+		fetched[userID] = profile
+		if err := s.convStore.UpsertUserProfile(ctx, userID, profile.DisplayName, profile.AvatarMediaID); err != nil {
+			s.log.Warn("failed to cache user profile after fallback fetch", "user_id", userID, "err", err)
+		}
+	}
+	return fetched
+}
+
+func (s *Service) fetchProfileFromUserService(ctx context.Context, userID uuid.UUID) (postgres.UserProfile, bool) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/v1/users/%s", s.userServiceURL, userID), nil)
+	if err != nil {
+		s.log.Warn("failed to create user-service profile request", "user_id", userID, "err", err)
+		return postgres.UserProfile{}, false
+	}
+	if s.internalServiceKey != "" {
+		req.Header.Set("X-Internal-Service-Key", s.internalServiceKey)
+	}
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		s.log.Warn("user-service profile request failed", "user_id", userID, "err", err)
+		return postgres.UserProfile{}, false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		s.log.Warn("user-service profile lookup returned non-200", "user_id", userID, "status", resp.StatusCode, "body", string(body))
+		return postgres.UserProfile{}, false
+	}
+
+	var envelope struct {
+		Data struct {
+			DisplayName   string  `json:"display_name"`
+			AvatarMediaID *string `json:"avatar_media_id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		s.log.Warn("failed to decode user-service profile response", "user_id", userID, "err", err)
+		return postgres.UserProfile{}, false
+	}
+
+	displayName := strings.TrimSpace(envelope.Data.DisplayName)
+	if displayName == "" {
+		return postgres.UserProfile{}, false
+	}
+
+	var avatarMediaID *uuid.UUID
+	if envelope.Data.AvatarMediaID != nil {
+		if parsed, err := uuid.Parse(*envelope.Data.AvatarMediaID); err == nil {
+			avatarMediaID = &parsed
+		}
+	}
+
+	return postgres.UserProfile{
+		UserID:        userID,
+		DisplayName:   displayName,
+		AvatarMediaID: avatarMediaID,
+		UpdatedAt:     time.Now(),
+	}, true
 }
 
 func withIdempotency[T any](ctx context.Context, s *Service, key string, requestPayload interface{}, exec func() (*T, error)) (*T, error) {

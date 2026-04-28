@@ -44,6 +44,7 @@ services:
     environment:
       NEXT_PUBLIC_API_BASE_URL: "https://${DOMAIN:-cleestudio.com}"
       NEXT_PUBLIC_WS_BASE_URL: "wss://${DOMAIN:-cleestudio.com}/v1/ws"
+      NEXT_PUBLIC_SITE_URL: "https://${DOMAIN:-cleestudio.com}"
       API_GATEWAY_URL: "http://api-gateway:8080"
       CHAT_BACKEND_URL: "http://chat-message-service:8092/v1/chat"
       AUTH_SERVICE_URL: "http://identity-auth:8081"

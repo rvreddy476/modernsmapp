@@ -1,35 +1,89 @@
 import 'dart:io' show Platform;
+
 import 'package:flutter/foundation.dart' show kIsWeb;
 
 /// Environment configuration for API endpoints.
 ///
-/// Set [externalDomain] to route all traffic through Caddy reverse proxy
-/// (e.g. "cleestudio.com") for external/HTTPS testing. When null, uses
-/// direct localhost/emulator connections.
+/// Use `ATPOST_EXTERNAL_DOMAIN` to route all traffic through Caddy/Cloudflare.
+/// Leave it unset in native builds to use direct local ports instead.
 class Environment {
   const Environment._();
 
+  static const String _defaultExternalDomain = 'cleestudio.com';
+  static const String _configuredExternalDomain = String.fromEnvironment(
+    'ATPOST_EXTERNAL_DOMAIN',
+    defaultValue: '',
+  );
+  static const String _configuredDirectHost = String.fromEnvironment(
+    'ATPOST_DIRECT_HOST',
+    defaultValue: '',
+  );
+  static const String _configuredApiBaseUrl = String.fromEnvironment(
+    'ATPOST_API_BASE_URL',
+    defaultValue: '',
+  );
+  static const String _configuredPostMatchBaseUrl = String.fromEnvironment(
+    'ATPOST_POSTMATCH_BASE_URL',
+    defaultValue: '',
+  );
+  static const String _configuredWsBaseUrl = String.fromEnvironment(
+    'ATPOST_WS_BASE_URL',
+    defaultValue: '',
+  );
+
   /// Set to a domain (e.g. "cleestudio.com") to use external HTTPS endpoints.
   /// Leave null for local development with direct service ports.
-  static String? externalDomain = 'cleestudio.com';
-  static String? postMatchBaseUrlOverride;
+  static String? externalDomain = _resolveExternalDomain();
+  static String? postMatchBaseUrlOverride = _trimOrNull(
+    _configuredPostMatchBaseUrl,
+  );
 
-  // Resolve host: Android emulator uses 10.0.2.2, everything else uses localhost
+  // Android debug defaults to adb-reversed localhost on a physical device.
+  // Override with ATPOST_DIRECT_HOST=10.0.2.2 when targeting an emulator.
   static String get _host {
+    final configuredHost = _trimOrNull(_configuredDirectHost);
+    if (configuredHost != null) return configuredHost;
     if (kIsWeb) return 'localhost';
     try {
-      if (Platform.isAndroid) return '10.0.2.2';
+      if (Platform.isAndroid) return '127.0.0.1';
     } catch (_) {}
     return 'localhost';
   }
 
-  // Base URLs — auto-detect platform, or use external domain if set
+  static String? _resolveExternalDomain() {
+    final configuredDomain = _trimOrNull(_configuredExternalDomain);
+    if (configuredDomain != null) {
+      return configuredDomain;
+    }
+    if (_trimOrNull(_configuredApiBaseUrl) != null ||
+        _trimOrNull(_configuredWsBaseUrl) != null) {
+      return null;
+    }
+    // Default to the production domain to avoid 127.0.0.1 hangs on physical devices
+    return _defaultExternalDomain;
+  }
+
+  static String? _trimOrNull(String? value) {
+    final trimmed = value?.trim();
+    if (trimmed == null || trimmed.isEmpty) {
+      return null;
+    }
+    return trimmed;
+  }
+
+  // Base URLs - auto-detect platform, or use explicit overrides if set.
   static String get apiBaseUrl {
+    final override = _trimOrNull(_configuredApiBaseUrl);
+    if (override != null) return override;
     if (externalDomain != null) return 'https://$externalDomain';
     return 'http://$_host:8080';
   }
 
   static String get postMatchBaseUrl {
+    final directOverride = _trimOrNull(_configuredPostMatchBaseUrl);
+    if (directOverride != null) {
+      return directOverride;
+    }
     final override = postMatchBaseUrlOverride?.trim();
     if (override != null && override.isNotEmpty) {
       return override;
@@ -39,6 +93,10 @@ class Environment {
   }
 
   static Uri get wsGatewayUri {
+    final override = _trimOrNull(_configuredWsBaseUrl);
+    if (override != null) {
+      return Uri.parse(override);
+    }
     if (externalDomain != null) {
       return Uri(scheme: 'wss', host: externalDomain!, path: '/v1/ws/connect');
     }

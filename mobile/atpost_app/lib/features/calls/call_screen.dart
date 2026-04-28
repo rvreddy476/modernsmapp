@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:go_router/go_router.dart';
+import 'package:livekit_client/livekit_client.dart' as lk;
 
 class CallScreen extends ConsumerStatefulWidget {
   const CallScreen({super.key});
@@ -38,6 +39,17 @@ class _CallScreenState extends ConsumerState<CallScreen> {
   Widget build(BuildContext context) {
     final callInfo = ref.watch(callProvider);
 
+    // Listen for stream changes and update renderers
+    ref.listen(callProvider, (previous, next) {
+      if (next == null) return;
+      if (next.localStream != null && _localRenderer.srcObject != next.localStream) {
+        _localRenderer.srcObject = next.localStream;
+      }
+      if (next.remoteStream != null && _remoteRenderer.srcObject != next.remoteStream) {
+        _remoteRenderer.srcObject = next.remoteStream;
+      }
+    });
+
     // If call ended or idle, auto-close the screen
     if (callInfo == null || callInfo.state == CallState.idle) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -48,25 +60,22 @@ class _CallScreenState extends ConsumerState<CallScreen> {
       return const Scaffold(backgroundColor: Colors.black);
     }
 
-    _updateStreams(callInfo);
-
     return Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
         children: [
           // 1. Remote Video (Full Screen)
-          if (callInfo.type == CallType.video && callInfo.remoteStream != null)
-            Positioned.fill(
-              child: RTCVideoView(
-                _remoteRenderer,
-                objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
-              ),
-            )
+          if (callInfo.type == CallType.video &&
+              (callInfo.remoteVideoTrack != null ||
+                  callInfo.remoteStream != null))
+            Positioned.fill(child: _buildRemoteVideo(callInfo))
           else
             _buildAudioCallBackground(callInfo),
 
           // 2. Local Video (Picture-in-Picture)
-          if (callInfo.type == CallType.video && callInfo.localStream != null)
+          if (callInfo.type == CallType.video &&
+              (callInfo.localVideoTrack != null ||
+                  callInfo.localStream != null))
             Positioned(
               right: 20,
               top: 60,
@@ -76,11 +85,7 @@ class _CallScreenState extends ConsumerState<CallScreen> {
                 borderRadius: BorderRadius.circular(16),
                 child: Container(
                   color: Colors.black54,
-                  child: RTCVideoView(
-                    _localRenderer,
-                    mirror: true,
-                    objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
-                  ),
+                  child: _buildLocalVideo(callInfo),
                 ),
               ),
             ),
@@ -88,11 +93,13 @@ class _CallScreenState extends ConsumerState<CallScreen> {
           // 3. Status Overlays
           _buildStatusOverlay(callInfo),
           if (callInfo.joinResponse?.usesStubSfu ?? false)
-            const Positioned(
+            Positioned(
               top: 112,
               left: 20,
               right: 20,
-              child: _CallWarningBanner(),
+              child: _CallWarningBanner(
+                hasTurnRelay: callInfo.joinResponse?.hasTurnRelay ?? false,
+              ),
             ),
 
           // 4. Call Controls
@@ -102,13 +109,34 @@ class _CallScreenState extends ConsumerState<CallScreen> {
     );
   }
 
-  void _updateStreams(CallInfo info) {
-    if (_localRenderer.srcObject != info.localStream) {
-      _localRenderer.srcObject = info.localStream;
+  Widget _buildRemoteVideo(CallInfo info) {
+    if (info.remoteVideoTrack != null) {
+      return lk.VideoTrackRenderer(
+        info.remoteVideoTrack!,
+        fit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+      );
     }
-    if (_remoteRenderer.srcObject != info.remoteStream) {
-      _remoteRenderer.srcObject = info.remoteStream;
+
+    return RTCVideoView(
+      _remoteRenderer,
+      objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+    );
+  }
+
+  Widget _buildLocalVideo(CallInfo info) {
+    if (info.localVideoTrack != null) {
+      return lk.VideoTrackRenderer(
+        info.localVideoTrack!,
+        fit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+        mirrorMode: lk.VideoViewMirrorMode.mirror,
+      );
     }
+
+    return RTCVideoView(
+      _localRenderer,
+      mirror: true,
+      objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+    );
   }
 
   Widget _buildAudioCallBackground(CallInfo info) {
@@ -149,9 +177,22 @@ class _CallScreenState extends ConsumerState<CallScreen> {
                 ? 'Incoming Call'
                 : info.state == CallState.active
                 ? 'On Call'
+                : info.state == CallState.failed
+                ? 'Call Failed'
                 : 'Connecting...',
-            style: AppTextStyles.bodyMedium.copyWith(color: Colors.white70),
+            style: AppTextStyles.bodyMedium.copyWith(
+              color: info.state == CallState.failed ? Colors.redAccent : Colors.white70,
+            ),
           ),
+          if (info.state == CallState.failed && info.error != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 8),
+              child: Text(
+                info.error!,
+                textAlign: TextAlign.center,
+                style: AppTextStyles.bodySmall.copyWith(color: Colors.white54),
+              ),
+            ),
         ],
       ),
     );
@@ -266,10 +307,15 @@ class _ControlButton extends StatelessWidget {
 }
 
 class _CallWarningBanner extends StatelessWidget {
-  const _CallWarningBanner();
+  const _CallWarningBanner({required this.hasTurnRelay});
+
+  final bool hasTurnRelay;
 
   @override
   Widget build(BuildContext context) {
+    final message = hasTurnRelay
+        ? 'Fallback WebRTC media path is active. TURN relay is configured for direct calls, but scalable group calling still needs a real SFU such as LiveKit.'
+        : 'Fallback WebRTC media path is active. Configure TURN for reliable NAT traversal and LiveKit for scalable group calling.';
     return DecoratedBox(
       decoration: BoxDecoration(
         color: Colors.amber.withValues(alpha: 0.16),
@@ -288,7 +334,7 @@ class _CallWarningBanner extends StatelessWidget {
             const SizedBox(width: 8),
             Expanded(
               child: Text(
-                'Calls are using the development SFU. Media relay is limited until LiveKit is configured.',
+                message,
                 style: AppTextStyles.bodySmall.copyWith(color: Colors.amber),
               ),
             ),

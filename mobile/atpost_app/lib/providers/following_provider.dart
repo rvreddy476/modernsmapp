@@ -26,8 +26,8 @@ class FollowingNotifier extends StateNotifier<AsyncValue<Set<String>>> {
       return;
     }
     try {
-      final users = await _repo.getFollowing(me);
-      state = AsyncValue.data(users.map((u) => u.id).toSet());
+      final ids = await _repo.getFollowingIds(me);
+      state = AsyncValue.data(ids.toSet());
     } catch (e, st) {
       state = AsyncValue.error(e, st);
     }

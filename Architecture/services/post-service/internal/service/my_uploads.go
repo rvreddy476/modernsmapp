@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 
@@ -14,6 +15,11 @@ type UploadDetail struct {
 	PostDetail
 	VideoMetadata *postgres.VideoMetadata `json:"video_metadata,omitempty"`
 }
+
+var (
+	ErrPostNotFound  = errors.New("post not found")
+	ErrPostForbidden = errors.New("forbidden")
+)
 
 // GetMyVideos returns the user's video and long_video uploads with video metadata.
 func (s *Service) GetMyVideos(ctx context.Context, authorID uuid.UUID, limit int, cursor string) ([]UploadDetail, string, error) {
@@ -54,23 +60,23 @@ func (s *Service) GetUploadCounts(ctx context.Context, authorID uuid.UUID) (vide
 	return s.pgStore.CountUploadsByContentTypes(ctx, authorID)
 }
 
-// DeleteUploadCascade deletes a post and all its crosspost links + embed posts.
-func (s *Service) DeleteUploadCascade(ctx context.Context, postID, authorID uuid.UUID) error {
+// DeletePost soft-deletes a post and its related crosspost targets when owned by the caller.
+func (s *Service) DeletePost(ctx context.Context, postID, authorID uuid.UUID) error {
 	// Fetch the post first for event data
 	source, err := s.pgStore.GetPost(ctx, postID)
 	if err != nil {
 		return fmt.Errorf("failed to get post: %w", err)
 	}
 	if source == nil {
-		return fmt.Errorf("post not found")
+		return ErrPostNotFound
 	}
 	if source.AuthorID != authorID {
-		return fmt.Errorf("FORBIDDEN")
+		return ErrPostForbidden
 	}
 
 	cascadeCount, err := s.pgStore.DeleteUploadCascade(ctx, postID, authorID)
 	if err != nil {
-		return fmt.Errorf("failed to delete upload: %w", err)
+		return fmt.Errorf("failed to delete post: %w", err)
 	}
 
 	// Publish upload.deleted event
@@ -83,6 +89,11 @@ func (s *Service) DeleteUploadCascade(ctx context.Context, postID, authorID uuid
 	}
 
 	return nil
+}
+
+// DeleteUploadCascade preserves the legacy "uploads" surface and delegates to DeletePost.
+func (s *Service) DeleteUploadCascade(ctx context.Context, postID, authorID uuid.UUID) error {
+	return s.DeletePost(ctx, postID, authorID)
 }
 
 // enrichUploads adds engagement counts and video metadata to posts.

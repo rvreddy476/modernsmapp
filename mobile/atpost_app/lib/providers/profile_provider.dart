@@ -51,33 +51,43 @@ class ProfileNotifier extends StateNotifier<AsyncValue<ProfileState>> {
   Future<void> refresh() async {
     state = const AsyncValue.loading();
     try {
+      final user = await ErrorHandler.retry(() => _userRepo.getMe());
+
       final results = await Future.wait([
-        ErrorHandler.retry(() => _userRepo.getMe()),
         ErrorHandler.retry(
           () => _api.get(
-            '/v1/posts',
-            queryParameters: {'author_id': 'me', 'limit': 30},
+            '/v1/posts/by-author/${user.id}',
+            queryParameters: {'limit': 30},
           ),
         ),
-        ErrorHandler.retry(() => _api.get('/v1/users/me/pins')),
-        ErrorHandler.retry(() => _api.get('/v1/users/me/portfolio')),
+        ErrorHandler.retry(() => _api.get('/v1/users/${user.id}/pins')),
+        ErrorHandler.retry(() => _api.get('/v1/users/${user.id}/portfolio')),
       ]);
 
-      final user = results[0] as User;
-      final postsRes = results[1] as dynamic;
-      final pinsRes = results[2] as dynamic;
-      final portfolioRes = results[3] as dynamic;
+      final postsRes = results[0];
+      final pinsRes = results[1];
+      final portfolioRes = results[2];
 
-      final posts =
-          (postsRes.data['data']?['items'] as List?)
-              ?.map((e) => Post.fromJson(e))
-              .toList() ??
-          [];
-      final pins =
-          (pinsRes.data['data'] as List?)?.cast<Map<String, dynamic>>() ?? [];
-      final portfolio =
-          (portfolioRes.data['data'] as List?)?.cast<Map<String, dynamic>>() ??
-          [];
+      final postsData = postsRes.data['data'];
+      final List rawPosts = postsData is List
+          ? postsData
+          : (postsData is Map && postsData['items'] is List)
+              ? postsData['items'] as List
+              : const [];
+      final posts = rawPosts
+          .map((e) => Post.fromJson(e as Map<String, dynamic>))
+          .toList();
+
+      List<Map<String, dynamic>> asList(dynamic d) {
+        if (d is List) return d.cast<Map<String, dynamic>>();
+        if (d is Map && d['items'] is List) {
+          return (d['items'] as List).cast<Map<String, dynamic>>();
+        }
+        return const [];
+      }
+
+      final pins = asList(pinsRes.data['data']);
+      final portfolio = asList(portfolioRes.data['data']);
 
       state = AsyncValue.data(
         ProfileState(

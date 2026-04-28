@@ -6,6 +6,7 @@ import 'package:atpost_app/services/call_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:livekit_client/livekit_client.dart' as lk;
 
 /// Full-screen call overlay rendered above the app.
 class CallOverlay extends ConsumerStatefulWidget {
@@ -148,7 +149,7 @@ class _CallOverlayState extends ConsumerState<CallOverlay> {
         _buildAvatar(info),
         const SizedBox(height: 24),
         if (info.joinResponse?.usesStubSfu ?? false) ...[
-          _buildSfuWarning(),
+          _buildSfuWarning(info.joinResponse?.hasTurnRelay ?? false),
           const SizedBox(height: 16),
         ],
         Text(
@@ -183,7 +184,7 @@ class _CallOverlayState extends ConsumerState<CallOverlay> {
         _buildAvatar(info),
         const SizedBox(height: 24),
         if (info.joinResponse?.usesStubSfu ?? false) ...[
-          _buildSfuWarning(),
+          _buildSfuWarning(info.joinResponse?.hasTurnRelay ?? false),
           const SizedBox(height: 16),
         ],
         Text(
@@ -225,13 +226,9 @@ class _CallOverlayState extends ConsumerState<CallOverlay> {
     return Stack(
       children: [
         // Remote video (full screen)
-        if (isVideo && info.remoteStream != null)
-          Positioned.fill(
-            child: RTCVideoView(
-              _remoteRenderer,
-              objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
-            ),
-          ),
+        if (isVideo &&
+            (info.remoteVideoTrack != null || info.remoteStream != null))
+          Positioned.fill(child: _buildRemoteVideo(info)),
 
         // Audio call: show centered avatar
         if (!isVideo)
@@ -260,7 +257,12 @@ class _CallOverlayState extends ConsumerState<CallOverlay> {
 
         // Video call: timer + name overlay at top
         if (isVideo && (info.joinResponse?.usesStubSfu ?? false))
-          Positioned(top: 64, left: 16, right: 16, child: _buildSfuWarning()),
+          Positioned(
+            top: 64,
+            left: 16,
+            right: 16,
+            child: _buildSfuWarning(info.joinResponse?.hasTurnRelay ?? false),
+          ),
 
         if (isVideo)
           Positioned(
@@ -293,7 +295,8 @@ class _CallOverlayState extends ConsumerState<CallOverlay> {
           ),
 
         // Local video PiP (top right)
-        if (isVideo && info.localStream != null)
+        if (isVideo &&
+            (info.localVideoTrack != null || info.localStream != null))
           Positioned(
             top: 80,
             right: 16,
@@ -302,11 +305,7 @@ class _CallOverlayState extends ConsumerState<CallOverlay> {
               child: SizedBox(
                 width: 100,
                 height: 140,
-                child: RTCVideoView(
-                  _localRenderer,
-                  mirror: true,
-                  objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
-                ),
+                child: _buildLocalVideo(info),
               ),
             ),
           ),
@@ -381,6 +380,36 @@ class _CallOverlayState extends ConsumerState<CallOverlay> {
     return avatar;
   }
 
+  Widget _buildRemoteVideo(CallInfo info) {
+    if (info.remoteVideoTrack != null) {
+      return lk.VideoTrackRenderer(
+        info.remoteVideoTrack!,
+        fit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+      );
+    }
+
+    return RTCVideoView(
+      _remoteRenderer,
+      objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+    );
+  }
+
+  Widget _buildLocalVideo(CallInfo info) {
+    if (info.localVideoTrack != null) {
+      return lk.VideoTrackRenderer(
+        info.localVideoTrack!,
+        fit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+        mirrorMode: lk.VideoViewMirrorMode.mirror,
+      );
+    }
+
+    return RTCVideoView(
+      _localRenderer,
+      mirror: true,
+      objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+    );
+  }
+
   Widget _callActionButton({
     required IconData icon,
     required Color color,
@@ -445,7 +474,10 @@ class _CallOverlayState extends ConsumerState<CallOverlay> {
     );
   }
 
-  Widget _buildSfuWarning() {
+  Widget _buildSfuWarning(bool hasTurnRelay) {
+    final message = hasTurnRelay
+        ? 'Fallback WebRTC media path is active. TURN relay is configured for direct calls, but scalable group calling still needs a real SFU such as LiveKit.'
+        : 'Fallback WebRTC media path is active. Configure TURN for reliable NAT traversal and LiveKit for scalable group calling.';
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 24),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -455,7 +487,7 @@ class _CallOverlayState extends ConsumerState<CallOverlay> {
         border: Border.all(color: Colors.amber.withValues(alpha: 0.35)),
       ),
       child: Text(
-        'Development SFU active. Configure LiveKit for production media relay.',
+        message,
         textAlign: TextAlign.center,
         style: AppTextStyles.bodySmall.copyWith(color: Colors.amber),
       ),

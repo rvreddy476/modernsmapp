@@ -3,6 +3,9 @@ import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/repositories/user_repository.dart';
 import 'package:atpost_app/features/discover/qa_topics_screen.dart';
+import 'package:atpost_app/features/services/data/service_registry.dart';
+import 'package:atpost_app/features/services/models/service_app.dart';
+import 'package:atpost_app/features/services/widgets/service_icon.dart';
 import 'package:atpost_app/services/api_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -40,8 +43,8 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
     try {
       final api = ref.read(apiClientProvider);
       final responses = await Future.wait([
-        api.get('/v1/search/trending'),
-        api.get('/v1/graph/suggestions'),
+        api.get('/v1/discover/trending'),
+        api.get('/v1/suggestions'),
       ]);
 
       final tags = _parseTags(responses[0].data['data']);
@@ -270,6 +273,32 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
                         ),
                       ),
                       const SizedBox(height: 20),
+                      Row(
+                        children: [
+                          Text('Services', style: AppTextStyles.h2),
+                          const Spacer(),
+                          TextButton(
+                            onPressed: () => context.push('/services'),
+                            child: Text(
+                              'View all',
+                              style: AppTextStyles.label.copyWith(
+                                color: AppColors.postbookPrimary,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      _ServicesRail(
+                        onTap: (app) {
+                          if (app.status.isOpenable && app.route != null) {
+                            context.push(app.route!);
+                          } else {
+                            context.push('/services/${app.slug}');
+                          }
+                        },
+                      ),
+                      const SizedBox(height: 22),
                       Text('Explore', style: AppTextStyles.h2),
                       const SizedBox(height: 10),
                       LayoutBuilder(
@@ -665,6 +694,67 @@ class _EmptyCard extends StatelessWidget {
               ),
             ),
         ],
+      ),
+    );
+  }
+}
+
+class _ServicesRail extends StatelessWidget {
+  const _ServicesRail({required this.onTap});
+
+  final ValueChanged<ServiceApp> onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final apps = ServiceRegistry.featured().take(6).toList();
+    if (apps.isEmpty) return const SizedBox.shrink();
+    return SizedBox(
+      height: 96,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        itemCount: apps.length,
+        separatorBuilder: (_, _) => const SizedBox(width: 12),
+        itemBuilder: (_, i) {
+          final app = apps[i];
+          return InkWell(
+            onTap: () => onTap(app),
+            borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
+            child: SizedBox(
+              width: 72,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 56,
+                    height: 56,
+                    decoration: BoxDecoration(
+                      color: app.accentColor.withValues(alpha: 0.16),
+                      borderRadius:
+                          BorderRadius.circular(AppSpacing.radiusLarge),
+                    ),
+                    alignment: Alignment.center,
+                    child: Icon(
+                      iconForServiceName(app.iconName),
+                      color: app.accentColor,
+                      size: 26,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    app.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.center,
+                    style: AppTextStyles.labelSmall.copyWith(
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
       ),
     );
   }

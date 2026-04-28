@@ -8,11 +8,35 @@ import (
 )
 
 // StubProvider is a no-op SFU for local development and testing.
-// It returns deterministic room names and static STUN servers.
-type StubProvider struct{}
+// It returns deterministic room names and configurable ICE servers for the
+// current direct-WebRTC mobile client.
+type StubProvider struct {
+	iceServers []ICEServer
+}
 
 func NewStubProvider() *StubProvider {
-	return &StubProvider{}
+	return NewStubProviderWithICEServers(nil)
+}
+
+func NewStubProviderWithICEServers(iceServers []ICEServer) *StubProvider {
+	if len(iceServers) == 0 {
+		iceServers = []ICEServer{
+			{URLs: []string{"stun:stun.l.google.com:19302"}},
+			{URLs: []string{"stun:stun1.l.google.com:19302"}},
+		}
+	}
+
+	cloned := make([]ICEServer, 0, len(iceServers))
+	for _, server := range iceServers {
+		urls := append([]string(nil), server.URLs...)
+		cloned = append(cloned, ICEServer{
+			URLs:       urls,
+			Username:   server.Username,
+			Credential: server.Credential,
+		})
+	}
+
+	return &StubProvider{iceServers: cloned}
 }
 
 func (s *StubProvider) CreateRoom(_ context.Context, roomKey string, _ int) (string, error) {
@@ -28,10 +52,20 @@ func (s *StubProvider) CloseRoom(_ context.Context, _ string) error {
 }
 
 func (s *StubProvider) GetICEServers() []ICEServer {
-	return []ICEServer{
-		{URLs: []string{"stun:stun.l.google.com:19302"}},
-		{URLs: []string{"stun:stun1.l.google.com:19302"}},
+	cloned := make([]ICEServer, 0, len(s.iceServers))
+	for _, server := range s.iceServers {
+		urls := append([]string(nil), server.URLs...)
+		cloned = append(cloned, ICEServer{
+			URLs:       urls,
+			Username:   server.Username,
+			Credential: server.Credential,
+		})
 	}
+	return cloned
+}
+
+func (s *StubProvider) ClientURL() string {
+	return ""
 }
 
 func (s *StubProvider) ProviderName() string {

@@ -147,7 +147,7 @@ type AdPerformance struct {
 
 func (s *Store) CreateStorefront(ctx context.Context, sf *Storefront) (*Storefront, error) {
 	err := s.db.QueryRow(ctx, `
-		INSERT INTO storefronts (seller_id, handle, display_name, tagline, about, policies)
+		INSERT INTO shop.storefronts (seller_id, handle, display_name, tagline, about, policies)
 		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING id, seller_id, handle, display_name, tagline, banner_media_id, logo_media_id,
 		          about, policies, is_verified, total_sales, avg_rating, review_count, created_at, updated_at
@@ -168,7 +168,7 @@ func (s *Store) GetStorefrontByHandle(ctx context.Context, handle string) (*Stor
 	err := s.db.QueryRow(ctx, `
 		SELECT id, seller_id, handle, display_name, tagline, banner_media_id, logo_media_id,
 		       about, policies, is_verified, total_sales, avg_rating, review_count, created_at, updated_at
-		FROM storefronts WHERE handle = $1
+		FROM shop.storefronts WHERE handle = $1
 	`, handle).Scan(
 		&sf.ID, &sf.SellerID, &sf.Handle, &sf.DisplayName, &sf.Tagline,
 		&sf.BannerMediaID, &sf.LogoMediaID, &sf.About, &sf.Policies,
@@ -186,7 +186,7 @@ func (s *Store) GetStorefrontBySeller(ctx context.Context, sellerID uuid.UUID) (
 	err := s.db.QueryRow(ctx, `
 		SELECT id, seller_id, handle, display_name, tagline, banner_media_id, logo_media_id,
 		       about, policies, is_verified, total_sales, avg_rating, review_count, created_at, updated_at
-		FROM storefronts WHERE seller_id = $1
+		FROM shop.storefronts WHERE seller_id = $1
 	`, sellerID).Scan(
 		&sf.ID, &sf.SellerID, &sf.Handle, &sf.DisplayName, &sf.Tagline,
 		&sf.BannerMediaID, &sf.LogoMediaID, &sf.About, &sf.Policies,
@@ -201,7 +201,7 @@ func (s *Store) GetStorefrontBySeller(ctx context.Context, sellerID uuid.UUID) (
 
 func (s *Store) UpdateStorefront(ctx context.Context, id uuid.UUID, sf *Storefront) error {
 	_, err := s.db.Exec(ctx, `
-		UPDATE storefronts SET display_name=$2, tagline=$3, about=$4, policies=$5, updated_at=NOW()
+		UPDATE shop.storefronts SET display_name=$2, tagline=$3, about=$4, policies=$5, updated_at=NOW()
 		WHERE id=$1
 	`, id, sf.DisplayName, sf.Tagline, sf.About, sf.Policies)
 	return err
@@ -214,14 +214,14 @@ func (s *Store) SetFeaturedListings(ctx context.Context, storefrontID uuid.UUID,
 	}
 	defer tx.Rollback(ctx)
 
-	_, err = tx.Exec(ctx, `DELETE FROM storefront_featured WHERE storefront_id = $1`, storefrontID)
+	_, err = tx.Exec(ctx, `DELETE FROM shop.storefront_featured WHERE storefront_id = $1`, storefrontID)
 	if err != nil {
 		return err
 	}
 
 	for i, lid := range listingIDs {
 		_, err = tx.Exec(ctx, `
-			INSERT INTO storefront_featured (storefront_id, listing_id, position) VALUES ($1, $2, $3)
+			INSERT INTO shop.storefront_featured (storefront_id, listing_id, position) VALUES ($1, $2, $3)
 		`, storefrontID, lid, i)
 		if err != nil {
 			return err
@@ -233,7 +233,7 @@ func (s *Store) SetFeaturedListings(ctx context.Context, storefrontID uuid.UUID,
 
 func (s *Store) GetFeaturedListings(ctx context.Context, storefrontID uuid.UUID) ([]uuid.UUID, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT listing_id FROM storefront_featured WHERE storefront_id = $1 ORDER BY position
+		SELECT listing_id FROM shop.storefront_featured WHERE storefront_id = $1 ORDER BY position
 	`, storefrontID)
 	if err != nil {
 		return nil, err
@@ -253,7 +253,7 @@ func (s *Store) GetFeaturedListings(ctx context.Context, storefrontID uuid.UUID)
 
 func (s *Store) CreateCollection(ctx context.Context, c *StorefrontCollection) (*StorefrontCollection, error) {
 	err := s.db.QueryRow(ctx, `
-		INSERT INTO storefront_collections (storefront_id, name, cover_media_id, sort_order)
+		INSERT INTO shop.storefront_collections (storefront_id, name, cover_media_id, sort_order)
 		VALUES ($1, $2, $3, $4)
 		RETURNING id, storefront_id, name, cover_media_id, sort_order, created_at
 	`, c.StorefrontID, c.Name, c.CoverMediaID, c.SortOrder).Scan(
@@ -268,7 +268,7 @@ func (s *Store) CreateCollection(ctx context.Context, c *StorefrontCollection) (
 func (s *Store) GetCollections(ctx context.Context, storefrontID uuid.UUID) ([]StorefrontCollection, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT id, storefront_id, name, cover_media_id, sort_order, created_at
-		FROM storefront_collections WHERE storefront_id = $1 ORDER BY sort_order
+		FROM shop.storefront_collections WHERE storefront_id = $1 ORDER BY sort_order
 	`, storefrontID)
 	if err != nil {
 		return nil, err
@@ -288,7 +288,7 @@ func (s *Store) GetCollections(ctx context.Context, storefrontID uuid.UUID) ([]S
 
 func (s *Store) AddListingToCollection(ctx context.Context, collectionID, listingID uuid.UUID, position int) error {
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO collection_listings (collection_id, listing_id, position)
+		INSERT INTO shop.collection_listings (collection_id, listing_id, position)
 		VALUES ($1, $2, $3)
 		ON CONFLICT (collection_id, position) DO UPDATE SET listing_id = EXCLUDED.listing_id
 	`, collectionID, listingID, position)
@@ -297,7 +297,7 @@ func (s *Store) AddListingToCollection(ctx context.Context, collectionID, listin
 
 func (s *Store) GetCollectionListings(ctx context.Context, collectionID uuid.UUID) ([]uuid.UUID, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT listing_id FROM collection_listings WHERE collection_id = $1 ORDER BY position
+		SELECT listing_id FROM shop.collection_listings WHERE collection_id = $1 ORDER BY position
 	`, collectionID)
 	if err != nil {
 		return nil, err
@@ -324,14 +324,14 @@ func (s *Store) UpsertPostProductTags(ctx context.Context, postID uuid.UUID, tag
 	}
 	defer tx.Rollback(ctx)
 
-	_, err = tx.Exec(ctx, `DELETE FROM post_product_tags WHERE post_id = $1`, postID)
+	_, err = tx.Exec(ctx, `DELETE FROM shop.post_product_tags WHERE post_id = $1`, postID)
 	if err != nil {
 		return err
 	}
 
 	for _, tag := range tags {
 		_, err = tx.Exec(ctx, `
-			INSERT INTO post_product_tags (post_id, listing_id, position, appear_at_ms, hide_at_ms)
+			INSERT INTO shop.post_product_tags (post_id, listing_id, position, appear_at_ms, hide_at_ms)
 			VALUES ($1, $2, $3, $4, $5)
 		`, postID, tag.ListingID, tag.Position, tag.AppearAtMs, tag.HideAtMs)
 		if err != nil {
@@ -345,7 +345,7 @@ func (s *Store) UpsertPostProductTags(ctx context.Context, postID uuid.UUID, tag
 func (s *Store) GetPostProductTags(ctx context.Context, postID uuid.UUID) ([]PostProductTag, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT id, post_id, listing_id, position, appear_at_ms, hide_at_ms, click_count, created_at
-		FROM post_product_tags WHERE post_id = $1
+		FROM shop.post_product_tags WHERE post_id = $1
 	`, postID)
 	if err != nil {
 		return nil, err
@@ -364,7 +364,7 @@ func (s *Store) GetPostProductTags(ctx context.Context, postID uuid.UUID) ([]Pos
 }
 
 func (s *Store) IncrementTagClickCount(ctx context.Context, tagID uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `UPDATE post_product_tags SET click_count = click_count + 1 WHERE id = $1`, tagID)
+	_, err := s.db.Exec(ctx, `UPDATE shop.post_product_tags SET click_count = click_count + 1 WHERE id = $1`, tagID)
 	return err
 }
 
@@ -372,7 +372,7 @@ func (s *Store) IncrementTagClickCount(ctx context.Context, tagID uuid.UUID) err
 
 func (s *Store) GetOrCreateDefaultWishlist(ctx context.Context, userID uuid.UUID) (*Wishlist, error) {
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO wishlists (user_id, name) VALUES ($1, 'My Wishlist')
+		INSERT INTO shop.wishlists (user_id, name) VALUES ($1, 'My Wishlist')
 		ON CONFLICT DO NOTHING
 	`, userID)
 	if err != nil {
@@ -381,7 +381,7 @@ func (s *Store) GetOrCreateDefaultWishlist(ctx context.Context, userID uuid.UUID
 
 	var w Wishlist
 	err = s.db.QueryRow(ctx, `
-		SELECT id, user_id, name, is_public, created_at FROM wishlists WHERE user_id = $1 LIMIT 1
+		SELECT id, user_id, name, is_public, created_at FROM shop.wishlists WHERE user_id = $1 LIMIT 1
 	`, userID).Scan(&w.ID, &w.UserID, &w.Name, &w.IsPublic, &w.CreatedAt)
 	if err != nil {
 		return nil, err
@@ -391,20 +391,20 @@ func (s *Store) GetOrCreateDefaultWishlist(ctx context.Context, userID uuid.UUID
 
 func (s *Store) AddToWishlist(ctx context.Context, wishlistID, listingID uuid.UUID) error {
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO wishlist_items (wishlist_id, listing_id) VALUES ($1, $2)
+		INSERT INTO shop.wishlist_items (wishlist_id, listing_id) VALUES ($1, $2)
 		ON CONFLICT DO NOTHING
 	`, wishlistID, listingID)
 	return err
 }
 
 func (s *Store) RemoveFromWishlist(ctx context.Context, wishlistID, listingID uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `DELETE FROM wishlist_items WHERE wishlist_id = $1 AND listing_id = $2`, wishlistID, listingID)
+	_, err := s.db.Exec(ctx, `DELETE FROM shop.wishlist_items WHERE wishlist_id = $1 AND listing_id = $2`, wishlistID, listingID)
 	return err
 }
 
 func (s *Store) GetWishlistItems(ctx context.Context, wishlistID uuid.UUID, limit, offset int) ([]WishlistItem, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT wishlist_id, listing_id, added_at FROM wishlist_items
+		SELECT wishlist_id, listing_id, added_at FROM shop.wishlist_items
 		WHERE wishlist_id = $1 ORDER BY added_at DESC LIMIT $2 OFFSET $3
 	`, wishlistID, limit, offset)
 	if err != nil {
@@ -425,20 +425,20 @@ func (s *Store) GetWishlistItems(ctx context.Context, wishlistID uuid.UUID, limi
 
 func (s *Store) CreateStockAlert(ctx context.Context, userID, listingID uuid.UUID) error {
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO stock_alerts (user_id, listing_id) VALUES ($1, $2)
+		INSERT INTO shop.stock_alerts (user_id, listing_id) VALUES ($1, $2)
 		ON CONFLICT DO NOTHING
 	`, userID, listingID)
 	return err
 }
 
 func (s *Store) RemoveStockAlert(ctx context.Context, userID, listingID uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `DELETE FROM stock_alerts WHERE user_id = $1 AND listing_id = $2`, userID, listingID)
+	_, err := s.db.Exec(ctx, `DELETE FROM shop.stock_alerts WHERE user_id = $1 AND listing_id = $2`, userID, listingID)
 	return err
 }
 
 func (s *Store) GetStockAlerts(ctx context.Context, listingID uuid.UUID) ([]StockAlert, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, user_id, listing_id, alerted, created_at FROM stock_alerts
+		SELECT id, user_id, listing_id, alerted, created_at FROM shop.stock_alerts
 		WHERE listing_id = $1 AND alerted = FALSE
 	`, listingID)
 	if err != nil {
@@ -461,7 +461,7 @@ func (s *Store) GetStockAlerts(ctx context.Context, listingID uuid.UUID) ([]Stoc
 
 func (s *Store) CreateGroupBuy(ctx context.Context, g *GroupBuy) (*GroupBuy, error) {
 	err := s.db.QueryRow(ctx, `
-		INSERT INTO group_buys (listing_id, initiator_id, target_qty, discounted_price, original_price, expires_at)
+		INSERT INTO shop.group_buys (listing_id, initiator_id, target_qty, discounted_price, original_price, expires_at)
 		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING id, listing_id, initiator_id, target_qty, current_qty, discounted_price, original_price, expires_at, status, created_at
 	`, g.ListingID, g.InitiatorID, g.TargetQty, g.DiscountedPrice, g.OriginalPrice, g.ExpiresAt).Scan(
@@ -482,7 +482,7 @@ func (s *Store) JoinGroupBuy(ctx context.Context, groupBuyID, userID uuid.UUID, 
 	defer tx.Rollback(ctx)
 
 	_, err = tx.Exec(ctx, `
-		INSERT INTO group_buy_participants (group_buy_id, user_id, payment_intent_id) VALUES ($1, $2, $3)
+		INSERT INTO shop.group_buy_participants (group_buy_id, user_id, payment_intent_id) VALUES ($1, $2, $3)
 	`, groupBuyID, userID, paymentIntentID)
 	if err != nil {
 		return err
@@ -490,7 +490,7 @@ func (s *Store) JoinGroupBuy(ctx context.Context, groupBuyID, userID uuid.UUID, 
 
 	var currentQty, targetQty int
 	err = tx.QueryRow(ctx, `
-		UPDATE group_buys SET current_qty = current_qty + 1
+		UPDATE shop.group_buys SET current_qty = current_qty + 1
 		WHERE id = $1
 		RETURNING current_qty, target_qty
 	`, groupBuyID).Scan(&currentQty, &targetQty)
@@ -499,7 +499,7 @@ func (s *Store) JoinGroupBuy(ctx context.Context, groupBuyID, userID uuid.UUID, 
 	}
 
 	if currentQty >= targetQty {
-		_, err = tx.Exec(ctx, `UPDATE group_buys SET status = 'fulfilled' WHERE id = $1`, groupBuyID)
+		_, err = tx.Exec(ctx, `UPDATE shop.group_buys SET status = 'fulfilled' WHERE id = $1`, groupBuyID)
 		if err != nil {
 			return err
 		}
@@ -512,7 +512,7 @@ func (s *Store) GetGroupBuy(ctx context.Context, id uuid.UUID) (*GroupBuy, error
 	var g GroupBuy
 	err := s.db.QueryRow(ctx, `
 		SELECT id, listing_id, initiator_id, target_qty, current_qty, discounted_price, original_price, expires_at, status, created_at
-		FROM group_buys WHERE id = $1
+		FROM shop.group_buys WHERE id = $1
 	`, id).Scan(
 		&g.ID, &g.ListingID, &g.InitiatorID, &g.TargetQty, &g.CurrentQty,
 		&g.DiscountedPrice, &g.OriginalPrice, &g.ExpiresAt, &g.Status, &g.CreatedAt,
@@ -526,7 +526,7 @@ func (s *Store) GetGroupBuy(ctx context.Context, id uuid.UUID) (*GroupBuy, error
 func (s *Store) ListActiveGroupBuys(ctx context.Context, listingID uuid.UUID) ([]GroupBuy, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT id, listing_id, initiator_id, target_qty, current_qty, discounted_price, original_price, expires_at, status, created_at
-		FROM group_buys WHERE listing_id = $1 AND status = 'open' AND expires_at > NOW()
+		FROM shop.group_buys WHERE listing_id = $1 AND status = 'open' AND expires_at > NOW()
 	`, listingID)
 	if err != nil {
 		return nil, err
@@ -550,7 +550,7 @@ func (s *Store) ListActiveGroupBuys(ctx context.Context, listingID uuid.UUID) ([
 func (s *Store) GetGroupBuyParticipants(ctx context.Context, groupBuyID uuid.UUID) ([]GroupBuyParticipant, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT group_buy_id, user_id, payment_intent_id, joined_at
-		FROM group_buy_participants WHERE group_buy_id = $1 ORDER BY joined_at
+		FROM shop.group_buy_participants WHERE group_buy_id = $1 ORDER BY joined_at
 	`, groupBuyID)
 	if err != nil {
 		return nil, err
@@ -572,7 +572,7 @@ func (s *Store) GetGroupBuyParticipants(ctx context.Context, groupBuyID uuid.UUI
 
 func (s *Store) CreateAdCampaign(ctx context.Context, c *AdCampaign) (*AdCampaign, error) {
 	err := s.db.QueryRow(ctx, `
-		INSERT INTO ad_campaigns (advertiser_id, name, objective, budget_type, budget_amount, currency, starts_at, ends_at, attribution_window_days)
+		INSERT INTO shop.ad_campaigns (advertiser_id, name, objective, budget_type, budget_amount, currency, starts_at, ends_at, attribution_window_days)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING id, advertiser_id, name, objective, status, budget_type, budget_amount, currency,
 		          starts_at, ends_at, spent_amount, attribution_window_days, created_at, updated_at
@@ -592,7 +592,7 @@ func (s *Store) GetAdCampaign(ctx context.Context, id uuid.UUID) (*AdCampaign, e
 	err := s.db.QueryRow(ctx, `
 		SELECT id, advertiser_id, name, objective, status, budget_type, budget_amount, currency,
 		       starts_at, ends_at, spent_amount, attribution_window_days, created_at, updated_at
-		FROM ad_campaigns WHERE id = $1
+		FROM shop.ad_campaigns WHERE id = $1
 	`, id).Scan(
 		&c.ID, &c.AdvertiserID, &c.Name, &c.Objective, &c.Status, &c.BudgetType,
 		&c.BudgetAmount, &c.Currency, &c.StartsAt, &c.EndsAt, &c.SpentAmount,
@@ -608,7 +608,7 @@ func (s *Store) ListAdCampaigns(ctx context.Context, advertiserID uuid.UUID, sta
 	query := `
 		SELECT id, advertiser_id, name, objective, status, budget_type, budget_amount, currency,
 		       starts_at, ends_at, spent_amount, attribution_window_days, created_at, updated_at
-		FROM ad_campaigns WHERE advertiser_id = $1`
+		FROM shop.ad_campaigns WHERE advertiser_id = $1`
 	args := []interface{}{advertiserID}
 	if status != "" {
 		query += ` AND status = $2 ORDER BY created_at DESC LIMIT $3 OFFSET $4`
@@ -640,13 +640,13 @@ func (s *Store) ListAdCampaigns(ctx context.Context, advertiserID uuid.UUID, sta
 }
 
 func (s *Store) UpdateAdCampaignStatus(ctx context.Context, id uuid.UUID, status string) error {
-	_, err := s.db.Exec(ctx, `UPDATE ad_campaigns SET status=$2, updated_at=NOW() WHERE id=$1`, id, status)
+	_, err := s.db.Exec(ctx, `UPDATE shop.ad_campaigns SET status=$2, updated_at=NOW() WHERE id=$1`, id, status)
 	return err
 }
 
 func (s *Store) CreateAdSet(ctx context.Context, as *AdSet) (*AdSet, error) {
 	err := s.db.QueryRow(ctx, `
-		INSERT INTO ad_sets (campaign_id, name, targeting, placement, bid_type, bid_amount, daily_budget)
+		INSERT INTO shop.ad_sets (campaign_id, name, targeting, placement, bid_type, bid_amount, daily_budget)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING id, campaign_id, name, targeting, placement, bid_type, bid_amount, daily_budget, created_at
 	`, as.CampaignID, as.Name, as.Targeting, as.Placement, as.BidType, as.BidAmount, as.DailyBudget).Scan(
@@ -661,7 +661,7 @@ func (s *Store) CreateAdSet(ctx context.Context, as *AdSet) (*AdSet, error) {
 
 func (s *Store) CreateAdCreative(ctx context.Context, c *AdCreative) (*AdCreative, error) {
 	err := s.db.QueryRow(ctx, `
-		INSERT INTO ad_creatives (campaign_id, content_type, post_id, headline, body_text, cta_type, cta_url)
+		INSERT INTO shop.ad_creatives (campaign_id, content_type, post_id, headline, body_text, cta_type, cta_url)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING id, campaign_id, content_type, post_id, headline, body_text, cta_type, cta_url, media_ids, created_at
 	`, c.CampaignID, c.ContentType, c.PostID, c.Headline, c.BodyText, c.CTAType, c.CTAURL).Scan(
@@ -676,14 +676,14 @@ func (s *Store) CreateAdCreative(ctx context.Context, c *AdCreative) (*AdCreativ
 
 func (s *Store) UpsertAdPerformance(ctx context.Context, p *AdPerformance) error {
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO ad_performance (campaign_id, creative_id, date, impressions, clicks, conversions, spend, reach)
+		INSERT INTO shop.ad_performance (campaign_id, creative_id, date, impressions, clicks, conversions, spend, reach)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (campaign_id, date) DO UPDATE SET
-		    impressions = ad_performance.impressions + EXCLUDED.impressions,
-		    clicks      = ad_performance.clicks + EXCLUDED.clicks,
-		    conversions = ad_performance.conversions + EXCLUDED.conversions,
-		    spend       = ad_performance.spend + EXCLUDED.spend,
-		    reach       = ad_performance.reach + EXCLUDED.reach
+		    impressions = shop.ad_performance.impressions + EXCLUDED.impressions,
+		    clicks      = shop.ad_performance.clicks + EXCLUDED.clicks,
+		    conversions = shop.ad_performance.conversions + EXCLUDED.conversions,
+		    spend       = shop.ad_performance.spend + EXCLUDED.spend,
+		    reach       = shop.ad_performance.reach + EXCLUDED.reach
 	`, p.CampaignID, p.CreativeID, p.Date, p.Impressions, p.Clicks, p.Conversions, p.Spend, p.Reach)
 	return err
 }
@@ -691,7 +691,7 @@ func (s *Store) UpsertAdPerformance(ctx context.Context, p *AdPerformance) error
 func (s *Store) GetAdPerformance(ctx context.Context, campaignID uuid.UUID, startDate, endDate time.Time) ([]AdPerformance, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT campaign_id, creative_id, date, impressions, clicks, conversions, spend, reach
-		FROM ad_performance WHERE campaign_id = $1 AND date >= $2 AND date <= $3 ORDER BY date
+		FROM shop.ad_performance WHERE campaign_id = $1 AND date >= $2 AND date <= $3 ORDER BY date
 	`, campaignID, startDate, endDate)
 	if err != nil {
 		return nil, err
@@ -711,7 +711,7 @@ func (s *Store) GetAdPerformance(ctx context.Context, campaignID uuid.UUID, star
 
 func (s *Store) SetAdFrequencyCap(ctx context.Context, campaignID uuid.UUID, perDay, perWeek int) error {
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO ad_frequency_caps (campaign_id, max_per_user_per_day, max_per_user_per_week)
+		INSERT INTO shop.ad_frequency_caps (campaign_id, max_per_user_per_day, max_per_user_per_week)
 		VALUES ($1, $2, $3)
 		ON CONFLICT (campaign_id) DO UPDATE SET
 		    max_per_user_per_day  = EXCLUDED.max_per_user_per_day,

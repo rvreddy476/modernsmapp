@@ -26,11 +26,14 @@ void main() {
   group('HomeFeedNotifier', () {
     test('fetchFirstPage loads posts and sets data state', () async {
       final posts = fakePosts(count: 3);
-      when(() => mockRepo.getHomeFeedPage(
-            feedMode: any(named: 'feedMode'),
-            limit: any(named: 'limit'),
-            cursor: any(named: 'cursor'),
-          )).thenAnswer((_) async => FeedPage(items: posts));
+      when(
+        () => mockRepo.getHomeFeedPage(
+          feedMode: any(named: 'feedMode'),
+          limit: any(named: 'limit'),
+          cursor: any(named: 'cursor'),
+          circleOnly: any(named: 'circleOnly'),
+        ),
+      ).thenAnswer((_) async => FeedPage(items: posts));
 
       final notifier = createNotifier();
 
@@ -44,11 +47,14 @@ void main() {
     });
 
     test('fetchFirstPage sets error state on failure', () async {
-      when(() => mockRepo.getHomeFeedPage(
-            feedMode: any(named: 'feedMode'),
-            limit: any(named: 'limit'),
-            cursor: any(named: 'cursor'),
-          )).thenThrow(Exception('Network error'));
+      when(
+        () => mockRepo.getHomeFeedPage(
+          feedMode: any(named: 'feedMode'),
+          limit: any(named: 'limit'),
+          cursor: any(named: 'cursor'),
+          circleOnly: any(named: 'circleOnly'),
+        ),
+      ).thenThrow(Exception('Network error'));
 
       final notifier = createNotifier();
 
@@ -59,11 +65,14 @@ void main() {
     });
 
     test('updateFilter triggers a new fetch', () async {
-      when(() => mockRepo.getHomeFeedPage(
-            feedMode: any(named: 'feedMode'),
-            limit: any(named: 'limit'),
-            cursor: any(named: 'cursor'),
-          )).thenAnswer((_) async => FeedPage(items: fakePosts(count: 2)));
+      when(
+        () => mockRepo.getHomeFeedPage(
+          feedMode: any(named: 'feedMode'),
+          limit: any(named: 'limit'),
+          cursor: any(named: 'cursor'),
+          circleOnly: any(named: 'circleOnly'),
+        ),
+      ).thenAnswer((_) async => FeedPage(items: fakePosts(count: 2)));
 
       final notifier = createNotifier();
 
@@ -76,19 +85,25 @@ void main() {
       await Future<void>.delayed(Duration.zero);
 
       // getHomeFeed called twice: once on init, once after filter change
-      verify(() => mockRepo.getHomeFeedPage(
-            feedMode: any(named: 'feedMode'),
-            limit: any(named: 'limit'),
-            cursor: any(named: 'cursor'),
-          )).called(2);
+      verify(
+        () => mockRepo.getHomeFeedPage(
+          feedMode: any(named: 'feedMode'),
+          limit: any(named: 'limit'),
+          cursor: any(named: 'cursor'),
+          circleOnly: any(named: 'circleOnly'),
+        ),
+      ).called(2);
     });
 
     test('updateFilter with same value is a no-op', () async {
-      when(() => mockRepo.getHomeFeedPage(
-            feedMode: any(named: 'feedMode'),
-            limit: any(named: 'limit'),
-            cursor: any(named: 'cursor'),
-          )).thenAnswer((_) async => const FeedPage(items: []));
+      when(
+        () => mockRepo.getHomeFeedPage(
+          feedMode: any(named: 'feedMode'),
+          limit: any(named: 'limit'),
+          cursor: any(named: 'cursor'),
+          circleOnly: any(named: 'circleOnly'),
+        ),
+      ).thenAnswer((_) async => const FeedPage(items: []));
 
       final notifier = createNotifier();
 
@@ -97,11 +112,40 @@ void main() {
 
       notifier.updateFilter('For You'); // same as default
 
-      verify(() => mockRepo.getHomeFeedPage(
-            feedMode: any(named: 'feedMode'),
-            limit: any(named: 'limit'),
-            cursor: any(named: 'cursor'),
-          )).called(1); // only the initial call
+      verify(
+        () => mockRepo.getHomeFeedPage(
+          feedMode: any(named: 'feedMode'),
+          limit: any(named: 'limit'),
+          cursor: any(named: 'cursor'),
+          circleOnly: any(named: 'circleOnly'),
+        ),
+      ).called(1); // only the initial call
+    });
+
+    test('removePost removes the post from current state', () async {
+      final posts = fakePosts(count: 3);
+      when(
+        () => mockRepo.getHomeFeedPage(
+          feedMode: any(named: 'feedMode'),
+          limit: any(named: 'limit'),
+          cursor: any(named: 'cursor'),
+          circleOnly: any(named: 'circleOnly'),
+        ),
+      ).thenAnswer((_) async => FeedPage(items: posts));
+
+      final notifier = createNotifier();
+
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      notifier.removePost(posts.first.id);
+
+      expect(notifier.state.hasValue, true);
+      expect(notifier.state.value!.posts, hasLength(2));
+      expect(
+        notifier.state.value!.posts.any((post) => post.id == posts.first.id),
+        isFalse,
+      );
     });
   });
 }

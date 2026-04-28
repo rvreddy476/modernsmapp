@@ -71,14 +71,15 @@ class AuthService {
             ),
           );
 
-  /// Restore session from secure storage with fault tolerance.
+  /// Restore session from secure storage with fault tolerance and timeout.
   Future<void> restoreSession() async {
     try {
+      // Add a timeout to prevent hanging on physical devices
       final results = await Future.wait([
         _storage.read(key: _keyUserId),
         _storage.read(key: _keyToken),
         _storage.read(key: _keyRefreshToken),
-      ]);
+      ]).timeout(const Duration(seconds: 5));
 
       final userId = _normalize(results[0]);
       final token = _normalize(results[1]);
@@ -95,6 +96,23 @@ class AuthService {
         );
         _stateController.add(_state);
         AppLogger.info('Session restored for user: $userId', tag: _tag);
+
+        // Refresh at startup when possible so the app does not fan out a burst
+        // of requests with an expired access token across multiple tabs.
+        if (refreshToken != null) {
+          final refreshed = await refreshAccessToken();
+          if (refreshed) {
+            AppLogger.info(
+              'Refreshed access token during session restore',
+              tag: _tag,
+            );
+          } else {
+            AppLogger.warn(
+              'Session restore kept the stored access token because refresh failed',
+              tag: _tag,
+            );
+          }
+        }
       } else {
         // Only clear if we have partial data (cleanup)
         if (userId != null || token != null) {

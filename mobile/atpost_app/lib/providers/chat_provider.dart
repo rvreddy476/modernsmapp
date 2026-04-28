@@ -9,6 +9,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 final chatConversationsProvider =
     FutureProvider.autoDispose<List<Conversation>>((ref) async {
+      final auth = ref.watch(authServiceProvider);
+      // Wait for session to be restored before making API calls
+      await auth.sessionReady;
+
+      if (!auth.isAuthenticated) {
+        throw Exception('User not authenticated');
+      }
+
       final repo = ref.watch(chatRepositoryProvider);
       return repo.getConversations();
     });
@@ -25,36 +33,31 @@ final chatConversationProvider = FutureProvider.autoDispose
       return repo.getConversation(conversationId);
     });
 
-final filteredConversationsProvider = Provider.autoDispose<List<Conversation>>((
-  ref,
-) {
-  final conversationsAsync = ref.watch(chatConversationsProvider);
-  final query = ref.watch(chatSearchQueryProvider).toLowerCase();
-  final activeFilter = ref.watch(chatActiveFilterProvider);
-  final currentUserId = ref.watch(authServiceProvider).userId;
+final filteredConversationsProvider =
+    Provider.autoDispose<AsyncValue<List<Conversation>>>((ref) {
+      final conversationsAsync = ref.watch(chatConversationsProvider);
+      final query = ref.watch(chatSearchQueryProvider).toLowerCase();
+      final activeFilter = ref.watch(chatActiveFilterProvider);
+      final currentUserId = ref.watch(authServiceProvider).userId;
 
-  return conversationsAsync.when(
-    data: (list) {
-      return list.where((conversation) {
-        final matchesFilter = switch (activeFilter) {
-          0 => true,
-          1 => conversation.unreadCount > 0,
-          2 => conversation.type == 'group',
-          3 => false,
-          _ => true,
-        };
-        if (!matchesFilter) return false;
+      return conversationsAsync.whenData((list) {
+        return list.where((conversation) {
+          final matchesFilter = switch (activeFilter) {
+            0 => !conversation.isArchived, // All (active)
+            1 => conversation.unreadCount > 0 && !conversation.isArchived, // Unread
+            2 => conversation.type == 'group' && !conversation.isArchived, // Groups
+            3 => conversation.isArchived, // Archived
+            _ => !conversation.isArchived,
+          };
+          if (!matchesFilter) return false;
 
-        if (query.isEmpty) return true;
-        final name = conversation.displayNameFor(currentUserId).toLowerCase();
-        final lastMessage = (conversation.lastMessage ?? '').toLowerCase();
-        return name.contains(query) || lastMessage.contains(query);
-      }).toList();
-    },
-    loading: () => const <Conversation>[],
-    error: (_, _) => const <Conversation>[],
-  );
-});
+          if (query.isEmpty) return true;
+          final name = conversation.displayNameFor(currentUserId).toLowerCase();
+          final lastMessage = (conversation.lastMessage ?? '').toLowerCase();
+          return name.contains(query) || lastMessage.contains(query);
+        }).toList();
+      });
+    });
 
 final chatSearchQueryProvider = StateProvider<String>((ref) => '');
 final chatActiveFilterProvider = StateProvider<int>((ref) => 0);

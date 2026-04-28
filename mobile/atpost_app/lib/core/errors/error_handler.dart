@@ -13,7 +13,11 @@ class ErrorHandler {
   static const _tag = 'ErrorHandler';
 
   /// Converts any error to a typed [AppException], logs it, and returns it.
-  static AppException handle(Object error, StackTrace stackTrace, {String? context}) {
+  static AppException handle(
+    Object error,
+    StackTrace stackTrace, {
+    String? context,
+  }) {
     final appException = _convert(error, stackTrace);
 
     final ctx = context != null ? ' [$context]' : '';
@@ -47,7 +51,8 @@ class ErrorHandler {
           throw exception;
         }
 
-        final delay = initialDelay * (attempts * attempts); // Exponential backoff
+        final delay =
+            initialDelay * (attempts * attempts); // Exponential backoff
         AppLogger.warn(
           'Task failed (attempt $attempts/$maxAttempts). Retrying in ${delay.inMilliseconds}ms...',
           tag: _tag,
@@ -100,7 +105,10 @@ class ErrorHandler {
   }
 
   /// Maps [DioException] to typed [AppException] based on status code and type.
-  static AppException _fromDioException(DioException error, StackTrace stackTrace) {
+  static AppException _fromDioException(
+    DioException error,
+    StackTrace stackTrace,
+  ) {
     if (error.type == DioExceptionType.connectionTimeout ||
         error.type == DioExceptionType.sendTimeout ||
         error.type == DioExceptionType.receiveTimeout ||
@@ -113,44 +121,58 @@ class ErrorHandler {
 
     return switch (statusCode) {
       400 || 422 => ValidationException(
-          message: serverMessage,
-          statusCode: statusCode,
-          originalError: error,
-          stackTrace: stackTrace,
-          fieldErrors: _extractFieldErrors(error),
-        ),
+        message: serverMessage,
+        statusCode: statusCode,
+        originalError: error,
+        stackTrace: stackTrace,
+        fieldErrors: _extractFieldErrors(error),
+      ),
       401 || 403 => AuthException(
-          message: serverMessage,
-          statusCode: statusCode,
-          originalError: error,
-          stackTrace: stackTrace,
-        ),
+        message: serverMessage,
+        statusCode: statusCode,
+        originalError: error,
+        stackTrace: stackTrace,
+      ),
       404 => NotFoundException(
-          message: serverMessage,
-          statusCode: statusCode,
-          originalError: error,
-          stackTrace: stackTrace,
-        ),
+        message: serverMessage,
+        statusCode: statusCode,
+        originalError: error,
+        stackTrace: stackTrace,
+      ),
       final code? when code >= 500 => ServerException(
-          message: serverMessage,
-          statusCode: code,
-          originalError: error,
-          stackTrace: stackTrace,
-        ),
+        message: serverMessage,
+        statusCode: code,
+        originalError: error,
+        stackTrace: stackTrace,
+      ),
       _ => NetworkException(
-          message: serverMessage,
-          statusCode: statusCode,
-          originalError: error,
-          stackTrace: stackTrace,
-        ),
+        message: serverMessage,
+        statusCode: statusCode,
+        originalError: error,
+        stackTrace: stackTrace,
+      ),
     };
   }
 
   static String _extractServerMessage(DioException error) {
     final data = error.response?.data;
     if (data is Map<String, dynamic>) {
-      final message = data['message'] ?? data['error'] ?? data['detail'];
-      if (message is String && message.isNotEmpty) return message;
+      final topLevelMessage = data['message'] ?? data['detail'];
+      if (topLevelMessage is String && topLevelMessage.isNotEmpty) {
+        return topLevelMessage;
+      }
+
+      final nestedError = data['error'];
+      if (nestedError is Map<String, dynamic>) {
+        final nestedMessage = nestedError['message'] ?? nestedError['detail'];
+        if (nestedMessage is String && nestedMessage.isNotEmpty) {
+          return nestedMessage;
+        }
+      }
+
+      if (nestedError is String && nestedError.isNotEmpty) {
+        return nestedError;
+      }
     }
     return error.message ?? 'An unexpected error occurred';
   }

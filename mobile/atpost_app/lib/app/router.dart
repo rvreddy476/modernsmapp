@@ -32,6 +32,8 @@ import 'package:atpost_app/features/monetization/subscription_tiers_screen.dart'
 import 'package:atpost_app/features/orders/order_detail_screen.dart';
 import 'package:atpost_app/features/orders/orders_screen.dart';
 import 'package:atpost_app/features/search/search_results_screen.dart';
+import 'package:atpost_app/features/services/service_slug_router.dart';
+import 'package:atpost_app/features/services/services_screen.dart';
 import 'package:atpost_app/features/stories/create_story_screen.dart';
 import 'package:atpost_app/features/stories/story_viewer_screen.dart';
 import 'package:atpost_app/features/chat/chat_detail_screen.dart';
@@ -44,6 +46,7 @@ import 'package:atpost_app/features/memories/slambook_detail_screen.dart';
 import 'package:atpost_app/features/memories/slambook_share_screen.dart';
 import 'package:atpost_app/features/memories/slambooks_screen.dart';
 import 'package:atpost_app/features/notifications/notifications_screen.dart';
+import 'package:atpost_app/features/profile/my_media_screen.dart';
 import 'package:atpost_app/features/profile/profile_detail_screen.dart';
 import 'package:atpost_app/features/social/followers_screen.dart';
 import 'package:atpost_app/features/social/following_screen.dart';
@@ -326,6 +329,19 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: '/settings/verification',
             builder: (_, _) => const VerificationScreen(),
+          ),
+          GoRoute(
+            path: '/services',
+            builder: (_, _) => const ServicesScreen(),
+          ),
+          GoRoute(
+            path: '/services/:slug',
+            builder: (context, state) =>
+                ServiceSlugRouter(slug: state.pathParameters['slug']!),
+          ),
+          GoRoute(
+            path: '/profile/media',
+            builder: (_, _) => const MyMediaScreen(),
           ),
           GoRoute(path: '/apps', builder: (_, _) => const MiniAppsScreen()),
           GoRoute(

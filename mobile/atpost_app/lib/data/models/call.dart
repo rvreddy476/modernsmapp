@@ -39,7 +39,7 @@ class CallSession {
     return CallSession(
       id: json['id'] as String,
       callType: json['call_type'] as String? ?? 'direct_audio',
-      sourceType: json['source_type'] as String? ?? 'direct',
+      sourceType: json['source_type'] as String? ?? 'chat',
       sourceId: json['source_id'] as String?,
       initiatorUserId: json['initiator_user_id'] as String,
       state: json['state'] as String? ?? 'ringing',
@@ -137,6 +137,8 @@ class JoinResponse {
   final String sfuToken;
   final String sfuRoomName;
   final String sfuProvider;
+  final String sfuUrl;
+  final String participantIdentity;
   final List<ICEServer> iceServers;
   final String signalingEndpoint;
   final int reconnectGraceSeconds;
@@ -146,6 +148,8 @@ class JoinResponse {
     required this.sfuToken,
     required this.sfuRoomName,
     required this.sfuProvider,
+    required this.sfuUrl,
+    required this.participantIdentity,
     required this.iceServers,
     required this.signalingEndpoint,
     required this.reconnectGraceSeconds,
@@ -157,12 +161,30 @@ class JoinResponse {
         sfuRoomName.startsWith('stub-room-');
   }
 
+  bool get hasTurnRelay {
+    for (final server in iceServers) {
+      for (final url in server.urls) {
+        final normalized = url.toLowerCase();
+        if (normalized.startsWith('turn:') || normalized.startsWith('turns:')) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  bool get usesLiveKit {
+    return sfuProvider == 'livekit' && sfuUrl.isNotEmpty;
+  }
+
   factory JoinResponse.fromJson(Map<String, dynamic> json) {
     return JoinResponse(
       callId: json['call_id'] as String? ?? '',
       sfuToken: json['sfu_token'] as String? ?? '',
       sfuRoomName: json['sfu_room_name'] as String? ?? '',
       sfuProvider: json['sfu_provider'] as String? ?? '',
+      sfuUrl: json['sfu_url'] as String? ?? '',
+      participantIdentity: json['participant_identity'] as String? ?? '',
       iceServers:
           (json['ice_servers'] as List<dynamic>?)
               ?.map((item) => ICEServer.fromJson(item as Map<String, dynamic>))
@@ -209,7 +231,7 @@ class CallHistoryItem {
     return CallHistoryItem(
       id: json['id'] as String,
       callType: json['call_type'] as String? ?? 'direct_audio',
-      sourceType: json['source_type'] as String? ?? 'direct',
+      sourceType: json['source_type'] as String? ?? 'chat',
       initiatorUserId: json['initiator_user_id'] as String,
       state: json['state'] as String? ?? 'ended',
       audioOnly: json['audio_only'] as bool? ?? true,

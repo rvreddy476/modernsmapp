@@ -170,6 +170,11 @@ services:
     environment:
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
       KAFKA_BROKERS: redpanda:9093
+      LIVEKIT_HOST: ${LIVEKIT_HOST:-}
+      LIVEKIT_URL: ${LIVEKIT_URL:-}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-}
+      ICE_SERVERS_JSON: ${ICE_SERVERS_JSON:-}
 
   monetization-service:
     <<: *transport_certs

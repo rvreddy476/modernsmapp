@@ -19,7 +19,8 @@ class ApiClient {
   static const _tag = 'ApiClient';
 
   ApiClient(this._auth)
-      : _dio = Dio(BaseOptions(
+    : _dio = Dio(
+        BaseOptions(
           baseUrl: Environment.apiBaseUrl,
           connectTimeout: const Duration(seconds: 30),
           receiveTimeout: const Duration(seconds: 30),
@@ -27,7 +28,12 @@ class ApiClient {
             'Content-Type': 'application/json',
             'Accept': 'application/json',
           },
-        )) {
+        ),
+      ) {
+    AppLogger.info(
+      'Configured API base URL: ${Environment.apiBaseUrl}',
+      tag: _tag,
+    );
     _dio.interceptors.addAll([
       AuthInterceptor(_auth),
       CsrfInterceptor(),
@@ -45,41 +51,93 @@ class ApiClient {
 
   // --- Core Methods ---
 
-  Future<Response<T>> get<T>(String path, {Map<String, dynamic>? queryParameters, Options? options, CancelToken? cancelToken}) async {
+  Future<Response<T>> get<T>(
+    String path, {
+    Map<String, dynamic>? queryParameters,
+    Options? options,
+    CancelToken? cancelToken,
+  }) async {
     try {
-      return await _dio.get<T>(path, queryParameters: queryParameters, options: options, cancelToken: cancelToken);
+      return await _dio.get<T>(
+        path,
+        queryParameters: queryParameters,
+        options: options,
+        cancelToken: cancelToken,
+      );
     } catch (e) {
       _handleError(e, path);
     }
   }
 
-  Future<Response<T>> post<T>(String path, {Object? data, Map<String, dynamic>? queryParameters, Options? options, CancelToken? cancelToken}) async {
+  Future<Response<T>> post<T>(
+    String path, {
+    Object? data,
+    Map<String, dynamic>? queryParameters,
+    Options? options,
+    CancelToken? cancelToken,
+  }) async {
     try {
-      return await _dio.post<T>(path, data: data, queryParameters: queryParameters, options: options, cancelToken: cancelToken);
+      return await _dio.post<T>(
+        path,
+        data: data,
+        queryParameters: queryParameters,
+        options: options,
+        cancelToken: cancelToken,
+      );
     } catch (e) {
       _handleError(e, path);
     }
   }
 
-  Future<Response<T>> put<T>(String path, {Object? data, Options? options, CancelToken? cancelToken}) async {
+  Future<Response<T>> put<T>(
+    String path, {
+    Object? data,
+    Options? options,
+    CancelToken? cancelToken,
+  }) async {
     try {
-      return await _dio.put<T>(path, data: data, options: options, cancelToken: cancelToken);
+      return await _dio.put<T>(
+        path,
+        data: data,
+        options: options,
+        cancelToken: cancelToken,
+      );
     } catch (e) {
       _handleError(e, path);
     }
   }
 
-  Future<Response<T>> patch<T>(String path, {Object? data, Options? options, CancelToken? cancelToken}) async {
+  Future<Response<T>> patch<T>(
+    String path, {
+    Object? data,
+    Options? options,
+    CancelToken? cancelToken,
+  }) async {
     try {
-      return await _dio.patch<T>(path, data: data, options: options, cancelToken: cancelToken);
+      return await _dio.patch<T>(
+        path,
+        data: data,
+        options: options,
+        cancelToken: cancelToken,
+      );
     } catch (e) {
       _handleError(e, path);
     }
   }
 
-  Future<Response<T>> delete<T>(String path, {Object? data, Options? options, CancelToken? cancelToken}) async {
+  Future<Response<T>> delete<T>(
+    String path, {
+    Object? data,
+    Options? options,
+    CancelToken? cancelToken,
+  }) async {
     try {
-      return await _dio.delete<T>(path, data: data, options: options, cancelToken: cancelToken);
+      return await _dio.delete<T>(
+        path,
+        data: data,
+        options: options,
+        cancelToken: cancelToken,
+      );
     } catch (e) {
       _handleError(e, path);
     }
@@ -103,11 +161,14 @@ class ApiClient {
 
       // 1. Initialize Upload
       AppLogger.info('Initializing upload for ${file.name}', tag: _tag);
-      final initRes = await post('/v1/media/init', data: {
-        'file_type': type,
-        'mime_type': mimeType,
-        'file_size_bytes': fileSize,
-      });
+      final initRes = await post(
+        '/v1/media/init',
+        data: {
+          'file_type': type,
+          'mime_type': mimeType,
+          'file_size_bytes': fileSize,
+        },
+      );
 
       final initData = initRes.data['data'] as Map<String, dynamic>;
       final mediaId = initData['media_id'] as String;
@@ -120,10 +181,7 @@ class ApiClient {
         data: fileData.openRead(),
         onSendProgress: onProgress,
         options: Options(
-          headers: {
-            'Content-Type': mimeType,
-            'Content-Length': fileSize,
-          },
+          headers: {'Content-Type': mimeType, 'Content-Length': fileSize},
         ),
       );
 
@@ -133,14 +191,23 @@ class ApiClient {
 
       return mediaId;
     } catch (e, st) {
-      AppLogger.error('Resilient upload failed', tag: _tag, error: e, stackTrace: st);
+      AppLogger.error(
+        'Resilient upload failed',
+        tag: _tag,
+        error: e,
+        stackTrace: st,
+      );
       throw ErrorHandler.handle(e, st, context: 'ApiClient.uploadMedia');
     }
   }
 
   Never _handleError(Object error, String path) {
     final st = error is DioException ? error.stackTrace : StackTrace.current;
-    final appException = ErrorHandler.handle(error, st, context: 'ApiClient.$path');
+    final appException = ErrorHandler.handle(
+      error,
+      st,
+      context: 'ApiClient.$path',
+    );
     throw appException;
   }
 }

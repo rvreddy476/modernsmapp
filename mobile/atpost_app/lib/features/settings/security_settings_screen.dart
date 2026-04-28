@@ -247,10 +247,12 @@ class _SecuritySettingsScreenState
                     onToggle: () =>
                         setState(() => _obscureConfirm = !_obscureConfirm),
                     validator: (v) {
-                      if (v == null || v.isEmpty)
+                      if (v == null || v.isEmpty) {
                         return 'Confirm your new password';
-                      if (v != _newPasswordController.text)
+                      }
+                      if (v != _newPasswordController.text) {
                         return 'Passwords do not match';
+                      }
                       return null;
                     },
                   ),

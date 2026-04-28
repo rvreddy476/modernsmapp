@@ -24,6 +24,8 @@ type FeedItem struct {
 	ContentType string // "post", "reel", "video", or "" for legacy rows
 }
 
+const maxTimelineBucketLookback = 12
+
 // bucket returns YYYYMM int from a time
 func bucket(t time.Time) int {
 	return t.Year()*100 + int(t.Month())
@@ -32,6 +34,11 @@ func bucket(t time.Time) int {
 // currentBucket returns the current month bucket
 func currentBucket() int {
 	return bucket(time.Now().UTC())
+}
+
+func monthStart(t time.Time) time.Time {
+	utc := t.UTC()
+	return time.Date(utc.Year(), utc.Month(), 1, 0, 0, 0, 0, time.UTC)
 }
 
 // toGocql converts google/uuid to gocql UUID
@@ -61,161 +68,129 @@ func (s *TimelineStore) AddToAuthorTimeline(ctx context.Context, authorID uuid.U
 
 // GetHomeTimeline returns all timeline items for the current month bucket.
 func (s *TimelineStore) GetHomeTimeline(ctx context.Context, userID uuid.UUID, limit int) ([]FeedItem, error) {
-	b := currentBucket()
-
-	iter := s.session.Query(`
-		SELECT post_id, author_id, created_at, content_type FROM home_timeline_by_user
-		WHERE user_id = ? AND bucket = ?
-		ORDER BY ts DESC
-		LIMIT ?
-	`, toGocql(userID), b, limit).Iter()
-
-	var items []FeedItem
-	var pid, aid gocql.UUID
-	var createdAt time.Time
-	var contentType *string
-	for iter.Scan(&pid, &aid, &createdAt, &contentType) {
-		ct := "post"
-		if contentType != nil && *contentType != "" {
-			ct = *contentType
-		}
-		items = append(items, FeedItem{
-			PostID:      uuid.UUID(pid),
-			AuthorID:    uuid.UUID(aid),
-			CreatedAt:   createdAt,
-			ContentType: ct,
-		})
-	}
-	if err := iter.Close(); err != nil {
-		return nil, err
-	}
-	return items, nil
+	return s.collectHomeTimeline(ctx, userID, time.Now().UTC(), nil, limit)
 }
 
 // GetHomeTimelineBefore returns timeline items older than the provided timestamp.
 func (s *TimelineStore) GetHomeTimelineBefore(ctx context.Context, userID uuid.UUID, before time.Time, limit int) ([]FeedItem, error) {
-	b := bucket(before.UTC())
-
-	iter := s.session.Query(`
-		SELECT post_id, author_id, created_at, content_type FROM home_timeline_by_user
-		WHERE user_id = ? AND bucket = ? AND ts < ?
-		ORDER BY ts DESC
-		LIMIT ?
-	`, toGocql(userID), b, gocql.UUIDFromTime(before.UTC()), limit).Iter()
-
-	var items []FeedItem
-	var pid, aid gocql.UUID
-	var createdAt time.Time
-	var contentType *string
-	for iter.Scan(&pid, &aid, &createdAt, &contentType) {
-		ct := "post"
-		if contentType != nil && *contentType != "" {
-			ct = *contentType
-		}
-		items = append(items, FeedItem{
-			PostID:      uuid.UUID(pid),
-			AuthorID:    uuid.UUID(aid),
-			CreatedAt:   createdAt,
-			ContentType: ct,
-		})
-	}
-	if err := iter.Close(); err != nil {
-		return nil, err
-	}
-	return items, nil
+	beforeUTC := before.UTC()
+	return s.collectHomeTimeline(ctx, userID, beforeUTC, &beforeUTC, limit)
 }
 
 // GetHomeTimelineByContentType returns timeline items filtered to a single
 // content_type. Over-fetches and filters in Go since content_type is not a
 // clustering key. The partition scan is bounded by (user_id, bucket).
 func (s *TimelineStore) GetHomeTimelineByContentType(ctx context.Context, userID uuid.UUID, contentType string, limit int) ([]FeedItem, error) {
-	fetchLimit := limit * 5
-	if fetchLimit > 1000 {
-		fetchLimit = 1000
-	}
-
-	b := currentBucket()
-
-	iter := s.session.Query(`
-		SELECT post_id, author_id, created_at, content_type FROM home_timeline_by_user
-		WHERE user_id = ? AND bucket = ?
-		ORDER BY ts DESC
-		LIMIT ?
-	`, toGocql(userID), b, fetchLimit).Iter()
-
-	var items []FeedItem
-	var pid, aid gocql.UUID
-	var createdAt time.Time
-	var ct *string
-	for iter.Scan(&pid, &aid, &createdAt, &ct) {
-		rowType := "post"
-		if ct != nil && *ct != "" {
-			rowType = *ct
-		}
-		if rowType != contentType {
-			continue
-		}
-		items = append(items, FeedItem{
-			PostID:      uuid.UUID(pid),
-			AuthorID:    uuid.UUID(aid),
-			CreatedAt:   createdAt,
-			ContentType: rowType,
-		})
-		if len(items) >= limit {
-			break
-		}
-	}
-	_ = iter.Close()
-	return items, nil
+	return s.GetHomeTimelineByContentTypes(ctx, userID, []string{contentType}, limit)
 }
 
 // GetHomeTimelineByContentTypes returns timeline items filtered to a set of
 // content_types. Over-fetches and filters in Go since content_type is not a
 // clustering key. The partition scan is bounded by (user_id, bucket).
 func (s *TimelineStore) GetHomeTimelineByContentTypes(ctx context.Context, userID uuid.UUID, contentTypes []string, limit int) ([]FeedItem, error) {
-	fetchLimit := limit * 5
-	if fetchLimit > 1000 {
-		fetchLimit = 1000
+	if limit <= 0 {
+		return nil, nil
 	}
 
-	b := currentBucket()
-
-	iter := s.session.Query(`
-		SELECT post_id, author_id, created_at, content_type FROM home_timeline_by_user
-		WHERE user_id = ? AND bucket = ?
-		ORDER BY ts DESC
-		LIMIT ?
-	`, toGocql(userID), b, fetchLimit).Iter()
-
-	// Build set for O(1) lookup
-	typeSet := make(map[string]bool, len(contentTypes))
+	typeSet := make(map[string]struct{}, len(contentTypes))
 	for _, ct := range contentTypes {
-		typeSet[ct] = true
+		if ct != "" {
+			typeSet[ct] = struct{}{}
+		}
+	}
+
+	current := monthStart(time.Now().UTC())
+	items := make([]FeedItem, 0, limit)
+	for i := 0; i < maxTimelineBucketLookback && len(items) < limit; i++ {
+		fetchLimit := (limit - len(items)) * 5
+		if fetchLimit > 1000 {
+			fetchLimit = 1000
+		}
+
+		batch, err := s.queryHomeTimelineBucket(ctx, userID, bucket(current), nil, fetchLimit)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, item := range batch {
+			if _, ok := typeSet[item.ContentType]; !ok {
+				continue
+			}
+			items = append(items, item)
+			if len(items) >= limit {
+				break
+			}
+		}
+
+		current = current.AddDate(0, -1, 0)
+	}
+
+	return items, nil
+}
+
+func (s *TimelineStore) collectHomeTimeline(ctx context.Context, userID uuid.UUID, start time.Time, firstBefore *time.Time, limit int) ([]FeedItem, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+
+	items := make([]FeedItem, 0, limit)
+	current := monthStart(start)
+	before := firstBefore
+
+	for i := 0; i < maxTimelineBucketLookback && len(items) < limit; i++ {
+		batch, err := s.queryHomeTimelineBucket(ctx, userID, bucket(current), before, limit-len(items))
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, batch...)
+		current = current.AddDate(0, -1, 0)
+		before = nil
+	}
+
+	return items, nil
+}
+
+func (s *TimelineStore) queryHomeTimelineBucket(ctx context.Context, userID uuid.UUID, bucketID int, before *time.Time, limit int) ([]FeedItem, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+
+	var iter *gocql.Iter
+	if before != nil && bucket(before.UTC()) == bucketID {
+		iter = s.session.Query(`
+			SELECT post_id, author_id, created_at, content_type FROM home_timeline_by_user
+			WHERE user_id = ? AND bucket = ? AND ts < ?
+			ORDER BY ts DESC
+			LIMIT ?
+		`, toGocql(userID), bucketID, gocql.UUIDFromTime(before.UTC()), limit).WithContext(ctx).Iter()
+	} else {
+		iter = s.session.Query(`
+			SELECT post_id, author_id, created_at, content_type FROM home_timeline_by_user
+			WHERE user_id = ? AND bucket = ?
+			ORDER BY ts DESC
+			LIMIT ?
+		`, toGocql(userID), bucketID, limit).WithContext(ctx).Iter()
 	}
 
 	var items []FeedItem
 	var pid, aid gocql.UUID
 	var createdAt time.Time
-	var ct *string
-	for iter.Scan(&pid, &aid, &createdAt, &ct) {
-		rowType := "post"
-		if ct != nil && *ct != "" {
-			rowType = *ct
-		}
-		if !typeSet[rowType] {
-			continue
+	var contentType *string
+	for iter.Scan(&pid, &aid, &createdAt, &contentType) {
+		ct := "post"
+		if contentType != nil && *contentType != "" {
+			ct = *contentType
 		}
 		items = append(items, FeedItem{
 			PostID:      uuid.UUID(pid),
 			AuthorID:    uuid.UUID(aid),
 			CreatedAt:   createdAt,
-			ContentType: rowType,
+			ContentType: ct,
 		})
-		if len(items) >= limit {
-			break
-		}
 	}
-	_ = iter.Close()
+	if err := iter.Close(); err != nil {
+		return nil, err
+	}
 	return items, nil
 }
 

@@ -55,7 +55,8 @@ class Post {
         authorId: (json['author_id'] ?? '').toString(),
         authorName: json['author_name']?.toString(),
         authorAvatar: json['author_avatar']?.toString(),
-        content: (json['content'] ?? json['text'] ?? json['title'] ?? '').toString(),
+        content: (json['content'] ?? json['text'] ?? json['title'] ?? '')
+            .toString(),
         contentType: (json['content_type'] ?? 'post').toString(),
         visibility: (json['visibility'] ?? 'public').toString(),
         tags: _parseStringList(json['tags'] ?? json['hashtags']),
@@ -84,15 +85,17 @@ class Post {
   }
 
   static Post empty() => Post(
-        id: 'error_${DateTime.now().millisecondsSinceEpoch}',
-        authorId: '',
-        content: 'Content unavailable',
-        createdAt: DateTime.now(),
-      );
+    id: 'error_${DateTime.now().millisecondsSinceEpoch}',
+    authorId: '',
+    content: 'Content unavailable',
+    createdAt: DateTime.now(),
+  );
 
   Post copyWith({
     String? authorName,
     String? authorAvatar,
+    int? likeCount,
+    int? commentCount,
   }) {
     return Post(
       id: id,
@@ -104,8 +107,8 @@ class Post {
       visibility: visibility,
       tags: tags,
       mediaIds: mediaIds,
-      likeCount: likeCount,
-      commentCount: commentCount,
+      likeCount: likeCount ?? this.likeCount,
+      commentCount: commentCount ?? this.commentCount,
       shareCount: shareCount,
       durationSeconds: durationSeconds,
       isLiked: isLiked,
@@ -255,8 +258,10 @@ class Comment {
       id: (json['id'] ?? json['comment_id'] ?? '').toString(),
       postId: (json['post_id'] ?? '').toString(),
       authorId: (json['user_id'] ?? json['author_id'] ?? '').toString(),
-      authorName: (json['user_display_name'] ?? json['author_name'])?.toString(),
-      authorAvatar: (json['user_avatar_url'] ?? json['author_avatar'])?.toString(),
+      authorName: (json['user_display_name'] ?? json['author_name'])
+          ?.toString(),
+      authorAvatar: (json['user_avatar_url'] ?? json['author_avatar'])
+          ?.toString(),
       text: (json['text'] ?? '').toString(),
       likeCount: _toInt(json['like_count']),
       createdAt: _parseDate(json['created_at']),
@@ -265,11 +270,6 @@ class Comment {
 }
 
 // --- Total Resilience Helper Methods ---
-
-List<T> _parseList<T>(dynamic data) {
-  if (data is List) return data.cast<T>();
-  return const [];
-}
 
 List<String> _parseStringList(dynamic data) {
   if (data is List) {
