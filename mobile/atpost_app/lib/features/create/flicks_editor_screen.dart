@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:atpost_app/data/models/editor.dart';
 import 'package:atpost_app/features/create/widgets/cover_frame_picker.dart';
 import 'package:atpost_app/features/create/widgets/trimmer_widget.dart';
 import 'package:atpost_app/providers/editor_provider.dart';
+import 'package:atpost_app/services/api_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -101,29 +103,13 @@ class _FlicksEditorScreenState extends ConsumerState<FlicksEditorScreen>
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF1A1A2E),
+      isScrollControlled: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (_) => const Padding(
-        padding: EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.music_note, color: Colors.orange, size: 40),
-            SizedBox(height: 12),
-            Text(
-              'Music library coming soon',
-              style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
-            ),
-            SizedBox(height: 8),
-            Text(
-              'You\'ll be able to browse and add background music to your Flicks.',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.white54, fontSize: 13),
-            ),
-            SizedBox(height: 24),
-          ],
-        ),
+      builder: (_) => SizedBox(
+        height: MediaQuery.of(context).size.height * 0.7,
+        child: const _AudioBrowserSheet(),
       ),
     );
   }
@@ -810,6 +796,218 @@ class _FlicksEditorScreenState extends ConsumerState<FlicksEditorScreen>
                   ),
                 ],
               ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Audio browser sheet — surfaces post-service /v1/audio/tracks.
+///
+/// Tabs: "Trending" pulls from /v1/audio/tracks/trending; the search field
+/// debounces against /v1/audio/tracks/search?q=. Selecting a track stores
+/// its ID + title on the editor state so the caption screen can attach it
+/// when the post is published.
+class _AudioBrowserSheet extends ConsumerStatefulWidget {
+  const _AudioBrowserSheet();
+
+  @override
+  ConsumerState<_AudioBrowserSheet> createState() => _AudioBrowserSheetState();
+}
+
+class _AudioBrowserSheetState extends ConsumerState<_AudioBrowserSheet> {
+  final TextEditingController _searchCtrl = TextEditingController();
+  Timer? _debounce;
+  bool _searching = false;
+  // Single sequence number guards against out-of-order responses when the
+  // user types fast: only the latest request can publish results.
+  int _searchSeq = 0;
+  late Future<List<Map<String, dynamic>>> _tracksFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _tracksFuture = _loadTrending();
+  }
+
+  @override
+  void dispose() {
+    _debounce?.cancel();
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<List<Map<String, dynamic>>> _loadTrending() async {
+    final api = ref.read(apiClientProvider);
+    final res = await api.get(
+      '/v1/audio/tracks/trending',
+      queryParameters: {'limit': 30},
+    );
+    return _extractTracks(res.data);
+  }
+
+  Future<List<Map<String, dynamic>>> _search(String query, int seq) async {
+    final api = ref.read(apiClientProvider);
+    final res = await api.get(
+      '/v1/audio/tracks/search',
+      queryParameters: {'q': query, 'limit': 30},
+    );
+    if (seq != _searchSeq) {
+      // A newer query has been issued; drop these results.
+      return const [];
+    }
+    return _extractTracks(res.data);
+  }
+
+  List<Map<String, dynamic>> _extractTracks(dynamic raw) {
+    if (raw is Map && raw['data'] is Map && raw['data']['tracks'] is List) {
+      return (raw['data']['tracks'] as List)
+          .whereType<Map>()
+          .map((e) => Map<String, dynamic>.from(e))
+          .toList();
+    }
+    return const [];
+  }
+
+  void _onSearchChanged(String value) {
+    _debounce?.cancel();
+    final query = value.trim();
+    if (query.isEmpty) {
+      setState(() {
+        _searching = false;
+        _tracksFuture = _loadTrending();
+      });
+      return;
+    }
+    _debounce = Timer(const Duration(milliseconds: 300), () {
+      _searchSeq++;
+      final seq = _searchSeq;
+      setState(() {
+        _searching = true;
+        _tracksFuture = _search(query, seq);
+      });
+    });
+  }
+
+  void _selectTrack(Map<String, dynamic> track) {
+    final durationMs = (track['duration_ms'] as num?)?.toInt() ?? 0;
+    final selected = AudioTrack(
+      id: (track['id'] ?? '').toString(),
+      title: (track['title'] ?? 'Untitled').toString(),
+      artistName: (track['artist'] ?? '').toString(),
+      // Backend returns media_id; the editor's filePath field can hold
+      // the audio's resolvable serve URL once the player is wired. For
+      // now leave empty — the publish step only needs the id.
+      filePath: '',
+      duration: Duration(milliseconds: durationMs),
+    );
+    ref.read(editorProvider.notifier).setBackgroundAudio(selected);
+    Navigator.of(context).pop();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.music_note, color: Colors.orange, size: 22),
+              const SizedBox(width: 8),
+              Text(
+                _searching ? 'Search results' : 'Trending sounds',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _searchCtrl,
+            onChanged: _onSearchChanged,
+            style: const TextStyle(color: Colors.white),
+            decoration: InputDecoration(
+              hintText: 'Search audio',
+              hintStyle: const TextStyle(color: Colors.white38),
+              filled: true,
+              fillColor: Colors.white10,
+              prefixIcon: const Icon(Icons.search, color: Colors.white54, size: 18),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide.none,
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Expanded(
+            child: FutureBuilder<List<Map<String, dynamic>>>(
+              future: _tracksFuture,
+              builder: (_, snap) {
+                if (snap.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                if (snap.hasError) {
+                  return Center(
+                    child: Text(
+                      'Could not load audio tracks.',
+                      style: const TextStyle(color: Colors.white54),
+                    ),
+                  );
+                }
+                final tracks = snap.data ?? const [];
+                if (tracks.isEmpty) {
+                  return Center(
+                    child: Text(
+                      _searching
+                          ? 'No tracks match.'
+                          : 'No audio available yet.',
+                      style: const TextStyle(color: Colors.white54),
+                    ),
+                  );
+                }
+                return ListView.separated(
+                  itemCount: tracks.length,
+                  separatorBuilder: (_, _) => const SizedBox(height: 6),
+                  itemBuilder: (_, i) {
+                    final t = tracks[i];
+                    return ListTile(
+                      onTap: () => _selectTrack(t),
+                      contentPadding: EdgeInsets.zero,
+                      leading: Container(
+                        width: 40,
+                        height: 40,
+                        decoration: BoxDecoration(
+                          color: Colors.orange.withValues(alpha: 0.18),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Icon(Icons.music_note, color: Colors.orange, size: 20),
+                      ),
+                      title: Text(
+                        (t['title'] ?? 'Untitled').toString(),
+                        style: const TextStyle(color: Colors.white, fontSize: 14),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      subtitle: Text(
+                        ((t['artist'] ?? '') as String).isEmpty
+                            ? 'Original sound'
+                            : (t['artist'] ?? '').toString(),
+                        style: const TextStyle(color: Colors.white54, fontSize: 12),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      trailing: const Icon(Icons.add, color: Colors.white54),
+                    );
+                  },
+                );
+              },
             ),
           ),
         ],

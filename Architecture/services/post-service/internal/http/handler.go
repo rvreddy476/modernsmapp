@@ -2,6 +2,7 @@ package http
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -116,6 +117,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// hashtag endpoint lives under /v1/hashtags/trending to keep it in
 	// post-service where the data lives.
 	r.GET("/v1/hashtags/trending", h.GetTrendingHashtagsFeed)
+	r.GET("/v1/posts/trending", h.GetTrendingPosts)
 	// Spec §7.6: 30 req/min per user, burst small. ~0.5 req/sec sustained.
 	hashtagSearchLimit := sharedmiddleware.RateLimit(sharedmiddleware.RateLimitConfig{
 		IPRate: 0.5, IPBurst: 5,
@@ -247,6 +249,10 @@ type CreatePostRequest struct {
 	CoverMediaID      *string  `json:"cover_media_id"`
 	OriginalAudioVol  float32  `json:"original_audio_volume"`
 	OverlayAudioVol   float32  `json:"overlay_audio_volume"`
+	// AudioTrackID attaches a track from /v1/audio/tracks to the post on
+	// create. Used by the Flicks composer's audio browser. Optional —
+	// posts without background audio leave this empty.
+	AudioTrackID *string `json:"audio_track_id"`
 }
 
 func (h *Handler) CreatePost(c *gin.Context) {
@@ -364,6 +370,15 @@ func (h *Handler) CreatePost(c *gin.Context) {
 	if err != nil {
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
 		return
+	}
+
+	// Attach background audio if the client picked a track. Best-effort:
+	// failure here logs but doesn't fail the create — the post is already
+	// persisted and a missing audio reference is recoverable from the UI.
+	if req.AudioTrackID != nil && *req.AudioTrackID != "" {
+		if audioID, parseErr := uuid.Parse(*req.AudioTrackID); parseErr == nil {
+			_ = h.svc.AttachAudioToPost(c.Request.Context(), p.ID, audioID)
+		}
 	}
 
 	api.JSON(c.Writer, http.StatusCreated, p, nil)
@@ -1619,6 +1634,48 @@ func (h *Handler) SearchHashtags(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, gin.H{
 		"query":    q,
 		"hashtags": suggestions,
+	}, nil)
+}
+
+// GetTrendingPosts handles GET /v1/posts/trending?content_type=...&limit=...&cursor=...
+//
+// Returns posts ranked by the same engagement score as the hashtag "top"
+// sort, optionally filtered by content_type. Multiple content_type query
+// params are allowed (e.g. ?content_type=long_video&content_type=flick) so
+// callers can blend Posttube + Reels in one trending stream.
+func (h *Handler) GetTrendingPosts(c *gin.Context) {
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+	cursor := c.Query("cursor")
+	contentTypes := c.QueryArray("content_type")
+
+	// Validate content types: either drop unknown ones or surface them as-is.
+	// Be strict and reject so the client knows quickly that "video" should
+	// have been "long_video".
+	allowed := map[string]bool{
+		"post": true, "poll": true, "flick": true, "long_video": true,
+	}
+	for _, ct := range contentTypes {
+		if !allowed[ct] {
+			api.Error(c.Writer, http.StatusBadRequest, "INVALID_CONTENT_TYPE",
+				fmt.Sprintf("unknown content_type %q", ct), nil, nil)
+			return
+		}
+	}
+
+	posts, nextCursor, err := h.svc.GetTrendingPosts(c.Request.Context(), contentTypes, limit, cursor)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	if posts == nil {
+		posts = []service.PostDetail{}
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{
+		"items":       posts,
+		"next_cursor": nextCursor,
 	}, nil)
 }
 

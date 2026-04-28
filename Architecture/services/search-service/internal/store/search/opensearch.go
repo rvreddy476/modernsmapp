@@ -324,11 +324,34 @@ func (s *Store) execUserSearch(ctx context.Context, query interface{}) ([]UserDo
 
 // SearchPosts
 func (s *Store) SearchPosts(ctx context.Context, query string, limit int) ([]PostDoc, error) {
+	return s.SearchPostsFiltered(ctx, query, nil, limit)
+}
+
+// SearchPostsFiltered runs a text-match search with an optional content_type
+// filter. Pass {"long_video"} for the Posttube video search tab, {"flick"}
+// for Reels, or {"long_video","flick"} to blend both. nil/empty means
+// "all content types" (same as SearchPosts).
+//
+// Implementation: bool query with a `must` text match + an optional
+// `terms` filter on content_type. Cheaper than running per-type searches
+// because OpenSearch handles the term-level filter via doc_values.
+func (s *Store) SearchPostsFiltered(ctx context.Context, query string, contentTypes []string, limit int) ([]PostDoc, error) {
+	mustClauses := []map[string]interface{}{
+		{"match": map[string]interface{}{"text": query}},
+	}
+	filter := []map[string]interface{}{}
+	if len(contentTypes) > 0 {
+		filter = append(filter, map[string]interface{}{
+			"terms": map[string]interface{}{"content_type": contentTypes},
+		})
+	}
+
 	q := map[string]interface{}{
 		"size": limit,
 		"query": map[string]interface{}{
-			"match": map[string]interface{}{
-				"text": query,
+			"bool": map[string]interface{}{
+				"must":   mustClauses,
+				"filter": filter,
 			},
 		},
 	}
@@ -459,6 +482,26 @@ func (s *Store) UniversalSearch(ctx context.Context, query string, searchType st
 		posts, err := s.SearchPosts(ctx, query, limit)
 		if err != nil {
 			return nil, fmt.Errorf("post search failed: %w", err)
+		}
+		if posts != nil {
+			result.Posts = posts
+		}
+
+	case "videos":
+		// Long-form video tab on the Posttube search surface.
+		posts, err := s.SearchPostsFiltered(ctx, query, []string{"long_video"}, limit)
+		if err != nil {
+			return nil, fmt.Errorf("video search failed: %w", err)
+		}
+		if posts != nil {
+			result.Posts = posts
+		}
+
+	case "flicks":
+		// Short-form vertical tab on the Reels search surface.
+		posts, err := s.SearchPostsFiltered(ctx, query, []string{"flick"}, limit)
+		if err != nil {
+			return nil, fmt.Errorf("flick search failed: %w", err)
 		}
 		if posts != nil {
 			result.Posts = posts

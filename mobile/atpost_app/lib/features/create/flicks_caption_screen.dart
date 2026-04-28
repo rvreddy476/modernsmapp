@@ -78,15 +78,22 @@ class _FlicksCaptionScreenState extends ConsumerState<FlicksCaptionScreen> {
       final tagLine = _hashtags.join(' ');
       final fullText = [caption, tagLine].where((s) => s.isNotEmpty).join('\n\n');
 
-      // Create the post
-      await api.post('/v1/posts', data: {
+      // Create the post. Include audio_track_id when the editor selected
+      // background music — post-service AttachAudioToPost links it to the
+      // new post on the server side.
+      final body = <String, dynamic>{
         'content_type': 'flick',
         'media_ids': mediaId.isNotEmpty ? [mediaId] : [],
         'text': fullText,
         'visibility': _audience.name,
         'cover_frame_ms': editorState.coverFrameMs,
         'filter': editorState.activeFilter.name,
-      });
+      };
+      final audio = editorState.backgroundAudio;
+      if (audio != null && audio.id.isNotEmpty) {
+        body['audio_track_id'] = audio.id;
+      }
+      await api.post('/v1/posts', data: body);
 
       ref.read(editorProvider.notifier).deleteSession();
 

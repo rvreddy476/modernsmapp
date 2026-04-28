@@ -222,6 +222,12 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
                         scrollDirection: Axis.horizontal,
                         children: [
                           _DiscoveryPill(
+                            icon: Icons.local_fire_department_outlined,
+                            label: 'Trending',
+                            onTap: () => context.push('/posttube/trending'),
+                          ),
+                          const SizedBox(width: 8),
+                          _DiscoveryPill(
                             icon: Icons.subscriptions_outlined,
                             label: 'Subscriptions',
                             onTap: () => context.push('/posttube/subscriptions'),

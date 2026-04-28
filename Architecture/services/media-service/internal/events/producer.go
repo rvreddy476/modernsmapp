@@ -39,9 +39,26 @@ func (p *Producer) PublishTranscodeRequested(ctx context.Context, mediaAssetID u
 }
 
 func (p *Producer) PublishTranscodeCompleted(ctx context.Context, mediaAssetID uuid.UUID, processingStatus string) error {
+	return p.PublishTranscodeCompletedWithURLs(ctx, mediaAssetID, processingStatus, "", "", "")
+}
+
+// PublishTranscodeCompletedWithURLs is the richer variant used on success —
+// downstream services (post-service.video_metadata) need the HLS master URL
+// so the watch screen can stream adaptive bitrate instead of falling back to
+// the original MP4. The plain PublishTranscodeCompleted above stays for the
+// failure path where no URLs exist yet.
+func (p *Producer) PublishTranscodeCompletedWithURLs(
+	ctx context.Context,
+	mediaAssetID uuid.UUID,
+	processingStatus string,
+	hlsMasterURL, mp4URL, thumbnailURL string,
+) error {
 	payload := events.MediaTranscodeCompletedPayload{
 		MediaAssetID:     mediaAssetID.String(),
 		ProcessingStatus: processingStatus,
+		HLSMasterURL:     hlsMasterURL,
+		MP4URL:           mp4URL,
+		ThumbnailURL:     thumbnailURL,
 	}
 	return p.publish(ctx, events.MediaTranscodeCompleted, nil, payload)
 }

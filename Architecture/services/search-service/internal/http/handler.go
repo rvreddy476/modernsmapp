@@ -162,10 +162,11 @@ func (h *Handler) UniversalSearch(c *gin.Context) {
 
 	searchType := c.DefaultQuery("type", "all")
 	switch searchType {
-	case "all", "profiles", "posts":
-		// valid
+	case "all", "profiles", "posts", "videos", "flicks":
+		// valid — videos = long_video content_type, flicks = flick content_type
 	default:
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Parameter 'type' must be one of: all, profiles, posts", nil, nil)
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST",
+			"Parameter 'type' must be one of: all, profiles, posts, videos, flicks", nil, nil)
 		return
 	}
 

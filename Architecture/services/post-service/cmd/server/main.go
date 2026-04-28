@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/atpost/post-service/database"
+	mediaConsumers "github.com/atpost/post-service/internal/consumers"
 	"github.com/atpost/post-service/internal/engagement"
 	"github.com/atpost/post-service/internal/engagement/consumers"
 	postEvents "github.com/atpost/post-service/internal/events"
@@ -159,7 +160,15 @@ func main() {
 	reelAnalytics := consumers.NewReelAnalyticsConsumer(dbPool, rdb)
 	go reelAnalytics.Start(consumerCtx, brokers, engTopic)
 
-	slog.Info("engagement consumers started")
+	// Media transcode consumer: listens to media-service's `media.events`
+	// topic and updates video_metadata.playback_url with the HLS master URL
+	// once transcoding finishes. Without this the watch screen always falls
+	// back to the raw MP4 even though HLS variants exist on storage.
+	mediaTranscodeMetrics := metrics.NewKafkaConsumerMetrics("post-service")
+	mediaTranscodeConsumer := mediaConsumers.NewMediaTranscodeConsumer(pgStore, brokers, rdb, mediaTranscodeMetrics)
+	go mediaTranscodeConsumer.Start(consumerCtx)
+
+	slog.Info("engagement consumers + media transcode consumer started")
 
 	// 11. Reconciliation worker (every 5 min)
 	reconciler := engagement.NewReconciler(rdb, scyllaSession, dbPool)

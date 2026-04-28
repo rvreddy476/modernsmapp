@@ -1737,6 +1737,24 @@ func (s *Service) GetPostsByHashtag(ctx context.Context, hashtag string, limit i
 	return details, nextCursor, nil
 }
 
+// GetTrendingPosts returns trending posts globally, optionally scoped to one
+// or more content types. Used by the Posttube/Reels "Trending" tabs and the
+// general discover surface. cursor is the same opaque base64 string used by
+// the hashtag top sort.
+func (s *Service) GetTrendingPosts(ctx context.Context, contentTypes []string, limit int, cursor string) ([]PostDetail, string, error) {
+	posts, nextCursor, err := s.pgStore.GetTrendingPosts(ctx, contentTypes, limit, cursor)
+	if err != nil {
+		return nil, "", err
+	}
+	details := make([]PostDetail, len(posts))
+	for i, p := range posts {
+		post := p
+		counts, _ := s.scyllaStore.GetCounts(ctx, p.ID)
+		details[i] = PostDetail{Post: &post, Counts: counts}
+	}
+	return details, nextCursor, nil
+}
+
 // SearchHashtags returns hashtag suggestions matching a prefix query.
 // Reads directly from posts.hashtags via the store; no Redis index is wired.
 func (s *Service) SearchHashtags(ctx context.Context, query string, limit int) ([]postgres.HashtagSuggestion, error) {

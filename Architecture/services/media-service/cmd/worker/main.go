@@ -161,8 +161,25 @@ func processMessage(ctx context.Context, m kafka.Message, pgStore *postgres.Medi
 		return nil // Don't retry — mark as failed
 	}
 
-	_ = producer.PublishTranscodeCompleted(ctx, mediaAssetID, "ready")
-	log.Printf("Transcode completed for media %s", payload.MediaAssetID)
+	// Read back the URLs we wrote during transcode so the success event can
+	// carry them. Downstream consumers (post-service.video_metadata) need the
+	// HLS master URL to point clients at adaptive bitrate playback rather
+	// than the raw MP4 fallback.
+	asset, fetchErr := pgStore.GetMedia(ctx, mediaAssetID)
+	hlsURL, mp4URL, thumbURL := "", "", ""
+	if fetchErr == nil && asset != nil {
+		if asset.HLSMasterKey != "" {
+			hlsURL = "/" + strings.TrimPrefix(asset.HLSMasterKey, "/")
+		}
+		if asset.CdnURL != nil && *asset.CdnURL != "" {
+			mp4URL = *asset.CdnURL
+		}
+		if asset.ThumbnailURL != nil && *asset.ThumbnailURL != "" {
+			thumbURL = *asset.ThumbnailURL
+		}
+	}
+	_ = producer.PublishTranscodeCompletedWithURLs(ctx, mediaAssetID, "ready", hlsURL, mp4URL, thumbURL)
+	log.Printf("Transcode completed for media %s (hls=%t)", payload.MediaAssetID, hlsURL != "")
 	return nil
 }
 

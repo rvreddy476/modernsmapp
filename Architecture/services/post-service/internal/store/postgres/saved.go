@@ -202,6 +202,100 @@ const hashtagTopScoreExpr = `
 		ELSE 0
 	  END)`
 
+// GetTrendingPosts returns posts ranked by the same engagement score as the
+// hashtag "top" sort, optionally filtered by content_type. Used by the
+// generic /v1/posts/trending endpoint that drives the discovery tabs in the
+// Posttube and Reels feeds.
+//
+// contentTypes nil means "any". Pass {"long_video"} for the Posttube
+// trending tab, {"flick"} for Reels, or {"long_video","flick"} for a blended
+// surface. Pagination uses the same base64({score, post_id}) cursor as the
+// hashtag top sort.
+func (s *Store) GetTrendingPosts(ctx context.Context, contentTypes []string, limit int, cursor string) ([]Post, string, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+
+	prefixedCols := strings.ReplaceAll(strings.ReplaceAll(postCols, "\n", " "), "  ", " ")
+	cols := make([]string, 0)
+	for _, c := range strings.Split(prefixedCols, ",") {
+		c = strings.TrimSpace(c)
+		if c != "" {
+			cols = append(cols, "p."+c)
+		}
+	}
+	selectList := strings.Join(cols, ", ")
+
+	args := []interface{}{limit + 1}
+	conds := []string{"p.deleted_at IS NULL", "p.visibility = 'public'"}
+
+	if len(contentTypes) > 0 {
+		args = append(args, contentTypes)
+		conds = append(conds, fmt.Sprintf("p.content_type = ANY($%d)", len(args)))
+	}
+	if cursor != "" {
+		if cur, err := decodeHashtagTopCursor(cursor); err == nil {
+			postUUID, err2 := uuid.Parse(cur.PostID)
+			if err2 == nil {
+				args = append(args, cur.Score)
+				args = append(args, postUUID)
+				conds = append(conds, fmt.Sprintf("(%s, p.id) < ($%d, $%d)",
+					hashtagTopScoreExpr, len(args)-1, len(args)))
+			}
+		}
+	}
+	where := "WHERE " + strings.Join(conds, " AND ")
+
+	query := `SELECT ` + selectList + `, ` + hashtagTopScoreExpr + ` AS top_score
+		FROM posts p
+		LEFT JOIN post_engagement_counts c ON c.post_id = p.id
+		` + where + `
+		ORDER BY ` + hashtagTopScoreExpr + ` DESC, p.id DESC
+		LIMIT $1`
+
+	rows, err := s.db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+
+	posts, scores, err := scanPostRowsWithScore(rows)
+	if err != nil {
+		return nil, "", err
+	}
+	var nextCursor string
+	if len(posts) > limit {
+		nextCursor = encodeHashtagTopCursor(scores[limit-1], posts[limit-1].ID.String())
+		posts = posts[:limit]
+	}
+
+	// Batch-fetch media so the client gets thumbnails without a second round-trip.
+	if len(posts) > 0 {
+		postIDs := make([]uuid.UUID, len(posts))
+		for i, p := range posts {
+			postIDs[i] = p.ID
+		}
+		mediaRows, err := s.db.Query(ctx, `
+			SELECT post_id, media_id, kind FROM post_media WHERE post_id = ANY($1)
+		`, postIDs)
+		if err == nil {
+			defer mediaRows.Close()
+			mediaMap := make(map[uuid.UUID][]PostMedia)
+			for mediaRows.Next() {
+				var postID uuid.UUID
+				var m PostMedia
+				if err := mediaRows.Scan(&postID, &m.MediaID, &m.Kind); err == nil {
+					mediaMap[postID] = append(mediaMap[postID], m)
+				}
+			}
+			for i := range posts {
+				posts[i].Media = mediaMap[posts[i].ID]
+			}
+		}
+	}
+	return posts, nextCursor, nil
+}
+
 // GetPostsByHashtag returns posts containing a specific hashtag, paginated.
 // Supports sort=recent (default, by created_at DESC) and sort=top (by simplified
 // trending score DESC). Cursor format depends on the sort mode:
