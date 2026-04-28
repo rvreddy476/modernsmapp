@@ -116,6 +116,23 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 		// Payout webhooks (no auth — signature verified externally)
 		v1.POST("/webhooks/payout", h.HandlePayoutWebhook)
+
+		// Creator Fund (Tier 3a)
+		cf := v1.Group("/creator-fund")
+		{
+			cf.GET("/status", h.GetCreatorFundStatus)
+			cf.POST("/apply", h.ApplyCreatorFund)
+			cf.GET("/earnings", h.GetCreatorFundEarnings)
+			cf.GET("/rates", h.ListCreatorFundRates)
+		}
+		admin := v1.Group("/admin/creator-fund")
+		{
+			admin.GET("/rates", h.ListCreatorFundRatesAdmin)
+			admin.PUT("/rates", h.SetCreatorFundRate)
+			admin.POST("/:userId/suspend", h.SuspendCreatorFund)
+			admin.POST("/:userId/unsuspend", h.UnsuspendCreatorFund)
+			admin.POST("/settle", h.ForceSettleCreatorFund)
+		}
 	}
 }
 

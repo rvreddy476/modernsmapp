@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/atpost/monetization-service/internal/events"
+	"github.com/atpost/monetization-service/internal/service"
 	"github.com/atpost/monetization-service/internal/store/postgres"
 	"github.com/google/uuid"
 )
@@ -21,8 +22,10 @@ const payoutAutoApproveLimit int64 = 1_000_000
 const holdAgeLimit = 30 * 24 * time.Hour
 
 // StartAll launches all background workers and blocks until ctx is cancelled.
-// Call this in a goroutine: go workers.StartAll(ctx, store, producer).
-func StartAll(ctx context.Context, store *postgres.Store, producer *events.Producer) {
+// Call this in a goroutine: go workers.StartAll(ctx, store, producer, svc).
+// svc may be nil; if it is, the creator-fund workers are skipped (used in
+// some bootstrap test setups that don't construct the service layer).
+func StartAll(ctx context.Context, store *postgres.Store, producer *events.Producer, svc *service.Service) {
 	slog.Info("starting monetization background workers")
 
 	go runSubscriptionRenewal(ctx, store, producer)
@@ -34,6 +37,10 @@ func StartAll(ctx context.Context, store *postgres.Store, producer *events.Produ
 	go runLedgerReconciliation(ctx, store)
 	go runStuckTransactionDetector(ctx, store)
 	go runStalePayoutDetector(ctx, store)
+	if svc != nil {
+		go runCreatorFundEarnings(ctx, svc)
+		go runEligibilityEvaluator(ctx, svc)
+	}
 
 	<-ctx.Done()
 	slog.Info("monetization workers stopped")

@@ -14,12 +14,26 @@ import (
 )
 
 type Service struct {
-	store *postgres.Store
-	rdb   *redis.Client
+	store          *postgres.Store
+	rdb            *redis.Client
+	creatorFundCfg CreatorFundConfig
 }
 
 func New(s *postgres.Store, rdb *redis.Client) *Service {
-	return &Service{store: s, rdb: rdb}
+	return &Service{store: s, rdb: rdb, creatorFundCfg: DefaultCreatorFundConfig()}
+}
+
+// WithCreatorFundConfig overrides the default creator-fund config (env-driven
+// thresholds and platform fee). Returns the same Service for chaining.
+func (s *Service) WithCreatorFundConfig(cfg CreatorFundConfig) *Service {
+	s.creatorFundCfg = cfg
+	return s
+}
+
+// CreatorFundConfigSnapshot returns the active config (for the status
+// endpoint and for tests).
+func (s *Service) CreatorFundConfigSnapshot() CreatorFundConfig {
+	return s.creatorFundCfg
 }
 
 // ---------------------------------------------------------------------------
