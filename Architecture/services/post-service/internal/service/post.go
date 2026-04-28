@@ -35,9 +35,11 @@ type Service struct {
 	engProducer     *engagement.Producer // new engagement event producer
 	rateLimiter     *engagement.RateLimiter
 	spam            *spam.Detector
-	userServiceURL  string
-	graphServiceURL string
-	httpClient      *http.Client
+	userServiceURL          string
+	graphServiceURL         string
+	monetizationServiceURL  string
+	internalServiceKey      string
+	httpClient              *http.Client
 }
 
 func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client) *Service {
@@ -59,6 +61,18 @@ func (s *Service) SetUserServiceURL(url string) {
 // SetGraphServiceURL configures the graph-service base URL for following/follower lookups.
 func (s *Service) SetGraphServiceURL(url string) {
 	s.graphServiceURL = url
+}
+
+// SetMonetizationServiceURL configures the monetization-service base
+// URL used by the membership-gating entitlement check.
+func (s *Service) SetMonetizationServiceURL(url string) {
+	s.monetizationServiceURL = url
+}
+
+// SetInternalServiceKey stores the X-Internal-Service-Key value used
+// when calling other services. Empty means no header set.
+func (s *Service) SetInternalServiceKey(key string) {
+	s.internalServiceKey = key
 }
 
 // SetProducer sets the legacy Kafka producer for engagement events.

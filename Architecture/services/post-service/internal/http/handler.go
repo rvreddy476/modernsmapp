@@ -191,6 +191,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	r.GET("/v1/posts/:postId/end-screens", h.GetEndScreens)
 	r.POST("/v1/posts/:postId/cards", h.SaveVideoCards)
 	r.GET("/v1/posts/:postId/cards", h.GetVideoCards)
+	r.PUT("/v1/posts/:postId/membership", h.SetPostMembershipGate)
 
 	// Watch Progress
 	r.POST("/v1/videos/:videoId/progress", h.SaveWatchProgress)
@@ -408,7 +409,64 @@ func (h *Handler) GetPost(c *gin.Context) {
 		return
 	}
 
+	// Tier 3c: members-only gating. If the post is gated and the
+	// viewer isn't entitled (or there is no viewer), redact the body
+	// fields so the response can render as a "subscribe to view"
+	// preview rather than 404 or 403.
+	if p.Post.TierRequiredID != nil {
+		viewerID := uuid.Nil
+		if viewerUUID != nil {
+			viewerID = *viewerUUID
+		}
+		allowed, _, _ := h.svc.CheckEntitlement(c.Request.Context(), viewerID, p.Post.AuthorID, p.Post.TierRequiredID)
+		if !allowed {
+			service.RedactGatedPost(p.Post)
+		}
+	}
+
 	api.JSON(c.Writer, http.StatusOK, p, nil)
+}
+
+// SetPostMembershipGate handles PUT /v1/posts/:postId/membership.
+// Body: {"tier_required_id": "<uuid>"} sets gate, or {} / {"tier_required_id": null}
+// clears it. Only the post author can change this.
+func (h *Handler) SetPostMembershipGate(c *gin.Context) {
+	postID, err := uuid.Parse(c.Param("postId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
+		return
+	}
+	actorIDStr := c.GetHeader("X-User-Id")
+	actorID, err := uuid.Parse(actorIDStr)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid user", nil)
+		return
+	}
+
+	owner, err := h.svc.IsPostAuthor(c.Request.Context(), postID, actorID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	if !owner {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Only the post author can change membership gating", nil)
+		return
+	}
+
+	var body struct {
+		TierRequiredID *uuid.UUID `json:"tier_required_id"`
+	}
+	_ = c.ShouldBindJSON(&body)
+
+	if err := h.svc.SetPostMembershipGate(c.Request.Context(), postID, body.TierRequiredID); err != nil {
+		if err.Error() == "POST_NOT_FOUND" {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Post not found", nil)
+			return
+		}
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"tier_required_id": body.TierRequiredID}, nil)
 }
 
 func (h *Handler) GetRecentPosts(c *gin.Context) {

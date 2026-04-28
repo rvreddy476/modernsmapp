@@ -117,6 +117,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// Payout webhooks (no auth — signature verified externally)
 		v1.POST("/webhooks/payout", h.HandlePayoutWebhook)
 
+		// Entitlement checks (Tier 3c — used by post-service / clients)
+		v1.GET("/entitlements", h.CheckEntitlement)
+		v1.POST("/entitlements/check", h.BulkCheckEntitlements)
+
 		// Creator Fund (Tier 3a)
 		cf := v1.Group("/creator-fund")
 		{

@@ -586,6 +586,7 @@ func scanPostRowsWithScore(rows pgx.Rows) ([]Post, []float64, error) {
 			&p.CommentModeration, &p.CommentAccess,
 			&p.RecordingDate, &p.RecordingLocation,
 			&p.CoverMediaID, &p.OriginalAudioVol, &p.OverlayAudioVol,
+			&p.TierRequiredID,
 			&p.CreatedAt, &p.UpdatedAt,
 			&topScore,
 		); err != nil {

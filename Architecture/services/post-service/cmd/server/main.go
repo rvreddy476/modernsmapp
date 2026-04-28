@@ -114,6 +114,8 @@ func main() {
 	scyllaInteractionStore := scylla.New(scyllaSession)
 	postSvc := service.New(pgStore, scyllaInteractionStore, rdb)
 	postSvc.SetGraphServiceURL(env("GRAPH_SERVICE_URL", "http://graph-service:8083"))
+	postSvc.SetMonetizationServiceURL(env("MONETIZATION_SERVICE_URL", "http://monetization-service:8099"))
+	postSvc.SetInternalServiceKey(os.Getenv("INTERNAL_SERVICE_KEY"))
 
 	// 7. Kafka producers
 	brokers := strings.Split(kafkaBrokers, ",")
@@ -336,6 +338,10 @@ func ensureSchema(ctx context.Context, db *pgxpool.Pool) {
 			processed_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_event_log_age ON engagement_event_log (processed_at)`,
+
+		// Tier 3c: membership gating. NULL tier_required_id = public.
+		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS tier_required_id UUID`,
+		`CREATE INDEX IF NOT EXISTS idx_posts_tier_required ON posts (tier_required_id) WHERE tier_required_id IS NOT NULL`,
 	}
 
 	for _, stmt := range ddl {

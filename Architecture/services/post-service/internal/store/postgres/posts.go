@@ -53,6 +53,8 @@ type Post struct {
 	CoverMediaID       *uuid.UUID  `json:"cover_media_id,omitempty"`
 	OriginalAudioVol   float32     `json:"original_audio_volume"`
 	OverlayAudioVol    float32     `json:"overlay_audio_volume"`
+	TierRequiredID     *uuid.UUID  `json:"tier_required_id,omitempty"`
+	BodyRedacted       bool        `json:"body_redacted,omitempty"`
 	CreatedAt      time.Time       `json:"created_at"`
 	UpdatedAt      time.Time       `json:"updated_at"`
 	Media          []PostMedia     `json:"media,omitempty"`
@@ -103,6 +105,7 @@ const postCols = `id, author_id, text, visibility, content_type, is_pinned,
 	comment_moderation, comment_access,
 	recording_date, recording_location,
 	cover_media_id, original_audio_volume, overlay_audio_volume,
+	tier_required_id,
 	created_at, updated_at`
 
 func scanPost(row pgx.Row) (*Post, error) {
@@ -119,6 +122,7 @@ func scanPost(row pgx.Row) (*Post, error) {
 		&p.CommentModeration, &p.CommentAccess,
 		&p.RecordingDate, &p.RecordingLocation,
 		&p.CoverMediaID, &p.OriginalAudioVol, &p.OverlayAudioVol,
+		&p.TierRequiredID,
 		&p.CreatedAt, &p.UpdatedAt,
 	)
 	if err != nil {
@@ -143,6 +147,7 @@ func scanPostRows(rows pgx.Rows) ([]Post, error) {
 			&p.CommentModeration, &p.CommentAccess,
 			&p.RecordingDate, &p.RecordingLocation,
 			&p.CoverMediaID, &p.OriginalAudioVol, &p.OverlayAudioVol,
+			&p.TierRequiredID,
 			&p.CreatedAt, &p.UpdatedAt,
 		); err != nil {
 			return nil, err
@@ -202,6 +207,7 @@ func (s *Store) CreatePost(ctx context.Context, p *Post) error {
 			comment_moderation, comment_access,
 			recording_date, recording_location,
 			cover_media_id, original_audio_volume, overlay_audio_volume,
+			tier_required_id,
 			created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
 			$12, $13, $14, $15, $16, $17, $18, $19, $20,
@@ -211,7 +217,8 @@ func (s *Store) CreatePost(ctx context.Context, p *Post) error {
 			$33, $34,
 			$35, $36,
 			$37, $38, $39,
-			$40, $40)
+			$40,
+			$41, $41)
 	`, p.ID, p.AuthorID, p.Text, p.Visibility, p.ContentType,
 		p.Feeling, p.Activity, p.ActivityDetail, p.RichText,
 		p.NoComments, p.NoLikes,
@@ -223,6 +230,7 @@ func (s *Store) CreatePost(ctx context.Context, p *Post) error {
 		p.CommentModeration, p.CommentAccess,
 		p.RecordingDate, p.RecordingLocation,
 		p.CoverMediaID, p.OriginalAudioVol, p.OverlayAudioVol,
+		p.TierRequiredID,
 		p.CreatedAt)
 	if err != nil {
 		return err
@@ -746,4 +754,34 @@ func (s *Store) GetPostsByIDs(ctx context.Context, ids []uuid.UUID) ([]Post, err
 	}
 
 	return posts, nil
+}
+
+// SetPostMembershipGate sets or clears the tier_required_id on a post.
+// Pass tierID == nil to make the post public again. The caller is
+// responsible for verifying the actor owns the post (handler layer
+// does this before calling).
+func (s *Store) SetPostMembershipGate(ctx context.Context, postID uuid.UUID, tierID *uuid.UUID) error {
+	tag, err := s.db.Exec(ctx,
+		`UPDATE posts SET tier_required_id = $2, updated_at = NOW() WHERE id = $1`,
+		postID, tierID,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return errors.New("POST_NOT_FOUND")
+	}
+	return nil
+}
+
+// GetPostAuthorAndGate returns just the author_id + tier_required_id
+// for a post — the two fields the gating handler needs without paying
+// for the full Post scan. Returns ErrPostNotFound (pgx.ErrNoRows) if
+// the post does not exist.
+func (s *Store) GetPostAuthorAndGate(ctx context.Context, postID uuid.UUID) (authorID uuid.UUID, tierID *uuid.UUID, err error) {
+	err = s.db.QueryRow(ctx,
+		`SELECT author_id, tier_required_id FROM posts WHERE id = $1`,
+		postID,
+	).Scan(&authorID, &tierID)
+	return
 }
