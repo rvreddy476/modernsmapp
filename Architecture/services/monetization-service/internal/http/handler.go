@@ -57,6 +57,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.POST("/tiers", h.CreateTier)
 		v1.PATCH("/tiers/:id", h.UpdateTier)
 
+		// Public: list a specific creator's active tiers (used by fans
+		// when picking a tier on a creator's profile).
+		v1.GET("/creators/:creatorId/tiers", h.GetCreatorTiersPublic)
+
 		// Subscriptions
 		v1.POST("/subscribe/:creatorId", h.Subscribe)
 		v1.DELETE("/subscribe/:creatorId", h.Unsubscribe)
@@ -438,6 +442,30 @@ func (h *Handler) GetMyTiers(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, tiers, nil)
+}
+
+// GetCreatorTiersPublic returns the active tiers of any creator. No
+// auth header required — this is what powers the fan-side tier picker
+// on a creator's profile. Inactive tiers are filtered out so a fan
+// can't subscribe to a sunset tier.
+func (h *Handler) GetCreatorTiersPublic(c *gin.Context) {
+	creatorID, err := uuid.Parse(c.Param("creatorId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid creator ID", nil)
+		return
+	}
+	tiers, err := h.svc.GetCreatorTiers(c.Request.Context(), creatorID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	out := make([]postgres.CreatorTier, 0, len(tiers))
+	for _, t := range tiers {
+		if t.IsActive {
+			out = append(out, t)
+		}
+	}
+	api.JSON(c.Writer, http.StatusOK, out, nil)
 }
 
 func (h *Handler) CreateTier(c *gin.Context) {
