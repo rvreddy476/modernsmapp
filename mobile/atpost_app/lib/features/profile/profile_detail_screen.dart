@@ -2,9 +2,10 @@ import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/repositories/user_repository.dart';
+import 'package:atpost_app/features/monetization/widgets/tier_picker_sheet.dart';
+import 'package:atpost_app/features/monetization/widgets/tip_sheet.dart';
 import 'package:atpost_app/providers/social_provider.dart';
 import 'package:atpost_app/providers/user_provider.dart';
-import 'package:atpost_app/services/api_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -22,7 +23,6 @@ class ProfileDetailScreen extends ConsumerStatefulWidget {
 class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
   bool _following = false;
   bool _subscribed = false;
-  bool _subscribing = false;
 
   void _showProfileOptions(
     BuildContext context,
@@ -387,41 +387,19 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
                           if (user.isVerified) ...[
                             const SizedBox(width: 8),
                             GestureDetector(
-                              onTap: _subscribing
-                                  ? null
-                                  : () async {
-                                      setState(() => _subscribing = true);
-                                      try {
-                                        await ref
-                                            .read(apiClientProvider)
-                                            .post(
-                                              '/v1/monetization/subscribe',
-                                              data: {
-                                                'target_user_id': widget.userId,
-                                              },
-                                            );
-                                        if (mounted) {
-                                          setState(
-                                            () => _subscribed = !_subscribed,
-                                          );
-                                        }
-                                      } catch (_) {
-                                        if (!context.mounted) return;
-                                        ScaffoldMessenger.of(
-                                          context,
-                                        ).showSnackBar(
-                                          const SnackBar(
-                                            content: Text(
-                                              'Could not update subscription.',
-                                            ),
-                                          ),
-                                        );
-                                      } finally {
-                                        if (mounted) {
-                                          setState(() => _subscribing = false);
-                                        }
-                                      }
-                                    },
+                              onTap: () async {
+                                // Tier 3c: open the tier picker. The
+                                // sheet returns the chosen tier ID on
+                                // success.
+                                final pickedTierId =
+                                    await TierPickerSheet.show(
+                                  context,
+                                  creatorId: widget.userId,
+                                );
+                                if (pickedTierId != null && mounted) {
+                                  setState(() => _subscribed = true);
+                                }
+                              },
                               child: Container(
                                 padding: const EdgeInsets.symmetric(
                                   horizontal: 14,
@@ -441,25 +419,40 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
                                         : Colors.transparent,
                                   ),
                                 ),
-                                child: _subscribing
-                                    ? const SizedBox(
-                                        width: 16,
-                                        height: 16,
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: 2,
-                                          color: AppColors.postbookPrimary,
-                                        ),
-                                      )
-                                    : Text(
-                                        _subscribed
-                                            ? 'Subscribed'
-                                            : 'Subscribe',
-                                        style: AppTextStyles.label.copyWith(
-                                          color: _subscribed
-                                              ? AppColors.textSecondary
-                                              : Colors.white,
-                                        ),
-                                      ),
+                                child: Text(
+                                  _subscribed ? 'Member' : 'Subscribe',
+                                  style: AppTextStyles.label.copyWith(
+                                    color: _subscribed
+                                        ? AppColors.textSecondary
+                                        : Colors.white,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            // Tier 3d: tip button next to Subscribe.
+                            GestureDetector(
+                              onTap: () {
+                                TipSheet.show(
+                                  context,
+                                  creatorId: widget.userId,
+                                );
+                              },
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 14,
+                                  vertical: 12,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: AppColors.bgCard,
+                                  borderRadius: BorderRadius.circular(
+                                    AppSpacing.radiusLarge,
+                                  ),
+                                  border: Border.all(
+                                    color: AppColors.borderSubtle,
+                                  ),
+                                ),
+                                child: Text('Tip', style: AppTextStyles.label),
                               ),
                             ),
                           ],

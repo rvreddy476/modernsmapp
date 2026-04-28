@@ -22,6 +22,11 @@ class Post {
   final String? activityDetail;
   final String? locationName;
   final PollData? poll;
+  // Tier 3c — Membership gating. tierRequiredId != null means the
+  // post is members-only at that tier; bodyRedacted == true means
+  // the backend has stripped text/media/poll for this caller.
+  final String? tierRequiredId;
+  final bool bodyRedacted;
 
   const Post({
     required this.id,
@@ -45,6 +50,8 @@ class Post {
     this.activityDetail,
     this.locationName,
     this.poll,
+    this.tierRequiredId,
+    this.bodyRedacted = false,
   });
 
   factory Post.fromJson(Map<String, dynamic> json) {
@@ -77,6 +84,8 @@ class Post {
         poll: json['poll'] != null
             ? PollData.fromJson(Map<String, dynamic>.from(json['poll']))
             : null,
+        tierRequiredId: json['tier_required_id']?.toString(),
+        bodyRedacted: _toBool(json['body_redacted']),
       );
     } catch (e, st) {
       AppLogger.error('Post.fromJson failed: $e', error: e, stackTrace: st);

@@ -6,6 +6,7 @@ import 'package:atpost_app/data/models/post.dart';
 import 'package:atpost_app/data/repositories/post_repository.dart';
 import 'package:atpost_app/data/repositories/user_repository.dart';
 import 'package:atpost_app/features/hashtag_feed/state/hashtag_feed_notifier.dart';
+import 'package:atpost_app/features/monetization/widgets/paywall_preview.dart';
 import 'package:atpost_app/features/shell/shell_providers.dart';
 import 'package:atpost_app/providers/feed_provider.dart';
 import 'package:atpost_app/providers/following_provider.dart';
@@ -241,7 +242,14 @@ class _PostCardState extends ConsumerState<PostCard> {
               child: _buildHeader(context),
             ),
 
-            if (isTextOnly)
+            if (post.bodyRedacted)
+              // Tier 3c: backend stripped the body for this caller —
+              // render the paywall preview in place of text/media.
+              PaywallPreview(
+                creatorId: post.authorId,
+                creatorName: post.authorName,
+              )
+            else if (isTextOnly)
               _buildTextPostBody()
             else if (hasMedia) ...[
               if (hasContent)
