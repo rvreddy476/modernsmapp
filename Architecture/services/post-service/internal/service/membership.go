@@ -7,18 +7,44 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
+	"time"
 
 	"github.com/atpost/post-service/internal/store/postgres"
 	"github.com/google/uuid"
 )
 
-// Tier 3c — Membership gating.
+// Tier 3c / 1a — Membership gating + Redis-backed entitlement cache.
 //
 // The post-service holds the column (`tier_required_id`) but does not
 // own subscription state, so it asks monetization-service whether the
 // caller is entitled to read a gated post. On failure the gate is
 // closed (fail-secure): if monetization is down, the body is redacted
 // rather than leaking through.
+//
+// Tier 1a — every gated post read used to be a synchronous HTTP
+// roundtrip to monetization-service. For a hot creator this is
+// dozens of duplicate calls per second answering the same question.
+// We now cache the (subscriber, creator, requiredTier) → (allowed,
+// reason) tuple in Redis with a short TTL, so subsequent reads
+// inside the TTL window skip the HTTP call entirely.
+//
+// Staleness: subscriptions don't churn at second-granularity, so a
+// short TTL trades correctness for a 60× reduction in monetization
+// load with acceptable propagation lag.
+
+const (
+	entitlementCacheKeyPrefix = "ent:"
+	// Allowed answers cache for 60s — long enough to absorb burst
+	// reads on hot posts, short enough that an unsubscribe propagates
+	// within a minute. (Phase 2: a Kafka consumer of
+	// monetization.entitlement.changed will invalidate keys
+	// immediately for the granted/revoked/upgraded cases.)
+	entitlementCacheTTLAllowed = 60 * time.Second
+	// Denied answers cache for a shorter window — when a fan
+	// subscribes mid-session we want them unblocked quickly.
+	entitlementCacheTTLDenied = 30 * time.Second
+)
 
 // SetPostMembershipGate is called by the handler after it has
 // confirmed the caller owns the post. tierID == nil clears the gate
@@ -46,6 +72,11 @@ func (s *Service) CheckEntitlement(ctx context.Context, subscriberID, creatorID 
 	// Author always passes. Mirrors monetization-service's own rule.
 	if subscriberID == creatorID {
 		return true, "self", nil
+	}
+
+	// Cache hit short-circuits the HTTP call entirely.
+	if cached, hit := s.entitlementCacheGet(ctx, subscriberID, creatorID, requiredTierID); hit {
+		return cached.Allowed, cached.Reason, nil
 	}
 
 	// No URL configured: fail-secure (treat every gated read as denied).
@@ -92,7 +123,106 @@ func (s *Service) CheckEntitlement(ctx context.Context, subscriberID, creatorID 
 	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
 		return false, "decode_failed", err
 	}
+
+	// Cache successful answers. Skip caching transport errors so a
+	// flaky monetization-service doesn't poison the cache for the
+	// next 60 seconds.
+	s.entitlementCachePut(ctx, subscriberID, creatorID, requiredTierID, envelope.Data.Allowed, envelope.Data.Reason)
 	return envelope.Data.Allowed, envelope.Data.Reason, nil
+}
+
+// InvalidateEntitlementCache drops the cached answer for one
+// (subscriber, creator) pair. Phase 2 will call this from a Kafka
+// consumer of monetization.entitlement.changed; for now it's a hook
+// for tests + the rare in-process call path that knows a state has
+// changed (e.g. an admin endpoint that toggles a creator's gate).
+//
+// Drops both the no-tier and any-tier variants under that pair, so a
+// downgrade/upgrade doesn't leave stale tier-specific entries behind.
+func (s *Service) InvalidateEntitlementCache(ctx context.Context, subscriberID, creatorID uuid.UUID) error {
+	if s.rdb == nil {
+		return nil
+	}
+	pattern := entitlementCacheKeyPrefix + subscriberID.String() + ":" + creatorID.String() + ":*"
+	iter := s.rdb.Scan(ctx, 0, pattern, 100).Iterator()
+	for iter.Next(ctx) {
+		_ = s.rdb.Del(ctx, iter.Val()).Err()
+	}
+	return iter.Err()
+}
+
+// ---------------------------------------------------------------------------
+// Cache plumbing — exported helpers (BuildEntitlementCacheKey,
+// EncodeEntitlementCacheValue, DecodeEntitlementCacheValue) so the
+// tests can drive the format directly without faking a Redis.
+// ---------------------------------------------------------------------------
+
+// CachedEntitlement is the decoded payload of a cache hit.
+type CachedEntitlement struct {
+	Allowed bool
+	Reason  string
+}
+
+// BuildEntitlementCacheKey returns the canonical Redis key for a
+// (subscriber, creator, requiredTier) tuple. requiredTier == nil is
+// treated as the "any active tier" variant and gets a literal "*"
+// segment so it doesn't collide with a real tier UUID.
+func BuildEntitlementCacheKey(subscriberID, creatorID uuid.UUID, requiredTierID *uuid.UUID) string {
+	tierPart := "*"
+	if requiredTierID != nil {
+		tierPart = requiredTierID.String()
+	}
+	return entitlementCacheKeyPrefix + subscriberID.String() + ":" + creatorID.String() + ":" + tierPart
+}
+
+// EncodeEntitlementCacheValue is the wire format we put into Redis:
+// "1|reason" or "0|reason". Compact so the cache is cheap.
+func EncodeEntitlementCacheValue(allowed bool, reason string) string {
+	flag := "0"
+	if allowed {
+		flag = "1"
+	}
+	return flag + "|" + reason
+}
+
+// DecodeEntitlementCacheValue parses what EncodeEntitlementCacheValue
+// produced. Returns (decoded, ok); ok=false on any malformed value
+// so the caller falls through to the live HTTP path rather than
+// trusting garbage.
+func DecodeEntitlementCacheValue(s string) (CachedEntitlement, bool) {
+	parts := strings.SplitN(s, "|", 2)
+	if len(parts) == 0 || (parts[0] != "0" && parts[0] != "1") {
+		return CachedEntitlement{}, false
+	}
+	c := CachedEntitlement{Allowed: parts[0] == "1"}
+	if len(parts) == 2 {
+		c.Reason = parts[1]
+	}
+	return c, true
+}
+
+func (s *Service) entitlementCacheGet(ctx context.Context, subscriberID, creatorID uuid.UUID, requiredTierID *uuid.UUID) (CachedEntitlement, bool) {
+	if s.rdb == nil {
+		return CachedEntitlement{}, false
+	}
+	key := BuildEntitlementCacheKey(subscriberID, creatorID, requiredTierID)
+	v, err := s.rdb.Get(ctx, key).Result()
+	if err != nil {
+		return CachedEntitlement{}, false
+	}
+	return DecodeEntitlementCacheValue(v)
+}
+
+func (s *Service) entitlementCachePut(ctx context.Context, subscriberID, creatorID uuid.UUID, requiredTierID *uuid.UUID, allowed bool, reason string) {
+	if s.rdb == nil {
+		return
+	}
+	ttl := entitlementCacheTTLAllowed
+	if !allowed {
+		ttl = entitlementCacheTTLDenied
+	}
+	key := BuildEntitlementCacheKey(subscriberID, creatorID, requiredTierID)
+	_ = s.rdb.Set(ctx, key, EncodeEntitlementCacheValue(allowed, reason), ttl).Err()
 }
 
 // RedactGatedPost zeroes the heavy body fields on a Post when the

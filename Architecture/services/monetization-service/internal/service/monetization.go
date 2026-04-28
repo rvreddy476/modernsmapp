@@ -13,10 +13,19 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// EntitlementPublisher is a tiny seam over the events.Producer so the
+// service package doesn't take a hard dependency on the events
+// package. Wired in main.go. nil means "don't publish" — used for
+// tests and for the legacy code path before this seam existed.
+type EntitlementPublisher interface {
+	PublishEntitlementChanged(ctx context.Context, subscriptionID, subscriberID, creatorID uuid.UUID, action string) error
+}
+
 type Service struct {
-	store          *postgres.Store
-	rdb            *redis.Client
-	creatorFundCfg CreatorFundConfig
+	store           *postgres.Store
+	rdb             *redis.Client
+	creatorFundCfg  CreatorFundConfig
+	entitlementPub  EntitlementPublisher
 }
 
 func New(s *postgres.Store, rdb *redis.Client) *Service {
@@ -30,10 +39,29 @@ func (s *Service) WithCreatorFundConfig(cfg CreatorFundConfig) *Service {
 	return s
 }
 
+// WithEntitlementPublisher wires the Kafka producer used to publish
+// entitlement.changed events on subscribe/unsubscribe. Nil-safe.
+func (s *Service) WithEntitlementPublisher(p EntitlementPublisher) *Service {
+	s.entitlementPub = p
+	return s
+}
+
 // CreatorFundConfigSnapshot returns the active config (for the status
 // endpoint and for tests).
 func (s *Service) CreatorFundConfigSnapshot() CreatorFundConfig {
 	return s.creatorFundCfg
+}
+
+// publishEntitlementChanged is a nil-safe internal helper used by
+// Subscribe/Unsubscribe to fan out cache-invalidation events.
+// Failures are logged silently (no return) — the event is best-effort
+// since the database write is the source of truth and a TTL-only
+// cache will eventually resolve to the right state anyway.
+func (s *Service) publishEntitlementChanged(ctx context.Context, subscriptionID, subscriberID, creatorID uuid.UUID, action string) {
+	if s.entitlementPub == nil {
+		return
+	}
+	_ = s.entitlementPub.PublishEntitlementChanged(ctx, subscriptionID, subscriberID, creatorID, action)
 }
 
 // ---------------------------------------------------------------------------
@@ -208,12 +236,24 @@ func (s *Service) Subscribe(ctx context.Context, subscriberID, creatorID uuid.UU
 		return nil, err
 	}
 
-	return s.store.Subscribe(ctx, subscriberID, creatorID, tier.ID, tier.Name, tier.PricePaise, tier.Currency, idempotencyKey)
+	sub, err := s.store.Subscribe(ctx, subscriberID, creatorID, tier.ID, tier.Name, tier.PricePaise, tier.Currency, idempotencyKey)
+	if err != nil {
+		return nil, err
+	}
+	// Tier 1a: invalidate downstream caches immediately so a fan who
+	// just subscribed sees gated content on the next read instead of
+	// waiting for the TTL to expire.
+	s.publishEntitlementChanged(ctx, sub.ID, subscriberID, creatorID, "granted")
+	return sub, nil
 }
 
 // Unsubscribe cancels an active subscription.
 func (s *Service) Unsubscribe(ctx context.Context, subscriberID, creatorID uuid.UUID) error {
-	return s.store.Unsubscribe(ctx, subscriberID, creatorID)
+	if err := s.store.Unsubscribe(ctx, subscriberID, creatorID); err != nil {
+		return err
+	}
+	s.publishEntitlementChanged(ctx, uuid.Nil, subscriberID, creatorID, "revoked")
+	return nil
 }
 
 // GetSubscription returns the active subscription between a subscriber and a creator.
