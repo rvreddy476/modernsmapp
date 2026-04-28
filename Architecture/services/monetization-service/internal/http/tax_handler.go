@@ -32,12 +32,12 @@ func (h *Handler) SaveTaxProfile(c *gin.Context) {
 
 	var req SaveTaxProfileRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
 	if err := h.svc.SaveCreatorTaxProfile(c.Request.Context(), userID, req.PANEncrypted, req.GSTIN, req.TaxResidency); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -53,11 +53,11 @@ func (h *Handler) GetTaxProfile(c *gin.Context) {
 
 	profile, err := h.svc.GetCreatorTaxProfile(c.Request.Context(), userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if profile == nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Tax profile not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Tax profile not found", nil)
 		return
 	}
 
@@ -73,13 +73,13 @@ func (h *Handler) GetTDSSummary(c *gin.Context) {
 
 	year := c.Param("year")
 	if year == "" {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "Financial year parameter is required", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "Financial year parameter is required", nil)
 		return
 	}
 
 	entries, totalPaise, err := h.svc.GetTDSSummary(c.Request.Context(), userID, year)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if entries == nil {
@@ -106,7 +106,7 @@ func (h *Handler) ListInvoices(c *gin.Context) {
 
 	invoices, err := h.svc.ListInvoices(c.Request.Context(), userID, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if invoices == nil {

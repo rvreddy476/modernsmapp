@@ -67,13 +67,13 @@ type InitUploadRequest struct {
 func (h *Handler) InitUpload(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	var req InitUploadRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -88,14 +88,14 @@ func (h *Handler) InitUpload(c *gin.Context) {
 		msg := err.Error()
 		switch {
 		case strings.Contains(msg, "file too large"):
-			api.Error(c.Writer, http.StatusRequestEntityTooLarge, "FILE_TOO_LARGE", msg, nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusRequestEntityTooLarge, "FILE_TOO_LARGE", msg, nil)
 		case strings.Contains(msg, "invalid video type") || strings.Contains(msg, "invalid image type"):
-			api.Error(c.Writer, http.StatusUnsupportedMediaType, "UNSUPPORTED_MEDIA_TYPE", msg, nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnsupportedMediaType, "UNSUPPORTED_MEDIA_TYPE", msg, nil)
 		case strings.Contains(msg, "upload rate limit exceeded"):
 			c.Header("Retry-After", "3600")
-			api.Error(c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", msg, nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", msg, nil)
 		default:
-			api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", msg, nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", msg, nil)
 		}
 		return
 	}
@@ -110,29 +110,29 @@ type ConfirmUploadRequest struct {
 func (h *Handler) ConfirmUpload(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	var req ConfirmUploadRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 
 	mediaID, err := uuid.Parse(req.MediaID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil)
 		return
 	}
 
 	res, err := h.svc.ConfirmUpload(c.Request.Context(), mediaID, userID)
 	if err != nil {
 		if err.Error() == "forbidden: you do not own this media" {
-			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -143,13 +143,13 @@ func (h *Handler) GetMedia(c *gin.Context) {
 	mediaIDStr := c.Param("mediaId")
 	mediaID, err := uuid.Parse(mediaIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil)
 		return
 	}
 
 	res, err := h.svc.GetMedia(c.Request.Context(), mediaID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found", nil)
 		return
 	}
 
@@ -160,13 +160,13 @@ func (h *Handler) GetMediaURL(c *gin.Context) {
 	mediaIDStr := c.Param("mediaId")
 	mediaID, err := uuid.Parse(mediaIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil)
 		return
 	}
 
 	res, err := h.svc.GetMediaURL(c.Request.Context(), mediaID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found", nil)
 		return
 	}
 
@@ -177,14 +177,14 @@ func (h *Handler) GetMediaVariantURL(c *gin.Context) {
 	mediaIDStr := c.Param("mediaId")
 	mediaID, err := uuid.Parse(mediaIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil)
 		return
 	}
 
 	variant := c.Param("variant")
 	url, err := h.svc.GetMediaVariantURL(c.Request.Context(), mediaID, variant)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
 		return
 	}
 
@@ -198,7 +198,7 @@ type BatchMediaURLsRequest struct {
 func (h *Handler) BatchMediaURLs(c *gin.Context) {
 	var req BatchMediaURLsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -206,7 +206,7 @@ func (h *Handler) BatchMediaURLs(c *gin.Context) {
 	for _, idStr := range req.IDs {
 		id, err := uuid.Parse(idStr)
 		if err != nil {
-			api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID: "+idStr, nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID: "+idStr, nil)
 			return
 		}
 		ids = append(ids, id)
@@ -214,7 +214,7 @@ func (h *Handler) BatchMediaURLs(c *gin.Context) {
 
 	res, err := h.svc.BatchMediaURLs(c.Request.Context(), ids)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -224,27 +224,27 @@ func (h *Handler) BatchMediaURLs(c *gin.Context) {
 func (h *Handler) DeleteMedia(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	mediaID, err := uuid.Parse(c.Param("mediaId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil)
 		return
 	}
 
 	err = h.svc.DeleteMedia(c.Request.Context(), mediaID, userID)
 	if err != nil {
 		if err.Error() == "forbidden: you do not own this media" {
-			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
 			return
 		}
 		if err.Error() == "media not found" {
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -254,13 +254,13 @@ func (h *Handler) DeleteMedia(c *gin.Context) {
 func (h *Handler) GetMediaStatus(c *gin.Context) {
 	mediaID, err := uuid.Parse(c.Param("mediaId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil)
 		return
 	}
 
 	res, err := h.svc.GetMediaStatus(c.Request.Context(), mediaID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found", nil)
 		return
 	}
 
@@ -272,13 +272,13 @@ func (h *Handler) GetMediaStatus(c *gin.Context) {
 func (h *Handler) ServeMedia(c *gin.Context) {
 	mediaID, err := uuid.Parse(c.Param("mediaId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil)
 		return
 	}
 
 	imgURL, err := h.svc.GetMediaVariantURL(c.Request.Context(), mediaID, "original")
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found", nil)
 		return
 	}
 
@@ -289,14 +289,14 @@ func (h *Handler) ServeMedia(c *gin.Context) {
 func (h *Handler) ServeMediaVariant(c *gin.Context) {
 	mediaID, err := uuid.Parse(c.Param("mediaId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil)
 		return
 	}
 
 	variant := c.Param("variant")
 	imgURL, err := h.svc.GetMediaVariantURL(c.Request.Context(), mediaID, variant)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
 		return
 	}
 
@@ -310,29 +310,29 @@ type UpdateAltTextRequest struct {
 func (h *Handler) UpdateAltText(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	mediaID, err := uuid.Parse(c.Param("mediaId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil)
 		return
 	}
 
 	var req UpdateAltTextRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 
 	err = h.svc.UpdateAltText(c.Request.Context(), mediaID, userID, req.AltText)
 	if err != nil {
 		if err.Error() == "no rows in result set" {
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found or not owned by user", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found or not owned by user", nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -347,19 +347,19 @@ type GetPresignedUploadURLRequest struct {
 func (h *Handler) GetPresignedUploadURL(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	var req GetPresignedUploadURLRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 
 	res, err := h.svc.GetPresignedUploadURL(c.Request.Context(), userID, req.Filename, req.ContentType)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -383,34 +383,34 @@ type ExtractFrameRequest struct {
 func (h *Handler) ExtractFrame(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	mediaID, err := uuid.Parse(c.Param("mediaId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid media ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid media ID", nil)
 		return
 	}
 
 	var req ExtractFrameRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 
 	// Verify the media exists and is owned by the caller
 	media, err := h.svc.GetMedia(c.Request.Context(), mediaID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found", nil)
 		return
 	}
 	if media.UploaderID != userID {
-		api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "you do not own this media", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "you do not own this media", nil)
 		return
 	}
 	if media.FileType != "video" {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "frame extraction only supported for video media", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "frame extraction only supported for video media", nil)
 		return
 	}
 

@@ -23,30 +23,30 @@ type CreateEventRequest struct {
 func (h *Handler) CreateEvent(c *gin.Context) {
 	communityID, err := uuid.Parse(c.Param("communityId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid community id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid community id", nil)
 		return
 	}
 
 	userID := c.GetHeader("X-User-ID")
 	if userID == "" {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil)
 		return
 	}
 	uid, err := uuid.Parse(userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid user id", nil)
 		return
 	}
 
 	var req CreateEventRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 
 	startsAt, err := time.Parse(time.RFC3339, req.StartsAt)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_DATE", "starts_at must be RFC3339", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_DATE", "starts_at must be RFC3339", nil)
 		return
 	}
 
@@ -54,7 +54,7 @@ func (h *Handler) CreateEvent(c *gin.Context) {
 	if req.EndsAt != nil {
 		t, err := time.Parse(time.RFC3339, *req.EndsAt)
 		if err != nil {
-			api.Error(c.Writer, http.StatusBadRequest, "INVALID_DATE", "ends_at must be RFC3339", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_DATE", "ends_at must be RFC3339", nil)
 			return
 		}
 		endsAt = &t
@@ -72,7 +72,7 @@ func (h *Handler) CreateEvent(c *gin.Context) {
 	}
 
 	if err := h.svc.Store().CreateEvent(c.Request.Context(), event); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "CREATE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "CREATE_FAILED", err.Error(), nil)
 		return
 	}
 
@@ -82,13 +82,13 @@ func (h *Handler) CreateEvent(c *gin.Context) {
 func (h *Handler) ListEvents(c *gin.Context) {
 	communityID, err := uuid.Parse(c.Param("communityId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid community id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid community id", nil)
 		return
 	}
 
 	events, err := h.svc.Store().ListEvents(c.Request.Context(), communityID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "LIST_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "LIST_FAILED", err.Error(), nil)
 		return
 	}
 

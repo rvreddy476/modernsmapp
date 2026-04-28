@@ -77,7 +77,7 @@ func (h *Handler) GetOnThisDay(c *gin.Context) {
 
 	memories, err := h.svc.GetOnThisDay(c.Request.Context(), userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "MEMORIES_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "MEMORIES_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": memories}, nil)
@@ -98,7 +98,7 @@ func (h *Handler) CreateCollection(c *gin.Context) {
 		Visibility  string  `json:"visibility"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 
@@ -110,7 +110,7 @@ func (h *Handler) CreateCollection(c *gin.Context) {
 		Visibility:  body.Visibility,
 	})
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "CREATE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "CREATE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, col, nil)
@@ -123,13 +123,13 @@ func (h *Handler) GetCollection(c *gin.Context) {
 	}
 	colID, err := uuid.Parse(c.Param("collectionId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid collection id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid collection id", nil)
 		return
 	}
 
 	col, err := h.svc.GetCollection(c.Request.Context(), colID, userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, col, nil)
@@ -144,7 +144,7 @@ func (h *Handler) ListCollections(c *gin.Context) {
 
 	collections, err := h.svc.ListCollections(c.Request.Context(), userID, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "LIST_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "LIST_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": collections}, nil)
@@ -157,7 +157,7 @@ func (h *Handler) UpdateCollection(c *gin.Context) {
 	}
 	colID, err := uuid.Parse(c.Param("collectionId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid collection id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid collection id", nil)
 		return
 	}
 
@@ -167,12 +167,12 @@ func (h *Handler) UpdateCollection(c *gin.Context) {
 		Visibility  string `json:"visibility"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 
 	if err := h.svc.UpdateCollection(c.Request.Context(), colID, userID, body.Title, body.Description, body.Visibility); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "UPDATE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "UPDATE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "updated"}, nil)
@@ -185,12 +185,12 @@ func (h *Handler) DeleteCollection(c *gin.Context) {
 	}
 	colID, err := uuid.Parse(c.Param("collectionId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid collection id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid collection id", nil)
 		return
 	}
 
 	if err := h.svc.DeleteCollection(c.Request.Context(), colID, userID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "DELETE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "DELETE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "deleted"}, nil)
@@ -205,7 +205,7 @@ func (h *Handler) AddCollectionItem(c *gin.Context) {
 	}
 	colID, err := uuid.Parse(c.Param("collectionId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid collection id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid collection id", nil)
 		return
 	}
 
@@ -215,7 +215,7 @@ func (h *Handler) AddCollectionItem(c *gin.Context) {
 		Caption  string  `json:"caption"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 
@@ -235,7 +235,7 @@ func (h *Handler) AddCollectionItem(c *gin.Context) {
 		Caption:      body.Caption,
 	})
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "ADD_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "ADD_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, item, nil)
@@ -248,14 +248,14 @@ func (h *Handler) ListCollectionItems(c *gin.Context) {
 	}
 	colID, err := uuid.Parse(c.Param("collectionId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid collection id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid collection id", nil)
 		return
 	}
 	limit, offset := parsePagination(c)
 
 	items, err := h.svc.ListCollectionItems(c.Request.Context(), colID, userID, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "LIST_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "LIST_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": items}, nil)
@@ -268,17 +268,17 @@ func (h *Handler) RemoveCollectionItem(c *gin.Context) {
 	}
 	colID, err := uuid.Parse(c.Param("collectionId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid collection id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid collection id", nil)
 		return
 	}
 	itemID, err := uuid.Parse(c.Param("itemId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid item id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid item id", nil)
 		return
 	}
 
 	if err := h.svc.RemoveCollectionItem(c.Request.Context(), itemID, colID, userID); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "REMOVE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "REMOVE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "removed"}, nil)
@@ -294,7 +294,7 @@ func (h *Handler) GetPreferences(c *gin.Context) {
 
 	prefs, err := h.svc.GetPreferences(c.Request.Context(), userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "PREFS_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "PREFS_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, prefs, nil)
@@ -313,7 +313,7 @@ func (h *Handler) UpdatePreferences(c *gin.Context) {
 		NotificationTime string   `json:"notification_time"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 
@@ -338,7 +338,7 @@ func (h *Handler) UpdatePreferences(c *gin.Context) {
 	}
 
 	if err := h.svc.UpdatePreferences(c.Request.Context(), prefs); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "UPDATE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "UPDATE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "updated"}, nil)
@@ -349,12 +349,12 @@ func (h *Handler) UpdatePreferences(c *gin.Context) {
 func parseUserID(c *gin.Context) (uuid.UUID, bool) {
 	userID := c.GetHeader("X-User-Id")
 	if userID == "" {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil)
 		return uuid.Nil, false
 	}
 	uid, err := uuid.Parse(userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_USER_ID", "invalid user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_USER_ID", "invalid user id", nil)
 		return uuid.Nil, false
 	}
 	return uid, true

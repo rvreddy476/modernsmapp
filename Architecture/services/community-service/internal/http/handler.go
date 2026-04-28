@@ -151,7 +151,7 @@ type QuarantineSpaceRequest struct {
 func getUserID(c *gin.Context) (uuid.UUID, bool) {
 	id, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return uuid.Nil, false
 	}
 	return id, true
@@ -173,19 +173,19 @@ func handleServiceError(c *gin.Context, err error) {
 	msg := err.Error()
 	switch {
 	case contains(msg, "forbidden"), contains(msg, "only admins"), contains(msg, "only the community"), contains(msg, "only moderators"), contains(msg, "only space managers"):
-		api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", msg, nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", msg, nil)
 	case contains(msg, "not found"):
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", msg, nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", msg, nil)
 	case contains(msg, "not a member"):
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", msg, nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", msg, nil)
 	case contains(msg, "rate_limited"):
-		api.Error(c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", msg, nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", msg, nil)
 	case contains(msg, "already"):
-		api.Error(c.Writer, http.StatusConflict, "CONFLICT", msg, nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "CONFLICT", msg, nil)
 	case contains(msg, "invalid"), contains(msg, "must be between"), contains(msg, "is required"):
-		api.Error(c.Writer, http.StatusUnprocessableEntity, "VALIDATION_ERROR", msg, nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnprocessableEntity, "VALIDATION_ERROR", msg, nil)
 	default:
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", msg, nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", msg, nil)
 	}
 }
 
@@ -212,7 +212,7 @@ func (h *Handler) CreateCommunity(c *gin.Context) {
 
 	var req CreateCommunityRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -250,7 +250,7 @@ func (h *Handler) CreateCommunity(c *gin.Context) {
 func (h *Handler) GetCommunity(c *gin.Context) {
 	communityID, err := uuid.Parse(c.Param("communityId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil)
 		return
 	}
 
@@ -276,13 +276,13 @@ func (h *Handler) UpdateCommunity(c *gin.Context) {
 
 	communityID, err := uuid.Parse(c.Param("communityId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil)
 		return
 	}
 
 	var req UpdateCommunityRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -324,7 +324,7 @@ func (h *Handler) DeleteCommunity(c *gin.Context) {
 
 	communityID, err := uuid.Parse(c.Param("communityId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil)
 		return
 	}
 
@@ -344,7 +344,7 @@ func (h *Handler) JoinCommunity(c *gin.Context) {
 
 	communityID, err := uuid.Parse(c.Param("communityId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil)
 		return
 	}
 
@@ -373,7 +373,7 @@ func (h *Handler) LeaveCommunity(c *gin.Context) {
 
 	communityID, err := uuid.Parse(c.Param("communityId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil)
 		return
 	}
 
@@ -388,7 +388,7 @@ func (h *Handler) LeaveCommunity(c *gin.Context) {
 func (h *Handler) ListMembers(c *gin.Context) {
 	communityID, err := uuid.Parse(c.Param("communityId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil)
 		return
 	}
 
@@ -410,19 +410,19 @@ func (h *Handler) UpdateMemberRole(c *gin.Context) {
 
 	communityID, err := uuid.Parse(c.Param("communityId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil)
 		return
 	}
 
 	targetUserID, err := uuid.Parse(c.Param("userId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil)
 		return
 	}
 
 	var req UpdateMemberRoleRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -442,13 +442,13 @@ func (h *Handler) BanMember(c *gin.Context) {
 
 	communityID, err := uuid.Parse(c.Param("communityId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil)
 		return
 	}
 
 	targetUserID, err := uuid.Parse(c.Param("userId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil)
 		return
 	}
 
@@ -471,13 +471,13 @@ func (h *Handler) UnbanMember(c *gin.Context) {
 
 	communityID, err := uuid.Parse(c.Param("communityId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil)
 		return
 	}
 
 	targetUserID, err := uuid.Parse(c.Param("userId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil)
 		return
 	}
 
@@ -492,7 +492,7 @@ func (h *Handler) UnbanMember(c *gin.Context) {
 func (h *Handler) ListSpaces(c *gin.Context) {
 	communityID, err := uuid.Parse(c.Param("communityId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil)
 		return
 	}
 
@@ -513,13 +513,13 @@ func (h *Handler) CreateSpace(c *gin.Context) {
 
 	communityID, err := uuid.Parse(c.Param("communityId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil)
 		return
 	}
 
 	var req CreateSpaceRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -549,19 +549,19 @@ func (h *Handler) UpdateSpace(c *gin.Context) {
 
 	communityID, err := uuid.Parse(c.Param("communityId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil)
 		return
 	}
 
 	spaceID, err := uuid.Parse(c.Param("spaceId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid space ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid space ID", nil)
 		return
 	}
 
 	var req UpdateSpaceRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -590,13 +590,13 @@ func (h *Handler) DeleteSpace(c *gin.Context) {
 
 	communityID, err := uuid.Parse(c.Param("communityId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil)
 		return
 	}
 
 	spaceID, err := uuid.Parse(c.Param("spaceId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid space ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid space ID", nil)
 		return
 	}
 
@@ -616,13 +616,13 @@ func (h *Handler) QuarantineSpace(c *gin.Context) {
 
 	communityID, err := uuid.Parse(c.Param("communityId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil)
 		return
 	}
 
 	spaceID, err := uuid.Parse(c.Param("spaceId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid space ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid space ID", nil)
 		return
 	}
 
@@ -645,7 +645,7 @@ func (h *Handler) ListJoinRequests(c *gin.Context) {
 
 	communityID, err := uuid.Parse(c.Param("communityId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil)
 		return
 	}
 
@@ -667,13 +667,13 @@ func (h *Handler) ApproveRequest(c *gin.Context) {
 
 	communityID, err := uuid.Parse(c.Param("communityId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil)
 		return
 	}
 
 	requestID, err := uuid.Parse(c.Param("requestId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid request ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid request ID", nil)
 		return
 	}
 
@@ -693,13 +693,13 @@ func (h *Handler) RejectRequest(c *gin.Context) {
 
 	communityID, err := uuid.Parse(c.Param("communityId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil)
 		return
 	}
 
 	requestID, err := uuid.Parse(c.Param("requestId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid request ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid request ID", nil)
 		return
 	}
 
@@ -719,7 +719,7 @@ func (h *Handler) GetModLog(c *gin.Context) {
 
 	communityID, err := uuid.Parse(c.Param("communityId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil)
 		return
 	}
 

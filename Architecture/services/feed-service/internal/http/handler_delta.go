@@ -29,7 +29,7 @@ func (h *Handler) FeedDelta(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
@@ -37,11 +37,11 @@ func (h *Handler) FeedDelta(c *gin.Context) {
 	anchor := c.Query("anchor")
 
 	if feedType == "" {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "feed_type is required", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "feed_type is required", nil)
 		return
 	}
 	if anchor == "" {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "anchor is required", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "anchor is required", nil)
 		return
 	}
 
@@ -51,8 +51,8 @@ func (h *Handler) FeedDelta(c *gin.Context) {
 		"flicks": true, "posttube": true,
 	}
 	if !validTypes[feedType] {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST",
-			"feed_type must be one of: home, following, group, group_channel, channel, community, community_space, flicks, posttube", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST",
+			"feed_type must be one of: home, following, group, group_channel, channel, community, community_space, flicks, posttube", nil)
 		return
 	}
 
@@ -66,27 +66,27 @@ func (h *Handler) FeedDelta(c *gin.Context) {
 	switch feedType {
 	case "group":
 		if groupID == "" {
-			api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "group_id is required for group feed", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "group_id is required for group feed", nil)
 			return
 		}
 	case "group_channel":
 		if groupID == "" || channelID == "" {
-			api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "group_id and channel_id are required for group_channel feed", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "group_id and channel_id are required for group_channel feed", nil)
 			return
 		}
 	case "channel":
 		if channelID == "" {
-			api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "channel_id is required for channel feed", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "channel_id is required for channel feed", nil)
 			return
 		}
 	case "community":
 		if communityID == "" {
-			api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "community_id is required for community feed", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "community_id is required for community feed", nil)
 			return
 		}
 	case "community_space":
 		if spaceID == "" {
-			api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "space_id is required for community_space feed", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "space_id is required for community_space feed", nil)
 			return
 		}
 	}
@@ -106,7 +106,7 @@ func (h *Handler) FeedDelta(c *gin.Context) {
 	delta, err := h.svc.ComputeFeedDelta(c.Request.Context(), userID, feedType, anchor, groupID, channelID, communityID, spaceID)
 	if err != nil {
 		slog.Error("feed delta computation failed", "feed_type", feedType, "error", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to compute feed delta", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to compute feed delta", nil)
 		return
 	}
 

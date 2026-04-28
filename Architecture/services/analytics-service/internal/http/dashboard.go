@@ -32,12 +32,12 @@ func (h *DashboardHandler) RegisterRoutes(v1 *gin.RouterGroup) {
 func (h *DashboardHandler) GetOverview(c *gin.Context) {
 	userID := c.GetHeader("X-User-Id")
 	if userID == "" {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing X-User-Id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing X-User-Id", nil)
 		return
 	}
 	creatorID, err := uuid.Parse(userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid user ID", nil)
 		return
 	}
 
@@ -46,7 +46,7 @@ func (h *DashboardHandler) GetOverview(c *gin.Context) {
 
 	overview, err := h.aggStore.GetCreatorOverview(c.Request.Context(), creatorID, since)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch overview", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch overview", nil)
 		return
 	}
 
@@ -56,7 +56,7 @@ func (h *DashboardHandler) GetOverview(c *gin.Context) {
 func (h *DashboardHandler) GetContentList(c *gin.Context) {
 	userID := c.GetHeader("X-User-Id")
 	if userID == "" {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing X-User-Id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing X-User-Id", nil)
 		return
 	}
 	creatorID, _ := uuid.Parse(userID)
@@ -73,7 +73,7 @@ func (h *DashboardHandler) GetContentList(c *gin.Context) {
 
 	content, err := h.aggStore.GetContentList(c.Request.Context(), creatorID, limit, cursor, sortBy)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch content list", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch content list", nil)
 		return
 	}
 
@@ -88,7 +88,7 @@ func (h *DashboardHandler) GetContentList(c *gin.Context) {
 func (h *DashboardHandler) GetContentDetail(c *gin.Context) {
 	contentID, err := uuid.Parse(c.Param("contentId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid content ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid content ID", nil)
 		return
 	}
 
@@ -96,7 +96,7 @@ func (h *DashboardHandler) GetContentDetail(c *gin.Context) {
 
 	trend, err := h.aggStore.GetContentHourlyTrend(c.Request.Context(), contentID, since)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch content detail", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch content detail", nil)
 		return
 	}
 
@@ -106,7 +106,7 @@ func (h *DashboardHandler) GetContentDetail(c *gin.Context) {
 func (h *DashboardHandler) GetContentTrend(c *gin.Context) {
 	contentID, err := uuid.Parse(c.Param("contentId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid content ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid content ID", nil)
 		return
 	}
 
@@ -114,7 +114,7 @@ func (h *DashboardHandler) GetContentTrend(c *gin.Context) {
 
 	trend, err := h.aggStore.GetContentHourlyTrend(c.Request.Context(), contentID, since)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch trend", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch trend", nil)
 		return
 	}
 
@@ -124,7 +124,7 @@ func (h *DashboardHandler) GetContentTrend(c *gin.Context) {
 func (h *DashboardHandler) GetCreatorTrend(c *gin.Context) {
 	userID := c.GetHeader("X-User-Id")
 	if userID == "" {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing X-User-Id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing X-User-Id", nil)
 		return
 	}
 	creatorID, _ := uuid.Parse(userID)
@@ -132,7 +132,7 @@ func (h *DashboardHandler) GetCreatorTrend(c *gin.Context) {
 
 	trend, err := h.aggStore.GetCreatorDailyTrend(c.Request.Context(), creatorID, since)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch trend", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch trend", nil)
 		return
 	}
 

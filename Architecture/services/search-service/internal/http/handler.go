@@ -87,7 +87,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 func (h *Handler) SearchUsers(c *gin.Context) {
 	query := c.Query("q")
 	if errMsg := validateSearchQuery(query); errMsg != "" {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", errMsg, nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", errMsg, nil)
 		return
 	}
 
@@ -101,7 +101,7 @@ func (h *Handler) SearchUsers(c *gin.Context) {
 	results, err := h.store.SearchUsers(c.Request.Context(), query, limit)
 	if err != nil {
 		slog.Error("SearchUsers error", "error", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Search failed", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Search failed", nil)
 		return
 	}
 
@@ -113,14 +113,14 @@ func (h *Handler) BulkSyncUsers(c *gin.Context) {
 		Users []search.UserDoc `json:"users"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 
 	count, err := h.store.BulkIndexUsers(c.Request.Context(), req.Users)
 	if err != nil {
 		slog.Error("BulkSyncUsers error", "error", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Bulk sync failed", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Bulk sync failed", nil)
 		return
 	}
 
@@ -130,7 +130,7 @@ func (h *Handler) BulkSyncUsers(c *gin.Context) {
 func (h *Handler) SearchPosts(c *gin.Context) {
 	query := c.Query("q")
 	if errMsg := validateSearchQuery(query); errMsg != "" {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", errMsg, nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", errMsg, nil)
 		return
 	}
 
@@ -144,7 +144,7 @@ func (h *Handler) SearchPosts(c *gin.Context) {
 	results, err := h.store.SearchPosts(c.Request.Context(), query, limit)
 	if err != nil {
 		slog.Error("SearchPosts error", "error", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Search failed", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Search failed", nil)
 		return
 	}
 
@@ -156,7 +156,7 @@ func (h *Handler) SearchPosts(c *gin.Context) {
 func (h *Handler) UniversalSearch(c *gin.Context) {
 	query := c.Query("q")
 	if errMsg := validateSearchQuery(query); errMsg != "" {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", errMsg, nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", errMsg, nil)
 		return
 	}
 
@@ -165,8 +165,8 @@ func (h *Handler) UniversalSearch(c *gin.Context) {
 	case "all", "profiles", "posts", "videos", "flicks":
 		// valid — videos = long_video content_type, flicks = flick content_type
 	default:
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST",
-			"Parameter 'type' must be one of: all, profiles, posts, videos, flicks", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST",
+			"Parameter 'type' must be one of: all, profiles, posts, videos, flicks", nil)
 		return
 	}
 
@@ -180,7 +180,7 @@ func (h *Handler) UniversalSearch(c *gin.Context) {
 	results, err := h.store.UniversalSearch(c.Request.Context(), query, searchType, limit)
 	if err != nil {
 		slog.Error("UniversalSearch error", "error", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Search failed", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Search failed", nil)
 		return
 	}
 
@@ -193,7 +193,7 @@ func (h *Handler) UniversalSearch(c *gin.Context) {
 func (h *Handler) SearchHashtags(c *gin.Context) {
 	query := c.Query("q")
 	if errMsg := validateSearchQuery(query); errMsg != "" {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", errMsg, nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", errMsg, nil)
 		return
 	}
 
@@ -207,7 +207,7 @@ func (h *Handler) SearchHashtags(c *gin.Context) {
 	hashtags, err := h.store.SearchHashtags(c.Request.Context(), query, limit)
 	if err != nil {
 		slog.Error("SearchHashtags error", "error", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Hashtag search failed", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Hashtag search failed", nil)
 		return
 	}
 
@@ -224,7 +224,7 @@ func (h *Handler) GetTrending(c *gin.Context) {
 	results, err := h.rdb.ZRevRangeWithScores(c.Request.Context(), key, 0, 19).Result()
 	if err != nil {
 		slog.Error("GetTrending Redis error", "error", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch trending hashtags", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch trending hashtags", nil)
 		return
 	}
 
@@ -250,7 +250,7 @@ func (h *Handler) GetTrending(c *gin.Context) {
 func (h *Handler) Autocomplete(c *gin.Context) {
 	query := c.Query("q")
 	if query == "" {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "q is required", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "q is required", nil)
 		return
 	}
 	if len(query) > 100 {
@@ -267,7 +267,7 @@ func (h *Handler) Autocomplete(c *gin.Context) {
 	results, err := h.store.Autocomplete(c.Request.Context(), query, limit)
 	if err != nil {
 		slog.Error("autocomplete: search failed", "error", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "SEARCH_ERROR", "search failed", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "SEARCH_ERROR", "search failed", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"results": results}, nil)
@@ -286,7 +286,7 @@ func (h *Handler) GetSuggested(c *gin.Context) {
 	posts, err := h.store.GetPopularPosts(c.Request.Context(), limit)
 	if err != nil {
 		slog.Error("GetSuggested error", "error", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch suggested posts", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch suggested posts", nil)
 		return
 	}
 
@@ -296,7 +296,7 @@ func (h *Handler) GetSuggested(c *gin.Context) {
 // requireExtras returns false and writes a 503 if the extras store is not configured.
 func (h *Handler) requireExtras(c *gin.Context) bool {
 	if h.extrasStore == nil {
-		api.Error(c.Writer, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "Postgres extras store not configured", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "Postgres extras store not configured", nil)
 		return false
 	}
 	return true
@@ -307,7 +307,7 @@ func requireUserID(c *gin.Context) (uuid.UUID, bool) {
 	raw := c.GetHeader("X-User-Id")
 	id, err := uuid.Parse(raw)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid or missing X-User-Id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid or missing X-User-Id", nil)
 		return uuid.Nil, false
 	}
 	return id, true
@@ -329,7 +329,7 @@ func (h *Handler) SaveSearch(c *gin.Context) {
 		SearchType string `json:"search_type"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 	if req.SearchType == "" {
@@ -339,7 +339,7 @@ func (h *Handler) SaveSearch(c *gin.Context) {
 	ss, err := h.extrasStore.SaveSearch(c.Request.Context(), userID, req.Query, req.SearchType)
 	if err != nil {
 		slog.Error("SaveSearch error", "error", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to save search", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to save search", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, ss, nil)
@@ -358,7 +358,7 @@ func (h *Handler) GetSavedSearches(c *gin.Context) {
 	items, err := h.extrasStore.GetSavedSearches(c.Request.Context(), userID)
 	if err != nil {
 		slog.Error("GetSavedSearches error", "error", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get saved searches", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get saved searches", nil)
 		return
 	}
 	if items == nil {
@@ -379,17 +379,17 @@ func (h *Handler) DeleteSavedSearch(c *gin.Context) {
 
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid saved search ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid saved search ID", nil)
 		return
 	}
 
 	if err := h.extrasStore.DeleteSavedSearch(c.Request.Context(), id, userID); err != nil {
 		if err == postgres.ErrNotFound {
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Saved search not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Saved search not found", nil)
 			return
 		}
 		slog.Error("DeleteSavedSearch error", "error", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to delete saved search", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to delete saved search", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"status": "deleted"}, nil)
@@ -416,7 +416,7 @@ func (h *Handler) GetSearchHistory(c *gin.Context) {
 	items, err := h.extrasStore.GetSearchHistory(c.Request.Context(), userID, limit)
 	if err != nil {
 		slog.Error("GetSearchHistory error", "error", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get search history", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get search history", nil)
 		return
 	}
 	if items == nil {
@@ -437,7 +437,7 @@ func (h *Handler) ClearSearchHistory(c *gin.Context) {
 
 	if err := h.extrasStore.ClearSearchHistory(c.Request.Context(), userID); err != nil {
 		slog.Error("ClearSearchHistory error", "error", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to clear search history", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to clear search history", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"status": "cleared"}, nil)
@@ -448,7 +448,7 @@ func (h *Handler) ClearSearchHistory(c *gin.Context) {
 func (h *Handler) SearchProducts(c *gin.Context) {
 	query := c.Query("q")
 	if errMsg := validateSearchQuery(query); errMsg != "" {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", errMsg, nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", errMsg, nil)
 		return
 	}
 
@@ -463,7 +463,7 @@ func (h *Handler) SearchProducts(c *gin.Context) {
 	results, err := h.store.SearchProducts(c.Request.Context(), query, category, limit)
 	if err != nil {
 		slog.Error("SearchProducts error", "error", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Product search failed", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Product search failed", nil)
 		return
 	}
 	if results == nil {
@@ -477,7 +477,7 @@ func (h *Handler) SearchProducts(c *gin.Context) {
 func (h *Handler) SearchEvents(c *gin.Context) {
 	query := c.Query("q")
 	if errMsg := validateSearchQuery(query); errMsg != "" {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", errMsg, nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", errMsg, nil)
 		return
 	}
 
@@ -491,7 +491,7 @@ func (h *Handler) SearchEvents(c *gin.Context) {
 	results, err := h.store.SearchEvents(c.Request.Context(), query, limit)
 	if err != nil {
 		slog.Error("SearchEvents error", "error", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Event search failed", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Event search failed", nil)
 		return
 	}
 	if results == nil {
@@ -511,7 +511,7 @@ func (h *Handler) SearchMessages(c *gin.Context) {
 
 	query := c.Query("q")
 	if errMsg := validateSearchQuery(query); errMsg != "" {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", errMsg, nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", errMsg, nil)
 		return
 	}
 
@@ -526,7 +526,7 @@ func (h *Handler) SearchMessages(c *gin.Context) {
 	results, err := h.store.SearchMessages(c.Request.Context(), userID.String(), convID, query, limit)
 	if err != nil {
 		slog.Error("SearchMessages error", "error", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Message search failed", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Message search failed", nil)
 		return
 	}
 	if results == nil {

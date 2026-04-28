@@ -34,7 +34,7 @@ func (h *Handler) GetTrendingHashtags(c *gin.Context) {
 
 	tags, err := h.svc.GetTrendingHashtags(c.Request.Context(), limit, sinceDays)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, tags, nil)
@@ -43,13 +43,13 @@ func (h *Handler) GetTrendingHashtags(c *gin.Context) {
 func (h *Handler) LookupSlugRedirect(c *gin.Context) {
 	slug := c.Param("slug")
 	if slug == "" {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_SLUG", "Slug is required", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_SLUG", "Slug is required", nil)
 		return
 	}
 
 	reelID, newSlug, err := h.svc.LookupSlugRedirect(c.Request.Context(), slug)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Slug not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Slug not found", nil)
 		return
 	}
 
@@ -71,7 +71,7 @@ func (h *Handler) GetFlaggedReels(c *gin.Context) {
 
 	reviews, err := h.svc.GetFlaggedReels(c.Request.Context(), limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, reviews, nil)
@@ -80,13 +80,13 @@ func (h *Handler) GetFlaggedReels(c *gin.Context) {
 func (h *Handler) GetReelModerationReviews(c *gin.Context) {
 	reelID, err := uuid.Parse(c.Param("reelId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid reel ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid reel ID", nil)
 		return
 	}
 
 	reviews, err := h.svc.GetReelModerationReviews(c.Request.Context(), reelID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, reviews, nil)

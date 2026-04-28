@@ -46,23 +46,23 @@ type PinContentRequest struct {
 func (h *Handler) PinContent(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	var req PinContentRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
 	pin, err := h.svc.PinContent(c.Request.Context(), userID, req.ContentType, req.ContentID, req.PinOrder)
 	if err != nil {
 		if err.Error() == "MAX_PINS_REACHED" {
-			api.Error(c.Writer, http.StatusUnprocessableEntity, "MAX_PINS_REACHED", "Maximum 3 pins allowed per profile", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnprocessableEntity, "MAX_PINS_REACHED", "Maximum 3 pins allowed per profile", nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -72,7 +72,7 @@ func (h *Handler) PinContent(c *gin.Context) {
 func (h *Handler) UnpinContent(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
@@ -80,7 +80,7 @@ func (h *Handler) UnpinContent(c *gin.Context) {
 	contentID := c.Param("contentId")
 
 	if err := h.svc.UnpinContent(c.Request.Context(), userID, contentType, contentID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -90,13 +90,13 @@ func (h *Handler) UnpinContent(c *gin.Context) {
 func (h *Handler) GetPins(c *gin.Context) {
 	userID, err := uuid.Parse(c.Param("userId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil)
 		return
 	}
 
 	pins, err := h.svc.GetProfilePins(c.Request.Context(), userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if pins == nil {
@@ -120,19 +120,19 @@ type AddPortfolioItemRequest struct {
 func (h *Handler) AddPortfolioItem(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	var req AddPortfolioItemRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
 	item, err := h.svc.AddPortfolioItem(c.Request.Context(), userID, req.Title, req.Description, req.Type, req.URL, req.MediaID, req.SortOrder)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -149,18 +149,18 @@ type UpdatePortfolioItemRequest struct {
 func (h *Handler) UpdatePortfolioItem(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 	itemID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid item ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid item ID", nil)
 		return
 	}
 
 	var req UpdatePortfolioItemRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -174,7 +174,7 @@ func (h *Handler) UpdatePortfolioItem(c *gin.Context) {
 	}
 
 	if err := h.svc.UpdatePortfolioItem(c.Request.Context(), item); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -184,17 +184,17 @@ func (h *Handler) UpdatePortfolioItem(c *gin.Context) {
 func (h *Handler) DeletePortfolioItem(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 	itemID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid item ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid item ID", nil)
 		return
 	}
 
 	if err := h.svc.DeletePortfolioItem(c.Request.Context(), itemID, userID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -204,13 +204,13 @@ func (h *Handler) DeletePortfolioItem(c *gin.Context) {
 func (h *Handler) GetPortfolio(c *gin.Context) {
 	userID, err := uuid.Parse(c.Param("userId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil)
 		return
 	}
 
 	items, err := h.svc.GetPortfolio(c.Request.Context(), userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if items == nil {
@@ -225,14 +225,14 @@ func (h *Handler) GetPortfolio(c *gin.Context) {
 func (h *Handler) GetMyQRCode(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	// Fetch user to get handle
 	u, err := h.svc.GetUser(c.Request.Context(), userID)
 	if err != nil || u == nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "User not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "User not found", nil)
 		return
 	}
 
@@ -243,7 +243,7 @@ func (h *Handler) GetMyQRCode(c *gin.Context) {
 
 	qr, err := h.svc.GetOrCreateQRCode(c.Request.Context(), userID, handle)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -253,12 +253,12 @@ func (h *Handler) GetMyQRCode(c *gin.Context) {
 func (h *Handler) TrackQRScan(c *gin.Context) {
 	userID, err := uuid.Parse(c.Param("userId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil)
 		return
 	}
 
 	if err := h.svc.TrackQRScan(c.Request.Context(), userID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -270,13 +270,13 @@ func (h *Handler) TrackQRScan(c *gin.Context) {
 func (h *Handler) GetWellbeing(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	w, err := h.svc.GetWellbeing(c.Request.Context(), userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -286,19 +286,19 @@ func (h *Handler) GetWellbeing(c *gin.Context) {
 func (h *Handler) UpdateWellbeing(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	var req store.DigitalWellbeing
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 	req.UserID = userID
 
 	if err := h.svc.UpdateWellbeing(c.Request.Context(), &req); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -313,18 +313,18 @@ type LogScreenTimeRequest struct {
 func (h *Handler) LogScreenTime(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	var req LogScreenTimeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
 	if err := h.svc.LogScreenTime(c.Request.Context(), userID, req.Minutes, req.Sessions); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -334,13 +334,13 @@ func (h *Handler) LogScreenTime(c *gin.Context) {
 func (h *Handler) GetScreenTime(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	logs, err := h.svc.GetScreenTime(c.Request.Context(), userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if logs == nil {

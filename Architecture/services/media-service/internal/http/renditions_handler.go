@@ -21,13 +21,13 @@ func (h *Handler) RegisterRenditionRoutes(r *gin.Engine, authMW gin.HandlerFunc)
 func (h *Handler) GetRenditions(c *gin.Context) {
 	mediaID, err := uuid.Parse(c.Param("mediaId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil)
 		return
 	}
 
 	resp, err := h.svc.GetRenditionStatus(c.Request.Context(), mediaID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found", nil)
 		return
 	}
 
@@ -37,13 +37,13 @@ func (h *Handler) GetRenditions(c *gin.Context) {
 func (h *Handler) ExtractFrames(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	mediaID, err := uuid.Parse(c.Param("mediaId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil)
 		return
 	}
 
@@ -52,10 +52,10 @@ func (h *Handler) ExtractFrames(c *gin.Context) {
 	resp, err := h.svc.ExtractFrames(c.Request.Context(), mediaID, userID, numFrames)
 	if err != nil {
 		if err.Error() == "forbidden: you do not own this media" {
-			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 

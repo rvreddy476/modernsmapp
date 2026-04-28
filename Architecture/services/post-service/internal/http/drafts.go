@@ -33,13 +33,13 @@ type createDraftRequest struct {
 func (h *Handler) CreateDraft(c *gin.Context) {
 	authorID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	var req createDraftRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -47,7 +47,7 @@ func (h *Handler) CreateDraft(c *gin.Context) {
 	if req.MediaID != nil {
 		id, err := uuid.Parse(*req.MediaID)
 		if err != nil {
-			api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "Invalid media_id", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "Invalid media_id", nil)
 			return
 		}
 		mediaID = &id
@@ -60,7 +60,7 @@ func (h *Handler) CreateDraft(c *gin.Context) {
 		Caption:    req.Caption,
 	})
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -70,19 +70,19 @@ func (h *Handler) CreateDraft(c *gin.Context) {
 func (h *Handler) GetDraft(c *gin.Context) {
 	authorID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	draftID, err := uuid.Parse(c.Param("draftId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid draft ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid draft ID", nil)
 		return
 	}
 
 	draft, err := h.svc.GetDraft(c.Request.Context(), draftID, authorID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Draft not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Draft not found", nil)
 		return
 	}
 
@@ -92,25 +92,25 @@ func (h *Handler) GetDraft(c *gin.Context) {
 func (h *Handler) UpdateDraft(c *gin.Context) {
 	authorID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	draftID, err := uuid.Parse(c.Param("draftId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid draft ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid draft ID", nil)
 		return
 	}
 
 	var input service.UpdateDraftInput
 	if err := c.ShouldBindJSON(&input); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
 	draft, err := h.svc.UpdateDraft(c.Request.Context(), draftID, authorID, &input)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -120,7 +120,7 @@ func (h *Handler) UpdateDraft(c *gin.Context) {
 func (h *Handler) ListDrafts(c *gin.Context) {
 	authorID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
@@ -138,7 +138,7 @@ func (h *Handler) ListDrafts(c *gin.Context) {
 
 	drafts, nextCursor, err := h.svc.ListDrafts(c.Request.Context(), authorID, limit, cursor)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -153,18 +153,18 @@ func (h *Handler) ListDrafts(c *gin.Context) {
 func (h *Handler) DeleteDraft(c *gin.Context) {
 	authorID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	draftID, err := uuid.Parse(c.Param("draftId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid draft ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid draft ID", nil)
 		return
 	}
 
 	if err := h.svc.DeleteDraft(c.Request.Context(), draftID, authorID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -178,13 +178,13 @@ type publishDraftRequest struct {
 func (h *Handler) PublishDraft(c *gin.Context) {
 	authorID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	draftID, err := uuid.Parse(c.Param("draftId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid draft ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid draft ID", nil)
 		return
 	}
 
@@ -193,7 +193,7 @@ func (h *Handler) PublishDraft(c *gin.Context) {
 
 	post, err := h.svc.PublishDraft(c.Request.Context(), draftID, authorID, req.ScheduleAt)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 

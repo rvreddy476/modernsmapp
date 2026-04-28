@@ -26,7 +26,7 @@ func (h *Handler) RegisterMyUploadsRoutes(r *gin.Engine) {
 func (h *Handler) GetMyVideos(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil)
 		return
 	}
 
@@ -34,7 +34,7 @@ func (h *Handler) GetMyVideos(c *gin.Context) {
 
 	uploads, nextCursor, err := h.svc.GetMyVideos(c.Request.Context(), userID, limit, cursor)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch videos", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch videos", nil)
 		return
 	}
 	if uploads == nil {
@@ -47,7 +47,7 @@ func (h *Handler) GetMyVideos(c *gin.Context) {
 func (h *Handler) GetMyFlicks(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil)
 		return
 	}
 
@@ -55,7 +55,7 @@ func (h *Handler) GetMyFlicks(c *gin.Context) {
 
 	uploads, nextCursor, err := h.svc.GetMyFlicks(c.Request.Context(), userID, limit, cursor)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch flicks", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch flicks", nil)
 		return
 	}
 	if uploads == nil {
@@ -68,7 +68,7 @@ func (h *Handler) GetMyFlicks(c *gin.Context) {
 func (h *Handler) GetMyTextPosts(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil)
 		return
 	}
 
@@ -76,7 +76,7 @@ func (h *Handler) GetMyTextPosts(c *gin.Context) {
 
 	posts, nextCursor, err := h.svc.GetMyPosts(c.Request.Context(), userID, limit, cursor)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch posts", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch posts", nil)
 		return
 	}
 	if posts == nil {
@@ -89,13 +89,13 @@ func (h *Handler) GetMyTextPosts(c *gin.Context) {
 func (h *Handler) GetUploadCounts(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil)
 		return
 	}
 
 	videos, flicks, posts, err := h.svc.GetUploadCounts(c.Request.Context(), userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get counts", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get counts", nil)
 		return
 	}
 
@@ -109,12 +109,12 @@ func (h *Handler) GetUploadCounts(c *gin.Context) {
 func (h *Handler) DeleteUpload(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil)
 		return
 	}
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid post ID", nil)
 		return
 	}
 
@@ -122,13 +122,13 @@ func (h *Handler) DeleteUpload(c *gin.Context) {
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrPostForbidden):
-			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "Cannot delete another user's upload", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Cannot delete another user's upload", nil)
 			return
 		case errors.Is(err, service.ErrPostNotFound):
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Post not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Post not found", nil)
 			return
 		default:
-			api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 			return
 		}
 	}

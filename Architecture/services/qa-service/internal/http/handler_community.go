@@ -83,7 +83,7 @@ func (h *Handler) UpdateCommunityQASettings(c *gin.Context) {
 
 	var body service.UpdateCommunityQASettingsParams
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 
@@ -138,7 +138,7 @@ func (h *Handler) PinCommunityQuestion(c *gin.Context) {
 		Reason string `json:"reason"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil && err != io.EOF {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 

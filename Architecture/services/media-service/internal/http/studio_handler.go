@@ -48,19 +48,19 @@ type createSessionReq struct {
 func (h *Handler) CreateEditorSession(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	var req createSessionReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 
 	sess, err := h.svc.CreateEditorSession(c.Request.Context(), userID, req.Mode, req.StateJSON)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -70,13 +70,13 @@ func (h *Handler) CreateEditorSession(c *gin.Context) {
 func (h *Handler) ListEditorSessions(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	sessions, err := h.svc.ListEditorSessions(c.Request.Context(), userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if sessions == nil {
@@ -89,13 +89,13 @@ func (h *Handler) ListEditorSessions(c *gin.Context) {
 func (h *Handler) UpdateEditorSession(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	sessionID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid session ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid session ID", nil)
 		return
 	}
 
@@ -103,16 +103,16 @@ func (h *Handler) UpdateEditorSession(c *gin.Context) {
 		StateJSON json.RawMessage `json:"state_json"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 
 	if err := h.svc.UpdateEditorSession(c.Request.Context(), sessionID, userID, body.StateJSON); err != nil {
 		if err == pgx.ErrNoRows {
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Session not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Session not found", nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -122,22 +122,22 @@ func (h *Handler) UpdateEditorSession(c *gin.Context) {
 func (h *Handler) DeleteEditorSession(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	sessionID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid session ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid session ID", nil)
 		return
 	}
 
 	if err := h.svc.DeleteEditorSession(c.Request.Context(), sessionID, userID); err != nil {
 		if err == pgx.ErrNoRows {
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Session not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Session not found", nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -159,7 +159,7 @@ func (h *Handler) ListStickers(c *gin.Context) {
 
 	stickers, err := h.svc.ListStickers(c.Request.Context(), category, limit)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if stickers == nil {
@@ -172,7 +172,7 @@ func (h *Handler) ListStickers(c *gin.Context) {
 func (h *Handler) ListStickerPacks(c *gin.Context) {
 	packs, err := h.svc.ListStickerPacks(c.Request.Context())
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if packs == nil {
@@ -185,7 +185,7 @@ func (h *Handler) ListStickerPacks(c *gin.Context) {
 func (h *Handler) RecordStickerUse(c *gin.Context) {
 	stickerID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid sticker ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid sticker ID", nil)
 		return
 	}
 
@@ -211,7 +211,7 @@ func (h *Handler) ListTemplates(c *gin.Context) {
 
 	templates, err := h.svc.ListTemplates(c.Request.Context(), category, limit)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if templates == nil {
@@ -237,13 +237,13 @@ type SuggestedFrame struct {
 func (h *Handler) GetSuggestedFrames(c *gin.Context) {
 	mediaID, err := uuid.Parse(c.Param("mediaId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil)
 		return
 	}
 
 	media, err := h.svc.GetMedia(c.Request.Context(), mediaID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found", nil)
 		return
 	}
 
@@ -272,19 +272,19 @@ type setCoverFrameReq struct {
 func (h *Handler) SetCoverFrame(c *gin.Context) {
 	_, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	mediaID, err := uuid.Parse(c.Param("mediaId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil)
 		return
 	}
 
 	var req setCoverFrameReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 

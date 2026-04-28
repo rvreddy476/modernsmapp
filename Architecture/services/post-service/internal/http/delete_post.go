@@ -14,26 +14,26 @@ import (
 func (h *Handler) DeletePost(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil)
 		return
 	}
 
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid post ID", nil)
 		return
 	}
 
 	if err := h.svc.DeletePost(c.Request.Context(), postID, userID); err != nil {
 		switch {
 		case errors.Is(err, service.ErrPostForbidden):
-			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "Cannot delete another user's post", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Cannot delete another user's post", nil)
 			return
 		case errors.Is(err, service.ErrPostNotFound):
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Post not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Post not found", nil)
 			return
 		default:
-			api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 			return
 		}
 	}

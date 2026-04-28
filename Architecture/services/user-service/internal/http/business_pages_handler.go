@@ -51,13 +51,13 @@ type UpdatePageRequest struct {
 func (h *Handler) CreateBusinessPage(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing user ID", nil)
 		return
 	}
 
 	var req CreatePageRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -66,7 +66,7 @@ func (h *Handler) CreateBusinessPage(c *gin.Context) {
 		status = "active"
 	}
 	if status != "draft" && status != "active" {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_STATUS", "status must be draft or active", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_STATUS", "status must be draft or active", nil)
 		return
 	}
 
@@ -90,10 +90,10 @@ func (h *Handler) CreateBusinessPage(c *gin.Context) {
 
 	if err := h.svc.CreateBusinessPage(c.Request.Context(), p); err != nil {
 		if strings.Contains(err.Error(), "unique") || strings.Contains(err.Error(), "duplicate") {
-			api.Error(c.Writer, http.StatusConflict, "HANDLE_TAKEN", "Page handle already taken", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "HANDLE_TAKEN", "Page handle already taken", nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -113,10 +113,10 @@ func (h *Handler) GetBusinessPage(c *gin.Context) {
 	p, err := h.svc.GetBusinessPage(c.Request.Context(), handle, viewerID)
 	if err != nil {
 		if strings.Contains(err.Error(), "no rows") {
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Page not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Page not found", nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -126,7 +126,7 @@ func (h *Handler) GetBusinessPage(c *gin.Context) {
 func (h *Handler) UpdateBusinessPage(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing user ID", nil)
 		return
 	}
 
@@ -135,21 +135,21 @@ func (h *Handler) UpdateBusinessPage(c *gin.Context) {
 	existing, err := h.svc.GetBusinessPage(c.Request.Context(), handle, nil)
 	if err != nil {
 		if strings.Contains(err.Error(), "no rows") {
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Page not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Page not found", nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
 	if existing.UserID != userID {
-		api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "Not your page", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Not your page", nil)
 		return
 	}
 
 	var req UpdatePageRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -198,10 +198,10 @@ func (h *Handler) UpdateBusinessPage(c *gin.Context) {
 
 	if err := h.svc.UpdateBusinessPage(c.Request.Context(), existing); err != nil {
 		if err.Error() == "PAGE_NOT_FOUND" {
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Page not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Page not found", nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -211,22 +211,22 @@ func (h *Handler) UpdateBusinessPage(c *gin.Context) {
 func (h *Handler) DeleteBusinessPage(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing user ID", nil)
 		return
 	}
 
 	pageID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid page ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid page ID", nil)
 		return
 	}
 
 	if err := h.svc.DeleteBusinessPage(c.Request.Context(), pageID, userID); err != nil {
 		if err.Error() == "PAGE_NOT_FOUND" {
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Page not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Page not found", nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -236,13 +236,13 @@ func (h *Handler) DeleteBusinessPage(c *gin.Context) {
 func (h *Handler) ListMyBusinessPages(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing user ID", nil)
 		return
 	}
 
 	pages, err := h.svc.GetUserBusinessPages(c.Request.Context(), userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if pages == nil {
@@ -271,7 +271,7 @@ func (h *Handler) DiscoverPages(c *gin.Context) {
 
 	pages, err := h.svc.DiscoverPages(c.Request.Context(), category, search, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if pages == nil {
@@ -284,18 +284,18 @@ func (h *Handler) DiscoverPages(c *gin.Context) {
 func (h *Handler) FollowPage(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing user ID", nil)
 		return
 	}
 
 	pageID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid page ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid page ID", nil)
 		return
 	}
 
 	if err := h.svc.FollowPage(c.Request.Context(), pageID, userID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -305,18 +305,18 @@ func (h *Handler) FollowPage(c *gin.Context) {
 func (h *Handler) UnfollowPage(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing user ID", nil)
 		return
 	}
 
 	pageID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid page ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid page ID", nil)
 		return
 	}
 
 	if err := h.svc.UnfollowPage(c.Request.Context(), pageID, userID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -336,10 +336,10 @@ func (h *Handler) GetPageReviews(c *gin.Context) {
 	existing, err := h.svc.GetBusinessPage(c.Request.Context(), handle, nil)
 	if err != nil {
 		if strings.Contains(err.Error(), "no rows") {
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Page not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Page not found", nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -359,7 +359,7 @@ func (h *Handler) GetPageReviews(c *gin.Context) {
 
 	reviews, err := h.svc.GetPageReviews(c.Request.Context(), existing.ID, cursor, limit)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if reviews == nil {
@@ -372,7 +372,7 @@ func (h *Handler) GetPageReviews(c *gin.Context) {
 func (h *Handler) SubmitReview(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing user ID", nil)
 		return
 	}
 
@@ -381,16 +381,16 @@ func (h *Handler) SubmitReview(c *gin.Context) {
 	existing, err := h.svc.GetBusinessPage(c.Request.Context(), handle, nil)
 	if err != nil {
 		if strings.Contains(err.Error(), "no rows") {
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Page not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Page not found", nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
 	var req SubmitReviewRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -402,7 +402,7 @@ func (h *Handler) SubmitReview(c *gin.Context) {
 	}
 
 	if err := h.svc.SubmitReview(c.Request.Context(), r); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 

@@ -41,7 +41,7 @@ func (h *Handler) CreateFundraiser(c *gin.Context) {
 
 	var req CreateFundraiserRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -49,7 +49,7 @@ func (h *Handler) CreateFundraiser(c *gin.Context) {
 	if req.EndsAt != nil && *req.EndsAt != "" {
 		t, err := time.Parse(time.RFC3339, *req.EndsAt)
 		if err != nil {
-			api.Error(c.Writer, http.StatusBadRequest, "INVALID_DATE", "ends_at must be RFC3339 format", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_DATE", "ends_at must be RFC3339 format", nil)
 			return
 		}
 		endsAt = &t
@@ -59,9 +59,9 @@ func (h *Handler) CreateFundraiser(c *gin.Context) {
 	if err != nil {
 		switch err.Error() {
 		case "INVALID_GOAL: goal_amount must be greater than zero":
-			api.Error(c.Writer, http.StatusBadRequest, "INVALID_GOAL", "goal_amount must be greater than zero", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_GOAL", "goal_amount must be greater than zero", nil)
 		default:
-			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
 		return
 	}
@@ -74,7 +74,7 @@ func (h *Handler) ListActiveFundraisers(c *gin.Context) {
 
 	fundraisers, err := h.svc.ListActiveFundraisers(c.Request.Context(), limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if fundraisers == nil {
@@ -87,17 +87,17 @@ func (h *Handler) ListActiveFundraisers(c *gin.Context) {
 func (h *Handler) GetFundraiser(c *gin.Context) {
 	fundraiserID, err := uuid.Parse(c.Param("fundraiserId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid fundraiser ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid fundraiser ID", nil)
 		return
 	}
 
 	fundraiser, err := h.svc.GetFundraiser(c.Request.Context(), fundraiserID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if fundraiser == nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Fundraiser not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Fundraiser not found", nil)
 		return
 	}
 
@@ -114,7 +114,7 @@ func (h *Handler) ListMyFundraisers(c *gin.Context) {
 
 	fundraisers, err := h.svc.ListMyFundraisers(c.Request.Context(), userID, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if fundraisers == nil {
@@ -132,18 +132,18 @@ func (h *Handler) PauseFundraiser(c *gin.Context) {
 
 	fundraiserID, err := uuid.Parse(c.Param("fundraiserId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid fundraiser ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid fundraiser ID", nil)
 		return
 	}
 
 	if err := h.svc.PauseFundraiser(c.Request.Context(), userID, fundraiserID); err != nil {
 		switch err.Error() {
 		case "FUNDRAISER_NOT_FOUND":
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Fundraiser not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Fundraiser not found", nil)
 		case "FORBIDDEN: not the fundraiser owner":
-			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "You do not own this fundraiser", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "You do not own this fundraiser", nil)
 		default:
-			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
 		return
 	}
@@ -159,19 +159,19 @@ func (h *Handler) Donate(c *gin.Context) {
 
 	fundraiserID, err := uuid.Parse(c.Param("fundraiserId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid fundraiser ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid fundraiser ID", nil)
 		return
 	}
 
 	var req DonateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
 	paymentIntentID, err := uuid.Parse(req.PaymentIntentID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid payment_intent_id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid payment_intent_id", nil)
 		return
 	}
 
@@ -179,11 +179,11 @@ func (h *Handler) Donate(c *gin.Context) {
 	if err != nil {
 		switch err.Error() {
 		case "FUNDRAISER_NOT_FOUND":
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Fundraiser not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Fundraiser not found", nil)
 		case "INVALID_AMOUNT: donation must be greater than zero":
-			api.Error(c.Writer, http.StatusBadRequest, "INVALID_AMOUNT", "Donation amount must be greater than zero", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_AMOUNT", "Donation amount must be greater than zero", nil)
 		default:
-			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
 		return
 	}
@@ -194,7 +194,7 @@ func (h *Handler) Donate(c *gin.Context) {
 func (h *Handler) GetDonationsByFundraiser(c *gin.Context) {
 	fundraiserID, err := uuid.Parse(c.Param("fundraiserId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid fundraiser ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid fundraiser ID", nil)
 		return
 	}
 
@@ -202,7 +202,7 @@ func (h *Handler) GetDonationsByFundraiser(c *gin.Context) {
 
 	donations, err := h.svc.GetDonationsByFundraiser(c.Request.Context(), fundraiserID, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if donations == nil {

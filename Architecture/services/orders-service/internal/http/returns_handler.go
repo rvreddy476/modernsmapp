@@ -18,7 +18,7 @@ func (h *Handler) CreateReturnRequest(c *gin.Context) {
 	}
 	orderID, err := uuid.Parse(c.Param("orderId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid order id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid order id", nil)
 		return
 	}
 	var body struct {
@@ -27,18 +27,18 @@ func (h *Handler) CreateReturnRequest(c *gin.Context) {
 		EvidenceURLs []string `json:"evidence_urls"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	ret, err := h.svc.CreateReturnRequest(c.Request.Context(), userID, orderID, body.Reason, body.Description, body.EvidenceURLs)
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrReturnAlreadyExists):
-			api.Error(c.Writer, http.StatusConflict, "RETURN_EXISTS", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "RETURN_EXISTS", err.Error(), nil)
 		case err.Error() == "forbidden":
-			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "access denied", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "access denied", nil)
 		default:
-			api.Error(c.Writer, http.StatusBadRequest, "CREATE_FAILED", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "CREATE_FAILED", err.Error(), nil)
 		}
 		return
 	}
@@ -53,15 +53,15 @@ func (h *Handler) GetReturnRequest(c *gin.Context) {
 	}
 	returnID, err := uuid.Parse(c.Param("returnId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid return id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid return id", nil)
 		return
 	}
 	ret, err := h.svc.GetReturnRequest(c.Request.Context(), userID, returnID)
 	if err != nil {
 		if err.Error() == "forbidden" {
-			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "access denied", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "access denied", nil)
 		} else {
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "return request not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "return request not found", nil)
 		}
 		return
 	}
@@ -77,7 +77,7 @@ func (h *Handler) ListBuyerReturns(c *gin.Context) {
 	limit, offset := parsePagination(c)
 	returns, err := h.svc.ListReturnsByBuyer(c.Request.Context(), userID, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "FETCH_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "FETCH_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, returns, nil)
@@ -93,7 +93,7 @@ func (h *Handler) ListSellerReturns(c *gin.Context) {
 	limit, offset := parsePagination(c)
 	returns, err := h.svc.ListReturnsBySeller(c.Request.Context(), userID, status, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "FETCH_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "FETCH_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, returns, nil)
@@ -107,7 +107,7 @@ func (h *Handler) ApproveReturn(c *gin.Context) {
 	}
 	returnID, err := uuid.Parse(c.Param("returnId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid return id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid return id", nil)
 		return
 	}
 	var body struct {
@@ -116,17 +116,17 @@ func (h *Handler) ApproveReturn(c *gin.Context) {
 		RefundMethod string  `json:"refund_method" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	if err := h.svc.ApproveReturn(c.Request.Context(), userID, returnID, body.SellerNote, body.RefundAmount, body.RefundMethod); err != nil {
 		switch {
 		case errors.Is(err, service.ErrReturnNotFound):
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
 		case err.Error() == "forbidden":
-			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "access denied", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "access denied", nil)
 		default:
-			api.Error(c.Writer, http.StatusBadRequest, "APPROVE_FAILED", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "APPROVE_FAILED", err.Error(), nil)
 		}
 		return
 	}
@@ -141,7 +141,7 @@ func (h *Handler) RejectReturn(c *gin.Context) {
 	}
 	returnID, err := uuid.Parse(c.Param("returnId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid return id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid return id", nil)
 		return
 	}
 	var body struct {
@@ -151,11 +151,11 @@ func (h *Handler) RejectReturn(c *gin.Context) {
 	if err := h.svc.RejectReturn(c.Request.Context(), userID, returnID, body.SellerNote); err != nil {
 		switch {
 		case errors.Is(err, service.ErrReturnNotFound):
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
 		case err.Error() == "forbidden":
-			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "access denied", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "access denied", nil)
 		default:
-			api.Error(c.Writer, http.StatusBadRequest, "REJECT_FAILED", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "REJECT_FAILED", err.Error(), nil)
 		}
 		return
 	}
@@ -170,17 +170,17 @@ func (h *Handler) MarkItemReceived(c *gin.Context) {
 	}
 	returnID, err := uuid.Parse(c.Param("returnId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid return id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid return id", nil)
 		return
 	}
 	if err := h.svc.MarkItemReceived(c.Request.Context(), userID, returnID); err != nil {
 		switch {
 		case errors.Is(err, service.ErrReturnNotFound):
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
 		case err.Error() == "forbidden":
-			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "access denied", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "access denied", nil)
 		default:
-			api.Error(c.Writer, http.StatusBadRequest, "UPDATE_FAILED", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "UPDATE_FAILED", err.Error(), nil)
 		}
 		return
 	}
@@ -195,24 +195,24 @@ func (h *Handler) UpdateReturnTracking(c *gin.Context) {
 	}
 	returnID, err := uuid.Parse(c.Param("returnId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid return id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid return id", nil)
 		return
 	}
 	var body struct {
 		TrackingNumber string `json:"tracking_number" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	if err := h.svc.UpdateReturnTracking(c.Request.Context(), userID, returnID, body.TrackingNumber); err != nil {
 		switch {
 		case errors.Is(err, service.ErrReturnNotFound):
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
 		case err.Error() == "forbidden":
-			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "access denied", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "access denied", nil)
 		default:
-			api.Error(c.Writer, http.StatusBadRequest, "UPDATE_FAILED", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "UPDATE_FAILED", err.Error(), nil)
 		}
 		return
 	}

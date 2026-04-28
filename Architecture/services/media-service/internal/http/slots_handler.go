@@ -33,7 +33,7 @@ type assignSlotRequest struct {
 func (h *Handler) AssignSlot(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
@@ -43,13 +43,13 @@ func (h *Handler) AssignSlot(c *gin.Context) {
 
 	var req assignSlotRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 
 	mediaAssetID, err := uuid.Parse(req.MediaAssetID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media_asset_id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media_asset_id", nil)
 		return
 	}
 
@@ -57,13 +57,13 @@ func (h *Handler) AssignSlot(c *gin.Context) {
 	if err != nil {
 		switch {
 		case containsAny(err.Error(), "invalid owner_type", "invalid slot_name", "invalid owner_id", "not available"):
-			api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		case containsAny(err.Error(), "forbidden"):
-			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
 		case containsAny(err.Error(), "not found"):
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
 		default:
-			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
 		return
 	}
@@ -74,7 +74,7 @@ func (h *Handler) AssignSlot(c *gin.Context) {
 func (h *Handler) RemoveSlot(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
@@ -85,10 +85,10 @@ func (h *Handler) RemoveSlot(c *gin.Context) {
 	err = h.svc.RemoveSlot(c.Request.Context(), userID, ownerType, ownerID, slotName)
 	if err != nil {
 		if containsAny(err.Error(), "no rows", "not found") {
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Slot not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Slot not found", nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -101,13 +101,13 @@ func (h *Handler) GetOwnerSlots(c *gin.Context) {
 
 	ownerID, err := uuid.Parse(ownerIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid owner ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid owner ID", nil)
 		return
 	}
 
 	slots, err := h.svc.GetOwnerMedia(c.Request.Context(), ownerType, ownerID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -125,13 +125,13 @@ type batchOwnersRequest struct {
 func (h *Handler) GetOwnerSlotsBatch(c *gin.Context) {
 	var req batchOwnersRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 
 	result, err := h.svc.GetOwnerMediaBatch(c.Request.Context(), req.Owners)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 

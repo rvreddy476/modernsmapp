@@ -35,7 +35,7 @@ func (h *Handler) ListPayoutStatements(c *gin.Context) {
 
 	stmts, err := h.svc.ListPayoutStatements(c.Request.Context(), userID, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if stmts == nil {
@@ -53,17 +53,17 @@ func (h *Handler) GetPayoutStatement(c *gin.Context) {
 
 	stmtID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid statement ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid statement ID", nil)
 		return
 	}
 
 	stmt, err := h.svc.GetPayoutStatement(c.Request.Context(), stmtID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if stmt == nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Payout statement not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Payout statement not found", nil)
 		return
 	}
 
@@ -84,16 +84,16 @@ func (h *Handler) HandlePayoutWebhook(c *gin.Context) {
 	// No auth check — webhook signature would be verified by API gateway or middleware.
 	var req PayoutWebhookRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
 	if err := h.svc.HandlePayoutWebhook(c.Request.Context(), req.ProviderReference, req.Status, req.FailureReason); err != nil {
 		if err.Error() == "PAYOUT_NOT_FOUND" {
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Payout not found for provider reference", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Payout not found for provider reference", nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 

@@ -24,18 +24,18 @@ func (h *Handler) SubmitAppeal(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 	var req submitAppealRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 	appeal, err := h.svc.SubmitAppeal(c.Request.Context(), userID, req.ContentType, req.ContentID, req.ActionTaken, req.AppealReason)
 	if err != nil {
 		slog.Error("SubmitAppeal", "err", err)
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, appeal, nil)
@@ -43,7 +43,7 @@ func (h *Handler) SubmitAppeal(c *gin.Context) {
 
 func (h *Handler) AdminListAppeals(c *gin.Context) {
 	if !hasScope(c.GetHeader("X-Scopes"), "admin") {
-		api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil)
 		return
 	}
 	status := c.Query("status")
@@ -51,7 +51,7 @@ func (h *Handler) AdminListAppeals(c *gin.Context) {
 	appeals, err := h.svc.ListAppeals(c.Request.Context(), status, limit, offset)
 	if err != nil {
 		slog.Error("ListAppeals", "err", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list appeals", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list appeals", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": appeals}, nil)
@@ -64,27 +64,27 @@ type reviewAppealRequest struct {
 
 func (h *Handler) ReviewAppeal(c *gin.Context) {
 	if !hasScope(c.GetHeader("X-Scopes"), "admin") {
-		api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil)
 		return
 	}
 	reviewerID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid reviewer ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid reviewer ID", nil)
 		return
 	}
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid appeal ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid appeal ID", nil)
 		return
 	}
 	var req reviewAppealRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 	if err := h.svc.ReviewAppeal(c.Request.Context(), id, req.Status, req.Note, reviewerID); err != nil {
 		slog.Error("ReviewAppeal", "err", err)
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "updated"}, nil)
@@ -101,17 +101,17 @@ type addKeywordFilterRequest struct {
 
 func (h *Handler) AddKeywordFilter(c *gin.Context) {
 	if !hasScope(c.GetHeader("X-Scopes"), "admin") {
-		api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil)
 		return
 	}
 	addedBy, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 	var req addKeywordFilterRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 	if req.Action == "" {
@@ -121,7 +121,7 @@ func (h *Handler) AddKeywordFilter(c *gin.Context) {
 	if req.ScopeID != nil {
 		id, err := uuid.Parse(*req.ScopeID)
 		if err != nil {
-			api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid scope_id", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid scope_id", nil)
 			return
 		}
 		scopeID = &id
@@ -129,7 +129,7 @@ func (h *Handler) AddKeywordFilter(c *gin.Context) {
 	filter, err := h.svc.AddKeywordFilter(c.Request.Context(), req.Scope, scopeID, req.Keyword, req.Action, addedBy)
 	if err != nil {
 		slog.Error("AddKeywordFilter", "err", err)
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, filter, nil)
@@ -144,7 +144,7 @@ func (h *Handler) GetKeywordFilters(c *gin.Context) {
 	if sid := c.Query("scope_id"); sid != "" {
 		id, err := uuid.Parse(sid)
 		if err != nil {
-			api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid scope_id", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid scope_id", nil)
 			return
 		}
 		scopeID = &id
@@ -152,7 +152,7 @@ func (h *Handler) GetKeywordFilters(c *gin.Context) {
 	filters, err := h.svc.GetKeywordFilters(c.Request.Context(), scope, scopeID)
 	if err != nil {
 		slog.Error("GetKeywordFilters", "err", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get keyword filters", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get keyword filters", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": filters}, nil)
@@ -172,12 +172,12 @@ type upsertTeenAccountRequest struct {
 func (h *Handler) UpsertTeenAccount(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 	var req upsertTeenAccountRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 	if req.ContentFilter == "" {
@@ -190,7 +190,7 @@ func (h *Handler) UpsertTeenAccount(c *gin.Context) {
 	ta := buildTeenAccount(userID, req)
 	if err := h.svc.UpsertTeenAccount(c.Request.Context(), ta); err != nil {
 		slog.Error("UpsertTeenAccount", "err", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to upsert teen account", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to upsert teen account", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, ta, nil)
@@ -199,12 +199,12 @@ func (h *Handler) UpsertTeenAccount(c *gin.Context) {
 func (h *Handler) GetTeenAccount(c *gin.Context) {
 	userID, err := uuid.Parse(c.Param("userId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid user ID", nil)
 		return
 	}
 	ta, err := h.svc.GetTeenAccount(c.Request.Context(), userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Teen account not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Teen account not found", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, ta, nil)
@@ -221,23 +221,23 @@ type addMediaLabelRequest struct {
 
 func (h *Handler) AddMediaLabel(c *gin.Context) {
 	if !hasScope(c.GetHeader("X-Scopes"), "admin") {
-		api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil)
 		return
 	}
 	var req addMediaLabelRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 	mediaAssetID, err := uuid.Parse(req.MediaAssetID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media_asset_id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media_asset_id", nil)
 		return
 	}
 	label, err := h.svc.AddMediaLabel(c.Request.Context(), mediaAssetID, req.LabelType, req.Confidence, req.Source)
 	if err != nil {
 		slog.Error("AddMediaLabel", "err", err)
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, label, nil)
@@ -246,13 +246,13 @@ func (h *Handler) AddMediaLabel(c *gin.Context) {
 func (h *Handler) GetMediaLabels(c *gin.Context) {
 	mediaAssetID, err := uuid.Parse(c.Param("mediaId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil)
 		return
 	}
 	labels, err := h.svc.GetMediaLabels(c.Request.Context(), mediaAssetID)
 	if err != nil {
 		slog.Error("GetMediaLabels", "err", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get media labels", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get media labels", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": labels}, nil)
@@ -270,29 +270,29 @@ type issueStrikeRequest struct {
 
 func (h *Handler) IssueStrike(c *gin.Context) {
 	if !hasScope(c.GetHeader("X-Scopes"), "admin") {
-		api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil)
 		return
 	}
 	createdBy, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 	var req issueStrikeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 	userID, err := uuid.Parse(req.UserID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid user_id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid user_id", nil)
 		return
 	}
 	var contentID *uuid.UUID
 	if req.ContentID != nil {
 		id, err := uuid.Parse(*req.ContentID)
 		if err != nil {
-			api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid content_id", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid content_id", nil)
 			return
 		}
 		contentID = &id
@@ -300,7 +300,7 @@ func (h *Handler) IssueStrike(c *gin.Context) {
 	strike, err := h.svc.IssueStrike(c.Request.Context(), userID, req.Reason, req.ContentType, contentID, req.Severity, createdBy)
 	if err != nil {
 		slog.Error("IssueStrike", "err", err)
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, strike, nil)
@@ -308,18 +308,18 @@ func (h *Handler) IssueStrike(c *gin.Context) {
 
 func (h *Handler) GetUserStrikes(c *gin.Context) {
 	if !hasScope(c.GetHeader("X-Scopes"), "admin") {
-		api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil)
 		return
 	}
 	userID, err := uuid.Parse(c.Param("userId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid user ID", nil)
 		return
 	}
 	strikes, err := h.svc.GetUserStrikes(c.Request.Context(), userID)
 	if err != nil {
 		slog.Error("GetUserStrikes", "err", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get strikes", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get strikes", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": strikes}, nil)
@@ -335,18 +335,18 @@ type submitVerificationRequest struct {
 func (h *Handler) SubmitVerificationRequest(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 	var req submitVerificationRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 	vreq, err := h.svc.SubmitVerificationRequest(c.Request.Context(), userID, req.Type, req.Docs)
 	if err != nil {
 		slog.Error("SubmitVerificationRequest", "err", err)
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, vreq, nil)
@@ -354,7 +354,7 @@ func (h *Handler) SubmitVerificationRequest(c *gin.Context) {
 
 func (h *Handler) AdminListVerificationRequests(c *gin.Context) {
 	if !hasScope(c.GetHeader("X-Scopes"), "admin") {
-		api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil)
 		return
 	}
 	status := c.Query("status")
@@ -362,7 +362,7 @@ func (h *Handler) AdminListVerificationRequests(c *gin.Context) {
 	requests, err := h.svc.ListVerificationRequestsAdmin(c.Request.Context(), status, limit, offset)
 	if err != nil {
 		slog.Error("ListVerificationRequests", "err", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list verification requests", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list verification requests", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": requests}, nil)
@@ -375,27 +375,27 @@ type reviewVerificationRequest struct {
 
 func (h *Handler) ReviewVerificationRequest(c *gin.Context) {
 	if !hasScope(c.GetHeader("X-Scopes"), "admin") {
-		api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil)
 		return
 	}
 	reviewerID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid reviewer ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid reviewer ID", nil)
 		return
 	}
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request ID", nil)
 		return
 	}
 	var req reviewVerificationRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 	if err := h.svc.ReviewVerificationRequest(c.Request.Context(), id, req.Status, req.RejectionReason, reviewerID); err != nil {
 		slog.Error("ReviewVerificationRequest", "err", err)
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "updated"}, nil)

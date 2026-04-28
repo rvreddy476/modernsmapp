@@ -18,7 +18,7 @@ func (h *Handler) GetHomeFeed(c *gin.Context) {
 
 	questions, err := h.svc.GetHomeFeed(c.Request.Context(), userID, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, questions, nil)
@@ -29,7 +29,7 @@ func (h *Handler) GetTrendingFeed(c *gin.Context) {
 
 	questions, err := h.svc.GetTrendingQuestions(c.Request.Context(), limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, questions, nil)
@@ -40,7 +40,7 @@ func (h *Handler) GetUnansweredFeed(c *gin.Context) {
 	if v := c.Query("topic_id"); v != "" {
 		id, err := uuid.Parse(v)
 		if err != nil {
-			api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "invalid topic_id", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PARAM", "invalid topic_id", nil)
 			return
 		}
 		topicID = &id
@@ -49,7 +49,7 @@ func (h *Handler) GetUnansweredFeed(c *gin.Context) {
 
 	questions, err := h.svc.GetUnansweredQuestions(c.Request.Context(), topicID, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, questions, nil)
@@ -64,7 +64,7 @@ func (h *Handler) GetFollowingFeed(c *gin.Context) {
 
 	questions, err := h.svc.GetFollowingFeed(c.Request.Context(), userID, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, questions, nil)
@@ -79,7 +79,7 @@ func (h *Handler) GetForYouFeed(c *gin.Context) {
 
 	questions, err := h.svc.GetForYouFeed(c.Request.Context(), userID, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, questions, nil)
@@ -89,17 +89,17 @@ func (h *Handler) GetLocalFeed(c *gin.Context) {
 	latStr := c.Query("lat")
 	lngStr := c.Query("lng")
 	if latStr == "" || lngStr == "" {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "lat and lng are required", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PARAM", "lat and lng are required", nil)
 		return
 	}
 	lat, err := strconv.ParseFloat(latStr, 64)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "invalid lat", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PARAM", "invalid lat", nil)
 		return
 	}
 	lng, err := strconv.ParseFloat(lngStr, 64)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "invalid lng", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PARAM", "invalid lng", nil)
 		return
 	}
 	radiusKm := 50
@@ -112,7 +112,7 @@ func (h *Handler) GetLocalFeed(c *gin.Context) {
 
 	questions, err := h.svc.GetLocalFeed(c.Request.Context(), lat, lng, radiusKm, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, questions, nil)
@@ -127,7 +127,7 @@ func (h *Handler) GetAnswerQueue(c *gin.Context) {
 
 	questions, err := h.svc.GetAnswerQueue(c.Request.Context(), userID, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, questions, nil)

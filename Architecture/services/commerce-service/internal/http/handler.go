@@ -90,7 +90,7 @@ func getUserID(c *gin.Context) (uuid.UUID, bool) {
 	raw := c.GetHeader("X-User-Id")
 	id, err := uuid.Parse(raw)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing or invalid X-User-Id header", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing or invalid X-User-Id header", nil)
 		return uuid.Nil, false
 	}
 	return id, true
@@ -99,14 +99,14 @@ func getUserID(c *gin.Context) (uuid.UUID, bool) {
 func parseUUID(c *gin.Context, param string) (uuid.UUID, bool) {
 	id, err := uuid.Parse(c.Param(param))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "invalid "+param, nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PARAM", "invalid "+param, nil)
 		return uuid.Nil, false
 	}
 	return id, true
 }
 
 func handleErr(c *gin.Context, err error) {
-	api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+	api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 }
 
 // ─── Catalog handlers ────────────────────────────────────────────
@@ -170,13 +170,13 @@ func (h *Handler) CreateProduct(c *gin.Context) {
 	}
 	var req createProductReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 
 	seller, err := h.svc.GetSellerProfile(c.Request.Context(), userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil)
 		return
 	}
 
@@ -255,7 +255,7 @@ func (h *Handler) CreateReview(c *gin.Context) {
 	}
 	var req createReviewReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	r := &postgres.Review{
@@ -299,7 +299,7 @@ func (h *Handler) OnboardSeller(c *gin.Context) {
 	}
 	var req onboardSellerReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	seller, err := h.svc.OnboardSeller(c.Request.Context(), service.OnboardSellerInput{
@@ -330,7 +330,7 @@ func (h *Handler) GetMySellerProfile(c *gin.Context) {
 	}
 	seller, err := h.svc.GetSellerProfile(c.Request.Context(), userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "seller not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "seller not found", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, seller, nil)
@@ -348,7 +348,7 @@ func (h *Handler) ListMyCODRemittances(c *gin.Context) {
 	}
 	seller, err := h.svc.GetSellerProfile(c.Request.Context(), userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil)
 		return
 	}
 	status := c.Query("status")
@@ -379,7 +379,7 @@ func (h *Handler) ListMySellerOrders(c *gin.Context) {
 	}
 	seller, err := h.svc.GetSellerProfile(c.Request.Context(), userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil)
 		return
 	}
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
@@ -427,7 +427,7 @@ func (h *Handler) ListProducts(c *gin.Context) {
 	if cat := c.Query("category"); cat != "" {
 		id, err := uuid.Parse(cat)
 		if err != nil {
-			api.Error(c.Writer, http.StatusBadRequest, "INVALID_CATEGORY", "category must be a UUID", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CATEGORY", "category must be a UUID", nil)
 			return
 		}
 		categoryID = &id
@@ -477,11 +477,11 @@ func (h *Handler) AddToCart(c *gin.Context) {
 	}
 	var req addToCartReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	if err := h.svc.AddToCart(c.Request.Context(), userID, req.VariantID, req.Quantity); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "ADD_TO_CART_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "ADD_TO_CART_FAILED", err.Error(), nil)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -520,7 +520,7 @@ func (h *Handler) Checkout(c *gin.Context) {
 	}
 	var req checkoutReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	order, err := h.svc.Checkout(c.Request.Context(), service.CheckoutInput{
@@ -532,7 +532,7 @@ func (h *Handler) Checkout(c *gin.Context) {
 		IdempotencyKey: req.IdempotencyKey,
 	})
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "CHECKOUT_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "CHECKOUT_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, order, nil)
@@ -565,7 +565,7 @@ func (h *Handler) GetOrder(c *gin.Context) {
 	}
 	order, err := h.svc.GetOrder(c.Request.Context(), orderID, userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "order not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "order not found", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, order, nil)
@@ -582,7 +582,7 @@ func (h *Handler) GetOrderItems(c *gin.Context) {
 	}
 	order, items, err := h.svc.GetOrderWithItems(c.Request.Context(), orderID, userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "order not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "order not found", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"order": order, "items": items}, nil)
@@ -605,7 +605,7 @@ func (h *Handler) CancelOrder(c *gin.Context) {
 	_ = c.ShouldBindJSON(&req)
 
 	if err := h.svc.CancelOrder(c.Request.Context(), orderID, userID, "customer", req.Reason); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "CANCEL_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "CANCEL_FAILED", err.Error(), nil)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -623,7 +623,7 @@ func (h *Handler) ConfirmPayment(c *gin.Context) {
 	}
 	var req confirmPaymentReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	if err := h.svc.ConfirmPayment(c.Request.Context(), orderID, req.PaymentID, req.Gateway); err != nil {
@@ -653,7 +653,7 @@ func (h *Handler) CreateReturn(c *gin.Context) {
 	}
 	var req createReturnReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	ret, err := h.svc.CreateReturnRequest(c.Request.Context(), service.CreateReturnInput{
@@ -686,7 +686,7 @@ func (h *Handler) ApproveReturn(c *gin.Context) {
 	}
 	out, err := h.svc.ApproveReturn(c.Request.Context(), returnID, actorID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "APPROVE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "APPROVE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, out, nil)
@@ -710,12 +710,12 @@ func (h *Handler) RejectReturn(c *gin.Context) {
 	}
 	var req rejectReturnReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	out, err := h.svc.RejectReturn(c.Request.Context(), returnID, actorID, req.Reason)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "REJECT_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "REJECT_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, out, nil)
@@ -757,7 +757,7 @@ func (h *Handler) AddAddress(c *gin.Context) {
 	}
 	var req addAddressReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	country := req.Country
@@ -796,7 +796,7 @@ func (h *Handler) UpdateAddress(c *gin.Context) {
 	}
 	var req addAddressReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	country := req.Country
@@ -814,7 +814,7 @@ func (h *Handler) UpdateAddress(c *gin.Context) {
 		PostalCode: req.PostalCode, Country: country, IsDefault: req.IsDefault,
 	}
 	if err := h.svc.UpdateAddress(c.Request.Context(), addrID, userID, addr); err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -830,7 +830,7 @@ func (h *Handler) DeleteAddress(c *gin.Context) {
 		return
 	}
 	if err := h.svc.DeleteAddress(c.Request.Context(), addrID, userID); err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -846,7 +846,7 @@ func (h *Handler) SetDefaultAddress(c *gin.Context) {
 		return
 	}
 	if err := h.svc.SetDefaultAddress(c.Request.Context(), addrID, userID); err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
 		return
 	}
 	c.Status(http.StatusNoContent)

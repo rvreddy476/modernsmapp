@@ -142,22 +142,22 @@ func (h *Handler) SendMessage(c *gin.Context) {
 	receiverIDStr := c.Param("receiverId")
 	receiverID, err := uuid.Parse(receiverIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Invalid receiver ID format", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Invalid receiver ID format", nil)
 		return
 	}
 
 	if senderID == receiverID {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "Cannot send message to yourself", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "Cannot send message to yourself", nil)
 		return
 	}
 
 	var req SendMessageRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", err.Error(), nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", err.Error())
 		return
 	}
 	if req.Text == "" && req.MediaID == "" {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Text or media_id is required", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Text or media_id is required", nil)
 		return
 	}
 
@@ -170,7 +170,7 @@ func (h *Handler) SendMessage(c *gin.Context) {
 	})
 	if err != nil {
 		slog.Error("failed to send message", "error", err, "sender", senderID, "receiver", receiverID)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to deliver message", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to deliver message", nil)
 		return
 	}
 
@@ -186,7 +186,7 @@ func (h *Handler) GetMessages(c *gin.Context) {
 	receiverIDStr := c.Param("receiverId")
 	receiverID, err := uuid.Parse(receiverIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Invalid receiver ID format", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Invalid receiver ID format", nil)
 		return
 	}
 
@@ -201,7 +201,7 @@ func (h *Handler) GetMessages(c *gin.Context) {
 	msgs, err := h.svc.GetMessages(c.Request.Context(), senderID, receiverID, limit)
 	if err != nil {
 		slog.Error("failed to get messages", "error", err, "sender", senderID, "receiver", receiverID)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to retrieve conversation history", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to retrieve conversation history", nil)
 		return
 	}
 
@@ -220,23 +220,23 @@ func (h *Handler) CreateDirectConversation(c *gin.Context) {
 
 	var req CreateDirectConversationRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", err.Error(), nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", err.Error())
 		return
 	}
 	otherID, err := uuid.Parse(req.OtherUserID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Invalid other_user_id format", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Invalid other_user_id format", nil)
 		return
 	}
 	if otherID == userID {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "Cannot start conversation with yourself", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "Cannot start conversation with yourself", nil)
 		return
 	}
 
 	conv, err := h.svc.CreateDirectConversation(c.Request.Context(), userID, otherID)
 	if err != nil {
 		slog.Error("failed to create direct conversation", "error", err, "user_id", userID, "other_user_id", otherID)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to create conversation", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to create conversation", nil)
 		return
 	}
 
@@ -251,7 +251,7 @@ func (h *Handler) CreateGroupConversation(c *gin.Context) {
 
 	var req CreateGroupConversationRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", err.Error(), nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", err.Error())
 		return
 	}
 
@@ -259,7 +259,7 @@ func (h *Handler) CreateGroupConversation(c *gin.Context) {
 	for _, idStr := range req.MemberIDs {
 		id, err := uuid.Parse(idStr)
 		if err != nil {
-			api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Invalid member ID: "+idStr, nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Invalid member ID: "+idStr, nil)
 			return
 		}
 		memberIDs = append(memberIDs, id)
@@ -268,7 +268,7 @@ func (h *Handler) CreateGroupConversation(c *gin.Context) {
 	convID, err := h.svc.CreateGroupConversation(c.Request.Context(), userID, memberIDs, req.Title)
 	if err != nil {
 		slog.Error("failed to create group conversation", "error", err, "user_id", userID)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to create group conversation", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to create group conversation", nil)
 		return
 	}
 
@@ -292,7 +292,7 @@ func (h *Handler) ListConversations(c *gin.Context) {
 	if raw := c.Query("cursor"); raw != "" {
 		cur, err := decodeCursor(raw)
 		if err != nil {
-			api.Error(c.Writer, http.StatusBadRequest, "INVALID_CURSOR", "Invalid cursor", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CURSOR", "Invalid cursor", nil)
 			return
 		}
 		cursor = cur
@@ -301,7 +301,7 @@ func (h *Handler) ListConversations(c *gin.Context) {
 	convs, next, err := h.svc.ListConversations(c.Request.Context(), userID, limit, cursor)
 	if err != nil {
 		slog.Error("failed to list conversations", "error", err, "user_id", userID)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list conversations", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list conversations", nil)
 		return
 	}
 
@@ -327,13 +327,13 @@ func (h *Handler) UpdateConversation(c *gin.Context) {
 
 	var req UpdateConversationRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", err.Error(), nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", err.Error())
 		return
 	}
 
 	if err := h.svc.UpdateConversation(c.Request.Context(), userID, convID, req.Name, req.IconURL); err != nil {
 		slog.Error("failed to update conversation", "error", err)
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -352,7 +352,7 @@ func (h *Handler) LeaveConversation(c *gin.Context) {
 
 	if err := h.svc.LeaveConversation(c.Request.Context(), userID, convID); err != nil {
 		slog.Error("failed to leave conversation", "error", err)
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -376,11 +376,11 @@ func (h *Handler) SendMessageToConversation(c *gin.Context) {
 
 	var req SendMessageRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", err.Error(), nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", err.Error())
 		return
 	}
 	if req.Text == "" && req.MediaID == "" {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Text or media_id is required", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Text or media_id is required", nil)
 		return
 	}
 
@@ -393,7 +393,7 @@ func (h *Handler) SendMessageToConversation(c *gin.Context) {
 	})
 	if err != nil {
 		slog.Error("failed to send message to conversation", "error", err, "user_id", userID, "conversation_id", convID)
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -421,7 +421,7 @@ func (h *Handler) GetMessagesByConversation(c *gin.Context) {
 	msgs, err := h.svc.GetMessagesByConversation(c.Request.Context(), userID, convID, limit)
 	if err != nil {
 		slog.Error("failed to get conversation messages", "error", err, "user_id", userID, "conversation_id", convID)
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -439,19 +439,19 @@ func (h *Handler) EditMessage(c *gin.Context) {
 	}
 	msgID := c.Param("messageId")
 	if msgID == "" {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Missing message ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Missing message ID", nil)
 		return
 	}
 
 	var req EditMessageRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", err.Error(), nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", err.Error())
 		return
 	}
 
 	ts, err := time.Parse(time.RFC3339Nano, req.Timestamp)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Invalid timestamp format", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Invalid timestamp format", nil)
 		return
 	}
 
@@ -461,7 +461,7 @@ func (h *Handler) EditMessage(c *gin.Context) {
 		if err.Error() == "can only edit your own messages" {
 			status = http.StatusForbidden
 		}
-		api.Error(c.Writer, status, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, status, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -479,19 +479,19 @@ func (h *Handler) DeleteMessage(c *gin.Context) {
 	}
 	msgID := c.Param("messageId")
 	if msgID == "" {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Missing message ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Missing message ID", nil)
 		return
 	}
 
 	var req DeleteMessageRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", err.Error(), nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", err.Error())
 		return
 	}
 
 	ts, err := time.Parse(time.RFC3339Nano, req.Timestamp)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Invalid timestamp format", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Invalid timestamp format", nil)
 		return
 	}
 
@@ -501,7 +501,7 @@ func (h *Handler) DeleteMessage(c *gin.Context) {
 		if err.Error() == "can only delete your own messages" {
 			status = http.StatusForbidden
 		}
-		api.Error(c.Writer, status, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, status, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -523,20 +523,20 @@ func (h *Handler) ToggleReaction(c *gin.Context) {
 	}
 	msgID := c.Param("messageId")
 	if msgID == "" {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Missing message ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Missing message ID", nil)
 		return
 	}
 
 	var req ToggleReactionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", err.Error(), nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", err.Error())
 		return
 	}
 
 	added, err := h.svc.ToggleReaction(c.Request.Context(), userID, convID, msgID, req.Emoji)
 	if err != nil {
 		slog.Error("failed to toggle reaction", "error", err)
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -559,13 +559,13 @@ func (h *Handler) MarkRead(c *gin.Context) {
 
 	var req MarkReadRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", err.Error(), nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", err.Error())
 		return
 	}
 
 	if err := h.svc.MarkRead(c.Request.Context(), userID, convID, req.MessageID); err != nil {
 		slog.Error("failed to mark read", "error", err)
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -584,7 +584,7 @@ func (h *Handler) SetTyping(c *gin.Context) {
 
 	if err := h.svc.SetTyping(c.Request.Context(), userID, convID); err != nil {
 		slog.Error("failed to set typing", "error", err)
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -608,18 +608,18 @@ func (h *Handler) AddMember(c *gin.Context) {
 
 	var req AddMemberRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", err.Error(), nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", err.Error())
 		return
 	}
 	targetID, err := uuid.Parse(req.UserID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Invalid user_id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Invalid user_id", nil)
 		return
 	}
 
 	if err := h.svc.AddGroupConversationMember(c.Request.Context(), convID, targetID); err != nil {
 		slog.Error("failed to add member", "error", err)
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -638,13 +638,13 @@ func (h *Handler) RemoveMember(c *gin.Context) {
 	targetIDStr := c.Param("userId")
 	targetID, err := uuid.Parse(targetIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Invalid user ID", nil)
 		return
 	}
 
 	if err := h.svc.RemoveGroupConversationMember(c.Request.Context(), convID, targetID); err != nil {
 		slog.Error("failed to remove member", "error", err)
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -664,13 +664,13 @@ func (h *Handler) PinMessage(c *gin.Context) {
 	convIDStr := c.Param("id")
 	convID, err := uuid.Parse(convIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Invalid conversation ID format", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Invalid conversation ID format", nil)
 		return
 	}
 
 	msgID := c.Param("msgId")
 	if msgID == "" {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Missing message ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Missing message ID", nil)
 		return
 	}
 
@@ -680,7 +680,7 @@ func (h *Handler) PinMessage(c *gin.Context) {
 		if err.Error() == "not a conversation member" {
 			status = http.StatusForbidden
 		}
-		api.Error(c.Writer, status, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, status, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -696,7 +696,7 @@ func (h *Handler) UnpinMessage(c *gin.Context) {
 	convIDStr := c.Param("id")
 	convID, err := uuid.Parse(convIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Invalid conversation ID format", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Invalid conversation ID format", nil)
 		return
 	}
 
@@ -706,7 +706,7 @@ func (h *Handler) UnpinMessage(c *gin.Context) {
 		if err.Error() == "not a conversation member" {
 			status = http.StatusForbidden
 		}
-		api.Error(c.Writer, status, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, status, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -722,7 +722,7 @@ func (h *Handler) GetPinnedMessage(c *gin.Context) {
 	convIDStr := c.Param("id")
 	convID, err := uuid.Parse(convIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Invalid conversation ID format", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Invalid conversation ID format", nil)
 		return
 	}
 
@@ -733,7 +733,7 @@ func (h *Handler) GetPinnedMessage(c *gin.Context) {
 		if err.Error() == "not a conversation member" {
 			status = http.StatusForbidden
 		}
-		api.Error(c.Writer, status, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, status, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -761,13 +761,13 @@ func (h *Handler) ReactToMessage(c *gin.Context) {
 		ReactionType string `json:"reaction_type" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", "reaction_type required", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", "reaction_type required", nil)
 		return
 	}
 
 	reaction, err := pgstore.AddReaction(c.Request.Context(), h.db, messageID, userID, body.ReactionType)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "REACT_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "REACT_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, reaction, nil)
@@ -781,7 +781,7 @@ func (h *Handler) UnreactToMessage(c *gin.Context) {
 	}
 	messageID := c.Param("messageId")
 	if err := pgstore.RemoveReaction(c.Request.Context(), h.db, messageID, userID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "UNREACT_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "UNREACT_FAILED", err.Error(), nil)
 		return
 	}
 	c.Writer.WriteHeader(http.StatusNoContent)
@@ -792,7 +792,7 @@ func (h *Handler) GetMessageReactions(c *gin.Context) {
 	messageID := c.Param("messageId")
 	summaries, err := pgstore.GetReactions(c.Request.Context(), h.db, messageID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "FETCH_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "FETCH_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, summaries, nil)
@@ -806,14 +806,14 @@ func getUserID(c *gin.Context) (uuid.UUID, bool) {
 	senderIDStr := c.GetHeader("X-User-Id")
 	if senderIDStr == "" {
 		slog.Warn("missing X-User-Id header")
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing user authentication", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing user authentication", nil)
 		return uuid.Nil, false
 	}
 
 	senderID, err := uuid.Parse(senderIDStr)
 	if err != nil {
 		slog.Warn("invalid X-User-Id header", "value", senderIDStr)
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user authentication", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user authentication", nil)
 		return uuid.Nil, false
 	}
 	return senderID, true
@@ -823,7 +823,7 @@ func parseConversationID(c *gin.Context) (uuid.UUID, bool) {
 	convIDStr := c.Param("conversationId")
 	convID, err := uuid.Parse(convIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Invalid conversation ID format", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Invalid conversation ID format", nil)
 		return uuid.Nil, false
 	}
 	return convID, true
@@ -869,7 +869,7 @@ func decodeCursor(raw string) (*service.ConversationCursor, error) {
 func (h *Handler) PublishKeyBundle(c *gin.Context) {
 	userID := c.GetHeader("X-User-Id")
 	if userID == "" {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing user authentication", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing user authentication", nil)
 		return
 	}
 
@@ -899,7 +899,7 @@ func (h *Handler) PublishKeyBundle(c *gin.Context) {
 func (h *Handler) GetKeyBundle(c *gin.Context) {
 	targetUserID := c.Param("userId")
 	if targetUserID == "" {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Missing user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Missing user ID", nil)
 		return
 	}
 

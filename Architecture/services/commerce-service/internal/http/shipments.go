@@ -30,7 +30,7 @@ func (h *Handler) CreateShipment(c *gin.Context) {
 	}
 	shipments, err := h.svc.CreateShipmentsForOrder(c.Request.Context(), orderID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "SHIPMENT_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "SHIPMENT_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, gin.H{"shipments": shipments}, nil)
@@ -46,7 +46,7 @@ func (h *Handler) GetShipment(c *gin.Context) {
 	}
 	sh, evts, err := h.svc.GetShipmentForOrder(c.Request.Context(), orderID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "shipment not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "shipment not found", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"shipment": sh, "events": evts}, nil)
@@ -62,7 +62,7 @@ func (h *Handler) ListShipments(c *gin.Context) {
 	}
 	out, err := h.svc.ListShipmentsForOrder(c.Request.Context(), orderID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "LIST_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "LIST_FAILED", err.Error(), nil)
 		return
 	}
 	if out == nil {
@@ -78,7 +78,7 @@ func (h *Handler) IssueInvoice(c *gin.Context) {
 	}
 	inv, err := h.svc.IssueInvoice(c.Request.Context(), orderID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVOICE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVOICE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, inv, nil)
@@ -91,7 +91,7 @@ func (h *Handler) GetInvoice(c *gin.Context) {
 	}
 	inv, url, err := h.svc.GetInvoiceDownloadURL(c.Request.Context(), orderID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "invoice not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "invoice not found", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"invoice": inv, "download_url": url}, nil)
@@ -104,7 +104,7 @@ func (h *Handler) ShipmentWebhook(c *gin.Context) {
 	courierName := c.Param("courier")
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	// Flatten headers (take first value per key) for the provider.
@@ -115,7 +115,7 @@ func (h *Handler) ShipmentWebhook(c *gin.Context) {
 		}
 	}
 	if err := h.svc.HandleShipmentWebhook(c.Request.Context(), courierName, headers, body); err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "WEBHOOK_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "WEBHOOK_FAILED", err.Error(), nil)
 		return
 	}
 	c.Status(http.StatusNoContent)

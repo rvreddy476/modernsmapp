@@ -27,7 +27,7 @@ func (h *Handler) RegisterReportRoutes(r *gin.Engine) {
 func (h *Handler) SubmitReport(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
@@ -38,20 +38,20 @@ func (h *Handler) SubmitReport(c *gin.Context) {
 		Description string `json:"description"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", nil)
 		return
 	}
 
 	targetID, err := uuid.Parse(body.TargetID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid target ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid target ID", nil)
 		return
 	}
 
 	// Validate target_type
 	validTypes := map[string]bool{"post": true, "comment": true, "reel": true, "video": true}
 	if !validTypes[body.TargetType] {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid target type", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid target type", nil)
 		return
 	}
 
@@ -61,7 +61,7 @@ func (h *Handler) SubmitReport(c *gin.Context) {
 		"violence": true, "nudity": true, "misinformation": true, "other": true,
 	}
 	if !validReasons[body.Reason] {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid reason", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid reason", nil)
 		return
 	}
 
@@ -74,7 +74,7 @@ func (h *Handler) SubmitReport(c *gin.Context) {
 	}
 
 	if err := h.svc.SubmitReport(c.Request.Context(), report); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to submit report", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to submit report", nil)
 		return
 	}
 
@@ -104,7 +104,7 @@ func (h *Handler) ListReports(c *gin.Context) {
 
 	reports, err := h.svc.ListReports(c.Request.Context(), status, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list reports", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list reports", nil)
 		return
 	}
 
@@ -116,7 +116,7 @@ func (h *Handler) ReviewReport(c *gin.Context) {
 	reviewerID := c.GetHeader("X-User-Id")
 	reportID, err := uuid.Parse(c.Param("reportId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid report ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid report ID", nil)
 		return
 	}
 
@@ -125,18 +125,18 @@ func (h *Handler) ReviewReport(c *gin.Context) {
 		ReviewNote string `json:"review_note"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", nil)
 		return
 	}
 
 	validStatuses := map[string]bool{"reviewed": true, "resolved": true, "dismissed": true}
 	if !validStatuses[body.Status] {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid status", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid status", nil)
 		return
 	}
 
 	if err := h.svc.ReviewReport(c.Request.Context(), reportID, body.Status, reviewerID, body.ReviewNote); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to review report", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to review report", nil)
 		return
 	}
 

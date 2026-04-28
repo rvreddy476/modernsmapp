@@ -34,13 +34,13 @@ type CreateAudioTrackRequest struct {
 func (h *Handler) CreateAudioTrack(c *gin.Context) {
 	var req CreateAudioTrackRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 
 	mediaID, err := uuid.Parse(req.MediaID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media_id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media_id", nil)
 		return
 	}
 
@@ -60,7 +60,7 @@ func (h *Handler) CreateAudioTrack(c *gin.Context) {
 	if req.OriginalPostID != nil {
 		pid, err := uuid.Parse(*req.OriginalPostID)
 		if err != nil {
-			api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid original_post_id", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid original_post_id", nil)
 			return
 		}
 		track.OriginalPostID = &pid
@@ -68,7 +68,7 @@ func (h *Handler) CreateAudioTrack(c *gin.Context) {
 
 	result, err := h.svc.CreateAudioTrack(c.Request.Context(), track)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -80,7 +80,7 @@ func (h *Handler) GetTrendingAudio(c *gin.Context) {
 
 	tracks, err := h.svc.GetTrendingAudio(c.Request.Context(), limit)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if tracks == nil {
@@ -93,13 +93,13 @@ func (h *Handler) GetTrendingAudio(c *gin.Context) {
 func (h *Handler) GetAudioTrackByID(c *gin.Context) {
 	trackID, err := uuid.Parse(c.Param("trackId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid track ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid track ID", nil)
 		return
 	}
 
 	track, err := h.svc.GetAudioTrack(c.Request.Context(), trackID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Audio track not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Audio track not found", nil)
 		return
 	}
 
@@ -109,14 +109,14 @@ func (h *Handler) GetAudioTrackByID(c *gin.Context) {
 func (h *Handler) SearchAudioTracks(c *gin.Context) {
 	query := c.Query("q")
 	if query == "" {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Query parameter 'q' is required", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Query parameter 'q' is required", nil)
 		return
 	}
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 
 	tracks, err := h.svc.SearchAudio(c.Request.Context(), query, limit)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if tracks == nil {

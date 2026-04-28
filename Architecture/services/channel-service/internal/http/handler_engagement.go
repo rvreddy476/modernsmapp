@@ -43,13 +43,13 @@ func (h *Handler) SparkUpdate(c *gin.Context) {
 
 	channelID, err := uuid.Parse(c.Param("channelId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil)
 		return
 	}
 
 	updateID, err := uuid.Parse(c.Param("updateId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid update ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid update ID", nil)
 		return
 	}
 
@@ -73,13 +73,13 @@ func (h *Handler) UnsparkUpdate(c *gin.Context) {
 
 	channelID, err := uuid.Parse(c.Param("channelId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil)
 		return
 	}
 
 	updateID, err := uuid.Parse(c.Param("updateId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid update ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid update ID", nil)
 		return
 	}
 
@@ -99,13 +99,13 @@ func (h *Handler) StashUpdate(c *gin.Context) {
 
 	channelID, err := uuid.Parse(c.Param("channelId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil)
 		return
 	}
 
 	updateID, err := uuid.Parse(c.Param("updateId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid update ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid update ID", nil)
 		return
 	}
 
@@ -125,13 +125,13 @@ func (h *Handler) UnstashUpdate(c *gin.Context) {
 
 	channelID, err := uuid.Parse(c.Param("channelId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil)
 		return
 	}
 
 	updateID, err := uuid.Parse(c.Param("updateId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid update ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid update ID", nil)
 		return
 	}
 
@@ -151,13 +151,13 @@ func (h *Handler) EchoUpdate(c *gin.Context) {
 
 	channelID, err := uuid.Parse(c.Param("channelId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil)
 		return
 	}
 
 	updateID, err := uuid.Parse(c.Param("updateId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid update ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid update ID", nil)
 		return
 	}
 
@@ -168,9 +168,9 @@ func (h *Handler) EchoUpdate(c *gin.Context) {
 		msg := err.Error()
 		switch {
 		case contains(msg, "already echoed"):
-			api.Error(c.Writer, http.StatusConflict, "ALREADY_ECHOED", msg, nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "ALREADY_ECHOED", msg, nil)
 		case contains(msg, "forwarding disabled"):
-			api.Error(c.Writer, http.StatusForbidden, "FORWARDING_DISABLED", msg, nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORWARDING_DISABLED", msg, nil)
 		default:
 			handleServiceError(c, err)
 		}
@@ -188,13 +188,13 @@ func (h *Handler) UnechoUpdate(c *gin.Context) {
 
 	channelID, err := uuid.Parse(c.Param("channelId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil)
 		return
 	}
 
 	updateID, err := uuid.Parse(c.Param("updateId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid update ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid update ID", nil)
 		return
 	}
 
@@ -214,13 +214,13 @@ func (h *Handler) RecordView(c *gin.Context) {
 
 	channelID, err := uuid.Parse(c.Param("channelId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil)
 		return
 	}
 
 	updateID, err := uuid.Parse(c.Param("updateId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid update ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid update ID", nil)
 		return
 	}
 
@@ -235,13 +235,13 @@ func (h *Handler) RecordView(c *gin.Context) {
 func (h *Handler) ListComments(c *gin.Context) {
 	channelID, err := uuid.Parse(c.Param("channelId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil)
 		return
 	}
 
 	updateID, err := uuid.Parse(c.Param("updateId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid update ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid update ID", nil)
 		return
 	}
 
@@ -265,19 +265,19 @@ func (h *Handler) AddComment(c *gin.Context) {
 
 	channelID, err := uuid.Parse(c.Param("channelId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil)
 		return
 	}
 
 	updateID, err := uuid.Parse(c.Param("updateId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid update ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid update ID", nil)
 		return
 	}
 
 	var req AddCommentRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -298,19 +298,19 @@ func (h *Handler) DeleteComment(c *gin.Context) {
 
 	channelID, err := uuid.Parse(c.Param("channelId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil)
 		return
 	}
 
 	updateID, err := uuid.Parse(c.Param("updateId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid update ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid update ID", nil)
 		return
 	}
 
 	commentID, err := uuid.Parse(c.Param("commentId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid comment ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid comment ID", nil)
 		return
 	}
 
@@ -330,19 +330,19 @@ func (h *Handler) PinComment(c *gin.Context) {
 
 	channelID, err := uuid.Parse(c.Param("channelId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil)
 		return
 	}
 
 	updateID, err := uuid.Parse(c.Param("updateId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid update ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid update ID", nil)
 		return
 	}
 
 	commentID, err := uuid.Parse(c.Param("commentId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid comment ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid comment ID", nil)
 		return
 	}
 
@@ -362,19 +362,19 @@ func (h *Handler) VoteOnPoll(c *gin.Context) {
 
 	channelID, err := uuid.Parse(c.Param("channelId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil)
 		return
 	}
 
 	updateID, err := uuid.Parse(c.Param("updateId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid update ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid update ID", nil)
 		return
 	}
 
 	var req VoteRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -389,13 +389,13 @@ func (h *Handler) VoteOnPoll(c *gin.Context) {
 func (h *Handler) GetPollResults(c *gin.Context) {
 	channelID, err := uuid.Parse(c.Param("channelId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil)
 		return
 	}
 
 	updateID, err := uuid.Parse(c.Param("updateId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid update ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid update ID", nil)
 		return
 	}
 
@@ -421,19 +421,19 @@ func (h *Handler) RSVPEvent(c *gin.Context) {
 
 	channelID, err := uuid.Parse(c.Param("channelId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil)
 		return
 	}
 
 	updateID, err := uuid.Parse(c.Param("updateId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid update ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid update ID", nil)
 		return
 	}
 
 	var req RSVPRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -448,24 +448,24 @@ func (h *Handler) RSVPEvent(c *gin.Context) {
 func (h *Handler) ListCommentsDelta(c *gin.Context) {
 	channelID, err := uuid.Parse(c.Param("channelId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil)
 		return
 	}
 
 	updateID, err := uuid.Parse(c.Param("updateId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid update ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid update ID", nil)
 		return
 	}
 
 	sinceStr := c.Query("since")
 	if sinceStr == "" {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "since query parameter is required (RFC3339 format)", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "since query parameter is required (RFC3339 format)", nil)
 		return
 	}
 	since, err := time.Parse(time.RFC3339, sinceStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "since must be in RFC3339 format", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "since must be in RFC3339 format", nil)
 		return
 	}
 
@@ -489,13 +489,13 @@ func (h *Handler) ListCommentsDelta(c *gin.Context) {
 func (h *Handler) ListAttendees(c *gin.Context) {
 	channelID, err := uuid.Parse(c.Param("channelId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid channel ID", nil)
 		return
 	}
 
 	updateID, err := uuid.Parse(c.Param("updateId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid update ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid update ID", nil)
 		return
 	}
 

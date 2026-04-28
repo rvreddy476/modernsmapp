@@ -68,12 +68,12 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 func getUserID(c *gin.Context) (uuid.UUID, bool) {
 	str := c.GetHeader("X-User-Id")
 	if str == "" {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil)
 		return uuid.Nil, false
 	}
 	id, err := uuid.Parse(str)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "invalid user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "invalid user id", nil)
 		return uuid.Nil, false
 	}
 	return id, true
@@ -110,12 +110,12 @@ func (h *Handler) CreateOrder(c *gin.Context) {
 		Notes           string      `json:"notes"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	sellerID, err := uuid.Parse(body.SellerID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_SELLER_ID", "invalid seller_id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_SELLER_ID", "invalid seller_id", nil)
 		return
 	}
 
@@ -146,7 +146,7 @@ func (h *Handler) CreateOrder(c *gin.Context) {
 
 	order, err := h.svc.CreateOrder(c.Request.Context(), in)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "CREATE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "CREATE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, order, nil)
@@ -168,15 +168,15 @@ func (h *Handler) GetOrder(c *gin.Context) {
 	}
 	orderID, err := uuid.Parse(c.Param("orderId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid order id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid order id", nil)
 		return
 	}
 	order, err := h.svc.GetOrder(c.Request.Context(), orderID, userID)
 	if err != nil {
 		if err.Error() == "forbidden" {
-			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "access denied", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "access denied", nil)
 		} else {
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "order not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "order not found", nil)
 		}
 		return
 	}
@@ -193,7 +193,7 @@ func (h *Handler) ListOrders(c *gin.Context) {
 	limit, offset := parsePagination(c)
 	orders, err := h.svc.ListOrders(c.Request.Context(), userID, role, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "FETCH_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "FETCH_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, orders, nil)
@@ -207,19 +207,19 @@ func (h *Handler) UpdateOrderStatus(c *gin.Context) {
 	}
 	orderID, err := uuid.Parse(c.Param("orderId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid order id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid order id", nil)
 		return
 	}
 	var body struct {
 		Status string `json:"status" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	order, err := h.svc.UpdateOrderStatus(c.Request.Context(), orderID, userID, body.Status)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "UPDATE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "UPDATE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, order, nil)
@@ -233,7 +233,7 @@ func (h *Handler) OpenDispute(c *gin.Context) {
 	}
 	orderID, err := uuid.Parse(c.Param("orderId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid order id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid order id", nil)
 		return
 	}
 	var body struct {
@@ -241,12 +241,12 @@ func (h *Handler) OpenDispute(c *gin.Context) {
 		EvidenceURLs []string `json:"evidence_urls"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	dispute, err := h.svc.OpenDispute(c.Request.Context(), orderID, userID, body.Reason, body.EvidenceURLs)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "DISPUTE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "DISPUTE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, dispute, nil)
@@ -256,7 +256,7 @@ func (h *Handler) OpenDispute(c *gin.Context) {
 func (h *Handler) ResolveDispute(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid dispute id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid dispute id", nil)
 		return
 	}
 	var req struct {
@@ -265,7 +265,7 @@ func (h *Handler) ResolveDispute(c *gin.Context) {
 	}
 	c.ShouldBindJSON(&req) //nolint:errcheck
 	if err := h.svc.ResolveDispute(c.Request.Context(), id, req.Resolution, req.RefundAmount); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "RESOLVE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "RESOLVE_FAILED", err.Error(), nil)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -275,7 +275,7 @@ func (h *Handler) ResolveDispute(c *gin.Context) {
 func (h *Handler) UpdateDisputeStatus(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid dispute id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid dispute id", nil)
 		return
 	}
 	var req struct {
@@ -285,11 +285,11 @@ func (h *Handler) UpdateDisputeStatus(c *gin.Context) {
 	c.ShouldBindJSON(&req) //nolint:errcheck
 	validStatuses := map[string]bool{"under_review": true, "resolved": true, "closed": true}
 	if !validStatuses[req.Status] {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_STATUS", "invalid dispute status", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_STATUS", "invalid dispute status", nil)
 		return
 	}
 	if err := h.svc.UpdateDisputeStatus(c.Request.Context(), id, req.Status, req.Notes); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -309,7 +309,7 @@ func (h *Handler) CreateBooking(c *gin.Context) {
 		Notes            string `json:"notes"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	providerID, _ := uuid.Parse(body.ProviderID)
@@ -317,12 +317,12 @@ func (h *Handler) CreateBooking(c *gin.Context) {
 
 	slotStart, err := time.Parse(time.RFC3339, body.SlotStart)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_SLOT_START", "use RFC3339 format", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_SLOT_START", "use RFC3339 format", nil)
 		return
 	}
 	slotEnd, err := time.Parse(time.RFC3339, body.SlotEnd)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_SLOT_END", "use RFC3339 format", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_SLOT_END", "use RFC3339 format", nil)
 		return
 	}
 
@@ -335,7 +335,7 @@ func (h *Handler) CreateBooking(c *gin.Context) {
 		Notes:            body.Notes,
 	})
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "CREATE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "CREATE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, booking, nil)
@@ -349,12 +349,12 @@ func (h *Handler) GetBooking(c *gin.Context) {
 	}
 	bookingID, err := uuid.Parse(c.Param("bookingId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid booking id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid booking id", nil)
 		return
 	}
 	b, err := h.svc.GetBooking(c.Request.Context(), bookingID, userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "booking not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "booking not found", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, b, nil)
@@ -370,7 +370,7 @@ func (h *Handler) ListBookings(c *gin.Context) {
 	limit, offset := parsePagination(c)
 	bookings, err := h.svc.ListBookings(c.Request.Context(), userID, role, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "FETCH_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "FETCH_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, bookings, nil)
@@ -384,19 +384,19 @@ func (h *Handler) UpdateBookingStatus(c *gin.Context) {
 	}
 	bookingID, err := uuid.Parse(c.Param("bookingId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid booking id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid booking id", nil)
 		return
 	}
 	var body struct {
 		Status string `json:"status" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	b, err := h.svc.UpdateBookingStatus(c.Request.Context(), bookingID, userID, body.Status)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "UPDATE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "UPDATE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, b, nil)

@@ -259,26 +259,26 @@ func (h *Handler) CreatePost(c *gin.Context) {
 	authorIDStr := c.GetHeader("X-User-Id")
 	authorID, err := uuid.Parse(authorIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	// Post creation rate limit (Redis sliding window)
 	if err := service.CheckPostRateLimit(c.Request.Context(), h.rdb, authorID); err != nil {
 		c.Header("Retry-After", "3600")
-		api.Error(c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", err.Error(), nil)
 		return
 	}
 
 	var req CreatePostRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
 	// Validate media IDs
 	if len(req.MediaIDs) > 10 {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "Maximum 10 media attachments", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "Maximum 10 media attachments", nil)
 		return
 	}
 
@@ -286,7 +286,7 @@ func (h *Handler) CreatePost(c *gin.Context) {
 	for _, idStr := range req.MediaIDs {
 		id, err := uuid.Parse(idStr)
 		if err != nil {
-			api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "Invalid media ID: "+idStr, nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "Invalid media ID: "+idStr, nil)
 			return
 		}
 		mediaIDs = append(mediaIDs, id)
@@ -368,7 +368,7 @@ func (h *Handler) CreatePost(c *gin.Context) {
 
 	p, err := h.svc.CreatePost(c.Request.Context(), input)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -388,7 +388,7 @@ func (h *Handler) GetPost(c *gin.Context) {
 	postIDStr := c.Param("postId")
 	postID, err := uuid.Parse(postIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 
@@ -400,11 +400,11 @@ func (h *Handler) GetPost(c *gin.Context) {
 
 	p, err := h.svc.GetPost(c.Request.Context(), postID, viewerUUID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if p == nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Post not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Post not found", nil)
 		return
 	}
 
@@ -420,7 +420,7 @@ func (h *Handler) GetRecentPosts(c *gin.Context) {
 
 	posts, nextCursor, err := h.svc.GetRecentPosts(c.Request.Context(), nil, limit, cursor)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if posts == nil {
@@ -439,7 +439,7 @@ func (h *Handler) GetPostsByAuthor(c *gin.Context) {
 	authorIDStr := c.Param("authorId")
 	authorID, err := uuid.Parse(authorIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid author ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid author ID", nil)
 		return
 	}
 
@@ -452,7 +452,7 @@ func (h *Handler) GetPostsByAuthor(c *gin.Context) {
 
 	posts, nextCursor, err := h.svc.GetPostsByAuthor(c.Request.Context(), authorID, contentType, limit, cursor)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if posts == nil {
@@ -471,13 +471,13 @@ func (h *Handler) GetAuthorCounts(c *gin.Context) {
 	authorIDStr := c.Param("authorId")
 	authorID, err := uuid.Parse(authorIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid author ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid author ID", nil)
 		return
 	}
 
 	counts, err := h.svc.GetAuthorCounts(c.Request.Context(), authorID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -492,25 +492,25 @@ func (h *Handler) TogglePin(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	postIDStr := c.Param("postId")
 	postID, err := uuid.Parse(postIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 
 	var req PinRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
 	if err := h.svc.TogglePin(c.Request.Context(), postID, userID, req.Pinned); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -525,25 +525,25 @@ func (h *Handler) React(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	postIDStr := c.Param("postId")
 	postID, err := uuid.Parse(postIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 
 	var req ReactionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
 	if err := h.svc.React(c.Request.Context(), postID, userID, req.Reaction); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -558,37 +558,37 @@ func (h *Handler) AddComment(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	postIDStr := c.Param("postId")
 	postID, err := uuid.Parse(postIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 
 	// Check if comments are disabled on this post
 	post, _ := h.svc.GetPost(c.Request.Context(), postID, nil)
 	if post != nil && post.NoComments {
-		api.Error(c.Writer, http.StatusForbidden, "COMMENTS_DISABLED", "Comments are disabled on this post", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "COMMENTS_DISABLED", "Comments are disabled on this post", nil)
 		return
 	}
 
 	var req CommentRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
 	comment, err := h.svc.CreateCommentPG(c.Request.Context(), postID, userID, req.Text)
 	if err != nil {
 		if err.Error() == "RATE_LIMITED" {
-			api.Error(c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many comments, please slow down", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many comments, please slow down", nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -599,7 +599,7 @@ func (h *Handler) GetPoll(c *gin.Context) {
 	postIDStr := c.Param("postId")
 	postID, err := uuid.Parse(postIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 
@@ -611,11 +611,11 @@ func (h *Handler) GetPoll(c *gin.Context) {
 
 	poll, err := h.svc.GetPoll(c.Request.Context(), postID, viewerUUID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if poll == nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Poll not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Poll not found", nil)
 		return
 	}
 
@@ -630,31 +630,31 @@ func (h *Handler) CastVote(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	postIDStr := c.Param("postId")
 	postID, err := uuid.Parse(postIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 
 	var req VoteRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
 	optionID, err := uuid.Parse(req.OptionID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "Invalid option ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "Invalid option ID", nil)
 		return
 	}
 
 	if err := h.svc.CastVote(c.Request.Context(), postID, optionID, userID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -665,19 +665,19 @@ func (h *Handler) Unreact(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	postIDStr := c.Param("postId")
 	postID, err := uuid.Parse(postIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 
 	if err := h.svc.Unreact(c.Request.Context(), postID, userID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -688,20 +688,20 @@ func (h *Handler) GetMyReaction(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	postIDStr := c.Param("postId")
 	postID, err := uuid.Parse(postIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 
 	reaction, err := h.svc.GetMyReaction(c.Request.Context(), postID, userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -716,7 +716,7 @@ func (h *Handler) ListComments(c *gin.Context) {
 	postIDStr := c.Param("postId")
 	postID, err := uuid.Parse(postIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 
@@ -728,7 +728,7 @@ func (h *Handler) ListComments(c *gin.Context) {
 
 	comments, nextCursor, err := h.svc.ListCommentsPG(c.Request.Context(), postID, cursor, limit)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -748,14 +748,14 @@ func (h *Handler) ListCommentsAround(c *gin.Context) {
 	postIDStr := c.Param("postId")
 	postID, err := uuid.Parse(postIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 
 	commentIDStr := c.Param("commentId")
 	commentID, err := uuid.Parse(commentIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid comment ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid comment ID", nil)
 		return
 	}
 
@@ -767,10 +767,10 @@ func (h *Handler) ListCommentsAround(c *gin.Context) {
 	comments, err := h.svc.GetCommentsAroundPG(c.Request.Context(), postID, commentID, limit)
 	if err != nil {
 		if err.Error() == "COMMENT_NOT_FOUND" {
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Comment not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Comment not found", nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -785,19 +785,19 @@ func (h *Handler) AddBookmark(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	postIDStr := c.Param("postId")
 	postID, err := uuid.Parse(postIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 
 	if err := h.svc.AddBookmark(c.Request.Context(), userID, postID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -808,19 +808,19 @@ func (h *Handler) RemoveBookmark(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	postIDStr := c.Param("postId")
 	postID, err := uuid.Parse(postIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 
 	if err := h.svc.RemoveBookmark(c.Request.Context(), userID, postID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -831,7 +831,7 @@ func (h *Handler) GetBookmarks(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
@@ -843,7 +843,7 @@ func (h *Handler) GetBookmarks(c *gin.Context) {
 
 	posts, nextCursor, err := h.svc.GetBookmarks(c.Request.Context(), userID, limit, cursor)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if posts == nil {
@@ -866,21 +866,21 @@ func (h *Handler) ToggleLike(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	postIDStr := c.Param("postId")
 	postID, err := uuid.Parse(postIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 
 	// Check if likes are disabled on this post
 	post, _ := h.svc.GetPost(c.Request.Context(), postID, nil)
 	if post != nil && post.NoLikes {
-		api.Error(c.Writer, http.StatusForbidden, "LIKES_DISABLED", "Likes are disabled on this post", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "LIKES_DISABLED", "Likes are disabled on this post", nil)
 		return
 	}
 
@@ -888,9 +888,9 @@ func (h *Handler) ToggleLike(c *gin.Context) {
 	if err != nil {
 		switch err.Error() {
 		case "RATE_LIMITED":
-			api.Error(c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many like toggles, please slow down", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many like toggles, please slow down", nil)
 		default:
-			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
 		return
 	}
@@ -907,20 +907,20 @@ func (h *Handler) SharePost(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	postIDStr := c.Param("postId")
 	postID, err := uuid.Parse(postIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 
 	var req ShareRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -928,15 +928,15 @@ func (h *Handler) SharePost(c *gin.Context) {
 	if err != nil {
 		switch err.Error() {
 		case "RATE_LIMITED":
-			api.Error(c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many shares, please slow down", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many shares, please slow down", nil)
 		case "CIRCLE_SHARE_RESTRICTED":
-			api.Error(c.Writer, http.StatusForbidden, "CIRCLE_SHARE_RESTRICTED", "Cannot share this post type externally", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "CIRCLE_SHARE_RESTRICTED", "Cannot share this post type externally", nil)
 		case "ALREADY_SHARED":
-			api.Error(c.Writer, http.StatusConflict, "ALREADY_SHARED", "You already reposted this", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "ALREADY_SHARED", "You already reposted this", nil)
 		case "POST_NOT_FOUND":
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Post not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Post not found", nil)
 		default:
-			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
 		return
 	}
@@ -948,14 +948,14 @@ func (h *Handler) ToggleBookmark(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	postIDStr := c.Param("postId")
 	postID, err := uuid.Parse(postIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 
@@ -963,9 +963,9 @@ func (h *Handler) ToggleBookmark(c *gin.Context) {
 	if err != nil {
 		switch err.Error() {
 		case "RATE_LIMITED":
-			api.Error(c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many bookmark toggles, please slow down", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many bookmark toggles, please slow down", nil)
 		default:
-			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
 		return
 	}
@@ -977,20 +977,20 @@ func (h *Handler) CreateReply(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	commentIDStr := c.Param("commentId")
 	commentID, err := uuid.Parse(commentIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid comment ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid comment ID", nil)
 		return
 	}
 
 	var req CommentRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -998,17 +998,17 @@ func (h *Handler) CreateReply(c *gin.Context) {
 	if err != nil {
 		switch err.Error() {
 		case "RATE_LIMITED":
-			api.Error(c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many replies, please slow down", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many replies, please slow down", nil)
 		case "COMMENT_NOT_FOUND":
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Comment not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Comment not found", nil)
 		case "CANNOT_REPLY_TO_REPLY":
-			api.Error(c.Writer, http.StatusBadRequest, "CANNOT_REPLY_TO_REPLY", "Cannot reply to a reply", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "CANNOT_REPLY_TO_REPLY", "Cannot reply to a reply", nil)
 		case "REPLY_EXISTS":
-			api.Error(c.Writer, http.StatusConflict, "REPLY_EXISTS", "This comment already has a reply", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "REPLY_EXISTS", "This comment already has a reply", nil)
 		case "REPLY_OWNER_ONLY":
-			api.Error(c.Writer, http.StatusForbidden, "REPLY_OWNER_ONLY", "Only the post owner can reply to comments", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "REPLY_OWNER_ONLY", "Only the post owner can reply to comments", nil)
 		default:
-			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
 		return
 	}
@@ -1020,14 +1020,14 @@ func (h *Handler) ToggleCommentLike(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	commentIDStr := c.Param("commentId")
 	commentID, err := uuid.Parse(commentIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid comment ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid comment ID", nil)
 		return
 	}
 
@@ -1035,9 +1035,9 @@ func (h *Handler) ToggleCommentLike(c *gin.Context) {
 	if err != nil {
 		switch err.Error() {
 		case "RATE_LIMITED":
-			api.Error(c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many comment like toggles, please slow down", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many comment like toggles, please slow down", nil)
 		default:
-			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
 		return
 	}
@@ -1049,14 +1049,14 @@ func (h *Handler) ToggleCommentDislike(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	commentIDStr := c.Param("commentId")
 	commentID, err := uuid.Parse(commentIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid comment ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid comment ID", nil)
 		return
 	}
 
@@ -1064,9 +1064,9 @@ func (h *Handler) ToggleCommentDislike(c *gin.Context) {
 	if err != nil {
 		switch err.Error() {
 		case "RATE_LIMITED":
-			api.Error(c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many comment dislike toggles, please slow down", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many comment dislike toggles, please slow down", nil)
 		default:
-			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
 		return
 	}
@@ -1078,14 +1078,14 @@ func (h *Handler) DeleteComment(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	commentIDStr := c.Param("commentId")
 	commentID, err := uuid.Parse(commentIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid comment ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid comment ID", nil)
 		return
 	}
 
@@ -1093,11 +1093,11 @@ func (h *Handler) DeleteComment(c *gin.Context) {
 	if err != nil {
 		switch err.Error() {
 		case "COMMENT_NOT_FOUND":
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Comment not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Comment not found", nil)
 		case "NOT_COMMENT_AUTHOR":
-			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "You can only delete your own comments", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "You can only delete your own comments", nil)
 		default:
-			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
 		return
 	}
@@ -1113,20 +1113,20 @@ func (h *Handler) EditComment(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	commentIDStr := c.Param("commentId")
 	commentID, err := uuid.Parse(commentIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid comment ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid comment ID", nil)
 		return
 	}
 
 	var req EditCommentRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -1134,13 +1134,13 @@ func (h *Handler) EditComment(c *gin.Context) {
 	if err != nil {
 		switch err.Error() {
 		case "COMMENT_NOT_FOUND":
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Comment not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Comment not found", nil)
 		case "NOT_COMMENT_AUTHOR":
-			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "You can only edit your own comments", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "You can only edit your own comments", nil)
 		case "EDIT_WINDOW_EXPIRED":
-			api.Error(c.Writer, http.StatusForbidden, "EDIT_WINDOW_EXPIRED", "Comments can only be edited within 15 minutes of creation", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "EDIT_WINDOW_EXPIRED", "Comments can only be edited within 15 minutes of creation", nil)
 		default:
-			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
 		return
 	}
@@ -1155,7 +1155,7 @@ type BatchGetPostsRequest struct {
 func (h *Handler) BatchGetPosts(c *gin.Context) {
 	var req BatchGetPostsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -1165,7 +1165,7 @@ func (h *Handler) BatchGetPosts(c *gin.Context) {
 	}
 
 	if len(req.IDs) > 100 {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "Maximum 100 IDs per request", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "Maximum 100 IDs per request", nil)
 		return
 	}
 
@@ -1173,7 +1173,7 @@ func (h *Handler) BatchGetPosts(c *gin.Context) {
 	for _, idStr := range req.IDs {
 		id, err := uuid.Parse(idStr)
 		if err != nil {
-			api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID: "+idStr, nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID: "+idStr, nil)
 			return
 		}
 		ids = append(ids, id)
@@ -1187,7 +1187,7 @@ func (h *Handler) BatchGetPosts(c *gin.Context) {
 
 	result, err := h.svc.GetPostsByIDs(c.Request.Context(), ids, viewerUUID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -1217,13 +1217,13 @@ func (h *Handler) CreateStory(c *gin.Context) {
 	authorIDStr := c.GetHeader("X-User-Id")
 	authorID, err := uuid.Parse(authorIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	var req CreateStoryRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -1237,7 +1237,7 @@ func (h *Handler) CreateStory(c *gin.Context) {
 		HighlightGroup: req.HighlightGroup,
 	})
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -1248,17 +1248,17 @@ func (h *Handler) GetStory(c *gin.Context) {
 	storyIDStr := c.Param("storyId")
 	storyID, err := uuid.Parse(storyIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid story ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid story ID", nil)
 		return
 	}
 
 	story, err := h.svc.GetStory(c.Request.Context(), storyID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if story == nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Story not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Story not found", nil)
 		return
 	}
 
@@ -1278,13 +1278,13 @@ func (h *Handler) GetStoriesFeed(c *gin.Context) {
 
 		userID, err := uuid.Parse(userIDStr)
 		if err != nil {
-			api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 			return
 		}
 
 		stories, err := h.svc.GetStoriesFeedForUser(c.Request.Context(), userID)
 		if err != nil {
-			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 			return
 		}
 		if stories == nil {
@@ -1307,7 +1307,7 @@ func (h *Handler) GetStoriesFeed(c *gin.Context) {
 
 	stories, err := h.svc.GetStoriesFeed(c.Request.Context(), followedIDs)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if stories == nil {
@@ -1320,13 +1320,13 @@ func (h *Handler) GetStoriesFeed(c *gin.Context) {
 func (h *Handler) GetStoriesByAuthor(c *gin.Context) {
 	authorID, err := uuid.Parse(c.Param("authorId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid author ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid author ID", nil)
 		return
 	}
 
 	stories, err := h.svc.GetStoriesByAuthor(c.Request.Context(), authorID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if stories == nil {
@@ -1340,23 +1340,23 @@ func (h *Handler) DeleteStory(c *gin.Context) {
 	authorIDStr := c.GetHeader("X-User-Id")
 	authorID, err := uuid.Parse(authorIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	storyIDStr := c.Param("storyId")
 	storyID, err := uuid.Parse(storyIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid story ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid story ID", nil)
 		return
 	}
 
 	if err := h.svc.DeleteStory(c.Request.Context(), storyID, authorID); err != nil {
 		if err.Error() == "STORY_NOT_FOUND" {
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Story not found or not yours", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Story not found or not yours", nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -1367,12 +1367,12 @@ func (h *Handler) ViewStory(c *gin.Context) {
 	storyIDStr := c.Param("storyId")
 	storyID, err := uuid.Parse(storyIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid story ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid story ID", nil)
 		return
 	}
 
 	if err := h.svc.ViewStory(c.Request.Context(), storyID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -1391,20 +1391,20 @@ func (h *Handler) ToggleReaction(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	postIDStr := c.Param("postId")
 	postID, err := uuid.Parse(postIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 
 	var req ToggleReactionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -1412,11 +1412,11 @@ func (h *Handler) ToggleReaction(c *gin.Context) {
 	if err != nil {
 		switch err.Error() {
 		case "INVALID_REACTION_TYPE":
-			api.Error(c.Writer, http.StatusBadRequest, "INVALID_REACTION_TYPE", "Valid types: like, love, haha, wow, sad, angry", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REACTION_TYPE", "Valid types: like, love, haha, wow, sad, angry", nil)
 		case "RATE_LIMITED":
-			api.Error(c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many reactions, please slow down", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many reactions, please slow down", nil)
 		default:
-			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
 		return
 	}
@@ -1428,13 +1428,13 @@ func (h *Handler) GetReactionCounts(c *gin.Context) {
 	postIDStr := c.Param("postId")
 	postID, err := uuid.Parse(postIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 
 	counts, err := h.svc.GetReactionCounts(c.Request.Context(), postID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -1455,25 +1455,25 @@ func (h *Handler) SaveItem(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	var req SaveItemRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
 	targetID, err := uuid.Parse(req.TargetID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "Invalid target ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "Invalid target ID", nil)
 		return
 	}
 
 	item, err := h.svc.SaveItem(c.Request.Context(), userID, req.TargetType, targetID, req.CollectionName)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -1484,7 +1484,7 @@ func (h *Handler) ListSavedItems(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
@@ -1497,7 +1497,7 @@ func (h *Handler) ListSavedItems(c *gin.Context) {
 
 	items, nextCursor, err := h.svc.ListSavedItems(c.Request.Context(), userID, collectionName, limit, cursor)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if items == nil {
@@ -1516,23 +1516,23 @@ func (h *Handler) UnsaveItem(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	savedIDStr := c.Param("savedId")
 	savedID, err := uuid.Parse(savedIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid saved item ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid saved item ID", nil)
 		return
 	}
 
 	if err := h.svc.UnsaveItem(c.Request.Context(), savedID, userID); err != nil {
 		if err.Error() == "SAVED_ITEM_NOT_FOUND" {
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Saved item not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Saved item not found", nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -1543,13 +1543,13 @@ func (h *Handler) ListCollections(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	collections, err := h.svc.ListCollections(c.Request.Context(), userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if collections == nil {
@@ -1566,7 +1566,7 @@ func (h *Handler) ListCollections(c *gin.Context) {
 func (h *Handler) GetPostsByHashtag(c *gin.Context) {
 	tag := c.Param("tag")
 	if tag == "" {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "Hashtag is required", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "Hashtag is required", nil)
 		return
 	}
 	// Strip leading # if present
@@ -1584,7 +1584,7 @@ func (h *Handler) GetPostsByHashtag(c *gin.Context) {
 
 	posts, nextCursor, err := h.svc.GetPostsByHashtag(c.Request.Context(), tag, limit, cursor, sort)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if posts == nil {
@@ -1606,11 +1606,11 @@ func (h *Handler) SearchHashtags(c *gin.Context) {
 	q := strings.TrimSpace(c.Query("q"))
 	q = strings.TrimPrefix(q, "#")
 	if len(q) < 2 {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "q must be at least 2 characters", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "q must be at least 2 characters", nil)
 		return
 	}
 	if len(q) > 100 {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "q is too long", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "q is too long", nil)
 		return
 	}
 
@@ -1624,7 +1624,7 @@ func (h *Handler) SearchHashtags(c *gin.Context) {
 
 	suggestions, err := h.svc.SearchHashtags(c.Request.Context(), q, limit)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if suggestions == nil {
@@ -1659,15 +1659,15 @@ func (h *Handler) GetTrendingPosts(c *gin.Context) {
 	}
 	for _, ct := range contentTypes {
 		if !allowed[ct] {
-			api.Error(c.Writer, http.StatusBadRequest, "INVALID_CONTENT_TYPE",
-				fmt.Sprintf("unknown content_type %q", ct), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CONTENT_TYPE",
+				fmt.Sprintf("unknown content_type %q", ct), nil)
 			return
 		}
 	}
 
 	posts, nextCursor, err := h.svc.GetTrendingPosts(c.Request.Context(), contentTypes, limit, cursor)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if posts == nil {
@@ -1716,7 +1716,7 @@ func (h *Handler) GetTrendingHashtagsFeed(c *gin.Context) {
 
 	trending, err := h.svc.GetTrendingHashtags24h(ctx, limit)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if trending == nil {
@@ -1735,12 +1735,12 @@ func (h *Handler) GetTrendingHashtagsFeed(c *gin.Context) {
 func (h *Handler) GetVideoDetail(c *gin.Context) {
 	videoID, err := uuid.Parse(c.Param("videoId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid video ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid video ID", nil)
 		return
 	}
 	vm, err := h.svc.GetVideoDetail(c.Request.Context(), videoID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Video metadata not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Video metadata not found", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, vm, nil)
@@ -1749,12 +1749,12 @@ func (h *Handler) GetVideoDetail(c *gin.Context) {
 func (h *Handler) UpdateTrim(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 	videoID, err := uuid.Parse(c.Param("videoId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid video ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid video ID", nil)
 		return
 	}
 
@@ -1763,16 +1763,16 @@ func (h *Handler) UpdateTrim(c *gin.Context) {
 		TrimEndMs   *int `json:"trim_end_ms"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
 	if err := h.svc.UpdateVideoTrim(c.Request.Context(), videoID, userID, req.TrimStartMs, req.TrimEndMs); err != nil {
 		if strings.Contains(err.Error(), "unauthorized") {
-			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "updated"}, nil)
@@ -1781,12 +1781,12 @@ func (h *Handler) UpdateTrim(c *gin.Context) {
 func (h *Handler) OverrideCategory(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 	videoID, err := uuid.Parse(c.Param("videoId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid video ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid video ID", nil)
 		return
 	}
 
@@ -1794,20 +1794,20 @@ func (h *Handler) OverrideCategory(c *gin.Context) {
 		Category string `json:"category" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
 	if err := h.svc.OverrideCategory(c.Request.Context(), videoID, userID, req.Category); err != nil {
 		if strings.Contains(err.Error(), "unauthorized") {
-			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
 			return
 		}
 		if strings.Contains(err.Error(), "cannot classify") {
-			api.Error(c.Writer, http.StatusUnprocessableEntity, "VALIDATION_ERROR", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnprocessableEntity, "VALIDATION_ERROR", err.Error(), nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "updated"}, nil)
@@ -1816,12 +1816,12 @@ func (h *Handler) OverrideCategory(c *gin.Context) {
 func (h *Handler) SetCoverFrame(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 	videoID, err := uuid.Parse(c.Param("videoId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid video ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid video ID", nil)
 		return
 	}
 
@@ -1831,7 +1831,7 @@ func (h *Handler) SetCoverFrame(c *gin.Context) {
 		TimestampMs  *int    `json:"timestamp_ms"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -1839,7 +1839,7 @@ func (h *Handler) SetCoverFrame(c *gin.Context) {
 	if req.CoverMediaID != nil {
 		id, err := uuid.Parse(*req.CoverMediaID)
 		if err != nil {
-			api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid cover media ID", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid cover media ID", nil)
 			return
 		}
 		coverMediaID = &id
@@ -1847,10 +1847,10 @@ func (h *Handler) SetCoverFrame(c *gin.Context) {
 
 	if err := h.svc.SetCoverFrame(c.Request.Context(), videoID, userID, coverMediaID, req.ThumbnailURL); err != nil {
 		if strings.Contains(err.Error(), "unauthorized") {
-			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "updated"}, nil)
@@ -1859,25 +1859,25 @@ func (h *Handler) SetCoverFrame(c *gin.Context) {
 func (h *Handler) PublishVideo(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 	videoID, err := uuid.Parse(c.Param("videoId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid video ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid video ID", nil)
 		return
 	}
 
 	if err := h.svc.PublishVideo(c.Request.Context(), videoID, userID); err != nil {
 		if strings.Contains(err.Error(), "unauthorized") {
-			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
 			return
 		}
 		if strings.Contains(err.Error(), "not ready") {
-			api.Error(c.Writer, http.StatusConflict, "NOT_READY", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "NOT_READY", err.Error(), nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "published"}, nil)
@@ -1890,23 +1890,23 @@ func (h *Handler) PublishVideo(c *gin.Context) {
 func (h *Handler) CastPollVote(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 	var req struct {
 		OptionID uuid.UUID `json:"option_id" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 	if err := h.svc.CastPollVote(c.Request.Context(), postID, req.OptionID, userID); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "VOTE_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "VOTE_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]bool{"ok": true}, nil)
@@ -1915,12 +1915,12 @@ func (h *Handler) CastPollVote(c *gin.Context) {
 func (h *Handler) GetPollResults(c *gin.Context) {
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 	results, err := h.svc.GetPollResults(c.Request.Context(), postID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if results == nil {
@@ -1936,16 +1936,16 @@ func (h *Handler) GetPollResults(c *gin.Context) {
 func (h *Handler) CreateTune(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 	if err := h.svc.CreateTune(c.Request.Context(), userID, postID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]bool{"ok": true}, nil)
@@ -1954,16 +1954,16 @@ func (h *Handler) CreateTune(c *gin.Context) {
 func (h *Handler) DeleteTune(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 	if err := h.svc.DeleteTune(c.Request.Context(), userID, postID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]bool{"ok": true}, nil)
@@ -1972,17 +1972,17 @@ func (h *Handler) DeleteTune(c *gin.Context) {
 func (h *Handler) GetTune(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 	tuned, err := h.svc.HasTune(c.Request.Context(), userID, postID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]bool{"tuned": tuned}, nil)
@@ -1995,7 +1995,7 @@ func (h *Handler) GetTune(c *gin.Context) {
 func (h *Handler) CreateEvent(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 	var req struct {
@@ -2012,7 +2012,7 @@ func (h *Handler) CreateEvent(c *gin.Context) {
 		MaxAttendees *int       `json:"max_attendees"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 	event, err := h.svc.CreateEvent(c.Request.Context(), service.CreateEventInput{
@@ -2030,7 +2030,7 @@ func (h *Handler) CreateEvent(c *gin.Context) {
 		MaxAttendees: req.MaxAttendees,
 	})
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "CREATE_EVENT_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "CREATE_EVENT_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, event, nil)
@@ -2039,12 +2039,12 @@ func (h *Handler) CreateEvent(c *gin.Context) {
 func (h *Handler) GetEvent(c *gin.Context) {
 	eventID, err := uuid.Parse(c.Param("eventId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid event ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid event ID", nil)
 		return
 	}
 	event, err := h.svc.GetEvent(c.Request.Context(), eventID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, event, nil)
@@ -2053,23 +2053,23 @@ func (h *Handler) GetEvent(c *gin.Context) {
 func (h *Handler) RSVPEvent(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 	eventID, err := uuid.Parse(c.Param("eventId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid event ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid event ID", nil)
 		return
 	}
 	var req struct {
 		Status string `json:"status" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 	if err := h.svc.RSVPEvent(c.Request.Context(), eventID, userID, req.Status); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "RSVP_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "RSVP_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]bool{"ok": true}, nil)
@@ -2078,14 +2078,14 @@ func (h *Handler) RSVPEvent(c *gin.Context) {
 func (h *Handler) GetEventRSVPs(c *gin.Context) {
 	eventID, err := uuid.Parse(c.Param("eventId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid event ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid event ID", nil)
 		return
 	}
 	limit := 20
 	offset := 0
 	rsvps, err := h.svc.GetEventRSVPs(c.Request.Context(), eventID, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if rsvps == nil {
@@ -2099,7 +2099,7 @@ func (h *Handler) GetEventRSVPs(c *gin.Context) {
 func (h *Handler) CreateFlickSeries(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil)
 		return
 	}
 	var req struct {
@@ -2107,12 +2107,12 @@ func (h *Handler) CreateFlickSeries(c *gin.Context) {
 		Description string `json:"description"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 	fs, err := h.svc.CreateFlickSeries(c.Request.Context(), userID, req.Title, req.Description)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "CREATE_SERIES_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "CREATE_SERIES_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, fs, nil)
@@ -2121,12 +2121,12 @@ func (h *Handler) CreateFlickSeries(c *gin.Context) {
 func (h *Handler) GetFlickSeries(c *gin.Context) {
 	seriesID, err := uuid.Parse(c.Param("seriesId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "invalid series id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "invalid series id", nil)
 		return
 	}
 	fs, err := h.svc.GetFlickSeries(c.Request.Context(), seriesID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, fs, nil)
@@ -2135,12 +2135,12 @@ func (h *Handler) GetFlickSeries(c *gin.Context) {
 func (h *Handler) GetSeriesEpisodes(c *gin.Context) {
 	seriesID, err := uuid.Parse(c.Param("seriesId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "invalid series id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "invalid series id", nil)
 		return
 	}
 	items, err := h.svc.GetSeriesEpisodes(c.Request.Context(), seriesID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if items == nil {
@@ -2152,12 +2152,12 @@ func (h *Handler) GetSeriesEpisodes(c *gin.Context) {
 func (h *Handler) AddEpisodeToSeries(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil)
 		return
 	}
 	seriesID, err := uuid.Parse(c.Param("seriesId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "invalid series id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "invalid series id", nil)
 		return
 	}
 	var req struct {
@@ -2165,16 +2165,16 @@ func (h *Handler) AddEpisodeToSeries(c *gin.Context) {
 		EpisodeNum int       `json:"episode_num" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 	item, err := h.svc.AddEpisodeToSeries(c.Request.Context(), userID, seriesID, req.PostID, req.EpisodeNum)
 	if err != nil {
 		if strings.Contains(err.Error(), "forbidden") {
-			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusBadRequest, "ADD_EPISODE_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "ADD_EPISODE_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, item, nil)
@@ -2183,16 +2183,16 @@ func (h *Handler) AddEpisodeToSeries(c *gin.Context) {
 func (h *Handler) FollowSeries(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil)
 		return
 	}
 	seriesID, err := uuid.Parse(c.Param("seriesId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "invalid series id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "invalid series id", nil)
 		return
 	}
 	if err := h.svc.FollowSeries(c.Request.Context(), userID, seriesID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
@@ -2201,16 +2201,16 @@ func (h *Handler) FollowSeries(c *gin.Context) {
 func (h *Handler) UnfollowSeries(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil)
 		return
 	}
 	seriesID, err := uuid.Parse(c.Param("seriesId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "invalid series id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "invalid series id", nil)
 		return
 	}
 	if err := h.svc.UnfollowSeries(c.Request.Context(), userID, seriesID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
@@ -2219,12 +2219,12 @@ func (h *Handler) UnfollowSeries(c *gin.Context) {
 func (h *Handler) ListCreatorSeries(c *gin.Context) {
 	creatorID, err := uuid.Parse(c.Param("creatorId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "invalid creator id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "invalid creator id", nil)
 		return
 	}
 	series, err := h.svc.ListFlickSeriesByCreator(c.Request.Context(), creatorID, 20, 0)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if series == nil {
@@ -2236,16 +2236,16 @@ func (h *Handler) ListCreatorSeries(c *gin.Context) {
 func (h *Handler) GetRemixToken(c *gin.Context) {
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "invalid post id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "invalid post id", nil)
 		return
 	}
 	result, err := h.svc.GetRemixToken(c.Request.Context(), postID)
 	if err != nil {
 		if strings.Contains(err.Error(), "does not allow") {
-			api.Error(c.Writer, http.StatusForbidden, "REMIX_NOT_ALLOWED", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "REMIX_NOT_ALLOWED", err.Error(), nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, result, nil)
@@ -2279,19 +2279,19 @@ func (h *Handler) CreateRepost(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 
 	var req CreateRepostRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -2314,19 +2314,19 @@ func (h *Handler) CreateRepost(c *gin.Context) {
 	if err != nil {
 		switch err.Error() {
 		case "RATE_LIMITED":
-			api.Error(c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many reposts, please slow down", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many reposts, please slow down", nil)
 		case "POST_NOT_FOUND":
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Post not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Post not found", nil)
 		case "NOT_ELIGIBLE":
-			api.Error(c.Writer, http.StatusForbidden, "NOT_ELIGIBLE", "This post cannot be reposted", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NOT_ELIGIBLE", "This post cannot be reposted", nil)
 		case "ALREADY_REPOSTED":
-			api.Error(c.Writer, http.StatusConflict, "ALREADY_REPOSTED", "You already reposted this post", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "ALREADY_REPOSTED", "You already reposted this post", nil)
 		case "QUOTE_TEXT_REQUIRED":
-			api.Error(c.Writer, http.StatusUnprocessableEntity, "QUOTE_TEXT_REQUIRED", "Add your thoughts to quote repost", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnprocessableEntity, "QUOTE_TEXT_REQUIRED", "Add your thoughts to quote repost", nil)
 		case "QUOTE_TEXT_TOO_LONG":
-			api.Error(c.Writer, http.StatusUnprocessableEntity, "QUOTE_TEXT_TOO_LONG", "Quote text must be 500 characters or fewer", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnprocessableEntity, "QUOTE_TEXT_TOO_LONG", "Quote text must be 500 characters or fewer", nil)
 		default:
-			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
 		return
 	}
@@ -2338,13 +2338,13 @@ func (h *Handler) UndoRepost(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 
@@ -2352,9 +2352,9 @@ func (h *Handler) UndoRepost(c *gin.Context) {
 	if err != nil {
 		switch err.Error() {
 		case "REPOST_NOT_FOUND":
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "No active repost found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "No active repost found", nil)
 		default:
-			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
 		return
 	}
@@ -2366,19 +2366,19 @@ func (h *Handler) GetRepostState(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 
 	result, err := h.svc.GetRepostState(c.Request.Context(), userID, postID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -2388,7 +2388,7 @@ func (h *Handler) GetRepostState(c *gin.Context) {
 func (h *Handler) ListReposters(c *gin.Context) {
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 
@@ -2402,7 +2402,7 @@ func (h *Handler) ListReposters(c *gin.Context) {
 
 	result, err := h.svc.ListReposters(c.Request.Context(), postID, limit, cursor)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -2412,7 +2412,7 @@ func (h *Handler) ListReposters(c *gin.Context) {
 func (h *Handler) ListUserReposts(c *gin.Context) {
 	userID, err := uuid.Parse(c.Param("userId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil)
 		return
 	}
 
@@ -2426,7 +2426,7 @@ func (h *Handler) ListUserReposts(c *gin.Context) {
 
 	result, err := h.svc.ListUserReposts(c.Request.Context(), userID, limit, cursor)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 

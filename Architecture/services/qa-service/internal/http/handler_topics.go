@@ -15,7 +15,7 @@ func (h *Handler) ListTopics(c *gin.Context) {
 
 	topics, err := h.svc.ListTopics(c.Request.Context(), limit, offset, featuredOnly)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, topics, nil)
@@ -29,7 +29,7 @@ func (h *Handler) GetTopic(c *gin.Context) {
 
 	topic, err := h.svc.GetTopic(c.Request.Context(), topicID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "topic not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "topic not found", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, topic, nil)
@@ -38,13 +38,13 @@ func (h *Handler) GetTopic(c *gin.Context) {
 func (h *Handler) GetTopicBySlug(c *gin.Context) {
 	slug := c.Param("slug")
 	if slug == "" {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "slug is required", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PARAM", "slug is required", nil)
 		return
 	}
 
 	topic, err := h.svc.GetTopicBySlug(c.Request.Context(), slug)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "topic not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "topic not found", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, topic, nil)
@@ -53,13 +53,13 @@ func (h *Handler) GetTopicBySlug(c *gin.Context) {
 func (h *Handler) CreateTopic(c *gin.Context) {
 	var body store.CreateTopicParams
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 
 	topic, err := h.svc.CreateTopic(c.Request.Context(), body)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "CREATE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "CREATE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, topic, nil)
@@ -75,7 +75,7 @@ func (h *Handler) GetTopicQuestions(c *gin.Context) {
 
 	questions, err := h.svc.GetTopicQuestions(c.Request.Context(), topicID, sortBy, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, questions, nil)
@@ -95,7 +95,7 @@ func (h *Handler) GetTopContributors(c *gin.Context) {
 
 	contributors, err := h.svc.GetTopContributors(c.Request.Context(), topicID, limit)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, contributors, nil)

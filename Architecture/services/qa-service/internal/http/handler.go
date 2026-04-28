@@ -138,12 +138,12 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 func getUserID(c *gin.Context) (uuid.UUID, bool) {
 	raw := c.GetHeader("X-User-ID")
 	if raw == "" {
-		api.Error(c.Writer, http.StatusUnauthorized, "AUTH_REQUIRED", "missing user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "AUTH_REQUIRED", "missing user id", nil)
 		return uuid.Nil, false
 	}
 	id, err := uuid.Parse(raw)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid user id", nil)
 		return uuid.Nil, false
 	}
 	return id, true
@@ -165,7 +165,7 @@ func parseUUID(c *gin.Context, param string) (uuid.UUID, bool) {
 	raw := c.Param(param)
 	id, err := uuid.Parse(raw)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid "+param, nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid "+param, nil)
 		return uuid.Nil, false
 	}
 	return id, true
@@ -174,7 +174,7 @@ func parseUUID(c *gin.Context, param string) (uuid.UUID, bool) {
 func parseUUIDString(c *gin.Context, raw, field string) (uuid.UUID, bool) {
 	id, err := uuid.Parse(raw)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid "+field, nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid "+field, nil)
 		return uuid.Nil, false
 	}
 	return id, true
@@ -203,17 +203,17 @@ func respondServiceError(c *gin.Context, err error, defaultCode int, defaultCode
 
 	msg := err.Error()
 	if detail, ok := strings.CutPrefix(msg, "invalid: "); ok {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", detail, nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", detail, nil)
 		return
 	}
 	if detail, ok := strings.CutPrefix(msg, "forbidden: "); ok {
-		api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", detail, nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", detail, nil)
 		return
 	}
 	if detail, ok := strings.CutPrefix(msg, "not_found: "); ok {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", detail, nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", detail, nil)
 		return
 	}
 
-	api.Error(c.Writer, defaultCode, defaultCodeName, msg, nil, nil)
+	api.ErrorWithContext(c.Request.Context(), c.Writer, defaultCode, defaultCodeName, msg, nil)
 }

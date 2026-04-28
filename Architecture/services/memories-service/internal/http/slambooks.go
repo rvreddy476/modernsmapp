@@ -16,7 +16,7 @@ import (
 func (h *Handler) ListSlambookTemplatePacks(c *gin.Context) {
 	packs, err := h.svc.ListSlambookTemplatePacks(c.Request.Context())
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "SLAMBOOK_TEMPLATE_PACKS_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "SLAMBOOK_TEMPLATE_PACKS_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]any{"items": packs}, nil)
@@ -49,7 +49,7 @@ func (h *Handler) CreateSlambook(c *gin.Context) {
 		} `json:"custom_cards"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 
@@ -106,7 +106,7 @@ func (h *Handler) ListSlambooks(c *gin.Context) {
 		if ownerParam == "" && viewerUserID != nil {
 			ownerUserID = *viewerUserID
 		} else {
-			api.Error(c.Writer, http.StatusBadRequest, "INVALID_OWNER_USER_ID", "invalid owner user id", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_OWNER_USER_ID", "invalid owner user id", nil)
 			return
 		}
 	}
@@ -127,7 +127,7 @@ func (h *Handler) ListSlambooks(c *gin.Context) {
 func (h *Handler) GetSlambook(c *gin.Context) {
 	slambookID, err := parseUUIDParam(c, "slambookId")
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_SLAMBOOK_ID", "invalid slambook id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_SLAMBOOK_ID", "invalid slambook id", nil)
 		return
 	}
 	viewerUserID, ok := parseOptionalUserID(c)
@@ -146,7 +146,7 @@ func (h *Handler) GetSlambook(c *gin.Context) {
 func (h *Handler) CreateSlambookShareLink(c *gin.Context) {
 	slambookID, err := parseUUIDParam(c, "slambookId")
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_SLAMBOOK_ID", "invalid slambook id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_SLAMBOOK_ID", "invalid slambook id", nil)
 		return
 	}
 	userID, ok := parseUserID(c)
@@ -165,7 +165,7 @@ func (h *Handler) CreateSlambookShareLink(c *gin.Context) {
 func (h *Handler) CreateSlambookInvites(c *gin.Context) {
 	slambookID, err := parseUUIDParam(c, "slambookId")
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_SLAMBOOK_ID", "invalid slambook id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_SLAMBOOK_ID", "invalid slambook id", nil)
 		return
 	}
 	userID, ok := parseUserID(c)
@@ -178,13 +178,13 @@ func (h *Handler) CreateSlambookInvites(c *gin.Context) {
 		Message       *string  `json:"message"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 
 	targetUserIDs, err := parseUUIDStrings(body.TargetUserIDs)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_TARGET_USER_IDS", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_TARGET_USER_IDS", err.Error(), nil)
 		return
 	}
 
@@ -199,7 +199,7 @@ func (h *Handler) CreateSlambookInvites(c *gin.Context) {
 func (h *Handler) SaveSlambookResponse(c *gin.Context) {
 	slambookID, err := parseUUIDParam(c, "slambookId")
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_SLAMBOOK_ID", "invalid slambook id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_SLAMBOOK_ID", "invalid slambook id", nil)
 		return
 	}
 	userID, ok := parseUserID(c)
@@ -219,7 +219,7 @@ func (h *Handler) SaveSlambookResponse(c *gin.Context) {
 		} `json:"answers"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 
@@ -227,7 +227,7 @@ func (h *Handler) SaveSlambookResponse(c *gin.Context) {
 	for _, answer := range body.Answers {
 		cardID, err := parseUUIDString(answer.CardID)
 		if err != nil {
-			api.Error(c.Writer, http.StatusBadRequest, "INVALID_CARD_ID", "invalid card id", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CARD_ID", "invalid card id", nil)
 			return
 		}
 		answers = append(answers, service.RespondToSlambookAnswerInput{
@@ -241,7 +241,7 @@ func (h *Handler) SaveSlambookResponse(c *gin.Context) {
 	if token := strings.TrimSpace(body.ShareToken); token != "" {
 		parsedToken, err := parseUUIDString(token)
 		if err != nil {
-			api.Error(c.Writer, http.StatusBadRequest, "INVALID_SHARE_TOKEN", "invalid share token", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_SHARE_TOKEN", "invalid share token", nil)
 			return
 		}
 		shareToken = &parsedToken
@@ -264,7 +264,7 @@ func (h *Handler) SaveSlambookResponse(c *gin.Context) {
 func (h *Handler) ListSlambookOpinionSpace(c *gin.Context) {
 	slambookID, err := parseUUIDParam(c, "slambookId")
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_SLAMBOOK_ID", "invalid slambook id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_SLAMBOOK_ID", "invalid slambook id", nil)
 		return
 	}
 	viewerUserID, ok := parseOptionalUserID(c)
@@ -283,7 +283,7 @@ func (h *Handler) ListSlambookOpinionSpace(c *gin.Context) {
 func (h *Handler) ListSlambookModerationQueue(c *gin.Context) {
 	slambookID, err := parseUUIDParam(c, "slambookId")
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_SLAMBOOK_ID", "invalid slambook id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_SLAMBOOK_ID", "invalid slambook id", nil)
 		return
 	}
 	userID, ok := parseUserID(c)
@@ -302,12 +302,12 @@ func (h *Handler) ListSlambookModerationQueue(c *gin.Context) {
 func (h *Handler) ModerateSlambookSession(c *gin.Context) {
 	slambookID, err := parseUUIDParam(c, "slambookId")
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_SLAMBOOK_ID", "invalid slambook id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_SLAMBOOK_ID", "invalid slambook id", nil)
 		return
 	}
 	sessionID, err := parseUUIDParam(c, "sessionId")
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_SESSION_ID", "invalid session id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_SESSION_ID", "invalid session id", nil)
 		return
 	}
 	userID, ok := parseUserID(c)
@@ -320,7 +320,7 @@ func (h *Handler) ModerateSlambookSession(c *gin.Context) {
 		Reason string `json:"reason"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 
@@ -334,12 +334,12 @@ func (h *Handler) ModerateSlambookSession(c *gin.Context) {
 func (h *Handler) SetSlambookOpinionPinned(c *gin.Context) {
 	slambookID, err := parseUUIDParam(c, "slambookId")
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_SLAMBOOK_ID", "invalid slambook id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_SLAMBOOK_ID", "invalid slambook id", nil)
 		return
 	}
 	itemID, err := parseUUIDParam(c, "itemId")
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ITEM_ID", "invalid item id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ITEM_ID", "invalid item id", nil)
 		return
 	}
 	userID, ok := parseUserID(c)
@@ -352,7 +352,7 @@ func (h *Handler) SetSlambookOpinionPinned(c *gin.Context) {
 	}
 	if c.Request.ContentLength != 0 {
 		if err := c.ShouldBindJSON(&body); err != nil {
-			api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 			return
 		}
 	}
@@ -371,7 +371,7 @@ func (h *Handler) SetSlambookOpinionPinned(c *gin.Context) {
 func (h *Handler) ReorderSlambookOpinionItems(c *gin.Context) {
 	slambookID, err := parseUUIDParam(c, "slambookId")
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_SLAMBOOK_ID", "invalid slambook id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_SLAMBOOK_ID", "invalid slambook id", nil)
 		return
 	}
 	userID, ok := parseUserID(c)
@@ -383,12 +383,12 @@ func (h *Handler) ReorderSlambookOpinionItems(c *gin.Context) {
 		ItemIDs []string `json:"item_ids"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	itemIDs, err := parseUUIDStrings(body.ItemIDs)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ITEM_IDS", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ITEM_IDS", err.Error(), nil)
 		return
 	}
 
@@ -402,7 +402,7 @@ func (h *Handler) ReorderSlambookOpinionItems(c *gin.Context) {
 func (h *Handler) ArchiveSlambook(c *gin.Context) {
 	slambookID, err := parseUUIDParam(c, "slambookId")
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_SLAMBOOK_ID", "invalid slambook id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_SLAMBOOK_ID", "invalid slambook id", nil)
 		return
 	}
 	userID, ok := parseUserID(c)
@@ -420,7 +420,7 @@ func (h *Handler) ArchiveSlambook(c *gin.Context) {
 func (h *Handler) GetSlambookByShareToken(c *gin.Context) {
 	token, err := parseUUIDParam(c, "token")
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_SHARE_TOKEN", "invalid share token", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_SHARE_TOKEN", "invalid share token", nil)
 		return
 	}
 	viewerUserID, ok := parseOptionalUserID(c)
@@ -443,7 +443,7 @@ func parseOptionalUserID(c *gin.Context) (*uuid.UUID, bool) {
 	}
 	uid, err := uuid.Parse(userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_USER_ID", "invalid user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_USER_ID", "invalid user id", nil)
 		return nil, false
 	}
 	return &uid, true
@@ -477,5 +477,5 @@ func writeSlambookError(c *gin.Context, code string, err error) {
 	case strings.Contains(err.Error(), "not authorized"), strings.Contains(err.Error(), "not allowed"):
 		status = http.StatusForbidden
 	}
-	api.Error(c.Writer, status, code, err.Error(), nil, nil)
+	api.ErrorWithContext(c.Request.Context(), c.Writer, status, code, err.Error(), nil)
 }

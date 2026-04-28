@@ -98,13 +98,13 @@ type IngestRequest struct {
 func (h *Handler) IngestEvents(c *gin.Context) {
 	var req IngestRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 
 	// Validate batch size
 	if len(req.Events) > 200 {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Batch size too large (max 200)", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Batch size too large (max 200)", nil)
 		return
 	}
 
@@ -114,7 +114,7 @@ func (h *Handler) IngestEvents(c *gin.Context) {
 	// Async ingest
 	if err := h.svc.IngestEvents(c.Request.Context(), userID, sessionID, req.Events); err != nil {
 		log.Printf("Ingest error: %v", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Ingestion failed", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Ingestion failed", nil)
 		return
 	}
 
@@ -127,14 +127,14 @@ func (h *Handler) IngestEvents(c *gin.Context) {
 func (h *Handler) GetContentViews(c *gin.Context) {
 	contentID := c.Param("contentId")
 	if contentID == "" {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "content_id is required", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "content_id is required", nil)
 		return
 	}
 
 	result, err := h.rdb.HGetAll(c.Request.Context(), "post:views:"+contentID).Result()
 	if err != nil {
 		log.Printf("Redis error fetching views for %s: %v", contentID, err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch view counts", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch view counts", nil)
 		return
 	}
 

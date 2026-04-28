@@ -89,26 +89,26 @@ func (h *Handler) FileReport(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	var req FileReportRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 
 	entityID, err := uuid.Parse(req.EntityID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid entity ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid entity ID", nil)
 		return
 	}
 
 	report, err := h.svc.FileReport(c.Request.Context(), userID, entityID, req.EntityType, req.Reason, req.Details)
 	if err != nil {
 		slog.Error("FileReport error", "error", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to file report", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to file report", nil)
 		return
 	}
 
@@ -118,7 +118,7 @@ func (h *Handler) FileReport(c *gin.Context) {
 func (h *Handler) ListReports(c *gin.Context) {
 	scopes := c.GetHeader("X-Scopes")
 	if !hasScope(scopes, "admin") {
-		api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil)
 		return
 	}
 
@@ -139,7 +139,7 @@ func (h *Handler) ListReports(c *gin.Context) {
 	reports, err := h.svc.ListReports(c.Request.Context(), limit, offset)
 	if err != nil {
 		slog.Error("ListReports error", "error", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list reports", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list reports", nil)
 		return
 	}
 
@@ -149,19 +149,19 @@ func (h *Handler) ListReports(c *gin.Context) {
 func (h *Handler) GetReport(c *gin.Context) {
 	scopes := c.GetHeader("X-Scopes")
 	if !hasScope(scopes, "admin") {
-		api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil)
 		return
 	}
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid report ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid report ID", nil)
 		return
 	}
 	// We need to call store directly or add GetReport to service
 	// Call through service
 	report, err := h.svc.GetReport(c.Request.Context(), id.String())
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Report not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Report not found", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, report, nil)
@@ -176,7 +176,7 @@ type UpdateReportRequest struct {
 func (h *Handler) UpdateReport(c *gin.Context) {
 	scopes := c.GetHeader("X-Scopes")
 	if !hasScope(scopes, "admin") {
-		api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil)
 		return
 	}
 	actorID := c.GetHeader("X-User-Id")
@@ -185,12 +185,12 @@ func (h *Handler) UpdateReport(c *gin.Context) {
 	}
 	reportID := c.Param("id")
 	if _, err := uuid.Parse(reportID); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid report ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid report ID", nil)
 		return
 	}
 	var req UpdateReportRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 	var assignedTo *uuid.UUID
@@ -203,7 +203,7 @@ func (h *Handler) UpdateReport(c *gin.Context) {
 	report, err := h.svc.UpdateReport(c.Request.Context(), actorID, reportID, req.Status, assignedTo, req.ResolutionNotes)
 	if err != nil {
 		slog.Error("UpdateReport error", "error", err)
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, report, nil)

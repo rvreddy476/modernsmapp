@@ -36,17 +36,17 @@ func (h *Handler) registerPostRoutes(v1 *gin.RouterGroup) {
 func (h *Handler) CreateCommunityPost(c *gin.Context) {
 	communityID, err := uuid.Parse(c.Param("communityId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid community id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid community id", nil)
 		return
 	}
 	spaceID, err := uuid.Parse(c.Param("spaceId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid space id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid space id", nil)
 		return
 	}
 	userID := c.GetHeader("X-User-Id")
 	if userID == "" {
-		api.Error(c.Writer, http.StatusUnauthorized, "AUTH_REQUIRED", "missing user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "AUTH_REQUIRED", "missing user id", nil)
 		return
 	}
 
@@ -60,7 +60,7 @@ func (h *Handler) CreateCommunityPost(c *gin.Context) {
 		ParentPostID *uuid.UUID      `json:"parent_post_id"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 
@@ -97,7 +97,7 @@ func (h *Handler) CreateCommunityPost(c *gin.Context) {
 	}
 
 	if err := h.svc.Store().CreateCommunityPost(c.Request.Context(), post); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "CREATE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "CREATE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, post, nil)
@@ -106,12 +106,12 @@ func (h *Handler) CreateCommunityPost(c *gin.Context) {
 func (h *Handler) GetCommunityPost(c *gin.Context) {
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid post id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid post id", nil)
 		return
 	}
 	post, err := h.svc.Store().GetCommunityPost(c.Request.Context(), postID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "post not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "post not found", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, post, nil)
@@ -135,12 +135,12 @@ func (h *Handler) ListCommunityPosts(c *gin.Context) {
 	if spaceID != "" {
 		sid, err := uuid.Parse(spaceID)
 		if err != nil {
-			api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid space_id", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid space_id", nil)
 			return
 		}
 		posts, err := h.svc.Store().ListSpacePosts(c.Request.Context(), sid, limit, offset)
 		if err != nil {
-			api.Error(c.Writer, http.StatusInternalServerError, "LIST_FAILED", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "LIST_FAILED", err.Error(), nil)
 			return
 		}
 		api.JSON(c.Writer, http.StatusOK, map[string]any{"items": posts}, nil)
@@ -149,13 +149,13 @@ func (h *Handler) ListCommunityPosts(c *gin.Context) {
 
 	communityID, err := uuid.Parse(c.Param("communityId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid community id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid community id", nil)
 		return
 	}
 	// List all posts across community (aggregated feed)
 	posts, err := h.svc.Store().ListCommunityPosts(c.Request.Context(), communityID, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "LIST_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "LIST_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]any{"items": posts}, nil)
@@ -164,12 +164,12 @@ func (h *Handler) ListCommunityPosts(c *gin.Context) {
 func (h *Handler) ListFeaturedPosts(c *gin.Context) {
 	communityID, err := uuid.Parse(c.Param("communityId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid community id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid community id", nil)
 		return
 	}
 	posts, err := h.svc.Store().ListFeaturedPosts(c.Request.Context(), communityID, 10)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "LIST_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "LIST_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]any{"items": posts}, nil)
@@ -178,11 +178,11 @@ func (h *Handler) ListFeaturedPosts(c *gin.Context) {
 func (h *Handler) DeleteCommunityPost(c *gin.Context) {
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid post id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid post id", nil)
 		return
 	}
 	if err := h.svc.Store().DeleteCommunityPost(c.Request.Context(), postID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "DELETE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "DELETE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "deleted"}, nil)
@@ -193,12 +193,12 @@ func (h *Handler) DeleteCommunityPost(c *gin.Context) {
 func (h *Handler) SparkCommunityPost(c *gin.Context) {
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid post id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid post id", nil)
 		return
 	}
 	userID := c.GetHeader("X-User-Id")
 	if userID == "" {
-		api.Error(c.Writer, http.StatusUnauthorized, "AUTH_REQUIRED", "missing user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "AUTH_REQUIRED", "missing user id", nil)
 		return
 	}
 	var body struct {
@@ -206,7 +206,7 @@ func (h *Handler) SparkCommunityPost(c *gin.Context) {
 	}
 	_ = c.ShouldBindJSON(&body)
 	if err := h.svc.Store().SparkCommunityPost(c.Request.Context(), postID, userID, body.IsSupernova); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "SPARK_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "SPARK_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "sparked"}, nil)
@@ -215,12 +215,12 @@ func (h *Handler) SparkCommunityPost(c *gin.Context) {
 func (h *Handler) StashCommunityPost(c *gin.Context) {
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid post id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid post id", nil)
 		return
 	}
 	userID := c.GetHeader("X-User-Id")
 	if err := h.svc.Store().StashCommunityPost(c.Request.Context(), postID, userID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "STASH_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "STASH_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "stashed"}, nil)
@@ -229,7 +229,7 @@ func (h *Handler) StashCommunityPost(c *gin.Context) {
 func (h *Handler) RecordCommunityPostView(c *gin.Context) {
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid post id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid post id", nil)
 		return
 	}
 	userID := c.GetHeader("X-User-Id")
@@ -240,7 +240,7 @@ func (h *Handler) RecordCommunityPostView(c *gin.Context) {
 func (h *Handler) FeaturePost(c *gin.Context) {
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid post id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid post id", nil)
 		return
 	}
 	var body struct {
@@ -248,7 +248,7 @@ func (h *Handler) FeaturePost(c *gin.Context) {
 	}
 	_ = c.ShouldBindJSON(&body)
 	if err := h.svc.Store().MarkFeatured(c.Request.Context(), postID, body.Featured); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "FEATURE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "FEATURE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "updated"}, nil)
@@ -257,11 +257,11 @@ func (h *Handler) FeaturePost(c *gin.Context) {
 func (h *Handler) PinCommunityPost(c *gin.Context) {
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid post id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid post id", nil)
 		return
 	}
 	if err := h.svc.Store().PinCommunityPost(c.Request.Context(), postID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "PIN_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "PIN_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "pinned"}, nil)
@@ -270,18 +270,18 @@ func (h *Handler) PinCommunityPost(c *gin.Context) {
 func (h *Handler) AcceptAnswerPost(c *gin.Context) {
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid post id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid post id", nil)
 		return
 	}
 	var body struct {
 		AnswerID uuid.UUID `json:"answer_id"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	if err := h.svc.Store().AcceptAnswer(c.Request.Context(), postID, body.AnswerID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "ACCEPT_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "ACCEPT_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "accepted"}, nil)
@@ -292,12 +292,12 @@ func (h *Handler) AcceptAnswerPost(c *gin.Context) {
 func (h *Handler) ListWikiPages(c *gin.Context) {
 	communityID, err := uuid.Parse(c.Param("communityId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid community id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid community id", nil)
 		return
 	}
 	pages, err := h.svc.Store().ListWikiPages(c.Request.Context(), communityID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "LIST_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "LIST_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]any{"items": pages}, nil)
@@ -306,7 +306,7 @@ func (h *Handler) ListWikiPages(c *gin.Context) {
 func (h *Handler) CreateWikiPage(c *gin.Context) {
 	communityID, err := uuid.Parse(c.Param("communityId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid community id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid community id", nil)
 		return
 	}
 	userID := c.GetHeader("X-User-Id")
@@ -317,7 +317,7 @@ func (h *Handler) CreateWikiPage(c *gin.Context) {
 		Category *string `json:"category"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	page := &store.WikiPage{
@@ -329,7 +329,7 @@ func (h *Handler) CreateWikiPage(c *gin.Context) {
 		CreatedBy:   userID,
 	}
 	if err := h.svc.Store().CreateWikiPage(c.Request.Context(), page); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "CREATE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "CREATE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, page, nil)
@@ -338,13 +338,13 @@ func (h *Handler) CreateWikiPage(c *gin.Context) {
 func (h *Handler) GetWikiPage(c *gin.Context) {
 	communityID, err := uuid.Parse(c.Param("communityId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid community id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid community id", nil)
 		return
 	}
 	slug := c.Param("slug")
 	page, err := h.svc.Store().GetWikiPage(c.Request.Context(), communityID, slug)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "wiki page not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "wiki page not found", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, page, nil)
@@ -359,16 +359,16 @@ func (h *Handler) UpdateWikiPage(c *gin.Context) {
 		Content string `json:"content" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	page, err := h.svc.Store().GetWikiPage(c.Request.Context(), communityID, slug)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "page not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "page not found", nil)
 		return
 	}
 	if err := h.svc.Store().UpdateWikiPage(c.Request.Context(), page.ID, body.Title, body.Content, "", userID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "UPDATE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "UPDATE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "updated"}, nil)

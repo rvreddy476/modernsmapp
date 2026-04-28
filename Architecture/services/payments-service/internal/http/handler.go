@@ -58,12 +58,12 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 func getUserID(c *gin.Context) (uuid.UUID, bool) {
 	str := c.GetHeader("X-User-Id")
 	if str == "" {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil)
 		return uuid.Nil, false
 	}
 	id, err := uuid.Parse(str)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "invalid user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "invalid user id", nil)
 		return uuid.Nil, false
 	}
 	return id, true
@@ -85,7 +85,7 @@ func (h *Handler) InitiatePayment(c *gin.Context) {
 		IdempotencyKey string  `json:"idempotency_key"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	if body.IdempotencyKey == "" {
@@ -105,7 +105,7 @@ func (h *Handler) InitiatePayment(c *gin.Context) {
 		IdempotencyKey: body.IdempotencyKey,
 	})
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INITIATE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INITIATE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, intent, nil)
@@ -119,12 +119,12 @@ func (h *Handler) GetIntent(c *gin.Context) {
 	}
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid intent id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid intent id", nil)
 		return
 	}
 	intent, err := h.svc.GetIntent(c.Request.Context(), id)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "intent not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "intent not found", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, intent, nil)
@@ -138,7 +138,7 @@ func (h *Handler) UpdateStatus(c *gin.Context) {
 	}
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid intent id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid intent id", nil)
 		return
 	}
 	var body struct {
@@ -147,12 +147,12 @@ func (h *Handler) UpdateStatus(c *gin.Context) {
 		ProviderRef string `json:"provider_ref"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	intent, err := h.svc.UpdateStatus(c.Request.Context(), id, body.OldStatus, body.NewStatus, body.ProviderRef, userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "UPDATE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "UPDATE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, intent, nil)
@@ -166,7 +166,7 @@ func (h *Handler) InitiateRefund(c *gin.Context) {
 	}
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid intent id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid intent id", nil)
 		return
 	}
 	var body struct {
@@ -175,7 +175,7 @@ func (h *Handler) InitiateRefund(c *gin.Context) {
 	c.ShouldBindJSON(&body) //nolint:errcheck
 	intent, err := h.svc.InitiateRefund(c.Request.Context(), id, userID, body.Reason)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "REFUND_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "REFUND_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, intent, nil)
@@ -190,17 +190,17 @@ func (h *Handler) ListByReference(c *gin.Context) {
 	refType := c.Query("ref_type")
 	refIDStr := c.Query("ref_id")
 	if refType == "" || refIDStr == "" {
-		api.Error(c.Writer, http.StatusBadRequest, "MISSING_PARAMS", "ref_type and ref_id required", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "MISSING_PARAMS", "ref_type and ref_id required", nil)
 		return
 	}
 	refID, err := uuid.Parse(refIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REF_ID", "invalid ref_id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REF_ID", "invalid ref_id", nil)
 		return
 	}
 	intents, err := h.svc.ListByReference(c.Request.Context(), refType, refID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "FETCH_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "FETCH_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, intents, nil)
@@ -279,12 +279,12 @@ func verifyRazorpaySignature(body []byte, signature, secret string) bool {
 func (h *Handler) ReleaseHold(c *gin.Context) {
 	intentID, err := uuid.Parse(c.Param("intentId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid intent id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid intent id", nil)
 		return
 	}
 	actor := c.GetHeader("X-User-Id")
 	if err := h.svc.ReleaseHold(c.Request.Context(), intentID, actor); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "HOLD_RELEASE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "HOLD_RELEASE_FAILED", err.Error(), nil)
 		return
 	}
 	c.Status(http.StatusNoContent)

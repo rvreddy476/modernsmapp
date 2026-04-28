@@ -27,13 +27,13 @@ func (h *Handler) RegisterClipsRoutes(r *gin.Engine, authMW gin.HandlerFunc) {
 func (h *Handler) SaveClips(c *gin.Context) {
 	_, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid post ID", nil)
 		return
 	}
 
@@ -47,7 +47,7 @@ func (h *Handler) SaveClips(c *gin.Context) {
 		} `json:"clips" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -64,7 +64,7 @@ func (h *Handler) SaveClips(c *gin.Context) {
 	}
 
 	if err := h.svc.SaveMediaClips(c.Request.Context(), postID, clips); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -74,13 +74,13 @@ func (h *Handler) SaveClips(c *gin.Context) {
 func (h *Handler) GetClips(c *gin.Context) {
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid post ID", nil)
 		return
 	}
 
 	clips, err := h.svc.GetMediaClips(c.Request.Context(), postID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if clips == nil {
@@ -93,13 +93,13 @@ func (h *Handler) GetClips(c *gin.Context) {
 func (h *Handler) GetSubtitles(c *gin.Context) {
 	mediaID, err := uuid.Parse(c.Param("mediaId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil)
 		return
 	}
 
 	subs, err := h.svc.GetSubtitles(c.Request.Context(), mediaID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if subs == nil {
@@ -112,7 +112,7 @@ func (h *Handler) GetSubtitles(c *gin.Context) {
 func (h *Handler) CreateSubtitle(c *gin.Context) {
 	mediaID, err := uuid.Parse(c.Param("mediaId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil)
 		return
 	}
 
@@ -124,7 +124,7 @@ func (h *Handler) CreateSubtitle(c *gin.Context) {
 		Confidence *float32 `json:"confidence"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 	if req.Format == "" {
@@ -140,7 +140,7 @@ func (h *Handler) CreateSubtitle(c *gin.Context) {
 		Confidence:   req.Confidence,
 	})
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 

@@ -22,7 +22,7 @@ func (h *Handler) CreateAnswer(c *gin.Context) {
 		BodyHTML string `json:"body_html"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 
@@ -59,7 +59,7 @@ func (h *Handler) GetAnswer(c *gin.Context) {
 
 	answer, err := h.svc.Store().GetAnswer(c.Request.Context(), aID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "answer not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "answer not found", nil)
 		return
 	}
 	if err := h.svc.EnsureQuestionVisible(c.Request.Context(), answer.QuestionID, optionalUserID(c)); err != nil {
@@ -84,7 +84,7 @@ func (h *Handler) UpdateAnswer(c *gin.Context) {
 		BodyHTML string `json:"body_html"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 
@@ -127,7 +127,7 @@ func (h *Handler) SelectBestAnswer(c *gin.Context) {
 		AnswerID string `json:"answer_id"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 
@@ -150,7 +150,7 @@ func (h *Handler) UnselectBestAnswer(c *gin.Context) {
 	}
 
 	if err := h.svc.Store().UnselectBestAnswer(c.Request.Context(), qID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "UNSELECT_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "UNSELECT_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "unselected"}, nil)

@@ -27,32 +27,32 @@ func (h *Handler) PauseSubscription(c *gin.Context) {
 
 	subID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid subscription ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid subscription ID", nil)
 		return
 	}
 
 	var req PauseSubscriptionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
 	pauseUntil, err := time.Parse(time.RFC3339, req.PauseUntil)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_DATE", "pause_until must be RFC3339 format", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_DATE", "pause_until must be RFC3339 format", nil)
 		return
 	}
 
 	if err := h.svc.PauseSubscription(c.Request.Context(), userID, subID, pauseUntil); err != nil {
 		switch err.Error() {
 		case "SUBSCRIPTION_NOT_FOUND":
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Subscription not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Subscription not found", nil)
 		case "SUBSCRIPTION_NOT_OWNED":
-			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "You do not own this subscription", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "You do not own this subscription", nil)
 		case "SUBSCRIPTION_NOT_ACTIVE":
-			api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Subscription is not active", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Subscription is not active", nil)
 		default:
-			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
 		return
 	}
@@ -68,20 +68,20 @@ func (h *Handler) ResumeSubscription(c *gin.Context) {
 
 	subID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid subscription ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid subscription ID", nil)
 		return
 	}
 
 	if err := h.svc.ResumeSubscription(c.Request.Context(), userID, subID); err != nil {
 		switch err.Error() {
 		case "SUBSCRIPTION_NOT_FOUND":
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Subscription not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Subscription not found", nil)
 		case "SUBSCRIPTION_NOT_OWNED":
-			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "You do not own this subscription", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "You do not own this subscription", nil)
 		case "SUBSCRIPTION_NOT_PAUSED":
-			api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Subscription is not paused", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Subscription is not paused", nil)
 		default:
-			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
 		return
 	}
@@ -102,7 +102,7 @@ func (h *Handler) CancelSubscription(c *gin.Context) {
 
 	subID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid subscription ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid subscription ID", nil)
 		return
 	}
 
@@ -122,13 +122,13 @@ func (h *Handler) CancelSubscription(c *gin.Context) {
 	if svcErr != nil {
 		switch svcErr.Error() {
 		case "SUBSCRIPTION_NOT_FOUND":
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Subscription not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Subscription not found", nil)
 		case "SUBSCRIPTION_NOT_OWNED":
-			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "You do not own this subscription", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "You do not own this subscription", nil)
 		case "SUBSCRIPTION_CANNOT_CANCEL", "SUBSCRIPTION_ALREADY_CANCELLED":
-			api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", svcErr.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", svcErr.Error(), nil)
 		default:
-			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", svcErr.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", svcErr.Error(), nil)
 		}
 		return
 	}
@@ -152,40 +152,40 @@ func (h *Handler) UpgradeSubscription(c *gin.Context) {
 
 	subID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid subscription ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid subscription ID", nil)
 		return
 	}
 
 	var req UpgradeSubscriptionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
 	newTierID, err := uuid.Parse(req.NewTierID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid tier ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid tier ID", nil)
 		return
 	}
 
 	if err := h.svc.UpgradeSubscription(c.Request.Context(), userID, subID, newTierID); err != nil {
 		switch err.Error() {
 		case "SUBSCRIPTION_NOT_FOUND":
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Subscription not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Subscription not found", nil)
 		case "SUBSCRIPTION_NOT_OWNED":
-			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "You do not own this subscription", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "You do not own this subscription", nil)
 		case "SUBSCRIPTION_NOT_ACTIVE":
-			api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Subscription is not active", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Subscription is not active", nil)
 		case "TIER_NOT_FOUND":
-			api.Error(c.Writer, http.StatusNotFound, "TIER_NOT_FOUND", "Tier not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "TIER_NOT_FOUND", "Tier not found", nil)
 		case "TIER_INACTIVE":
-			api.Error(c.Writer, http.StatusBadRequest, "TIER_INACTIVE", "Tier is not active", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "TIER_INACTIVE", "Tier is not active", nil)
 		case "TIER_CREATOR_MISMATCH":
-			api.Error(c.Writer, http.StatusBadRequest, "TIER_CREATOR_MISMATCH", "Tier does not belong to this creator", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "TIER_CREATOR_MISMATCH", "Tier does not belong to this creator", nil)
 		case "INSUFFICIENT_BALANCE_FOR_UPGRADE":
-			api.Error(c.Writer, http.StatusBadRequest, "INSUFFICIENT_BALANCE", "Insufficient balance for upgrade", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INSUFFICIENT_BALANCE", "Insufficient balance for upgrade", nil)
 		default:
-			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
 		return
 	}
@@ -201,7 +201,7 @@ func (h *Handler) GetSubscriptionEvents(c *gin.Context) {
 
 	subID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid subscription ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid subscription ID", nil)
 		return
 	}
 
@@ -220,7 +220,7 @@ func (h *Handler) GetSubscriptionEvents(c *gin.Context) {
 
 	events, err := h.svc.GetSubscriptionEvents(c.Request.Context(), subID, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if events == nil {

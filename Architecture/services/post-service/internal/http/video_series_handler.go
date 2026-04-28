@@ -26,12 +26,12 @@ type createVideoSeriesRequest struct {
 func (h *Handler) CreateVideoSeries(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil)
 		return
 	}
 	var req createVideoSeriesRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -62,7 +62,7 @@ func (h *Handler) CreateVideoSeries(c *gin.Context) {
 	}
 
 	if err := h.svc.CreateVideoSeries(c.Request.Context(), vs); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, vs, nil)
@@ -71,12 +71,12 @@ func (h *Handler) CreateVideoSeries(c *gin.Context) {
 func (h *Handler) GetVideoSeries(c *gin.Context) {
 	seriesID, err := uuid.Parse(c.Param("seriesId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid series ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid series ID", nil)
 		return
 	}
 	vs, err := h.svc.GetVideoSeries(c.Request.Context(), seriesID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, vs, nil)
@@ -85,12 +85,12 @@ func (h *Handler) GetVideoSeries(c *gin.Context) {
 func (h *Handler) GetVideoSeriesEpisodes(c *gin.Context) {
 	seriesID, err := uuid.Parse(c.Param("seriesId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid series ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid series ID", nil)
 		return
 	}
 	eps, err := h.svc.GetVideoSeriesEpisodes(c.Request.Context(), seriesID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if eps == nil {
@@ -108,22 +108,22 @@ type addVideoSeriesEpisodeRequest struct {
 func (h *Handler) AddVideoSeriesEpisode(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil)
 		return
 	}
 	seriesID, err := uuid.Parse(c.Param("seriesId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid series ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid series ID", nil)
 		return
 	}
 	var req addVideoSeriesEpisodeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 	postID, err := uuid.Parse(req.PostID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 
@@ -138,7 +138,7 @@ func (h *Handler) AddVideoSeriesEpisode(c *gin.Context) {
 			status = http.StatusForbidden
 			code = "FORBIDDEN"
 		}
-		api.Error(c.Writer, status, code, err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, status, code, err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, ep, nil)
@@ -147,13 +147,13 @@ func (h *Handler) AddVideoSeriesEpisode(c *gin.Context) {
 func (h *Handler) ListCreatorVideoSeries(c *gin.Context) {
 	creatorID, err := uuid.Parse(c.Param("creatorId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid creator ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid creator ID", nil)
 		return
 	}
 	limit, offset := parseLimitOffset(c)
 	series, err := h.svc.ListVideoSeriesByCreator(c.Request.Context(), creatorID, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if series == nil {
@@ -175,12 +175,12 @@ type createPlaylistRequest struct {
 func (h *Handler) CreatePlaylist(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil)
 		return
 	}
 	var req createPlaylistRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -203,7 +203,7 @@ func (h *Handler) CreatePlaylist(c *gin.Context) {
 	}
 
 	if err := h.svc.CreatePlaylist(c.Request.Context(), p); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, p, nil)
@@ -212,7 +212,7 @@ func (h *Handler) CreatePlaylist(c *gin.Context) {
 func (h *Handler) GetPlaylist(c *gin.Context) {
 	playlistID, err := uuid.Parse(c.Param("playlistId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid playlist ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid playlist ID", nil)
 		return
 	}
 	var callerID *uuid.UUID
@@ -234,7 +234,7 @@ func (h *Handler) GetPlaylist(c *gin.Context) {
 			status = http.StatusForbidden
 			code = "FORBIDDEN"
 		}
-		api.Error(c.Writer, status, code, msg, nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, status, code, msg, nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, p, nil)
@@ -243,12 +243,12 @@ func (h *Handler) GetPlaylist(c *gin.Context) {
 func (h *Handler) DeletePlaylist(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil)
 		return
 	}
 	playlistID, err := uuid.Parse(c.Param("playlistId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid playlist ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid playlist ID", nil)
 		return
 	}
 	if err := h.svc.DeletePlaylist(c.Request.Context(), userID, playlistID); err != nil {
@@ -262,7 +262,7 @@ func (h *Handler) DeletePlaylist(c *gin.Context) {
 			status = http.StatusForbidden
 			code = "FORBIDDEN"
 		}
-		api.Error(c.Writer, status, code, msg, nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, status, code, msg, nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusNoContent, nil, nil)
@@ -276,26 +276,26 @@ type addPlaylistItemRequest struct {
 func (h *Handler) AddPlaylistItem(c *gin.Context) {
 	_, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil)
 		return
 	}
 	playlistID, err := uuid.Parse(c.Param("playlistId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid playlist ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid playlist ID", nil)
 		return
 	}
 	var req addPlaylistItemRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 	postID, err := uuid.Parse(req.PostID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 	if err := h.svc.AddPlaylistItem(c.Request.Context(), playlistID, postID, req.Position); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, gin.H{"playlist_id": playlistID, "post_id": postID, "position": req.Position}, nil)
@@ -304,21 +304,21 @@ func (h *Handler) AddPlaylistItem(c *gin.Context) {
 func (h *Handler) RemovePlaylistItem(c *gin.Context) {
 	_, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil)
 		return
 	}
 	playlistID, err := uuid.Parse(c.Param("playlistId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid playlist ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid playlist ID", nil)
 		return
 	}
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 	if err := h.svc.RemovePlaylistItem(c.Request.Context(), playlistID, postID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusNoContent, nil, nil)
@@ -327,12 +327,12 @@ func (h *Handler) RemovePlaylistItem(c *gin.Context) {
 func (h *Handler) GetPlaylistItems(c *gin.Context) {
 	playlistID, err := uuid.Parse(c.Param("playlistId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid playlist ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid playlist ID", nil)
 		return
 	}
 	items, err := h.svc.GetPlaylistItems(c.Request.Context(), playlistID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if items == nil {
@@ -344,13 +344,13 @@ func (h *Handler) GetPlaylistItems(c *gin.Context) {
 func (h *Handler) ListCreatorPlaylists(c *gin.Context) {
 	creatorID, err := uuid.Parse(c.Param("creatorId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid creator ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid creator ID", nil)
 		return
 	}
 	limit, offset := parseLimitOffset(c)
 	playlists, err := h.svc.ListPlaylistsByCreator(c.Request.Context(), creatorID, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if playlists == nil {
@@ -376,17 +376,17 @@ type saveChaptersRequest struct {
 func (h *Handler) SaveChapters(c *gin.Context) {
 	_, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil)
 		return
 	}
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 	var req saveChaptersRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -403,7 +403,7 @@ func (h *Handler) SaveChapters(c *gin.Context) {
 	}
 
 	if err := h.svc.SaveChapters(c.Request.Context(), postID, chapters); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"saved": len(chapters)}, nil)
@@ -412,12 +412,12 @@ func (h *Handler) SaveChapters(c *gin.Context) {
 func (h *Handler) GetChapters(c *gin.Context) {
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 	chapters, err := h.svc.GetChapters(c.Request.Context(), postID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if chapters == nil {
@@ -445,17 +445,17 @@ type saveEndScreensRequest struct {
 func (h *Handler) SaveEndScreens(c *gin.Context) {
 	_, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil)
 		return
 	}
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 	var req saveEndScreensRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -478,7 +478,7 @@ func (h *Handler) SaveEndScreens(c *gin.Context) {
 	}
 
 	if err := h.svc.SaveEndScreens(c.Request.Context(), postID, screens); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"saved": len(screens)}, nil)
@@ -487,12 +487,12 @@ func (h *Handler) SaveEndScreens(c *gin.Context) {
 func (h *Handler) GetEndScreens(c *gin.Context) {
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 	screens, err := h.svc.GetEndScreens(c.Request.Context(), postID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if screens == nil {
@@ -519,17 +519,17 @@ type saveVideoCardsRequest struct {
 func (h *Handler) SaveVideoCards(c *gin.Context) {
 	_, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil)
 		return
 	}
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 	var req saveVideoCardsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -551,7 +551,7 @@ func (h *Handler) SaveVideoCards(c *gin.Context) {
 	}
 
 	if err := h.svc.SaveVideoCards(c.Request.Context(), postID, cards); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"saved": len(cards)}, nil)
@@ -560,12 +560,12 @@ func (h *Handler) SaveVideoCards(c *gin.Context) {
 func (h *Handler) GetVideoCards(c *gin.Context) {
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 	cards, err := h.svc.GetVideoCards(c.Request.Context(), postID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if cards == nil {
@@ -584,17 +584,17 @@ type saveWatchProgressRequest struct {
 func (h *Handler) SaveWatchProgress(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil)
 		return
 	}
 	postID, err := uuid.Parse(c.Param("videoId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 	var req saveWatchProgressRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -614,7 +614,7 @@ func (h *Handler) SaveWatchProgress(c *gin.Context) {
 	}
 
 	if err := h.svc.SaveWatchProgress(c.Request.Context(), wp); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, wp, nil)
@@ -623,7 +623,7 @@ func (h *Handler) SaveWatchProgress(c *gin.Context) {
 func (h *Handler) GetContinueWatching(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil)
 		return
 	}
 	limit := 20
@@ -632,7 +632,7 @@ func (h *Handler) GetContinueWatching(c *gin.Context) {
 	}
 	items, err := h.svc.GetContinueWatching(c.Request.Context(), userID, limit)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if items == nil {
@@ -644,16 +644,16 @@ func (h *Handler) GetContinueWatching(c *gin.Context) {
 func (h *Handler) DeleteWatchProgress(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil)
 		return
 	}
 	postID, err := uuid.Parse(c.Param("videoId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
 	if err := h.svc.DeleteWatchProgress(c.Request.Context(), userID, postID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusNoContent, nil, nil)

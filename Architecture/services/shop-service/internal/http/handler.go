@@ -96,12 +96,12 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 func (h *Handler) CreateProduct(c *gin.Context) {
 	userID := c.GetHeader("X-User-Id")
 	if userID == "" {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil)
 		return
 	}
 	sellerID, err := uuid.Parse(userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_USER_ID", "invalid user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_USER_ID", "invalid user id", nil)
 		return
 	}
 
@@ -115,7 +115,7 @@ func (h *Handler) CreateProduct(c *gin.Context) {
 		Stock       int      `json:"stock"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 
@@ -130,7 +130,7 @@ func (h *Handler) CreateProduct(c *gin.Context) {
 		Stock:       body.Stock,
 	})
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "CREATE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "CREATE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, p, nil)
@@ -139,13 +139,13 @@ func (h *Handler) CreateProduct(c *gin.Context) {
 func (h *Handler) GetProduct(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("productId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid product id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid product id", nil)
 		return
 	}
 
 	p, err := h.svc.GetProduct(c.Request.Context(), id)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "product not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "product not found", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, p, nil)
@@ -157,7 +157,7 @@ func (h *Handler) ListProducts(c *gin.Context) {
 
 	products, total, err := h.svc.ListProducts(c.Request.Context(), category, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "LIST_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "LIST_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{
@@ -169,14 +169,14 @@ func (h *Handler) ListProducts(c *gin.Context) {
 func (h *Handler) UpdateProduct(c *gin.Context) {
 	userID := c.GetHeader("X-User-Id")
 	if userID == "" {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil)
 		return
 	}
 	sellerID, _ := uuid.Parse(userID)
 
 	productID, err := uuid.Parse(c.Param("productId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid product id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid product id", nil)
 		return
 	}
 
@@ -189,7 +189,7 @@ func (h *Handler) UpdateProduct(c *gin.Context) {
 		Stock       int     `json:"stock"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 
@@ -201,7 +201,7 @@ func (h *Handler) UpdateProduct(c *gin.Context) {
 		Price:       body.Price,
 		Stock:       body.Stock,
 	}); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "UPDATE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "UPDATE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "updated"}, nil)
@@ -210,14 +210,14 @@ func (h *Handler) UpdateProduct(c *gin.Context) {
 func (h *Handler) ListSellerProducts(c *gin.Context) {
 	sellerID, err := uuid.Parse(c.Param("sellerId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid seller id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid seller id", nil)
 		return
 	}
 	limit, offset := parsePagination(c)
 
 	products, err := h.svc.ListSellerProducts(c.Request.Context(), sellerID, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "LIST_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "LIST_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": products}, nil)
@@ -228,7 +228,7 @@ func (h *Handler) ListSellerProducts(c *gin.Context) {
 func (h *Handler) AddToCart(c *gin.Context) {
 	userID := c.GetHeader("X-User-Id")
 	if userID == "" {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil)
 		return
 	}
 	uid, _ := uuid.Parse(userID)
@@ -238,13 +238,13 @@ func (h *Handler) AddToCart(c *gin.Context) {
 		Quantity  int    `json:"quantity"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 
 	productID, err := uuid.Parse(body.ProductID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PRODUCT_ID", "invalid product id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PRODUCT_ID", "invalid product id", nil)
 		return
 	}
 
@@ -254,7 +254,7 @@ func (h *Handler) AddToCart(c *gin.Context) {
 	}
 
 	if err := h.svc.AddToCart(c.Request.Context(), uid, productID, qty); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "CART_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "CART_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "added"}, nil)
@@ -263,14 +263,14 @@ func (h *Handler) AddToCart(c *gin.Context) {
 func (h *Handler) GetCart(c *gin.Context) {
 	userID := c.GetHeader("X-User-Id")
 	if userID == "" {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil)
 		return
 	}
 	uid, _ := uuid.Parse(userID)
 
 	items, err := h.svc.GetCart(c.Request.Context(), uid)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "CART_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "CART_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": items}, nil)
@@ -279,19 +279,19 @@ func (h *Handler) GetCart(c *gin.Context) {
 func (h *Handler) RemoveFromCart(c *gin.Context) {
 	userID := c.GetHeader("X-User-Id")
 	if userID == "" {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil)
 		return
 	}
 	uid, _ := uuid.Parse(userID)
 
 	productID, err := uuid.Parse(c.Param("productId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid product id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid product id", nil)
 		return
 	}
 
 	if err := h.svc.RemoveFromCart(c.Request.Context(), uid, productID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "CART_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "CART_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "removed"}, nil)
@@ -300,13 +300,13 @@ func (h *Handler) RemoveFromCart(c *gin.Context) {
 func (h *Handler) ClearCart(c *gin.Context) {
 	userID := c.GetHeader("X-User-Id")
 	if userID == "" {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil)
 		return
 	}
 	uid, _ := uuid.Parse(userID)
 
 	if err := h.svc.ClearCart(c.Request.Context(), uid); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "CART_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "CART_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "cleared"}, nil)
@@ -317,14 +317,14 @@ func (h *Handler) ClearCart(c *gin.Context) {
 func (h *Handler) Checkout(c *gin.Context) {
 	userID := c.GetHeader("X-User-Id")
 	if userID == "" {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil)
 		return
 	}
 	uid, _ := uuid.Parse(userID)
 
 	order, err := h.svc.Checkout(c.Request.Context(), uid)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "CHECKOUT_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "CHECKOUT_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, order, nil)
@@ -333,20 +333,20 @@ func (h *Handler) Checkout(c *gin.Context) {
 func (h *Handler) GetOrder(c *gin.Context) {
 	userID := c.GetHeader("X-User-Id")
 	if userID == "" {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil)
 		return
 	}
 	uid, _ := uuid.Parse(userID)
 
 	orderID, err := uuid.Parse(c.Param("orderId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid order id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid order id", nil)
 		return
 	}
 
 	order, err := h.svc.GetOrder(c.Request.Context(), orderID, uid)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, order, nil)
@@ -355,7 +355,7 @@ func (h *Handler) GetOrder(c *gin.Context) {
 func (h *Handler) ListOrders(c *gin.Context) {
 	userID := c.GetHeader("X-User-Id")
 	if userID == "" {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil)
 		return
 	}
 	uid, _ := uuid.Parse(userID)
@@ -365,7 +365,7 @@ func (h *Handler) ListOrders(c *gin.Context) {
 
 	orders, err := h.svc.ListOrders(c.Request.Context(), uid, role, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "LIST_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "LIST_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": orders}, nil)
@@ -374,14 +374,14 @@ func (h *Handler) ListOrders(c *gin.Context) {
 func (h *Handler) UpdateOrderStatus(c *gin.Context) {
 	userID := c.GetHeader("X-User-Id")
 	if userID == "" {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil)
 		return
 	}
 	sellerID, _ := uuid.Parse(userID)
 
 	orderID, err := uuid.Parse(c.Param("orderId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid order id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid order id", nil)
 		return
 	}
 
@@ -389,12 +389,12 @@ func (h *Handler) UpdateOrderStatus(c *gin.Context) {
 		Status string `json:"status"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 
 	if err := h.svc.UpdateOrderStatus(c.Request.Context(), orderID, sellerID, body.Status); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "STATUS_UPDATE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "STATUS_UPDATE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": body.Status}, nil)

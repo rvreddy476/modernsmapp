@@ -16,12 +16,12 @@ import (
 func requireUser(c *gin.Context) (uuid.UUID, bool) {
 	raw := c.GetHeader("X-User-Id")
 	if raw == "" {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil)
 		return uuid.Nil, false
 	}
 	id, err := uuid.Parse(raw)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_USER_ID", "invalid user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_USER_ID", "invalid user id", nil)
 		return uuid.Nil, false
 	}
 	return id, true
@@ -30,7 +30,7 @@ func requireUser(c *gin.Context) (uuid.UUID, bool) {
 func parseUUIDParam(c *gin.Context, param, errCode string) (uuid.UUID, bool) {
 	id, err := uuid.Parse(c.Param(param))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, errCode, "invalid "+param, nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, errCode, "invalid "+param, nil)
 		return uuid.Nil, false
 	}
 	return id, true
@@ -50,12 +50,12 @@ func (h *Handler) CreateStorefront(c *gin.Context) {
 		About       string `json:"about"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	sf, err := h.svc.CreateStorefront(c.Request.Context(), userID, body.Handle, body.DisplayName, body.Tagline, body.About)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "CREATE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "CREATE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, sf, nil)
@@ -65,7 +65,7 @@ func (h *Handler) GetStorefrontByHandle(c *gin.Context) {
 	handle := c.Param("id")
 	sf, err := h.svc.GetStorefrontByHandle(c.Request.Context(), handle)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "storefront not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "storefront not found", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, sf, nil)
@@ -78,7 +78,7 @@ func (h *Handler) GetStorefrontBySeller(c *gin.Context) {
 	}
 	sf, err := h.svc.GetStorefrontBySeller(c.Request.Context(), sellerID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "storefront not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "storefront not found", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, sf, nil)
@@ -99,11 +99,11 @@ func (h *Handler) UpdateStorefront(c *gin.Context) {
 		About       string `json:"about"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	if err := h.svc.UpdateStorefront(c.Request.Context(), storefrontID, userID, body.DisplayName, body.Tagline, body.About); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "UPDATE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "UPDATE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "updated"}, nil)
@@ -122,20 +122,20 @@ func (h *Handler) SetFeaturedListings(c *gin.Context) {
 		ListingIDs []string `json:"listing_ids"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	ids := make([]uuid.UUID, 0, len(body.ListingIDs))
 	for _, raw := range body.ListingIDs {
 		id, err := uuid.Parse(raw)
 		if err != nil {
-			api.Error(c.Writer, http.StatusBadRequest, "INVALID_LISTING_ID", "invalid listing id: "+raw, nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_LISTING_ID", "invalid listing id: "+raw, nil)
 			return
 		}
 		ids = append(ids, id)
 	}
 	if err := h.svc.SetFeaturedListings(c.Request.Context(), storefrontID, ids); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "SET_FEATURED_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "SET_FEATURED_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "updated"}, nil)
@@ -148,7 +148,7 @@ func (h *Handler) GetFeaturedListings(c *gin.Context) {
 	}
 	ids, err := h.svc.GetFeaturedListings(c.Request.Context(), storefrontID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "FETCH_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "FETCH_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"listing_ids": ids}, nil)
@@ -168,12 +168,12 @@ func (h *Handler) CreateCollection(c *gin.Context) {
 		SortOrder int    `json:"sort_order"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	col, err := h.svc.CreateCollection(c.Request.Context(), storefrontID, body.Name, body.SortOrder)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "CREATE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "CREATE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, col, nil)
@@ -186,7 +186,7 @@ func (h *Handler) GetCollections(c *gin.Context) {
 	}
 	cols, err := h.svc.GetCollections(c.Request.Context(), storefrontID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "FETCH_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "FETCH_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": cols}, nil)
@@ -206,16 +206,16 @@ func (h *Handler) AddListingToCollection(c *gin.Context) {
 		Position  int    `json:"position"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	listingID, err := uuid.Parse(body.ListingID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_LISTING_ID", "invalid listing id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_LISTING_ID", "invalid listing id", nil)
 		return
 	}
 	if err := h.svc.AddListingToCollection(c.Request.Context(), collectionID, listingID, body.Position); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "ADD_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "ADD_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "added"}, nil)
@@ -228,7 +228,7 @@ func (h *Handler) GetCollectionListings(c *gin.Context) {
 	}
 	ids, err := h.svc.GetCollectionListings(c.Request.Context(), collectionID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "FETCH_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "FETCH_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"listing_ids": ids}, nil)
@@ -254,14 +254,14 @@ func (h *Handler) UpsertPostProductTags(c *gin.Context) {
 		} `json:"tags"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	tags := make([]postgres.PostProductTag, 0, len(body.Tags))
 	for _, bt := range body.Tags {
 		lid, err := uuid.Parse(bt.ListingID)
 		if err != nil {
-			api.Error(c.Writer, http.StatusBadRequest, "INVALID_LISTING_ID", "invalid listing id: "+bt.ListingID, nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_LISTING_ID", "invalid listing id: "+bt.ListingID, nil)
 			return
 		}
 		tags = append(tags, postgres.PostProductTag{
@@ -273,7 +273,7 @@ func (h *Handler) UpsertPostProductTags(c *gin.Context) {
 		})
 	}
 	if err := h.svc.UpsertPostProductTags(c.Request.Context(), postID, tags); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "UPSERT_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "UPSERT_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "updated"}, nil)
@@ -286,7 +286,7 @@ func (h *Handler) GetPostProductTags(c *gin.Context) {
 	}
 	tags, err := h.svc.GetPostProductTags(c.Request.Context(), postID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "FETCH_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "FETCH_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": tags}, nil)
@@ -301,7 +301,7 @@ func (h *Handler) GetWishlist(c *gin.Context) {
 	}
 	wishlist, items, err := h.svc.GetWishlist(c.Request.Context(), userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "FETCH_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "FETCH_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{
@@ -319,16 +319,16 @@ func (h *Handler) AddToWishlist(c *gin.Context) {
 		ListingID string `json:"listing_id"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	listingID, err := uuid.Parse(body.ListingID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_LISTING_ID", "invalid listing id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_LISTING_ID", "invalid listing id", nil)
 		return
 	}
 	if err := h.svc.AddToWishlist(c.Request.Context(), userID, listingID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "ADD_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "ADD_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "added"}, nil)
@@ -344,7 +344,7 @@ func (h *Handler) RemoveFromWishlist(c *gin.Context) {
 		return
 	}
 	if err := h.svc.RemoveFromWishlist(c.Request.Context(), userID, listingID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "REMOVE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "REMOVE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "removed"}, nil)
@@ -360,7 +360,7 @@ func (h *Handler) CreateStockAlert(c *gin.Context) {
 		return
 	}
 	if err := h.svc.CreateStockAlert(c.Request.Context(), userID, listingID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "CREATE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "CREATE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, map[string]string{"status": "created"}, nil)
@@ -376,7 +376,7 @@ func (h *Handler) RemoveStockAlert(c *gin.Context) {
 		return
 	}
 	if err := h.svc.RemoveStockAlert(c.Request.Context(), userID, listingID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "REMOVE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "REMOVE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "removed"}, nil)
@@ -397,17 +397,17 @@ func (h *Handler) CreateGroupBuy(c *gin.Context) {
 		ExpiresAt       time.Time `json:"expires_at"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	listingID, err := uuid.Parse(body.ListingID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_LISTING_ID", "invalid listing id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_LISTING_ID", "invalid listing id", nil)
 		return
 	}
 	gb, err := h.svc.CreateGroupBuy(c.Request.Context(), listingID, userID, body.TargetQty, body.DiscountedPrice, body.OriginalPrice, body.ExpiresAt)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "CREATE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "CREATE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, gb, nil)
@@ -420,7 +420,7 @@ func (h *Handler) GetGroupBuy(c *gin.Context) {
 	}
 	gb, err := h.svc.GetGroupBuy(c.Request.Context(), groupBuyID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "group buy not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "group buy not found", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gb, nil)
@@ -445,14 +445,14 @@ func (h *Handler) JoinGroupBuy(c *gin.Context) {
 	if body.PaymentIntentID != "" {
 		pid, err := uuid.Parse(body.PaymentIntentID)
 		if err != nil {
-			api.Error(c.Writer, http.StatusBadRequest, "INVALID_PAYMENT_INTENT_ID", "invalid payment_intent_id", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PAYMENT_INTENT_ID", "invalid payment_intent_id", nil)
 			return
 		}
 		paymentIntentID = &pid
 	}
 
 	if err := h.svc.JoinGroupBuy(c.Request.Context(), groupBuyID, userID, paymentIntentID); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "JOIN_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "JOIN_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "joined"}, nil)
@@ -465,7 +465,7 @@ func (h *Handler) ListActiveGroupBuys(c *gin.Context) {
 	}
 	buys, err := h.svc.ListActiveGroupBuys(c.Request.Context(), listingID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "FETCH_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "FETCH_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": buys}, nil)
@@ -486,12 +486,12 @@ func (h *Handler) CreateAdCampaign(c *gin.Context) {
 		StartsAt     time.Time `json:"starts_at"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	camp, err := h.svc.CreateAdCampaign(c.Request.Context(), userID, body.Name, body.Objective, body.BudgetType, body.BudgetAmount, body.StartsAt)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "CREATE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "CREATE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, camp, nil)
@@ -506,7 +506,7 @@ func (h *Handler) ListAdCampaigns(c *gin.Context) {
 	limit, offset := parsePagination(c)
 	camps, err := h.svc.ListAdCampaigns(c.Request.Context(), userID, status, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "FETCH_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "FETCH_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": camps}, nil)
@@ -519,7 +519,7 @@ func (h *Handler) GetAdCampaign(c *gin.Context) {
 	}
 	camp, err := h.svc.GetAdCampaign(c.Request.Context(), campaignID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "campaign not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "campaign not found", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, camp, nil)
@@ -538,11 +538,11 @@ func (h *Handler) UpdateAdCampaignStatus(c *gin.Context) {
 		Status string `json:"status"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	if err := h.svc.UpdateAdCampaignStatus(c.Request.Context(), campaignID, body.Status); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "UPDATE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "UPDATE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": body.Status}, nil)
@@ -566,7 +566,7 @@ func (h *Handler) CreateAdSet(c *gin.Context) {
 		DailyBudget *float64        `json:"daily_budget"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	if body.BidType == "" {
@@ -586,7 +586,7 @@ func (h *Handler) CreateAdSet(c *gin.Context) {
 		DailyBudget: body.DailyBudget,
 	})
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "CREATE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "CREATE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, as, nil)
@@ -610,7 +610,7 @@ func (h *Handler) CreateAdCreative(c *gin.Context) {
 		CTAURL      string `json:"cta_url"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	creative := &postgres.AdCreative{
@@ -624,14 +624,14 @@ func (h *Handler) CreateAdCreative(c *gin.Context) {
 	if body.PostID != "" {
 		pid, err := uuid.Parse(body.PostID)
 		if err != nil {
-			api.Error(c.Writer, http.StatusBadRequest, "INVALID_POST_ID", "invalid post_id", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_POST_ID", "invalid post_id", nil)
 			return
 		}
 		creative.PostID = &pid
 	}
 	cr, err := h.svc.CreateAdCreative(c.Request.Context(), creative)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "CREATE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "CREATE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, cr, nil)
@@ -647,18 +647,18 @@ func (h *Handler) GetAdPerformance(c *gin.Context) {
 
 	startDate, err := time.Parse("2006-01-02", startStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_DATE", "invalid start_date", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_DATE", "invalid start_date", nil)
 		return
 	}
 	endDate, err := time.Parse("2006-01-02", endStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_DATE", "invalid end_date", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_DATE", "invalid end_date", nil)
 		return
 	}
 
 	perf, err := h.svc.GetAdPerformance(c.Request.Context(), campaignID, startDate, endDate)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "FETCH_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "FETCH_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": perf}, nil)
@@ -678,11 +678,11 @@ func (h *Handler) SetAdFrequencyCap(c *gin.Context) {
 		PerWeek int `json:"per_week"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	if err := h.svc.SetAdFrequencyCap(c.Request.Context(), campaignID, body.PerDay, body.PerWeek); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "SET_CAP_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "SET_CAP_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "updated"}, nil)

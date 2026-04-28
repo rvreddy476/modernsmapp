@@ -20,7 +20,7 @@ func (h *Handler) RegisterCommerceRoutes(r *gin.Engine, cc *service.CommerceClie
 		offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 		data, status, err := cc.ListSellerQueue(c.Request.Context(), limit, offset)
 		if err != nil {
-			api.Error(c.Writer, http.StatusBadGateway, "UPSTREAM_ERROR", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadGateway, "UPSTREAM_ERROR", err.Error(), nil)
 			return
 		}
 		c.Data(status, "application/json", data)
@@ -29,7 +29,7 @@ func (h *Handler) RegisterCommerceRoutes(r *gin.Engine, cc *service.CommerceClie
 	g.GET("/sellers/:sellerId", requireScopeFn("moderator", "admin", "superadmin"), func(c *gin.Context) {
 		data, status, err := cc.GetSeller(c.Request.Context(), c.Param("sellerId"))
 		if err != nil {
-			api.Error(c.Writer, http.StatusBadGateway, "UPSTREAM_ERROR", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadGateway, "UPSTREAM_ERROR", err.Error(), nil)
 			return
 		}
 		c.Data(status, "application/json", data)
@@ -41,7 +41,7 @@ func (h *Handler) RegisterCommerceRoutes(r *gin.Engine, cc *service.CommerceClie
 		actorID := actorIDFromCtx(c)
 		status, err := cc.ApproveSeller(c.Request.Context(), c.Param("sellerId"), actorID, req.Notes)
 		if err != nil {
-			api.Error(c.Writer, http.StatusBadGateway, "UPSTREAM_ERROR", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadGateway, "UPSTREAM_ERROR", err.Error(), nil)
 			return
 		}
 		c.Status(status)
@@ -53,7 +53,7 @@ func (h *Handler) RegisterCommerceRoutes(r *gin.Engine, cc *service.CommerceClie
 		actorID := actorIDFromCtx(c)
 		status, err := cc.RejectSeller(c.Request.Context(), c.Param("sellerId"), actorID, req.Reason, req.Notes)
 		if err != nil {
-			api.Error(c.Writer, http.StatusBadGateway, "UPSTREAM_ERROR", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadGateway, "UPSTREAM_ERROR", err.Error(), nil)
 			return
 		}
 		c.Status(status)
@@ -65,7 +65,7 @@ func (h *Handler) RegisterCommerceRoutes(r *gin.Engine, cc *service.CommerceClie
 		actorID := actorIDFromCtx(c)
 		status, err := cc.RequestSellerChanges(c.Request.Context(), c.Param("sellerId"), actorID, req.Changes, req.Notes)
 		if err != nil {
-			api.Error(c.Writer, http.StatusBadGateway, "UPSTREAM_ERROR", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadGateway, "UPSTREAM_ERROR", err.Error(), nil)
 			return
 		}
 		c.Status(status)
@@ -77,7 +77,7 @@ func (h *Handler) RegisterCommerceRoutes(r *gin.Engine, cc *service.CommerceClie
 		actorID := actorIDFromCtx(c)
 		status, err := cc.SuspendSeller(c.Request.Context(), c.Param("sellerId"), actorID, req.Reason, req.Notes)
 		if err != nil {
-			api.Error(c.Writer, http.StatusBadGateway, "UPSTREAM_ERROR", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadGateway, "UPSTREAM_ERROR", err.Error(), nil)
 			return
 		}
 		c.Status(status)
@@ -89,7 +89,7 @@ func (h *Handler) RegisterCommerceRoutes(r *gin.Engine, cc *service.CommerceClie
 		offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 		data, status, err := cc.ListProductQueue(c.Request.Context(), limit, offset)
 		if err != nil {
-			api.Error(c.Writer, http.StatusBadGateway, "UPSTREAM_ERROR", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadGateway, "UPSTREAM_ERROR", err.Error(), nil)
 			return
 		}
 		c.Data(status, "application/json", data)
@@ -101,7 +101,7 @@ func (h *Handler) RegisterCommerceRoutes(r *gin.Engine, cc *service.CommerceClie
 		actorID := actorIDFromCtx(c)
 		status, err := cc.ApproveProduct(c.Request.Context(), c.Param("productId"), actorID, req.Notes)
 		if err != nil {
-			api.Error(c.Writer, http.StatusBadGateway, "UPSTREAM_ERROR", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadGateway, "UPSTREAM_ERROR", err.Error(), nil)
 			return
 		}
 		c.Status(status)
@@ -113,7 +113,7 @@ func (h *Handler) RegisterCommerceRoutes(r *gin.Engine, cc *service.CommerceClie
 		actorID := actorIDFromCtx(c)
 		status, err := cc.RejectProduct(c.Request.Context(), c.Param("productId"), actorID, req.Reason)
 		if err != nil {
-			api.Error(c.Writer, http.StatusBadGateway, "UPSTREAM_ERROR", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadGateway, "UPSTREAM_ERROR", err.Error(), nil)
 			return
 		}
 		c.Status(status)

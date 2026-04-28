@@ -82,14 +82,14 @@ func AuthMiddleware(jwtSecret string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		tokenStr := extractToken(c)
 		if tokenStr == "" {
-			api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing access token", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing access token", nil)
 			c.Abort()
 			return
 		}
 
 		userID, err := verifyJWT(tokenStr, secret)
 		if err != nil {
-			api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid access token", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid access token", nil)
 			c.Abort()
 			return
 		}
@@ -112,7 +112,7 @@ func OptionalAuthMiddleware(jwtSecret string) gin.HandlerFunc {
 
 		userID, err := verifyJWT(tokenStr, secret)
 		if err != nil {
-			api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid access token", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid access token", nil)
 			c.Abort()
 			return
 		}

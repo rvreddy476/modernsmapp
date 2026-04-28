@@ -67,7 +67,7 @@ func (h *Handler) AdminAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		scopes := c.GetHeader("X-Scopes")
 		if !hasScope(scopes, "admin") && !hasScope(scopes, "superadmin") {
-			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil)
 			c.Abort()
 			return
 		}
@@ -87,7 +87,7 @@ func (h *Handler) EvaluateMe(c *gin.Context) {
 	if key != "" {
 		result, err := h.svc.Evaluate(c.Request.Context(), key, userID)
 		if err != nil {
-			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Evaluation failed", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Evaluation failed", nil)
 			return
 		}
 		api.JSON(c.Writer, http.StatusOK, result, nil)
@@ -97,13 +97,13 @@ func (h *Handler) EvaluateMe(c *gin.Context) {
 	// If no key, maybe list all? For V1, let's just require key or return empty.
 	// Or we could implement "GetAllFlagsForUser" in service.
 	// For simplicity in V1, let's just return a generic message or required key.
-	api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Key query parameter required for V1", nil, nil)
+	api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Key query parameter required for V1", nil)
 }
 
 func (h *Handler) UpsertFlag(c *gin.Context) {
 	var flag postgres.Flag
 	if err := c.ShouldBindJSON(&flag); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -116,7 +116,7 @@ func (h *Handler) UpsertFlag(c *gin.Context) {
 
 	if err := h.svc.UpsertFlag(ctx, &flag); err != nil {
 		slog.Error("Upsert error", "error", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to upsert flag", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to upsert flag", nil)
 		return
 	}
 
@@ -126,7 +126,7 @@ func (h *Handler) UpsertFlag(c *gin.Context) {
 func (h *Handler) ListFlags(c *gin.Context) {
 	flags, err := h.svc.ListFlags(c.Request.Context())
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list flags", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list flags", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": flags}, nil)

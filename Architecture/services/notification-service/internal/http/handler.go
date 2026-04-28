@@ -66,7 +66,7 @@ func (h *Handler) GetNotifications(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
@@ -80,7 +80,7 @@ func (h *Handler) GetNotifications(c *gin.Context) {
 	page, err := h.svc.GetNotificationsPage(c.Request.Context(), userID, limit, cursor)
 	if err != nil {
 		log.Printf("Failed to get notifications: %v", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch notifications", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch notifications", nil)
 		return
 	}
 
@@ -101,19 +101,19 @@ func (h *Handler) MarkRead(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	var req MarkReadRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 
 	if err := h.svc.MarkRead(c.Request.Context(), userID, req.Bucket, req.TS); err != nil {
 		log.Printf("Failed to mark read: %v", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to mark as read", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to mark as read", nil)
 		return
 	}
 
@@ -124,14 +124,14 @@ func (h *Handler) GetUnreadCount(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	count, err := h.svc.GetUnreadCount(c.Request.Context(), userID)
 	if err != nil {
 		log.Printf("Failed to get unread count: %v", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get unread count", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get unread count", nil)
 		return
 	}
 
@@ -142,13 +142,13 @@ func (h *Handler) MarkAllRead(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	if err := h.svc.MarkAllRead(c.Request.Context(), userID); err != nil {
 		log.Printf("Failed to mark all read: %v", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to mark all as read", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to mark all as read", nil)
 		return
 	}
 
@@ -164,26 +164,26 @@ func (h *Handler) DeleteNotification(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	bucketStr := c.Param("bucket")
 	bucket, err := strconv.Atoi(bucketStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid bucket", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid bucket", nil)
 		return
 	}
 
 	ts := c.Param("ts")
 	if ts == "" {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Missing ts", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Missing ts", nil)
 		return
 	}
 
 	if err := h.svc.DeleteNotification(c.Request.Context(), userID, bucket, ts); err != nil {
 		log.Printf("Failed to delete notification: %v", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to delete notification", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to delete notification", nil)
 		return
 	}
 
@@ -194,14 +194,14 @@ func (h *Handler) GetPreferences(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	prefs, err := h.svc.GetPreferences(c.Request.Context(), userID)
 	if err != nil {
 		log.Printf("Failed to get preferences: %v", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get preferences", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get preferences", nil)
 		return
 	}
 
@@ -221,20 +221,20 @@ func (h *Handler) UpdatePreferences(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	var req UpdatePreferencesRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 
 	// Fetch current, merge updates
 	current, err := h.svc.GetPreferences(c.Request.Context(), userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -260,7 +260,7 @@ func (h *Handler) UpdatePreferences(c *gin.Context) {
 
 	if err := h.svc.UpdatePreferences(c.Request.Context(), current); err != nil {
 		log.Printf("Failed to update preferences: %v", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to update preferences", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to update preferences", nil)
 		return
 	}
 
@@ -276,20 +276,20 @@ func (h *Handler) RegisterDevice(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	var req RegisterDeviceRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 
 	device, err := h.svc.RegisterDevice(c.Request.Context(), userID, req.Platform, req.PushToken)
 	if err != nil {
 		log.Printf("Failed to register device: %v", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to register device", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to register device", nil)
 		return
 	}
 
@@ -300,24 +300,24 @@ func (h *Handler) UnregisterDevice(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	deviceIDStr := c.Param("id")
 	deviceID, err := uuid.Parse(deviceIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid device ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid device ID", nil)
 		return
 	}
 
 	if err := h.svc.UnregisterDevice(c.Request.Context(), deviceID, userID); err != nil {
 		if err.Error() == "DEVICE_NOT_FOUND" {
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Device not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Device not found", nil)
 			return
 		}
 		log.Printf("Failed to unregister device: %v", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to unregister device", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to unregister device", nil)
 		return
 	}
 
@@ -330,14 +330,14 @@ func (h *Handler) GetDigests(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	digests, err := h.svc.GetDigests(c.Request.Context(), userID)
 	if err != nil {
 		log.Printf("GetDigests error: %v", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get digests", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get digests", nil)
 		return
 	}
 	if digests == nil {
@@ -360,18 +360,18 @@ type BundleNotificationRequest struct {
 func (h *Handler) BundleNotification(c *gin.Context) {
 	var req BundleNotificationRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 
 	userID, err := uuid.Parse(req.UserID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid user_id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid user_id", nil)
 		return
 	}
 	actorID, err := uuid.Parse(req.ActorID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid actor_id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid actor_id", nil)
 		return
 	}
 
@@ -379,7 +379,7 @@ func (h *Handler) BundleNotification(c *gin.Context) {
 	if req.RefID != nil && *req.RefID != "" {
 		parsed, parseErr := uuid.Parse(*req.RefID)
 		if parseErr != nil {
-			api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid ref_id", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid ref_id", nil)
 			return
 		}
 		refID = &parsed
@@ -387,7 +387,7 @@ func (h *Handler) BundleNotification(c *gin.Context) {
 
 	if err := h.svc.BundleNotification(c.Request.Context(), userID, actorID, req.BundleType, refID); err != nil {
 		log.Printf("BundleNotification error: %v", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to bundle notification", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to bundle notification", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "ok"}, nil)
@@ -397,13 +397,13 @@ func (h *Handler) BundleNotification(c *gin.Context) {
 func (h *Handler) GetNotifPreferences(c *gin.Context) {
 	userID := c.GetHeader("X-User-Id")
 	if userID == "" {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing user ID", nil)
 		return
 	}
 
 	prefs, err := h.svc.GetNotifPreferences(c.Request.Context(), userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get preferences", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get preferences", nil)
 		return
 	}
 
@@ -440,20 +440,20 @@ type UpdateNotifPreferencesRequest struct {
 func (h *Handler) UpdateNotifPreferences(c *gin.Context) {
 	userID := c.GetHeader("X-User-Id")
 	if userID == "" {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing user ID", nil)
 		return
 	}
 
 	var req UpdateNotifPreferencesRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 
 	// Fetch current, merge updates
 	current, err := h.svc.GetNotifPreferences(c.Request.Context(), userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -526,7 +526,7 @@ func (h *Handler) UpdateNotifPreferences(c *gin.Context) {
 	current.UserID = userID
 
 	if err := h.svc.UpdateNotifPreferences(c.Request.Context(), current); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to update preferences", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to update preferences", nil)
 		return
 	}
 
@@ -537,7 +537,7 @@ func (h *Handler) UpdateNotifPreferences(c *gin.Context) {
 func (h *Handler) StreamNotifications(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	if _, err := uuid.Parse(userIDStr); err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 

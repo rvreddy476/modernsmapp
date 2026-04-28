@@ -60,7 +60,7 @@ func (h *Handler) StartOnboarding(c *gin.Context) {
 	}
 	var req startOnboardingReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	sel, err := h.svc.StartOnboarding(c.Request.Context(), service.StartOnboardingInput{
@@ -85,7 +85,7 @@ func (h *Handler) GetOnboardingStatus(c *gin.Context) {
 	}
 	sel, err := h.svc.GetOnboardingStatus(c.Request.Context(), userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "no onboarding found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "no onboarding found", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, sel, nil)
@@ -111,7 +111,7 @@ func (h *Handler) SaveBasicInfo(c *gin.Context) {
 	}
 	var req saveBasicReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	if err := h.svc.SaveBasicInfo(c.Request.Context(), userID, postgres.OnboardingBasicInput{
@@ -149,7 +149,7 @@ func (h *Handler) SaveStorefront(c *gin.Context) {
 	}
 	var req saveStorefrontReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	if err := h.svc.SaveStorefront(c.Request.Context(), userID, postgres.OnboardingStorefrontInput{
@@ -184,7 +184,7 @@ func (h *Handler) SaveDocuments(c *gin.Context) {
 	}
 	var req saveDocumentsReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	docs := make([]postgres.SellerDocument, len(req.Documents))
@@ -217,7 +217,7 @@ func (h *Handler) SaveFulfillment(c *gin.Context) {
 	}
 	var req saveFulfillmentReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	if len(req.DeliveryModes) == 0 {
@@ -257,7 +257,7 @@ func (h *Handler) SavePayout(c *gin.Context) {
 	}
 	var req savePayoutReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 	if err := h.svc.SavePayout(c.Request.Context(), userID, postgres.OnboardingPayoutInput{
@@ -279,7 +279,7 @@ func (h *Handler) SubmitApplication(c *gin.Context) {
 		return
 	}
 	if err := h.svc.SubmitApplication(c.Request.Context(), userID); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "SUBMIT_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "SUBMIT_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"message": "application submitted for review"}, nil)
@@ -292,7 +292,7 @@ func (h *Handler) GetDashboard(c *gin.Context) {
 	}
 	stats, err := h.svc.GetDashboard(c.Request.Context(), userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, stats, nil)
@@ -308,7 +308,7 @@ func (h *Handler) SubmitProduct(c *gin.Context) {
 		return
 	}
 	if err := h.svc.SubmitProduct(c.Request.Context(), productID, userID); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "SUBMIT_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "SUBMIT_FAILED", err.Error(), nil)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -339,7 +339,7 @@ func (h *Handler) AdminGetSeller(c *gin.Context) {
 	}
 	sel, err := h.svc.AdminGetSeller(c.Request.Context(), sellerID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "seller not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "seller not found", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, sel, nil)

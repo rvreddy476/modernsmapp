@@ -117,7 +117,7 @@ func (h *Handler) CreateStream(c *gin.Context) {
 		Visibility   string  `json:"visibility"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 
@@ -129,7 +129,7 @@ func (h *Handler) CreateStream(c *gin.Context) {
 		Visibility:   body.Visibility,
 	})
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "CREATE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "CREATE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, st, nil)
@@ -138,13 +138,13 @@ func (h *Handler) CreateStream(c *gin.Context) {
 func (h *Handler) GetStream(c *gin.Context) {
 	streamID, err := uuid.Parse(c.Param("streamId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid stream id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid stream id", nil)
 		return
 	}
 
 	st, err := h.svc.GetStream(c.Request.Context(), streamID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "stream not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "stream not found", nil)
 		return
 	}
 	sanitizeStreamForRequester(st, c.GetHeader("X-User-Id") == st.HostID.String())
@@ -155,7 +155,7 @@ func (h *Handler) ListLiveStreams(c *gin.Context) {
 	limit, offset := parsePagination(c)
 	streams, err := h.svc.ListLiveStreams(c.Request.Context(), limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "LIST_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "LIST_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": streams}, nil)
@@ -168,12 +168,12 @@ func (h *Handler) GoLive(c *gin.Context) {
 	}
 	streamID, err := uuid.Parse(c.Param("streamId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid stream id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid stream id", nil)
 		return
 	}
 
 	if err := h.svc.GoLive(c.Request.Context(), streamID, userID); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "GO_LIVE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "GO_LIVE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "live"}, nil)
@@ -186,12 +186,12 @@ func (h *Handler) EndStream(c *gin.Context) {
 	}
 	streamID, err := uuid.Parse(c.Param("streamId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid stream id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid stream id", nil)
 		return
 	}
 
 	if err := h.svc.EndStream(c.Request.Context(), streamID, userID); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "END_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "END_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "ended"}, nil)
@@ -200,14 +200,14 @@ func (h *Handler) EndStream(c *gin.Context) {
 func (h *Handler) ListHostStreams(c *gin.Context) {
 	hostID, err := uuid.Parse(c.Param("hostId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid host id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid host id", nil)
 		return
 	}
 	limit, offset := parsePagination(c)
 
 	streams, err := h.svc.ListHostStreams(c.Request.Context(), hostID, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "LIST_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "LIST_FAILED", err.Error(), nil)
 		return
 	}
 	sanitizeStreamsForRequester(streams, c.GetHeader("X-User-Id") == hostID.String())
@@ -223,13 +223,13 @@ func (h *Handler) JoinStream(c *gin.Context) {
 	}
 	streamID, err := uuid.Parse(c.Param("streamId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid stream id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid stream id", nil)
 		return
 	}
 
 	count, err := h.svc.JoinStream(c.Request.Context(), streamID, userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "JOIN_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "JOIN_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"viewer_count": count}, nil)
@@ -242,12 +242,12 @@ func (h *Handler) LeaveStream(c *gin.Context) {
 	}
 	streamID, err := uuid.Parse(c.Param("streamId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid stream id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid stream id", nil)
 		return
 	}
 
 	if err := h.svc.LeaveStream(c.Request.Context(), streamID, userID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "LEAVE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "LEAVE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "left"}, nil)
@@ -256,12 +256,12 @@ func (h *Handler) LeaveStream(c *gin.Context) {
 func (h *Handler) LikeStream(c *gin.Context) {
 	streamID, err := uuid.Parse(c.Param("streamId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid stream id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid stream id", nil)
 		return
 	}
 
 	if err := h.svc.LikeStream(c.Request.Context(), streamID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "LIKE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "LIKE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "liked"}, nil)
@@ -270,13 +270,13 @@ func (h *Handler) LikeStream(c *gin.Context) {
 func (h *Handler) GetViewerCount(c *gin.Context) {
 	streamID, err := uuid.Parse(c.Param("streamId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid stream id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid stream id", nil)
 		return
 	}
 
 	count, err := h.svc.GetViewerCount(c.Request.Context(), streamID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "COUNT_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "COUNT_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"viewer_count": count}, nil)
@@ -291,7 +291,7 @@ func (h *Handler) SendChatMessage(c *gin.Context) {
 	}
 	streamID, err := uuid.Parse(c.Param("streamId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid stream id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid stream id", nil)
 		return
 	}
 
@@ -299,13 +299,13 @@ func (h *Handler) SendChatMessage(c *gin.Context) {
 		Message string `json:"message"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 
 	msg, err := h.svc.SendChatMessage(c.Request.Context(), streamID, userID, body.Message)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "CHAT_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "CHAT_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, msg, nil)
@@ -314,7 +314,7 @@ func (h *Handler) SendChatMessage(c *gin.Context) {
 func (h *Handler) GetChatMessages(c *gin.Context) {
 	streamID, err := uuid.Parse(c.Param("streamId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid stream id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid stream id", nil)
 		return
 	}
 
@@ -334,7 +334,7 @@ func (h *Handler) GetChatMessages(c *gin.Context) {
 
 	messages, err := h.svc.GetChatMessages(c.Request.Context(), streamID, limit, before)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "CHAT_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "CHAT_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": messages}, nil)
@@ -347,17 +347,17 @@ func (h *Handler) PinMessage(c *gin.Context) {
 	}
 	streamID, err := uuid.Parse(c.Param("streamId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid stream id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid stream id", nil)
 		return
 	}
 	messageID, err := uuid.Parse(c.Param("messageId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid message id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid message id", nil)
 		return
 	}
 
 	if err := h.svc.PinMessage(c.Request.Context(), streamID, messageID, userID); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "PIN_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "PIN_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "pinned"}, nil)
@@ -377,19 +377,19 @@ func (h *Handler) ScheduleStream(c *gin.Context) {
 		ScheduledAt string `json:"scheduled_at"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 
 	scheduledAt, err := time.Parse(time.RFC3339, body.ScheduledAt)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_TIME", "scheduled_at must be RFC3339", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_TIME", "scheduled_at must be RFC3339", nil)
 		return
 	}
 
 	ss, err := h.svc.ScheduleStream(c.Request.Context(), userID, body.Title, body.Description, scheduledAt)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "SCHEDULE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "SCHEDULE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, ss, nil)
@@ -405,7 +405,7 @@ func (h *Handler) ListUpcomingStreams(c *gin.Context) {
 
 	streams, err := h.svc.ListUpcomingStreams(c.Request.Context(), limit)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "LIST_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "LIST_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": streams}, nil)
@@ -416,12 +416,12 @@ func (h *Handler) ListUpcomingStreams(c *gin.Context) {
 func parseUserID(c *gin.Context) (uuid.UUID, bool) {
 	userID := c.GetHeader("X-User-Id")
 	if userID == "" {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil)
 		return uuid.Nil, false
 	}
 	uid, err := uuid.Parse(userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_USER_ID", "invalid user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_USER_ID", "invalid user id", nil)
 		return uuid.Nil, false
 	}
 	return uid, true

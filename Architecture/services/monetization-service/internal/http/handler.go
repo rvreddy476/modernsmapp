@@ -126,12 +126,12 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 func getUserID(c *gin.Context) (uuid.UUID, bool) {
 	userIDStr := c.GetHeader("X-User-Id")
 	if userIDStr == "" {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing user ID", nil)
 		return uuid.Nil, false
 	}
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return uuid.Nil, false
 	}
 	return userID, true
@@ -149,7 +149,7 @@ func (h *Handler) GetWallet(c *gin.Context) {
 
 	wallet, err := h.svc.GetWallet(c.Request.Context(), userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -176,7 +176,7 @@ func (h *Handler) GetTransactions(c *gin.Context) {
 
 	txns, err := h.svc.GetTransactions(c.Request.Context(), userID, cursor, limit)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if txns == nil {
@@ -209,7 +209,7 @@ func (h *Handler) AddPayoutMethod(c *gin.Context) {
 
 	var req AddPayoutMethodRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -221,7 +221,7 @@ func (h *Handler) AddPayoutMethod(c *gin.Context) {
 	}
 
 	if err := h.svc.AddPayoutMethod(c.Request.Context(), m); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -236,16 +236,16 @@ func (h *Handler) RemovePayoutMethod(c *gin.Context) {
 
 	methodID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid payout method ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid payout method ID", nil)
 		return
 	}
 
 	if err := h.svc.RemovePayoutMethod(c.Request.Context(), userID, methodID); err != nil {
 		if err.Error() == "PAYOUT_METHOD_NOT_FOUND" {
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Payout method not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Payout method not found", nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -260,7 +260,7 @@ func (h *Handler) GetPayoutMethods(c *gin.Context) {
 
 	methods, err := h.svc.GetPayoutMethods(c.Request.Context(), userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if methods == nil {
@@ -287,13 +287,13 @@ func (h *Handler) RequestPayout(c *gin.Context) {
 
 	var req RequestPayoutRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
 	payoutMethodID, err := uuid.Parse(req.PayoutMethodID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid payout method ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid payout method ID", nil)
 		return
 	}
 
@@ -301,15 +301,15 @@ func (h *Handler) RequestPayout(c *gin.Context) {
 	if err != nil {
 		switch err.Error() {
 		case "INVALID_AMOUNT":
-			api.Error(c.Writer, http.StatusBadRequest, "INVALID_AMOUNT", "Amount must be greater than zero", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_AMOUNT", "Amount must be greater than zero", nil)
 		case "WALLET_NOT_FOUND":
-			api.Error(c.Writer, http.StatusNotFound, "WALLET_NOT_FOUND", "Wallet not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "WALLET_NOT_FOUND", "Wallet not found", nil)
 		case "WALLET_FROZEN":
-			api.Error(c.Writer, http.StatusForbidden, "WALLET_FROZEN", "Wallet is frozen", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "WALLET_FROZEN", "Wallet is frozen", nil)
 		case "INSUFFICIENT_BALANCE":
-			api.Error(c.Writer, http.StatusBadRequest, "INSUFFICIENT_BALANCE", "Insufficient balance for payout", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INSUFFICIENT_BALANCE", "Insufficient balance for payout", nil)
 		default:
-			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
 		return
 	}
@@ -333,7 +333,7 @@ func (h *Handler) GetPayouts(c *gin.Context) {
 
 	txns, err := h.svc.GetPayouts(c.Request.Context(), userID, cursor, limit)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if txns == nil {
@@ -365,7 +365,7 @@ func (h *Handler) SaveTaxInfo(c *gin.Context) {
 
 	var req SaveTaxInfoRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -377,7 +377,7 @@ func (h *Handler) SaveTaxInfo(c *gin.Context) {
 	}
 
 	if err := h.svc.SaveTaxInfo(c.Request.Context(), t); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -403,7 +403,7 @@ func (h *Handler) GetMyTiers(c *gin.Context) {
 
 	tiers, err := h.svc.GetCreatorTiers(c.Request.Context(), userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if tiers == nil {
@@ -421,7 +421,7 @@ func (h *Handler) CreateTier(c *gin.Context) {
 
 	var req CreateTierRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -440,7 +440,7 @@ func (h *Handler) CreateTier(c *gin.Context) {
 	}
 
 	if err := h.svc.CreateTier(c.Request.Context(), t); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -463,13 +463,13 @@ func (h *Handler) UpdateTier(c *gin.Context) {
 
 	tierID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid tier ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid tier ID", nil)
 		return
 	}
 
 	var req UpdateTierRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -490,10 +490,10 @@ func (h *Handler) UpdateTier(c *gin.Context) {
 
 	if err := h.svc.UpdateTier(c.Request.Context(), t); err != nil {
 		if err.Error() == "TIER_NOT_FOUND" {
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Tier not found or not owned by you", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Tier not found or not owned by you", nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -516,19 +516,19 @@ func (h *Handler) Subscribe(c *gin.Context) {
 
 	creatorID, err := uuid.Parse(c.Param("creatorId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid creator ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid creator ID", nil)
 		return
 	}
 
 	var req SubscribeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
 	tierID, err := uuid.Parse(req.TierID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid tier ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid tier ID", nil)
 		return
 	}
 
@@ -538,19 +538,19 @@ func (h *Handler) Subscribe(c *gin.Context) {
 	if err != nil {
 		switch err.Error() {
 		case "CANNOT_SUBSCRIBE_TO_SELF":
-			api.Error(c.Writer, http.StatusBadRequest, "CANNOT_SUBSCRIBE_TO_SELF", "Cannot subscribe to yourself", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "CANNOT_SUBSCRIBE_TO_SELF", "Cannot subscribe to yourself", nil)
 		case "TIER_NOT_FOUND":
-			api.Error(c.Writer, http.StatusNotFound, "TIER_NOT_FOUND", "Tier not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "TIER_NOT_FOUND", "Tier not found", nil)
 		case "TIER_INACTIVE":
-			api.Error(c.Writer, http.StatusBadRequest, "TIER_INACTIVE", "Tier is not active", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "TIER_INACTIVE", "Tier is not active", nil)
 		case "TIER_CREATOR_MISMATCH":
-			api.Error(c.Writer, http.StatusBadRequest, "TIER_CREATOR_MISMATCH", "Tier does not belong to this creator", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "TIER_CREATOR_MISMATCH", "Tier does not belong to this creator", nil)
 		case "ALREADY_SUBSCRIBED":
-			api.Error(c.Writer, http.StatusConflict, "ALREADY_SUBSCRIBED", "Already subscribed to this creator", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "ALREADY_SUBSCRIBED", "Already subscribed to this creator", nil)
 		case "INSUFFICIENT_BALANCE_OR_FROZEN":
-			api.Error(c.Writer, http.StatusBadRequest, "INSUFFICIENT_BALANCE", "Insufficient balance or wallet is frozen", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INSUFFICIENT_BALANCE", "Insufficient balance or wallet is frozen", nil)
 		default:
-			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
 		return
 	}
@@ -566,16 +566,16 @@ func (h *Handler) Unsubscribe(c *gin.Context) {
 
 	creatorID, err := uuid.Parse(c.Param("creatorId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid creator ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid creator ID", nil)
 		return
 	}
 
 	if err := h.svc.Unsubscribe(c.Request.Context(), userID, creatorID); err != nil {
 		if err.Error() == "SUBSCRIPTION_NOT_FOUND" {
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Active subscription not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Active subscription not found", nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -594,7 +594,7 @@ func (h *Handler) GetDashboard(c *gin.Context) {
 
 	dashboard, err := h.svc.GetDashboard(c.Request.Context(), userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 

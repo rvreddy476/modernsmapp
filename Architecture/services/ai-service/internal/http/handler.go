@@ -74,14 +74,14 @@ func (h *Handler) EnqueueJob(c *gin.Context) {
 		RefID   uuid.UUID `json:"ref_id" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
 	job, err := h.svc.EnqueueJob(c.Request.Context(), req.JobType, req.RefType, req.RefID, requesterID(c))
 	if err != nil {
 		slog.Error("EnqueueJob failed", "error", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "ENQUEUE_FAILED", "failed to enqueue job", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "ENQUEUE_FAILED", "failed to enqueue job", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, job, nil)
@@ -91,18 +91,18 @@ func (h *Handler) EnqueueJob(c *gin.Context) {
 func (h *Handler) GetJob(c *gin.Context) {
 	jobID, err := uuid.Parse(c.Param("jobId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_JOB_ID", "invalid job ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_JOB_ID", "invalid job ID", nil)
 		return
 	}
 
 	job, err := h.svc.GetJob(c.Request.Context(), jobID)
 	if err != nil {
 		slog.Error("GetJob failed", "error", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "GET_JOB_FAILED", "failed to get job", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "GET_JOB_FAILED", "failed to get job", nil)
 		return
 	}
 	if job == nil {
-		api.Error(c.Writer, http.StatusNotFound, "JOB_NOT_FOUND", "job not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "JOB_NOT_FOUND", "job not found", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, job, nil)
@@ -115,7 +115,7 @@ func (h *Handler) SuggestCaption(c *gin.Context) {
 		Text    string    `json:"text"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -152,7 +152,7 @@ func (h *Handler) SuggestHashtags(c *gin.Context) {
 		Content string    `json:"content"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -185,7 +185,7 @@ func (h *Handler) SmartReply(c *gin.Context) {
 		LastMessages   []string  `json:"last_messages"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -219,7 +219,7 @@ func (h *Handler) ModerationCheck(c *gin.Context) {
 		Text        string    `json:"text"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -266,7 +266,7 @@ func (h *Handler) Translation(c *gin.Context) {
 		TargetLang string `json:"target_lang"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -280,14 +280,14 @@ func (h *Handler) Summary(c *gin.Context) {
 		RefID       uuid.UUID `json:"ref_id" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
 	job, err := h.svc.EnqueueJob(c.Request.Context(), "summary", req.ContentType, req.RefID, requesterID(c))
 	if err != nil {
 		slog.Error("Summary enqueue failed", "error", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "ENQUEUE_FAILED", "failed to enqueue summary job", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "ENQUEUE_FAILED", "failed to enqueue summary job", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusAccepted, job, nil)
@@ -299,7 +299,7 @@ func (h *Handler) EngagementPredict(c *gin.Context) {
 		PostDraft map[string]interface{} `json:"post_draft"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -319,14 +319,14 @@ func (h *Handler) ScamCheck(c *gin.Context) {
 		MessageText string    `json:"message_text"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
 	job, err := h.svc.EnqueueJob(c.Request.Context(), "scam_detection", "profile", req.ProfileID, requesterID(c))
 	if err != nil {
 		slog.Error("ScamCheck enqueue failed", "error", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "ENQUEUE_FAILED", "failed to enqueue scam check job", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "ENQUEUE_FAILED", "failed to enqueue scam check job", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusAccepted, job, nil)

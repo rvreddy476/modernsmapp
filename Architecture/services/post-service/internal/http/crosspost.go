@@ -25,12 +25,12 @@ func (h *Handler) RegisterCrosspostRoutes(r *gin.Engine) {
 func (h *Handler) CreateCrosspost(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil)
 		return
 	}
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid post ID", nil)
 		return
 	}
 
@@ -38,7 +38,7 @@ func (h *Handler) CreateCrosspost(c *gin.Context) {
 		TargetModule string `json:"target_module" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "target_module is required", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "target_module is required", nil)
 		return
 	}
 
@@ -46,11 +46,11 @@ func (h *Handler) CreateCrosspost(c *gin.Context) {
 	if err != nil {
 		switch err.Error() {
 		case "RATE_LIMITED":
-			api.Error(c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many crossposts. Limit: 5 per hour.", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many crossposts. Limit: 5 per hour.", nil)
 		case "FORBIDDEN":
-			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "Cannot crosspost another user's content", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Cannot crosspost another user's content", nil)
 		default:
-			api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		}
 		return
 	}
@@ -61,13 +61,13 @@ func (h *Handler) CreateCrosspost(c *gin.Context) {
 func (h *Handler) ListCrossposts(c *gin.Context) {
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid post ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid post ID", nil)
 		return
 	}
 
 	links, err := h.svc.ListCrossposts(c.Request.Context(), postID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list crossposts", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list crossposts", nil)
 		return
 	}
 	if links == nil {
@@ -80,12 +80,12 @@ func (h *Handler) ListCrossposts(c *gin.Context) {
 func (h *Handler) RemoveCrosspost(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil)
 		return
 	}
 	crosspostID, err := uuid.Parse(c.Param("crosspostId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid crosspost ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid crosspost ID", nil)
 		return
 	}
 
@@ -93,9 +93,9 @@ func (h *Handler) RemoveCrosspost(c *gin.Context) {
 	if err != nil {
 		switch err.Error() {
 		case "FORBIDDEN":
-			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "Cannot remove another user's crosspost", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Cannot remove another user's crosspost", nil)
 		default:
-			api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		}
 		return
 	}
@@ -106,7 +106,7 @@ func (h *Handler) RemoveCrosspost(c *gin.Context) {
 func (h *Handler) ListMyCrossposts(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid X-User-Id header", nil)
 		return
 	}
 
@@ -125,7 +125,7 @@ func (h *Handler) ListMyCrossposts(c *gin.Context) {
 
 	links, total, err := h.svc.ListCrosspostsByUser(c.Request.Context(), userID, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list crossposts", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list crossposts", nil)
 		return
 	}
 	if links == nil {

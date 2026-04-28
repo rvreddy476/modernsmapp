@@ -18,7 +18,7 @@ func (h *Handler) GetMyProfile(c *gin.Context) {
 
 	profile, err := h.svc.GetOrCreateProfile(c.Request.Context(), userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, profile, nil)
@@ -32,7 +32,7 @@ func (h *Handler) GetProfile(c *gin.Context) {
 
 	profile, err := h.svc.GetProfile(c.Request.Context(), targetID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "profile not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "profile not found", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, profile, nil)
@@ -46,13 +46,13 @@ func (h *Handler) UpdateProfile(c *gin.Context) {
 
 	var body store.UpdateProfileParams
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 
 	profile, err := h.svc.UpdateProfile(c.Request.Context(), userID, body)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "UPDATE_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "UPDATE_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, profile, nil)
@@ -67,7 +67,7 @@ func (h *Handler) GetReputationHistory(c *gin.Context) {
 
 	events, err := h.svc.GetReputationHistory(c.Request.Context(), targetID, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, events, nil)
@@ -81,7 +81,7 @@ func (h *Handler) GetBadges(c *gin.Context) {
 
 	badges, err := h.svc.GetBadges(c.Request.Context(), targetID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, badges, nil)
@@ -96,7 +96,7 @@ func (h *Handler) GetUserQuestions(c *gin.Context) {
 
 	questions, err := h.svc.ListQuestionsByAuthor(c.Request.Context(), targetID, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, questions, nil)
@@ -111,7 +111,7 @@ func (h *Handler) GetUserAnswers(c *gin.Context) {
 
 	answers, err := h.svc.Store().ListAnswersByAuthor(c.Request.Context(), targetID, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, answers, nil)
@@ -122,7 +122,7 @@ func (h *Handler) GetLeaderboard(c *gin.Context) {
 	if v := c.Query("topic_id"); v != "" {
 		id, err := uuid.Parse(v)
 		if err != nil {
-			api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "invalid topic_id", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PARAM", "invalid topic_id", nil)
 			return
 		}
 		topicID = &id
@@ -136,7 +136,7 @@ func (h *Handler) GetLeaderboard(c *gin.Context) {
 
 	profiles, err := h.svc.GetLeaderboard(c.Request.Context(), topicID, limit)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, profiles, nil)

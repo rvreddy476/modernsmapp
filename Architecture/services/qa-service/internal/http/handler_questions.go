@@ -18,7 +18,7 @@ func (h *Handler) CreateQuestion(c *gin.Context) {
 
 	var body store.CreateQuestionParams
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 
@@ -38,7 +38,7 @@ func (h *Handler) ListQuestions(c *gin.Context) {
 	if raw := c.Query("community_id"); raw != "" {
 		parsed, err := uuid.Parse(raw)
 		if err != nil {
-			api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "invalid community_id", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PARAM", "invalid community_id", nil)
 			return
 		}
 		communityID = &parsed
@@ -88,13 +88,13 @@ func (h *Handler) GetQuestion(c *gin.Context) {
 func (h *Handler) GetQuestionBySlug(c *gin.Context) {
 	slug := c.Param("slug")
 	if slug == "" {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "slug is required", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PARAM", "slug is required", nil)
 		return
 	}
 
 	q, err := h.svc.Store().GetQuestionBySlug(c.Request.Context(), slug)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "question not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "question not found", nil)
 		return
 	}
 	q, err = h.svc.GetQuestion(c.Request.Context(), q.ID, optionalUserID(c))
@@ -117,7 +117,7 @@ func (h *Handler) UpdateQuestion(c *gin.Context) {
 
 	var body store.UpdateQuestionParams
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 
@@ -160,7 +160,7 @@ func (h *Handler) CloseQuestion(c *gin.Context) {
 		Reason string `json:"reason"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 
@@ -187,7 +187,7 @@ func (h *Handler) ReopenQuestion(c *gin.Context) {
 func (h *Handler) GetSimilarQuestions(c *gin.Context) {
 	title := c.Query("title")
 	if title == "" {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "title query param is required", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PARAM", "title query param is required", nil)
 		return
 	}
 	limit := 5
@@ -199,7 +199,7 @@ func (h *Handler) GetSimilarQuestions(c *gin.Context) {
 
 	questions, err := h.svc.FindSimilarQuestions(c.Request.Context(), title, limit)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, questions, nil)
@@ -214,7 +214,7 @@ func (h *Handler) GetMyQuestions(c *gin.Context) {
 
 	questions, err := h.svc.ListQuestionsByAuthor(c.Request.Context(), userID, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, questions, nil)

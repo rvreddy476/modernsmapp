@@ -95,7 +95,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 func getUserID(c *gin.Context) (uuid.UUID, bool) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return uuid.Nil, false
 	}
 	return userID, true
@@ -109,17 +109,17 @@ type UserIDRequest struct {
 func parseAuthAndBody(c *gin.Context) (uuid.UUID, uuid.UUID, bool) {
 	actorID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return uuid.Nil, uuid.Nil, false
 	}
 	var req UserIDRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return uuid.Nil, uuid.Nil, false
 	}
 	targetID, err := uuid.Parse(req.UserID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid target user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid target user ID", nil)
 		return uuid.Nil, uuid.Nil, false
 	}
 	return actorID, targetID, true
@@ -129,7 +129,7 @@ func parseAuthAndBody(c *gin.Context) (uuid.UUID, uuid.UUID, bool) {
 func parsePaginatedUserID(c *gin.Context) (uuid.UUID, int, int, bool) {
 	userID, err := uuid.Parse(c.Param("userId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil)
 		return uuid.Nil, 0, 0, false
 	}
 	limit := 20
@@ -149,7 +149,7 @@ func (h *Handler) Follow(c *gin.Context) {
 		return
 	}
 	if err := h.svc.Follow(c.Request.Context(), followerID, followeeID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "followed"}, nil)
@@ -161,7 +161,7 @@ func (h *Handler) Unfollow(c *gin.Context) {
 		return
 	}
 	if err := h.svc.Unfollow(c.Request.Context(), followerID, followeeID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "unfollowed"}, nil)
@@ -173,7 +173,7 @@ func (h *Handler) Block(c *gin.Context) {
 		return
 	}
 	if err := h.svc.Block(c.Request.Context(), blockerID, blockedID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "blocked"}, nil)
@@ -182,17 +182,17 @@ func (h *Handler) Block(c *gin.Context) {
 func (h *Handler) GetRelationship(c *gin.Context) {
 	actorID, err := uuid.Parse(c.Query("user_id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user_id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user_id", nil)
 		return
 	}
 	targetID, err := uuid.Parse(c.Query("other_id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid other_id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid other_id", nil)
 		return
 	}
 	rel, err := h.svc.GetRelationship(c.Request.Context(), actorID, targetID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, rel, nil)
@@ -201,12 +201,12 @@ func (h *Handler) GetRelationship(c *gin.Context) {
 func (h *Handler) GetCounts(c *gin.Context) {
 	userID, err := uuid.Parse(c.Param("userId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil)
 		return
 	}
 	counts, err := h.svc.GetCounts(c.Request.Context(), userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, counts, nil)
@@ -219,7 +219,7 @@ func (h *Handler) GetFollowers(c *gin.Context) {
 	}
 	ids, err := h.svc.GetFollowers(c.Request.Context(), userID, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if ids == nil {
@@ -235,7 +235,7 @@ func (h *Handler) GetFollowing(c *gin.Context) {
 	}
 	ids, err := h.svc.GetFollowing(c.Request.Context(), userID, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if ids == nil {
@@ -249,12 +249,12 @@ func (h *Handler) GetMutualFollowers(c *gin.Context) {
 	otherIDStr := c.Query("other_id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user_id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user_id", nil)
 		return
 	}
 	otherID, err := uuid.Parse(otherIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid other_id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid other_id", nil)
 		return
 	}
 	limit := 20
@@ -263,7 +263,7 @@ func (h *Handler) GetMutualFollowers(c *gin.Context) {
 	}
 	ids, err := h.svc.GetMutualFollowers(c.Request.Context(), userID, otherID, limit)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if ids == nil {
@@ -280,7 +280,7 @@ func (h *Handler) SendFriendRequest(c *gin.Context) {
 		return
 	}
 	if err := h.svc.SendFriendRequest(c.Request.Context(), senderID, receiverID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "request_sent"}, nil)
@@ -289,21 +289,21 @@ func (h *Handler) SendFriendRequest(c *gin.Context) {
 func (h *Handler) AcceptFriendRequest(c *gin.Context) {
 	receiverID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 	var req UserIDRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 	senderID, err := uuid.Parse(req.UserID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid sender user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid sender user ID", nil)
 		return
 	}
 	if err := h.svc.AcceptFriendRequest(c.Request.Context(), senderID, receiverID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "accepted"}, nil)
@@ -312,21 +312,21 @@ func (h *Handler) AcceptFriendRequest(c *gin.Context) {
 func (h *Handler) RejectFriendRequest(c *gin.Context) {
 	receiverID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 	var req UserIDRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 	senderID, err := uuid.Parse(req.UserID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid sender user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid sender user ID", nil)
 		return
 	}
 	if err := h.svc.RejectFriendRequest(c.Request.Context(), senderID, receiverID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "rejected"}, nil)
@@ -338,7 +338,7 @@ func (h *Handler) RemoveFriend(c *gin.Context) {
 		return
 	}
 	if err := h.svc.RemoveFriend(c.Request.Context(), actorID, targetID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "removed"}, nil)
@@ -351,7 +351,7 @@ func (h *Handler) GetFriends(c *gin.Context) {
 	}
 	ids, err := h.svc.GetFriends(c.Request.Context(), userID, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if ids == nil {
@@ -363,12 +363,12 @@ func (h *Handler) GetFriends(c *gin.Context) {
 func (h *Handler) GetPendingRequests(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 	reqs, err := h.svc.GetPendingRequests(c.Request.Context(), userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if reqs == nil {
@@ -382,23 +382,23 @@ func (h *Handler) GetPendingRequests(c *gin.Context) {
 func (h *Handler) Mute(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 	var req struct {
 		UserID string `json:"user_id"`
 	}
 	if err := c.BindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 	mutedID, err := uuid.Parse(req.UserID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid target user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid target user ID", nil)
 		return
 	}
 	if err := h.svc.Mute(c.Request.Context(), userID, mutedID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -407,19 +407,19 @@ func (h *Handler) Mute(c *gin.Context) {
 func (h *Handler) Unmute(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 	var req struct {
 		UserID string `json:"user_id"`
 	}
 	if err := c.BindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 	mutedID, err := uuid.Parse(req.UserID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid target user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid target user ID", nil)
 		return
 	}
 	h.svc.Unmute(c.Request.Context(), userID, mutedID)
@@ -430,12 +430,12 @@ func (h *Handler) GetBlockedAndMuted(c *gin.Context) {
 	userIDStr := c.Query("user_id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user_id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user_id", nil)
 		return
 	}
 	ids, err := h.svc.GetBlockedAndMuted(c.Request.Context(), userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if ids == nil {
@@ -453,7 +453,7 @@ func (h *Handler) GetCloseFriends(c *gin.Context) {
 	}
 	ids, err := h.svc.GetCloseFriends(c.Request.Context(), userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if ids == nil {
@@ -469,11 +469,11 @@ func (h *Handler) AddCloseFriend(c *gin.Context) {
 	}
 	friendID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid friend id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid friend id", nil)
 		return
 	}
 	if err := h.svc.AddCloseFriend(c.Request.Context(), userID, friendID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
@@ -486,11 +486,11 @@ func (h *Handler) RemoveCloseFriend(c *gin.Context) {
 	}
 	friendID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid friend id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid friend id", nil)
 		return
 	}
 	if err := h.svc.RemoveCloseFriend(c.Request.Context(), userID, friendID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
@@ -508,12 +508,12 @@ func (h *Handler) CreateCircle(c *gin.Context) {
 		Emoji *string `json:"emoji"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 	circle, err := h.svc.CreateCircle(c.Request.Context(), userID, req.Name, req.Emoji)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, circle, nil)
@@ -526,7 +526,7 @@ func (h *Handler) ListCircles(c *gin.Context) {
 	}
 	circles, err := h.svc.ListCircles(c.Request.Context(), userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if circles == nil {
@@ -542,7 +542,7 @@ func (h *Handler) UpdateCircle(c *gin.Context) {
 	}
 	circleID, err := uuid.Parse(c.Param("circleId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid circle id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid circle id", nil)
 		return
 	}
 	var req struct {
@@ -550,16 +550,16 @@ func (h *Handler) UpdateCircle(c *gin.Context) {
 		Emoji *string `json:"emoji"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 	circle, err := h.svc.UpdateCircle(c.Request.Context(), circleID, userID, req.Name, req.Emoji)
 	if err != nil {
 		if err.Error() == "circle not found" {
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "circle not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "circle not found", nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, circle, nil)
@@ -572,11 +572,11 @@ func (h *Handler) DeleteCircle(c *gin.Context) {
 	}
 	circleID, err := uuid.Parse(c.Param("circleId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid circle id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid circle id", nil)
 		return
 	}
 	if err := h.svc.DeleteCircle(c.Request.Context(), circleID, userID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
@@ -589,16 +589,16 @@ func (h *Handler) GetCircleMembers(c *gin.Context) {
 	}
 	circleID, err := uuid.Parse(c.Param("circleId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid circle id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid circle id", nil)
 		return
 	}
 	ids, err := h.svc.GetCircleMembers(c.Request.Context(), circleID, userID)
 	if err != nil {
 		if err.Error() == "circle not found" {
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "circle not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "circle not found", nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if ids == nil {
@@ -614,20 +614,20 @@ func (h *Handler) AddCircleMember(c *gin.Context) {
 	}
 	circleID, err := uuid.Parse(c.Param("circleId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid circle id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid circle id", nil)
 		return
 	}
 	memberID, err := uuid.Parse(c.Param("userId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid user id", nil)
 		return
 	}
 	if err := h.svc.AddCircleMember(c.Request.Context(), circleID, userID, memberID); err != nil {
 		if err.Error() == "circle not found" {
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "circle not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "circle not found", nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
@@ -640,20 +640,20 @@ func (h *Handler) RemoveCircleMember(c *gin.Context) {
 	}
 	circleID, err := uuid.Parse(c.Param("circleId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid circle id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid circle id", nil)
 		return
 	}
 	memberID, err := uuid.Parse(c.Param("userId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid user id", nil)
 		return
 	}
 	if err := h.svc.RemoveCircleMember(c.Request.Context(), circleID, userID, memberID); err != nil {
 		if err.Error() == "circle not found" {
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "circle not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "circle not found", nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
@@ -668,7 +668,7 @@ func (h *Handler) ListRelationshipLabels(c *gin.Context) {
 	}
 	labels, err := h.svc.ListRelationshipLabels(c.Request.Context(), userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if labels == nil {
@@ -684,18 +684,18 @@ func (h *Handler) UpsertRelationshipLabel(c *gin.Context) {
 	}
 	targetID, err := uuid.Parse(c.Param("userId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid user id", nil)
 		return
 	}
 	var req struct {
 		Label string `json:"label" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 	if err := h.svc.UpsertRelationshipLabel(c.Request.Context(), userID, targetID, req.Label); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_LABEL", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_LABEL", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
@@ -708,11 +708,11 @@ func (h *Handler) DeleteRelationshipLabel(c *gin.Context) {
 	}
 	targetID, err := uuid.Parse(c.Param("userId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid user id", nil)
 		return
 	}
 	if err := h.svc.DeleteRelationshipLabel(c.Request.Context(), userID, targetID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
@@ -727,7 +727,7 @@ func (h *Handler) GetFavorites(c *gin.Context) {
 	}
 	ids, err := h.svc.GetFavorites(c.Request.Context(), userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if ids == nil {
@@ -743,11 +743,11 @@ func (h *Handler) AddFavorite(c *gin.Context) {
 	}
 	targetID, err := uuid.Parse(c.Param("userId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid user id", nil)
 		return
 	}
 	if err := h.svc.AddFavorite(c.Request.Context(), userID, targetID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
@@ -760,11 +760,11 @@ func (h *Handler) RemoveFavorite(c *gin.Context) {
 	}
 	targetID, err := uuid.Parse(c.Param("userId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid user id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid user id", nil)
 		return
 	}
 	if err := h.svc.RemoveFavorite(c.Request.Context(), userID, targetID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
@@ -776,12 +776,12 @@ func (h *Handler) GetRelationshipBatch(c *gin.Context) {
 		TargetIDs []string `json:"target_ids"`
 	}
 	if err := c.BindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 	viewerID, err := uuid.Parse(req.ViewerID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid viewer_id", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid viewer_id", nil)
 		return
 	}
 	targetIDs := make([]uuid.UUID, 0, len(req.TargetIDs))
@@ -792,7 +792,7 @@ func (h *Handler) GetRelationshipBatch(c *gin.Context) {
 	}
 	result, err := h.svc.GetRelationshipBatch(c.Request.Context(), viewerID, targetIDs)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	c.JSON(http.StatusOK, result)

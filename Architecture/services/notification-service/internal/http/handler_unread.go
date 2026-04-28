@@ -14,30 +14,30 @@ import (
 func (h *Handler) BulkUnread(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	if _, err := uuid.Parse(userIDStr); err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	var req service.BulkUnreadRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 
 	// Validate total requested IDs to prevent abuse
 	total := len(req.GroupIDs) + len(req.ChannelIDs) + len(req.CommunityIDs) + len(req.ConversationIDs)
 	if total == 0 {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "At least one ID list must be provided", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "At least one ID list must be provided", nil)
 		return
 	}
 	if total > 200 {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Maximum 200 total IDs allowed", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Maximum 200 total IDs allowed", nil)
 		return
 	}
 
 	resp, err := h.svc.GetBulkUnread(c.Request.Context(), userIDStr, &req)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch unread counts", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch unread counts", nil)
 		return
 	}
 
@@ -48,22 +48,22 @@ func (h *Handler) BulkUnread(c *gin.Context) {
 func (h *Handler) ReadMarker(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	if _, err := uuid.Parse(userIDStr); err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	var req service.ReadMarkerRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 
 	if err := h.svc.SetReadMarker(c.Request.Context(), userIDStr, &req); err != nil {
 		if err.Error() == "invalid context_type: must be group, channel, community_space, or chat" {
-			api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to set read marker", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to set read marker", nil)
 		return
 	}
 

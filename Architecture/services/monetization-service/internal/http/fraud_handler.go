@@ -17,18 +17,18 @@ import (
 func getAdminID(c *gin.Context) (uuid.UUID, bool) {
 	adminRole := c.GetHeader("X-Admin-Role")
 	if adminRole == "" {
-		api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin access required", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin access required", nil)
 		return uuid.Nil, false
 	}
 
 	adminIDStr := c.GetHeader("X-User-Id")
 	if adminIDStr == "" {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing user ID", nil)
 		return uuid.Nil, false
 	}
 	adminID, err := uuid.Parse(adminIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return uuid.Nil, false
 	}
 	return adminID, true
@@ -68,13 +68,13 @@ func (h *Handler) CreateDispute(c *gin.Context) {
 
 	var req CreateDisputeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
 	txnID, err := uuid.Parse(req.TransactionID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid transaction ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid transaction ID", nil)
 		return
 	}
 
@@ -82,11 +82,11 @@ func (h *Handler) CreateDispute(c *gin.Context) {
 	if err != nil {
 		switch err.Error() {
 		case "TRANSACTION_NOT_FOUND":
-			api.Error(c.Writer, http.StatusNotFound, "TRANSACTION_NOT_FOUND", "Transaction not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "TRANSACTION_NOT_FOUND", "Transaction not found", nil)
 		case "TRANSACTION_NOT_OWNED":
-			api.Error(c.Writer, http.StatusForbidden, "TRANSACTION_NOT_OWNED", "Transaction does not belong to you", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "TRANSACTION_NOT_OWNED", "Transaction does not belong to you", nil)
 		default:
-			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
 		return
 	}
@@ -104,7 +104,7 @@ func (h *Handler) ListUserDisputes(c *gin.Context) {
 
 	disputes, err := h.svc.ListUserDisputes(c.Request.Context(), userID, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if disputes == nil {
@@ -122,17 +122,17 @@ func (h *Handler) GetDisputeByID(c *gin.Context) {
 
 	disputeID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid dispute ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid dispute ID", nil)
 		return
 	}
 
 	dispute, err := h.svc.GetDispute(c.Request.Context(), disputeID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if dispute == nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Dispute not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Dispute not found", nil)
 		return
 	}
 
@@ -152,22 +152,22 @@ func (h *Handler) ResolveDisputeAdmin(c *gin.Context) {
 
 	disputeID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid dispute ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid dispute ID", nil)
 		return
 	}
 
 	var req ResolveDisputeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
 	if err := h.svc.ResolveDispute(c.Request.Context(), disputeID, req.Status, req.ResolutionNotes, adminID); err != nil {
 		if err.Error() == "DISPUTE_NOT_FOUND" {
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Dispute not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Dispute not found", nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -193,13 +193,13 @@ func (h *Handler) ProcessRefund(c *gin.Context) {
 
 	var req ProcessRefundRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
 	txnID, err := uuid.Parse(req.TransactionID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid transaction ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid transaction ID", nil)
 		return
 	}
 
@@ -207,7 +207,7 @@ func (h *Handler) ProcessRefund(c *gin.Context) {
 	if req.DisputeID != nil && *req.DisputeID != "" {
 		parsed, err := uuid.Parse(*req.DisputeID)
 		if err != nil {
-			api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid dispute ID", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid dispute ID", nil)
 			return
 		}
 		disputeID = &parsed
@@ -217,11 +217,11 @@ func (h *Handler) ProcessRefund(c *gin.Context) {
 	if err != nil {
 		switch err.Error() {
 		case "TRANSACTION_NOT_FOUND":
-			api.Error(c.Writer, http.StatusNotFound, "TRANSACTION_NOT_FOUND", "Transaction not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "TRANSACTION_NOT_FOUND", "Transaction not found", nil)
 		case "REFUND_ALREADY_EXISTS":
-			api.Error(c.Writer, http.StatusConflict, "REFUND_ALREADY_EXISTS", "Refund already exists for this transaction", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "REFUND_ALREADY_EXISTS", "Refund already exists for this transaction", nil)
 		default:
-			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
 		return
 	}
@@ -243,7 +243,7 @@ func (h *Handler) ListPendingFraudReviews(c *gin.Context) {
 
 	reviews, err := h.svc.ListPendingFraudReviews(c.Request.Context(), limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if reviews == nil {
@@ -266,22 +266,22 @@ func (h *Handler) ResolveFraudReviewAdmin(c *gin.Context) {
 
 	reviewID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid review ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid review ID", nil)
 		return
 	}
 
 	var req ResolveFraudReviewRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
 	if err := h.svc.ResolveFraudReview(c.Request.Context(), reviewID, req.Status, req.Notes, adminID); err != nil {
 		if err.Error() == "FRAUD_REVIEW_NOT_FOUND" {
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Fraud review not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Fraud review not found", nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 

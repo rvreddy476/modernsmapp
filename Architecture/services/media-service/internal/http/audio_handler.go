@@ -39,13 +39,13 @@ type ExtractAudioRequest struct {
 func (h *Handler) ExtractAudio(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	mediaID, err := uuid.Parse(c.Param("mediaId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil)
 		return
 	}
 
@@ -55,17 +55,17 @@ func (h *Handler) ExtractAudio(c *gin.Context) {
 	// Verify ownership
 	media, err := h.svc.GetMedia(c.Request.Context(), mediaID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found", nil)
 		return
 	}
 	if media.UploaderID != userID {
-		api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "You do not own this media", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "You do not own this media", nil)
 		return
 	}
 
 	track, err := h.svc.ExtractAudioFromMedia(c.Request.Context(), mediaID, req.Title, req.Artist)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -75,13 +75,13 @@ func (h *Handler) ExtractAudio(c *gin.Context) {
 func (h *Handler) GetAudioTrack(c *gin.Context) {
 	audioID, err := uuid.Parse(c.Param("audioId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid audio ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid audio ID", nil)
 		return
 	}
 
 	track, err := h.svc.GetAudioTrack(c.Request.Context(), audioID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Audio track not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Audio track not found", nil)
 		return
 	}
 
@@ -91,13 +91,13 @@ func (h *Handler) GetAudioTrack(c *gin.Context) {
 func (h *Handler) GetAudioTrackURL(c *gin.Context) {
 	audioID, err := uuid.Parse(c.Param("audioId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid audio ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid audio ID", nil)
 		return
 	}
 
 	url, err := h.svc.GetAudioTrackURL(c.Request.Context(), audioID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Audio track not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Audio track not found", nil)
 		return
 	}
 
@@ -110,7 +110,7 @@ func (h *Handler) GetTrendingAudio(c *gin.Context) {
 
 	tracks, err := h.svc.GetTrendingAudio(c.Request.Context(), limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -120,7 +120,7 @@ func (h *Handler) GetTrendingAudio(c *gin.Context) {
 func (h *Handler) SearchAudio(c *gin.Context) {
 	query := c.Query("q")
 	if query == "" {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Query parameter 'q' is required", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Query parameter 'q' is required", nil)
 		return
 	}
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
@@ -128,7 +128,7 @@ func (h *Handler) SearchAudio(c *gin.Context) {
 
 	tracks, err := h.svc.SearchAudio(c.Request.Context(), query, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -138,12 +138,12 @@ func (h *Handler) SearchAudio(c *gin.Context) {
 func (h *Handler) UseAudioTrack(c *gin.Context) {
 	audioID, err := uuid.Parse(c.Param("audioId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid audio ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid audio ID", nil)
 		return
 	}
 
 	if err := h.svc.UseAudioTrack(c.Request.Context(), audioID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -153,20 +153,20 @@ func (h *Handler) UseAudioTrack(c *gin.Context) {
 func (h *Handler) UploadVoiceover(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	file, header, err := c.Request.FormFile("audio")
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "audio file required (form field: audio)", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "audio file required (form field: audio)", nil)
 		return
 	}
 	defer file.Close()
 
 	data, err := io.ReadAll(file)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to read file", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to read file", nil)
 		return
 	}
 
@@ -177,7 +177,7 @@ func (h *Handler) UploadVoiceover(c *gin.Context) {
 
 	asset, err := h.svc.RecordVoiceover(c.Request.Context(), userID, data, mimeType)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -196,7 +196,7 @@ func (h *Handler) GetAudioLibrary(c *gin.Context) {
 
 	tracks, err := h.svc.GetTrendingAudioLibrary(c.Request.Context(), genrePtr, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if tracks == nil {
@@ -209,13 +209,13 @@ func (h *Handler) GetAudioLibrary(c *gin.Context) {
 func (h *Handler) GetAudioLibraryTrack(c *gin.Context) {
 	audioID, err := uuid.Parse(c.Param("audioId"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid audio ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid audio ID", nil)
 		return
 	}
 
 	track, err := h.svc.GetAudioLibraryTrackByID(c.Request.Context(), audioID)
 	if err != nil || track == nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Audio track not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Audio track not found", nil)
 		return
 	}
 

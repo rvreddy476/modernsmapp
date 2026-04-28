@@ -122,7 +122,7 @@ func (h *Handler) TakedownContent(c *gin.Context) {
 
 	var req TakedownRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -131,7 +131,7 @@ func (h *Handler) TakedownContent(c *gin.Context) {
 
 	if err := h.svc.TakedownContent(c.Request.Context(), adminActor, req.EntityType, req.EntityID, req.Reason); err != nil {
 		slog.Error("Takedown error", "error", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Takedown failed", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Takedown failed", nil)
 		return
 	}
 
@@ -151,13 +151,13 @@ func (h *Handler) SuspendUser(c *gin.Context) {
 	userIDStr := c.Param("userId")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid User ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid User ID", nil)
 		return
 	}
 
 	var req SuspendRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -165,7 +165,7 @@ func (h *Handler) SuspendUser(c *gin.Context) {
 
 	if err := h.svc.SuspendUser(c.Request.Context(), adminActor, userID, req.Until, req.Reason); err != nil {
 		slog.Error("Suspend error", "error", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Suspension failed", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Suspension failed", nil)
 		return
 	}
 
@@ -181,7 +181,7 @@ func (h *Handler) GetDashboard(c *gin.Context) {
 	stats, err := h.svc.GetDashboard(c.Request.Context())
 	if err != nil {
 		slog.Error("Dashboard error", "error", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to load dashboard", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to load dashboard", nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, stats, nil)
@@ -198,7 +198,7 @@ func (h *Handler) GetAuditLog(c *gin.Context) {
 	logs, total, err := h.svc.GetAuditLogs(c.Request.Context(), limit, offset)
 	if err != nil {
 		slog.Error("Audit log error", "error", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to load audit log", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to load audit log", nil)
 		return
 	}
 
@@ -222,7 +222,7 @@ func (h *Handler) ListReports(c *gin.Context) {
 	reports, total, err := h.svc.ListReports(c.Request.Context(), status, limit, offset)
 	if err != nil {
 		slog.Error("List reports error", "error", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to load reports", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to load reports", nil)
 		return
 	}
 
@@ -245,7 +245,7 @@ func (h *Handler) ListSuspensions(c *gin.Context) {
 	suspensions, total, err := h.svc.ListSuspensions(c.Request.Context(), limit, offset)
 	if err != nil {
 		slog.Error("List suspensions error", "error", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to load suspensions", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to load suspensions", nil)
 		return
 	}
 
@@ -266,7 +266,7 @@ func (h *Handler) UnsuspendUser(c *gin.Context) {
 	userIDStr := c.Param("userId")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid User ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid User ID", nil)
 		return
 	}
 
@@ -274,7 +274,7 @@ func (h *Handler) UnsuspendUser(c *gin.Context) {
 
 	if err := h.svc.UnsuspendUser(c.Request.Context(), adminActor, userID); err != nil {
 		slog.Error("Unsuspend error", "error", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Unsuspend failed", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Unsuspend failed", nil)
 		return
 	}
 
@@ -302,14 +302,14 @@ func (h *Handler) RequestDataExport(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	req, err := h.svc.RequestDataExport(c.Request.Context(), userID)
 	if err != nil {
 		slog.Error("RequestDataExport error", "error", err)
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to create export request", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to create export request", nil)
 		return
 	}
 
@@ -321,27 +321,27 @@ func (h *Handler) GetDataExportStatus(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid export request ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid export request ID", nil)
 		return
 	}
 
 	req, err := h.svc.GetDataExportStatus(c.Request.Context(), id, userID)
 	if err != nil {
 		if err.Error() == "NOT_FOUND" {
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Export request not found", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Export request not found", nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get export status", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get export status", nil)
 		return
 	}
 	if req == nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Export request not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Export request not found", nil)
 		return
 	}
 
@@ -363,13 +363,13 @@ func (h *Handler) CreateMiniApp(c *gin.Context) {
 	developerIDStr := c.GetHeader("X-User-Id")
 	developerID, err := uuid.Parse(developerIDStr)
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid developer ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid developer ID", nil)
 		return
 	}
 
 	var req CreateMiniAppRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -387,7 +387,7 @@ func (h *Handler) CreateMiniApp(c *gin.Context) {
 	}
 
 	if err := h.svc.CreateMiniApp(c.Request.Context(), app); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -400,7 +400,7 @@ func (h *Handler) ListMiniApps(c *gin.Context) {
 
 	apps, err := h.svc.ListMiniApps(c.Request.Context(), category, limit, offset)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if apps == nil {
@@ -413,17 +413,17 @@ func (h *Handler) ListMiniApps(c *gin.Context) {
 func (h *Handler) GetMiniApp(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid app ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid app ID", nil)
 		return
 	}
 
 	app, err := h.svc.GetMiniApp(c.Request.Context(), id)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if app == nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "App not found", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "App not found", nil)
 		return
 	}
 
@@ -441,18 +441,18 @@ func (h *Handler) UpdateMiniAppStatus(c *gin.Context) {
 
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid app ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid app ID", nil)
 		return
 	}
 
 	var req UpdateAppStatusRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
 	if err := h.svc.UpdateMiniAppStatus(c.Request.Context(), id, req.Status); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -466,13 +466,13 @@ type InstallAppRequest struct {
 func (h *Handler) InstallApp(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	appID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid app ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid app ID", nil)
 		return
 	}
 
@@ -485,14 +485,14 @@ func (h *Handler) InstallApp(c *gin.Context) {
 	inst, err := h.svc.InstallApp(c.Request.Context(), appID, userID, req.GrantedPermissions)
 	if err != nil {
 		if err.Error() == "APP_NOT_AVAILABLE" {
-			api.Error(c.Writer, http.StatusBadRequest, "APP_NOT_AVAILABLE", "App is not available for installation", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "APP_NOT_AVAILABLE", "App is not available for installation", nil)
 			return
 		}
 		if err.Error() == "INVALID_PERMISSIONS" {
-			api.Error(c.Writer, http.StatusBadRequest, "INVALID_PERMISSIONS", "Granted permissions must be a subset of the app permissions", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PERMISSIONS", "Granted permissions must be a subset of the app permissions", nil)
 			return
 		}
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -502,18 +502,18 @@ func (h *Handler) InstallApp(c *gin.Context) {
 func (h *Handler) UninstallApp(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	appID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid app ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid app ID", nil)
 		return
 	}
 
 	if err := h.svc.UninstallApp(c.Request.Context(), appID, userID); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -523,13 +523,13 @@ func (h *Handler) UninstallApp(c *gin.Context) {
 func (h *Handler) GetUserInstalledApps(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	apps, err := h.svc.GetUserInstalledApps(c.Request.Context(), userID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if apps == nil {
@@ -542,13 +542,13 @@ func (h *Handler) GetUserInstalledApps(c *gin.Context) {
 func (h *Handler) GetMiniAppSession(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
 	appID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid app ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid app ID", nil)
 		return
 	}
 
@@ -556,16 +556,16 @@ func (h *Handler) GetMiniAppSession(c *gin.Context) {
 	if err != nil {
 		switch err.Error() {
 		case "APP_NOT_INSTALLED":
-			api.Error(c.Writer, http.StatusForbidden, "APP_NOT_INSTALLED", "App must be installed before requesting a session", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "APP_NOT_INSTALLED", "App must be installed before requesting a session", nil)
 			return
 		case "APP_NOT_AVAILABLE":
-			api.Error(c.Writer, http.StatusBadRequest, "APP_NOT_AVAILABLE", "App is not available for runtime sessions", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "APP_NOT_AVAILABLE", "App is not available for runtime sessions", nil)
 			return
 		case "SESSION_UNAVAILABLE":
-			api.Error(c.Writer, http.StatusServiceUnavailable, "SESSION_UNAVAILABLE", "Mini app sessions are not configured on this environment", nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable, "SESSION_UNAVAILABLE", "Mini app sessions are not configured on this environment", nil)
 			return
 		default:
-			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 			return
 		}
 	}
@@ -586,13 +586,13 @@ type CreateOAuthClientRequest struct {
 func (h *Handler) CreateOAuthClient(c *gin.Context) {
 	developerID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid developer ID", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid developer ID", nil)
 		return
 	}
 
 	var req CreateOAuthClientRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
 
@@ -612,7 +612,7 @@ func (h *Handler) CreateOAuthClient(c *gin.Context) {
 	}
 
 	if err := h.svc.CreateOAuthClient(c.Request.Context(), client); err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -630,17 +630,17 @@ func (h *Handler) OAuthAuthorize(c *gin.Context) {
 	state := c.Query("state")
 
 	if clientID == "" {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "client_id is required", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "client_id is required", nil)
 		return
 	}
 
 	client, err := h.svc.GetOAuthClientByClientID(c.Request.Context(), clientID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if client == nil || !client.IsActive {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_CLIENT", "Unknown or inactive client", nil, nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CLIENT", "Unknown or inactive client", nil)
 		return
 	}
 
