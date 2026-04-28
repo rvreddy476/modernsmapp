@@ -27,16 +27,17 @@ var (
 )
 
 type Service struct {
-	pgStore        *postgres.Store
-	scyllaStore    *scylla.InteractionStore
-	scyllaSession  *gocql.Session
-	rdb            *redis.Client
-	producer       *postEvents.Producer  // legacy producer, optional
-	engProducer    *engagement.Producer  // new engagement event producer
-	rateLimiter    *engagement.RateLimiter
-	spam           *spam.Detector
-	userServiceURL string
-	httpClient     *http.Client
+	pgStore         *postgres.Store
+	scyllaStore     *scylla.InteractionStore
+	scyllaSession   *gocql.Session
+	rdb             *redis.Client
+	producer        *postEvents.Producer // legacy producer, optional
+	engProducer     *engagement.Producer // new engagement event producer
+	rateLimiter     *engagement.RateLimiter
+	spam            *spam.Detector
+	userServiceURL  string
+	graphServiceURL string
+	httpClient      *http.Client
 }
 
 func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client) *Service {
@@ -53,6 +54,11 @@ func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client)
 // SetUserServiceURL configures the user-service base URL for mention resolution.
 func (s *Service) SetUserServiceURL(url string) {
 	s.userServiceURL = url
+}
+
+// SetGraphServiceURL configures the graph-service base URL for following/follower lookups.
+func (s *Service) SetGraphServiceURL(url string) {
+	s.graphServiceURL = url
 }
 
 // SetProducer sets the legacy Kafka producer for engagement events.
@@ -72,54 +78,54 @@ func (s *Service) SetScyllaSession(session *gocql.Session) {
 
 type PostDetail struct {
 	*postgres.Post
-	Counts         *scylla.Counts  `json:"counts"`
-	ViewerReaction *string         `json:"viewer_reaction,omitempty"`
-	IsBookmarked   bool            `json:"is_bookmarked"`
-	RepostCount    int             `json:"repost_count"`
+	Counts         *scylla.Counts     `json:"counts"`
+	ViewerReaction *string            `json:"viewer_reaction,omitempty"`
+	IsBookmarked   bool               `json:"is_bookmarked"`
+	RepostCount    int                `json:"repost_count"`
 	ViewerRepost   *RepostStateResult `json:"viewer_repost,omitempty"`
-	IsRepostable   bool            `json:"is_repostable"`
+	IsRepostable   bool               `json:"is_repostable"`
 }
 
 // CreatePostInput holds all fields for creating a new post.
 type CreatePostInput struct {
-	AuthorID       uuid.UUID
-	Text           string
-	Visibility     string
-	ContentType    string
-	MediaIDs       []uuid.UUID
-	Feeling        *string
-	Activity       *string
-	ActivityDetail *string
-	RichText       json.RawMessage
-	Poll           *CreatePollInput
-	NoComments     bool
-	NoLikes        bool
-	LocationName   *string
-	LocationLat    *float64
-	LocationLng    *float64
-	PostType       string
+	AuthorID        uuid.UUID
+	Text            string
+	Visibility      string
+	ContentType     string
+	MediaIDs        []uuid.UUID
+	Feeling         *string
+	Activity        *string
+	ActivityDetail  *string
+	RichText        json.RawMessage
+	Poll            *CreatePollInput
+	NoComments      bool
+	NoLikes         bool
+	LocationName    *string
+	LocationLat     *float64
+	LocationLng     *float64
+	PostType        string
 	AppOrigin       string
 	ShareToPostbook bool
 	// Reel metadata
-	Title              string
-	Tags               []string
-	Category           string
-	Language           string
-	SEOTitle           string
-	PaidPromotion      bool
-	AlteredContent     bool
-	IsMadeForKids      bool
-	License            string
-	AllowEmbedding     bool
-	PublishToFeed      bool
-	RemixSetting       string
-	CommentModeration  string
-	CommentAccess      string
-	RecordingDate      *time.Time
-	RecordingLocation  string
-	CoverMediaID       *uuid.UUID
-	OriginalAudioVol   float32
-	OverlayAudioVol    float32
+	Title             string
+	Tags              []string
+	Category          string
+	Language          string
+	SEOTitle          string
+	PaidPromotion     bool
+	AlteredContent    bool
+	IsMadeForKids     bool
+	License           string
+	AllowEmbedding    bool
+	PublishToFeed     bool
+	RemixSetting      string
+	CommentModeration string
+	CommentAccess     string
+	RecordingDate     *time.Time
+	RecordingLocation string
+	CoverMediaID      *uuid.UUID
+	OriginalAudioVol  float32
+	OverlayAudioVol   float32
 }
 
 // CreatePollInput holds poll creation data.
@@ -309,44 +315,44 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	}
 
 	p := &postgres.Post{
-		ID:             uuid.New(),
-		AuthorID:       input.AuthorID,
-		Text:           input.Text,
-		Visibility:     input.Visibility,
-		ContentType:    contentType,
-		Feeling:        input.Feeling,
-		Activity:       input.Activity,
-		ActivityDetail: input.ActivityDetail,
-		RichText:       input.RichText,
-		NoComments:     input.NoComments,
-		NoLikes:        input.NoLikes,
-		Hashtags:       hashtags,
-		LocationName:   input.LocationName,
-		LocationLat:    input.LocationLat,
-		LocationLng:    input.LocationLng,
-		PostType:       postType,
-		AppOrigin:          appOrigin,
-		ShareToPostbook:    input.ShareToPostbook,
-		Title:              input.Title,
-		Tags:               input.Tags,
-		Category:           input.Category,
-		Language:           lang,
-		SEOTitle:           input.SEOTitle,
-		PaidPromotion:      input.PaidPromotion,
-		AlteredContent:     input.AlteredContent,
-		IsMadeForKids:      input.IsMadeForKids,
-		License:            license,
-		AllowEmbedding:     input.AllowEmbedding,
-		PublishToFeed:      input.PublishToFeed,
-		RemixSetting:       remixSetting,
-		CommentModeration:  commentMod,
-		CommentAccess:      commentAcc,
-		RecordingDate:      input.RecordingDate,
-		RecordingLocation:  input.RecordingLocation,
-		CoverMediaID:       input.CoverMediaID,
-		OriginalAudioVol:   origVol,
-		OverlayAudioVol:    overlayVol,
-		CreatedAt:      time.Now(),
+		ID:                uuid.New(),
+		AuthorID:          input.AuthorID,
+		Text:              input.Text,
+		Visibility:        input.Visibility,
+		ContentType:       contentType,
+		Feeling:           input.Feeling,
+		Activity:          input.Activity,
+		ActivityDetail:    input.ActivityDetail,
+		RichText:          input.RichText,
+		NoComments:        input.NoComments,
+		NoLikes:           input.NoLikes,
+		Hashtags:          hashtags,
+		LocationName:      input.LocationName,
+		LocationLat:       input.LocationLat,
+		LocationLng:       input.LocationLng,
+		PostType:          postType,
+		AppOrigin:         appOrigin,
+		ShareToPostbook:   input.ShareToPostbook,
+		Title:             input.Title,
+		Tags:              input.Tags,
+		Category:          input.Category,
+		Language:          lang,
+		SEOTitle:          input.SEOTitle,
+		PaidPromotion:     input.PaidPromotion,
+		AlteredContent:    input.AlteredContent,
+		IsMadeForKids:     input.IsMadeForKids,
+		License:           license,
+		AllowEmbedding:    input.AllowEmbedding,
+		PublishToFeed:     input.PublishToFeed,
+		RemixSetting:      remixSetting,
+		CommentModeration: commentMod,
+		CommentAccess:     commentAcc,
+		RecordingDate:     input.RecordingDate,
+		RecordingLocation: input.RecordingLocation,
+		CoverMediaID:      input.CoverMediaID,
+		OriginalAudioVol:  origVol,
+		OverlayAudioVol:   overlayVol,
+		CreatedAt:         time.Now(),
 	}
 
 	// Attach media (resolve kind and duration from media_assets table)
@@ -485,6 +491,24 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	// Fire-and-forget: Kafka + Redis publish in background
 	go func() {
 		bgCtx := context.Background()
+
+		// Bump trending hashtag scores for today's bucket. The reader is
+		// search-service `GetTrending` and post-service `GetTrendingHashtagsFeed`,
+		// both of which read from `trending:hashtags:{YYYY-MM-DD}` (UTC).
+		if len(p.Hashtags) > 0 {
+			today := time.Now().UTC().Format("2006-01-02")
+			key := "trending:hashtags:" + today
+			pipe := s.rdb.Pipeline()
+			for _, tag := range p.Hashtags {
+				pipe.ZIncrBy(bgCtx, key, 1, tag)
+			}
+			// 48h TTL keeps the previous day's set alive briefly so reads
+			// that race past midnight don't return empty.
+			pipe.Expire(bgCtx, key, 48*time.Hour)
+			if _, err := pipe.Exec(bgCtx); err != nil {
+				log.Printf("Warning: failed to update trending:hashtags: %v", err)
+			}
+		}
 
 		if s.producer != nil {
 			if err := s.producer.PublishPostCreated(bgCtx, p.ID, p.AuthorID, p.Text, p.Visibility, p.ContentType, maxDuration); err != nil {
@@ -1395,6 +1419,20 @@ func (s *Service) GetStoriesFeed(ctx context.Context, followedUserIDs []uuid.UUI
 	return s.pgStore.GetStoriesFeed(ctx, followedUserIDs)
 }
 
+// GetStoriesFeedForUser resolves the user's following graph and returns active stories.
+func (s *Service) GetStoriesFeedForUser(ctx context.Context, userID uuid.UUID) ([]postgres.Story, error) {
+	following, err := s.fetchFollowing(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	return s.pgStore.GetStoriesFeed(ctx, following)
+}
+
+// GetStoriesByAuthor returns active stories for a specific author.
+func (s *Service) GetStoriesByAuthor(ctx context.Context, authorID uuid.UUID) ([]postgres.Story, error) {
+	return s.pgStore.GetStoriesByAuthor(ctx, authorID)
+}
+
 // DeleteStory removes a story.
 func (s *Service) DeleteStory(ctx context.Context, storyID, authorID uuid.UUID) error {
 	return s.pgStore.DeleteStory(ctx, storyID, authorID)
@@ -1410,14 +1448,69 @@ func (s *Service) CleanupExpiredStories(ctx context.Context) (int64, error) {
 	return s.pgStore.CleanupExpiredStories(ctx)
 }
 
+func (s *Service) fetchFollowing(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	if s.graphServiceURL == "" {
+		return nil, nil
+	}
+
+	var allFollowing []uuid.UUID
+	offset := 0
+	limit := 100
+
+	client := s.httpClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+
+	for {
+		url := fmt.Sprintf(
+			"%s/v1/graph/following/%s?limit=%d&offset=%d",
+			s.graphServiceURL,
+			userID.String(),
+			limit,
+			offset,
+		)
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return nil, fmt.Errorf("create following request: %w", err)
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("graph-service request failed: %w", err)
+		}
+
+		var envelope struct {
+			Data []uuid.UUID `json:"data"`
+		}
+		decodeErr := json.NewDecoder(resp.Body).Decode(&envelope)
+		resp.Body.Close()
+		if decodeErr != nil {
+			return nil, fmt.Errorf("decode following response: %w", decodeErr)
+		}
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("graph-service returned %d", resp.StatusCode)
+		}
+
+		allFollowing = append(allFollowing, envelope.Data...)
+		if len(envelope.Data) < limit {
+			break
+		}
+		offset += limit
+	}
+
+	return allFollowing, nil
+}
+
 // ============================================================
 // Multi-Reactions
 // ============================================================
 
 // ReactionToggleResult is the response for the multi-reaction toggle API.
 type ReactionToggleResult struct {
-	ReactionType string                `json:"reaction_type"`
-	IsSet        bool                  `json:"is_set"`
+	ReactionType string                   `json:"reaction_type"`
+	IsSet        bool                     `json:"is_set"`
 	Counts       *postgres.ReactionCounts `json:"counts"`
 }
 
@@ -1623,8 +1716,13 @@ func (s *Service) ListCollections(ctx context.Context, userID uuid.UUID) ([]post
 // ============================================================
 
 // GetPostsByHashtag returns posts with a specific hashtag.
-func (s *Service) GetPostsByHashtag(ctx context.Context, hashtag string, limit int, cursor string) ([]PostDetail, string, error) {
-	posts, nextCursor, err := s.pgStore.GetPostsByHashtag(ctx, hashtag, limit, cursor)
+// sort accepts "top" or "recent" (default).
+func (s *Service) GetPostsByHashtag(ctx context.Context, hashtag string, limit int, cursor, sort string) ([]PostDetail, string, error) {
+	mode := postgres.HashtagSortRecent
+	if sort == "top" {
+		mode = postgres.HashtagSortTop
+	}
+	posts, nextCursor, err := s.pgStore.GetPostsByHashtag(ctx, hashtag, limit, cursor, mode)
 	if err != nil {
 		return nil, "", err
 	}
@@ -1637,6 +1735,18 @@ func (s *Service) GetPostsByHashtag(ctx context.Context, hashtag string, limit i
 	}
 
 	return details, nextCursor, nil
+}
+
+// SearchHashtags returns hashtag suggestions matching a prefix query.
+// Reads directly from posts.hashtags via the store; no Redis index is wired.
+func (s *Service) SearchHashtags(ctx context.Context, query string, limit int) ([]postgres.HashtagSuggestion, error) {
+	return s.pgStore.SearchHashtags(ctx, query, limit)
+}
+
+// GetTrendingHashtags24h returns the most-used hashtags in the last 24 hours.
+// SQL fallback used until the Redis trending writer ships.
+func (s *Service) GetTrendingHashtags24h(ctx context.Context, limit int) ([]postgres.HashtagTrending24h, error) {
+	return s.pgStore.GetTrendingHashtags24h(ctx, limit)
 }
 
 // lookupUserByUsername resolves a username to a user ID via user-service.

@@ -52,6 +52,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/by-author/:authorId", h.GetPostsByAuthor)
 		v1.GET("/by-author/:authorId/counts", h.GetAuthorCounts)
 		v1.GET("/:postId", h.GetPost)
+		v1.DELETE("/:postId", h.DeletePost)
 		v1.PUT("/:postId/pin", h.TogglePin)
 
 		// Legacy reaction routes (kept for backward compat)
@@ -91,6 +92,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	{
 		stories.POST("", h.CreateStory)
 		stories.GET("/feed", h.GetStoriesFeed)
+		stories.GET("/author/:authorId", h.GetStoriesByAuthor)
 		stories.GET("/:storyId", h.GetStory)
 		stories.DELETE("/:storyId", h.DeleteStory)
 		stories.POST("/:storyId/view", h.ViewStory)
@@ -110,6 +112,16 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	}
 
 	// Hashtag search
+	// Note: /v1/feed routes to feed-service in the gateway, so the trending
+	// hashtag endpoint lives under /v1/hashtags/trending to keep it in
+	// post-service where the data lives.
+	r.GET("/v1/hashtags/trending", h.GetTrendingHashtagsFeed)
+	// Spec §7.6: 30 req/min per user, burst small. ~0.5 req/sec sustained.
+	hashtagSearchLimit := sharedmiddleware.RateLimit(sharedmiddleware.RateLimitConfig{
+		IPRate: 0.5, IPBurst: 5,
+		UserRate: 0.5, UserBurst: 5,
+	})
+	r.GET("/v1/hashtags/search", hashtagSearchLimit, h.SearchHashtags)
 	r.GET("/v1/hashtags/:tag/posts", h.GetPostsByHashtag)
 
 	// Video creator tools
@@ -192,49 +204,49 @@ type CreatePollRequest struct {
 }
 
 type CreatePostRequest struct {
-	Text           string          `json:"text"`
-	Visibility     string          `json:"visibility" binding:"required,oneof=public followers private unlisted"`
+	Text             string `json:"text"`
+	Visibility       string `json:"visibility" binding:"required,oneof=public followers private unlisted"`
 	VisibilityPolicy *struct {
 		Mode       string   `json:"mode"`
 		AllowLists []string `json:"allow_lists,omitempty"`
 		AllowUsers []string `json:"allow_users,omitempty"`
 		DenyUsers  []string `json:"deny_users,omitempty"`
 	} `json:"visibility_policy,omitempty"`
-	ContentType    string          `json:"content_type"`
-	MediaIDs       []string        `json:"media_ids"`
-	Feeling        *string         `json:"feeling"`
-	Activity       *string         `json:"activity"`
-	ActivityDetail *string         `json:"activity_detail"`
-	RichText       json.RawMessage `json:"rich_text"`
-	Poll           *CreatePollRequest `json:"poll"`
-	NoComments     bool            `json:"no_comments"`
-	NoLikes        bool            `json:"no_likes"`
-	LocationName   *string         `json:"location_name"`
-	LocationLat    *float64        `json:"location_lat"`
-	LocationLng    *float64        `json:"location_lng"`
-	PostType       string          `json:"post_type"`
-	AppOrigin       string          `json:"app_origin"`
-	ShareToPostbook bool            `json:"share_to_postbook"`
+	ContentType     string             `json:"content_type"`
+	MediaIDs        []string           `json:"media_ids"`
+	Feeling         *string            `json:"feeling"`
+	Activity        *string            `json:"activity"`
+	ActivityDetail  *string            `json:"activity_detail"`
+	RichText        json.RawMessage    `json:"rich_text"`
+	Poll            *CreatePollRequest `json:"poll"`
+	NoComments      bool               `json:"no_comments"`
+	NoLikes         bool               `json:"no_likes"`
+	LocationName    *string            `json:"location_name"`
+	LocationLat     *float64           `json:"location_lat"`
+	LocationLng     *float64           `json:"location_lng"`
+	PostType        string             `json:"post_type"`
+	AppOrigin       string             `json:"app_origin"`
+	ShareToPostbook bool               `json:"share_to_postbook"`
 	// Reel metadata
-	Title              string   `json:"title"`
-	Tags               []string `json:"tags"`
-	Category           string   `json:"category"`
-	Language           string   `json:"language"`
-	SEOTitle           string   `json:"seo_title"`
-	PaidPromotion      bool     `json:"paid_promotion"`
-	AlteredContent     bool     `json:"altered_content"`
-	IsMadeForKids      bool     `json:"is_made_for_kids"`
-	License            string   `json:"license"`
-	AllowEmbedding     *bool    `json:"allow_embedding"`
-	PublishToFeed      *bool    `json:"publish_to_feed"`
-	RemixSetting       string   `json:"remix_setting"`
-	CommentModeration  string   `json:"comment_moderation"`
-	CommentAccess      string   `json:"comment_access"`
-	RecordingDate      *string  `json:"recording_date"`
-	RecordingLocation  string   `json:"recording_location"`
-	CoverMediaID       *string  `json:"cover_media_id"`
-	OriginalAudioVol   float32  `json:"original_audio_volume"`
-	OverlayAudioVol    float32  `json:"overlay_audio_volume"`
+	Title             string   `json:"title"`
+	Tags              []string `json:"tags"`
+	Category          string   `json:"category"`
+	Language          string   `json:"language"`
+	SEOTitle          string   `json:"seo_title"`
+	PaidPromotion     bool     `json:"paid_promotion"`
+	AlteredContent    bool     `json:"altered_content"`
+	IsMadeForKids     bool     `json:"is_made_for_kids"`
+	License           string   `json:"license"`
+	AllowEmbedding    *bool    `json:"allow_embedding"`
+	PublishToFeed     *bool    `json:"publish_to_feed"`
+	RemixSetting      string   `json:"remix_setting"`
+	CommentModeration string   `json:"comment_moderation"`
+	CommentAccess     string   `json:"comment_access"`
+	RecordingDate     *string  `json:"recording_date"`
+	RecordingLocation string   `json:"recording_location"`
+	CoverMediaID      *string  `json:"cover_media_id"`
+	OriginalAudioVol  float32  `json:"original_audio_volume"`
+	OverlayAudioVol   float32  `json:"overlay_audio_volume"`
 }
 
 func (h *Handler) CreatePost(c *gin.Context) {
@@ -301,42 +313,42 @@ func (h *Handler) CreatePost(c *gin.Context) {
 	}
 
 	input := &service.CreatePostInput{
-		AuthorID:       authorID,
-		Text:           req.Text,
-		Visibility:     req.Visibility,
-		ContentType:    req.ContentType,
-		MediaIDs:       mediaIDs,
-		Feeling:        req.Feeling,
-		Activity:       req.Activity,
-		ActivityDetail: req.ActivityDetail,
-		RichText:       req.RichText,
-		NoComments:     req.NoComments,
-		NoLikes:        req.NoLikes,
-		LocationName:   req.LocationName,
-		LocationLat:    req.LocationLat,
-		LocationLng:    req.LocationLng,
-		PostType:       req.PostType,
-		AppOrigin:       req.AppOrigin,
-		ShareToPostbook: req.ShareToPostbook,
-		Title:               req.Title,
-		Tags:               req.Tags,
-		Category:           req.Category,
-		Language:           req.Language,
-		SEOTitle:           req.SEOTitle,
-		PaidPromotion:      req.PaidPromotion,
-		AlteredContent:     req.AlteredContent,
-		IsMadeForKids:      req.IsMadeForKids,
-		License:            req.License,
-		AllowEmbedding:     allowEmbedding,
-		PublishToFeed:      publishToFeed,
-		RemixSetting:       req.RemixSetting,
-		CommentModeration:  req.CommentModeration,
-		CommentAccess:      req.CommentAccess,
-		RecordingDate:      recordingDate,
-		RecordingLocation:  req.RecordingLocation,
-		CoverMediaID:       coverMediaID,
-		OriginalAudioVol:   req.OriginalAudioVol,
-		OverlayAudioVol:    req.OverlayAudioVol,
+		AuthorID:          authorID,
+		Text:              req.Text,
+		Visibility:        req.Visibility,
+		ContentType:       req.ContentType,
+		MediaIDs:          mediaIDs,
+		Feeling:           req.Feeling,
+		Activity:          req.Activity,
+		ActivityDetail:    req.ActivityDetail,
+		RichText:          req.RichText,
+		NoComments:        req.NoComments,
+		NoLikes:           req.NoLikes,
+		LocationName:      req.LocationName,
+		LocationLat:       req.LocationLat,
+		LocationLng:       req.LocationLng,
+		PostType:          req.PostType,
+		AppOrigin:         req.AppOrigin,
+		ShareToPostbook:   req.ShareToPostbook,
+		Title:             req.Title,
+		Tags:              req.Tags,
+		Category:          req.Category,
+		Language:          req.Language,
+		SEOTitle:          req.SEOTitle,
+		PaidPromotion:     req.PaidPromotion,
+		AlteredContent:    req.AlteredContent,
+		IsMadeForKids:     req.IsMadeForKids,
+		License:           req.License,
+		AllowEmbedding:    allowEmbedding,
+		PublishToFeed:     publishToFeed,
+		RemixSetting:      req.RemixSetting,
+		CommentModeration: req.CommentModeration,
+		CommentAccess:     req.CommentAccess,
+		RecordingDate:     recordingDate,
+		RecordingLocation: req.RecordingLocation,
+		CoverMediaID:      coverMediaID,
+		OriginalAudioVol:  req.OriginalAudioVol,
+		OverlayAudioVol:   req.OverlayAudioVol,
 	}
 
 	if req.Poll != nil {
@@ -1243,7 +1255,28 @@ func (h *Handler) GetStoriesFeed(c *gin.Context) {
 	// or the client passes them explicitly.
 	followedStr := c.DefaultQuery("followed_ids", "")
 	if followedStr == "" {
-		api.JSON(c.Writer, http.StatusOK, []postgres.Story{}, nil)
+		userIDStr := c.GetHeader("X-User-Id")
+		if userIDStr == "" {
+			api.JSON(c.Writer, http.StatusOK, []postgres.Story{}, nil)
+			return
+		}
+
+		userID, err := uuid.Parse(userIDStr)
+		if err != nil {
+			api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+			return
+		}
+
+		stories, err := h.svc.GetStoriesFeedForUser(c.Request.Context(), userID)
+		if err != nil {
+			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+			return
+		}
+		if stories == nil {
+			stories = []postgres.Story{}
+		}
+
+		api.JSON(c.Writer, http.StatusOK, stories, nil)
 		return
 	}
 
@@ -1258,6 +1291,25 @@ func (h *Handler) GetStoriesFeed(c *gin.Context) {
 	}
 
 	stories, err := h.svc.GetStoriesFeed(c.Request.Context(), followedIDs)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	if stories == nil {
+		stories = []postgres.Story{}
+	}
+
+	api.JSON(c.Writer, http.StatusOK, stories, nil)
+}
+
+func (h *Handler) GetStoriesByAuthor(c *gin.Context) {
+	authorID, err := uuid.Parse(c.Param("authorId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid author ID", nil, nil)
+		return
+	}
+
+	stories, err := h.svc.GetStoriesByAuthor(c.Request.Context(), authorID)
 	if err != nil {
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
 		return
@@ -1506,12 +1558,16 @@ func (h *Handler) GetPostsByHashtag(c *gin.Context) {
 	tag = strings.TrimPrefix(tag, "#")
 
 	cursor := c.DefaultQuery("cursor", "")
+	sort := c.DefaultQuery("sort", "recent")
+	if sort != "top" && sort != "recent" {
+		sort = "recent"
+	}
 	limit := 20
 	if l, err := strconv.Atoi(c.DefaultQuery("limit", "20")); err == nil && l > 0 {
 		limit = l
 	}
 
-	posts, nextCursor, err := h.svc.GetPostsByHashtag(c.Request.Context(), tag, limit, cursor)
+	posts, nextCursor, err := h.svc.GetPostsByHashtag(c.Request.Context(), tag, limit, cursor, sort)
 	if err != nil {
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
 		return
@@ -1526,6 +1582,93 @@ func (h *Handler) GetPostsByHashtag(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, posts, meta)
+}
+
+// SearchHashtags handles GET /v1/hashtags/search?q=...&limit=...
+// Returns hashtag suggestions whose normalized name starts with the query.
+// Reads directly from posts.hashtags TEXT[]. Rate-limited at the route level.
+func (h *Handler) SearchHashtags(c *gin.Context) {
+	q := strings.TrimSpace(c.Query("q"))
+	q = strings.TrimPrefix(q, "#")
+	if len(q) < 2 {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "q must be at least 2 characters", nil, nil)
+		return
+	}
+	if len(q) > 100 {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "q is too long", nil, nil)
+		return
+	}
+
+	limit := 10
+	if l, err := strconv.Atoi(c.DefaultQuery("limit", "10")); err == nil && l > 0 {
+		if l > 20 {
+			l = 20
+		}
+		limit = l
+	}
+
+	suggestions, err := h.svc.SearchHashtags(c.Request.Context(), q, limit)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	if suggestions == nil {
+		suggestions = []postgres.HashtagSuggestion{}
+	}
+
+	api.JSON(c.Writer, http.StatusOK, gin.H{
+		"query":    q,
+		"hashtags": suggestions,
+	}, nil)
+}
+
+// GetTrendingHashtagsFeed handles GET /v1/hashtags/trending?limit=...
+// Reads from Redis sorted set `trending:hashtags:{YYYY-MM-DD}` (UTC) populated
+// by post-service on every CreatePost. Falls back to a 24h SQL aggregate when
+// the Redis set is empty (cold start / wiped cache / no posts yet today).
+func (h *Handler) GetTrendingHashtagsFeed(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	limit := 15
+	if l, err := strconv.Atoi(c.DefaultQuery("limit", "15")); err == nil && l > 0 {
+		if l > 30 {
+			l = 30
+		}
+		limit = l
+	}
+
+	today := time.Now().UTC().Format("2006-01-02")
+	key := "trending:hashtags:" + today
+	results, rerr := h.rdb.ZRevRangeWithScores(ctx, key, 0, int64(limit-1)).Result()
+	if rerr == nil && len(results) > 0 {
+		out := make([]postgres.HashtagTrending24h, 0, len(results))
+		for _, z := range results {
+			tag, ok := z.Member.(string)
+			if !ok {
+				continue
+			}
+			out = append(out, postgres.HashtagTrending24h{
+				NormalizedName: tag,
+				DisplayName:    "#" + tag,
+				PostCount:      int64(z.Score),
+			})
+		}
+		api.JSON(c.Writer, http.StatusOK, gin.H{"hashtags": out}, nil)
+		return
+	}
+
+	trending, err := h.svc.GetTrendingHashtags24h(ctx, limit)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		return
+	}
+	if trending == nil {
+		trending = []postgres.HashtagTrending24h{}
+	}
+
+	api.JSON(c.Writer, http.StatusOK, gin.H{
+		"hashtags": trending,
+	}, nil)
 }
 
 // ============================================================

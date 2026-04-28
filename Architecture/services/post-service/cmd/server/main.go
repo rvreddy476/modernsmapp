@@ -112,6 +112,7 @@ func main() {
 	pgStore := postgres.New(dbPool)
 	scyllaInteractionStore := scylla.New(scyllaSession)
 	postSvc := service.New(pgStore, scyllaInteractionStore, rdb)
+	postSvc.SetGraphServiceURL(env("GRAPH_SERVICE_URL", "http://graph-service:8083"))
 
 	// 7. Kafka producers
 	brokers := strings.Split(kafkaBrokers, ",")
@@ -627,6 +628,59 @@ func ensureSchema(ctx context.Context, db *pgxpool.Pool) {
 			slog.Warn("content reports schema", "error", err)
 		}
 	}
+
+	// Extra engagement counters used by the hashtag "top" sort score.
+	// views_count needs a future view-tracking writer to be non-zero — adding
+	// the column now so the score formula doesn't have to change later.
+	// reports_count is maintained by trg_post_reports below, fired on every
+	// insert/delete of a `content_reports` row whose target is a post.
+	extraCountersDDL := []string{
+		`ALTER TABLE post_engagement_counts ADD COLUMN IF NOT EXISTS views_count   BIGINT NOT NULL DEFAULT 0`,
+		`ALTER TABLE post_engagement_counts ADD COLUMN IF NOT EXISTS reports_count INTEGER NOT NULL DEFAULT 0`,
+	}
+	for _, stmt := range extraCountersDDL {
+		if _, err := db.Exec(ctx, stmt); err != nil {
+			slog.Warn("extra engagement counters schema", "error", err)
+		}
+	}
+
+	// Trigger: keep post_engagement_counts.reports_count in sync with
+	// content_reports rows. Idempotent — CREATE OR REPLACE / DROP IF EXISTS.
+	db.Exec(ctx, `
+		CREATE OR REPLACE FUNCTION sync_post_reports_count()
+		RETURNS TRIGGER AS $$
+		BEGIN
+			IF TG_OP = 'INSERT' AND NEW.target_type = 'post' THEN
+				INSERT INTO post_engagement_counts (post_id, reports_count)
+				VALUES (NEW.target_id, 1)
+				ON CONFLICT (post_id) DO UPDATE
+				SET reports_count = post_engagement_counts.reports_count + 1,
+				    updated_at    = now();
+			ELSIF TG_OP = 'DELETE' AND OLD.target_type = 'post' THEN
+				UPDATE post_engagement_counts
+				SET reports_count = GREATEST(reports_count - 1, 0),
+				    updated_at    = now()
+				WHERE post_id = OLD.target_id;
+			END IF;
+			RETURN NULL;
+		END; $$ LANGUAGE plpgsql`)
+	db.Exec(ctx, `DROP TRIGGER IF EXISTS trg_post_reports ON content_reports`)
+	db.Exec(ctx, `
+		CREATE TRIGGER trg_post_reports
+			AFTER INSERT OR DELETE ON content_reports
+			FOR EACH ROW EXECUTE FUNCTION sync_post_reports_count()`)
+
+	// Backfill reports_count once for posts with existing report rows.
+	db.Exec(ctx, `
+		UPDATE post_engagement_counts pec
+		SET reports_count = sub.cnt
+		FROM (
+			SELECT target_id AS post_id, COUNT(*)::INT AS cnt
+			FROM content_reports
+			WHERE target_type = 'post'
+			GROUP BY target_id
+		) sub
+		WHERE pec.post_id = sub.post_id AND pec.reports_count <> sub.cnt`)
 
 	// Topics seed data
 	db.Exec(ctx, `CREATE TABLE IF NOT EXISTS topics (
