@@ -152,6 +152,77 @@ func (s *WatchStore) GetViewerHistory(ctx context.Context, viewerID, contentID u
 	return count, nil
 }
 
+// RetentionPoint is one bucket of the audience-retention curve:
+// the share of sessions still watching at SecondOffset seconds in.
+type RetentionPoint struct {
+	SecondOffset  int64   `json:"second_offset"`
+	RetainedRatio float64 `json:"retained_ratio"`
+	SessionCount  int64   `json:"session_count"`
+}
+
+// GetRetentionCurve walks every watch session for contentID and
+// builds the audience-retention histogram. Returns one point per
+// `bucketSec` seconds, capped at `maxBuckets` so the response stays
+// bounded for long videos.
+//
+// Algorithm: histogram[ floor(watched_ms / 1000 / bucketSec) ]++,
+// then cumulative-from-the-tail to get "still watching" at each
+// bucket. Per-session, not per-viewer — re-watches lift the curve,
+// matching the way YouTube/TikTok show retention.
+func (s *WatchStore) GetRetentionCurve(ctx context.Context, contentID uuid.UUID, bucketSec int64, maxBuckets int) ([]RetentionPoint, error) {
+	if bucketSec <= 0 {
+		bucketSec = 1
+	}
+	if maxBuckets <= 0 || maxBuckets > 600 {
+		maxBuckets = 600
+	}
+
+	iter := s.session.Query(
+		`SELECT watched_ms FROM social_analytics.watch_sessions WHERE content_id = ?`,
+		contentID,
+	).WithContext(ctx).Iter()
+
+	hist := make([]int64, maxBuckets+1)
+	var total int64
+	var watchedMS int64
+	for iter.Scan(&watchedMS) {
+		if watchedMS < 0 {
+			watchedMS = 0
+		}
+		bucket := watchedMS / 1000 / bucketSec
+		if bucket > int64(maxBuckets) {
+			bucket = int64(maxBuckets)
+		}
+		hist[bucket]++
+		total++
+	}
+	if err := iter.Close(); err != nil {
+		return nil, err
+	}
+	if total == 0 {
+		return nil, nil
+	}
+
+	// Cumulative-from-tail: sessions with watched_ms in bucket b
+	// stopped at second b*bucketSec. Anyone in bucket >= t was still
+	// watching at t. So retention[t] = sum(hist[t..]) / total.
+	out := make([]RetentionPoint, 0, maxBuckets+1)
+	retained := total
+	for b := 0; b <= maxBuckets; b++ {
+		ratio := float64(retained) / float64(total)
+		out = append(out, RetentionPoint{
+			SecondOffset:  int64(b) * bucketSec,
+			RetainedRatio: ratio,
+			SessionCount:  retained,
+		})
+		retained -= hist[b]
+		if retained <= 0 {
+			break
+		}
+	}
+	return out, nil
+}
+
 // CountDisplayViews counts sessions where is_display_view = true for a content item.
 func (s *WatchStore) CountDisplayViews(ctx context.Context, contentID uuid.UUID) (int64, error) {
 	var count int64

@@ -458,3 +458,118 @@ func (s *Store) EditComment(ctx context.Context, commentID, userID uuid.UUID, bo
 	)
 	return err
 }
+
+// ---------------------------------------------------------------------------
+// Tier 2b: comment moderation
+// ---------------------------------------------------------------------------
+
+// FlaggedComment is the payload returned by the moderation queue
+// endpoint — a comment that's either been reported (flagged_count > 0)
+// or already moved out of the public thread.
+type FlaggedComment struct {
+	ID               uuid.UUID `json:"id"`
+	PostID           uuid.UUID `json:"post_id"`
+	AuthorID         uuid.UUID `json:"author_id"`
+	Body             string    `json:"body"`
+	ModerationStatus string    `json:"moderation_status"`
+	FlaggedCount     int       `json:"flagged_count"`
+	CreatedAt        time.Time `json:"created_at"`
+}
+
+// IncrementCommentFlaggedCount bumps the report counter and, if the
+// counter crosses the auto-review threshold, transitions the comment
+// to 'review' status (visible to author + moderator, hidden from
+// everyone else). Idempotent — multiple reports stack the count, the
+// status flip is one-shot via the WHERE clause.
+const commentAutoReviewThreshold = 3
+
+func (s *Store) IncrementCommentFlaggedCount(ctx context.Context, commentID uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE comments
+		SET flagged_count = flagged_count + 1,
+		    moderation_status = CASE
+		        WHEN moderation_status = 'visible' AND flagged_count + 1 >= $2
+		        THEN 'review'
+		        ELSE moderation_status
+		    END
+		WHERE id = $1
+	`, commentID, commentAutoReviewThreshold)
+	return err
+}
+
+// SetCommentModerationStatus is the admin's override. Status must be
+// one of visible / hidden / removed / review. Returns
+// COMMENT_NOT_FOUND if the row doesn't exist.
+func (s *Store) SetCommentModerationStatus(ctx context.Context, commentID uuid.UUID, status string) error {
+	switch status {
+	case "visible", "hidden", "removed", "review":
+	default:
+		return fmt.Errorf("INVALID_MODERATION_STATUS: %q", status)
+	}
+	tag, err := s.db.Exec(ctx, `
+		UPDATE comments SET moderation_status = $2, updated_at = NOW()
+		WHERE id = $1
+	`, commentID, status)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("COMMENT_NOT_FOUND")
+	}
+	return nil
+}
+
+// ListFlaggedComments returns the moderation queue: comments with
+// flagged_count > 0 OR moderation_status in (hidden, removed, review),
+// newest first. Bounded so a backlog can't take down the admin UI.
+//
+// status="all" (default) returns everything; status can also be
+// specifically "review", "hidden", "removed", or "flagged" (only
+// visible-but-flagged-count-positive). Cursor is the created_at of
+// the last seen row.
+func (s *Store) ListFlaggedComments(ctx context.Context, status string, cursor time.Time, limit int) ([]FlaggedComment, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	if cursor.IsZero() {
+		cursor = time.Now()
+	}
+	var query string
+	switch status {
+	case "review":
+		query = `WHERE moderation_status = 'review'`
+	case "hidden":
+		query = `WHERE moderation_status = 'hidden'`
+	case "removed":
+		query = `WHERE moderation_status = 'removed'`
+	case "flagged":
+		query = `WHERE moderation_status = 'visible' AND flagged_count > 0`
+	default:
+		// Parens are load-bearing: AND binds tighter than OR, so without
+		// them the cursor predicate would only apply to the second OR
+		// branch.
+		query = `WHERE (moderation_status IN ('hidden','removed','review') OR flagged_count > 0)`
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT id, post_id, author_id, body, moderation_status, flagged_count, created_at
+		FROM comments `+query+`
+		AND created_at < $1
+		AND is_deleted = FALSE
+		ORDER BY created_at DESC
+		LIMIT $2
+	`, cursor, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []FlaggedComment
+	for rows.Next() {
+		var c FlaggedComment
+		if err := rows.Scan(&c.ID, &c.PostID, &c.AuthorID, &c.Body,
+			&c.ModerationStatus, &c.FlaggedCount, &c.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}

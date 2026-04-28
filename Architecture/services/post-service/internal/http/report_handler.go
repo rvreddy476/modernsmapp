@@ -2,6 +2,7 @@ package http
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
@@ -20,6 +21,13 @@ func (h *Handler) RegisterReportRoutes(r *gin.Engine) {
 	{
 		reports.GET("", h.ListReports)
 		reports.PATCH("/:reportId", h.ReviewReport)
+	}
+
+	// Tier 2b: comment moderation queue
+	mod := r.Group("/v1/admin/comments")
+	{
+		mod.GET("/moderation", h.ListFlaggedComments)
+		mod.PATCH("/:commentId/moderation", h.ModerateComment)
 	}
 }
 
@@ -152,4 +160,77 @@ func parseIntParam(s string) (int, error) {
 		n = n*10 + int(c-'0')
 	}
 	return n, nil
+}
+
+// ---------------------------------------------------------------------------
+// Tier 2b: comment moderation
+// ---------------------------------------------------------------------------
+
+// ListFlaggedComments — GET /v1/admin/comments/moderation
+// Query params:
+//
+//	status=review|hidden|removed|flagged|all (default all)
+//	cursor=RFC3339 (created_at of the last seen row, descending)
+//	limit=int (default 50, max 200)
+//
+// Returns the comments that need a moderator's eyes plus those that
+// have already been actioned, so the audit trail is one fetch away.
+func (h *Handler) ListFlaggedComments(c *gin.Context) {
+	status := c.DefaultQuery("status", "")
+	limit := 50
+	if v := c.Query("limit"); v != "" {
+		if n, err := parseIntParam(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	cursor := time.Now()
+	if v := c.Query("cursor"); v != "" {
+		if t, err := time.Parse(time.RFC3339Nano, v); err == nil {
+			cursor = t
+		}
+	}
+	rows, err := h.svc.ListFlaggedComments(c.Request.Context(), status, cursor, limit)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	if rows == nil {
+		rows = []postgres.FlaggedComment{}
+	}
+	var meta *api.Meta
+	if len(rows) == limit {
+		meta = &api.Meta{NextCursor: rows[len(rows)-1].CreatedAt.Format(time.RFC3339Nano)}
+	}
+	api.JSON(c.Writer, http.StatusOK, rows, meta)
+}
+
+// ModerateComment — PATCH /v1/admin/comments/:commentId/moderation
+// Body: {"status": "visible|hidden|removed|review"}
+func (h *Handler) ModerateComment(c *gin.Context) {
+	commentID, err := uuid.Parse(c.Param("commentId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid comment ID", nil)
+		return
+	}
+	var body struct {
+		Status string `json:"status" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
+		return
+	}
+	if err := h.svc.SetCommentModerationStatus(c.Request.Context(), commentID, body.Status); err != nil {
+		switch err.Error() {
+		case "COMMENT_NOT_FOUND":
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Comment not found", nil)
+		default:
+			if len(err.Error()) > 25 && err.Error()[:25] == "INVALID_MODERATION_STATUS" {
+				api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
+				return
+			}
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		}
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"status": body.Status}, nil)
 }
