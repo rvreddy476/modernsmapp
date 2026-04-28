@@ -9,7 +9,10 @@ import 'package:atpost_app/features/communities/community_space_screen.dart';
 import 'package:atpost_app/features/communities/create_community_screen.dart';
 import 'package:atpost_app/features/auth/forgot_password_screen.dart';
 import 'package:atpost_app/features/create/upload_progress_screen.dart';
+import 'package:atpost_app/features/posttube/channel_screen.dart';
 import 'package:atpost_app/features/posttube/posttube_upload_screen.dart';
+import 'package:atpost_app/features/posttube/subscriptions_screen.dart';
+import 'package:atpost_app/features/posttube/watch_history_screen.dart';
 import 'package:atpost_app/features/auth/login_screen.dart';
 import 'package:atpost_app/features/auth/otp_verify_screen.dart';
 import 'package:atpost_app/features/auth/register_screen.dart';
@@ -504,6 +507,20 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: '/posttube/upload',
             builder: (_, _) => const PosttubeUploadScreen(),
+          ),
+          GoRoute(
+            path: '/posttube/subscriptions',
+            builder: (_, _) => const PosttubeSubscriptionsScreen(),
+          ),
+          GoRoute(
+            path: '/posttube/history',
+            builder: (_, _) => const WatchHistoryScreen(),
+          ),
+          GoRoute(
+            path: '/posttube/channel/:userId',
+            builder: (_, state) => PosttubeChannelScreen(
+              userId: state.pathParameters['userId'] ?? '',
+            ),
           ),
         ],
       ),

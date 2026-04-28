@@ -163,9 +163,14 @@ class FeedRepository {
     );
   }
 
-  Future<FeedPage> getVideoFeedPage({int limit = 20, String? cursor}) async {
+  Future<FeedPage> getVideoFeedPage({
+    int limit = 20,
+    String? cursor,
+    bool followingOnly = false,
+  }) async {
     final params = <String, dynamic>{'limit': limit};
     if (cursor != null) params['cursor'] = cursor;
+    if (followingOnly) params['following_only'] = true;
 
     final response = await _api.get('/v1/feed/watch', queryParameters: params);
     final rawData = response.data['data'] as List<dynamic>? ?? [];

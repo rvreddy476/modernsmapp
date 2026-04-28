@@ -6,6 +6,7 @@ import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/models/post.dart';
 import 'package:atpost_app/data/repositories/feed_repository.dart';
 import 'package:atpost_app/data/repositories/post_repository.dart';
+import 'package:atpost_app/data/repositories/user_repository.dart';
 import 'package:atpost_app/shared/widgets/video_player_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -270,6 +271,43 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> {
     }
   }
 
+  // Per-author follow state, keyed by post.authorId. Lifted out of the
+  // individual reel pages so that the optimistic toggle survives scroll-
+  // driven rebuilds and applies across every reel by the same creator in
+  // the current page.
+  final Map<String, bool> _followedAuthors = {};
+  final Set<String> _followInFlight = {};
+
+  Future<void> _toggleFollow(Post post) async {
+    final authorId = post.authorId;
+    if (authorId.isEmpty) return;
+    if (_followInFlight.contains(authorId)) return;
+
+    final wasFollowing = _followedAuthors[authorId] ?? false;
+    setState(() {
+      _followInFlight.add(authorId);
+      _followedAuthors[authorId] = !wasFollowing;
+    });
+    try {
+      final repo = ref.read(userRepositoryProvider);
+      if (wasFollowing) {
+        await repo.unfollowUser(authorId);
+      } else {
+        await repo.followUser(authorId);
+      }
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _followedAuthors[authorId] = wasFollowing);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not update follow.')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _followInFlight.remove(authorId));
+      }
+    }
+  }
+
   Future<void> _toggleSave(Post post) async {
     final engagement = _ensureEngagement(post);
     final prevSaved = engagement.saved;
@@ -368,6 +406,8 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> {
               final engagement = _ensureEngagement(post);
               final colors = _palette[index % _palette.length];
 
+              final canFollow = post.authorId.isNotEmpty;
+              final isFollowing = _followedAuthors[post.authorId] ?? false;
               return GestureDetector(
                 onDoubleTap: () => _toggleLike(post),
                 child: _ReelPage(
@@ -384,6 +424,8 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> {
                   onShare: () => _shareReel(post),
                   onSave: () => _toggleSave(post),
                   countLabel: _countLabel,
+                  isFollowing: isFollowing,
+                  onFollow: canFollow ? () => _toggleFollow(post) : null,
                 ),
               );
             },
@@ -425,6 +467,8 @@ class _ReelPage extends StatefulWidget {
     required this.onShare,
     required this.onSave,
     required this.countLabel,
+    this.isFollowing = false,
+    this.onFollow,
   });
 
   final Post post;
@@ -440,6 +484,11 @@ class _ReelPage extends StatefulWidget {
   final VoidCallback onShare;
   final VoidCallback onSave;
   final String Function(int value) countLabel;
+  // Follow state passed in from the parent so the button reflects the latest
+  // optimistic value across rebuilds. onFollow is null for the user's own
+  // reels — the parent decides who to suppress the button for.
+  final bool isFollowing;
+  final VoidCallback? onFollow;
 
   @override
   State<_ReelPage> createState() => _ReelPageState();
@@ -625,6 +674,8 @@ class _ReelPageState extends State<_ReelPage> {
             title: _title,
             tags: _tags,
             mediaCount: widget.post.mediaIds.length,
+            isFollowing: widget.isFollowing,
+            onFollow: widget.onFollow,
           ),
         ),
       ],
@@ -780,12 +831,19 @@ class _BottomInfo extends StatelessWidget {
     required this.title,
     required this.tags,
     required this.mediaCount,
+    this.isFollowing = false,
+    this.onFollow,
   });
 
   final String authorHandle;
   final String title;
   final String tags;
   final int mediaCount;
+  // Follow button is suppressed when onFollow is null (e.g. on the user's
+  // own reels). isFollowing toggles between filled "Follow" and outlined
+  // "Following" states with optimistic updates handled by the parent.
+  final bool isFollowing;
+  final VoidCallback? onFollow;
 
   @override
   Widget build(BuildContext context) {
@@ -821,6 +879,36 @@ class _BottomInfo extends StatelessWidget {
                 style: AppTextStyles.h3.copyWith(color: Colors.white),
               ),
             ),
+            if (onFollow != null) ...[
+              const SizedBox(width: 8),
+              GestureDetector(
+                onTap: onFollow,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: isFollowing
+                        ? Colors.white.withValues(alpha: 0.12)
+                        : Colors.white,
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(
+                      color: isFollowing
+                          ? Colors.white.withValues(alpha: 0.4)
+                          : Colors.white,
+                    ),
+                  ),
+                  child: Text(
+                    isFollowing ? 'Following' : 'Follow',
+                    style: AppTextStyles.labelSmall.copyWith(
+                      color: isFollowing ? Colors.white : Colors.black,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ],
         ),
         const SizedBox(height: 8),

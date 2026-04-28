@@ -267,7 +267,8 @@ func (h *Handler) GetVideoFeed(c *gin.Context) {
 		limit = 50
 	}
 
-	feedItems, err := h.svc.GetVideoFeed(c.Request.Context(), userID, limit)
+	followingOnly := c.DefaultQuery("following_only", "") == "true"
+	feedItems, err := h.svc.GetVideoFeed(c.Request.Context(), userID, limit, followingOnly)
 	if err != nil {
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
 		return

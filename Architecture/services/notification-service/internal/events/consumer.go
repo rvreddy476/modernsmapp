@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"sync"
 	"time"
 
+	"github.com/atpost/notification-service/internal/graph"
 	"github.com/atpost/notification-service/internal/service"
 	"github.com/atpost/shared/events"
 	"github.com/google/uuid"
@@ -29,10 +31,19 @@ type likeAggEntry struct {
 type Consumer struct {
 	reader  *kafka.Reader
 	service *service.Service
+	graph   *graph.Client // optional — fan-out for upload notifications
 
 	// Like aggregation: key = "postID:postAuthorID"
 	likeAgg   map[string]*likeAggEntry
 	likeAggMu sync.Mutex
+}
+
+// WithGraph attaches a graph-service client. Required for fanning out
+// follower notifications on PostCreated; the consumer otherwise no-ops
+// for that event.
+func (c *Consumer) WithGraph(g *graph.Client) *Consumer {
+	c.graph = g
+	return c
 }
 
 func NewConsumer(brokers []string, groupID string, topic string, svc *service.Service) *Consumer {
@@ -87,6 +98,16 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 
 		deepLink := fmt.Sprintf("/u/%s", e.FollowerID)
 		return c.service.CreateNotification(ctx, followeeID, followerID, "follow", "user", followerID, deepLink, e.CreatedAt)
+
+	case events.PostCreated:
+		// Fan out a notification to every follower of the author whenever
+		// they upload a video or flick. Skip text/poll posts — those flow
+		// through the regular feed and shouldn't push-spam followers.
+		var e events.PostCreatedPayload
+		if err := unmarshalPayload(envelope.Payload, &e); err != nil {
+			return err
+		}
+		return c.fanOutCreatorUpload(ctx, e)
 
 	case events.PostReacted:
 		var e events.PostReactedPayload
@@ -346,6 +367,86 @@ func (c *Consumer) flushLikeAgg(key string) {
 func unmarshalPayload(raw json.RawMessage, v interface{}) error {
 	b, _ := json.Marshal(raw)
 	return json.Unmarshal(b, v)
+}
+
+// fanOutCreatorUpload pages through the author's follower list and creates
+// one notification row per follower for the new video/flick. Best-effort:
+// failures on individual followers are logged and skipped so one bad row
+// can't poison the whole batch.
+//
+// Filters:
+//   - Only video/flick content_types push (text/poll posts go via the feed).
+//   - Public + followers visibility only — private posts don't notify.
+//   - Author themselves is excluded by graph-service (followers != self).
+//
+// Page size 200, capped at 5,000 followers per upload to bound the cost.
+// At-scale this should move to a paginated background job, but for now
+// inline fan-out covers normal creator follower counts.
+func (c *Consumer) fanOutCreatorUpload(ctx context.Context, e events.PostCreatedPayload) error {
+	switch e.ContentType {
+	case "flick", "long_video", "reel", "video":
+		// supported — fall through
+	default:
+		return nil
+	}
+	if e.Visibility == "private" || e.Visibility == "unlisted" {
+		return nil
+	}
+	if c.graph == nil {
+		// No graph client wired (dev?); silently skip rather than failing.
+		return nil
+	}
+
+	authorID, err := uuid.Parse(e.AuthorID)
+	if err != nil {
+		return nil // bad payload, don't retry
+	}
+	postID, err := uuid.Parse(e.PostID)
+	if err != nil {
+		return nil
+	}
+
+	const pageSize = 200
+	const maxFollowers = 5000
+	deepLink := fmt.Sprintf("/posttube/watch/%s", e.PostID)
+	if e.ContentType == "flick" || e.ContentType == "reel" {
+		deepLink = fmt.Sprintf("/reels/%s", e.PostID)
+	}
+
+	notifType := "creator_uploaded_video"
+	if e.ContentType == "flick" || e.ContentType == "reel" {
+		notifType = "creator_uploaded_flick"
+	}
+
+	delivered := 0
+	for offset := 0; offset < maxFollowers; offset += pageSize {
+		followers, err := c.graph.GetFollowers(ctx, authorID, pageSize, offset)
+		if err != nil {
+			slog.Warn("creator upload fan-out: followers fetch failed",
+				"author_id", authorID, "offset", offset, "error", err)
+			break
+		}
+		if len(followers) == 0 {
+			break
+		}
+		for _, fid := range followers {
+			if err := c.service.CreateNotification(
+				ctx, fid, authorID, notifType, "post", postID, deepLink, e.CreatedAt,
+			); err != nil {
+				slog.Warn("creator upload fan-out: notify failed",
+					"follower", fid, "post_id", postID, "error", err)
+				continue
+			}
+			delivered++
+		}
+		if len(followers) < pageSize {
+			break
+		}
+	}
+	slog.Info("creator upload fan-out complete",
+		"author_id", authorID, "post_id", postID,
+		"content_type", e.ContentType, "delivered", delivered)
+	return nil
 }
 
 func (c *Consumer) Close() error {

@@ -301,7 +301,7 @@ func (s *Service) GetReelFeed(ctx context.Context, userID uuid.UUID, limit int) 
 
 // GetVideoFeed returns the user's long-video-only timeline.
 // Aliases to GetLongVideoFeed (backward compat).
-func (s *Service) GetVideoFeed(ctx context.Context, userID uuid.UUID, limit int) ([]FeedItem, error) {
+func (s *Service) GetVideoFeed(ctx context.Context, userID uuid.UUID, limit int, followingOnly bool) ([]FeedItem, error) {
 	items, err := s.scyllaStore.GetHomeTimelineByContentTypes(ctx, userID, []string{"long_video", "video"}, limit*3)
 	if err != nil {
 		return nil, err
@@ -315,6 +315,31 @@ func (s *Service) GetVideoFeed(ctx context.Context, userID uuid.UUID, limit int)
 			CreatedAt:   item.CreatedAt,
 			ContentType: item.ContentType,
 		})
+	}
+
+	// Subscriptions filter: keep only videos by creators the viewer follows.
+	// Mirrors the followingOnly path in GetHomeFeed so the subscriptions tab
+	// in the Posttube mobile shell can reuse the existing graph-service
+	// follow list.
+	if followingOnly && len(candidates) > 0 {
+		following, err := s.fetchFollowing(ctx, userID)
+		if err != nil {
+			log.Printf("video feed following_only: failed to fetch follows for %s: %v", userID, err)
+		} else if len(following) > 0 {
+			followSet := make(map[uuid.UUID]struct{}, len(following))
+			for _, fid := range following {
+				followSet[fid] = struct{}{}
+			}
+			filtered := candidates[:0]
+			for _, c := range candidates {
+				if _, ok := followSet[c.AuthorID]; ok {
+					filtered = append(filtered, c)
+				}
+			}
+			candidates = filtered
+		} else {
+			candidates = nil
+		}
 	}
 
 	// Long-video feed uses the main ranker with full signals

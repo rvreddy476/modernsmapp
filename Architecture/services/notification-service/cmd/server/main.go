@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/atpost/notification-service/internal/events"
+	"github.com/atpost/notification-service/internal/graph"
 	"github.com/atpost/notification-service/internal/http"
 	"github.com/atpost/notification-service/internal/service"
 	"github.com/atpost/notification-service/internal/store/postgres"
@@ -153,6 +154,11 @@ func main() {
 		notifSvc,
 		kafkaDialer,
 	)
+	// Attach graph-service client so PostCreated events fan out to followers.
+	graphURL := env("GRAPH_SERVICE_URL", "http://graph-service:8083")
+	internalKey := os.Getenv("INTERNAL_SERVICE_KEY")
+	consumer.WithGraph(graph.New(graphURL, internalKey))
+	slog.Info("graph client attached", "graph_url", graphURL)
 	go consumer.Start(ctx)
 	slog.Info("kafka consumer started", "topic", "social.events.v1")
 
