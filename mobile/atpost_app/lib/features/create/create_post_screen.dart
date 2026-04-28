@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/features/create/providers/creation_provider.dart';
+import 'package:atpost_app/providers/feed_provider.dart';
 import 'package:atpost_app/providers/user_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -230,6 +231,19 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
                     final success = await ref
                         .read(creationProvider.notifier)
                         .submit();
+                    if (success) {
+                      // Drop cached feeds so the new post shows up on Home/
+                      // PostTube/Reels without needing an app restart. The
+                      // backend auto-classifies videos to flick/long_video by
+                      // duration, so we invalidate both video surfaces.
+                      ref.invalidate(videoFeedProvider);
+                      ref.invalidate(reelFeedProvider);
+                      try {
+                        await ref
+                            .read(homeFeedProvider.notifier)
+                            .fetchFirstPage();
+                      } catch (_) {/* non-fatal */}
+                    }
                     if (success && mounted) context.pop();
                     if (!success && mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(

@@ -1,4 +1,5 @@
 import 'package:atpost_app/providers/editor_provider.dart';
+import 'package:atpost_app/providers/feed_provider.dart';
 import 'package:atpost_app/services/api_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -26,7 +27,7 @@ class _FlicksCaptionScreenState extends ConsumerState<FlicksCaptionScreen> {
 
   static const _suggestedTags = [
     '#flicks', '#viral', '#fyp', '#trending', '#explore',
-    '#reels', '#video', '#creator', '#atpost',
+    '#reels', '#video', '#creator', '#vchat',
   ];
 
   @override
@@ -69,18 +70,35 @@ class _FlicksCaptionScreenState extends ConsumerState<FlicksCaptionScreen> {
         type: 'video',
       );
 
+      // Embed hashtags into the caption text so the backend's
+      // extractHashtags() indexes them into posts.hashtags[]. Sending them in
+      // the `tags` field would land in reel-metadata categories, not the
+      // hashtag index → trending/hashtag-feed wouldn't see them.
+      final caption = _captionCtrl.text.trim();
+      final tagLine = _hashtags.join(' ');
+      final fullText = [caption, tagLine].where((s) => s.isNotEmpty).join('\n\n');
+
       // Create the post
       await api.post('/v1/posts', data: {
         'content_type': 'flick',
         'media_ids': mediaId.isNotEmpty ? [mediaId] : [],
-        'text': _captionCtrl.text.trim(),
-        'tags': _hashtags,
+        'text': fullText,
         'visibility': _audience.name,
         'cover_frame_ms': editorState.coverFrameMs,
         'filter': editorState.activeFilter.name,
       });
 
       ref.read(editorProvider.notifier).deleteSession();
+
+      // Drop cached video/reel/home feeds so the new flick shows up immediately
+      // when the user lands on /reels or /. Without this, autoDispose's first
+      // build is served from the prior cached future.
+      ref.invalidate(reelFeedProvider);
+      ref.invalidate(videoFeedProvider);
+      try {
+        await ref.read(homeFeedProvider.notifier).fetchFirstPage();
+      } catch (_) {/* non-fatal */}
+
       if (mounted) context.go('/');
     } catch (e) {
       if (mounted) {

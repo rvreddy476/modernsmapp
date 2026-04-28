@@ -15,6 +15,20 @@ String postTypeToContentType(PostType type) {
   }
 }
 
+const _videoExtensions = {
+  '.mp4', '.mov', '.m4v', '.webm', '.avi', '.mkv', '.3gp', '.hevc',
+};
+
+/// Detects video files by extension. Covers iOS (.mov), Android (.mp4),
+/// and the common alternatives users hand the picker.
+bool _isVideoFile(String path) {
+  final lower = path.toLowerCase();
+  for (final ext in _videoExtensions) {
+    if (lower.endsWith(ext)) return true;
+  }
+  return false;
+}
+
 enum PostVisibility { public, followers, private }
 
 class CreationState {
@@ -166,7 +180,7 @@ class CreationNotifier extends StateNotifier<CreationState> {
         final file = files[i];
         final id = await _apiClient.uploadMedia(
           file,
-          type: file.path.contains('.mp4') ? 'video' : 'image',
+          type: _isVideoFile(file.path) ? 'video' : 'image',
           onProgress: (sent, total) {
             if (total <= 0 || files.isEmpty) return;
             final fileProgress = sent / total;
