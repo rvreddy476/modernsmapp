@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/atpost/payments-service/internal/gateway"
 	"github.com/atpost/payments-service/internal/store/postgres"
+	"github.com/atpost/shared/events"
 	"github.com/google/uuid"
 	kafka "github.com/segmentio/kafka-go"
 )
@@ -159,9 +161,29 @@ func (s *Service) publishEvent(ctx context.Context, eventType, key string, paylo
 		slog.Error("failed to marshal event", "event_type", eventType, "error", err)
 		return
 	}
+	// Wrap the payload in the shared EventEnvelope so consumers using the
+	// shared/kafka.Consumer can decode it. The actor (key) goes into
+	// ActorUserID when it parses as a UUID; otherwise it's left nil.
+	envelope := events.EventEnvelope{
+		EventID:    uuid.New().String(),
+		EventType:  eventType,
+		OccurredAt: time.Now().UTC(),
+		Payload:    data,
+	}
+	if key != "" {
+		if _, err := uuid.Parse(key); err == nil {
+			k := key
+			envelope.ActorUserID = &k
+		}
+	}
+	value, err := json.Marshal(envelope)
+	if err != nil {
+		slog.Error("failed to marshal envelope", "event_type", eventType, "error", err)
+		return
+	}
 	if err := s.writer.WriteMessages(ctx, kafka.Message{
 		Key:     []byte(key),
-		Value:   data,
+		Value:   value,
 		Headers: []kafka.Header{{Key: "event_type", Value: []byte(eventType)}},
 	}); err != nil {
 		slog.Error("failed to publish event", "event_type", eventType, "error", err)

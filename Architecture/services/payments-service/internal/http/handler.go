@@ -1,8 +1,12 @@
 package http
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 
 	"github.com/atpost/payments-service/internal/service"
@@ -13,8 +17,9 @@ import (
 )
 
 type Handler struct {
-	svc         *service.Service
-	internalKey string
+	svc           *service.Service
+	internalKey   string
+	webhookSecret string
 }
 
 func New(svc *service.Service) *Handler {
@@ -23,6 +28,14 @@ func New(svc *service.Service) *Handler {
 
 func (h *Handler) WithInternalKey(key string) *Handler {
 	h.internalKey = key
+	return h
+}
+
+// WithWebhookSecret enables HMAC-SHA256 verification of Razorpay webhooks.
+// When set, requests with a missing or mismatched X-Razorpay-Signature are
+// rejected with 401. Empty secret keeps signature checks off (dev/test).
+func (h *Handler) WithWebhookSecret(secret string) *Handler {
+	h.webhookSecret = secret
 	return h
 }
 
@@ -194,9 +207,26 @@ func (h *Handler) ListByReference(c *gin.Context) {
 }
 
 // HandleWebhook POST /v1/payments/webhook
+//
+// Razorpay sends a JSON event with an X-Razorpay-Signature header that is the
+// HMAC-SHA256 of the raw body keyed by the webhook secret. When the secret is
+// configured (production), we reject unsigned/mismatched calls with 401. When
+// no secret is set (dev/test), we accept all calls so local stub flows work.
 func (h *Handler) HandleWebhook(c *gin.Context) {
 	signature := c.GetHeader("X-Razorpay-Signature")
-	body, _ := io.ReadAll(c.Request.Body)
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.Status(http.StatusBadRequest)
+		return
+	}
+
+	if h.webhookSecret != "" {
+		if !verifyRazorpaySignature(body, signature, h.webhookSecret) {
+			slog.Warn("razorpay webhook signature mismatch", "have_sig", signature != "")
+			c.Status(http.StatusUnauthorized)
+			return
+		}
+	}
 
 	var event struct {
 		Event   string          `json:"event"`
@@ -220,7 +250,6 @@ func (h *Handler) HandleWebhook(c *gin.Context) {
 
 	paymentID := payloadData.Payment.Entity.ID
 	orderID := payloadData.Payment.Entity.OrderID
-	_ = signature // verify in production: h.svc.VerifySignature(...)
 
 	switch event.Event {
 	case "payment.captured":
@@ -231,6 +260,19 @@ func (h *Handler) HandleWebhook(c *gin.Context) {
 		h.svc.UpdateStatusByProviderRef(c.Request.Context(), orderID, "refunded", paymentID)
 	}
 	c.Status(http.StatusOK)
+}
+
+// verifyRazorpaySignature checks the HMAC-SHA256 of body against signature
+// using secret. Constant-time compare so a mismatch doesn't leak length info
+// via timing.
+func verifyRazorpaySignature(body []byte, signature, secret string) bool {
+	if signature == "" {
+		return false
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	expected := hex.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(expected), []byte(signature))
 }
 
 // ReleaseHold POST /v1/payments/holds/:intentId/release

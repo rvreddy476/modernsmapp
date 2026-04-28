@@ -34,6 +34,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 	// ── Catalog ──────────────────────────────────────────────
 	v1.GET("/categories", h.ListCategories)
+	v1.GET("/products", h.ListProducts)
 	v1.GET("/products/:productId", h.GetProduct)
 	v1.POST("/products", h.CreateProduct)
 	v1.GET("/products/:productId/reviews", h.GetProductReviews)
@@ -365,6 +366,48 @@ func (h *Handler) ListSellerProducts(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, products, nil)
+}
+
+// ListProducts is the customer-facing global product browse endpoint.
+//   GET /v1/commerce/products?category={uuid}&q={text}&limit=20&offset=0
+//
+// Returns published + approved products only. category and q are optional.
+// Response: { items: [...], total: int, limit: int, offset: int }
+func (h *Handler) ListProducts(c *gin.Context) {
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	var categoryID *uuid.UUID
+	if cat := c.Query("category"); cat != "" {
+		id, err := uuid.Parse(cat)
+		if err != nil {
+			api.Error(c.Writer, http.StatusBadRequest, "INVALID_CATEGORY", "category must be a UUID", nil, nil)
+			return
+		}
+		categoryID = &id
+	}
+	query := c.Query("q")
+
+	products, total, err := h.svc.ListProducts(c.Request.Context(), categoryID, query, limit, offset)
+	if err != nil {
+		handleErr(c, err)
+		return
+	}
+	if products == nil {
+		products = []*postgres.Product{}
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{
+		"items":  products,
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
+	}, nil)
 }
 
 // ─── Cart handlers ───────────────────────────────────────────────

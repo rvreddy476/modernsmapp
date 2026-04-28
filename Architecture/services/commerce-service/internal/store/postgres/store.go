@@ -166,6 +166,51 @@ func (s *Store) ListSellerProducts(ctx context.Context, sellerID uuid.UUID, stat
 	return products, total, nil
 }
 
+// ListProducts returns paginated products for the customer-facing browse
+// surface: published + approved only, optionally filtered by category and a
+// title search. Newest first. Returns total count for pagination.
+func (s *Store) ListProducts(ctx context.Context, categoryID *uuid.UUID, query string, limit, offset int) ([]*Product, int, error) {
+	conds := []string{"status = 'published'", "approval_status = 'approved'"}
+	args := []any{}
+	idx := 1
+	if categoryID != nil {
+		conds = append(conds, fmt.Sprintf("category_id = $%d", idx))
+		args = append(args, *categoryID)
+		idx++
+	}
+	if q := strings.TrimSpace(query); q != "" {
+		conds = append(conds, fmt.Sprintf("title ILIKE $%d", idx))
+		args = append(args, "%"+q+"%")
+		idx++
+	}
+	where := "WHERE " + strings.Join(conds, " AND ")
+
+	var total int
+	if err := s.db.QueryRow(ctx, "SELECT COUNT(*) FROM products "+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	args = append(args, limit, offset)
+	rows, err := s.db.Query(ctx, `SELECT id,seller_id,category_id,title,slug,status,approval_status,
+		avg_rating,review_count,order_count,view_count,created_at,updated_at FROM products `+
+		where+fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d OFFSET $%d", idx, idx+1), args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	var products []*Product
+	for rows.Next() {
+		var p Product
+		if err := rows.Scan(&p.ID, &p.SellerID, &p.CategoryID, &p.Title, &p.Slug,
+			&p.Status, &p.ApprovalStatus, &p.AvgRating, &p.ReviewCount, &p.OrderCount,
+			&p.ViewCount, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			return nil, 0, err
+		}
+		products = append(products, &p)
+	}
+	return products, total, rows.Err()
+}
+
 func (s *Store) UpdateProduct(ctx context.Context, id uuid.UUID, updates map[string]any) error {
 	if len(updates) == 0 {
 		return nil

@@ -237,6 +237,13 @@ func (s *Service) ListSellerProducts(ctx context.Context, sellerID uuid.UUID, li
 	return products, err
 }
 
+// ListProducts returns the customer-facing product catalog: published +
+// approved only. Optional category filter and title query. Returns total so
+// the UI can paginate.
+func (s *Service) ListProducts(ctx context.Context, categoryID *uuid.UUID, query string, limit, offset int) ([]*postgres.Product, int, error) {
+	return s.store.ListProducts(ctx, categoryID, query, limit, offset)
+}
+
 func (s *Service) ListOrders(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*postgres.Order, error) {
 	orders, _, err := s.store.GetOrdersByCustomer(ctx, userID, limit, offset)
 	return orders, err
@@ -622,6 +629,29 @@ func (s *Service) ConfirmPayment(ctx context.Context, orderID uuid.UUID, payment
 	// Best-effort fulfillment automation. Run in a detached goroutine so a slow
 	// courier API or invoice render doesn't stall the payment callback.
 	go s.fulfillPaidOrder(orderID)
+	return nil
+}
+
+// MarkPaymentFailed flags an order's payment as failed and releases the stock
+// reservation made at checkout so other customers can buy the units. The
+// order itself stays in payment_pending so the customer can retry — switching
+// to a hard "payment_failed" terminal state would force them to rebuild the
+// cart. Idempotent: a second call on an already-failed intent is a no-op.
+func (s *Service) MarkPaymentFailed(ctx context.Context, orderID uuid.UUID, paymentID string) error {
+	if err := s.store.UpdatePaymentStatus(ctx, orderID, "failed", paymentID, "razorpay"); err != nil {
+		return err
+	}
+	items, _ := s.store.GetOrderItems(ctx, orderID)
+	order, _ := s.store.GetOrderByID(ctx, orderID)
+	if order == nil {
+		return nil
+	}
+	for _, item := range items {
+		if err := s.store.ReleaseReservation(ctx, item.VariantID, order.CustomerUserID, item.Quantity); err != nil {
+			slog.Warn("failed to release reservation",
+				"variant", item.VariantID, "order", orderID, "error", err)
+		}
+	}
 	return nil
 }
 

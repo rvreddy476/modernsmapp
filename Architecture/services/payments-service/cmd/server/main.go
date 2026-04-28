@@ -109,7 +109,7 @@ func main() {
 	}
 
 	svc := service.NewWithDialer(store, kafkaBrokers, gw, kafkaDialer)
-	handler := nethttp.New(svc)
+	handler := nethttp.New(svc).WithWebhookSecret(os.Getenv("RAZORPAY_WEBHOOK_SECRET"))
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
