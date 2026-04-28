@@ -78,6 +78,9 @@ func (s *Service) DeletePost(ctx context.Context, postID, authorID uuid.UUID) er
 	if err != nil {
 		return fmt.Errorf("failed to delete post: %w", err)
 	}
+	// Tier 1b: drop the cached body so a stale read can't keep
+	// serving deleted content for up to the TTL window.
+	s.InvalidatePostBodyCache(ctx, postID)
 
 	// Publish upload.deleted event
 	if s.producer != nil && cascadeCount >= 0 {

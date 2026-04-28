@@ -50,7 +50,13 @@ const (
 // confirmed the caller owns the post. tierID == nil clears the gate
 // (post becomes public again).
 func (s *Service) SetPostMembershipGate(ctx context.Context, postID uuid.UUID, tierID *uuid.UUID) error {
-	return s.pgStore.SetPostMembershipGate(ctx, postID, tierID)
+	if err := s.pgStore.SetPostMembershipGate(ctx, postID, tierID); err != nil {
+		return err
+	}
+	// Tier 1b: tier_required_id is part of the cached body, drop the
+	// stale entry so the next read repopulates with the new gate.
+	s.InvalidatePostBodyCache(ctx, postID)
+	return nil
 }
 
 // IsPostAuthor returns whether actor is the post's author. Cheap pgx

@@ -551,7 +551,9 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 }
 
 func (s *Service) GetPost(ctx context.Context, id uuid.UUID, viewerID *uuid.UUID) (*PostDetail, error) {
-	p, err := s.pgStore.GetPost(ctx, id)
+	// Tier 1b: cached read. Falls through to pgStore on miss; nil
+	// rdb is supported.
+	p, err := s.getCachedPostBody(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -1659,6 +1661,8 @@ func (s *Service) SetCoverFrame(ctx context.Context, postID, userID uuid.UUID, c
 		if err := s.pgStore.UpdatePostCoverMedia(ctx, postID, coverMediaID); err != nil {
 			return err
 		}
+		// Tier 1b: cover_media_id is in the cached body.
+		s.InvalidatePostBodyCache(ctx, postID)
 	}
 
 	// Update thumbnail_url on video_metadata
