@@ -11,6 +11,7 @@ import (
 
 	"github.com/atpost/commerce-service/internal/courier"
 	"github.com/atpost/commerce-service/internal/identity"
+	"github.com/atpost/commerce-service/internal/payments"
 	"github.com/atpost/commerce-service/internal/store/postgres"
 	"github.com/atpost/shared/events"
 	"github.com/google/uuid"
@@ -26,6 +27,7 @@ type Service struct {
 	courier  courier.Provider
 	blob     BlobStore
 	identity *identity.Client
+	payments *payments.Client
 }
 
 func New(store *postgres.Store, rdb *redis.Client, kafkaBrokers string) *Service {
@@ -720,6 +722,210 @@ func (s *Service) CreateReturnRequest(ctx context.Context, in CreateReturnInput)
 		"return_id": r.ID, "order_id": r.OrderID, "seller_id": r.SellerID,
 	})
 	return r, nil
+}
+
+// ApproveReturn moves a return from 'requested' to 'approved', books a
+// reverse-pickup with the courier (pickup at the customer's address, drop
+// at the seller), and kicks off the refund. The refund flow differs by
+// payment method:
+//   - Prepaid: call payments-service to refund the original gateway intent.
+//     Refund status flips to 'pending' here; payments-service publishes a
+//     payment.refunded event when the gateway settles, which the
+//     commerce-service consumer rolls into 'succeeded'.
+//   - COD: there is no gateway transaction to reverse. We mark the refund
+//     as 'manual' so the seller's payout is debited and Ops can wire the
+//     cash back to the customer outside the system.
+//
+// All side effects best-effort: courier or payments-service unavailability
+// degrades cleanly to "approved with refund pending" rather than rolling
+// back the approval.
+func (s *Service) ApproveReturn(ctx context.Context, returnID, actorID uuid.UUID) (*postgres.ReturnRequest, error) {
+	r, err := s.store.GetReturnRequestByID(ctx, returnID)
+	if err != nil {
+		return nil, fmt.Errorf("get return: %w", err)
+	}
+	if r.Status == "approved" {
+		return r, nil // idempotent
+	}
+	if r.Status != "requested" {
+		return nil, fmt.Errorf("cannot approve return in status %q", r.Status)
+	}
+
+	if err := s.store.UpdateReturnStatus(ctx, returnID, "approved", nil); err != nil {
+		return nil, fmt.Errorf("update return status: %w", err)
+	}
+	_ = s.store.UpdateOrderStatus(ctx, r.OrderID, "return_approved", &actorID, "seller", "return approved")
+
+	// Reverse-pickup label.
+	s.bookReturnPickup(ctx, r)
+
+	// Refund.
+	s.initiateReturnRefund(ctx, r, actorID)
+
+	out, _ := s.store.GetReturnRequestByID(ctx, returnID)
+	if out == nil {
+		out = r
+	}
+	s.publish(ctx, "commerce.return.approved", map[string]any{
+		"return_id": out.ID, "order_id": out.OrderID,
+		"seller_id": out.SellerID, "refund_status": out.RefundAmount,
+	})
+	return out, nil
+}
+
+// bookReturnPickup books a reverse-pickup shipment (customer → seller).
+// Failures are logged but don't block approval — Ops can re-trigger via
+// a retry endpoint later. The courier is the same provider as outbound.
+func (s *Service) bookReturnPickup(ctx context.Context, r *postgres.ReturnRequest) {
+	if s.courier == nil {
+		return
+	}
+	order, err := s.store.GetOrderByID(ctx, r.OrderID)
+	if err != nil || order == nil {
+		slog.Warn("return pickup: get order failed", "return_id", r.ID, "error", err)
+		return
+	}
+	// Pickup is the customer's delivery address (where the goods are now).
+	if order.DeliveryAddressID == nil {
+		slog.Warn("return pickup: order has no delivery address", "order_id", order.ID)
+		return
+	}
+	addr, err := s.store.GetAddressByID(ctx, *order.DeliveryAddressID)
+	if err != nil {
+		slog.Warn("return pickup: address lookup failed", "error", err)
+		return
+	}
+	pickup := courier.Address{
+		Name: addr.ContactName, Phone: addr.Phone,
+		Line1: addr.AddressLine1, City: addr.City, State: addr.State,
+		Postal: addr.PostalCode, Country: addr.Country,
+	}
+	if addr.AddressLine2 != nil {
+		pickup.Line2 = *addr.AddressLine2
+	}
+
+	// Drop is the seller's pickup address.
+	seller, err := s.store.GetSellerByID(ctx, r.SellerID)
+	if err != nil {
+		slog.Warn("return pickup: seller lookup failed", "error", err)
+		return
+	}
+	drop := courier.Address{Name: seller.StoreName, Country: "IN"}
+	if seller.City != nil {
+		drop.City = *seller.City
+	}
+	if seller.State != nil {
+		drop.State = *seller.State
+	}
+	if seller.PostalCode != nil {
+		drop.Postal = *seller.PostalCode
+	}
+	if seller.Phone != nil {
+		drop.Phone = *seller.Phone
+	}
+
+	// Reuse the outbound CreateShipment; courier providers don't model
+	// returns separately. PaymentMethod=prepaid because the customer
+	// already paid (this is reverse logistics, not a sale).
+	resp, err := s.courier.CreateShipment(ctx, courier.ShipmentRequest{
+		OrderID:       r.OrderID.String() + "-return",
+		OrderNumber:   "RTN-" + r.ID.String()[:8],
+		PickupAddress: pickup,
+		DropAddress:   drop,
+		Weight:        0.5, // Use a default — real weight is the original item's, looked up below.
+		PaymentMethod: "prepaid",
+	})
+	if err != nil {
+		slog.Warn("return pickup: courier create failed", "error", err)
+		return
+	}
+	if err := s.store.SetReturnPickupLabel(ctx, r.ID, s.courier.Name(), resp.AWBNumber, resp.LabelURL); err != nil {
+		slog.Warn("return pickup: persist label failed", "error", err)
+	}
+}
+
+// initiateReturnRefund decides between gateway refund and manual COD
+// reconciliation, then records the outcome on the return row. Item-level
+// refund amount = the original line's final price (one item per return
+// today; multi-item returns would prorate here).
+func (s *Service) initiateReturnRefund(ctx context.Context, r *postgres.ReturnRequest, actorID uuid.UUID) {
+	order, err := s.store.GetOrderByID(ctx, r.OrderID)
+	if err != nil || order == nil {
+		slog.Warn("refund: get order failed", "return_id", r.ID, "error", err)
+		return
+	}
+	items, _ := s.store.GetOrderItems(ctx, r.OrderID)
+	var amount float64
+	for _, it := range items {
+		if it.ID == r.OrderItemID {
+			amount = it.FinalPrice
+			break
+		}
+	}
+	if amount == 0 {
+		amount = order.FinalAmount // fallback: full-order refund
+	}
+
+	isCOD := order.PaymentMethod != nil && strings.EqualFold(*order.PaymentMethod, "cod")
+	if isCOD {
+		// No gateway leg — Ops settles cash externally.
+		if err := s.store.SetReturnRefund(ctx, r.ID, "", "manual", amount); err != nil {
+			slog.Warn("refund: persist manual cod refund failed", "error", err)
+		}
+		return
+	}
+
+	if s.payments == nil {
+		slog.Warn("refund: payments client not configured; marking pending", "return_id", r.ID)
+		_ = s.store.SetReturnRefund(ctx, r.ID, "", "pending", amount)
+		return
+	}
+	intent, err := s.payments.FindOrderIntent(ctx, r.OrderID, actorID)
+	if err != nil || intent == nil {
+		slog.Warn("refund: no succeeded intent for order", "order_id", r.OrderID, "error", err)
+		_ = s.store.SetReturnRefund(ctx, r.ID, "", "pending", amount)
+		return
+	}
+	refunded, err := s.payments.InitiateRefund(ctx, intent.ID, actorID, "return:"+r.ReasonCode)
+	if err != nil {
+		slog.Warn("refund: initiate failed", "intent_id", intent.ID, "error", err)
+		_ = s.store.SetReturnRefund(ctx, r.ID, intent.ID.String(), "pending", amount)
+		return
+	}
+	status := "pending"
+	if refunded != nil && refunded.Status == "refunded" {
+		status = "succeeded"
+	}
+	_ = s.store.SetReturnRefund(ctx, r.ID, intent.ID.String(), status, amount)
+}
+
+// RejectReturn closes a return with status='rejected' and records the
+// seller's reason. Order falls back to the previous fulfillment state
+// (delivered) so the customer's UI shows the return is closed.
+func (s *Service) RejectReturn(ctx context.Context, returnID, actorID uuid.UUID, reason string) (*postgres.ReturnRequest, error) {
+	r, err := s.store.GetReturnRequestByID(ctx, returnID)
+	if err != nil {
+		return nil, fmt.Errorf("get return: %w", err)
+	}
+	if r.Status == "rejected" {
+		return r, nil
+	}
+	if r.Status != "requested" {
+		return nil, fmt.Errorf("cannot reject return in status %q", r.Status)
+	}
+	rsn := reason
+	if err := s.store.UpdateReturnStatus(ctx, returnID, "rejected", &rsn); err != nil {
+		return nil, fmt.Errorf("update return status: %w", err)
+	}
+	_ = s.store.UpdateOrderStatus(ctx, r.OrderID, "return_rejected", &actorID, "seller", reason)
+	s.publish(ctx, "commerce.return.rejected", map[string]any{
+		"return_id": r.ID, "order_id": r.OrderID, "reason": reason,
+	})
+	out, _ := s.store.GetReturnRequestByID(ctx, returnID)
+	if out == nil {
+		out = r
+	}
+	return out, nil
 }
 
 // ─── Payout Calculation ──────────────────────────────────────

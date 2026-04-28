@@ -61,6 +61,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 	// ── Returns ──────────────────────────────────────────────
 	v1.POST("/orders/:orderId/returns", h.CreateReturn)
+	v1.POST("/returns/:returnId/approve", h.ApproveReturn)
+	v1.POST("/returns/:returnId/reject", h.RejectReturn)
 
 	// ── Addresses ────────────────────────────────────────────
 	v1.GET("/addresses", h.ListAddresses)
@@ -74,6 +76,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 	// ── Payout preview ───────────────────────────────────────
 	v1.GET("/payout/preview", h.PayoutPreview)
+
+	// ── COD remittances (seller-facing) ──────────────────────
+	v1.GET("/seller/cod-remittances", h.ListMyCODRemittances)
 
 	// ── Shipments + Invoices ─────────────────────────────────
 	h.RegisterShipmentRoutes(v1)
@@ -329,6 +334,41 @@ func (h *Handler) GetMySellerProfile(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, seller, nil)
+}
+
+// ListMyCODRemittances returns the seller's COD remittance ledger. Each row
+// is one COD shipment whose cash has either been collected by the courier
+// (status=pending) or transferred to the seller (status=settled).
+//
+//   GET /v1/commerce/seller/cod-remittances?status=pending&limit=20&offset=0
+func (h *Handler) ListMyCODRemittances(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	seller, err := h.svc.GetSellerProfile(c.Request.Context(), userID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil, nil)
+		return
+	}
+	status := c.Query("status")
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+
+	items, total, err := h.svc.ListSellerCODRemittances(c.Request.Context(), seller.ID, status, limit, offset)
+	if err != nil {
+		handleErr(c, err)
+		return
+	}
+	if items == nil {
+		items = []*postgres.CODRemittance{}
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{
+		"items":  items,
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
+	}, nil)
 }
 
 // ListMySellerOrders returns orders for the authenticated seller's store.
@@ -629,6 +669,56 @@ func (h *Handler) CreateReturn(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, ret, nil)
+}
+
+// ApproveReturn is called by the seller (or admin) to approve a customer's
+// return request. Books the reverse-pickup label and initiates the refund.
+//
+//   POST /v1/commerce/returns/:returnId/approve
+func (h *Handler) ApproveReturn(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	returnID, ok := parseUUID(c, "returnId")
+	if !ok {
+		return
+	}
+	out, err := h.svc.ApproveReturn(c.Request.Context(), returnID, actorID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "APPROVE_FAILED", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, out, nil)
+}
+
+type rejectReturnReq struct {
+	Reason string `json:"reason" binding:"required"`
+}
+
+// RejectReturn closes a return with the seller's stated reason.
+//
+//   POST /v1/commerce/returns/:returnId/reject
+func (h *Handler) RejectReturn(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	returnID, ok := parseUUID(c, "returnId")
+	if !ok {
+		return
+	}
+	var req rejectReturnReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil, nil)
+		return
+	}
+	out, err := h.svc.RejectReturn(c.Request.Context(), returnID, actorID, req.Reason)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "REJECT_FAILED", err.Error(), nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, out, nil)
 }
 
 // ─── Address handlers ────────────────────────────────────────────

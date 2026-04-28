@@ -886,13 +886,138 @@ func (s *Store) ListReturnsByCustomer(ctx context.Context, userID uuid.UUID, lim
 	return out, nil
 }
 
-func (s *Store) UpdateReturnStatus(ctx context.Context, id uuid.UUID, status string, actorID *uuid.UUID, rejReason *string) error {
+// UpdateReturnStatus advances a return through requested → approved/rejected.
+// rejReason is only persisted when status is 'rejected'; pass nil otherwise.
+//
+// (Earlier signature took an actorID for audit, but no approved_by /
+// rejected_by columns exist on return_requests so it was always discarded.
+// Dropped to avoid a pgx parameter-type-inference error when callers passed
+// untyped nils.)
+func (s *Store) UpdateReturnStatus(ctx context.Context, id uuid.UUID, status string, rejReason *string) error {
 	_, err := s.db.Exec(ctx, `
 		UPDATE return_requests SET status=$2,
 		  approved_at=CASE WHEN $2='approved' THEN NOW() ELSE approved_at END,
 		  rejected_at=CASE WHEN $2='rejected' THEN NOW() ELSE rejected_at END,
-		  rejection_reason=COALESCE($4,rejection_reason)
-		WHERE id=$1`, id, status, actorID, rejReason)
+		  rejection_reason=COALESCE($3,rejection_reason)
+		WHERE id=$1`, id, status, rejReason)
+	return err
+}
+
+// GetReturnRequestByID returns a single return request for inspection.
+func (s *Store) GetReturnRequestByID(ctx context.Context, id uuid.UUID) (*ReturnRequest, error) {
+	r := &ReturnRequest{}
+	err := s.db.QueryRow(ctx, `
+		SELECT id, order_id, order_item_id, customer_user_id, seller_id,
+		       reason_code, reason_description, status,
+		       approved_at, rejected_at, rejection_reason, refund_amount,
+		       requested_at
+		FROM return_requests WHERE id=$1`, id).Scan(
+		&r.ID, &r.OrderID, &r.OrderItemID, &r.CustomerUserID, &r.SellerID,
+		&r.ReasonCode, &r.ReasonDescription, &r.Status,
+		&r.ApprovedAt, &r.RejectedAt, &r.RejectionReason, &r.RefundAmount,
+		&r.RequestedAt)
+	if err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+// SetReturnPickupLabel records the courier-issued return shipping details
+// (pickup at the customer's address, drop at the seller). Called after
+// ApproveReturn books a pickup with the courier.
+func (s *Store) SetReturnPickupLabel(ctx context.Context, returnID uuid.UUID, courierName, awb, labelURL string) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE return_requests
+		SET pickup_courier=$2, pickup_tracking_number=$3, pickup_label_url=$4
+		WHERE id=$1`, returnID, courierName, awb, labelURL)
+	return err
+}
+
+// CreateCODRemittance inserts a COD remittance row. Idempotent on
+// shipment_id (the table has a UNIQUE constraint) — a second delivery
+// webhook for the same shipment is dropped silently. Returns nil on
+// successful insert OR on conflict, both of which are "fine".
+func (s *Store) CreateCODRemittance(ctx context.Context, r *CODRemittance) error {
+	r.ID = uuid.New()
+	r.CreatedAt = time.Now()
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO cod_remittances (
+			id, shipment_id, order_id, seller_id,
+			gross_amount, commission_amount, platform_fee, tds_amount, net_amount,
+			currency_code, status, delivered_at, created_at
+		)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+		ON CONFLICT (shipment_id) DO NOTHING`,
+		r.ID, r.ShipmentID, r.OrderID, r.SellerID,
+		r.GrossAmount, r.CommissionAmount, r.PlatformFee, r.TDSAmount, r.NetAmount,
+		r.CurrencyCode, r.Status, r.DeliveredAt, r.CreatedAt,
+	)
+	return err
+}
+
+// ListCODRemittancesBySeller returns the seller's COD remittances newest
+// first, optionally filtered by status. Used by the seller payouts UI.
+func (s *Store) ListCODRemittancesBySeller(ctx context.Context, sellerID uuid.UUID, status string, limit, offset int) ([]*CODRemittance, int, error) {
+	conds := []string{"seller_id = $1"}
+	args := []any{sellerID}
+	idx := 2
+	if status != "" {
+		conds = append(conds, fmt.Sprintf("status = $%d", idx))
+		args = append(args, status)
+		idx++
+	}
+	where := "WHERE " + strings.Join(conds, " AND ")
+
+	var total int
+	if err := s.db.QueryRow(ctx, "SELECT COUNT(*) FROM cod_remittances "+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	args = append(args, limit, offset)
+	rows, err := s.db.Query(ctx, `
+		SELECT id, shipment_id, order_id, seller_id,
+		       gross_amount, commission_amount, platform_fee, tds_amount, net_amount,
+		       currency_code, status, delivered_at, settled_at, payout_batch_id, created_at
+		FROM cod_remittances `+where+
+		fmt.Sprintf(" ORDER BY delivered_at DESC LIMIT $%d OFFSET $%d", idx, idx+1), args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	var out []*CODRemittance
+	for rows.Next() {
+		r := &CODRemittance{}
+		if err := rows.Scan(&r.ID, &r.ShipmentID, &r.OrderID, &r.SellerID,
+			&r.GrossAmount, &r.CommissionAmount, &r.PlatformFee, &r.TDSAmount, &r.NetAmount,
+			&r.CurrencyCode, &r.Status, &r.DeliveredAt, &r.SettledAt, &r.PayoutBatchID, &r.CreatedAt); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, r)
+	}
+	return out, total, rows.Err()
+}
+
+// MarkCODRemittanceSettled flips a pending remittance to settled and stamps
+// the payout batch. Used by the Ops-side payout job when cash actually
+// transfers to the seller's bank/UPI.
+func (s *Store) MarkCODRemittanceSettled(ctx context.Context, remittanceID, payoutBatchID uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE cod_remittances
+		SET status = 'settled',
+		    settled_at = NOW(),
+		    payout_batch_id = $2
+		WHERE id = $1 AND status = 'pending'`, remittanceID, payoutBatchID)
+	return err
+}
+
+// SetReturnRefund stamps the refund intent + status onto the return. Used
+// once payments-service accepts the refund — even if the gateway is async,
+// we record the intent ID immediately so a follow-up webhook can find it.
+func (s *Store) SetReturnRefund(ctx context.Context, returnID uuid.UUID, refundIntentID, status string, amount float64) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE return_requests
+		SET refund_intent_id=$2, refund_status=$3, refund_amount=$4
+		WHERE id=$1`, returnID, refundIntentID, status, amount)
 	return err
 }
 

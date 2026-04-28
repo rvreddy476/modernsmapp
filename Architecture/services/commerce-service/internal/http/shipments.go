@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/atpost/commerce-service/internal/service"
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
 )
@@ -12,24 +13,32 @@ import (
 func (h *Handler) RegisterShipmentRoutes(v1 *gin.RouterGroup) {
 	v1.POST("/orders/:orderId/shipment", h.CreateShipment)
 	v1.GET("/orders/:orderId/shipment", h.GetShipment)
+	v1.GET("/orders/:orderId/shipments", h.ListShipments)
 	v1.POST("/orders/:orderId/invoice", h.IssueInvoice)
 	v1.GET("/orders/:orderId/invoice", h.GetInvoice)
 	v1.POST("/shipments/webhooks/:courier", h.ShipmentWebhook)
 }
 
+// CreateShipment books shipments for the order. Multi-seller orders return
+// a list of shipments (one per seller); single-seller orders return a list
+// of length 1. Wrapped in a `shipments` envelope so the response shape is
+// stable regardless of the seller count.
 func (h *Handler) CreateShipment(c *gin.Context) {
 	orderID, ok := parseUUID(c, "orderId")
 	if !ok {
 		return
 	}
-	sh, err := h.svc.CreateShipmentForOrder(c.Request.Context(), orderID)
+	shipments, err := h.svc.CreateShipmentsForOrder(c.Request.Context(), orderID)
 	if err != nil {
 		api.Error(c.Writer, http.StatusBadRequest, "SHIPMENT_FAILED", err.Error(), nil, nil)
 		return
 	}
-	api.JSON(c.Writer, http.StatusCreated, sh, nil)
+	api.JSON(c.Writer, http.StatusCreated, gin.H{"shipments": shipments}, nil)
 }
 
+// GetShipment returns the latest shipment + events for the order. Kept for
+// backward-compatible single-seller flows; use ListShipments for the full set
+// across multi-seller orders.
 func (h *Handler) GetShipment(c *gin.Context) {
 	orderID, ok := parseUUID(c, "orderId")
 	if !ok {
@@ -41,6 +50,25 @@ func (h *Handler) GetShipment(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"shipment": sh, "events": evts}, nil)
+}
+
+// ListShipments returns every shipment for the order with their tracking
+// events. Used by the order detail page to render multi-seller fulfillment
+// progress.
+func (h *Handler) ListShipments(c *gin.Context) {
+	orderID, ok := parseUUID(c, "orderId")
+	if !ok {
+		return
+	}
+	out, err := h.svc.ListShipmentsForOrder(c.Request.Context(), orderID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "LIST_FAILED", err.Error(), nil, nil)
+		return
+	}
+	if out == nil {
+		out = []service.ShipmentWithEvents{}
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"shipments": out}, nil)
 }
 
 func (h *Handler) IssueInvoice(c *gin.Context) {

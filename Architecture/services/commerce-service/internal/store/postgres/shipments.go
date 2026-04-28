@@ -123,6 +123,53 @@ func (s *Store) GetShipmentByOrder(ctx context.Context, orderID uuid.UUID) (*Shi
 	return sh, nil
 }
 
+// ListShipmentsByOrder returns every shipment for the order, ordered oldest
+// first. Multi-seller orders create one shipment per seller (each seller's
+// items ship from their own pickup address), so callers that need full
+// fulfillment state must use this rather than GetShipmentByOrder.
+func (s *Store) ListShipmentsByOrder(ctx context.Context, orderID uuid.UUID) ([]*Shipment, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT id, order_id, seller_id, courier, tracking_number, courier_order_id, label_url, tracking_url,
+		       status, eta, shipped_at, delivered_at, last_event_at, created_at, updated_at
+		FROM shipments WHERE order_id = $1
+		ORDER BY created_at ASC
+	`, orderID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Shipment
+	for rows.Next() {
+		sh := &Shipment{}
+		if err := rows.Scan(&sh.ID, &sh.OrderID, &sh.SellerID, &sh.Courier, &sh.TrackingNumber, &sh.CourierOrderID,
+			&sh.LabelURL, &sh.TrackingURL, &sh.Status, &sh.ETA, &sh.ShippedAt, &sh.DeliveredAt,
+			&sh.LastEventAt, &sh.CreatedAt, &sh.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, sh)
+	}
+	return out, rows.Err()
+}
+
+// GetShipmentByOrderAndSeller returns the shipment for one seller's items
+// in the order, or pgx.ErrNoRows if that seller hasn't been booked yet.
+// Used by the multi-seller idempotency check in CreateShipmentsForOrder.
+func (s *Store) GetShipmentByOrderAndSeller(ctx context.Context, orderID, sellerID uuid.UUID) (*Shipment, error) {
+	sh := &Shipment{}
+	err := s.db.QueryRow(ctx, `
+		SELECT id, order_id, seller_id, courier, tracking_number, courier_order_id, label_url, tracking_url,
+		       status, eta, shipped_at, delivered_at, last_event_at, created_at, updated_at
+		FROM shipments WHERE order_id = $1 AND seller_id = $2
+		ORDER BY created_at DESC LIMIT 1
+	`, orderID, sellerID).Scan(&sh.ID, &sh.OrderID, &sh.SellerID, &sh.Courier, &sh.TrackingNumber, &sh.CourierOrderID,
+		&sh.LabelURL, &sh.TrackingURL, &sh.Status, &sh.ETA, &sh.ShippedAt, &sh.DeliveredAt,
+		&sh.LastEventAt, &sh.CreatedAt, &sh.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return sh, nil
+}
+
 func (s *Store) GetShipmentByTracking(ctx context.Context, courier, tracking string) (*Shipment, error) {
 	sh := &Shipment{}
 	err := s.db.QueryRow(ctx, `

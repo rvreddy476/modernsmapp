@@ -413,6 +413,29 @@ type CustomerAddress struct {
 	CreatedAt      time.Time `db:"created_at" json:"created_at,omitempty"`
 }
 
+// ─── COD Remittance ──────────────────────────────────────────
+
+// CODRemittance tracks one COD shipment's cash collection lifecycle: courier
+// confirms delivery -> remittance row created in 'pending' -> Ops marks
+// 'settled' once the cash transfers to the seller's payout account.
+type CODRemittance struct {
+	ID               uuid.UUID  `db:"id" json:"id,omitempty"`
+	ShipmentID       uuid.UUID  `db:"shipment_id" json:"shipment_id,omitempty"`
+	OrderID          uuid.UUID  `db:"order_id" json:"order_id,omitempty"`
+	SellerID         uuid.UUID  `db:"seller_id" json:"seller_id,omitempty"`
+	GrossAmount      float64    `db:"gross_amount" json:"gross_amount"`
+	CommissionAmount float64    `db:"commission_amount" json:"commission_amount"`
+	PlatformFee      float64    `db:"platform_fee" json:"platform_fee"`
+	TDSAmount        float64    `db:"tds_amount" json:"tds_amount"`
+	NetAmount        float64    `db:"net_amount" json:"net_amount"`
+	CurrencyCode     string     `db:"currency_code" json:"currency_code,omitempty"`
+	Status           string     `db:"status" json:"status,omitempty"`
+	DeliveredAt      time.Time  `db:"delivered_at" json:"delivered_at,omitempty"`
+	SettledAt        *time.Time `db:"settled_at" json:"settled_at,omitempty"`
+	PayoutBatchID    *uuid.UUID `db:"payout_batch_id" json:"payout_batch_id,omitempty"`
+	CreatedAt        time.Time  `db:"created_at" json:"created_at,omitempty"`
+}
+
 // ─── Support Ticket ──────────────────────────────────────────
 
 type SupportTicket struct {

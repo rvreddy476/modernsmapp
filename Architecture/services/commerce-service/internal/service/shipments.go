@@ -9,6 +9,7 @@ import (
 
 	"github.com/atpost/commerce-service/internal/courier"
 	"github.com/atpost/commerce-service/internal/identity"
+	"github.com/atpost/commerce-service/internal/payments"
 	"github.com/atpost/commerce-service/internal/store/blob"
 	"github.com/atpost/commerce-service/internal/store/postgres"
 	"github.com/atpost/shared/events"
@@ -43,6 +44,12 @@ func (s *Service) WithIdentity(c *identity.Client) *Service {
 	return s
 }
 
+// WithPayments attaches the payments-service client for refund initiation.
+func (s *Service) WithPayments(c *payments.Client) *Service {
+	s.payments = c
+	return s
+}
+
 // resolveBuyer returns email + display name for an order's customer. Safe on nil client.
 func (s *Service) resolveBuyer(ctx context.Context, userID uuid.UUID) (email, name string) {
 	if s.identity == nil {
@@ -65,14 +72,17 @@ func (s *Service) resolveSeller(seller *postgres.Seller) (email, name string) {
 
 // ─── Shipments ────────────────────────────────────────────────────────
 
-// CreateShipmentForOrder books a shipment with the courier and persists it.
-// Idempotent: if a shipment already exists for the order, returns that.
-func (s *Service) CreateShipmentForOrder(ctx context.Context, orderID uuid.UUID) (*postgres.Shipment, error) {
+// CreateShipmentsForOrder books one shipment per distinct seller in the order
+// and persists each. Items belonging to seller A ship from seller A's pickup
+// address with seller A's items only; same for seller B etc. Single-seller
+// orders return a slice of length 1.
+//
+// Idempotent: a seller already booked for this order is returned as-is rather
+// than re-booking. So calling twice on the same order is safe and produces
+// the same set of shipments.
+func (s *Service) CreateShipmentsForOrder(ctx context.Context, orderID uuid.UUID) ([]*postgres.Shipment, error) {
 	if s.courier == nil {
 		return nil, fmt.Errorf("courier provider not configured")
-	}
-	if existing, err := s.store.GetShipmentByOrder(ctx, orderID); err == nil && existing != nil {
-		return existing, nil
 	}
 
 	order, err := s.store.GetOrderByID(ctx, orderID)
@@ -112,108 +122,160 @@ func (s *Service) CreateShipmentForOrder(ctx context.Context, orderID uuid.UUID)
 		}
 	}
 
-	sellerID := items[0].SellerID
-	seller, err := s.store.GetSellerByID(ctx, sellerID)
-	if err != nil {
-		return nil, fmt.Errorf("get seller: %w", err)
-	}
-
-	pickup := courier.Address{Name: seller.StoreName, Country: "IN"}
-	if seller.City != nil {
-		pickup.City = *seller.City
-	}
-	if seller.State != nil {
-		pickup.State = *seller.State
-	}
-	if seller.PostalCode != nil {
-		pickup.Postal = *seller.PostalCode
-	}
-	if seller.Phone != nil {
-		pickup.Phone = *seller.Phone
-	}
-
-	var weight float64
-	var courierItems []courier.Item
+	// Group items by seller. Stable order: first occurrence wins so
+	// shipments come back in cart-insertion order.
+	sellerOrder := []uuid.UUID{}
+	bySeller := map[uuid.UUID][]*postgres.OrderItem{}
 	for _, it := range items {
-		// Pull weight + HSN from the underlying product; fall back to 500g if missing.
-		product, _ := s.store.GetProductByID(ctx, it.ProductID)
-		perUnitKg := 0.5
-		hsn := ""
-		if product != nil {
-			if product.WeightGrams != nil && *product.WeightGrams > 0 {
-				perUnitKg = float64(*product.WeightGrams) / 1000.0
-			}
-			if product.HSNCode != nil {
-				hsn = *product.HSNCode
-			}
+		if _, seen := bySeller[it.SellerID]; !seen {
+			sellerOrder = append(sellerOrder, it.SellerID)
 		}
-		weight += perUnitKg * float64(it.Quantity)
-		courierItems = append(courierItems, courier.Item{
-			Name: it.ProductTitle, SKU: it.SKU, Quantity: it.Quantity,
-			Price: it.UnitPrice, HSN: hsn,
-		})
-	}
-	if weight == 0 {
-		weight = 0.5
+		bySeller[it.SellerID] = append(bySeller[it.SellerID], it)
 	}
 
 	pm := "prepaid"
-	if order.PaymentMethod != nil && strings.EqualFold(*order.PaymentMethod, "cod") {
+	if isCOD {
 		pm = "cod"
 	}
 
-	resp, err := s.courier.CreateShipment(ctx, courier.ShipmentRequest{
-		OrderID:       orderID.String(),
-		OrderNumber:   order.OrderNumber,
-		PickupAddress: pickup,
-		DropAddress:   dropAddr,
-		Weight:        weight,
-		PackageValue:  order.FinalAmount,
-		PaymentMethod: pm,
-		CODAmount:     codAmount(pm, order.FinalAmount),
-		Items:         courierItems,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("courier create: %w", err)
+	out := make([]*postgres.Shipment, 0, len(sellerOrder))
+	for _, sellerID := range sellerOrder {
+		// Idempotency per seller: if this seller already has a shipment for
+		// this order, reuse it. Lets the function be re-invoked safely (e.g.
+		// from a retry path) without booking duplicate AWBs.
+		if existing, err := s.store.GetShipmentByOrderAndSeller(ctx, orderID, sellerID); err == nil && existing != nil {
+			out = append(out, existing)
+			continue
+		}
+
+		sellerItems := bySeller[sellerID]
+		seller, err := s.store.GetSellerByID(ctx, sellerID)
+		if err != nil {
+			slog.Warn("get seller for shipment failed", "seller_id", sellerID, "error", err)
+			continue
+		}
+		pickup := courier.Address{Name: seller.StoreName, Country: "IN"}
+		if seller.City != nil {
+			pickup.City = *seller.City
+		}
+		if seller.State != nil {
+			pickup.State = *seller.State
+		}
+		if seller.PostalCode != nil {
+			pickup.Postal = *seller.PostalCode
+		}
+		if seller.Phone != nil {
+			pickup.Phone = *seller.Phone
+		}
+
+		var weight float64
+		var packageValue float64
+		var courierItems []courier.Item
+		for _, it := range sellerItems {
+			product, _ := s.store.GetProductByID(ctx, it.ProductID)
+			perUnitKg := 0.5
+			hsn := ""
+			if product != nil {
+				if product.WeightGrams != nil && *product.WeightGrams > 0 {
+					perUnitKg = float64(*product.WeightGrams) / 1000.0
+				}
+				if product.HSNCode != nil {
+					hsn = *product.HSNCode
+				}
+			}
+			weight += perUnitKg * float64(it.Quantity)
+			packageValue += it.FinalPrice
+			courierItems = append(courierItems, courier.Item{
+				Name: it.ProductTitle, SKU: it.SKU, Quantity: it.Quantity,
+				Price: it.UnitPrice, HSN: hsn,
+			})
+		}
+		if weight == 0 {
+			weight = 0.5
+		}
+
+		// COD amount per shipment: each seller's slice of the order. The
+		// courier collects only what's owed for the items this seller ships.
+		shipmentCOD := 0.0
+		if pm == "cod" {
+			shipmentCOD = packageValue
+		}
+
+		resp, err := s.courier.CreateShipment(ctx, courier.ShipmentRequest{
+			OrderID:       orderID.String(),
+			OrderNumber:   order.OrderNumber,
+			PickupAddress: pickup,
+			DropAddress:   dropAddr,
+			Weight:        weight,
+			PackageValue:  packageValue,
+			PaymentMethod: pm,
+			CODAmount:     shipmentCOD,
+			Items:         courierItems,
+		})
+		if err != nil {
+			slog.Warn("courier create failed", "seller_id", sellerID, "error", err)
+			continue
+		}
+
+		now := time.Now()
+		sh := &postgres.Shipment{
+			OrderID:        orderID,
+			SellerID:       sellerID,
+			Courier:        s.courier.Name(),
+			TrackingNumber: strPtr(resp.AWBNumber),
+			CourierOrderID: strPtr(resp.CourierOrderID),
+			LabelURL:       strPtr(resp.LabelURL),
+			TrackingURL:    strPtr(resp.TrackingURL),
+			Status:         "booked",
+			ETA:            &resp.EstimatedETA,
+			ShippedAt:      &now,
+		}
+		if err := s.store.CreateShipment(ctx, sh); err != nil {
+			slog.Warn("persist shipment failed", "seller_id", sellerID, "error", err)
+			continue
+		}
+		out = append(out, sh)
+
+		buyerEmail, buyerName := s.resolveBuyer(ctx, order.CustomerUserID)
+		s.publish(ctx, events.EventCommerceOrderShipped, map[string]any{
+			"order_id":        orderID,
+			"shipment_id":     sh.ID,
+			"order_number":    order.OrderNumber,
+			"user_id":         order.CustomerUserID,
+			"seller_id":       sellerID,
+			"courier":         sh.Courier,
+			"tracking_number": resp.AWBNumber,
+			"tracking_url":    resp.TrackingURL,
+			"eta":             resp.EstimatedETA,
+			"buyer_email":     buyerEmail,
+			"buyer_name":      buyerName,
+		})
 	}
 
-	now := time.Now()
-	sh := &postgres.Shipment{
-		OrderID:        orderID,
-		SellerID:       sellerID,
-		Courier:        s.courier.Name(),
-		TrackingNumber: strPtr(resp.AWBNumber),
-		CourierOrderID: strPtr(resp.CourierOrderID),
-		LabelURL:       strPtr(resp.LabelURL),
-		TrackingURL:    strPtr(resp.TrackingURL),
-		Status:         "booked",
-		ETA:            &resp.EstimatedETA,
-		ShippedAt:      &now,
-	}
-	if err := s.store.CreateShipment(ctx, sh); err != nil {
-		return nil, fmt.Errorf("persist shipment: %w", err)
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no shipments could be booked for order %s", orderID)
 	}
 
+	// Order status flips to "shipped" once at least one shipment exists.
+	// Per-shipment delivered status updates roll forward as webhooks land.
 	_ = s.store.UpdateOrderStatus(ctx, orderID, "shipped", nil, "system", "shipment booked")
-
-	buyerEmail, buyerName := s.resolveBuyer(ctx, order.CustomerUserID)
-	s.publish(ctx, events.EventCommerceOrderShipped, map[string]any{
-		"order_id":        orderID,
-		"shipment_id":     sh.ID,
-		"order_number":    order.OrderNumber,
-		"user_id":         order.CustomerUserID,
-		"seller_id":       sellerID,
-		"courier":         sh.Courier,
-		"tracking_number": resp.AWBNumber,
-		"tracking_url":    resp.TrackingURL,
-		"eta":             resp.EstimatedETA,
-		"buyer_email":     buyerEmail,
-		"buyer_name":      buyerName,
-	})
-	return sh, nil
+	return out, nil
 }
 
-// GetShipmentForOrder returns the shipment for an order (if any).
+// CreateShipmentForOrder is a backward-compatible single-shipment wrapper
+// that returns the first shipment booked. Prefer CreateShipmentsForOrder for
+// new callers that need to surface every shipment in a multi-seller order.
+func (s *Service) CreateShipmentForOrder(ctx context.Context, orderID uuid.UUID) (*postgres.Shipment, error) {
+	shipments, err := s.CreateShipmentsForOrder(ctx, orderID)
+	if err != nil {
+		return nil, err
+	}
+	return shipments[0], nil
+}
+
+// GetShipmentForOrder returns the latest shipment for an order plus its
+// events. Multi-seller orders have multiple shipments — see
+// ListShipmentsForOrder for the full set.
 func (s *Service) GetShipmentForOrder(ctx context.Context, orderID uuid.UUID) (*postgres.Shipment, []*postgres.ShipmentEvent, error) {
 	sh, err := s.store.GetShipmentByOrder(ctx, orderID)
 	if err != nil {
@@ -221,6 +283,102 @@ func (s *Service) GetShipmentForOrder(ctx context.Context, orderID uuid.UUID) (*
 	}
 	evts, _ := s.store.ListShipmentEvents(ctx, sh.ID)
 	return sh, evts, nil
+}
+
+// ListShipmentsForOrder returns every shipment for the order, with their
+// events. Used to render multi-seller fulfillment progress on the order
+// detail page.
+type ShipmentWithEvents struct {
+	Shipment *postgres.Shipment        `json:"shipment"`
+	Events   []*postgres.ShipmentEvent `json:"events"`
+}
+
+func (s *Service) ListShipmentsForOrder(ctx context.Context, orderID uuid.UUID) ([]ShipmentWithEvents, error) {
+	shipments, err := s.store.ListShipmentsByOrder(ctx, orderID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ShipmentWithEvents, 0, len(shipments))
+	for _, sh := range shipments {
+		evts, _ := s.store.ListShipmentEvents(ctx, sh.ID)
+		out = append(out, ShipmentWithEvents{Shipment: sh, Events: evts})
+	}
+	return out, nil
+}
+
+// recordCODRemittance opens a pending COD remittance row when a COD
+// shipment delivers. Skipped silently for prepaid shipments (gateway has
+// already settled). Idempotent at the DB layer (UNIQUE on shipment_id), so
+// retried delivery webhooks don't double-credit.
+//
+// Amount = sum of order_items belonging to the shipment's seller. After the
+// multi-seller refactor each shipment carries one seller's items, so we can
+// match by seller_id and avoid carrying a shipment_items table.
+func (s *Service) recordCODRemittance(ctx context.Context, sh *postgres.Shipment, order *postgres.Order, deliveredAt time.Time) {
+	if order == nil {
+		return
+	}
+	if order.PaymentMethod == nil || !strings.EqualFold(*order.PaymentMethod, "cod") {
+		return
+	}
+	items, err := s.store.GetOrderItems(ctx, sh.OrderID)
+	if err != nil {
+		slog.Warn("cod remittance: get items failed", "order_id", sh.OrderID, "error", err)
+		return
+	}
+	var gross float64
+	for _, it := range items {
+		if it.SellerID == sh.SellerID {
+			gross += it.FinalPrice
+		}
+	}
+	if gross == 0 {
+		// No items match — likely a multi-seller order where this shipment's
+		// seller has zero items in the order_items table (data drift). Don't
+		// create a zero-amount remittance.
+		slog.Warn("cod remittance: no matching items for seller",
+			"order_id", sh.OrderID, "seller_id", sh.SellerID)
+		return
+	}
+	net, commission, fee, tds := s.CalculateSellerPayout(gross, 0, 0)
+	r := &postgres.CODRemittance{
+		ShipmentID:       sh.ID,
+		OrderID:          sh.OrderID,
+		SellerID:         sh.SellerID,
+		GrossAmount:      gross,
+		CommissionAmount: commission,
+		PlatformFee:      fee,
+		TDSAmount:        tds,
+		NetAmount:        net,
+		CurrencyCode:     order.CurrencyCode,
+		Status:           "pending",
+		DeliveredAt:      deliveredAt,
+	}
+	if err := s.store.CreateCODRemittance(ctx, r); err != nil {
+		slog.Warn("cod remittance: persist failed",
+			"shipment_id", sh.ID, "error", err)
+		return
+	}
+	s.publish(ctx, "commerce.cod.remittance.opened", map[string]any{
+		"remittance_id": r.ID,
+		"shipment_id":   sh.ID,
+		"order_id":      sh.OrderID,
+		"seller_id":     sh.SellerID,
+		"gross_amount":  gross,
+		"net_amount":    net,
+	})
+}
+
+// ListSellerCODRemittances returns the seller's COD remittances paginated.
+// status is optional ("pending" | "settled" | "on_hold" | ""=all).
+func (s *Service) ListSellerCODRemittances(ctx context.Context, sellerID uuid.UUID, status string, limit, offset int) ([]*postgres.CODRemittance, int, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	return s.store.ListCODRemittancesBySeller(ctx, sellerID, status, limit, offset)
 }
 
 // HandleShipmentWebhook processes a courier webhook payload.
@@ -265,6 +423,10 @@ func (s *Service) HandleShipmentWebhook(ctx context.Context, courierName string,
 				"occurred_at":  u.OccurredAt,
 				"buyer_email":  buyerEmail,
 			})
+
+			// Cash collected at delivery — open a remittance so the seller
+			// sees what they're owed and Ops can settle it.
+			s.recordCODRemittance(ctx, sh, order, u.OccurredAt)
 		}
 	}
 	return nil
