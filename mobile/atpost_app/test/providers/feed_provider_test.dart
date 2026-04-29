@@ -12,15 +12,20 @@ import '../helpers/mocks.dart';
 void main() {
   late MockFeedRepository mockRepo;
   late MockRealtimeService mockRealtime;
+  late MockAuthService mockAuth;
 
   setUp(() {
     mockRepo = MockFeedRepository();
     mockRealtime = MockRealtimeService();
+    mockAuth = MockAuthService();
     when(() => mockRealtime.events).thenAnswer((_) => const Stream.empty());
+    // HomeFeedNotifier waits on AuthService.sessionReady before its
+    // first fetch; satisfy it immediately so the tests don't deadlock.
+    when(() => mockAuth.sessionReady).thenAnswer((_) async {});
   });
 
   HomeFeedNotifier createNotifier() {
-    return HomeFeedNotifier(mockRepo, mockRealtime);
+    return HomeFeedNotifier(mockRepo, mockRealtime, mockAuth);
   }
 
   group('HomeFeedNotifier', () {

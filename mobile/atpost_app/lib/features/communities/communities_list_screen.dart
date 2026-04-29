@@ -78,7 +78,7 @@ class CommunitiesListScreen extends ConsumerWidget {
                 shape: BoxShape.circle,
                 boxShadow: [
                   BoxShadow(
-                    color: AppColors.posttubePrimary.withOpacity(0.3),
+                    color: AppColors.posttubePrimary.withValues(alpha: 0.3),
                     blurRadius: 12,
                     offset: const Offset(0, 4),
                   ),
@@ -98,7 +98,7 @@ class CommunitiesListScreen extends ConsumerWidget {
       child: Container(
         padding: const EdgeInsets.all(4),
         decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.05),
+          color: Colors.white.withValues(alpha: 0.05),
           borderRadius: BorderRadius.circular(30),
         ),
         child: TabBar(
@@ -172,9 +172,9 @@ class _CommunityGlassTile extends ConsumerWidget {
         child: Container(
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
-            color: Colors.white.withOpacity(0.03),
+            color: Colors.white.withValues(alpha: 0.03),
             borderRadius: BorderRadius.circular(24),
-            border: Border.all(color: Colors.white.withOpacity(0.05)),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
           ),
           child: Row(
             children: [
@@ -238,14 +238,14 @@ class _JoinButton extends ConsumerWidget {
     return ElevatedButton(
       onPressed: () => ref.read(communitiesProvider.notifier).toggleJoin(communityId),
       style: ElevatedButton.styleFrom(
-        backgroundColor: isJoined ? Colors.white.withOpacity(0.05) : AppColors.posttubePrimary,
+        backgroundColor: isJoined ? Colors.white.withValues(alpha: 0.05) : AppColors.posttubePrimary,
         foregroundColor: isJoined ? Colors.white70 : Colors.white,
         elevation: 0,
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         minimumSize: Size.zero,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(20),
-          side: isJoined ? BorderSide(color: Colors.white.withOpacity(0.1)) : BorderSide.none,
+          side: isJoined ? BorderSide(color: Colors.white.withValues(alpha: 0.1)) : BorderSide.none,
         ),
       ),
       child: Text(

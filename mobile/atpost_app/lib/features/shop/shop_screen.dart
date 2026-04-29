@@ -145,7 +145,7 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Container(
             decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.05),
+              color: Colors.white.withValues(alpha: 0.05),
               borderRadius: BorderRadius.circular(20),
               border: Border.all(color: Colors.white10),
             ),
@@ -186,8 +186,8 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
                   onSelected: (val) {
                     if (val) ref.read(shopProvider.notifier).setCategory(cat);
                   },
-                  selectedColor: AppColors.postbookPrimary.withOpacity(0.2),
-                  backgroundColor: Colors.white.withOpacity(0.03),
+                  selectedColor: AppColors.postbookPrimary.withValues(alpha: 0.2),
+                  backgroundColor: Colors.white.withValues(alpha: 0.03),
                   labelStyle: TextStyle(
                     color: isSelected
                         ? AppColors.postbookPrimary
@@ -279,9 +279,9 @@ class _ProductGlassCard extends ConsumerWidget {
     return RepaintBoundary(
       child: Container(
         decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.03),
+          color: Colors.white.withValues(alpha: 0.03),
           borderRadius: BorderRadius.circular(24),
-          border: Border.all(color: Colors.white.withOpacity(0.05)),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -347,7 +347,7 @@ class _ProductGlassCard extends ConsumerWidget {
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.05),
+        color: Colors.white.withValues(alpha: 0.05),
         borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
       ),
       child: ClipRRect(
@@ -506,7 +506,7 @@ class _CartItemTile extends ConsumerWidget {
             width: 50,
             height: 50,
             decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.05),
+              color: Colors.white.withValues(alpha: 0.05),
               borderRadius: BorderRadius.circular(12),
             ),
             child: const Icon(

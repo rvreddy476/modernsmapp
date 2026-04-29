@@ -343,7 +343,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
           Container(
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
-                  color: Colors.amber.withOpacity(0.1),
+                  color: Colors.amber.withValues(alpha: 0.1),
                   shape: BoxShape.circle,
                 ),
                 child: state.isGeneratingAi
@@ -374,7 +374,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
         margin: const EdgeInsets.only(top: 4),
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
         decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.05),
+          color: Colors.white.withValues(alpha: 0.05),
           borderRadius: BorderRadius.circular(4),
           border: Border.all(color: Colors.white10),
         ),
@@ -450,7 +450,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
       margin: const EdgeInsets.only(top: 24),
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.03),
+        color: Colors.white.withValues(alpha: 0.03),
         borderRadius: BorderRadius.circular(24),
         border: Border.all(color: Colors.white10),
       ),
@@ -473,7 +473,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
                 decoration: InputDecoration(
                   hintText: 'Option ${e.key + 1}',
                   filled: true,
-                  fillColor: Colors.white.withOpacity(0.05),
+                  fillColor: Colors.white.withValues(alpha: 0.05),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
                     borderSide: BorderSide.none,
@@ -518,12 +518,12 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
           borderRadius: BorderRadius.circular(30),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.4),
+              color: Colors.black.withValues(alpha: 0.4),
               blurRadius: 20,
               offset: const Offset(0, 10),
             ),
           ],
-          border: Border.all(color: Colors.white.withOpacity(0.05)),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
         ),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceAround,

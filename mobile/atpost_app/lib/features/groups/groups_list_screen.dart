@@ -78,7 +78,7 @@ class GroupsListScreen extends ConsumerWidget {
                 shape: BoxShape.circle,
                 boxShadow: [
                   BoxShadow(
-                    color: AppColors.postbookPrimary.withOpacity(0.3),
+                    color: AppColors.postbookPrimary.withValues(alpha: 0.3),
                     blurRadius: 12,
                     offset: const Offset(0, 4),
                   ),
@@ -98,7 +98,7 @@ class GroupsListScreen extends ConsumerWidget {
       child: Container(
         padding: const EdgeInsets.all(4),
         decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.05),
+          color: Colors.white.withValues(alpha: 0.05),
           borderRadius: BorderRadius.circular(30),
         ),
         child: TabBar(
@@ -170,9 +170,9 @@ class _GroupGlassTile extends ConsumerWidget {
         child: Container(
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
-            color: Colors.white.withOpacity(0.03),
+            color: Colors.white.withValues(alpha: 0.03),
             borderRadius: BorderRadius.circular(24),
-            border: Border.all(color: Colors.white.withOpacity(0.05)),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
           ),
           child: Row(
             children: [
@@ -208,7 +208,7 @@ class _GroupGlassTile extends ConsumerWidget {
         borderRadius: BorderRadius.circular(16),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.2),
+            color: Colors.black.withValues(alpha: 0.2),
             blurRadius: 8,
             offset: const Offset(0, 4),
           ),
@@ -230,14 +230,14 @@ class _JoinButton extends ConsumerWidget {
     return ElevatedButton(
       onPressed: () => ref.read(groupsProvider.notifier).toggleJoin(groupId),
       style: ElevatedButton.styleFrom(
-        backgroundColor: isMember ? Colors.white.withOpacity(0.05) : AppColors.postbookPrimary,
+        backgroundColor: isMember ? Colors.white.withValues(alpha: 0.05) : AppColors.postbookPrimary,
         foregroundColor: isMember ? Colors.white70 : Colors.white,
         elevation: 0,
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         minimumSize: Size.zero,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(20),
-          side: isMember ? BorderSide(color: Colors.white.withOpacity(0.1)) : BorderSide.none,
+          side: isMember ? BorderSide(color: Colors.white.withValues(alpha: 0.1)) : BorderSide.none,
         ),
       ),
       child: Text(

@@ -13,7 +13,6 @@ import 'package:atpost_app/providers/stories_provider.dart';
 import 'package:atpost_app/providers/user_provider.dart';
 import 'package:atpost_app/shared/widgets/badge_icon_button.dart';
 import 'package:atpost_app/shared/widgets/content_cards.dart';
-import 'package:atpost_app/shared/widgets/story_ring.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';

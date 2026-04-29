@@ -488,7 +488,7 @@ class _PostCardState extends ConsumerState<PostCard> {
               (tag) => Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
                 decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.05),
+                  color: Colors.white.withValues(alpha: 0.05),
                   borderRadius: BorderRadius.circular(999),
                 ),
                 child: Text(
@@ -707,7 +707,7 @@ class ReelCard extends StatelessWidget {
                 gradient: LinearGradient(
                   begin: Alignment.topCenter,
                   end: Alignment.bottomCenter,
-                  colors: [Colors.transparent, Colors.black.withOpacity(0.8)],
+                  colors: [Colors.transparent, Colors.black.withValues(alpha: 0.8)],
                 ),
               ),
             ),
@@ -863,8 +863,8 @@ class _ActionPill extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         decoration: BoxDecoration(
           color: active
-              ? color.withOpacity(0.1)
-              : Colors.white.withOpacity(0.05),
+              ? color.withValues(alpha: 0.1)
+              : Colors.white.withValues(alpha: 0.05),
           borderRadius: BorderRadius.circular(20),
         ),
         child: Row(

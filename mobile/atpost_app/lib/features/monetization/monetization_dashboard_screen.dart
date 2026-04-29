@@ -128,9 +128,9 @@ class MonetizationDashboardScreen extends ConsumerWidget {
             height: 220,
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.03),
+              color: Colors.white.withValues(alpha: 0.03),
               borderRadius: BorderRadius.circular(24),
-              border: Border.all(color: Colors.white.withOpacity(0.05)),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
             ),
             child: _EarningsLineChart(history: history),
           ),
@@ -222,9 +222,9 @@ class _GlassStatCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.03),
+        color: Colors.white.withValues(alpha: 0.03),
         borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: Colors.white.withOpacity(0.05)),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -270,9 +270,9 @@ class _ActionPill extends StatelessWidget {
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.05),
+              color: Colors.white.withValues(alpha: 0.05),
               shape: BoxShape.circle,
-              border: Border.all(color: Colors.white.withOpacity(0.08)),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
             ),
             child: Icon(icon, color: Colors.white70, size: 24),
           ),
@@ -298,16 +298,16 @@ class _PayoutGlassTile extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.02),
+        color: Colors.white.withValues(alpha: 0.02),
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: Colors.white.withOpacity(0.05)),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
       ),
       child: Row(
         children: [
           Container(
             padding: const EdgeInsets.all(10),
             decoration: BoxDecoration(
-              color: (isCompleted ? Colors.green : Colors.amber).withOpacity(
+              color: (isCompleted ? Colors.green : Colors.amber).withValues(alpha: 
                 0.1,
               ),
               borderRadius: BorderRadius.circular(12),
@@ -382,8 +382,8 @@ class _EarningsLineChart extends StatelessWidget {
                 begin: Alignment.topCenter,
                 end: Alignment.bottomCenter,
                 colors: [
-                  AppColors.postbookPrimary.withOpacity(0.2),
-                  AppColors.postbookPrimary.withOpacity(0),
+                  AppColors.postbookPrimary.withValues(alpha: 0.2),
+                  AppColors.postbookPrimary.withValues(alpha: 0),
                 ],
               ),
             ),
