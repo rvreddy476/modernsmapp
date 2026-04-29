@@ -298,6 +298,12 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		return c.handleCommerceEvent(ctx, envelope.EventType, envelope.Payload)
 
 	default:
+		// Q&A events are routed through a dedicated handler so the producer
+		// payloads can stay narrow (we look up author_id via internal HTTP
+		// to qa-service when the payload doesn't carry it).
+		if handled, err := c.handleQAEvent(ctx, envelope); handled {
+			return err
+		}
 		return nil
 	}
 }
