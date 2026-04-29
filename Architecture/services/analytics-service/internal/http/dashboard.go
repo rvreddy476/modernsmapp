@@ -37,6 +37,7 @@ func (h *DashboardHandler) RegisterRoutes(v1 *gin.RouterGroup) {
 		dash.GET("/content/:contentId", h.GetContentDetail)
 		dash.GET("/content/:contentId/trend", h.GetContentTrend)
 		dash.GET("/content/:contentId/retention", h.GetContentRetention)
+		dash.GET("/content/:contentId/demographics", h.GetContentDemographics)
 		dash.GET("/trend", h.GetCreatorTrend)
 	}
 }
@@ -87,6 +88,39 @@ func (h *DashboardHandler) GetContentRetention(c *gin.Context) {
 		curve = []scylla.RetentionPoint{}
 	}
 	api.JSON(c.Writer, http.StatusOK, curve, nil)
+}
+
+// GetContentDemographics returns a top-N country + surface breakdown
+// for one piece of content. Powers the studio's "Who's watching"
+// drawer.
+//
+// Query params:
+//
+//	top_n  default 10; max 50 (per dimension)
+//
+// Same "scylla unconfigured → 503" contract as the retention endpoint.
+func (h *DashboardHandler) GetContentDemographics(c *gin.Context) {
+	contentID, err := uuid.Parse(c.Param("contentId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid content ID", nil)
+		return
+	}
+	if h.watchStore == nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable, "ANALYTICS_UNAVAILABLE", "Audience data is not yet available for this deployment", nil)
+		return
+	}
+	topN := 10
+	if v := c.Query("top_n"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			topN = n
+		}
+	}
+	dem, err := h.watchStore.GetAudienceDemographics(c.Request.Context(), contentID, topN)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to compute demographics", nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, dem, nil)
 }
 
 func (h *DashboardHandler) GetOverview(c *gin.Context) {

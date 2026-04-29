@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/media-service/internal/captions"
 	"github.com/atpost/media-service/internal/config"
 	mediaEvents "github.com/atpost/media-service/internal/events"
 	"github.com/atpost/media-service/internal/processing"
@@ -34,6 +35,7 @@ type Service struct {
 	cfg       *config.Config
 	scanner   processing.Scanner
 	rdb       *redis.Client // optional, nil = skip rate limiting
+	captions  captions.Backend
 }
 
 func New(pg *postgres.MediaAssetStore, blobStore *blob.Store) *Service {
@@ -42,7 +44,16 @@ func New(pg *postgres.MediaAssetStore, blobStore *blob.Store) *Service {
 		blobStore: blobStore,
 		cfg:       config.Load(),
 		scanner:   &processing.StubScanner{},
+		captions:  captions.SelectBackend(),
 	}
+}
+
+// WithCaptionsBackend overrides the auto-selected captions backend.
+// Used in tests + by main.go when a non-default backend (e.g. a
+// self-hosted whisper.cpp endpoint) is configured.
+func (s *Service) WithCaptionsBackend(b captions.Backend) *Service {
+	s.captions = b
+	return s
 }
 
 // NewWithConfig creates a Service with an explicit config and scanner.

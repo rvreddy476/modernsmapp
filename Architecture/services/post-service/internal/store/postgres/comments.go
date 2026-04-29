@@ -302,7 +302,14 @@ func (s *Store) ListComments(ctx context.Context, postID uuid.UUID, viewerID *uu
 
 // GetCommentsAround returns top-level comments surrounding a target comment.
 // It fetches half the limit before and half after the target, centering the result.
-func (s *Store) GetCommentsAround(ctx context.Context, postID, commentID uuid.UUID, limit int) ([]Comment, error) {
+//
+// viewerID drives moderation visibility (same rules as ListComments):
+//   - 'visible' shown to everyone.
+//   - 'review' shown only to the comment's author.
+//   - 'hidden' / 'removed' filtered out entirely.
+//
+// Pass viewerID == nil for anonymous viewers (visible-only).
+func (s *Store) GetCommentsAround(ctx context.Context, postID, commentID uuid.UUID, viewerID *uuid.UUID, limit int) ([]Comment, error) {
 	if limit <= 0 || limit > 50 {
 		limit = 20
 	}
@@ -324,24 +331,30 @@ func (s *Store) GetCommentsAround(ctx context.Context, postID, commentID uuid.UU
 	// 2. Fetch comments: half newer + target + half older (using a UNION approach)
 	// "Newer" means created_at >= target (ordered ASC, take half) then flip
 	// "Older" means created_at < target (ordered DESC, take half)
+	args := []interface{}{postID, targetCreatedAt, half + 1, half}
+	visibilityClause := `AND moderation_status = 'visible'`
+	if viewerID != nil {
+		args = append(args, *viewerID)
+		visibilityClause = `AND (moderation_status = 'visible' OR (moderation_status = 'review' AND author_id = $5))`
+	}
 	query := `
 		(SELECT id, post_id, author_id, parent_id, body, like_count, dislike_count, reply_count,
 			is_reply, is_deleted, created_at, updated_at
 		FROM comments
-		WHERE post_id = $1 AND parent_id IS NULL AND is_deleted = FALSE AND created_at >= $2
+		WHERE post_id = $1 AND parent_id IS NULL AND is_deleted = FALSE AND created_at >= $2 ` + visibilityClause + `
 		ORDER BY created_at ASC
 		LIMIT $3)
 		UNION ALL
 		(SELECT id, post_id, author_id, parent_id, body, like_count, dislike_count, reply_count,
 			is_reply, is_deleted, created_at, updated_at
 		FROM comments
-		WHERE post_id = $1 AND parent_id IS NULL AND is_deleted = FALSE AND created_at < $2
+		WHERE post_id = $1 AND parent_id IS NULL AND is_deleted = FALSE AND created_at < $2 ` + visibilityClause + `
 		ORDER BY created_at DESC
 		LIMIT $4)
 		ORDER BY created_at DESC
 	`
 
-	rows, err := s.db.Query(ctx, query, postID, targetCreatedAt, half+1, half)
+	rows, err := s.db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -362,23 +375,31 @@ func (s *Store) GetCommentsAround(ctx context.Context, postID, commentID uuid.UU
 		commentIDs = append(commentIDs, c.ID)
 	}
 
-	// 3. Load inline replies
+	// 3. Load inline replies (same moderation filter applied)
 	if len(commentIDs) > 0 {
-		s.loadInlineReplies(ctx, comments, commentIDs)
+		s.loadInlineReplies(ctx, comments, commentIDs, viewerID)
 	}
 
 	return comments, nil
 }
 
-// loadInlineReplies fetches and attaches a single reply per top-level comment.
-func (s *Store) loadInlineReplies(ctx context.Context, comments []Comment, commentIDs []uuid.UUID) {
+// loadInlineReplies fetches and attaches a single reply per top-level
+// comment. Applies the same moderation filter as the parent query: a
+// hidden reply doesn't show under its parent.
+func (s *Store) loadInlineReplies(ctx context.Context, comments []Comment, commentIDs []uuid.UUID, viewerID *uuid.UUID) {
+	args := []interface{}{commentIDs}
+	visibilityClause := `AND moderation_status = 'visible'`
+	if viewerID != nil {
+		args = append(args, *viewerID)
+		visibilityClause = `AND (moderation_status = 'visible' OR (moderation_status = 'review' AND author_id = $2))`
+	}
 	replyRows, err := s.db.Query(ctx, `
 		SELECT id, post_id, author_id, parent_id, body, like_count, dislike_count, reply_count,
 			is_reply, is_deleted, created_at, updated_at
 		FROM comments
-		WHERE parent_id = ANY($1) AND is_deleted = FALSE
+		WHERE parent_id = ANY($1) AND is_deleted = FALSE `+visibilityClause+`
 		ORDER BY created_at ASC`,
-		commentIDs,
+		args...,
 	)
 	if err != nil {
 		return

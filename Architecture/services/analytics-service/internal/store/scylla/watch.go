@@ -223,6 +223,118 @@ func (s *WatchStore) GetRetentionCurve(ctx context.Context, contentID uuid.UUID,
 	return out, nil
 }
 
+// DemographicBucket is one slice of an audience-distribution chart:
+// "what fraction of viewers came from <key>". Key is "country" or
+// "surface" depending on which dimension the caller asked for.
+type DemographicBucket struct {
+	Key   string  `json:"key"`
+	Count int64   `json:"count"`
+	Share float64 `json:"share"`
+}
+
+// AudienceDemographics is what the studio's "Who's watching"
+// drawer renders: a top-N breakdown by country and by surface
+// (Home / Profile / Posttube etc.) for one piece of content. Both
+// dimensions live on watch_sessions, so the whole rollup is one
+// partition scan.
+type AudienceDemographics struct {
+	TotalSessions  int64               `json:"total_sessions"`
+	UniqueViewers  int64               `json:"unique_viewers"`
+	TopCountries   []DemographicBucket `json:"top_countries"`
+	TopSurfaces    []DemographicBucket `json:"top_surfaces"`
+}
+
+// GetAudienceDemographics walks every watch_session for one
+// content_id and returns the country + surface distributions.
+// `topN` caps each dimension's slice (default 10, max 50). Sessions
+// with empty country / surface are bucketed under "unknown" so the
+// total adds up cleanly.
+func (s *WatchStore) GetAudienceDemographics(ctx context.Context, contentID uuid.UUID, topN int) (*AudienceDemographics, error) {
+	if topN <= 0 || topN > 50 {
+		topN = 10
+	}
+	iter := s.session.Query(
+		`SELECT viewer_id, country, surface FROM social_analytics.watch_sessions WHERE content_id = ?`,
+		contentID,
+	).WithContext(ctx).Iter()
+
+	countries := map[string]int64{}
+	surfaces := map[string]int64{}
+	uniqueViewers := map[uuid.UUID]struct{}{}
+	var total int64
+	var viewerID uuid.UUID
+	var country, surface string
+	for iter.Scan(&viewerID, &country, &surface) {
+		if country == "" {
+			country = "unknown"
+		}
+		if surface == "" {
+			surface = "unknown"
+		}
+		countries[country]++
+		surfaces[surface]++
+		uniqueViewers[viewerID] = struct{}{}
+		total++
+	}
+	if err := iter.Close(); err != nil {
+		return nil, err
+	}
+
+	return &AudienceDemographics{
+		TotalSessions: total,
+		UniqueViewers: int64(len(uniqueViewers)),
+		TopCountries:  topBuckets(countries, total, topN),
+		TopSurfaces:   topBuckets(surfaces, total, topN),
+	}, nil
+}
+
+// topBuckets sorts a count map descending, takes the top N, and
+// computes share = count / total. Tail keys roll into "other" so the
+// shares always sum to 1.0.
+func topBuckets(counts map[string]int64, total int64, topN int) []DemographicBucket {
+	if total == 0 {
+		return []DemographicBucket{}
+	}
+	type kv struct {
+		k string
+		v int64
+	}
+	rows := make([]kv, 0, len(counts))
+	for k, v := range counts {
+		rows = append(rows, kv{k, v})
+	}
+	// Manual descending sort by count.
+	for i := 0; i < len(rows); i++ {
+		for j := i + 1; j < len(rows); j++ {
+			if rows[j].v > rows[i].v {
+				rows[i], rows[j] = rows[j], rows[i]
+			}
+		}
+	}
+
+	out := make([]DemographicBucket, 0, topN+1)
+	var taken int64
+	for i, r := range rows {
+		if i >= topN {
+			break
+		}
+		out = append(out, DemographicBucket{
+			Key:   r.k,
+			Count: r.v,
+			Share: float64(r.v) / float64(total),
+		})
+		taken += r.v
+	}
+	if remainder := total - taken; remainder > 0 {
+		out = append(out, DemographicBucket{
+			Key:   "other",
+			Count: remainder,
+			Share: float64(remainder) / float64(total),
+		})
+	}
+	return out
+}
+
 // CountDisplayViews counts sessions where is_display_view = true for a content item.
 func (s *WatchStore) CountDisplayViews(ctx context.Context, contentID uuid.UUID) (int64, error) {
 	var count int64

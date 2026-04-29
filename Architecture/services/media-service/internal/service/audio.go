@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -186,6 +187,75 @@ func (s *Service) GetSubtitles(ctx context.Context, mediaAssetID uuid.UUID) ([]p
 func (s *Service) CreateSubtitle(ctx context.Context, sub *postgres.MediaSubtitle) (*postgres.MediaSubtitle, error) {
 	return s.pgStore.CreateSubtitle(ctx, sub)
 }
+
+// GenerateAutoCaptions runs the configured speech-to-text backend
+// against the audio of a video media asset and persists the result
+// as a media_subtitles row with source="auto". Idempotent — calling
+// twice for the same (media, language) replaces the previous row
+// (CreateSubtitle's upsert semantics).
+//
+// Behaviour:
+//   - When OPENAI_API_KEY is set, the WhisperBackend ships the audio
+//     to OpenAI and returns a real transcript with word-level timing.
+//   - When not set, StubBackend returns a placeholder marked
+//     IsPlaceholder=true so the studio can render "captions
+//     pending — wire a backend".
+//
+// language="" asks the backend to auto-detect.
+func (s *Service) GenerateAutoCaptions(ctx context.Context, mediaID uuid.UUID, language string) (*postgres.MediaSubtitle, error) {
+	if s.captions == nil {
+		return nil, fmt.Errorf("CAPTIONS_BACKEND_UNCONFIGURED")
+	}
+	media, err := s.pgStore.GetMedia(ctx, mediaID)
+	if err != nil {
+		return nil, fmt.Errorf("media not found: %w", err)
+	}
+	if media.FileType != "video" {
+		return nil, fmt.Errorf("auto-captions only supported for video media")
+	}
+
+	// Use a presigned GET URL so the backend can fetch directly from
+	// blob storage (Whisper needs the raw audio file). Short expiry —
+	// transcription rarely takes more than a minute or two.
+	signed, err := s.blobStore.GeneratePresignedGetURL(ctx, media.StorageKey, 30*time.Minute)
+	if err != nil {
+		return nil, fmt.Errorf("sign audio url: %w", err)
+	}
+
+	res, err := s.captions.Transcribe(ctx, signed.String(), language)
+	if err != nil {
+		slog.Error("auto-captions: backend failed",
+			"backend", s.captions.Name(), "media_id", mediaID, "error", err)
+		return nil, fmt.Errorf("transcribe: %w", err)
+	}
+
+	var wordsJSON []byte
+	if len(res.Words) > 0 {
+		wordsJSON, _ = json.Marshal(res.Words)
+	}
+	conf := res.Confidence
+	sub := &postgres.MediaSubtitle{
+		MediaAssetID:  mediaID,
+		Language:      res.Language,
+		Source:        "auto",
+		Format:        res.Format,
+		ContentURL:    "", // inline transcript only — no .vtt file rendered yet
+		WordLevelJSON: wordsJSON,
+		Confidence:    &conf,
+	}
+	saved, err := s.pgStore.CreateSubtitle(ctx, sub)
+	if err != nil {
+		return nil, fmt.Errorf("save subtitle: %w", err)
+	}
+	slog.Info("auto-captions: stored",
+		"backend", s.captions.Name(),
+		"media_id", mediaID,
+		"language", res.Language,
+		"placeholder", res.IsPlaceholder,
+		"word_count", len(res.Words))
+	return saved, nil
+}
+
 
 // ─── Voiceover ───────────────────────────────────────────────────────
 

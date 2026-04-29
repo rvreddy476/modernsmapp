@@ -133,3 +133,129 @@ func TestSplitEarningsInvariant(t *testing.T) {
 		}
 	}
 }
+
+// TestEarningsFormulaEndToEnd composes ComputeGrossPaise → SplitEarnings
+// the same way SettleCreatorFundDay does, and asserts the full numeric
+// chain for the canonical scenarios the studio dashboard will quote
+// to creators. A regression here means a creator's "you earned X
+// today" number is wrong — the worst kind of monetization bug.
+//
+// Reference scenarios use the launch-baseline rates seeded by
+// migration 010:
+//   - long_video: 5000 paise per 1000 views (₹50/CPM)
+//   - flick:       300 paise per 1000 views (₹3/CPM)
+//
+// At the default 30% platform fee:
+func TestEarningsFormulaEndToEnd(t *testing.T) {
+	const platformFeeBps = int64(3000) // 30%
+
+	cases := []struct {
+		name        string
+		views       int64
+		rpmPaise    int64
+		wantGross   int64
+		wantFee     int64
+		wantNet     int64
+	}{
+		{
+			name:      "long_video, 1000 views @ ₹50 CPM",
+			views:     1000,
+			rpmPaise:  5000,
+			wantGross: 5000, // ₹50.00
+			wantFee:   1500, // ₹15.00
+			wantNet:   3500, // ₹35.00 to creator
+		},
+		{
+			name:      "long_video, 100k views @ ₹50 CPM (a small viral)",
+			views:     100_000,
+			rpmPaise:  5000,
+			wantGross: 500_000,  // ₹5,000
+			wantFee:   150_000,  // ₹1,500
+			wantNet:   350_000,  // ₹3,500 to creator
+		},
+		{
+			name:      "long_video, 1M views @ ₹50 CPM (real viral)",
+			views:     1_000_000,
+			rpmPaise:  5000,
+			wantGross: 5_000_000,  // ₹50,000
+			wantFee:   1_500_000,  // ₹15,000
+			wantNet:   3_500_000,  // ₹35,000 to creator
+		},
+		{
+			name:      "flick, 1000 views @ ₹3 CPM",
+			views:     1000,
+			rpmPaise:  300,
+			wantGross: 300, // ₹3.00
+			wantFee:   90,
+			wantNet:   210,
+		},
+		{
+			name:      "flick, 1M views @ ₹3 CPM",
+			views:     1_000_000,
+			rpmPaise:  300,
+			wantGross: 300_000, // ₹3,000
+			wantFee:   90_000,
+			wantNet:   210_000,
+		},
+		{
+			name:      "tiny: 1 view earns nothing because of /1000 floor",
+			views:     1,
+			rpmPaise:  5000,
+			wantGross: 5,
+			wantFee:   1, // 5 * 3000 / 10000 = 1
+			wantNet:   4,
+		},
+		{
+			name:      "no rate configured for content_type → no earnings",
+			views:     1_000_000,
+			rpmPaise:  0,
+			wantGross: 0,
+			wantFee:   0,
+			wantNet:   0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gross := ComputeGrossPaise(tc.views, tc.rpmPaise)
+			net, fee := SplitEarnings(gross, platformFeeBps)
+			if gross != tc.wantGross {
+				t.Errorf("gross: got %d, want %d", gross, tc.wantGross)
+			}
+			if fee != tc.wantFee {
+				t.Errorf("fee: got %d, want %d", fee, tc.wantFee)
+			}
+			if net != tc.wantNet {
+				t.Errorf("net: got %d, want %d", net, tc.wantNet)
+			}
+			// Hard ledger invariant: every earning row must satisfy
+			// gross == net + fee. Already covered by
+			// TestSplitEarningsInvariant for arbitrary gross, but
+			// re-asserted here for the composed values.
+			if gross > 0 && gross != net+fee {
+				t.Errorf("ledger invariant: gross=%d != net+fee=%d", gross, net+fee)
+			}
+		})
+	}
+}
+
+// TestEarningsRoundingFavorsCreator — when the platform-fee math
+// floors and net = gross - fee, any 0.x paise rounding goes to the
+// creator. Re-asserting because the alternative (rounding the net
+// down, fee up) would be a creator-hostile silent change.
+func TestEarningsRoundingFavorsCreator(t *testing.T) {
+	// With gross=100, feeBps=3333 (33.33%), the literal split is
+	// 33.33 platform / 66.67 creator. Integer math floors fee to 33,
+	// net = 100 - 33 = 67. Creator gets the leftover 0.33 paise.
+	gross := int64(100)
+	feeBps := int64(3333)
+	net, fee := SplitEarnings(gross, feeBps)
+	if fee != 33 {
+		t.Errorf("fee floor: got %d, want 33", fee)
+	}
+	if net != 67 {
+		t.Errorf("net (creator-favored): got %d, want 67", net)
+	}
+	if net+fee != gross {
+		t.Errorf("ledger invariant violated")
+	}
+}

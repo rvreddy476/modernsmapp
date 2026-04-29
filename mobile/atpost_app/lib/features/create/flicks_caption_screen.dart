@@ -24,6 +24,10 @@ class _FlicksCaptionScreenState extends ConsumerState<FlicksCaptionScreen> {
   final List<String> _hashtags = [];
   _FlicksAudience _audience = _FlicksAudience.public;
   bool _isPosting = false;
+  // Tier 2c — when non-null, the post is queued for cmd/scheduler to
+  // promote at this moment. UTC-aware: we send RFC3339 to the
+  // backend; the picker shows local time to the creator.
+  DateTime? _scheduleAt;
 
   static const _suggestedTags = [
     '#flicks', '#viral', '#fyp', '#trending', '#explore',
@@ -93,7 +97,16 @@ class _FlicksCaptionScreenState extends ConsumerState<FlicksCaptionScreen> {
       if (audio != null && audio.id.isNotEmpty) {
         body['audio_track_id'] = audio.id;
       }
-      await api.post('/v1/posts', data: body);
+      // Tier 2c: when a future schedule is set, save as draft +
+      // schedule_at (the cmd/scheduler worker promotes it). When
+      // unset, publish immediately via /v1/posts.
+      if (_scheduleAt != null && _scheduleAt!.isAfter(DateTime.now())) {
+        final draftBody = Map<String, dynamic>.from(body)
+          ..['schedule_at'] = _scheduleAt!.toUtc().toIso8601String();
+        await api.post('/v1/drafts', data: draftBody);
+      } else {
+        await api.post('/v1/posts', data: body);
+      }
 
       ref.read(editorProvider.notifier).deleteSession();
 
@@ -147,6 +160,8 @@ class _FlicksCaptionScreenState extends ConsumerState<FlicksCaptionScreen> {
               _buildHashtagsSection(),
               const SizedBox(height: 20),
               _buildAudienceSelector(),
+              const SizedBox(height: 20),
+              _buildScheduleRow(),
               const SizedBox(height: 20),
               _buildCrossPostRow(),
               const SizedBox(height: 32),
@@ -330,6 +345,109 @@ class _FlicksCaptionScreenState extends ConsumerState<FlicksCaptionScreen> {
         ),
       ],
     );
+  }
+
+  Future<void> _pickScheduleAt() async {
+    final now = DateTime.now();
+    // Default to 1 hour out so the picker doesn't immediately fail
+    // the past-time validator on the backend.
+    final initial = _scheduleAt ?? now.add(const Duration(hours: 1));
+
+    final pickedDate = await showDatePicker(
+      context: context,
+      initialDate: initial,
+      firstDate: now,
+      lastDate: now.add(const Duration(days: 365)),
+    );
+    if (pickedDate == null || !mounted) return;
+    final pickedTime = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(initial),
+    );
+    if (pickedTime == null || !mounted) return;
+
+    final combined = DateTime(
+      pickedDate.year, pickedDate.month, pickedDate.day,
+      pickedTime.hour, pickedTime.minute,
+    );
+    if (combined.isBefore(now)) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Scheduled time must be in the future.')),
+        );
+      }
+      return;
+    }
+    setState(() => _scheduleAt = combined);
+  }
+
+  Widget _buildScheduleRow() {
+    final hasSchedule = _scheduleAt != null;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            const Text(
+              'Schedule',
+              style: TextStyle(color: Colors.white54, fontSize: 12, fontWeight: FontWeight.w600),
+            ),
+            const Spacer(),
+            Switch(
+              value: hasSchedule,
+              activeThumbColor: _brandRed,
+              onChanged: (on) {
+                if (on) {
+                  _pickScheduleAt();
+                } else {
+                  setState(() => _scheduleAt = null);
+                }
+              },
+            ),
+          ],
+        ),
+        if (hasSchedule) ...[
+          const SizedBox(height: 4),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              color: Colors.white10,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.white12),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.schedule, color: Colors.white54, size: 18),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    _formatScheduledLocal(_scheduleAt!),
+                    style: const TextStyle(color: Colors.white),
+                  ),
+                ),
+                TextButton(
+                  onPressed: _pickScheduleAt,
+                  child: const Text('Change'),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'The post will be published automatically at this time.',
+            style: TextStyle(color: Colors.white38, fontSize: 11),
+          ),
+        ],
+      ],
+    );
+  }
+
+  String _formatScheduledLocal(DateTime dt) {
+    // Tight, non-locale-y format so it matches across devices and is
+    // unambiguous about timezone (always local).
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${dt.year}-${two(dt.month)}-${two(dt.day)} '
+        '${two(dt.hour)}:${two(dt.minute)}';
   }
 
   Widget _buildCrossPostRow() {

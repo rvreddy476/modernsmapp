@@ -1369,9 +1369,11 @@ func (s *Service) ListCommentsPG(ctx context.Context, postID uuid.UUID, viewerID
 	return s.pgStore.ListComments(ctx, postID, viewerID, cursor, limit)
 }
 
-// GetCommentsAroundPG returns comments surrounding a target comment for deep-link navigation.
-func (s *Service) GetCommentsAroundPG(ctx context.Context, postID, commentID uuid.UUID, limit int) ([]postgres.Comment, error) {
-	return s.pgStore.GetCommentsAround(ctx, postID, commentID, limit)
+// GetCommentsAroundPG returns comments surrounding a target comment
+// for deep-link navigation. viewerID drives moderation visibility:
+// held-for-review comments are only shown to their own author.
+func (s *Service) GetCommentsAroundPG(ctx context.Context, postID, commentID uuid.UUID, viewerID *uuid.UUID, limit int) ([]postgres.Comment, error) {
+	return s.pgStore.GetCommentsAround(ctx, postID, commentID, viewerID, limit)
 }
 
 // ============================================================

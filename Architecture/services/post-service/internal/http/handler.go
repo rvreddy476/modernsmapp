@@ -829,7 +829,14 @@ func (h *Handler) ListCommentsAround(c *gin.Context) {
 		limit = l
 	}
 
-	comments, err := h.svc.GetCommentsAroundPG(c.Request.Context(), postID, commentID, limit)
+	var viewerID *uuid.UUID
+	if v := c.GetHeader("X-User-Id"); v != "" {
+		if id, err := uuid.Parse(v); err == nil {
+			viewerID = &id
+		}
+	}
+
+	comments, err := h.svc.GetCommentsAroundPG(c.Request.Context(), postID, commentID, viewerID, limit)
 	if err != nil {
 		if err.Error() == "COMMENT_NOT_FOUND" {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Comment not found", nil)

@@ -21,7 +21,39 @@ func (h *Handler) RegisterClipsRoutes(r *gin.Engine, authMW gin.HandlerFunc) {
 	{
 		subtitles.GET("/:mediaId", h.GetSubtitles)
 		subtitles.POST("/:mediaId", authMW, h.CreateSubtitle)
+		subtitles.POST("/:mediaId/auto", authMW, h.GenerateAutoCaptions)
 	}
+}
+
+// GenerateAutoCaptions — POST /v1/subtitles/:mediaId/auto
+// Body: {"language": "en"}  (optional; "" or omitted = auto-detect)
+//
+// Runs the configured speech-to-text backend against the media's
+// audio and persists a media_subtitles row with source="auto". When
+// OPENAI_API_KEY isn't set, the StubBackend returns a placeholder
+// row so the studio renders a "captions pending" state instead of
+// failing.
+func (h *Handler) GenerateAutoCaptions(c *gin.Context) {
+	if _, err := uuid.Parse(c.GetHeader("X-User-Id")); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
+		return
+	}
+	mediaID, err := uuid.Parse(c.Param("mediaId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil)
+		return
+	}
+	var body struct {
+		Language string `json:"language"`
+	}
+	_ = c.ShouldBindJSON(&body)
+
+	sub, err := h.svc.GenerateAutoCaptions(c.Request.Context(), mediaID, body.Language)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "AUTO_CAPTIONS_FAILED", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusCreated, sub, nil)
 }
 
 func (h *Handler) SaveClips(c *gin.Context) {
