@@ -41,7 +41,8 @@ class QAFeedNotifier extends StateNotifier<AsyncValue<QAFeedState>> {
   final QARepository _repo;
   final String? communityId;
 
-  QAFeedNotifier(this._repo, {this.communityId}) : super(const AsyncValue.loading()) {
+  QAFeedNotifier(this._repo, {this.communityId})
+      : super(const AsyncValue.loading()) {
     refresh();
   }
 
@@ -49,10 +50,10 @@ class QAFeedNotifier extends StateNotifier<AsyncValue<QAFeedState>> {
     state = const AsyncValue.loading();
     try {
       final page = await ErrorHandler.retry(() => _repo.getQuestions(
-        communityId: communityId,
-        topic: topic,
-        sort: sort ?? 'trending',
-      ));
+            communityId: communityId,
+            topic: topic,
+            sort: sort ?? 'trending',
+          ));
 
       state = AsyncValue.data(QAFeedState(
         questions: page.items,
@@ -67,16 +68,20 @@ class QAFeedNotifier extends StateNotifier<AsyncValue<QAFeedState>> {
 
   Future<void> loadMore() async {
     final currentState = state.value;
-    if (currentState == null || currentState.isLoadingMore || currentState.nextCursor == null) return;
+    if (currentState == null ||
+        currentState.isLoadingMore ||
+        currentState.nextCursor == null) {
+      return;
+    }
 
     state = AsyncValue.data(currentState.copyWith(isLoadingMore: true));
     try {
       final page = await ErrorHandler.retry(() => _repo.getQuestions(
-        communityId: communityId,
-        topic: currentState.activeTopic,
-        sort: currentState.sort,
-        cursor: currentState.nextCursor,
-      ));
+            communityId: communityId,
+            topic: currentState.activeTopic,
+            sort: currentState.sort,
+            cursor: currentState.nextCursor,
+          ));
 
       state = AsyncValue.data(currentState.copyWith(
         questions: [...currentState.questions, ...page.items],
@@ -89,7 +94,10 @@ class QAFeedNotifier extends StateNotifier<AsyncValue<QAFeedState>> {
   }
 
   /// Optimistically updates a question's vote in the feed.
-  void updateVote(String questionId, int value) {
+  ///
+  /// [voteType] = 'up' | 'down'. Tapping the same direction toggles it off
+  /// (calls removeQuestionVote).
+  void toggleVote(String questionId, String voteType) {
     final currentState = state.value;
     if (currentState == null) return;
 
@@ -99,37 +107,67 @@ class QAFeedNotifier extends StateNotifier<AsyncValue<QAFeedState>> {
     final question = currentState.questions[index];
     final wasUpvoted = question.viewerVote == true;
     final wasDownvoted = question.viewerVote == false;
+    final tappedSame = (voteType == 'up' && wasUpvoted) ||
+        (voteType == 'down' && wasDownvoted);
 
     int newUpvotes = question.upvoteCount;
     int newDownvotes = question.downvoteCount;
 
-    // Reset previous vote
     if (wasUpvoted) newUpvotes--;
     if (wasDownvoted) newDownvotes--;
 
-    // Apply new vote
-    if (value == 1) newUpvotes++;
-    if (value == -1) newDownvotes++;
+    bool? newViewerVote;
+    if (tappedSame) {
+      newViewerVote = null;
+    } else {
+      if (voteType == 'up') {
+        newUpvotes++;
+        newViewerVote = true;
+      } else if (voteType == 'down') {
+        newDownvotes++;
+        newViewerVote = false;
+      }
+    }
 
-    final updated = question.copyWith(
-      upvoteCount: newUpvotes,
-      downvoteCount: newDownvotes,
-      viewerVote: value == 1 ? true : (value == -1 ? false : null),
+    final updated = Question(
+      id: question.id,
+      authorId: question.authorId,
+      authorName: question.authorName,
+      authorAvatar: question.authorAvatar,
+      title: question.title,
+      body: question.body,
+      bodyHtml: question.bodyHtml,
+      topics: question.topics,
+      topicObjects: question.topicObjects,
+      communityId: question.communityId,
+      community: question.community,
+      upvoteCount: newUpvotes < 0 ? 0 : newUpvotes,
+      downvoteCount: newDownvotes < 0 ? 0 : newDownvotes,
+      answerCount: question.answerCount,
+      viewCount: question.viewCount,
+      isPinned: question.isPinned,
+      isAnswered: question.isAnswered,
+      isAnonymous: question.isAnonymous,
+      createdAt: question.createdAt,
+      viewerVote: newViewerVote,
     );
 
-    final newList = List<Question>.from(currentState.questions)..[index] = updated;
+    final newList = List<Question>.from(currentState.questions)
+      ..[index] = updated;
     state = AsyncValue.data(currentState.copyWith(questions: newList));
 
-    // Background API call
-    _repo.voteQuestion(questionId, value).catchError((e) {
-      // Rollback on failure (simple implementation)
+    final future = tappedSame
+        ? _repo.removeQuestionVote(questionId)
+        : _repo.voteQuestion(questionId, voteType);
+    future.catchError((_) {
       refresh();
     });
   }
 }
 
 /// Global provider for the general Q&A feed.
-final qaFeedProvider = StateNotifierProvider.autoDispose<QAFeedNotifier, AsyncValue<QAFeedState>>((ref) {
+final qaFeedProvider = StateNotifierProvider.autoDispose<QAFeedNotifier,
+    AsyncValue<QAFeedState>>((ref) {
   return QAFeedNotifier(ref.watch(qaRepositoryProvider));
 });
 
@@ -171,35 +209,68 @@ class CommunityQuestionsResult {
 }
 
 /// Community-specific Q&A feed provider.
+///
+/// Combines the new community questions endpoint with the qa-settings call so
+/// the existing community_detail_screen.dart consumer keeps working.
 final communityQuestionsProvider = FutureProvider.autoDispose
     .family<CommunityQuestionsResult, CommunityQuestionsParams>(
   (ref, params) async {
     final repo = ref.watch(qaRepositoryProvider);
-    final questions = await repo.getQuestions(
-      communityId: params.communityId,
-      topic: params.topicSlug,
-      sort: params.sort,
-    );
+    final results = await Future.wait([
+      repo.getCommunityQuestions(params.communityId),
+      repo.getCommunityQASettings(params.communityId).catchError(
+            (_) => const CommunityQaSettings(),
+          ),
+      repo
+          .getCommunityPopularTopics(params.communityId)
+          .catchError((_) => <QaTopic>[]),
+    ]);
 
-    // In a real app, these would come from the API too.
+    final questions = results[0] as List<Question>;
+    final settings = results[1] as CommunityQaSettings;
+    final popularTopics = results[2] as List<QaTopic>;
+
+    // Optional client-side filter by topic slug.
+    final filtered = params.topicSlug == null
+        ? questions
+        : questions
+            .where((q) => q.topics.contains(params.topicSlug))
+            .toList();
+
+    // Sort: pinned first, then by selected sort key.
+    filtered.sort((a, b) {
+      if (a.isPinned != b.isPinned) return a.isPinned ? -1 : 1;
+      switch (params.sort) {
+        case 'votes':
+          return b.voteScore.compareTo(a.voteScore);
+        case 'recent':
+        default:
+          return b.createdAt.compareTo(a.createdAt);
+      }
+    });
+
+    final topicOptions = popularTopics
+        .map((t) => QaTopicOption(name: t.name, slug: t.slug))
+        .toList();
+
     return CommunityQuestionsResult(
-      questions: questions.items,
-      availableTopics: [],
-      settings: const CommunityQaSettings(),
+      questions: filtered,
+      availableTopics: topicOptions,
+      settings: settings,
     );
   },
 );
 
-/// QA Topics provider.
-final qaTopicsProvider = FutureProvider.autoDispose<List<QaTopic>>((ref) async {
-  // In a real app, this would be a repo call.
-  return [];
+/// QA Topics provider — list all topics.
+final qaTopicsProvider =
+    FutureProvider.autoDispose<List<QaTopic>>((ref) async {
+  return ref.watch(qaRepositoryProvider).listTopics();
 });
 
 /// Single QA Topic provider.
 final qaTopicProvider =
     FutureProvider.autoDispose.family<QaTopic, String>((ref, topicId) async {
-  return const QaTopic(id: '1', name: 'General', slug: 'general');
+  return ref.watch(qaRepositoryProvider).getTopic(topicId);
 });
 
 /// Params for topic-specific questions.
@@ -260,4 +331,113 @@ final qaQuestionAnswersProvider = FutureProvider.autoDispose
       .watch(qaRepositoryProvider)
       .getQuestionDetail(params.questionId);
   return detail.answers;
+});
+
+// ---------------- New providers ----------------
+
+/// Comments under a specific answer.
+final questionAnswerCommentsProvider = FutureProvider.autoDispose
+    .family<List<AnswerComment>, String>((ref, answerId) async {
+  return ref.watch(qaRepositoryProvider).listComments(answerId);
+});
+
+/// Search params for Q&A search.
+class QaSearchParams {
+  final String query;
+  final String? communityId;
+  final String? topicId;
+
+  const QaSearchParams({
+    required this.query,
+    this.communityId,
+    this.topicId,
+  });
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is QaSearchParams &&
+          runtimeType == other.runtimeType &&
+          query == other.query &&
+          communityId == other.communityId &&
+          topicId == other.topicId;
+
+  @override
+  int get hashCode =>
+      query.hashCode ^ communityId.hashCode ^ topicId.hashCode;
+}
+
+final qaSearchProvider = FutureProvider.autoDispose
+    .family<List<Question>, QaSearchParams>((ref, params) async {
+  if (params.query.trim().isEmpty) return const <Question>[];
+  return ref.watch(qaRepositoryProvider).searchQuestions(
+        params.query,
+        communityId: params.communityId,
+        topicId: params.topicId,
+      );
+});
+
+final qaProfileProvider = FutureProvider.autoDispose
+    .family<QaProfile, String>((ref, userId) async {
+  return ref.watch(qaRepositoryProvider).getProfile(userId);
+});
+
+final qaMyProfileProvider =
+    FutureProvider.autoDispose<QaProfile>((ref) async {
+  return ref.watch(qaRepositoryProvider).getMyProfile();
+});
+
+final qaLeaderboardProvider =
+    FutureProvider.autoDispose<List<LeaderboardEntry>>((ref) async {
+  return ref.watch(qaRepositoryProvider).getLeaderboard();
+});
+
+final qaSavedQuestionsProvider =
+    FutureProvider.autoDispose<List<Question>>((ref) async {
+  return ref.watch(qaRepositoryProvider).getSavedQuestions();
+});
+
+final qaSavedAnswersProvider =
+    FutureProvider.autoDispose<List<Answer>>((ref) async {
+  return ref.watch(qaRepositoryProvider).getSavedAnswers();
+});
+
+final qaQuestionDraftsProvider =
+    FutureProvider.autoDispose<List<QuestionDraft>>((ref) async {
+  return ref.watch(qaRepositoryProvider).listQuestionDrafts();
+});
+
+final qaAnswerDraftsProvider =
+    FutureProvider.autoDispose<List<AnswerDraft>>((ref) async {
+  return ref.watch(qaRepositoryProvider).listAnswerDrafts();
+});
+
+final qaCommunitySettingsProvider = FutureProvider.autoDispose
+    .family<CommunityQaSettings, String>((ref, cid) async {
+  return ref.watch(qaRepositoryProvider).getCommunityQASettings(cid);
+});
+
+final qaCommunityPopularTopicsProvider = FutureProvider.autoDispose
+    .family<List<QaTopic>, String>((ref, cid) async {
+  return ref.watch(qaRepositoryProvider).getCommunityPopularTopics(cid);
+});
+
+final qaUserQuestionsProvider = FutureProvider.autoDispose
+    .family<List<Question>, String>((ref, userId) async {
+  return ref.watch(qaRepositoryProvider).getUserQuestions(userId);
+});
+
+final qaUserAnswersProvider = FutureProvider.autoDispose
+    .family<List<Answer>, String>((ref, userId) async {
+  return ref.watch(qaRepositoryProvider).getUserAnswers(userId);
+});
+
+final qaUserBadgesProvider = FutureProvider.autoDispose
+    .family<List<ContributorBadge>, String>((ref, userId) async {
+  return ref.watch(qaRepositoryProvider).getBadges(userId);
+});
+
+final qaUserReputationProvider = FutureProvider.autoDispose
+    .family<List<ReputationEvent>, String>((ref, userId) async {
+  return ref.watch(qaRepositoryProvider).getReputationHistory(userId);
 });

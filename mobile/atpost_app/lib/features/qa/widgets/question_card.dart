@@ -2,6 +2,8 @@ import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/models/qa.dart';
+import 'package:atpost_app/data/repositories/qa_repository.dart';
+import 'package:atpost_app/features/qa/widgets/qa_report_sheet.dart';
 import 'package:atpost_app/providers/qa_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -21,6 +23,7 @@ class QuestionCard extends ConsumerWidget {
     return RepaintBoundary(
       child: GestureDetector(
         onTap: onTap,
+        onLongPress: () => _showActions(context, ref),
         child: Container(
           margin: const EdgeInsets.only(bottom: 12),
           padding: const EdgeInsets.all(16),
@@ -56,19 +59,29 @@ class QuestionCard extends ConsumerWidget {
   }
 
   Widget _buildHeader() {
+    final isAnon = question.isAnonymous ||
+        question.authorId == anonymousAuthorId;
+    final displayName =
+        isAnon ? 'Anonymous' : (question.authorName ?? 'Anonymous');
+    final avatarUrl = isAnon ? null : question.authorAvatar;
     return Row(
       children: [
         CircleAvatar(
           radius: 14,
           backgroundColor: AppColors.bgTertiary,
-          backgroundImage: question.authorAvatar != null ? NetworkImage(question.authorAvatar!) : null,
-          child: question.authorAvatar == null
-              ? Text(question.authorName?[0] ?? '?', style: AppTextStyles.labelSmall)
+          backgroundImage:
+              avatarUrl != null && avatarUrl.isNotEmpty ? NetworkImage(avatarUrl) : null,
+          child: avatarUrl == null || avatarUrl.isEmpty
+              ? Icon(
+                  isAnon ? Icons.visibility_off_outlined : Icons.person,
+                  size: 14,
+                  color: Colors.white24,
+                )
               : null,
         ),
         const SizedBox(width: 8),
         Text(
-          question.authorName ?? 'Anonymous',
+          displayName,
           style: AppTextStyles.labelSmall.copyWith(color: AppColors.textSecondary),
         ),
         const Spacer(),
@@ -76,7 +89,7 @@ class QuestionCard extends ConsumerWidget {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             decoration: BoxDecoration(
-              color: AppColors.posttubePrimary.withOpacity(0.1),
+              color: AppColors.posttubePrimary.withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(8),
             ),
             child: Text(
@@ -101,6 +114,53 @@ class QuestionCard extends ConsumerWidget {
     );
   }
 
+  void _showActions(BuildContext context, WidgetRef ref) {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: AppColors.bgCard,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetCtx) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.flag_outlined,
+                    color: AppColors.statusError),
+                title: Text('Report question', style: AppTextStyles.body),
+                onTap: () async {
+                  Navigator.of(sheetCtx).pop();
+                  final result = await showQaReportSheet(context);
+                  if (result == null) return;
+                  try {
+                    await ref.read(qaRepositoryProvider).createQuestionReport(
+                          question.id,
+                          result.reason,
+                          result.details,
+                        );
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Report submitted.')),
+                      );
+                    }
+                  } catch (_) {
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Could not send report.')),
+                      );
+                    }
+                  }
+                },
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   Widget _buildFooter(WidgetRef ref) {
     final notifier = ref.read(qaFeedProvider.notifier);
 
@@ -109,8 +169,8 @@ class QuestionCard extends ConsumerWidget {
         _VoteBadge(
           score: question.voteScore,
           viewerVote: question.viewerVote,
-          onUpvote: () => notifier.updateVote(question.id, 1),
-          onDownvote: () => notifier.updateVote(question.id, -1),
+          onUpvote: () => notifier.toggleVote(question.id, 'up'),
+          onDownvote: () => notifier.toggleVote(question.id, 'down'),
         ),
         const SizedBox(width: 16),
         Icon(Icons.chat_bubble_outline, size: 18, color: AppColors.textMuted),
@@ -143,7 +203,7 @@ class _VoteBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.05),
+        color: Colors.white.withValues(alpha: 0.05),
         borderRadius: BorderRadius.circular(20),
       ),
       child: Row(

@@ -7,6 +7,7 @@ import 'package:atpost_app/data/repositories/communities_repository.dart';
 import 'package:atpost_app/data/repositories/community_posts_repository.dart';
 import 'package:atpost_app/features/qa/question_detail_screen.dart';
 import 'package:atpost_app/features/discover/qa_question_tile.dart';
+import 'package:atpost_app/features/communities/widgets/community_qa_settings_sheet.dart';
 import 'package:atpost_app/providers/communities_provider.dart';
 import 'package:atpost_app/providers/community_posts_provider.dart';
 import 'package:atpost_app/providers/qa_provider.dart';
@@ -409,6 +410,7 @@ class _CommunityDetailScreenState extends ConsumerState<CommunityDetailScreen>
                 _CommunityQuestionsView(
                   communityId: widget.communityId,
                   topicTags: community.topicTags,
+                  viewerRole: community.viewerRole,
                 ),
                 _buildMembersTab(community),
               ],
@@ -648,10 +650,12 @@ class _SpaceChip extends StatelessWidget {
 class _CommunityQuestionsView extends ConsumerStatefulWidget {
   final String communityId;
   final List<String> topicTags;
+  final String? viewerRole;
 
   const _CommunityQuestionsView({
     required this.communityId,
     required this.topicTags,
+    this.viewerRole,
   });
 
   @override
@@ -663,6 +667,9 @@ class _CommunityQuestionsViewState
     extends ConsumerState<_CommunityQuestionsView> {
   String _sort = 'recent';
   String? _selectedTopicSlug;
+
+  bool get _isAdmin =>
+      widget.viewerRole == 'admin' || widget.viewerRole == 'owner';
 
   @override
   Widget build(BuildContext context) {
@@ -744,6 +751,7 @@ class _CommunityQuestionsViewState
                 ),
               ],
               const SizedBox(height: 18),
+              _PopularTopicsRow(communityId: widget.communityId),
               Row(
                 children: [
                   Text('Questions', style: AppTextStyles.h2),
@@ -759,6 +767,20 @@ class _CommunityQuestionsViewState
                     selected: _sort == 'votes',
                     onTap: () => setState(() => _sort = 'votes'),
                   ),
+                  if (_isAdmin) ...[
+                    const SizedBox(width: 8),
+                    IconButton(
+                      tooltip: 'Q&A settings',
+                      icon: const Icon(
+                        Icons.settings_outlined,
+                        color: AppColors.textSecondary,
+                      ),
+                      onPressed: () => showCommunityQaSettingsSheet(
+                        context,
+                        widget.communityId,
+                      ),
+                    ),
+                  ],
                 ],
               ),
               const SizedBox(height: 12),
@@ -1229,6 +1251,60 @@ class _SpaceTile extends StatelessWidget {
           }
         },
       ),
+    );
+  }
+}
+
+class _PopularTopicsRow extends ConsumerWidget {
+  final String communityId;
+  const _PopularTopicsRow({required this.communityId});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final topicsAsync =
+        ref.watch(qaCommunityPopularTopicsProvider(communityId));
+    return topicsAsync.when(
+      loading: () => const SizedBox.shrink(),
+      error: (_, _) => const SizedBox.shrink(),
+      data: (topics) {
+        if (topics.isEmpty) return const SizedBox.shrink();
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Popular topics', style: AppTextStyles.label),
+              const SizedBox(height: 6),
+              SizedBox(
+                height: 32,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: topics.length,
+                  separatorBuilder: (_, _) => const SizedBox(width: 6),
+                  itemBuilder: (_, i) {
+                    final t = topics[i];
+                    return Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: AppColors.posttubePrimary
+                            .withValues(alpha: 0.14),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Text(
+                        '#${t.slug.isNotEmpty ? t.slug : t.name}',
+                        style: AppTextStyles.labelSmall.copyWith(
+                          color: AppColors.posttubePrimary,
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }

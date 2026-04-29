@@ -92,6 +92,7 @@ class _CallOverlayState extends ConsumerState<CallOverlay> {
       case CallState.active:
         return _buildActive(info);
       case CallState.idle:
+      case CallState.failed:
         return const SizedBox.shrink();
     }
   }

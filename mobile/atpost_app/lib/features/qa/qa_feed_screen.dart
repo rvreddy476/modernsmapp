@@ -82,7 +82,7 @@ class _QAFeedScreenState extends ConsumerState<QAFeedScreen> {
           GlassIconButton(
             icon: Icons.search,
             tooltip: 'Search',
-            onPressed: () {},
+            onPressed: () => context.push('/qa/search'),
           ),
         ],
       ),
@@ -111,8 +111,8 @@ class _QAFeedScreenState extends ConsumerState<QAFeedScreen> {
                   ref.read(qaFeedProvider.notifier).refresh(sort: option);
                 }
               },
-              selectedColor: AppColors.postbookPrimary.withOpacity(0.2),
-              backgroundColor: Colors.white.withOpacity(0.03),
+              selectedColor: AppColors.postbookPrimary.withValues(alpha: 0.2),
+              backgroundColor: Colors.white.withValues(alpha: 0.03),
               labelStyle: TextStyle(
                 color: isSelected ? AppColors.postbookPrimary : Colors.white38,
                 fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
