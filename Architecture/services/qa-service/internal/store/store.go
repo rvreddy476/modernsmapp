@@ -138,6 +138,7 @@ type Question struct {
 	IsFollowing   *bool           `json:"is_following,omitempty"`
 	Community     *CommunityScope `json:"community,omitempty"`
 	IsPinned      bool            `json:"is_pinned"`
+	IsAnonymous   bool            `json:"is_anonymous,omitempty"`
 }
 
 type QuestionSummary struct {
@@ -157,6 +158,7 @@ type QuestionSummary struct {
 	Community   *CommunityScope `json:"community,omitempty"`
 	IsPinned    bool            `json:"is_pinned"`
 	Excerpt     string          `json:"excerpt,omitempty"`
+	IsAnonymous bool            `json:"is_anonymous,omitempty"`
 }
 
 type Answer struct {
@@ -179,6 +181,7 @@ type Answer struct {
 	Author         *QAProfile        `json:"author,omitempty"`
 	ViewerVote     *string           `json:"viewer_vote,omitempty"`
 	IsSaved        *bool             `json:"is_saved,omitempty"`
+	IsAnonymous    bool              `json:"is_anonymous,omitempty"`
 }
 
 type AnswerReference struct {

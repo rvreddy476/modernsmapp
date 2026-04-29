@@ -12,7 +12,8 @@ func (s *Store) GetTrendingQuestions(ctx context.Context, limit, offset int) ([]
 		limit = 20
 	}
 	rows, err := s.db.Query(ctx, `
-		SELECT id, author_id, title, slug, status, vote_score, answer_count, view_count, is_answered, created_at
+		SELECT id, author_id, title, slug, status, vote_score, answer_count, view_count, is_answered, created_at,
+		       COALESCE(is_anonymous, false)
 		FROM questions
 		WHERE deleted_at IS NULL AND status = 'open'
 		  AND created_at > now() - interval '7 days'
@@ -31,7 +32,8 @@ func (s *Store) GetUnansweredQuestions(ctx context.Context, topicID *uuid.UUID, 
 	}
 	if topicID != nil {
 		rows, err := s.db.Query(ctx, `
-			SELECT q.id, q.author_id, q.title, q.slug, q.status, q.vote_score, q.answer_count, q.view_count, q.is_answered, q.created_at
+			SELECT q.id, q.author_id, q.title, q.slug, q.status, q.vote_score, q.answer_count, q.view_count, q.is_answered, q.created_at,
+			       COALESCE(q.is_anonymous, false)
 			FROM questions q JOIN question_topics qt ON q.id = qt.question_id
 			WHERE qt.topic_id = $1 AND q.answer_count = 0 AND q.status = 'open' AND q.deleted_at IS NULL
 			ORDER BY q.created_at DESC LIMIT $2 OFFSET $3`, *topicID, limit, offset)
@@ -42,7 +44,8 @@ func (s *Store) GetUnansweredQuestions(ctx context.Context, topicID *uuid.UUID, 
 		return scanQuestionSummaries(rows)
 	}
 	rows, err := s.db.Query(ctx, `
-		SELECT id, author_id, title, slug, status, vote_score, answer_count, view_count, is_answered, created_at
+		SELECT id, author_id, title, slug, status, vote_score, answer_count, view_count, is_answered, created_at,
+		       COALESCE(is_anonymous, false)
 		FROM questions WHERE answer_count = 0 AND status = 'open' AND deleted_at IS NULL
 		ORDER BY created_at DESC LIMIT $1 OFFSET $2`, limit, offset)
 	if err != nil {
@@ -57,7 +60,8 @@ func (s *Store) GetFollowingFeed(ctx context.Context, userID uuid.UUID, limit, o
 		limit = 20
 	}
 	rows, err := s.db.Query(ctx, `
-		SELECT DISTINCT q.id, q.author_id, q.title, q.slug, q.status, q.vote_score, q.answer_count, q.view_count, q.is_answered, q.created_at
+		SELECT DISTINCT q.id, q.author_id, q.title, q.slug, q.status, q.vote_score, q.answer_count, q.view_count, q.is_answered, q.created_at,
+		       COALESCE(q.is_anonymous, false)
 		FROM questions q
 		LEFT JOIN question_topics qt ON q.id = qt.question_id
 		LEFT JOIN topic_follows tf ON qt.topic_id = tf.topic_id AND tf.user_id = $1
@@ -78,7 +82,8 @@ func (s *Store) GetForYouFeed(ctx context.Context, userID uuid.UUID, limit, offs
 	}
 	// V1: questions in user's expertise topics, falling back to trending
 	rows, err := s.db.Query(ctx, `
-		SELECT DISTINCT q.id, q.author_id, q.title, q.slug, q.status, q.vote_score, q.answer_count, q.view_count, q.is_answered, q.created_at
+		SELECT DISTINCT q.id, q.author_id, q.title, q.slug, q.status, q.vote_score, q.answer_count, q.view_count, q.is_answered, q.created_at,
+		       COALESCE(q.is_anonymous, false)
 		FROM questions q
 		JOIN question_topics qt ON q.id = qt.question_id
 		JOIN topics t ON qt.topic_id = t.id
@@ -132,7 +137,8 @@ func (s *Store) GetAnswerQueue(ctx context.Context, userID uuid.UUID, limit, off
 		limit = 20
 	}
 	rows, err := s.db.Query(ctx, `
-		SELECT DISTINCT q.id, q.author_id, q.title, q.slug, q.status, q.vote_score, q.answer_count, q.view_count, q.is_answered, q.created_at
+		SELECT DISTINCT q.id, q.author_id, q.title, q.slug, q.status, q.vote_score, q.answer_count, q.view_count, q.is_answered, q.created_at,
+		       COALESCE(q.is_anonymous, false)
 		FROM questions q
 		JOIN question_topics qt ON q.id = qt.question_id
 		JOIN topics t ON qt.topic_id = t.id
@@ -159,7 +165,8 @@ func (s *Store) GetLocalFeed(ctx context.Context, lat, lng float64, radiusKm int
 	lngDelta := float64(radiusKm) / 111.0
 
 	rows, err := s.db.Query(ctx, fmt.Sprintf(`
-		SELECT q.id, q.author_id, q.title, q.slug, q.status, q.vote_score, q.answer_count, q.view_count, q.is_answered, q.created_at
+		SELECT q.id, q.author_id, q.title, q.slug, q.status, q.vote_score, q.answer_count, q.view_count, q.is_answered, q.created_at,
+		       COALESCE(q.is_anonymous, false)
 		FROM questions q JOIN local_scopes ls ON q.id = ls.question_id
 		WHERE q.deleted_at IS NULL AND q.status = 'open'
 		  AND ls.latitude BETWEEN $1 - %f AND $1 + %f

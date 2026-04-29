@@ -18,15 +18,16 @@ func (h *Handler) CreateAnswer(c *gin.Context) {
 	}
 
 	var body struct {
-		Body     string `json:"body"`
-		BodyHTML string `json:"body_html"`
+		Body        string `json:"body"`
+		BodyHTML    string `json:"body_html"`
+		IsAnonymous bool   `json:"is_anonymous,omitempty"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
 
-	answer, err := h.svc.CreateAnswer(c.Request.Context(), qID, userID, body.Body, body.BodyHTML)
+	answer, err := h.svc.CreateAnswer(c.Request.Context(), qID, userID, body.Body, body.BodyHTML, body.IsAnonymous)
 	if err != nil {
 		respondServiceError(c, err, http.StatusInternalServerError, "CREATE_FAILED")
 		return
@@ -57,12 +58,8 @@ func (h *Handler) GetAnswer(c *gin.Context) {
 		return
 	}
 
-	answer, err := h.svc.Store().GetAnswer(c.Request.Context(), aID)
+	answer, err := h.svc.GetAnswer(c.Request.Context(), aID, optionalUserID(c))
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "answer not found", nil)
-		return
-	}
-	if err := h.svc.EnsureQuestionVisible(c.Request.Context(), answer.QuestionID, optionalUserID(c)); err != nil {
 		respondServiceError(c, err, http.StatusNotFound, "NOT_FOUND")
 		return
 	}

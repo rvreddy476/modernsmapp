@@ -7,6 +7,7 @@ import (
 	"log"
 	"log/slog"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/atpost/notification-service/internal/push"
@@ -154,6 +155,20 @@ func notifTitleBody(notifType string) (string, string) {
 		return "New Subscriber", "Someone subscribed to your content"
 	case "mention":
 		return "You were mentioned", "Someone mentioned you in a post"
+	case "qa.answer.created":
+		return "New Answer", "Someone answered your question"
+	case "qa.answer.best_selected":
+		return "Answer Accepted", "Your answer was accepted"
+	case "qa.answer.comment.created":
+		return "New Comment", "Someone commented on your answer"
+	case "qa.answer.requested":
+		return "Answer Requested", "Someone asked you to answer"
+	case "qa.question.voted":
+		return "New Upvote", "Your question was upvoted"
+	case "qa.answer.voted":
+		return "New Upvote", "Your answer was upvoted"
+	case "qa.question.pinned":
+		return "Question Pinned", "Your question was pinned"
 	default:
 		return "New Notification", "You have a new notification"
 	}
@@ -181,7 +196,10 @@ func (s *Service) GetNotifications(ctx context.Context, userID uuid.UUID, limit 
 
 // GetNotificationsPage returns a cursor-paginated page of notifications.
 // Cursor format: "bucket:timeuuid" (e.g. "202603:550e8400-e29b-41d4-a716-446655440000").
-func (s *Service) GetNotificationsPage(ctx context.Context, userID uuid.UUID, limit int, cursor string) (*NotificationsPage, error) {
+// When category is non-empty and recognized (currently only "qa"), notifications
+// are filtered server-side by notification-type prefix. The function over-fetches
+// from Scylla while filtering so the visible page still respects `limit`.
+func (s *Service) GetNotificationsPage(ctx context.Context, userID uuid.UUID, limit int, cursor, category string) (*NotificationsPage, error) {
 	var cursorBucket int
 	var cursorTS *gocql.UUID
 
@@ -197,9 +215,32 @@ func (s *Service) GetNotificationsPage(ctx context.Context, userID uuid.UUID, li
 		}
 	}
 
-	notifs, err := s.scyllaStore.GetNotificationsWithCursor(ctx, userID, cursorBucket, cursorTS, limit+1)
+	// Determine an optional type-prefix filter from the category.
+	prefix := categoryTypePrefix(category)
+
+	// Fetch up to limit+1 normally; when filtering, over-fetch (cap at 200)
+	// so the page still has a chance of returning `limit` items.
+	fetchLimit := limit + 1
+	if prefix != "" {
+		fetchLimit = limit * 4
+		if fetchLimit > 200 {
+			fetchLimit = 200
+		}
+	}
+
+	notifs, err := s.scyllaStore.GetNotificationsWithCursor(ctx, userID, cursorBucket, cursorTS, fetchLimit)
 	if err != nil {
 		return nil, err
+	}
+
+	if prefix != "" {
+		filtered := notifs[:0]
+		for _, n := range notifs {
+			if strings.HasPrefix(n.Type, prefix) {
+				filtered = append(filtered, n)
+			}
+		}
+		notifs = filtered
 	}
 
 	page := &NotificationsPage{}
@@ -212,6 +253,18 @@ func (s *Service) GetNotificationsPage(ctx context.Context, userID uuid.UUID, li
 	}
 
 	return page, nil
+}
+
+// categoryTypePrefix maps a category query param to a notification-type prefix.
+// Returns "" when the category is empty/"all" or unknown — in which case no
+// filtering is applied (preserves existing behavior for other tabs).
+func categoryTypePrefix(category string) string {
+	switch category {
+	case "qa":
+		return "qa."
+	default:
+		return ""
+	}
 }
 
 // splitCursor splits "bucket:timeuuid" on the first colon.

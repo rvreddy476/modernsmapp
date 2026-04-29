@@ -126,7 +126,7 @@ func (s *Service) ListQuestions(ctx context.Context, viewerID *uuid.UUID, topicS
 		}
 	}
 
-	return s.store.ListQuestions(ctx, viewerID, store.ListQuestionsParams{
+	results, err := s.store.ListQuestions(ctx, viewerID, store.ListQuestionsParams{
 		TopicID:     topicID,
 		CommunityID: communityID,
 		Scope:       scope,
@@ -135,6 +135,13 @@ func (s *Service) ListQuestions(ctx context.Context, viewerID *uuid.UUID, topicS
 		Limit:       limit,
 		Offset:      offset,
 	})
+	if err != nil {
+		return nil, err
+	}
+	for i := range results {
+		maskAnonymousSummary(&results[i])
+	}
+	return results, nil
 }
 
 func (s *Service) ListCommunityQuestions(ctx context.Context, communityID uuid.UUID, viewerID *uuid.UUID, topicSlug, sortBy, status string, limit, offset int) ([]store.QuestionSummary, []store.CommunityTopicOption, *store.CommunityQASettings, error) {
@@ -238,5 +245,11 @@ func (s *Service) SetCommunityQuestionPinned(ctx context.Context, communityID, q
 		return fmt.Errorf("invalid: question does not belong to this community")
 	}
 
-	return s.store.PinCommunityQuestion(ctx, communityID, questionID, pinned, &actorID, reason)
+	if err := s.store.PinCommunityQuestion(ctx, communityID, questionID, pinned, &actorID, reason); err != nil {
+		return err
+	}
+	if s.producer != nil {
+		_ = s.producer.PublishQuestionPinned(ctx, questionID, communityID, actorID, pinned)
+	}
+	return nil
 }

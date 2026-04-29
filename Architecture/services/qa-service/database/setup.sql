@@ -409,3 +409,41 @@ CREATE INDEX IF NOT EXISTS idx_qa_communities_status ON qa_communities(status, l
 CREATE INDEX IF NOT EXISTS idx_qa_community_members_user ON qa_community_members(user_id, community_id);
 CREATE INDEX IF NOT EXISTS idx_qcc_community_pinned ON question_community_context(community_id, is_pinned, created_at DESC) WHERE is_pinned = true;
 CREATE INDEX IF NOT EXISTS idx_cta_community_affinity ON community_topic_affinity(community_id, affinity_score DESC, question_count DESC);
+
+-- ---------------------------------------------------------------------------
+-- Anonymity (idempotent column adds)
+-- ---------------------------------------------------------------------------
+ALTER TABLE questions ADD COLUMN IF NOT EXISTS is_anonymous BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE answers   ADD COLUMN IF NOT EXISTS is_anonymous BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE community_qa_settings ADD COLUMN IF NOT EXISTS anonymity_enabled BOOLEAN NOT NULL DEFAULT false;
+
+-- ---------------------------------------------------------------------------
+-- Drafts: server-backed save & resume for questions and answers
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS question_drafts (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    author_id     UUID NOT NULL,
+    community_id  UUID,
+    title         TEXT NOT NULL DEFAULT '',
+    body          TEXT NOT NULL DEFAULT '',
+    tags          TEXT[] NOT NULL DEFAULT '{}',
+    topic_ids     UUID[] NOT NULL DEFAULT '{}',
+    is_anonymous  BOOLEAN NOT NULL DEFAULT false,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_question_drafts_author ON question_drafts(author_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS answer_drafts (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    author_id   UUID NOT NULL,
+    question_id UUID NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
+    body        TEXT NOT NULL DEFAULT '',
+    is_anonymous BOOLEAN NOT NULL DEFAULT false,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (author_id, question_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_answer_drafts_author ON answer_drafts(author_id, updated_at DESC);

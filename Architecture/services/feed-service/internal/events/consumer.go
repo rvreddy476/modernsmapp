@@ -95,9 +95,62 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 	case events.EventPostRepostUndone:
 		return c.handlePostRepostUndone(ctx, envelope)
 
+	case events.EventQAQuestionCreated:
+		return c.handleQAQuestionCreated(ctx, envelope)
+
+	case events.EventQAQuestionDeleted, events.EventQAQuestionClosed:
+		return c.handleQAQuestionRemoved(ctx, envelope)
+
 	default:
 		return nil
 	}
+}
+
+// handleQAQuestionCreated fans out a new Q&A question into followers' home
+// timelines using content_type = "qa_question". The producer payload carries
+// the question_id, author_id, and title — that's enough for the timeline
+// write; deeper hydration (community, tags) happens at read time.
+func (c *Consumer) handleQAQuestionCreated(ctx context.Context, envelope events.EventEnvelope) error {
+	var event struct {
+		QuestionID string    `json:"question_id"`
+		AuthorID   string    `json:"author_id"`
+		Title      string    `json:"title"`
+		CreatedAt  time.Time `json:"created_at"`
+	}
+	payloadBytes, _ := json.Marshal(envelope.Payload)
+	if err := json.Unmarshal(payloadBytes, &event); err != nil {
+		return err
+	}
+	questionID, err := uuid.Parse(event.QuestionID)
+	if err != nil {
+		return nil
+	}
+	authorID, err := uuid.Parse(event.AuthorID)
+	if err != nil {
+		return nil
+	}
+	log.Printf("Processing QAQuestionCreated: %s by %s", event.QuestionID, event.AuthorID)
+	return c.service.FanoutQuestion(ctx, questionID, authorID, event.CreatedAt)
+}
+
+// handleQAQuestionRemoved hides a question from the feed by flipping the
+// shared post:deleted Redis key the hydrator already consults. Both
+// deletion and close fire this branch (closed questions should drop out
+// of home feeds).
+func (c *Consumer) handleQAQuestionRemoved(ctx context.Context, envelope events.EventEnvelope) error {
+	var event struct {
+		QuestionID string `json:"question_id"`
+	}
+	payloadBytes, _ := json.Marshal(envelope.Payload)
+	if err := json.Unmarshal(payloadBytes, &event); err != nil {
+		return err
+	}
+	questionID, err := uuid.Parse(event.QuestionID)
+	if err != nil {
+		return nil
+	}
+	log.Printf("Processing QAQuestion removed: %s", event.QuestionID)
+	return c.service.MarkQuestionDeleted(ctx, questionID)
 }
 
 func (c *Consumer) handlePostCreated(ctx context.Context, envelope events.EventEnvelope) error {

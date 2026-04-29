@@ -76,8 +76,9 @@ func (h *Handler) GetNotifications(c *gin.Context) {
 	}
 
 	cursor := c.Query("cursor")
+	category := c.Query("category")
 
-	page, err := h.svc.GetNotificationsPage(c.Request.Context(), userID, limit, cursor)
+	page, err := h.svc.GetNotificationsPage(c.Request.Context(), userID, limit, cursor, category)
 	if err != nil {
 		log.Printf("Failed to get notifications: %v", err)
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch notifications", nil)

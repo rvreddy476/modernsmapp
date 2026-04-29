@@ -119,7 +119,8 @@ func (s *Store) ListQuestionsByTopic(ctx context.Context, topicID uuid.UUID, sor
 		orderBy = "q.created_at DESC"
 	}
 	rows, err := s.db.Query(ctx, fmt.Sprintf(`
-		SELECT q.id, q.author_id, q.title, q.slug, q.status, q.vote_score, q.answer_count, q.view_count, q.is_answered, q.created_at
+		SELECT q.id, q.author_id, q.title, q.slug, q.status, q.vote_score, q.answer_count, q.view_count, q.is_answered, q.created_at,
+		       COALESCE(q.is_anonymous, false)
 		FROM questions q JOIN question_topics qt ON q.id = qt.question_id
 		WHERE qt.topic_id = $1 AND q.deleted_at IS NULL AND q.status != 'deleted'
 		ORDER BY %s LIMIT $2 OFFSET $3`, orderBy), topicID, limit, offset)

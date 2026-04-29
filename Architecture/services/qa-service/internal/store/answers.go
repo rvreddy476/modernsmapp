@@ -8,7 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func (s *Store) CreateAnswer(ctx context.Context, questionID, authorID uuid.UUID, body, bodyHTML string) (*Answer, error) {
+func (s *Store) CreateAnswer(ctx context.Context, questionID, authorID uuid.UUID, body, bodyHTML string, isAnonymous bool) (*Answer, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -17,14 +17,14 @@ func (s *Store) CreateAnswer(ctx context.Context, questionID, authorID uuid.UUID
 
 	a := &Answer{}
 	err = tx.QueryRow(ctx, `
-		INSERT INTO answers (question_id, author_id, body, body_html)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO answers (question_id, author_id, body, body_html, is_anonymous)
+		VALUES ($1, $2, $3, $4, $5)
 		RETURNING id, question_id, author_id, body, body_html, vote_score, upvote_count, downvote_count,
-		          is_best, is_accepted, comment_count, reference_count, created_at, updated_at`,
-		questionID, authorID, body, bodyHTML,
+		          is_best, is_accepted, comment_count, reference_count, created_at, updated_at, COALESCE(is_anonymous, false)`,
+		questionID, authorID, body, bodyHTML, isAnonymous,
 	).Scan(&a.ID, &a.QuestionID, &a.AuthorID, &a.Body, &a.BodyHTML, &a.VoteScore,
 		&a.UpvoteCount, &a.DownvoteCount, &a.IsBest, &a.IsAccepted,
-		&a.CommentCount, &a.ReferenceCount, &a.CreatedAt, &a.UpdatedAt)
+		&a.CommentCount, &a.ReferenceCount, &a.CreatedAt, &a.UpdatedAt, &a.IsAnonymous)
 	if err != nil {
 		return nil, fmt.Errorf("insert answer: %w", err)
 	}
@@ -58,11 +58,12 @@ func (s *Store) GetAnswer(ctx context.Context, answerID uuid.UUID) (*Answer, err
 	a := &Answer{}
 	err := s.db.QueryRow(ctx, `
 		SELECT id, question_id, author_id, body, body_html, vote_score, upvote_count, downvote_count,
-		       is_best, is_accepted, comment_count, reference_count, created_at, updated_at, deleted_at
+		       is_best, is_accepted, comment_count, reference_count, created_at, updated_at, deleted_at,
+		       COALESCE(is_anonymous, false)
 		FROM answers WHERE id = $1 AND deleted_at IS NULL`, answerID,
 	).Scan(&a.ID, &a.QuestionID, &a.AuthorID, &a.Body, &a.BodyHTML, &a.VoteScore,
 		&a.UpvoteCount, &a.DownvoteCount, &a.IsBest, &a.IsAccepted,
-		&a.CommentCount, &a.ReferenceCount, &a.CreatedAt, &a.UpdatedAt, &a.DeletedAt)
+		&a.CommentCount, &a.ReferenceCount, &a.CreatedAt, &a.UpdatedAt, &a.DeletedAt, &a.IsAnonymous)
 	if err != nil {
 		return nil, fmt.Errorf("get answer: %w", err)
 	}
@@ -125,7 +126,8 @@ func (s *Store) ListAnswersByQuestion(ctx context.Context, questionID uuid.UUID,
 	}
 	rows, err := s.db.Query(ctx, fmt.Sprintf(`
 		SELECT id, question_id, author_id, body, body_html, vote_score, upvote_count, downvote_count,
-		       is_best, is_accepted, comment_count, reference_count, created_at, updated_at
+		       is_best, is_accepted, comment_count, reference_count, created_at, updated_at,
+		       COALESCE(is_anonymous, false)
 		FROM answers WHERE question_id = $1 AND deleted_at IS NULL
 		ORDER BY is_best DESC, %s LIMIT $2 OFFSET $3`, orderBy), questionID, limit, offset)
 	if err != nil {
@@ -210,7 +212,8 @@ func (s *Store) ListAnswersByAuthor(ctx context.Context, authorID uuid.UUID, lim
 	rows, err := s.db.Query(ctx, `
 		SELECT id, question_id, author_id, body, body_html, vote_score,
 		       upvote_count, downvote_count, is_best, is_accepted,
-		       comment_count, reference_count, created_at, updated_at
+		       comment_count, reference_count, created_at, updated_at,
+		       COALESCE(is_anonymous, false)
 		FROM answers WHERE author_id = $1 AND deleted_at IS NULL
 		ORDER BY created_at DESC LIMIT $2 OFFSET $3`, authorID, limit, offset)
 	if err != nil {
@@ -226,7 +229,7 @@ func scanAnswers(rows pgx.Rows) ([]Answer, error) {
 		var a Answer
 		if err := rows.Scan(&a.ID, &a.QuestionID, &a.AuthorID, &a.Body, &a.BodyHTML, &a.VoteScore,
 			&a.UpvoteCount, &a.DownvoteCount, &a.IsBest, &a.IsAccepted,
-			&a.CommentCount, &a.ReferenceCount, &a.CreatedAt, &a.UpdatedAt); err != nil {
+			&a.CommentCount, &a.ReferenceCount, &a.CreatedAt, &a.UpdatedAt, &a.IsAnonymous); err != nil {
 			return nil, err
 		}
 		results = append(results, a)

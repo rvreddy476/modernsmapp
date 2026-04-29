@@ -83,6 +83,7 @@ func (s *Service) GetQuestion(ctx context.Context, questionID uuid.UUID, viewerI
 			_ = s.store.IncrementQuestionViewCount(ctx, questionID)
 		}
 	}
+	maskAnonymousQuestion(q)
 	return q, nil
 }
 
@@ -139,8 +140,25 @@ func (s *Service) FindSimilarQuestions(ctx context.Context, title string, limit 
 	return s.store.GetSimilarQuestions(ctx, title, limit)
 }
 
+func (s *Service) SearchQuestions(ctx context.Context, q string, communityID, topicID *uuid.UUID, limit, offset int) ([]store.QuestionSummary, error) {
+	results, err := s.store.SearchQuestions(ctx, q, communityID, topicID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	for i := range results {
+		maskAnonymousSummary(&results[i])
+	}
+	return results, nil
+}
+
 func (s *Service) ListQuestionsByAuthor(ctx context.Context, authorID uuid.UUID, limit, offset int) ([]store.QuestionSummary, error) {
-	return s.store.ListQuestionsByAuthor(ctx, authorID, limit, offset)
+	results, err := s.store.ListQuestionsByAuthor(ctx, authorID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	// Author's own questions: leave AuthorID intact (they posted, they see).
+	// We still surface the is_anonymous flag so the UI can show "posted as anonymous".
+	return results, nil
 }
 
 // --- Topics ---
@@ -165,7 +183,14 @@ func (s *Service) ListTopics(ctx context.Context, limit, offset int, featuredOnl
 }
 
 func (s *Service) GetTopicQuestions(ctx context.Context, topicID uuid.UUID, sortBy string, limit, offset int) ([]store.QuestionSummary, error) {
-	return s.store.ListQuestionsByTopic(ctx, topicID, sortBy, limit, offset)
+	results, err := s.store.ListQuestionsByTopic(ctx, topicID, sortBy, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	for i := range results {
+		maskAnonymousSummary(&results[i])
+	}
+	return results, nil
 }
 
 func (s *Service) GetTopContributors(ctx context.Context, topicID uuid.UUID, limit int) ([]store.QAProfile, error) {
@@ -174,7 +199,7 @@ func (s *Service) GetTopContributors(ctx context.Context, topicID uuid.UUID, lim
 
 // --- Answers ---
 
-func (s *Service) CreateAnswer(ctx context.Context, questionID, authorID uuid.UUID, body, bodyHTML string) (*store.Answer, error) {
+func (s *Service) CreateAnswer(ctx context.Context, questionID, authorID uuid.UUID, body, bodyHTML string, isAnonymous bool) (*store.Answer, error) {
 	if body == "" {
 		return nil, fmt.Errorf("invalid: answer body is required")
 	}
@@ -200,7 +225,7 @@ func (s *Service) CreateAnswer(ctx context.Context, questionID, authorID uuid.UU
 			return nil, fmt.Errorf("forbidden: you cannot answer in this community")
 		}
 	}
-	a, err := s.store.CreateAnswer(ctx, questionID, authorID, body, bodyHTML)
+	a, err := s.store.CreateAnswer(ctx, questionID, authorID, body, bodyHTML, isAnonymous)
 	if err != nil {
 		return nil, err
 	}
@@ -208,6 +233,18 @@ func (s *Service) CreateAnswer(ctx context.Context, questionID, authorID uuid.UU
 		_ = s.producer.PublishAnswerCreated(ctx, a.ID, questionID, authorID)
 	}
 	s.awardReputation(ctx, authorID, "answer_posted", ReputationAnswerPosted, "answer", &a.ID)
+	return a, nil
+}
+
+func (s *Service) GetAnswer(ctx context.Context, answerID uuid.UUID, viewerID *uuid.UUID) (*store.Answer, error) {
+	a, err := s.store.GetAnswer(ctx, answerID)
+	if err != nil {
+		return nil, fmt.Errorf("not_found: answer not found")
+	}
+	if err := s.EnsureQuestionVisible(ctx, a.QuestionID, viewerID); err != nil {
+		return nil, err
+	}
+	maskAnonymousAnswer(a)
 	return a, nil
 }
 
@@ -241,7 +278,14 @@ func (s *Service) ListAnswers(ctx context.Context, questionID uuid.UUID, viewerI
 	if err := s.ensureQuestionVisible(ctx, q, viewerID); err != nil {
 		return nil, err
 	}
-	return s.store.ListAnswersByQuestion(ctx, questionID, sortBy, limit, offset)
+	answers, err := s.store.ListAnswersByQuestion(ctx, questionID, sortBy, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	for i := range answers {
+		maskAnonymousAnswer(&answers[i])
+	}
+	return answers, nil
 }
 
 func (s *Service) SelectBestAnswer(ctx context.Context, questionID, answerID, selectorID uuid.UUID) error {
@@ -400,7 +444,14 @@ func (s *Service) UnsaveQuestion(ctx context.Context, userID, questionID uuid.UU
 }
 
 func (s *Service) GetSavedQuestions(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.QuestionSummary, error) {
-	return s.store.GetSavedQuestions(ctx, userID, limit, offset)
+	results, err := s.store.GetSavedQuestions(ctx, userID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	for i := range results {
+		maskAnonymousSummary(&results[i])
+	}
+	return results, nil
 }
 
 func (s *Service) SaveAnswer(ctx context.Context, userID, answerID uuid.UUID) error {
@@ -412,7 +463,14 @@ func (s *Service) UnsaveAnswer(ctx context.Context, userID, answerID uuid.UUID) 
 }
 
 func (s *Service) GetSavedAnswers(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.Answer, error) {
-	return s.store.GetSavedAnswers(ctx, userID, limit, offset)
+	results, err := s.store.GetSavedAnswers(ctx, userID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	for i := range results {
+		maskAnonymousAnswer(&results[i])
+	}
+	return results, nil
 }
 
 func (s *Service) CreateAnswerRequest(ctx context.Context, questionID, requesterID, requestedUserID uuid.UUID) (*store.AnswerRequest, error) {
@@ -465,37 +523,98 @@ func (s *Service) GetLeaderboard(ctx context.Context, topicID *uuid.UUID, limit 
 // --- Feeds ---
 
 func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.QuestionSummary, error) {
-	return s.store.GetHomeFeed(ctx, userID, limit, offset)
+	results, err := s.store.GetHomeFeed(ctx, userID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	for i := range results {
+		maskAnonymousSummary(&results[i])
+	}
+	return results, nil
 }
 
 func (s *Service) GetTrendingQuestions(ctx context.Context, limit, offset int) ([]store.QuestionSummary, error) {
-	return s.store.GetTrendingQuestions(ctx, limit, offset)
+	results, err := s.store.GetTrendingQuestions(ctx, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	for i := range results {
+		maskAnonymousSummary(&results[i])
+	}
+	return results, nil
 }
 
 func (s *Service) GetUnansweredQuestions(ctx context.Context, topicID *uuid.UUID, limit, offset int) ([]store.QuestionSummary, error) {
-	return s.store.GetUnansweredQuestions(ctx, topicID, limit, offset)
+	results, err := s.store.GetUnansweredQuestions(ctx, topicID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	for i := range results {
+		maskAnonymousSummary(&results[i])
+	}
+	return results, nil
 }
 
 func (s *Service) GetFollowingFeed(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.QuestionSummary, error) {
-	return s.store.GetFollowingFeed(ctx, userID, limit, offset)
+	results, err := s.store.GetFollowingFeed(ctx, userID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	for i := range results {
+		maskAnonymousSummary(&results[i])
+	}
+	return results, nil
 }
 
 func (s *Service) GetForYouFeed(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.QuestionSummary, error) {
-	return s.store.GetForYouFeed(ctx, userID, limit, offset)
+	results, err := s.store.GetForYouFeed(ctx, userID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	for i := range results {
+		maskAnonymousSummary(&results[i])
+	}
+	return results, nil
 }
 
 func (s *Service) GetLocalFeed(ctx context.Context, lat, lng float64, radiusKm, limit, offset int) ([]store.QuestionSummary, error) {
-	return s.store.GetLocalFeed(ctx, lat, lng, radiusKm, limit, offset)
+	results, err := s.store.GetLocalFeed(ctx, lat, lng, radiusKm, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	for i := range results {
+		maskAnonymousSummary(&results[i])
+	}
+	return results, nil
 }
 
 func (s *Service) GetAnswerQueue(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.QuestionSummary, error) {
-	return s.store.GetAnswerQueue(ctx, userID, limit, offset)
+	results, err := s.store.GetAnswerQueue(ctx, userID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	for i := range results {
+		maskAnonymousSummary(&results[i])
+	}
+	return results, nil
 }
 
 // --- Moderation ---
 
 func (s *Service) CreateReport(ctx context.Context, reporterID uuid.UUID, targetType string, targetID uuid.UUID, reason, details string) (*store.ModerationReport, error) {
-	return s.store.CreateReport(ctx, reporterID, targetType, targetID, reason, details)
+	report, err := s.store.CreateReport(ctx, reporterID, targetType, targetID, reason, details)
+	if err != nil {
+		return nil, err
+	}
+	if s.producer != nil {
+		switch targetType {
+		case "question":
+			_ = s.producer.PublishQuestionReported(ctx, report.ID, targetID, reporterID, reason)
+		case "answer":
+			_ = s.producer.PublishAnswerReported(ctx, report.ID, targetID, reporterID, reason)
+		}
+	}
+	return report, nil
 }
 
 func (s *Service) ListReports(ctx context.Context, status string, limit, offset int) ([]store.ModerationReport, error) {
@@ -540,4 +659,33 @@ func (s *Service) awardReputation(ctx context.Context, userID uuid.UUID, eventTy
 	if err := s.store.AddReputationEvent(ctx, userID, eventType, points, sourceType, sourceID); err != nil {
 		slog.Warn("failed to award reputation", "user_id", userID, "event_type", eventType, "error", err)
 	}
+}
+
+// --- anonymity helpers ---
+// When is_anonymous = true, the author_id is masked to uuid.Nil and any
+// joined Author profile is dropped. The is_anonymous boolean stays true
+// on the JSON so clients can render an "Anonymous" label.
+
+func maskAnonymousQuestion(q *store.Question) {
+	if q == nil || !q.IsAnonymous {
+		return
+	}
+	q.AuthorID = uuid.Nil
+	q.Author = nil
+}
+
+func maskAnonymousAnswer(a *store.Answer) {
+	if a == nil || !a.IsAnonymous {
+		return
+	}
+	a.AuthorID = uuid.Nil
+	a.Author = nil
+}
+
+func maskAnonymousSummary(q *store.QuestionSummary) {
+	if q == nil || !q.IsAnonymous {
+		return
+	}
+	q.AuthorID = uuid.Nil
+	q.Author = nil
 }

@@ -105,6 +105,28 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// Reports
 		qa.POST("/reports", h.CreateReport)
 
+		// Search (v1: reuse similar-questions trigram lookup)
+		qa.GET("/search", h.SearchQuestions)
+
+		// Drafts (server-backed)
+		qa.GET("/drafts/questions", h.ListQuestionDrafts)
+		qa.POST("/drafts/questions", h.UpsertQuestionDraft)
+		qa.DELETE("/drafts/questions/:draftId", h.DeleteQuestionDraft)
+		qa.GET("/drafts/answers", h.ListAnswerDrafts)
+		qa.POST("/drafts/answers", h.UpsertAnswerDraft)
+		qa.DELETE("/drafts/answers/:draftId", h.DeleteAnswerDraft)
+
+		// Community-scoped Q&A (lives under /v1/qa to avoid clashing with community-service)
+		communities := qa.Group("/communities")
+		{
+			communities.GET("/:communityId/questions", h.ListCommunityQuestions)
+			communities.POST("/:communityId/questions/:questionId/pin", h.PinCommunityQuestion)
+			communities.DELETE("/:communityId/questions/:questionId/pin", h.UnpinCommunityQuestion)
+			communities.GET("/:communityId/qa-settings", h.GetCommunityQASettings)
+			communities.PUT("/:communityId/qa-settings", h.UpdateCommunityQASettings)
+			communities.GET("/:communityId/topics/popular", h.GetCommunityPopularTopics)
+		}
+
 		// Admin moderation
 		admin := qa.Group("/admin")
 		{
@@ -120,16 +142,6 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			admin.POST("/comments/:commentId/hide", h.HideComment)
 			admin.GET("/actions", h.ListModerationActions)
 		}
-	}
-
-	communities := r.Group("/v1/communities")
-	{
-		communities.GET("/:communityId/questions", h.ListCommunityQuestions)
-		communities.POST("/:communityId/questions/:questionId/pin", h.PinCommunityQuestion)
-		communities.DELETE("/:communityId/questions/:questionId/pin", h.UnpinCommunityQuestion)
-		communities.GET("/:communityId/qa-settings", h.GetCommunityQASettings)
-		communities.PUT("/:communityId/qa-settings", h.UpdateCommunityQASettings)
-		communities.GET("/:communityId/topics/popular", h.GetCommunityPopularTopics)
 	}
 }
 

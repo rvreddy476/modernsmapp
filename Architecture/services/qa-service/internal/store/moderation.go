@@ -143,7 +143,8 @@ func (s *Store) MarkDuplicate(ctx context.Context, questionID, duplicateOfID, ma
 
 func (s *Store) GetDuplicates(ctx context.Context, questionID uuid.UUID) ([]QuestionSummary, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT q.id, q.author_id, q.title, q.slug, q.status, q.vote_score, q.answer_count, q.view_count, q.is_answered, q.created_at
+		SELECT q.id, q.author_id, q.title, q.slug, q.status, q.vote_score, q.answer_count, q.view_count, q.is_answered, q.created_at,
+		       COALESCE(q.is_anonymous, false)
 		FROM questions q JOIN question_duplicates qd ON q.id = qd.question_id
 		WHERE qd.duplicate_of_id = $1 AND q.deleted_at IS NULL`, questionID)
 	if err != nil {

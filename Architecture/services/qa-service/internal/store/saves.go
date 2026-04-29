@@ -27,7 +27,8 @@ func (s *Store) GetSavedQuestions(ctx context.Context, userID uuid.UUID, limit, 
 		limit = 20
 	}
 	rows, err := s.db.Query(ctx, `
-		SELECT q.id, q.author_id, q.title, q.slug, q.status, q.vote_score, q.answer_count, q.view_count, q.is_answered, q.created_at
+		SELECT q.id, q.author_id, q.title, q.slug, q.status, q.vote_score, q.answer_count, q.view_count, q.is_answered, q.created_at,
+		       COALESCE(q.is_anonymous, false)
 		FROM questions q JOIN question_saves qs ON q.id = qs.question_id
 		WHERE qs.user_id = $1 AND q.deleted_at IS NULL
 		ORDER BY qs.created_at DESC LIMIT $2 OFFSET $3`, userID, limit, offset)
@@ -54,7 +55,8 @@ func (s *Store) GetSavedAnswers(ctx context.Context, userID uuid.UUID, limit, of
 	}
 	rows, err := s.db.Query(ctx, `
 		SELECT a.id, a.question_id, a.author_id, a.body, a.body_html, a.vote_score, a.upvote_count, a.downvote_count,
-		       a.is_best, a.is_accepted, a.comment_count, a.reference_count, a.created_at, a.updated_at
+		       a.is_best, a.is_accepted, a.comment_count, a.reference_count, a.created_at, a.updated_at,
+		       COALESCE(a.is_anonymous, false)
 		FROM answers a JOIN answer_saves sa ON a.id = sa.answer_id
 		WHERE sa.user_id = $1 AND a.deleted_at IS NULL
 		ORDER BY sa.created_at DESC LIMIT $2 OFFSET $3`, userID, limit, offset)

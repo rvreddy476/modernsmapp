@@ -116,6 +116,30 @@ func (p *Producer) PublishModerationAction(ctx context.Context, actionID, actorI
 	})
 }
 
+func (p *Producer) PublishQuestionPinned(ctx context.Context, questionID, communityID, actorID uuid.UUID, pinned bool) error {
+	return p.publish(ctx, events.EventQAQuestionPinned, &actorID, QuestionPinnedPayload{
+		QuestionID:  questionID.String(),
+		CommunityID: communityID.String(),
+		ActorID:     actorID.String(),
+		Pinned:      pinned,
+		At:          time.Now(),
+	})
+}
+
+func (p *Producer) PublishQuestionReported(ctx context.Context, reportID, questionID, reporterID uuid.UUID, reason string) error {
+	return p.publish(ctx, events.EventQAQuestionReported, &reporterID, ReportedPayload{
+		ReportID: reportID.String(), TargetID: questionID.String(),
+		ReporterID: reporterID.String(), Reason: reason, ReportedAt: time.Now(),
+	})
+}
+
+func (p *Producer) PublishAnswerReported(ctx context.Context, reportID, answerID, reporterID uuid.UUID, reason string) error {
+	return p.publish(ctx, events.EventQAAnswerReported, &reporterID, ReportedPayload{
+		ReportID: reportID.String(), TargetID: answerID.String(),
+		ReporterID: reporterID.String(), Reason: reason, ReportedAt: time.Now(),
+	})
+}
+
 func (p *Producer) publish(ctx context.Context, eventType string, actorID *uuid.UUID, payload any) error {
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -233,4 +257,20 @@ type ModerationActionPayload struct {
 	TargetID   string    `json:"target_id"`
 	ActionType string    `json:"action_type"`
 	ActedAt    time.Time `json:"acted_at"`
+}
+
+type QuestionPinnedPayload struct {
+	QuestionID  string    `json:"question_id"`
+	CommunityID string    `json:"community_id"`
+	ActorID     string    `json:"actor_id"`
+	Pinned      bool      `json:"pinned"`
+	At          time.Time `json:"at"`
+}
+
+type ReportedPayload struct {
+	ReportID   string    `json:"report_id"`
+	TargetID   string    `json:"target_id"`
+	ReporterID string    `json:"reporter_id"`
+	Reason     string    `json:"reason"`
+	ReportedAt time.Time `json:"reported_at"`
 }

@@ -22,6 +22,7 @@ type CreateQuestionParams struct {
 	Topics      []string   `json:"topics,omitempty"`
 	Tags        []string   `json:"tags"`
 	MediaIDs    []string   `json:"media_ids"`
+	IsAnonymous bool       `json:"is_anonymous,omitempty"`
 }
 
 type UpdateQuestionParams struct {
@@ -69,9 +70,9 @@ func (s *Store) CreateQuestion(ctx context.Context, authorID uuid.UUID, p Create
 	defer tx.Rollback(ctx)
 
 	_, err = tx.Exec(ctx, `
-		INSERT INTO questions (id, author_id, community_id, title, body, body_html, slug, language, visibility, status)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-		id, authorID, p.CommunityID, p.Title, p.Body, p.BodyHTML, slug, lang, vis, status,
+		INSERT INTO questions (id, author_id, community_id, title, body, body_html, slug, language, visibility, status, is_anonymous)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		id, authorID, p.CommunityID, p.Title, p.Body, p.BodyHTML, slug, lang, vis, status, p.IsAnonymous,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert question: %w", err)
@@ -164,7 +165,8 @@ func (s *Store) GetQuestion(ctx context.Context, questionID uuid.UUID) (*Questio
 		       COALESCE(qcc.is_pinned, false),
 		       COALESCE(qcc.community_name_snapshot, qc.name, ''),
 		       COALESCE(qcc.community_visibility, CASE WHEN qc.community_type IN ('private', 'invite') THEN 'private' ELSE 'public' END, ''),
-		       COALESCE(qc.community_type, '')
+		       COALESCE(qc.community_type, ''),
+		       COALESCE(q.is_anonymous, false)
 		FROM questions q
 		LEFT JOIN question_community_context qcc ON qcc.question_id = q.id
 		LEFT JOIN qa_communities qc ON qc.id = q.community_id
@@ -176,6 +178,7 @@ func (s *Store) GetQuestion(ctx context.Context, questionID uuid.UUID) (*Questio
 		&q.AnswerCount, &q.ViewCount, &q.FollowCount, &q.IsAnswered, &q.BestAnswerID,
 		&q.ClosedReason, &q.ClosedBy, &q.MergedIntoID, &q.CreatedAt, &q.UpdatedAt, &q.DeletedAt,
 		&q.IsPinned, &communityName, &communityVisibility, &communityType,
+		&q.IsAnonymous,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get question: %w", err)
@@ -323,7 +326,8 @@ func (s *Store) ListQuestions(ctx context.Context, viewerID *uuid.UUID, p ListQu
 		       COALESCE(qcc.is_pinned, false),
 		       COALESCE(qcc.community_name_snapshot, qc.name, ''),
 		       COALESCE(qcc.community_visibility, CASE WHEN qc.community_type IN ('private', 'invite') THEN 'private' ELSE 'public' END, ''),
-		       COALESCE(qc.community_type, '')
+		       COALESCE(qc.community_type, ''),
+		       COALESCE(q.is_anonymous, false)
 		FROM questions q
 		LEFT JOIN question_community_context qcc ON qcc.question_id = q.id
 		LEFT JOIN qa_communities qc ON qc.id = q.community_id
@@ -350,7 +354,8 @@ func (s *Store) ListQuestionsByAuthor(ctx context.Context, authorID uuid.UUID, l
 		limit = 20
 	}
 	rows, err := s.db.Query(ctx, `
-		SELECT id, author_id, title, slug, status, vote_score, answer_count, view_count, is_answered, created_at
+		SELECT id, author_id, title, slug, status, vote_score, answer_count, view_count, is_answered, created_at,
+		       COALESCE(is_anonymous, false)
 		FROM questions WHERE author_id = $1 AND deleted_at IS NULL
 		ORDER BY created_at DESC LIMIT $2 OFFSET $3`, authorID, limit, offset)
 	if err != nil {
@@ -529,10 +534,61 @@ func (s *Store) GetSimilarQuestions(ctx context.Context, title string, limit int
 		limit = 5
 	}
 	rows, err := s.db.Query(ctx, `
-		SELECT id, author_id, title, slug, status, vote_score, answer_count, view_count, is_answered, created_at
+		SELECT id, author_id, title, slug, status, vote_score, answer_count, view_count, is_answered, created_at,
+		       COALESCE(is_anonymous, false)
 		FROM questions
 		WHERE deleted_at IS NULL AND status = 'open' AND title ILIKE '%' || $1 || '%'
 		ORDER BY vote_score DESC LIMIT $2`, title, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanQuestionSummaries(rows)
+}
+
+// SearchQuestions performs a trigram/ILIKE title match with optional
+// community + topic filters. Results are ordered by relevance (similarity)
+// with a fallback to vote_score so the search still works without the
+// pg_trgm extension installed.
+func (s *Store) SearchQuestions(ctx context.Context, q string, communityID, topicID *uuid.UUID, limit, offset int) ([]QuestionSummary, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+
+	conditions := []string{
+		"q.deleted_at IS NULL",
+		"q.status != 'deleted'",
+		"(q.title ILIKE '%' || $1 || '%' OR q.body ILIKE '%' || $1 || '%')",
+	}
+	args := []any{q}
+	idx := 2
+
+	if communityID != nil {
+		conditions = append(conditions, fmt.Sprintf("q.community_id = $%d", idx))
+		args = append(args, *communityID)
+		idx++
+	}
+	if topicID != nil {
+		conditions = append(conditions, fmt.Sprintf("EXISTS (SELECT 1 FROM question_topics qt WHERE qt.question_id = q.id AND qt.topic_id = $%d)", idx))
+		args = append(args, *topicID)
+		idx++
+	}
+
+	args = append(args, limit, offset)
+	limitIdx := idx
+	offsetIdx := idx + 1
+
+	query := fmt.Sprintf(`
+		SELECT q.id, q.author_id, q.title, q.slug, q.status, q.vote_score, q.answer_count, q.view_count, q.is_answered, q.created_at,
+		       COALESCE(q.is_anonymous, false)
+		FROM questions q
+		WHERE %s
+		ORDER BY (CASE WHEN q.title ILIKE $1 || '%%' THEN 1 ELSE 0 END) DESC, q.vote_score DESC, q.created_at DESC
+		LIMIT $%d OFFSET $%d`,
+		strings.Join(conditions, " AND "), limitIdx, offsetIdx,
+	)
+
+	rows, err := s.db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -746,7 +802,7 @@ func scanQuestionSummaries(rows pgx.Rows) ([]QuestionSummary, error) {
 	var results []QuestionSummary
 	for rows.Next() {
 		var q QuestionSummary
-		if err := rows.Scan(&q.ID, &q.AuthorID, &q.Title, &q.Slug, &q.Status, &q.VoteScore, &q.AnswerCount, &q.ViewCount, &q.IsAnswered, &q.CreatedAt); err != nil {
+		if err := rows.Scan(&q.ID, &q.AuthorID, &q.Title, &q.Slug, &q.Status, &q.VoteScore, &q.AnswerCount, &q.ViewCount, &q.IsAnswered, &q.CreatedAt, &q.IsAnonymous); err != nil {
 			return nil, err
 		}
 		results = append(results, q)
@@ -766,6 +822,7 @@ func scanQuestionSummariesWithCommunity(rows pgx.Rows) ([]QuestionSummary, error
 			&q.ID, &q.AuthorID, &communityIDText, &q.Title, &q.Slug, &q.Status,
 			&q.VoteScore, &q.AnswerCount, &q.ViewCount, &q.IsAnswered, &q.CreatedAt,
 			&q.Excerpt, &q.IsPinned, &communityName, &communityVisibility, &communityType,
+			&q.IsAnonymous,
 		); err != nil {
 			return nil, err
 		}

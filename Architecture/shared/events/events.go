@@ -252,6 +252,7 @@ const (
 	EventQAQuestionReported     = "qa.question.reported"
 	EventQAAnswerReported       = "qa.answer.reported"
 	EventQAModerationAction     = "qa.moderation.action"
+	EventQAQuestionPinned       = "qa.question.pinned"
 )
 
 // EventEnvelope is the CloudEvents-ish structure we use on Kafka.

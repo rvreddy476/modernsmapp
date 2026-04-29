@@ -753,6 +753,63 @@ func feedItemsToCandidates(items []FeedItem) []ranking.Candidate {
 	return out
 }
 
+// FanoutQuestion writes a Q&A question into the author's followers' home
+// timelines using content_type = "qa_question". Mirrors FanoutPost but
+// without the celeb/visibility short-circuits — Q&A questions always
+// fan out to followers (community-scoped questions are filtered at read
+// time by the feed hydrator, which respects community visibility).
+func (s *Service) FanoutQuestion(ctx context.Context, questionID, authorID uuid.UUID, createdAt time.Time) error {
+	const ct = "qa_question"
+
+	// 1. Author timeline + author's own home timeline
+	if err := s.scyllaStore.AddToAuthorTimeline(ctx, authorID, questionID, createdAt, ct); err != nil {
+		return err
+	}
+	if err := s.scyllaStore.AddToHomeTimeline(ctx, authorID, questionID, authorID, createdAt, ct); err != nil {
+		log.Printf("FanoutQuestion: failed to push to author's home timeline: %v", err)
+	}
+
+	// 2. Stop early for celebs (pull model — same rule as FanoutPost).
+	isCeleb, err := s.pgStore.IsCeleb(ctx, authorID)
+	if err == nil && isCeleb {
+		return nil
+	}
+
+	// 3. Followers + circle members.
+	recipientSet := make(map[uuid.UUID]struct{})
+	if followerIDs, err := s.fetchFollowers(ctx, authorID); err == nil {
+		for _, id := range followerIDs {
+			recipientSet[id] = struct{}{}
+		}
+	} else {
+		log.Printf("FanoutQuestion: fetch followers failed: %v", err)
+	}
+	if friendIDs, err := s.fetchCircleMembers(ctx, authorID); err == nil {
+		for _, id := range friendIDs {
+			recipientSet[id] = struct{}{}
+		}
+	} else {
+		log.Printf("FanoutQuestion: fetch circle members failed: %v", err)
+	}
+
+	for recipientID := range recipientSet {
+		if recipientID == authorID {
+			continue
+		}
+		if err := s.scyllaStore.AddToHomeTimeline(ctx, recipientID, questionID, authorID, createdAt, ct); err != nil {
+			log.Printf("FanoutQuestion: push to timeline for user %s failed: %v", recipientID, err)
+		}
+	}
+	return nil
+}
+
+// MarkQuestionDeleted soft-removes a Q&A question from feed hydration by
+// flipping a Redis flag identical to the post-deleted pattern.
+func (s *Service) MarkQuestionDeleted(ctx context.Context, questionID uuid.UUID) error {
+	deletedKey := fmt.Sprintf("post:deleted:%s", questionID)
+	return s.rdb.Set(ctx, deletedKey, "1", 24*time.Hour).Err()
+}
+
 // FanoutRepost distributes a repost into the reposter's followers' home timelines.
 // The feed entry points to the original post but is attributed to the reposter.
 func (s *Service) FanoutRepost(ctx context.Context, repostID, originalPostID, reposterID uuid.UUID, createdAt time.Time, visibility string) error {
