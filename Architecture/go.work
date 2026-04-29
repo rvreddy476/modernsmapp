@@ -29,4 +29,5 @@ use (
 	./services/user-service
 	./shared
 	./tools/schemacheck
+	./tools/integration
 )
