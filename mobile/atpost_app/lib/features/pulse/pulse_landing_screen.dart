@@ -1,23 +1,24 @@
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
-import 'package:atpost_app/services/postmatch_auth_service.dart';
+import 'package:atpost_app/services/pulse_auth_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-class PostMatchLandingScreen extends ConsumerStatefulWidget {
-  const PostMatchLandingScreen({super.key});
+// formerly PostMatchLandingScreen
+class PulseLandingScreen extends ConsumerStatefulWidget {
+  const PulseLandingScreen({super.key});
 
   @override
-  ConsumerState<PostMatchLandingScreen> createState() =>
-      _PostMatchLandingScreenState();
+  ConsumerState<PulseLandingScreen> createState() =>
+      _PulseLandingScreenState();
 }
 
-class _PostMatchLandingScreenState
-    extends ConsumerState<PostMatchLandingScreen> {
+class _PulseLandingScreenState
+    extends ConsumerState<PulseLandingScreen> {
   bool _loading = true;
-  String _ctaRoute = '/postmatch/onboarding';
+  String _ctaRoute = '/pulse/onboarding/intent';
 
   static const _features = [
     (
@@ -49,13 +50,13 @@ class _PostMatchLandingScreenState
   }
 
   Future<void> _resolveCtaRoute() async {
-    final auth = ref.read(postMatchAuthServiceProvider);
+    final auth = ref.read(pulseAuthServiceProvider);
     await auth.sessionReady;
     if (!mounted) return;
     setState(() {
       _ctaRoute = auth.isReady
-          ? '/postmatch/discover'
-          : '/postmatch/onboarding';
+          ? '/pulse/discover'
+          : '/pulse/onboarding/intent';
       _loading = false;
     });
   }
@@ -79,7 +80,7 @@ class _PostMatchLandingScreenState
                           : () => context.push(_ctaRoute),
                     ),
                     const SizedBox(height: 22),
-                    Text('Why PostMatch', style: AppTextStyles.h2),
+                    Text('Why Pulse', style: AppTextStyles.h2),
                     const SizedBox(height: 10),
                     ..._features.map(
                       (feature) => Padding(

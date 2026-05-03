@@ -1,18 +1,19 @@
 import 'dart:io';
 
 import 'package:atpost_app/core/config/environment.dart';
-import 'package:atpost_app/services/postmatch_auth_service.dart';
+import 'package:atpost_app/services/pulse_auth_service.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-class PostMatchApiClient {
+// formerly PostMatchApiClient
+class PulseApiClient {
   final Dio _dio;
-  final PostMatchAuthService _auth;
+  final PulseAuthService _auth;
 
-  PostMatchApiClient(this._auth)
+  PulseApiClient(this._auth)
     : _dio = Dio(
         BaseOptions(
-          baseUrl: Environment.postMatchBaseUrl,
+          baseUrl: Environment.pulseBaseUrl,
           connectTimeout: const Duration(seconds: 20),
           receiveTimeout: const Duration(seconds: 20),
           headers: const {
@@ -33,7 +34,7 @@ class PostMatchApiClient {
         onError: (error, handler) async {
           final shouldRetry =
               error.response?.statusCode == 401 &&
-              error.requestOptions.extra['postmatch_retry'] != true &&
+              error.requestOptions.extra['pulse_retry'] != true &&
               _auth.refreshToken != null;
           if (!shouldRetry) {
             handler.next(error);
@@ -49,7 +50,7 @@ class PostMatchApiClient {
           final requestOptions = error.requestOptions;
           requestOptions.headers['Authorization'] =
               'Bearer ${_auth.accessToken}';
-          requestOptions.extra['postmatch_retry'] = true;
+          requestOptions.extra['pulse_retry'] = true;
 
           try {
             final response = await _dio.fetch<dynamic>(requestOptions);
@@ -92,6 +93,10 @@ class PostMatchApiClient {
     return _dio.put<T>(path, data: data, options: options);
   }
 
+  Future<Response<T>> patch<T>(String path, {Object? data, Options? options}) {
+    return _dio.patch<T>(path, data: data, options: options);
+  }
+
   Future<Response<T>> delete<T>(String path, {Object? data, Options? options}) {
     return _dio.delete<T>(path, data: data, options: options);
   }
@@ -114,6 +119,6 @@ class PostMatchApiClient {
   }
 }
 
-final postMatchApiClientProvider = Provider<PostMatchApiClient>((ref) {
-  return PostMatchApiClient(ref.watch(postMatchAuthServiceProvider));
+final pulseApiClientProvider = Provider<PulseApiClient>((ref) {
+  return PulseApiClient(ref.watch(pulseAuthServiceProvider));
 });

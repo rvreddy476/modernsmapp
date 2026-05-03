@@ -5,10 +5,10 @@ import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/models/user.dart';
-import 'package:atpost_app/data/repositories/postmatch_repository.dart';
+import 'package:atpost_app/data/repositories/pulse_repository.dart';
 import 'package:atpost_app/providers/user_provider.dart';
-import 'package:atpost_app/services/postmatch_auth_service.dart';
-import 'package:atpost_app/services/postmatch_face_verification_service.dart';
+import 'package:atpost_app/services/pulse_auth_service.dart';
+import 'package:atpost_app/services/pulse_face_verification_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -41,16 +41,17 @@ class _PendingPhoto {
   }
 }
 
-class PostMatchOnboardingScreen extends ConsumerStatefulWidget {
-  const PostMatchOnboardingScreen({super.key});
+// formerly PostMatchOnboardingScreen
+class PulseOnboardingScreen extends ConsumerStatefulWidget {
+  const PulseOnboardingScreen({super.key});
 
   @override
-  ConsumerState<PostMatchOnboardingScreen> createState() =>
-      _PostMatchOnboardingScreenState();
+  ConsumerState<PulseOnboardingScreen> createState() =>
+      _PulseOnboardingScreenState();
 }
 
-class _PostMatchOnboardingScreenState
-    extends ConsumerState<PostMatchOnboardingScreen> {
+class _PulseOnboardingScreenState
+    extends ConsumerState<PulseOnboardingScreen> {
   static const _steps = [
     _OnboardingStep.rules,
     _OnboardingStep.personal,
@@ -64,14 +65,14 @@ class _PostMatchOnboardingScreenState
   final _dobYearController = TextEditingController();
   final _dobMonthFocus = FocusNode();
   final _dobYearFocus = FocusNode();
-  late final PostMatchFaceVerificationService _faceVerificationService;
+  late final PulseFaceVerificationService _faceVerificationService;
 
   _OnboardingStep _step = _OnboardingStep.rules;
   _LocationStatus _locationStatus = _LocationStatus.idle;
 
   final List<_PendingPhoto> _photos = [];
   _PendingPhoto? _selfie;
-  PostMatchFaceVerificationResult? _faceVerificationResult;
+  PulseFaceVerificationResult? _faceVerificationResult;
 
   bool _bootstrapping = true;
   bool _loading = false;
@@ -88,7 +89,7 @@ class _PostMatchOnboardingScreenState
   @override
   void initState() {
     super.initState();
-    _faceVerificationService = PostMatchFaceVerificationService();
+    _faceVerificationService = PulseFaceVerificationService();
     _bootstrap();
   }
 
@@ -111,7 +112,7 @@ class _PostMatchOnboardingScreenState
     } catch (_) {
       currentUser = null;
     }
-    final auth = ref.read(postMatchAuthServiceProvider);
+    final auth = ref.read(pulseAuthServiceProvider);
     await auth.sessionReady;
 
     final displayName = currentUser?.displayName.trim() ?? '';
@@ -125,7 +126,7 @@ class _PostMatchOnboardingScreenState
         if (!mounted) return;
         setState(() {
           _error =
-              'Could not connect PostMatch to your Postbook account. Please try again.';
+              'Could not connect Pulse to your AtPost account. Please try again.';
           _bootstrapping = false;
         });
         return;
@@ -134,7 +135,7 @@ class _PostMatchOnboardingScreenState
 
     if (!mounted) return;
     if (auth.isReady) {
-      context.go('/postmatch/discover');
+      context.go('/pulse/discover');
       return;
     }
     setState(() => _bootstrapping = false);
@@ -323,7 +324,7 @@ class _PostMatchOnboardingScreenState
     final verified = await _ensureVerifiedMedia();
     if (!verified) return false;
 
-    final repo = ref.read(postMatchRepositoryProvider);
+    final repo = ref.read(pulseRepositoryProvider);
     final allMedia = [..._photos, _selfie!];
 
     for (var index = 0; index < allMedia.length; index++) {
@@ -395,7 +396,7 @@ class _PostMatchOnboardingScreenState
   }
 
   Future<bool> _saveProfile() async {
-    final repo = ref.read(postMatchRepositoryProvider);
+    final repo = ref.read(pulseRepositoryProvider);
     try {
       await repo.updateProfile({
         'first_name': _firstNameController.text.trim(),
@@ -418,17 +419,17 @@ class _PostMatchOnboardingScreenState
   bool get _isFaceVerified =>
       !_mediaNeedsVerification && (_faceVerificationResult?.isMatch ?? false);
 
-  String _faceVerificationErrorMessage(PostMatchFaceVerificationResult result) {
+  String _faceVerificationErrorMessage(PulseFaceVerificationResult result) {
     switch (result.status) {
-      case PostMatchFaceVerificationStatus.matched:
+      case PulseFaceVerificationStatus.matched:
         return '';
-      case PostMatchFaceVerificationStatus.noFace:
+      case PulseFaceVerificationStatus.noFace:
         return 'No face was detected in your selfie. Retake it with your face centered and well lit.';
-      case PostMatchFaceVerificationStatus.multiFace:
+      case PulseFaceVerificationStatus.multiFace:
         return 'Multiple faces were detected in your selfie. Make sure only you are visible.';
-      case PostMatchFaceVerificationStatus.mismatch:
+      case PulseFaceVerificationStatus.mismatch:
         return 'Your selfie does not match the profile photos you selected. Retake it or change your photos.';
-      case PostMatchFaceVerificationStatus.noUsablePhotos:
+      case PulseFaceVerificationStatus.noUsablePhotos:
         return 'Add at least 1 clear solo profile photo so we can verify your selfie.';
     }
   }
@@ -450,17 +451,17 @@ class _PostMatchOnboardingScreenState
     }
 
     switch (result.status) {
-      case PostMatchFaceVerificationStatus.matched:
+      case PulseFaceVerificationStatus.matched:
         final comparablePhotos = result.comparablePhotoCount;
         final skippedPhotos = result.skippedPhotoCount;
         final summary =
             'Verified against $comparablePhotos clear ${comparablePhotos == 1 ? 'photo' : 'photos'}.';
         if (skippedPhotos == 0) return summary;
         return '$summary $skippedPhotos other ${skippedPhotos == 1 ? 'photo was' : 'photos were'} not usable for matching.';
-      case PostMatchFaceVerificationStatus.noFace:
-      case PostMatchFaceVerificationStatus.multiFace:
-      case PostMatchFaceVerificationStatus.mismatch:
-      case PostMatchFaceVerificationStatus.noUsablePhotos:
+      case PulseFaceVerificationStatus.noFace:
+      case PulseFaceVerificationStatus.multiFace:
+      case PulseFaceVerificationStatus.mismatch:
+      case PulseFaceVerificationStatus.noUsablePhotos:
         return _faceVerificationErrorMessage(result);
     }
   }
@@ -472,8 +473,8 @@ class _PostMatchOnboardingScreenState
     if (_mediaNeedsVerification) return 'Needs review';
 
     return switch (_faceVerificationResult?.status) {
-      PostMatchFaceVerificationStatus.noUsablePhotos => 'Photo issue',
-      PostMatchFaceVerificationStatus.matched => 'Verified',
+      PulseFaceVerificationStatus.noUsablePhotos => 'Photo issue',
+      PulseFaceVerificationStatus.matched => 'Verified',
       _ => 'Retake needed',
     };
   }
@@ -492,12 +493,12 @@ class _PostMatchOnboardingScreenState
     if (_mediaNeedsVerification) return Icons.refresh_rounded;
 
     return switch (_faceVerificationResult?.status) {
-      PostMatchFaceVerificationStatus.noUsablePhotos =>
+      PulseFaceVerificationStatus.noUsablePhotos =>
         Icons.photo_library_outlined,
-      PostMatchFaceVerificationStatus.noFace => Icons.face_outlined,
-      PostMatchFaceVerificationStatus.multiFace => Icons.groups_2_outlined,
-      PostMatchFaceVerificationStatus.mismatch => Icons.warning_amber_rounded,
-      PostMatchFaceVerificationStatus.matched => Icons.verified_rounded,
+      PulseFaceVerificationStatus.noFace => Icons.face_outlined,
+      PulseFaceVerificationStatus.multiFace => Icons.groups_2_outlined,
+      PulseFaceVerificationStatus.mismatch => Icons.warning_amber_rounded,
+      PulseFaceVerificationStatus.matched => Icons.verified_rounded,
       _ => Icons.camera_alt_outlined,
     };
   }
@@ -528,7 +529,10 @@ class _PostMatchOnboardingScreenState
         final saved = await _saveProfile();
         if (!mounted) return;
         setState(() => _loading = false);
-        if (saved) context.go('/postmatch/discover');
+        // S1 onboarding flow: identity/photos/location -> Tune -> Echoes ->
+        // discover. The Tune and Echoes screens forward into the discover
+        // feed once they finish saving.
+        if (saved) context.go('/pulse/onboarding/tune');
         return;
     }
   }
@@ -565,7 +569,7 @@ class _PostMatchOnboardingScreenState
               const CircularProgressIndicator(color: AppColors.postbookPrimary),
               const SizedBox(height: 14),
               Text(
-                'Connecting PostMatch to your Postbook account...',
+                'Connecting Pulse to your AtPost account...',
                 style: AppTextStyles.bodySmall,
               ),
             ],
@@ -608,7 +612,7 @@ class _PostMatchOnboardingScreenState
                       ),
                       const SizedBox(width: 10),
                       Expanded(
-                        child: Text('PostMatch', style: AppTextStyles.h2),
+                        child: Text('Pulse', style: AppTextStyles.h2),
                       ),
                       Text(
                         'Step ${_stepIndex + 1} of ${_steps.length}',

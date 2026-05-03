@@ -1,23 +1,24 @@
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
-import 'package:atpost_app/data/models/postmatch.dart';
-import 'package:atpost_app/data/repositories/postmatch_repository.dart';
-import 'package:atpost_app/services/postmatch_auth_service.dart';
+import 'package:atpost_app/data/models/pulse.dart';
+import 'package:atpost_app/data/repositories/pulse_repository.dart';
+import 'package:atpost_app/services/pulse_auth_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-class PostMatchProfileScreen extends ConsumerStatefulWidget {
-  const PostMatchProfileScreen({super.key});
+// formerly PostMatchProfileScreen
+class PulseProfileScreen extends ConsumerStatefulWidget {
+  const PulseProfileScreen({super.key});
 
   @override
-  ConsumerState<PostMatchProfileScreen> createState() =>
-      _PostMatchProfileScreenState();
+  ConsumerState<PulseProfileScreen> createState() =>
+      _PulseProfileScreenState();
 }
 
-class _PostMatchProfileScreenState
-    extends ConsumerState<PostMatchProfileScreen> {
+class _PulseProfileScreenState
+    extends ConsumerState<PulseProfileScreen> {
   final _nameController = TextEditingController();
   final _bioController = TextEditingController();
   final _cityController = TextEditingController();
@@ -31,9 +32,9 @@ class _PostMatchProfileScreenState
   bool _savingPrefs = false;
   String _error = '';
 
-  PostMatchProfile? _profile;
-  PostMatchPreferences? _preferences;
-  List<PostMatchPhoto> _photos = const [];
+  PulseProfile? _profile;
+  PulsePreferences? _preferences;
+  List<PulsePhoto> _photos = const [];
   String _intent = 'figuring_out';
   String _prefGender = 'everyone';
   double _minAge = 18;
@@ -59,11 +60,11 @@ class _PostMatchProfileScreenState
   }
 
   Future<void> _load() async {
-    final auth = ref.read(postMatchAuthServiceProvider);
+    final auth = ref.read(pulseAuthServiceProvider);
     await auth.sessionReady;
     if (!mounted) return;
     if (!auth.isReady) {
-      context.go('/postmatch/onboarding');
+      context.go('/pulse/onboarding');
       return;
     }
 
@@ -72,16 +73,16 @@ class _PostMatchProfileScreenState
       _error = '';
     });
     try {
-      final repo = ref.read(postMatchRepositoryProvider);
+      final repo = ref.read(pulseRepositoryProvider);
       final results = await Future.wait([
         repo.getProfile(),
         repo.getPreferences(),
         repo.getPhotos(),
       ]);
       if (!mounted) return;
-      _profile = results[0] as PostMatchProfile?;
-      _preferences = results[1] as PostMatchPreferences?;
-      _photos = results[2] as List<PostMatchPhoto>;
+      _profile = results[0] as PulseProfile?;
+      _preferences = results[1] as PulsePreferences?;
+      _photos = results[2] as List<PulsePhoto>;
 
       _nameController.text = _profile?.firstName ?? '';
       _bioController.text = _profile?.bio ?? '';
@@ -100,7 +101,7 @@ class _PostMatchProfileScreenState
     } catch (_) {
       if (!mounted) return;
       setState(() {
-        _error = 'Could not load your PostMatch profile.';
+        _error = 'Could not load your Pulse profile.';
         _loading = false;
       });
     }
@@ -110,7 +111,7 @@ class _PostMatchProfileScreenState
     if (_profile == null) return;
     setState(() => _savingProfile = true);
     try {
-      await ref.read(postMatchRepositoryProvider).updateProfile({
+      await ref.read(pulseRepositoryProvider).updateProfile({
         'first_name': _nameController.text.trim(),
         'date_of_birth': _profile!.dateOfBirth,
         'gender': _profile!.gender,
@@ -152,7 +153,7 @@ class _PostMatchProfileScreenState
   Future<void> _savePreferences() async {
     setState(() => _savingPrefs = true);
     try {
-      await ref.read(postMatchRepositoryProvider).updatePreferences({
+      await ref.read(pulseRepositoryProvider).updatePreferences({
         'min_age': _minAge.round(),
         'max_age': _maxAge.round(),
         'distance_km': _distanceKm.round(),
@@ -176,19 +177,19 @@ class _PostMatchProfileScreenState
   }
 
   Future<void> _deletePhoto(String photoId) async {
-    await ref.read(postMatchRepositoryProvider).deletePhoto(photoId);
+    await ref.read(pulseRepositoryProvider).deletePhoto(photoId);
     await _load();
   }
 
   Future<void> _logout() async {
-    await ref.read(postMatchRepositoryProvider).logout();
+    await ref.read(pulseRepositoryProvider).logout();
     if (!mounted) return;
-    context.go('/postmatch');
+    context.go('/pulse');
   }
 
   @override
   Widget build(BuildContext context) {
-    final primaryPhoto = _photos.cast<PostMatchPhoto?>().firstWhere(
+    final primaryPhoto = _photos.cast<PulsePhoto?>().firstWhere(
       (photo) => photo?.isPrimary ?? false,
       orElse: () => null,
     );
@@ -201,14 +202,14 @@ class _PostMatchProfileScreenState
         title: Text('Your Profile', style: AppTextStyles.h2),
         actions: [
           IconButton(
-            onPressed: () => context.push('/postmatch/discover'),
+            onPressed: () => context.push('/pulse/discover'),
             icon: const Icon(
               Icons.explore_outlined,
               color: AppColors.textPrimary,
             ),
           ),
           IconButton(
-            onPressed: () => context.push('/postmatch/matches'),
+            onPressed: () => context.push('/pulse/matches'),
             icon: const Icon(
               Icons.favorite_border,
               color: AppColors.textPrimary,

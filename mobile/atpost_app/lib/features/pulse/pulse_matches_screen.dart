@@ -1,28 +1,29 @@
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
-import 'package:atpost_app/data/models/postmatch.dart';
-import 'package:atpost_app/data/repositories/postmatch_repository.dart';
-import 'package:atpost_app/services/postmatch_auth_service.dart';
+import 'package:atpost_app/data/models/pulse.dart';
+import 'package:atpost_app/data/repositories/pulse_repository.dart';
+import 'package:atpost_app/services/pulse_auth_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-class PostMatchMatchesScreen extends ConsumerStatefulWidget {
-  const PostMatchMatchesScreen({super.key});
+// formerly PostMatchMatchesScreen
+class PulseMatchesScreen extends ConsumerStatefulWidget {
+  const PulseMatchesScreen({super.key});
 
   @override
-  ConsumerState<PostMatchMatchesScreen> createState() =>
-      _PostMatchMatchesScreenState();
+  ConsumerState<PulseMatchesScreen> createState() =>
+      _PulseMatchesScreenState();
 }
 
-class _PostMatchMatchesScreenState
-    extends ConsumerState<PostMatchMatchesScreen> {
+class _PulseMatchesScreenState
+    extends ConsumerState<PulseMatchesScreen> {
   bool _loading = true;
   String _error = '';
-  List<PostMatchLikeReceived> _likes = const [];
-  List<PostMatchMatch> _matches = const [];
-  List<PostMatchConversation> _conversations = const [];
+  List<PulseLikeReceived> _likes = const [];
+  List<PulseMatch> _matches = const [];
+  List<PulseConversation> _conversations = const [];
 
   @override
   void initState() {
@@ -31,11 +32,11 @@ class _PostMatchMatchesScreenState
   }
 
   Future<void> _load() async {
-    final auth = ref.read(postMatchAuthServiceProvider);
+    final auth = ref.read(pulseAuthServiceProvider);
     await auth.sessionReady;
     if (!mounted) return;
     if (!auth.isReady) {
-      context.go('/postmatch/onboarding');
+      context.go('/pulse/onboarding');
       return;
     }
 
@@ -44,7 +45,7 @@ class _PostMatchMatchesScreenState
       _error = '';
     });
     try {
-      final repo = ref.read(postMatchRepositoryProvider);
+      final repo = ref.read(pulseRepositoryProvider);
       final results = await Future.wait([
         repo.getLikesReceived(),
         repo.getMatches(),
@@ -52,9 +53,9 @@ class _PostMatchMatchesScreenState
       ]);
       if (!mounted) return;
       setState(() {
-        _likes = results[0] as List<PostMatchLikeReceived>;
-        _matches = results[1] as List<PostMatchMatch>;
-        _conversations = results[2] as List<PostMatchConversation>;
+        _likes = results[0] as List<PulseLikeReceived>;
+        _matches = results[1] as List<PulseMatch>;
+        _conversations = results[2] as List<PulseConversation>;
         _loading = false;
       });
     } catch (_) {
@@ -76,14 +77,14 @@ class _PostMatchMatchesScreenState
         title: Text('Matches', style: AppTextStyles.h2),
         actions: [
           IconButton(
-            onPressed: () => context.push('/postmatch/discover'),
+            onPressed: () => context.push('/pulse/discover'),
             icon: const Icon(
               Icons.explore_outlined,
               color: AppColors.textPrimary,
             ),
           ),
           IconButton(
-            onPressed: () => context.push('/postmatch/profile'),
+            onPressed: () => context.push('/pulse/profile'),
             icon: const Icon(
               Icons.person_outline,
               color: AppColors.textPrimary,
@@ -119,7 +120,7 @@ class _PostMatchMatchesScreenState
                           return _RoundProfileCard(
                             name: like.firstName,
                             imageUrl: like.photoUrl,
-                            onTap: () => context.push('/postmatch/discover'),
+                            onTap: () => context.push('/pulse/discover'),
                           );
                         },
                       ),
@@ -148,7 +149,7 @@ class _PostMatchMatchesScreenState
                             onTap: () {
                               if (match.conversationId != null) {
                                 context.push(
-                                  '/postmatch/chat/${match.conversationId}',
+                                  '/pulse/chat/${match.conversationId}',
                                 );
                               }
                             },
@@ -228,12 +229,12 @@ class _RoundProfileCard extends StatelessWidget {
 class _ConversationTile extends StatelessWidget {
   const _ConversationTile({required this.conversation});
 
-  final PostMatchConversation conversation;
+  final PulseConversation conversation;
 
   @override
   Widget build(BuildContext context) {
     return InkWell(
-      onTap: () => context.push('/postmatch/chat/${conversation.id}'),
+      onTap: () => context.push('/pulse/chat/${conversation.id}'),
       borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
       child: Ink(
         padding: const EdgeInsets.all(14),

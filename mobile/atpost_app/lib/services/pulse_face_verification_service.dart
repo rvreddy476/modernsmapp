@@ -2,7 +2,8 @@ import 'package:face_verification/face_verification.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:image_picker/image_picker.dart';
 
-enum PostMatchFaceVerificationStatus {
+// formerly PostMatchFaceVerificationStatus
+enum PulseFaceVerificationStatus {
   matched,
   noFace,
   multiFace,
@@ -10,27 +11,29 @@ enum PostMatchFaceVerificationStatus {
   noUsablePhotos,
 }
 
-class PostMatchFaceVerificationResult {
-  const PostMatchFaceVerificationResult({
+// formerly PostMatchFaceVerificationResult
+class PulseFaceVerificationResult {
+  const PulseFaceVerificationResult({
     required this.status,
     required this.comparablePhotoCount,
     required this.skippedPhotoCount,
   });
 
-  final PostMatchFaceVerificationStatus status;
+  final PulseFaceVerificationStatus status;
   final int comparablePhotoCount;
   final int skippedPhotoCount;
 
-  bool get isMatch => status == PostMatchFaceVerificationStatus.matched;
+  bool get isMatch => status == PulseFaceVerificationStatus.matched;
 }
 
-class PostMatchFaceVerificationService {
-  static const _verificationUserId = '__postmatch_onboarding__';
+// formerly PostMatchFaceVerificationService
+class PulseFaceVerificationService {
+  static const _verificationUserId = '__pulse_onboarding__';
   static const _matchThreshold = 0.60;
 
   bool _initialized = false;
 
-  Future<PostMatchFaceVerificationResult> verify({
+  Future<PulseFaceVerificationResult> verify({
     required List<XFile> photos,
     required XFile selfie,
   }) async {
@@ -48,15 +51,15 @@ class PostMatchFaceVerificationService {
     try {
       final selfieFaceCount = await _detectFaceCount(detector, selfie.path);
       if (selfieFaceCount == 0) {
-        return const PostMatchFaceVerificationResult(
-          status: PostMatchFaceVerificationStatus.noFace,
+        return const PulseFaceVerificationResult(
+          status: PulseFaceVerificationStatus.noFace,
           comparablePhotoCount: 0,
           skippedPhotoCount: 0,
         );
       }
       if (selfieFaceCount > 1) {
-        return const PostMatchFaceVerificationResult(
-          status: PostMatchFaceVerificationStatus.multiFace,
+        return const PulseFaceVerificationResult(
+          status: PulseFaceVerificationStatus.multiFace,
           comparablePhotoCount: 0,
           skippedPhotoCount: 0,
         );
@@ -89,8 +92,8 @@ class PostMatchFaceVerificationService {
       }
 
       if (comparablePhotoCount == 0) {
-        return PostMatchFaceVerificationResult(
-          status: PostMatchFaceVerificationStatus.noUsablePhotos,
+        return PulseFaceVerificationResult(
+          status: PulseFaceVerificationStatus.noUsablePhotos,
           comparablePhotoCount: comparablePhotoCount,
           skippedPhotoCount: skippedPhotoCount,
         );
@@ -103,10 +106,10 @@ class PostMatchFaceVerificationService {
             staffId: _verificationUserId,
           );
 
-      return PostMatchFaceVerificationResult(
+      return PulseFaceVerificationResult(
         status: matchId == _verificationUserId
-            ? PostMatchFaceVerificationStatus.matched
-            : PostMatchFaceVerificationStatus.mismatch,
+            ? PulseFaceVerificationStatus.matched
+            : PulseFaceVerificationStatus.mismatch,
         comparablePhotoCount: comparablePhotoCount,
         skippedPhotoCount: skippedPhotoCount,
       );

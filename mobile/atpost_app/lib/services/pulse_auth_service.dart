@@ -2,31 +2,32 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:atpost_app/core/config/environment.dart';
-import 'package:atpost_app/data/models/postmatch.dart';
+import 'package:atpost_app/data/models/pulse.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
-class PostMatchAuthService {
-  static const _keyAccessToken = 'postmatch_access_token';
-  static const _keyRefreshToken = 'postmatch_refresh_token';
-  static const _keySession = 'postmatch_session';
+// formerly PostMatchAuthService
+class PulseAuthService {
+  static const _keyAccessToken = 'pulse_access_token';
+  static const _keyRefreshToken = 'pulse_refresh_token';
+  static const _keySession = 'pulse_session';
 
   final FlutterSecureStorage _storage;
   final Dio _dio;
 
   String? _accessToken;
   String? _refreshToken;
-  PostMatchSession? _session;
+  PulseSession? _session;
   late final Future<void> sessionReady;
 
-  PostMatchAuthService({FlutterSecureStorage? storage, Dio? dio})
+  PulseAuthService({FlutterSecureStorage? storage, Dio? dio})
     : _storage = storage ?? const FlutterSecureStorage(),
       _dio =
           dio ??
           Dio(
             BaseOptions(
-              baseUrl: Environment.postMatchBaseUrl,
+              baseUrl: Environment.pulseBaseUrl,
               connectTimeout: const Duration(seconds: 20),
               receiveTimeout: const Duration(seconds: 20),
               headers: const {
@@ -40,7 +41,7 @@ class PostMatchAuthService {
 
   String? get accessToken => _accessToken;
   String? get refreshToken => _refreshToken;
-  PostMatchSession? get session => _session;
+  PulseSession? get session => _session;
   bool get hasSession =>
       _accessToken != null &&
       _accessToken!.isNotEmpty &&
@@ -60,7 +61,7 @@ class PostMatchAuthService {
       try {
         final decoded = jsonDecode(rawSession);
         if (decoded is Map<String, dynamic>) {
-          _session = PostMatchSession.fromJson(decoded);
+          _session = PulseSession.fromJson(decoded);
         }
       } catch (_) {
         _session = null;
@@ -141,7 +142,7 @@ class PostMatchAuthService {
 
     _accessToken = access;
     _refreshToken = refresh;
-    _session = PostMatchSession(
+    _session = PulseSession(
       userId: userId,
       onboardingStatus: onboardingStatus,
     );
@@ -174,6 +175,6 @@ class PostMatchAuthService {
   }
 }
 
-final postMatchAuthServiceProvider = Provider<PostMatchAuthService>((ref) {
-  return PostMatchAuthService();
+final pulseAuthServiceProvider = Provider<PulseAuthService>((ref) {
+  return PulseAuthService();
 });
