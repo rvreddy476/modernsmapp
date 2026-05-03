@@ -1,0 +1,2 @@
+# Versioned migrations land here once we have a non-trivial change to apply on
+# top of database/setup.sql. Empty for v1.
