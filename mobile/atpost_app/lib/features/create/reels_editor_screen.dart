@@ -13,14 +13,14 @@ import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:video_player/video_player.dart';
 
-class FlicksEditorScreen extends ConsumerStatefulWidget {
-  const FlicksEditorScreen({super.key});
+class ReelsEditorScreen extends ConsumerStatefulWidget {
+  const ReelsEditorScreen({super.key});
 
   @override
-  ConsumerState<FlicksEditorScreen> createState() => _FlicksEditorScreenState();
+  ConsumerState<ReelsEditorScreen> createState() => _ReelsEditorScreenState();
 }
 
-class _FlicksEditorScreenState extends ConsumerState<FlicksEditorScreen>
+class _ReelsEditorScreenState extends ConsumerState<ReelsEditorScreen>
     with SingleTickerProviderStateMixin {
   VideoPlayerController? _playerController;
   int _selectedClipIndex = 0;
@@ -743,7 +743,7 @@ class _FlicksEditorScreenState extends ConsumerState<FlicksEditorScreen>
               style: TextButton.styleFrom(foregroundColor: Colors.white),
               icon: const Icon(Icons.arrow_forward, size: 18),
               label: const Text('Next', style: TextStyle(fontWeight: FontWeight.w700)),
-              onPressed: () => context.push('/flicks/caption'),
+              onPressed: () => context.push('/reels/caption'),
             ),
           const SizedBox(width: 8),
         ],

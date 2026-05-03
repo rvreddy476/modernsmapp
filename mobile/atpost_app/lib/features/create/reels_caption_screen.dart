@@ -8,14 +8,14 @@ import 'package:image_picker/image_picker.dart';
 
 enum _FlicksAudience { public, friends, private }
 
-class FlicksCaptionScreen extends ConsumerStatefulWidget {
-  const FlicksCaptionScreen({super.key});
+class ReelsCaptionScreen extends ConsumerStatefulWidget {
+  const ReelsCaptionScreen({super.key});
 
   @override
-  ConsumerState<FlicksCaptionScreen> createState() => _FlicksCaptionScreenState();
+  ConsumerState<ReelsCaptionScreen> createState() => _ReelsCaptionScreenState();
 }
 
-class _FlicksCaptionScreenState extends ConsumerState<FlicksCaptionScreen> {
+class _ReelsCaptionScreenState extends ConsumerState<ReelsCaptionScreen> {
   static const _brandRed = Color(0xFFD8103F);
 
   final _captionCtrl = TextEditingController();
@@ -30,8 +30,8 @@ class _FlicksCaptionScreenState extends ConsumerState<FlicksCaptionScreen> {
   DateTime? _scheduleAt;
 
   static const _suggestedTags = [
-    '#flicks', '#viral', '#fyp', '#trending', '#explore',
-    '#reels', '#video', '#creator', '#vchat',
+    '#reels', '#viral', '#fyp', '#trending', '#explore',
+    '#video', '#creator', '#atpost',
   ];
 
   @override
@@ -143,7 +143,7 @@ class _FlicksCaptionScreenState extends ConsumerState<FlicksCaptionScreen> {
           onPressed: () => context.pop(),
         ),
         title: const Text(
-          'New Flick',
+          'New Reel',
           style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
         ),
         centerTitle: true,
@@ -500,7 +500,7 @@ class _FlicksCaptionScreenState extends ConsumerState<FlicksCaptionScreen> {
                 child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
               )
             : const Text(
-                'Post Flick',
+                'Post Reel',
                 style: TextStyle(
                   color: Colors.white,
                   fontSize: 16,
