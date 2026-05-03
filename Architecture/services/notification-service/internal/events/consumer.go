@@ -304,6 +304,18 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		if handled, err := c.handleQAEvent(ctx, envelope); handled {
 			return err
 		}
+		// Dating events (Sprint 3): spark.created, spark.matched,
+		// match.first_message, match.expired. Other dating.* events are
+		// claimed and silently ignored.
+		if handled, err := c.handleDatingEvent(ctx, envelope); handled {
+			return err
+		}
+		// Rider (Mopedu) events (Sprint 3): safety.sos, complaint.raised,
+		// partner.approved, subscription.expiring. Other rider.* events are
+		// claimed and silently ignored.
+		if handled, err := c.handleRiderEvent(ctx, envelope); handled {
+			return err
+		}
 		return nil
 	}
 }
