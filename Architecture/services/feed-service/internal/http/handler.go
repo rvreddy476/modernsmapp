@@ -105,17 +105,16 @@ func (h *Handler) GetHomeFeed(c *gin.Context) {
 		return
 	}
 
-	// Hydrate with full post details from post-service
+	// Hydrate with full post details from post-service.
+	// On failure: fail loud (502) instead of silently returning the
+	// bare FeedItem rows — those have no text/media so the client
+	// would render every post as a blank "Shared a post" placeholder,
+	// which masks the real problem (post-service unreachable, wrong
+	// POST_SERVICE_URL, INTERNAL_SERVICE_KEY mismatch, etc).
 	hydrated, err := h.svc.HydratePosts(c.Request.Context(), feedItems, userID)
 	if err != nil {
-		// Log but don't fail — return raw feed items as fallback
-		log.Printf("Warning: post hydration failed: %v", err)
-		var meta *api.Meta
-		if len(feedItems) >= limit {
-			meta = &api.Meta{NextCursor: feedItems[len(feedItems)-1].CreatedAt.UTC().Format(time.RFC3339Nano)}
-		}
-		c.Writer.Header().Set("X-Feed-Mode", feedMode)
-		api.JSON(c.Writer, http.StatusOK, feedItems, meta)
+		log.Printf("ERROR: post hydration failed: %v", err)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadGateway, "HYDRATION_FAILED", "Could not load post details — try again", nil)
 		return
 	}
 
