@@ -1,0 +1,349 @@
+// Safety store — spec §15 safety center: panic, location share, safe-meet,
+// check-in, block, report.
+//
+// Design rule (CRITICAL RULES #6): every safety-adjacent code path is
+// explicit. We persist *before* emitting events so the panic / report
+// endpoints cannot be silently dropped if Kafka is unhappy.
+package store
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+)
+
+// SafetyEvent is one row of dating_safety_events.
+type SafetyEvent struct {
+	ID        uuid.UUID      `json:"id"`
+	UserID    uuid.UUID      `json:"user_id"`
+	Kind      string         `json:"kind"`
+	Details   map[string]any `json:"details,omitempty"`
+	CreatedAt time.Time      `json:"created_at"`
+}
+
+// LocationShare is a transient share-link record. The store row captures
+// the static initiator location at creation time; the moving WebSocket
+// updates land in Redis (see service.LocationShareKey) and are not
+// persisted in Postgres.
+type LocationShare struct {
+	ShareID   uuid.UUID `json:"share_id"`
+	UserID    uuid.UUID `json:"user_id"`
+	ContactID uuid.UUID `json:"contact_id"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// Meet is one row of dating_meets — a scheduled in-person meet.
+type Meet struct {
+	ID            uuid.UUID  `json:"id"`
+	UserID        uuid.UUID  `json:"user_id"`
+	WithUserID    uuid.UUID  `json:"with_user_id"`
+	ScheduledAt   time.Time  `json:"scheduled_at"`
+	Venue         *string    `json:"venue,omitempty"`
+	Latitude      *float64   `json:"latitude,omitempty"`
+	Longitude     *float64   `json:"longitude,omitempty"`
+	CheckInStatus *string    `json:"check_in_status,omitempty"`
+	CheckedInAt   *time.Time `json:"checked_in_at,omitempty"`
+	NoShowAt      *time.Time `json:"no_show_at,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+}
+
+// Report is a row of dating_reports.
+type Report struct {
+	ID         uuid.UUID `json:"id"`
+	ReporterID uuid.UUID `json:"reporter_id"`
+	TargetID   uuid.UUID `json:"target_id"`
+	Category   string    `json:"category"`
+	Details    string    `json:"details"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// ErrMeetNotFound is returned when no meet matches the lookup.
+var ErrMeetNotFound = errors.New("not_found: meet not found")
+
+// RecordSafetyEvent inserts a safety event and returns the generated id.
+// Callers must persist before emitting Kafka — this method must succeed
+// before any event is published, otherwise we lose the audit trail.
+func (s *Store) RecordSafetyEvent(ctx context.Context, userID uuid.UUID, kind string, details map[string]any) error {
+	if userID == uuid.Nil {
+		return fmt.Errorf("invalid: user_id required")
+	}
+	if kind == "" {
+		return fmt.Errorf("invalid: kind required")
+	}
+	var raw []byte
+	if details != nil {
+		buf, err := json.Marshal(details)
+		if err != nil {
+			return fmt.Errorf("marshal details: %w", err)
+		}
+		raw = buf
+	}
+	if _, err := s.db.Exec(ctx, `
+        INSERT INTO dating_safety_events (user_id, kind, details)
+        VALUES ($1, $2, $3)`, userID, kind, raw); err != nil {
+		return fmt.Errorf("record safety event: %w", err)
+	}
+	return nil
+}
+
+// CreateLiveLocationShare allocates a share_id with the given duration and
+// records the bookkeeping safety event. The location-stream itself runs
+// over WebSocket in S5; v1 keeps the static at-creation snapshot in Redis
+// (set by the service layer keyed `dating:location_share:<share_id>`).
+func (s *Store) CreateLiveLocationShare(ctx context.Context, userID, contactID uuid.UUID, durationMinutes int) (*LocationShare, error) {
+	if userID == uuid.Nil {
+		return nil, fmt.Errorf("invalid: user_id required")
+	}
+	if contactID == uuid.Nil {
+		return nil, fmt.Errorf("invalid: contact_id required")
+	}
+	if durationMinutes <= 0 || durationMinutes > 24*60 {
+		durationMinutes = 60
+	}
+	share := &LocationShare{
+		ShareID:   uuid.New(),
+		UserID:    userID,
+		ContactID: contactID,
+		ExpiresAt: time.Now().Add(time.Duration(durationMinutes) * time.Minute),
+	}
+	if err := s.RecordSafetyEvent(ctx, userID, "location_share_created", map[string]any{
+		"share_id":         share.ShareID.String(),
+		"contact_id":       contactID.String(),
+		"duration_minutes": durationMinutes,
+	}); err != nil {
+		return nil, err
+	}
+	return share, nil
+}
+
+// ScheduleMeet inserts a dating_meets row.
+func (s *Store) ScheduleMeet(ctx context.Context, userID, withUserID uuid.UUID, when time.Time, lat, lng float64, venue string) (uuid.UUID, error) {
+	if userID == uuid.Nil || withUserID == uuid.Nil {
+		return uuid.Nil, fmt.Errorf("invalid: user ids required")
+	}
+	if userID == withUserID {
+		return uuid.Nil, fmt.Errorf("invalid: cannot schedule a meet with yourself")
+	}
+	if when.IsZero() {
+		return uuid.Nil, fmt.Errorf("invalid: scheduled time required")
+	}
+	var venuePtr *string
+	if venue != "" {
+		venuePtr = &venue
+	}
+	var latPtr, lngPtr *float64
+	if lat != 0 || lng != 0 {
+		latPtr, lngPtr = &lat, &lng
+	}
+	var id uuid.UUID
+	err := s.db.QueryRow(ctx, `
+        INSERT INTO dating_meets (user_id, with_user_id, scheduled_at, venue, latitude, longitude)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING id`,
+		userID, withUserID, when, venuePtr, latPtr, lngPtr).Scan(&id)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("schedule meet: %w", err)
+	}
+	return id, nil
+}
+
+// MeetCheckIn records a user's confirmation that a meet is going OK
+// (status='safe') or escalates to help (status='help').
+func (s *Store) MeetCheckIn(ctx context.Context, meetID, userID uuid.UUID, status string) error {
+	switch status {
+	case "safe", "help":
+	default:
+		return fmt.Errorf("invalid: status must be safe|help")
+	}
+	tag, err := s.db.Exec(ctx, `
+        UPDATE dating_meets
+        SET check_in_status = $3, checked_in_at = now()
+        WHERE id = $1 AND user_id = $2`, meetID, userID, status)
+	if err != nil {
+		return fmt.Errorf("meet check in: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrMeetNotFound
+	}
+	return nil
+}
+
+// GetMeet returns one row by id.
+func (s *Store) GetMeet(ctx context.Context, id uuid.UUID) (*Meet, error) {
+	row := s.db.QueryRow(ctx, `
+        SELECT id, user_id, with_user_id, scheduled_at, venue, latitude, longitude,
+               check_in_status, checked_in_at, no_show_at, created_at
+        FROM dating_meets WHERE id = $1`, id)
+	m := &Meet{}
+	if err := row.Scan(
+		&m.ID, &m.UserID, &m.WithUserID, &m.ScheduledAt, &m.Venue, &m.Latitude, &m.Longitude,
+		&m.CheckInStatus, &m.CheckedInAt, &m.NoShowAt, &m.CreatedAt,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrMeetNotFound
+		}
+		return nil, fmt.Errorf("scan meet: %w", err)
+	}
+	return m, nil
+}
+
+// MarkMeetNoShow stamps no_show_at — used by the S5 follow-up worker.
+func (s *Store) MarkMeetNoShow(ctx context.Context, meetID uuid.UUID) error {
+	tag, err := s.db.Exec(ctx, `
+        UPDATE dating_meets
+        SET no_show_at = now()
+        WHERE id = $1 AND check_in_status IS NULL AND no_show_at IS NULL`,
+		meetID)
+	if err != nil {
+		return fmt.Errorf("mark no show: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrMeetNotFound
+	}
+	return nil
+}
+
+// BlockUser inserts a row into dating_blocks. Idempotent on (user_id,
+// blocked_id). Propagation to graph-service is the service layer's job.
+func (s *Store) BlockUser(ctx context.Context, userID, targetUserID uuid.UUID) error {
+	if userID == uuid.Nil || targetUserID == uuid.Nil {
+		return fmt.Errorf("invalid: user ids required")
+	}
+	if userID == targetUserID {
+		return fmt.Errorf("invalid: cannot block yourself")
+	}
+	if _, err := s.db.Exec(ctx, `
+        INSERT INTO dating_blocks (user_id, blocked_id)
+        VALUES ($1, $2)
+        ON CONFLICT DO NOTHING`, userID, targetUserID); err != nil {
+		return fmt.Errorf("block user: %w", err)
+	}
+	return nil
+}
+
+// CreateReport persists a report into dating_reports. The service layer
+// emits dating.report.created for trust-safety-service intake afterwards.
+func (s *Store) CreateReport(ctx context.Context, reporterID, targetID uuid.UUID, category, details string) (*Report, error) {
+	if reporterID == uuid.Nil || targetID == uuid.Nil {
+		return nil, fmt.Errorf("invalid: reporter and target ids required")
+	}
+	if reporterID == targetID {
+		return nil, fmt.Errorf("invalid: cannot report yourself")
+	}
+	if category == "" {
+		return nil, fmt.Errorf("invalid: category required")
+	}
+	r := &Report{
+		ReporterID: reporterID,
+		TargetID:   targetID,
+		Category:   category,
+		Details:    details,
+	}
+	err := s.db.QueryRow(ctx, `
+        INSERT INTO dating_reports (reporter_id, target_id, category, details)
+        VALUES ($1, $2, $3, $4)
+        RETURNING id, created_at`,
+		reporterID, targetID, category, details).Scan(&r.ID, &r.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("create report: %w", err)
+	}
+	return r, nil
+}
+
+// ListSafetyEventsForUser returns the user's full safety_events history
+// newest-first. Used by the DPDP data exporter (§15.8). Telemetry queries
+// also call into this to compute the off-app meet rate.
+func (s *Store) ListSafetyEventsForUser(ctx context.Context, userID uuid.UUID) ([]*SafetyEvent, error) {
+	rows, err := s.db.Query(ctx, `
+        SELECT id, user_id, kind, details, created_at
+        FROM dating_safety_events
+        WHERE user_id = $1
+        ORDER BY created_at DESC
+        LIMIT 500`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list safety events for user: %w", err)
+	}
+	defer rows.Close()
+	out := make([]*SafetyEvent, 0, 16)
+	for rows.Next() {
+		e := &SafetyEvent{}
+		var raw []byte
+		if err := rows.Scan(&e.ID, &e.UserID, &e.Kind, &raw, &e.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan safety event: %w", err)
+		}
+		if len(raw) > 0 {
+			_ = json.Unmarshal(raw, &e.Details)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// CountSafetyEventsByKindWindow counts safety events of a particular kind
+// within the supplied window. Used by the north-star telemetry job to
+// compute the 30-day off-app-meet rate.
+func (s *Store) CountSafetyEventsByKindWindow(ctx context.Context, kind string, since time.Time) (int64, error) {
+	var n int64
+	err := s.db.QueryRow(ctx, `
+        SELECT COUNT(*) FROM dating_safety_events
+        WHERE kind = $1 AND created_at >= $2`, kind, since).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count safety events: %w", err)
+	}
+	return n, nil
+}
+
+// CountSafetyMeetCheckInsSafeWindow counts safety_events with kind
+// 'meet_check_in' and details->>'status' = 'safe' within the window. The
+// north-star query treats this as the off-app-meet success metric.
+func (s *Store) CountSafetyMeetCheckInsSafeWindow(ctx context.Context, since time.Time) (int64, error) {
+	var n int64
+	err := s.db.QueryRow(ctx, `
+        SELECT COUNT(*) FROM dating_safety_events
+        WHERE kind = 'meet_check_in'
+          AND details->>'status' = 'safe'
+          AND created_at >= $1`, since).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count safe meet check-ins: %w", err)
+	}
+	return n, nil
+}
+
+// PendingMeetsForCheckin returns meets whose scheduled_at is older than
+// `before` and which have not yet been checked-in or no-show'd. The S5
+// no-show worker iterates this list.
+func (s *Store) PendingMeetsForCheckin(ctx context.Context, before time.Time, limit int) ([]*Meet, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.Query(ctx, `
+        SELECT id, user_id, with_user_id, scheduled_at, venue, latitude, longitude,
+               check_in_status, checked_in_at, no_show_at, created_at
+        FROM dating_meets
+        WHERE scheduled_at < $1
+          AND check_in_status IS NULL
+          AND no_show_at IS NULL
+        ORDER BY scheduled_at ASC
+        LIMIT $2`, before, limit)
+	if err != nil {
+		return nil, fmt.Errorf("pending meets: %w", err)
+	}
+	defer rows.Close()
+	out := make([]*Meet, 0, limit)
+	for rows.Next() {
+		m := &Meet{}
+		if err := rows.Scan(
+			&m.ID, &m.UserID, &m.WithUserID, &m.ScheduledAt, &m.Venue, &m.Latitude, &m.Longitude,
+			&m.CheckInStatus, &m.CheckedInAt, &m.NoShowAt, &m.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
