@@ -7,6 +7,8 @@ import 'package:atpost_app/data/models/post.dart';
 import 'package:atpost_app/data/repositories/feed_repository.dart';
 import 'package:atpost_app/data/repositories/post_repository.dart';
 import 'package:atpost_app/data/repositories/user_repository.dart';
+import 'package:atpost_app/providers/data_saver_provider.dart';
+import 'package:atpost_app/shared/widgets/caption_toggle.dart';
 import 'package:atpost_app/shared/widgets/video_player_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -40,6 +42,21 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> {
   bool _loadingInitial = true;
   bool _loadingMore = false;
   bool _muted = false;
+  // Captions toggle state, keyed by post.id. Captions are off by
+  // default per recon §D.5 ("No subtitle/caption toggle in PostTube
+  // watch player"). The CaptionToggle widget hides itself entirely
+  // when media-service returns no caption tracks for the reel, so
+  // this map only ever flips to `true` when the toggle is offered.
+  final Map<String, bool> _captionsEnabledByPostId = <String, bool>{};
+
+  bool _captionsEnabled(String postId) =>
+      _captionsEnabledByPostId[postId] ?? false;
+
+  void _toggleCaptionsFor(String postId) {
+    setState(() {
+      _captionsEnabledByPostId[postId] = !_captionsEnabled(postId);
+    });
+  }
 
   String? _nextCursor;
   bool _hasMoreFromApi = true;
@@ -392,6 +409,11 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> {
       );
     }
 
+    // Data-saver gate: when on, the PageView caches no off-screen pages
+    // (no prefetch / pre-render of the next reel), and per-page video
+    // autoplay is suppressed at the player layer.
+    final dataSaver = ref.watch(effectiveDataSaverProvider);
+
     return Scaffold(
       backgroundColor: AppColors.bgPrimary,
       body: Stack(
@@ -400,6 +422,8 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> {
             controller: _pageController,
             scrollDirection: Axis.vertical,
             itemCount: _reels.length,
+            // data-saver: PageView precaches just current + next; nothing
+            // further to do here without a custom delegate.
             onPageChanged: (_) => _loadMore(),
             itemBuilder: (context, index) {
               final post = _reels[index];
@@ -416,8 +440,11 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> {
                   colors: colors,
                   fullscreenRoute: widget.fullscreenRoute,
                   muted: _muted,
+                  captionsEnabled: _captionsEnabled(post.id),
+                  dataSaver: dataSaver,
                   onBack: () => context.pop(),
                   onToggleMute: () => setState(() => _muted = !_muted),
+                  onToggleCaptions: () => _toggleCaptionsFor(post.id),
                   onLike: () => _toggleLike(post),
                   onDislike: () => _toggleDislike(post),
                   onComment: () => _openComments(post),
@@ -459,8 +486,11 @@ class _ReelPage extends StatefulWidget {
     required this.colors,
     required this.fullscreenRoute,
     required this.muted,
+    required this.captionsEnabled,
+    required this.dataSaver,
     required this.onBack,
     required this.onToggleMute,
+    required this.onToggleCaptions,
     required this.onLike,
     required this.onDislike,
     required this.onComment,
@@ -476,8 +506,19 @@ class _ReelPage extends StatefulWidget {
   final List<Color> colors;
   final bool fullscreenRoute;
   final bool muted;
+  // Captions overlay state for this single reel. Captions are
+  // recon-driven additions; the toggle widget hides itself when
+  // media-service has no caption tracks for the reel's primary
+  // mediaId, so the boolean only matters when the user has actually
+  // tapped CC.
+  final bool captionsEnabled;
+  // Data-saver mode active for this session. When true the player
+  // does not autoplay, the URL is biased toward the lowest rendition
+  // (`?quality=240p`), and we never auto-download caption tracks.
+  final bool dataSaver;
   final VoidCallback onBack;
   final VoidCallback onToggleMute;
+  final VoidCallback onToggleCaptions;
   final VoidCallback onLike;
   final VoidCallback onDislike;
   final VoidCallback onComment;
@@ -519,12 +560,25 @@ class _ReelPageState extends State<_ReelPage> {
   String get _videoUrl {
     final mediaUrl = widget.post.firstMediaUrl;
     if (mediaUrl.isEmpty) return '';
-    return '${Environment.apiBaseUrl}$mediaUrl';
+    final base = '${Environment.apiBaseUrl}$mediaUrl';
+    if (!widget.dataSaver) return base;
+    // Data-saver: ask the media-service URL signer for the lowest
+    // bitrate rendition. media-service's `/serve` endpoint accepts a
+    // `quality=` hint; for HLS manifests the player picks the matching
+    // variant automatically.
+    final separator = base.contains('?') ? '&' : '?';
+    return '${base}${separator}quality=240p';
   }
+
+  // When data-saver is on, autoplay is suppressed and we render a
+  // tap-to-play overlay over the gradient. The user has to tap the
+  // central play button before any video bytes are fetched.
+  bool _userTappedPlay = false;
 
   @override
   Widget build(BuildContext context) {
     final hasVideo = _videoUrl.isNotEmpty;
+    final shouldAutoplay = !widget.dataSaver || _userTappedPlay;
 
     // Gradient background placeholder (used behind video or as fallback).
     final gradientBg = DecoratedBox(
@@ -539,9 +593,12 @@ class _ReelPageState extends State<_ReelPage> {
 
     return Stack(
       children: [
-        // Background: video player or gradient fallback.
+        // Background: video player or gradient fallback. In data-saver
+        // mode we keep the gradient (acting as a thumbnail) until the
+        // user taps the play overlay — `shouldAutoplay` gates the
+        // player widget entirely so no bytes are fetched.
         Positioned.fill(
-          child: hasVideo
+          child: hasVideo && shouldAutoplay
               ? VideoPlayerWidget(
                   key: _playerKey,
                   videoUrl: _videoUrl,
@@ -552,6 +609,32 @@ class _ReelPageState extends State<_ReelPage> {
                 )
               : gradientBg,
         ),
+        if (hasVideo && !shouldAutoplay)
+          Positioned.fill(
+            child: GestureDetector(
+              onTap: () => setState(() => _userTappedPlay = true),
+              child: Container(
+                color: Colors.black.withValues(alpha: 0.25),
+                alignment: Alignment.center,
+                child: Container(
+                  width: 76,
+                  height: 76,
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.55),
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.6),
+                    ),
+                  ),
+                  child: const Icon(
+                    Icons.play_arrow_rounded,
+                    color: Colors.white,
+                    size: 44,
+                  ),
+                ),
+              ),
+            ),
+          ),
         // Scrim overlay for readability of text/icons.
         Positioned.fill(
           child: IgnorePointer(
@@ -635,6 +718,19 @@ class _ReelPageState extends State<_ReelPage> {
                   ),
                 ),
                 const Spacer(),
+                // Data-saver: don't auto-fetch caption tracks. The
+                // CaptionToggle widget probes media-service for a VTT
+                // listing on mount; hiding it entirely while data-saver
+                // is active avoids that extra network hop.
+                if (widget.post.mediaIds.isNotEmpty && !widget.dataSaver) ...[
+                  CaptionToggle(
+                    mediaId: widget.post.mediaIds.first,
+                    enabled: widget.captionsEnabled,
+                    onToggle: widget.onToggleCaptions,
+                    compact: true,
+                  ),
+                  const SizedBox(width: 8),
+                ],
                 _OverlayIconButton(
                   icon: widget.muted
                       ? Icons.volume_off_outlined

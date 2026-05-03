@@ -22,8 +22,8 @@ class Environment {
     'ATPOST_API_BASE_URL',
     defaultValue: '',
   );
-  static const String _configuredPostMatchBaseUrl = String.fromEnvironment(
-    'ATPOST_POSTMATCH_BASE_URL',
+  static const String _configuredPulseBaseUrl = String.fromEnvironment(
+    'ATPOST_PULSE_BASE_URL',
     defaultValue: '',
   );
   static const String _configuredWsBaseUrl = String.fromEnvironment(
@@ -34,8 +34,8 @@ class Environment {
   /// Set to a domain (e.g. "cleestudio.com") to use external HTTPS endpoints.
   /// Leave null for local development with direct service ports.
   static String? externalDomain = _resolveExternalDomain();
-  static String? postMatchBaseUrlOverride = _trimOrNull(
-    _configuredPostMatchBaseUrl,
+  static String? pulseBaseUrlOverride = _trimOrNull(
+    _configuredPulseBaseUrl,
   );
 
   // Android debug defaults to adb-reversed localhost on a physical device.
@@ -79,12 +79,12 @@ class Environment {
     return 'http://$_host:8080';
   }
 
-  static String get postMatchBaseUrl {
-    final directOverride = _trimOrNull(_configuredPostMatchBaseUrl);
+  static String get pulseBaseUrl {
+    final directOverride = _trimOrNull(_configuredPulseBaseUrl);
     if (directOverride != null) {
       return directOverride;
     }
-    final override = postMatchBaseUrlOverride?.trim();
+    final override = pulseBaseUrlOverride?.trim();
     if (override != null && override.isNotEmpty) {
       return override;
     }
@@ -134,6 +134,7 @@ class Environment {
   static const String suggestionsPath = '/v1/suggestions';
   static const String analyticsPath = '/v1/analytics';
   static const String shopPath = '/v1/shop';
+  static const String foodPath = '/v1/food';
   static const String memoriesPath = '/v1/memories';
   static const String livePath = '/v1/live';
 }

@@ -169,7 +169,7 @@ class _UploadProgressScreenState extends ConsumerState<UploadProgressScreen> {
                       color: Colors.green, size: 60),
                   const SizedBox(height: 16),
                   const Text(
-                    'Your Flick is live!',
+                    'Your Reel is live!',
                     style: TextStyle(
                       color: Colors.white,
                       fontSize: 24,
@@ -192,7 +192,7 @@ class _UploadProgressScreenState extends ConsumerState<UploadProgressScreen> {
                       const SizedBox(width: 12),
                       ElevatedButton(
                         onPressed: () =>
-                            context.go('/flicks/editor'),
+                            context.go('/reels/editor'),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: _brandRed,
                           foregroundColor: Colors.white,

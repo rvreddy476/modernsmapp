@@ -4,7 +4,9 @@ import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/models/post.dart';
 import 'package:atpost_app/data/repositories/post_repository.dart';
 import 'package:atpost_app/providers/comments_provider.dart';
+import 'package:atpost_app/providers/data_saver_provider.dart';
 import 'package:atpost_app/providers/user_provider.dart';
+import 'package:atpost_app/services/image_url_helper.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -129,11 +131,20 @@ class _CommentsScreenState extends ConsumerState<CommentsScreen> {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Avatar
+            // Avatar — when data-saver is on, swap to a 48px / q=60
+            // rendition. Animated avatars (GIF) effectively freeze
+            // because the resized rendition served by media-service is
+            // a still JPEG.
             comment.authorAvatar != null
                 ? CircleAvatar(
                     radius: 18,
-                    backgroundImage: NetworkImage(comment.authorAvatar!),
+                    backgroundImage: NetworkImage(
+                      resolveImageUrl(
+                        comment.authorAvatar!,
+                        dataSaver: ref.watch(effectiveDataSaverProvider),
+                        size: ImageSize.small,
+                      ),
+                    ),
                     backgroundColor: AppColors.bgTertiary,
                   )
                 : CircleAvatar(

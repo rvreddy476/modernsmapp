@@ -9,7 +9,9 @@ import 'package:atpost_app/data/models/post.dart';
 import 'package:atpost_app/data/repositories/post_repository.dart';
 import 'package:atpost_app/data/repositories/user_repository.dart';
 import 'package:atpost_app/providers/comments_provider.dart';
+import 'package:atpost_app/providers/data_saver_provider.dart';
 import 'package:atpost_app/providers/feed_provider.dart';
+import 'package:atpost_app/shared/widgets/caption_toggle.dart';
 import 'package:atpost_app/shared/widgets/video_player_widget.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/material.dart';
@@ -40,6 +42,19 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
   // Per-author follow state. Hits /v1/graph/follow which is a global state
   // (you either follow them or you don't), so one bool per authorId is fine.
   final Map<String, bool> _followedAuthors = {};
+
+  // Captions toggle state, keyed by post.id so the user's preference
+  // persists when they scroll between videos in the watch surface.
+  final Map<String, bool> _captionsEnabledByPostId = {};
+
+  bool _captionsEnabled(String postId) =>
+      _captionsEnabledByPostId[postId] ?? false;
+
+  void _toggleCaptions(String postId) {
+    setState(() {
+      _captionsEnabledByPostId[postId] = !_captionsEnabled(postId);
+    });
+  }
 
   _PosttubeEngagement _ensureEngagement(Post post) {
     return _engagementByPostId.putIfAbsent(
@@ -178,6 +193,18 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
     return '${diff.inMinutes}m ago';
   }
 
+  // Build the playback URL with an optional `?quality=240p` hint when
+  // data-saver is on. media-service's `/serve` endpoint accepts a
+  // quality hint; for HLS streams the player picks the matching
+  // rendition out of the manifest.
+  String _resolveVideoUrl(Post? post, {required bool dataSaver}) {
+    if (post == null || post.firstMediaUrl.isEmpty) return '';
+    final base = '${Environment.apiBaseUrl}${post.firstMediaUrl}';
+    if (!dataSaver) return base;
+    final separator = base.contains('?') ? '&' : '?';
+    return '${base}${separator}quality=240p';
+  }
+
   // Chapters are now derived from video metadata when available.
   // Placeholder chapters shown only when a video is loaded.
   List<_Chapter> get _chapters {
@@ -202,6 +229,10 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
     final currentVideo = _videos.isNotEmpty
         ? _videos[_currentVideoIndex]
         : null;
+
+    // Data-saver bias: suppresses the autoplay default and biases the
+    // playback URL toward the lowest available rendition.
+    final dataSaver = ref.watch(effectiveDataSaverProvider);
 
     return Scaffold(
       body: SafeArea(
@@ -243,13 +274,13 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
                     ),
                     const SizedBox(height: 12),
                     _VideoPanel(
-                      videoUrl:
-                          currentVideo != null &&
-                              currentVideo.firstMediaUrl.isNotEmpty
-                          ? '${Environment.apiBaseUrl}${currentVideo.firstMediaUrl}'
-                          : '',
+                      videoUrl: _resolveVideoUrl(
+                        currentVideo,
+                        dataSaver: dataSaver,
+                      ),
                       progress: _progress,
                       isPlaying: _playing,
+                      dataSaver: dataSaver,
                       onProgressChanged: (value) =>
                           setState(() => _progress = value),
                       onTogglePlay: () => setState(() => _playing = !_playing),
@@ -315,6 +346,22 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
                                   active: eng.saved,
                                   onTap: () => _toggleSave(currentVideo),
                                 ),
+                                const SizedBox(width: 8),
+                                // Captions (CC) toggle. Hidden when
+                                // media-service has no caption tracks
+                                // for the current video's primary
+                                // media id; mediaIds may be empty for
+                                // text/image posts that the user can
+                                // still react to but we never render
+                                // captions for.
+                                if (currentVideo.mediaIds.isNotEmpty)
+                                  CaptionToggle(
+                                    mediaId: currentVideo.mediaIds.first,
+                                    enabled:
+                                        _captionsEnabled(currentVideo.id),
+                                    onToggle: () =>
+                                        _toggleCaptions(currentVideo.id),
+                                  ),
                               ],
                             ),
                           );
@@ -409,11 +456,12 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
   }
 }
 
-class _VideoPanel extends StatelessWidget {
+class _VideoPanel extends StatefulWidget {
   const _VideoPanel({
     required this.videoUrl,
     required this.progress,
     required this.isPlaying,
+    required this.dataSaver,
     required this.onProgressChanged,
     required this.onTogglePlay,
   });
@@ -421,12 +469,32 @@ class _VideoPanel extends StatelessWidget {
   final String videoUrl;
   final double progress;
   final bool isPlaying;
+  final bool dataSaver;
   final ValueChanged<double> onProgressChanged;
   final VoidCallback onTogglePlay;
 
   @override
+  State<_VideoPanel> createState() => _VideoPanelState();
+}
+
+class _VideoPanelState extends State<_VideoPanel> {
+  // Data-saver: gate the player widget behind a manual tap so we
+  // never auto-fetch video bytes. Resets when the URL changes (the
+  // user has scrolled to a new video).
+  bool _userTappedPlay = false;
+
+  @override
+  void didUpdateWidget(_VideoPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.videoUrl != widget.videoUrl) {
+      _userTappedPlay = false;
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final hasVideo = videoUrl.isNotEmpty;
+    final hasVideo = widget.videoUrl.isNotEmpty;
+    final shouldAutoplay = !widget.dataSaver || _userTappedPlay;
 
     return Container(
       decoration: BoxDecoration(
@@ -441,19 +509,27 @@ class _VideoPanel extends StatelessWidget {
             child: SizedBox(
               height: 230,
               width: double.infinity,
-              child: hasVideo
+              child: hasVideo && shouldAutoplay
                   ? VideoPlayerWidget(
-                      videoUrl: videoUrl,
+                      videoUrl: widget.videoUrl,
                       autoPlay: true,
                       looping: false,
                       showControls: true,
                       aspectRatio: 16 / 9,
                       placeholder: _gradientPlaceholder(
-                        onTogglePlay,
-                        isPlaying,
+                        widget.onTogglePlay,
+                        widget.isPlaying,
                       ),
                     )
-                  : _gradientPlaceholder(onTogglePlay, isPlaying),
+                  : GestureDetector(
+                      onTap: hasVideo
+                          ? () => setState(() => _userTappedPlay = true)
+                          : null,
+                      child: _gradientPlaceholder(
+                        widget.onTogglePlay,
+                        widget.isPlaying,
+                      ),
+                    ),
             ),
           ),
         ],

@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/features/create/providers/creation_provider.dart';
+import 'package:atpost_app/features/create/widgets/mention_field.dart';
 import 'package:atpost_app/providers/feed_provider.dart';
 import 'package:atpost_app/providers/user_provider.dart';
 import 'package:flutter/material.dart';
@@ -311,9 +312,13 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
           ],
         ),
         const SizedBox(height: 20),
-        // RepaintBoundary ensures smooth typing performance
+        // RepaintBoundary ensures smooth typing performance.
+        // MentionField wraps a TextField and shows an `@username`
+        // popover from `userRepository.searchUsers` whenever the
+        // caret follows an unbroken `@token`. post-service already
+        // parses mentions in `internal/service/posts.go`.
         RepaintBoundary(
-          child: TextField(
+          child: MentionField(
             controller: _textController,
             focusNode: _focusNode,
             maxLines: null,
@@ -322,14 +327,14 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
               color: Colors.white,
               fontSize: 20,
             ),
-            decoration: InputDecoration(
-              hintText: "What's on your mind?",
-              hintStyle: AppTextStyles.h2.copyWith(
-                color: Colors.white24,
-                fontWeight: FontWeight.w400,
-              ),
-              border: InputBorder.none,
+            hintText: "What's on your mind?",
+            hintStyle: AppTextStyles.h2.copyWith(
+              color: Colors.white24,
+              fontWeight: FontWeight.w400,
             ),
+            onChanged: (text) {
+              ref.read(creationProvider.notifier).setText(text);
+            },
           ),
         ),
       ],
@@ -548,9 +553,9 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
             ),
             _ToolbarIcon(
               Icons.movie_edit,
-              'Flicks',
+              'Reels',
               Colors.amberAccent,
-              () => context.push('/flicks/editor'),
+              () => context.push('/reels/editor'),
             ),
             const VerticalDivider(color: Colors.white10),
             Text(

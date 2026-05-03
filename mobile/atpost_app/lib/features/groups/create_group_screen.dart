@@ -123,7 +123,7 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
                 maxLength: 60,
                 textInputAction: TextInputAction.next,
                 decoration: InputDecoration(
-                  hintText: 'Example: Postbook Creators Hub',
+                  hintText: 'Example: AtPost Creators Hub',
                   hintStyle: AppTextStyles.bodySmall,
                 ),
               ),

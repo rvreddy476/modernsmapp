@@ -120,7 +120,7 @@ class _ServicePermissionSheet extends StatelessWidget {
                 )),
             const SizedBox(height: 16),
             Text(
-              'Permissions are controlled by Postbook, not by the mini app. '
+              'Permissions are controlled by AtPost, not by the mini app. '
               'You can revoke access at any time from settings.',
               style: AppTextStyles.bodySmall.copyWith(
                 color: AppColors.textMuted,

@@ -35,12 +35,47 @@ void main() {
         () => mockApi.post(any(), data: any(named: 'data')),
       ).thenAnswer((_) async => mockResponse(data: {}));
 
+      // The fire emoji used to map to "love" before backend exposed
+      // its own `spark` reaction. Sprint 1 of the social/video module
+      // adds spark + supernova as first-class reactions and remaps
+      // the fire emoji onto the canonical spark wire id so the
+      // ReactionPicker, the post-card row, and the API agree.
       await repo.toggleReaction('post-1', emoji: '🔥');
 
       verify(
         () => mockApi.post(
           '/v1/posts/post-1/react',
-          data: {'reaction_type': 'love'},
+          data: {'reaction_type': 'spark'},
+        ),
+      ).called(1);
+    });
+
+    test('posts spark wire id directly', () async {
+      when(
+        () => mockApi.post(any(), data: any(named: 'data')),
+      ).thenAnswer((_) async => mockResponse(data: {}));
+
+      await repo.toggleReaction('post-1', emoji: 'spark');
+
+      verify(
+        () => mockApi.post(
+          '/v1/posts/post-1/react',
+          data: {'reaction_type': 'spark'},
+        ),
+      ).called(1);
+    });
+
+    test('posts supernova wire id directly', () async {
+      when(
+        () => mockApi.post(any(), data: any(named: 'data')),
+      ).thenAnswer((_) async => mockResponse(data: {}));
+
+      await repo.toggleReaction('post-1', emoji: 'supernova');
+
+      verify(
+        () => mockApi.post(
+          '/v1/posts/post-1/react',
+          data: {'reaction_type': 'supernova'},
         ),
       ).called(1);
     });

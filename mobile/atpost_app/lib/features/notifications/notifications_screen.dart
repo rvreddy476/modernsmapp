@@ -49,8 +49,13 @@ class _NotificationsScreenState extends ConsumerState<NotificationsScreen>
       }
 
       if (!mounted) return;
-      if ((notification.deepLink ?? '').isNotEmpty) {
-        context.push(notification.deepLink!);
+      // Prefer the server-supplied deep link; otherwise fall back to a
+      // type-based resolver. Sprint 3 added the four dating cases.
+      final link = (notification.deepLink ?? '').isNotEmpty
+          ? notification.deepLink!
+          : _resolveDeepLink(notification);
+      if (link.isNotEmpty) {
+        context.push(link);
       }
     } catch (_) {
       if (!mounted) return;
@@ -116,12 +121,61 @@ class _NotificationsScreenState extends ConsumerState<NotificationsScreen>
           color: AppColors.accentPurple,
           text: 'mentioned you',
         );
+      // Sprint 3 — Pulse dating notifications.
+      case 'dating.spark.created':
+        return const _NotifMeta(
+          icon: Icons.bolt_rounded,
+          color: AppColors.postbookPrimary,
+          text: 'sparked you',
+        );
+      case 'dating.spark.matched':
+        return const _NotifMeta(
+          icon: Icons.favorite_rounded,
+          color: AppColors.postgramPrimary,
+          text: 'and you matched!',
+        );
+      case 'dating.match.first_message':
+        return const _NotifMeta(
+          icon: Icons.mark_chat_unread_rounded,
+          color: AppColors.posttubePrimary,
+          text: 'sent you a first message',
+        );
+      case 'dating.match.expired':
+        return const _NotifMeta(
+          icon: Icons.hourglass_bottom_rounded,
+          color: AppColors.statusWarning,
+          text: 'match expired',
+        );
       default:
         return const _NotifMeta(
           icon: Icons.notifications_rounded,
           color: AppColors.textSecondary,
           text: 'sent a notification',
         );
+    }
+  }
+
+  /// Sprint 3 — fallback router for dating notifications when the backend
+  /// payload doesn't include a `deep_link`. Maps notification type +
+  /// entity_id to an in-app route.
+  String _resolveDeepLink(AppNotification n) {
+    switch (n.type) {
+      case 'dating.spark.matched':
+        // entity is the match id.
+        return n.entityId.isNotEmpty
+            ? '/pulse/matches/${n.entityId}'
+            : '/pulse/matches';
+      case 'dating.match.first_message':
+        // entity is the conversation id.
+        return n.entityId.isNotEmpty
+            ? '/pulse/chat/${n.entityId}'
+            : '/pulse/matches';
+      case 'dating.match.expired':
+        return '/pulse/matches';
+      case 'dating.spark.created':
+        return '/pulse/matches?tab=sparks';
+      default:
+        return '';
     }
   }
 

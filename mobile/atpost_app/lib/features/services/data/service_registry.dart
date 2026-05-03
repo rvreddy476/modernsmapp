@@ -1,12 +1,12 @@
 import 'package:atpost_app/features/services/models/service_app.dart';
 import 'package:flutter/material.dart';
 
-/// Curated catalog of internal Postbook mini-apps surfaced under /services.
+/// Curated catalog of internal AtPost mini-apps surfaced under /services.
 /// Hand-written; intentionally NOT loaded from backend (per spec §16 — backend
 /// registry is a future phase).
 ///
 /// Routes here are validated against actual GoRouter routes in lib/app/router.dart.
-/// Existing modules: /shop, /posttube, /reels, /qa, /postmatch.
+/// Existing modules: /shop, /posttube, /reels, /qa, /pulse.
 /// Coming-soon modules use the dynamic /services/:slug placeholder.
 class ServiceRegistry {
   const ServiceRegistry._();
@@ -15,7 +15,7 @@ class ServiceRegistry {
     ServiceApp(
       id: 'commerce',
       slug: 'commerce',
-      name: 'Postbook Market',
+      name: 'AtPost Market',
       shortDescription: 'Buy and sell products from verified sellers.',
       longDescription:
           'Discover products from local sellers, businesses, and creators. '
@@ -61,7 +61,7 @@ class ServiceRegistry {
     ServiceApp(
       id: 'flicks',
       slug: 'flicks',
-      name: 'Flicks',
+      name: 'Reels',
       shortDescription: 'Short videos, reels, and trending clips.',
       iconName: 'Clapperboard',
       category: ServiceCategory.entertainment,
@@ -108,7 +108,7 @@ class ServiceRegistry {
       category: ServiceCategory.dating,
       status: ServiceStatus.active,
       runtime: ServiceRuntimeType.internalRoute,
-      route: '/postmatch',
+      route: '/pulse',
       permissions: [
         ServicePermission.profile,
         ServicePermission.location,
@@ -118,18 +118,18 @@ class ServiceRegistry {
       sortOrder: 5,
       version: '1.0.0',
       accentColor: Color(0xFFF43F5E),
-      tags: ['dating', 'match', 'connect', 'postmatch'],
+      tags: ['dating', 'match', 'connect', 'pulse'],
     ),
     ServiceApp(
-      id: 'food-home-kitchen',
-      slug: 'food-home-kitchen',
-      name: 'Food & Home Kitchen',
-      shortDescription:
-          'Order homemade food, sweets, pickles, and local meals.',
+      id: 'figo',
+      slug: 'figo',
+      name: 'FiGo',
+      shortDescription: 'Food in GO: restaurants, home chefs, and local meals.',
       iconName: 'UtensilsCrossed',
       category: ServiceCategory.food,
-      status: ServiceStatus.comingSoon,
+      status: ServiceStatus.active,
       runtime: ServiceRuntimeType.internalRoute,
+      route: '/figo',
       permissions: [
         ServicePermission.profile,
         ServicePermission.location,
@@ -138,9 +138,17 @@ class ServiceRegistry {
       ],
       isFeatured: true,
       sortOrder: 6,
-      version: '0.1.0',
+      version: '1.0.0',
       accentColor: Color(0xFFF97316),
-      tags: ['food', 'homemade', 'kitchen', 'order', 'delivery'],
+      tags: [
+        'figo',
+        'food',
+        'restaurant',
+        'homemade',
+        'kitchen',
+        'order',
+        'delivery'
+      ],
     ),
     ServiceApp(
       id: 'ai-tutor',

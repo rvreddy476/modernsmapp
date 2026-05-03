@@ -1,6 +1,8 @@
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/data/models/user.dart';
+import 'package:atpost_app/providers/data_saver_provider.dart';
 import 'package:atpost_app/providers/profile_provider.dart';
+import 'package:atpost_app/services/image_url_helper.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -170,7 +172,13 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
             ),
             image: user.hasCover
                 ? DecorationImage(
-                    image: NetworkImage(user.coverUrl!),
+                    image: NetworkImage(
+                      resolveImageUrl(
+                        user.coverUrl!,
+                        dataSaver: ref.watch(effectiveDataSaverProvider),
+                        size: ImageSize.large,
+                      ),
+                    ),
                     fit: BoxFit.cover,
                     onError: (_, _) {},
                   )
@@ -212,7 +220,13 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
               border: Border.all(color: _bg, width: 3),
               image: user.hasAvatar
                   ? DecorationImage(
-                      image: NetworkImage(user.avatarUrl),
+                      image: NetworkImage(
+                        resolveImageUrl(
+                          user.avatarUrl,
+                          dataSaver: ref.watch(effectiveDataSaverProvider),
+                          size: ImageSize.medium,
+                        ),
+                      ),
                       fit: BoxFit.cover,
                     )
                   : null,

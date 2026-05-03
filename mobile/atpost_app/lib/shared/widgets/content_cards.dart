@@ -12,6 +12,7 @@ import 'package:atpost_app/providers/feed_provider.dart';
 import 'package:atpost_app/providers/following_provider.dart';
 import 'package:atpost_app/services/auth_service.dart';
 import 'package:atpost_app/shared/widgets/clickable_hashtag_text.dart';
+import 'package:atpost_app/shared/widgets/echo_sheet.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -32,6 +33,11 @@ class _PostCardState extends ConsumerState<PostCard> {
   late int _likeCount;
   late int _shareCount;
   bool _actionPending = false;
+  // Echo (repost) state. Optimistically toggled when the user confirms
+  // an Echo from the bottom sheet; reconciled against
+  // `/v1/posts/:id/repost/me` on demand.
+  bool _echoed = false;
+  bool _echoPending = false;
 
   Post get post => widget.post;
 
@@ -93,6 +99,46 @@ class _PostCardState extends ConsumerState<PostCard> {
     } finally {
       if (mounted) setState(() => _actionPending = false);
     }
+  }
+
+  Future<void> _openEchoSheet() async {
+    if (_echoPending) return;
+    final wasEchoed = _echoed;
+    if (wasEchoed) {
+      // Toggle off: undo the existing Echo without showing the sheet.
+      setState(() {
+        _echoPending = true;
+        _echoed = false;
+      });
+      try {
+        await ref.read(postRepositoryProvider).undoEcho(post.id);
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Echo removed.')),
+        );
+      } catch (_) {
+        if (!mounted) return;
+        setState(() => _echoed = true);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not remove Echo.')),
+        );
+      } finally {
+        if (mounted) setState(() => _echoPending = false);
+      }
+      return;
+    }
+
+    final created = await showEchoSheet(
+      context,
+      postId: post.id,
+      authorName: post.authorName ?? 'this creator',
+      sourceContextType: 'feed',
+    );
+    if (!mounted || created != true) return;
+    setState(() => _echoed = true);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Echoed to your followers.')),
+    );
   }
 
   Future<void> _sharePost() async {
@@ -518,6 +564,17 @@ class _PostCardState extends ConsumerState<PostCard> {
           icon: Icons.chat_bubble_outline,
           label: _formatCount(post.commentCount),
           onTap: () => context.push('/comments/${post.id}'),
+        ),
+        const SizedBox(width: 8),
+        // Echo (repost). Tappable on every post the current viewer
+        // doesn't author (filtering is done by the recon's eligibility
+        // check on the backend; the UI lets the user attempt and shows
+        // a friendly error otherwise).
+        _ActionPill(
+          icon: Icons.repeat_rounded,
+          label: 'Echo',
+          active: _echoed,
+          onTap: _openEchoSheet,
         ),
         const Spacer(),
         InkWell(

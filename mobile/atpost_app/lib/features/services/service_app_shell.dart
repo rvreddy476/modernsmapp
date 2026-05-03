@@ -119,7 +119,7 @@ class _ServiceAppShellState extends ConsumerState<ServiceAppShell> {
                   ),
                   if (widget.app.isVerified)
                     Text(
-                      'Verified by Postbook',
+                      'Verified by AtPost',
                       style: AppTextStyles.labelTiny.copyWith(
                         color: AppColors.posttubePrimary,
                       ),

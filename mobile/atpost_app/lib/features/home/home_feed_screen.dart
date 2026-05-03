@@ -7,10 +7,12 @@ import 'package:atpost_app/data/models/user.dart';
 import 'package:atpost_app/data/repositories/user_repository.dart';
 import 'package:atpost_app/features/hashtag_feed/hashtag_feed_screen.dart';
 import 'package:atpost_app/features/shell/shell_providers.dart';
+import 'package:atpost_app/providers/data_saver_provider.dart';
 import 'package:atpost_app/providers/feed_provider.dart';
 import 'package:atpost_app/providers/notification_provider.dart';
 import 'package:atpost_app/providers/stories_provider.dart';
 import 'package:atpost_app/providers/user_provider.dart';
+import 'package:atpost_app/services/image_url_helper.dart';
 import 'package:atpost_app/shared/widgets/badge_icon_button.dart';
 import 'package:atpost_app/shared/widgets/content_cards.dart';
 import 'package:flutter/material.dart';
@@ -186,11 +188,19 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
             builder: (_) {
               final me = ref.watch(currentUserProvider).valueOrNull;
               final avatar = me?.hasAvatar == true ? me!.avatarUrl : null;
+              final dataSaver = ref.watch(effectiveDataSaverProvider);
               return CircleAvatar(
                 radius: 18,
                 backgroundColor: AppColors.bgTertiary,
-                backgroundImage:
-                    avatar != null ? NetworkImage(avatar) : null,
+                backgroundImage: avatar != null
+                    ? NetworkImage(
+                        resolveImageUrl(
+                          avatar,
+                          dataSaver: dataSaver,
+                          size: ImageSize.small,
+                        ),
+                      )
+                    : null,
                 child: avatar == null
                     ? const Icon(
                         Icons.person_rounded,
@@ -342,7 +352,15 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
               leading: CircleAvatar(
                 radius: 22,
                 backgroundColor: AppColors.bgTertiary,
-                backgroundImage: hasAvatar ? NetworkImage(user.avatarUrl) : null,
+                backgroundImage: hasAvatar
+                    ? NetworkImage(
+                        resolveImageUrl(
+                          user.avatarUrl,
+                          dataSaver: ref.watch(effectiveDataSaverProvider),
+                          size: ImageSize.small,
+                        ),
+                      )
+                    : null,
                 child: hasAvatar
                     ? null
                     : Text(

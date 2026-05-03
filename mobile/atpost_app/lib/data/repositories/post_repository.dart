@@ -111,6 +111,67 @@ class PostRepository {
     await _api.delete('/v1/posts/$postId');
   }
 
+  /// Echo (repost) a post. The recon doc calls this "Echo"; backend
+  /// route is POST /v1/posts/:postId/repost. `quoteText` is required
+  /// when [type] is `'quote'` (HTTP 422 QUOTE_TEXT_REQUIRED otherwise),
+  /// and must be 500 chars or fewer (QUOTE_TEXT_TOO_LONG otherwise).
+  ///
+  /// `sourceContextType` lets the caller record where the Echo was
+  /// initiated from (e.g. `"feed"`, `"profile"`, `"channel"`,
+  /// `"reels"`); see post-service `CreateRepostRequest`. The mobile
+  /// composer leaves it null today; that's fine.
+  Future<Map<String, dynamic>> echoPost(
+    String postId, {
+    String type = 'plain',
+    String? quoteText,
+    String? sourceContextType,
+    String? sourceContextId,
+  }) async {
+    final response = await _api.post(
+      '/v1/posts/$postId/repost',
+      data: <String, dynamic>{
+        'type': type,
+        if (quoteText != null && quoteText.isNotEmpty) 'quote_text': quoteText,
+        if (sourceContextType != null && sourceContextType.isNotEmpty)
+          'source_context_type': sourceContextType,
+        if (sourceContextId != null && sourceContextId.isNotEmpty)
+          'source_context_id': sourceContextId,
+      },
+    );
+    final body = response.data;
+    if (body is Map<String, dynamic>) {
+      final data = body['data'];
+      if (data is Map<String, dynamic>) return data;
+      return body;
+    }
+    return const <String, dynamic>{};
+  }
+
+  /// Undo a previous Echo. Backend returns 204 on success or 404
+  /// REPOST_NOT_FOUND if the user never echoed this post.
+  Future<void> undoEcho(String postId) async {
+    await _api.delete('/v1/posts/$postId/repost');
+  }
+
+  /// Whether the current viewer has echoed [postId]. Used to flip the
+  /// Echo button to its filled state.
+  Future<bool> hasEchoed(String postId) async {
+    try {
+      final response = await _api.get('/v1/posts/$postId/repost/me');
+      final body = response.data;
+      if (body is Map<String, dynamic>) {
+        final data = body['data'];
+        if (data is Map<String, dynamic>) {
+          final hasRepost = data['has_repost'];
+          if (hasRepost is bool) return hasRepost;
+        }
+      }
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<void> sharePost(String postId) async {
     await _api.post('/v1/posts/$postId/share');
   }
@@ -172,6 +233,10 @@ List<dynamic> _unwrapListEnvelope(dynamic body) {
 }
 
 String _reactionTypeFor(String? emoji) {
+  // Backend supports 8 reactions: like, love, wow, haha, sad, angry,
+  // spark, supernova. Callers may pass either the wire id ("spark")
+  // or a Unicode emoji ("\u{1F525}"). We coerce both to the wire id
+  // post-service expects on POST /v1/posts/:id/react.
   const reactionTypes = <String, String>{
     'like': 'like',
     'love': 'love',
@@ -179,10 +244,16 @@ String _reactionTypeFor(String? emoji) {
     'wow': 'wow',
     'sad': 'sad',
     'angry': 'angry',
+    'spark': 'spark',
+    'supernova': 'supernova',
     '': 'like',
     '\u{1F44D}': 'like',
     '\u2764\uFE0F': 'love',
-    '\u{1F525}': 'love',
+    // Fire emoji historically meant "love" in the old picker; map it
+    // to "spark" now that spark is a real backend reaction type.
+    '\u{1F525}': 'spark',
+    '\u{1F31F}': 'supernova',
+    '\u2728': 'supernova',
     '\u{1F602}': 'haha',
     '\u{1F62E}': 'wow',
     '\u{1F622}': 'sad',

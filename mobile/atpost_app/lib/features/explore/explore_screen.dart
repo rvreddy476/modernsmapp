@@ -238,9 +238,9 @@ class _ExploreScreenState extends ConsumerState<ExploreScreen> {
       ),
       const _ExploreAction(
         icon: Icons.favorite_rounded,
-        title: 'PostMatch',
+        title: 'Pulse',
         subtitle: 'Meet people',
-        route: '/postmatch',
+        route: '/pulse',
         gradient: LinearGradient(
           colors: [AppColors.postgramPrimary, AppColors.liveRed],
         ),
@@ -548,7 +548,7 @@ class _ExploreHero extends StatelessWidget {
           Text('Explore', style: AppTextStyles.h1.copyWith(fontSize: 30)),
           const SizedBox(height: 6),
           Text(
-            'Discover creators, trends, and community spaces built for Postbook.',
+            'Discover creators, trends, and community spaces built for AtPost.',
             style: AppTextStyles.bodySmall.copyWith(
               color: AppColors.textSecondary,
             ),
