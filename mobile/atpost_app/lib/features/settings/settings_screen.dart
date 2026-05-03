@@ -84,10 +84,24 @@ class SettingsScreen extends ConsumerWidget {
                   onTap: () => context.push('/settings/wellbeing'),
                 ),
                 _SettingTile(
+                  icon: Icons.data_saver_on_outlined,
+                  title: 'Data saver',
+                  subtitle:
+                      'Lower-bandwidth mode for reels, video, and feed media',
+                  onTap: () => context.push('/settings/data-saver'),
+                ),
+                _SettingTile(
                   icon: Icons.verified,
                   title: 'Get Verified',
                   subtitle: 'Apply for a verified badge',
                   onTap: () => context.push('/settings/verification'),
+                ),
+                _SettingTile(
+                  icon: Icons.shield_outlined,
+                  title: 'Safety Center',
+                  subtitle:
+                      'Verification, vouches, trusted contact, panic & more',
+                  onTap: () => context.push('/pulse/safety'),
                 ),
                 _SettingTile(
                   icon: Icons.download_outlined,

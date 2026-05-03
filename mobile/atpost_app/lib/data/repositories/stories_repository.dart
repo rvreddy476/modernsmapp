@@ -32,12 +32,13 @@ class StoriesRepository {
     return Story.fromJson(legacyResponse.data['data'] as Map<String, dynamic>);
   }
 
-  Future<void> createStory({
+  Future<String> createStory({
     required String mediaId,
     required String mediaType,
     String? text,
+    List<StoryInteractive> interactives = const [],
   }) async {
-    await _api.post(
+    final response = await _api.post(
       '/v1/stories',
       data: {
         'media_url': _mediaUrl(mediaId),
@@ -46,6 +47,89 @@ class StoriesRepository {
         'visibility': 'public',
       },
     );
+    final data = response.data['data'];
+    final storyId = data is Map ? data['id']?.toString() ?? '' : '';
+
+    // Best-effort: persist any interactive elements after the story exists.
+    // Backend currently has no handler for the /interactive subroute (the
+    // schema is migrated but not wired in the post-service). Each call is
+    // wrapped to stay non-fatal.
+    for (final interactive in interactives) {
+      if (storyId.isEmpty) break;
+      try {
+        await addInteractive(storyId: storyId, interactive: interactive);
+      } catch (_) {
+        // swallow — UI will still create the story; backend wire is a TODO.
+      }
+    }
+    return storyId;
+  }
+
+  /// Attaches an interactive element (poll/quiz/countdown/question/slider)
+  /// to an existing story.
+  ///
+  /// Wire (proposed):
+  ///   POST /v1/stories/:storyId/interactive
+  ///   body  -> StoryInteractive.toCreateJson()
+  ///   resp  -> { data: { id, type, ... } }
+  Future<StoryInteractive?> addInteractive({
+    required String storyId,
+    required StoryInteractive interactive,
+  }) async {
+    final response = await _api.post(
+      '/v1/stories/$storyId/interactive',
+      data: interactive.toCreateJson(),
+    );
+    final raw = response.data['data'];
+    if (raw is Map) {
+      return StoryInteractive.fromJson(Map<String, dynamic>.from(raw));
+    }
+    return null;
+  }
+
+  /// Submits a viewer's response to an interactive element.
+  ///
+  /// Wire (proposed):
+  ///   POST /v1/stories/:storyId/interactive/:interactiveId/respond
+  ///   body  -> { option_id?, text?, slider_value?, reminder? }
+  Future<void> submitInteractiveResponse({
+    required String storyId,
+    required String interactiveId,
+    String? optionId,
+    String? text,
+    int? sliderValue,
+    bool? reminder,
+  }) async {
+    final body = <String, dynamic>{};
+    if (optionId != null) body['option_id'] = optionId;
+    if (text != null) body['text'] = text;
+    if (sliderValue != null) body['slider_value'] = sliderValue;
+    if (reminder != null) body['reminder'] = reminder;
+    await _api.post(
+      '/v1/stories/$storyId/interactive/$interactiveId/respond',
+      data: body,
+    );
+  }
+
+  /// Fetches aggregated results for the creator of the story.
+  ///
+  /// Wire (proposed):
+  ///   GET /v1/stories/:storyId/interactive/:interactiveId/results
+  ///   resp -> StoryInteractiveResults JSON
+  Future<StoryInteractiveResults?> getInteractiveResults({
+    required String storyId,
+    required String interactiveId,
+  }) async {
+    final response = await _api.get(
+      '/v1/stories/$storyId/interactive/$interactiveId/results',
+    );
+    final raw = response.data['data'];
+    if (raw is Map) {
+      return StoryInteractiveResults.fromJson(
+        Map<String, dynamic>.from(raw),
+      );
+    }
+    return null;
   }
 }
 
@@ -76,6 +160,7 @@ List<Story> _groupFlatStories(List<dynamic> rawItems) {
               'media_type': item['media_type'],
               'text': item['caption'],
               'expires_at': item['expires_at'],
+              'interactives': item['interactives'],
             },
           )
           .toList(),

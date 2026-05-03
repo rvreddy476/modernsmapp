@@ -2,7 +2,14 @@ import 'dart:async';
 
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/models/story.dart';
+import 'package:atpost_app/features/stories/widgets/countdown_widget.dart';
+import 'package:atpost_app/features/stories/widgets/interactive_results_sheet.dart';
+import 'package:atpost_app/features/stories/widgets/poll_widget.dart';
+import 'package:atpost_app/features/stories/widgets/question_widget.dart';
+import 'package:atpost_app/features/stories/widgets/quiz_widget.dart';
+import 'package:atpost_app/features/stories/widgets/slider_widget.dart';
 import 'package:atpost_app/providers/stories_provider.dart';
+import 'package:atpost_app/services/auth_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -120,6 +127,69 @@ class _StoryViewerScreenState extends ConsumerState<StoryViewerScreen> {
     return '${diff.inMinutes}m ago';
   }
 
+  Widget _interactiveFor({
+    required String storyId,
+    required StoryInteractive interactive,
+    required bool isOwnStory,
+  }) {
+    Widget child;
+    switch (interactive.type) {
+      case 'poll':
+        child = PollWidget(storyId: storyId, interactive: interactive);
+      case 'quiz':
+        child = QuizWidget(storyId: storyId, interactive: interactive);
+      case 'countdown':
+        child = CountdownWidget(storyId: storyId, interactive: interactive);
+      case 'question':
+        child = QuestionWidget(storyId: storyId, interactive: interactive);
+      case 'slider':
+        child = SliderInteractiveWidget(
+          storyId: storyId,
+          interactive: interactive,
+        );
+      default:
+        return const SizedBox.shrink();
+    }
+
+    if (!isOwnStory) return child;
+
+    // Creator sees a "View results" button on their own story.
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        IgnorePointer(child: child),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24),
+          child: SizedBox(
+            width: double.infinity,
+            child: TextButton.icon(
+              style: TextButton.styleFrom(
+                backgroundColor: Colors.white.withAlpha(40),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 10),
+              ),
+              onPressed: () {
+                _timer?.cancel();
+                InteractiveResultsSheet.show(
+                  context,
+                  storyId: storyId,
+                  interactive: interactive,
+                ).then((_) {
+                  if (mounted) _startTimer();
+                });
+              },
+              icon: const Icon(Icons.bar_chart, color: Colors.white),
+              label: Text(
+                'View results',
+                style: AppTextStyles.label.copyWith(color: Colors.white),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildMediaContent(StoryItem item) {
     if (item.mediaType == 'video') {
       if (_videoReady && _videoController != null) {
@@ -188,6 +258,10 @@ class _StoryViewerScreenState extends ConsumerState<StoryViewerScreen> {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           _onStoryLoaded(story);
         });
+
+        final authState = ref.watch(authStateProvider);
+        final selfId = authState.valueOrNull?.userId;
+        final isOwnStory = selfId != null && selfId == story.authorId;
 
         if (story.items.isEmpty) {
           return Scaffold(
@@ -364,6 +438,19 @@ class _StoryViewerScreenState extends ConsumerState<StoryViewerScreen> {
                                     .copyWith(color: Colors.white),
                               ),
                             ),
+                          ),
+                        ),
+
+                      // Interactive overlays (poll/quiz/countdown/question/slider).
+                      // Pause the story timer while one is on screen.
+                      for (final interactive in item.interactives)
+                        Listener(
+                          onPointerDown: (_) => _timer?.cancel(),
+                          onPointerUp: (_) => _startTimer(),
+                          child: _interactiveFor(
+                            storyId: story.id,
+                            interactive: interactive,
+                            isOwnStory: isOwnStory,
                           ),
                         ),
 
