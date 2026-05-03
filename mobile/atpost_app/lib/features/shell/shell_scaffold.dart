@@ -19,8 +19,8 @@
 
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_app/features/home/home_feed_screen.dart';
 import 'package:atpost_app/features/shell/create_options_sheet.dart';
-import 'package:atpost_app/features/shell/home_tab.dart';
 import 'package:atpost_app/features/shell/inbox_tab.dart';
 import 'package:atpost_app/features/shell/me_tab.dart';
 import 'package:atpost_app/features/shell/search_tab.dart';
@@ -77,7 +77,12 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold> {
       body: IndexedStack(
         index: _safeIndex(current),
         children: const [
-          HomeTab(),
+          // Home tab is the original 3-strip feed (For You /
+          // Following / #HashTag) — same shape as Twitter/IG. The
+          // module rail + mixed feed lives in /explore + the
+          // Me-tab launcher grid; the home surface stays
+          // feed-first per product direction.
+          HomeFeedScreen(),
           SearchTab(),
           InboxTab(),
           MeTab(),
