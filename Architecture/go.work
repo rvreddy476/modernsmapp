@@ -5,11 +5,14 @@ use (
 	./services/ai-service
 	./services/analytics-service
 	./services/api-gateway
+	./services/bill-pay-service
 	./services/channel-service
 	./services/commerce-service
 	./services/community-service
+	./services/dating-service
 	./services/feature-flag-service
 	./services/feed-service
+	./services/food-service
 	./services/graph-service
 	./services/group-service
 	./services/live-service
@@ -27,6 +30,8 @@ use (
 	./services/suggestion-service
 	./services/trust-safety-service
 	./services/user-service
+	./services/wallet-service
+	./services/rider-service
 	./shared
 	./tools/schemacheck
 	./tools/integration

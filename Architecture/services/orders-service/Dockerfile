@@ -1,4 +1,4 @@
-FROM golang:1.24-alpine AS builder
+FROM golang:1.25.6-alpine AS builder
 
 RUN apk add --no-cache build-base
 
@@ -8,6 +8,7 @@ WORKDIR /
 COPY go.work .
 COPY go.work.sum .
 COPY vendor /vendor
+COPY tools /tools
 
 # Copy shared module
 COPY shared /shared

@@ -38,7 +38,7 @@ services:
   # ─── Shared Infrastructure ──────────────────────────────────
 
   postgres:
-    image: postgres:16
+    image: postgis/postgis:16-3.4
     command: ["postgres", "-c", "max_connections=500"]
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
@@ -255,6 +255,7 @@ services:
       TRUST_SAFETY_SERVICE_URL: http://trust-safety-service:8091
       MESSAGE_SERVICE_URL: http://chat-message-service:8092
       ANALYTICS_SERVICE_URL: http://analytics-service:8094
+      AI_SERVICE_URL: http://ai-service:8117
       FLAGS_SERVICE_URL: http://feature-flag-service:8095
       GROUP_SERVICE_URL: http://group-service:8090
       ADMIN_SERVICE_URL: http://admin-service:8096
@@ -268,6 +269,11 @@ services:
       COMMUNITY_SERVICE_URL: http://community-service:8107
       QA_SERVICE_URL: http://qa-service:8108
       COMMERCE_SERVICE_URL: http://commerce-service:8109
+      DATING_SERVICE_URL: http://dating-service:8112
+      FOOD_SERVICE_URL: http://food-service:8113
+      WALLET_SERVICE_URL: http://wallet-service:8114
+      BILL_PAY_SERVICE_URL: http://bill-pay-service:8115
+      RIDER_SERVICE_URL: http://rider-service:8116
     ports:
       - "8080:8080"
     depends_on:
@@ -873,6 +879,33 @@ services:
           cpus: '0.5'
           memory: 512M
 
+  ai-service:
+    build:
+      context: ..
+      dockerfile: services/ai-service/Dockerfile
+    environment:
+      <<: *redis_client_env
+      HTTP_PORT: "8117"
+      POSTGRES_DSN: *app_postgres_dsn
+      REDIS_ADDR: redis:6379
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+    ports:
+      - "8117:8117"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
   feature-flag-service:
     build:
       context: ..
@@ -1069,6 +1102,141 @@ services:
           cpus: '0.25'
           memory: 256M
 
+  food-service:
+    build:
+      context: ..
+      dockerfile: services/food-service/Dockerfile
+    environment:
+      HTTP_PORT: "8113"
+      POSTGRES_DSN: *app_postgres_dsn
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      MONETIZATION_SERVICE_URL: http://monetization-service:8099
+      PAYMENTS_SERVICE_URL: http://payments-service:8102
+    ports:
+      - "8113:8113"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+  # Consumer wallet — BC of partner-bank PPI. See services/wallet-service.
+  wallet-service:
+    build:
+      context: ..
+      dockerfile: services/wallet-service/Dockerfile
+    environment:
+      <<: [*redis_client_env, *kafka_client_env]
+      HTTP_PORT: "8114"
+      POSTGRES_DSN: *app_postgres_dsn
+      REDIS_ADDR: redis:6379
+      KAFKA_BROKERS: redpanda:9092
+      KAFKA_TOPIC: wallet-events
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      PARTNER_BANK_VPA: ${PARTNER_BANK_VPA:-atpostwallet@partnerbank}
+      BANK_PARTNER: ${BANK_PARTNER:-mock}
+    ports:
+      - "8114:8114"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      redpanda:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+  # Bill-pay (Setu BBPS aggregator). See services/bill-pay-service.
+  bill-pay-service:
+    build:
+      context: ..
+      dockerfile: services/bill-pay-service/Dockerfile
+    environment:
+      <<: [*redis_client_env, *kafka_client_env]
+      HTTP_PORT: "8115"
+      POSTGRES_DSN: *app_postgres_dsn
+      REDIS_ADDR: redis:6379
+      KAFKA_BROKERS: redpanda:9092
+      KAFKA_TOPIC: billpay-events
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      WALLET_SERVICE_URL: http://wallet-service:8114
+      SETU_MODE: ${SETU_MODE:-mock}
+      SETU_CLIENT_ID: ${SETU_CLIENT_ID:-}
+      SETU_CLIENT_SECRET: ${SETU_CLIENT_SECRET:-}
+      SETU_BASE_URL: ${SETU_BASE_URL:-https://prod.setu.co}
+      SETU_WEBHOOK_SECRET: ${SETU_WEBHOOK_SECRET:-}
+    ports:
+      - "8115:8115"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      redpanda:
+        condition: service_started
+      wallet-service:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+  # Rider service (Mopedu mini-app). Customers ride free; partners pay
+  # monthly subscription. See services/rider-service + mopedu/MOPEDU_SPEC.md.
+  rider-service:
+    build:
+      context: ..
+      dockerfile: services/rider-service/Dockerfile
+    environment:
+      <<: [*redis_client_env, *kafka_client_env]
+      HTTP_PORT: "8116"
+      POSTGRES_DSN: *app_postgres_dsn
+      REDIS_ADDR: redis:6379
+      KAFKA_BROKERS: redpanda:9092
+      KAFKA_TOPIC: rider-events
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      WALLET_SERVICE_URL: http://wallet-service:8114
+      DIGILOCKER_MODE: ${DIGILOCKER_MODE:-mock}
+      DIGILOCKER_BASE_URL: ${DIGILOCKER_BASE_URL:-}
+      DIGILOCKER_API_KEY: ${DIGILOCKER_API_KEY:-}
+      DIGILOCKER_REDIRECT_URI: ${DIGILOCKER_REDIRECT_URI:-https://atpost.app/rider/aadhaar/callback}
+    ports:
+      - "8116:8116"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      redpanda:
+        condition: service_started
+      wallet-service:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
   live-service:
     build:
       context: ..
@@ -1208,9 +1376,34 @@ services:
           cpus: '0.25'
           memory: 256M
 
+  dating-service:
+    build:
+      context: ..
+      dockerfile: services/dating-service/Dockerfile
+    environment:
+      <<: [*redis_client_env, *kafka_client_env]
+      HTTP_PORT: "8112"
+      POSTGRES_DSN: *app_postgres_dsn
+      REDIS_ADDR: redis:6379
+      KAFKA_BROKERS: redpanda:9092
+      KAFKA_TOPIC: dating-events
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+    ports:
+      - "8112:8112"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      redpanda: { condition: service_started }
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
 volumes:
   pgdata:
   miniodata:
   scylladata:
-
-

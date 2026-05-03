@@ -17,7 +17,7 @@ COPY shared /shared
 COPY services /services
 
 # Build the application
-RUN go build -mod=vendor -o /server ./services/search-service/cmd/server/main.go
+RUN go build -mod=vendor -o /server ./services/rider-service/cmd/server/main.go
 
 FROM alpine:3.19
 WORKDIR /

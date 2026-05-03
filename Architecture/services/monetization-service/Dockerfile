@@ -1,4 +1,4 @@
-FROM golang:1.24-alpine AS builder
+FROM golang:1.25.6-alpine AS builder
 
 RUN apk add --no-cache build-base
 
@@ -14,6 +14,7 @@ COPY shared /shared
 
 # Copy all services to satisfy go.work
 COPY services /services
+COPY tools /tools
 
 # Build the application
 RUN go build -mod=vendor -o /server ./services/monetization-service/cmd/server/main.go
