@@ -231,6 +231,61 @@ services:
     environment:
       KAFKA_BROKERS: redpanda:9093
 
+  qa-service:
+    <<: *transport_certs
+    environment:
+      KAFKA_BROKERS: redpanda:9093
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:?set INTERNAL_SERVICE_KEY}
+
+  commerce-service:
+    <<: *transport_certs
+    environment:
+      KAFKA_BROKERS: redpanda:9093
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:?set INTERNAL_SERVICE_KEY}
+
+  dating-service:
+    <<: *transport_certs
+    environment:
+      KAFKA_BROKERS: redpanda:9093
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:?set INTERNAL_SERVICE_KEY}
+
+  food-service:
+    <<: *transport_certs
+    environment:
+      KAFKA_BROKERS: redpanda:9093
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:?set INTERNAL_SERVICE_KEY}
+
+  wallet-service:
+    <<: *transport_certs
+    environment:
+      KAFKA_BROKERS: redpanda:9093
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:?set INTERNAL_SERVICE_KEY}
+      PARTNER_BANK_VPA: ${PARTNER_BANK_VPA:?set PARTNER_BANK_VPA}
+      BANK_PARTNER: ${BANK_PARTNER:?set BANK_PARTNER}
+
+  bill-pay-service:
+    <<: *transport_certs
+    environment:
+      KAFKA_BROKERS: redpanda:9093
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:?set INTERNAL_SERVICE_KEY}
+      WALLET_SERVICE_URL: http://wallet-service:8114
+      SETU_MODE: ${SETU_MODE:?set SETU_MODE}
+      SETU_CLIENT_ID: ${SETU_CLIENT_ID:?set SETU_CLIENT_ID}
+      SETU_CLIENT_SECRET: ${SETU_CLIENT_SECRET:?set SETU_CLIENT_SECRET}
+      SETU_BASE_URL: ${SETU_BASE_URL:?set SETU_BASE_URL}
+      SETU_WEBHOOK_SECRET: ${SETU_WEBHOOK_SECRET:?set SETU_WEBHOOK_SECRET}
+
+  rider-service:
+    <<: *transport_certs
+    environment:
+      KAFKA_BROKERS: redpanda:9093
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:?set INTERNAL_SERVICE_KEY}
+      WALLET_SERVICE_URL: http://wallet-service:8114
+      DIGILOCKER_MODE: ${DIGILOCKER_MODE:?set DIGILOCKER_MODE}
+      DIGILOCKER_BASE_URL: ${DIGILOCKER_BASE_URL:?set DIGILOCKER_BASE_URL}
+      DIGILOCKER_API_KEY: ${DIGILOCKER_API_KEY:?set DIGILOCKER_API_KEY}
+      DIGILOCKER_REDIRECT_URI: ${DIGILOCKER_REDIRECT_URI:?set DIGILOCKER_REDIRECT_URI}
+
   nextjs:
     environment:
       CHAT_PROXY_SIGNING_SECRET: ${CHAT_PROXY_SIGNING_SECRET:?set CHAT_PROXY_SIGNING_SECRET}

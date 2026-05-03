@@ -55,6 +55,10 @@ topics=(
   "atpost.channel.notifications"
   "atpost.channel.feed-inject"
   "qa-events"
+  "dating-events"
+  "wallet-events"
+  "billpay-events"
+  "rider-events"
 )
 
 rpk cluster config set kafka_enable_authorization true >/dev/null 2>&1 || true
