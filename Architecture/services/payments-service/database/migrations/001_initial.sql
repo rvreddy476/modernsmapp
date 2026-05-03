@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS payments.payment_intents (
     status           TEXT NOT NULL DEFAULT 'pending'
                        CHECK (status IN ('pending','processing','succeeded','failed','refunded','disputed')),
     provider_ref     TEXT,
+    upi_intent_url   TEXT,
     metadata         JSONB DEFAULT '{}',
     idempotency_key  TEXT NOT NULL UNIQUE,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),

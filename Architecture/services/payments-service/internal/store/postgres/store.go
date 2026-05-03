@@ -70,14 +70,14 @@ func (s *Store) CreateIntent(ctx context.Context, in PaymentIntent) (*CreateInte
 
 	err = tx.QueryRow(ctx,
 		`INSERT INTO payments.payment_intents
-		    (payer_id, payee_id, reference_type, reference_id, amount, currency, method, status, idempotency_key, metadata)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8, $9)
+		    (payer_id, payee_id, reference_type, reference_id, amount, currency, method, status, provider_ref, idempotency_key, metadata)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8, $9, $10)
 		 ON CONFLICT (idempotency_key)
 		 DO UPDATE SET updated_at = payments.payment_intents.updated_at
 		 RETURNING id, payer_id, payee_id, reference_type, reference_id, amount, currency, method, status,
 		           idempotency_key, COALESCE(provider_ref,''), created_at, updated_at`,
 		in.PayerID, in.PayeeID, in.ReferenceType, in.ReferenceID,
-		in.Amount, in.Currency, in.Method, in.IdempotencyKey, "{}",
+		in.Amount, in.Currency, in.Method, in.ProviderRef, in.IdempotencyKey, "{}",
 	).Scan(&in.ID, &in.PayerID, &in.PayeeID, &in.ReferenceType, &in.ReferenceID,
 		&in.Amount, &in.Currency, &in.Method, &in.Status, &in.IdempotencyKey,
 		&in.ProviderRef, &in.CreatedAt, &in.UpdatedAt)

@@ -19,7 +19,14 @@ var ErrInsufficientFunds = errors.New("insufficient funds")
 // Models
 // ---------------------------------------------------------------------------
 
-// Wallet represents a user's monetization wallet.
+// Wallet represents a row in the creator-earnings ledger.
+//
+// NAMING (Phase 2 §D4, 2026-04-30): the underlying table was renamed
+// from `wallets` to `creator_ledger`. The Go type name `Wallet` is
+// retained as an exported alias to avoid forcing a coordinated change
+// across every service that already imports `postgres.Wallet`. New
+// code should reference `CreatorLedgerEntry`. The `Wallet` alias will
+// be removed after 2026-10-30.
 type Wallet struct {
 	UserID               uuid.UUID `json:"user_id"`
 	BalancePaise         int64     `json:"balance_paise"`
@@ -30,6 +37,11 @@ type Wallet struct {
 	CreatedAt            time.Time `json:"created_at"`
 	UpdatedAt            time.Time `json:"updated_at"`
 }
+
+// CreatorLedgerEntry is the canonical name for a creator-earnings
+// ledger row. It is an alias of Wallet for the duration of the
+// deprecation window. Prefer this name in new code.
+type CreatorLedgerEntry = Wallet
 
 // Transaction represents a financial transaction on a wallet.
 type Transaction struct {
@@ -163,7 +175,7 @@ func (s *Store) GetWallet(ctx context.Context, userID uuid.UUID) (*Wallet, error
 	var w Wallet
 	err := s.db.QueryRow(ctx, `
 		SELECT user_id, balance, lifetime_earnings, pending_payout, currency, is_frozen, created_at, updated_at
-		FROM wallets
+		FROM creator_ledger
 		WHERE user_id = $1
 	`, userID).Scan(
 		&w.UserID, &w.BalancePaise, &w.LifetimeEarningsPaise, &w.PendingPayoutPaise,
@@ -182,7 +194,7 @@ func (s *Store) GetWallet(ctx context.Context, userID uuid.UUID) (*Wallet, error
 func (s *Store) EnsureWallet(ctx context.Context, userID uuid.UUID) (*Wallet, error) {
 	now := time.Now()
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO wallets (user_id, balance, lifetime_earnings, pending_payout, currency, is_frozen, created_at, updated_at)
+		INSERT INTO creator_ledger (user_id, balance, lifetime_earnings, pending_payout, currency, is_frozen, created_at, updated_at)
 		VALUES ($1, 0, 0, 0, 'INR', false, $2, $2)
 		ON CONFLICT (user_id) DO NOTHING
 	`, userID, now)
@@ -346,7 +358,7 @@ func (s *Store) RequestPayout(ctx context.Context, userID uuid.UUID, amountPaise
 	var frozen bool
 	err = tx.QueryRow(ctx, `
 		SELECT balance, pending_payout, is_frozen
-		FROM wallets
+		FROM creator_ledger
 		WHERE user_id = $1
 		FOR UPDATE
 	`, userID).Scan(&balance, &pending, &frozen)
@@ -365,7 +377,7 @@ func (s *Store) RequestPayout(ctx context.Context, userID uuid.UUID, amountPaise
 
 	// Deduct from balance and add to pending_payout
 	_, err = tx.Exec(ctx, `
-		UPDATE wallets
+		UPDATE creator_ledger
 		SET balance = balance - $2, pending_payout = pending_payout + $2, updated_at = NOW()
 		WHERE user_id = $1
 	`, userID, amountPaise)
@@ -507,7 +519,7 @@ func (s *Store) Subscribe(ctx context.Context, subscriberID, creatorID, tierID u
 
 	// Deduct from subscriber wallet
 	tag, err := tx.Exec(ctx, `
-		UPDATE wallets SET balance = balance - $2, updated_at = NOW()
+		UPDATE creator_ledger SET balance = balance - $2, updated_at = NOW()
 		WHERE user_id = $1 AND balance >= $2 AND is_frozen = false
 	`, subscriberID, pricePaise)
 	if err != nil {
@@ -519,7 +531,7 @@ func (s *Store) Subscribe(ctx context.Context, subscriberID, creatorID, tierID u
 
 	// Credit creator wallet (lifetime_earnings too)
 	_, err = tx.Exec(ctx, `
-		UPDATE wallets SET balance = balance + $2, lifetime_earnings = lifetime_earnings + $2, updated_at = NOW()
+		UPDATE creator_ledger SET balance = balance + $2, lifetime_earnings = lifetime_earnings + $2, updated_at = NOW()
 		WHERE user_id = $1
 	`, creatorID, pricePaise)
 	if err != nil {
@@ -678,7 +690,7 @@ func (s *Store) ChargeAndCredit(ctx context.Context, fromUserID, toUserID string
 	// Atomic debit: only succeeds if balance is sufficient
 	var newBalance int64
 	err = tx.QueryRow(ctx,
-		`UPDATE wallets SET balance = balance - $2, updated_at = NOW() WHERE user_id = $1 AND balance >= $2 AND is_frozen = false RETURNING balance`,
+		`UPDATE creator_ledger SET balance = balance - $2, updated_at = NOW() WHERE user_id = $1 AND balance >= $2 AND is_frozen = false RETURNING balance`,
 		fromUserID, amountPaise,
 	).Scan(&newBalance)
 	if err != nil {
@@ -690,7 +702,7 @@ func (s *Store) ChargeAndCredit(ctx context.Context, fromUserID, toUserID string
 
 	// Credit
 	_, err = tx.Exec(ctx,
-		`UPDATE wallets SET balance = balance + $2, lifetime_earnings = lifetime_earnings + $2, updated_at = NOW() WHERE user_id = $1`,
+		`UPDATE creator_ledger SET balance = balance + $2, lifetime_earnings = lifetime_earnings + $2, updated_at = NOW() WHERE user_id = $1`,
 		toUserID, amountPaise,
 	)
 	if err != nil {
@@ -700,7 +712,7 @@ func (s *Store) ChargeAndCredit(ctx context.Context, fromUserID, toUserID string
 	// Record debit transaction
 	_, err = tx.Exec(ctx,
 		`INSERT INTO transactions (id, wallet_id, type, amount, currency, status, description, created_at)
-		 SELECT $1, id, 'subscription_payment', $3, currency, 'completed', $4, NOW() FROM wallets WHERE user_id = $2`,
+		 SELECT $1, user_id, 'subscription_payment', $3, currency, 'completed', $4, NOW() FROM creator_ledger WHERE user_id = $2`,
 		uuid.New(), fromUserID, amountPaise, description,
 	)
 	if err != nil {
@@ -710,7 +722,7 @@ func (s *Store) ChargeAndCredit(ctx context.Context, fromUserID, toUserID string
 	// Record credit transaction
 	_, err = tx.Exec(ctx,
 		`INSERT INTO transactions (id, wallet_id, type, amount, currency, status, description, created_at)
-		 SELECT $1, id, 'earning', $3, currency, 'completed', $4, NOW() FROM wallets WHERE user_id = $2`,
+		 SELECT $1, user_id, 'earning', $3, currency, 'completed', $4, NOW() FROM creator_ledger WHERE user_id = $2`,
 		uuid.New(), toUserID, amountPaise, description,
 	)
 	if err != nil {

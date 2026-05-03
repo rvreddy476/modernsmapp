@@ -1,4 +1,8 @@
 -- Convert all DECIMAL money columns to BIGINT (paise/cents minor units)
+-- NOTE 2026-04-30: at the time this migration was authored the table was
+-- named `wallets`. It is now renamed to `creator_ledger` (see migration
+-- 012). Historical migrations are kept verbatim and run before the
+-- rename, so referring to the old name here is correct.
 ALTER TABLE wallets ALTER COLUMN balance TYPE BIGINT USING (balance * 100)::BIGINT;
 ALTER TABLE wallets ALTER COLUMN lifetime_earnings TYPE BIGINT USING (lifetime_earnings * 100)::BIGINT;
 ALTER TABLE wallets ALTER COLUMN pending_payout TYPE BIGINT USING (pending_payout * 100)::BIGINT;

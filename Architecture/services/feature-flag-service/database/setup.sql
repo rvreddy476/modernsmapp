@@ -49,3 +49,68 @@ CREATE INDEX IF NOT EXISTS idx_conversions_flag
 
 CREATE INDEX IF NOT EXISTS idx_conversions_user
     ON flags.experiment_conversions(user_id, flag_key);
+
+-- =============================================================================
+-- Seed: Pulse (dating module) feature flags
+-- Plan: C:\workspace\atpost\dating\IMPLEMENTATION_PLAN.md §7
+-- Spec: C:\workspace\atpost\dating\PULSE_DATING_SPEC.md §18 (open questions)
+-- All inserts are idempotent: ON CONFLICT (key) DO NOTHING preserves any
+-- runtime overrides applied via the admin API. The payload JSONB carries
+-- description + owner since the flags table has no dedicated columns.
+-- =============================================================================
+
+INSERT INTO flags.flags (key, enabled, rollout_pct, payload)
+VALUES (
+    'pulse_enabled_master', FALSE, 0,
+    '{"description":"Master switch for the entire Pulse dating module","owner":"dating-team","default":"off"}'::jsonb
+)
+ON CONFLICT (key) DO NOTHING;
+
+INSERT INTO flags.flags (key, enabled, rollout_pct, payload)
+VALUES (
+    'pulse_orbital_default', TRUE, 100,
+    '{"description":"New users land in Orbital mode by default; off => List mode","owner":"dating-team","default":"on"}'::jsonb
+)
+ON CONFLICT (key) DO NOTHING;
+
+INSERT INTO flags.flags (key, enabled, rollout_pct, payload)
+VALUES (
+    'pulse_premium_enabled', FALSE, 0,
+    '{"description":"Premium tier purchase + premium-only features","owner":"dating-team","default":"off"}'::jsonb
+)
+ON CONFLICT (key) DO NOTHING;
+
+INSERT INTO flags.flags (key, enabled, rollout_pct, payload)
+VALUES (
+    'pulse_aadhaar_enabled', FALSE, 0,
+    '{"description":"DigiLocker / Aadhaar verification flow visible","owner":"dating-team","default":"off"}'::jsonb
+)
+ON CONFLICT (key) DO NOTHING;
+
+INSERT INTO flags.flags (key, enabled, rollout_pct, payload)
+VALUES (
+    'pulse_moderation_strict', FALSE, 0,
+    '{"description":"AI moderation in strict mode (off = shadow mode)","owner":"dating-team","default":"off"}'::jsonb
+)
+ON CONFLICT (key) DO NOTHING;
+
+INSERT INTO flags.flags (key, enabled, rollout_pct, payload)
+VALUES (
+    'pulse_vouching_enabled', FALSE, 0,
+    '{"description":"Vouching flow visible","owner":"dating-team","default":"off"}'::jsonb
+)
+ON CONFLICT (key) DO NOTHING;
+
+INSERT INTO flags.flags (key, enabled, rollout_pct, payload)
+VALUES (
+    'pulse_safe_meet_enabled', FALSE, 0,
+    '{"description":"Safe-meet check-in scheduler","owner":"dating-team","default":"off"}'::jsonb
+)
+ON CONFLICT (key) DO NOTHING;
+
+INSERT INTO flags.flags (key, enabled, rollout_pct, payload)
+VALUES (
+    'pulse_boost_enabled', FALSE, 0,
+    '{"description":"Pulse Boost button visible (premium feature)","owner":"dating-team","default":"off"}'::jsonb
+)
+ON CONFLICT (key) DO NOTHING;

@@ -281,7 +281,7 @@ func (s *Store) GetRefundByTransaction(ctx context.Context, txnID uuid.UUID) (*R
 // FreezeWallet sets is_frozen=true for a user's wallet.
 func (s *Store) FreezeWallet(ctx context.Context, userID uuid.UUID) error {
 	tag, err := s.db.Exec(ctx, `
-		UPDATE wallets SET is_frozen = true, updated_at = NOW() WHERE user_id = $1
+		UPDATE creator_ledger SET is_frozen = true, updated_at = NOW() WHERE user_id = $1
 	`, userID)
 	if err != nil {
 		return err
@@ -295,7 +295,7 @@ func (s *Store) FreezeWallet(ctx context.Context, userID uuid.UUID) error {
 // UnfreezeWallet sets is_frozen=false for a user's wallet.
 func (s *Store) UnfreezeWallet(ctx context.Context, userID uuid.UUID) error {
 	tag, err := s.db.Exec(ctx, `
-		UPDATE wallets SET is_frozen = false, updated_at = NOW() WHERE user_id = $1
+		UPDATE creator_ledger SET is_frozen = false, updated_at = NOW() WHERE user_id = $1
 	`, userID)
 	if err != nil {
 		return err
@@ -385,7 +385,7 @@ func (s *Store) GetTransactionByID(ctx context.Context, txnID uuid.UUID) (*Trans
 // CreditWallet adds amount to a user's wallet balance (used for refunds).
 func (s *Store) CreditWallet(ctx context.Context, userID uuid.UUID, amountPaise int64) error {
 	_, err := s.db.Exec(ctx, `
-		UPDATE wallets SET balance = balance + $2, updated_at = NOW() WHERE user_id = $1
+		UPDATE creator_ledger SET balance = balance + $2, updated_at = NOW() WHERE user_id = $1
 	`, userID, amountPaise)
 	return err
 }
@@ -410,7 +410,7 @@ func (s *Store) RebuildWalletFromLedger(ctx context.Context, userID uuid.UUID) (
 
 	// Update wallet balance to match ledger
 	_, err = s.db.Exec(ctx, `
-		UPDATE wallets SET balance = $2, updated_at = NOW() WHERE user_id = $1
+		UPDATE creator_ledger SET balance = $2, updated_at = NOW() WHERE user_id = $1
 	`, userID, balance)
 	if err != nil {
 		return 0, err
@@ -419,11 +419,11 @@ func (s *Store) RebuildWalletFromLedger(ctx context.Context, userID uuid.UUID) (
 	return balance, nil
 }
 
-// GetAllWallets returns all wallets (used by reconciliation worker).
+// GetAllWallets returns all creator-ledger rows (used by reconciliation worker).
 func (s *Store) GetAllWallets(ctx context.Context, limit, offset int) ([]Wallet, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT user_id, balance, lifetime_earnings, pending_payout, currency, is_frozen, created_at, updated_at
-		FROM wallets
+		FROM creator_ledger
 		ORDER BY user_id
 		LIMIT $1 OFFSET $2
 	`, limit, offset)

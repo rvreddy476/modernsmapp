@@ -15,11 +15,15 @@ CREATE TABLE IF NOT EXISTS payments.payment_intents (
     status           TEXT NOT NULL DEFAULT 'pending'
                        CHECK (status IN ('pending','processing','succeeded','failed','refunded','disputed')),
     provider_ref     TEXT,
+    upi_intent_url   TEXT,
     metadata         JSONB DEFAULT '{}',
     idempotency_key  TEXT NOT NULL UNIQUE,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE payments.payment_intents
+    ADD COLUMN IF NOT EXISTS upi_intent_url TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_payment_intents_reference
     ON payments.payment_intents (reference_type, reference_id);

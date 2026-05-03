@@ -1,6 +1,9 @@
 -- Database setup for Architecture/monetization-service
 
-CREATE TABLE IF NOT EXISTS wallets (
+-- creator_ledger (renamed from `wallets` 2026-04-30, Phase 2 §D4).
+-- Holds creator earnings: lifetime_earnings, pending_payout, balance.
+-- NOT a consumer wallet — that lives in wallet-service.
+CREATE TABLE IF NOT EXISTS creator_ledger (
     user_id       UUID PRIMARY KEY,
     balance       DECIMAL(12,2) NOT NULL DEFAULT 0.00,
     lifetime_earnings DECIMAL(12,2) NOT NULL DEFAULT 0.00,
@@ -10,6 +13,9 @@ CREATE TABLE IF NOT EXISTS wallets (
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Deprecated read-only alias (drop after 2026-10-30).
+CREATE OR REPLACE VIEW wallets AS SELECT * FROM creator_ledger;
 
 CREATE TABLE IF NOT EXISTS creator_tiers (
     id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -28,7 +34,7 @@ CREATE INDEX IF NOT EXISTS idx_creator_tiers_creator ON creator_tiers (creator_i
 
 CREATE TABLE IF NOT EXISTS transactions (
     id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    wallet_id      UUID NOT NULL REFERENCES wallets(user_id),
+    wallet_id      UUID NOT NULL REFERENCES creator_ledger(user_id),
     type           TEXT NOT NULL CHECK (type IN ('earning', 'payout', 'refund', 'adjustment', 'subscription_payment')),
     amount         DECIMAL(12,2) NOT NULL,
     currency       TEXT NOT NULL DEFAULT 'INR',

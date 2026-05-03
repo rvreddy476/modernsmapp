@@ -463,7 +463,7 @@ func (s *Store) CreditCreatorFundEarning(ctx context.Context, creatorID uuid.UUI
 	defer tx.Rollback(ctx)
 
 	if _, err := tx.Exec(ctx, `
-		UPDATE wallets
+		UPDATE creator_ledger
 		SET balance = balance + $2,
 		    lifetime_earnings = lifetime_earnings + $2,
 		    updated_at = NOW()

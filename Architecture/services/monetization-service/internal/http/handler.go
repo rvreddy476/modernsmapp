@@ -2,6 +2,7 @@ package http
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -34,11 +35,16 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	}
 	v1 := r.Group("/v1/monetization")
 	{
-		// Wallet
-		v1.GET("/wallet", h.GetWallet)
+		// Creator earnings ledger (canonical name as of 2026-04-30, Phase 2 §D4).
+		v1.GET("/creator-ledger", h.GetCreatorLedger)
+		// Deprecated alias — returns the same payload but emits a Deprecation
+		// header and a `_deprecated_use` JSON field. Will be removed after
+		// 2026-10-30. See PHASE_2_DECISIONS.md §D4.
+		v1.GET("/wallet", h.GetWalletDeprecated)
 
 		// Transactions
 		v1.GET("/transactions", h.GetTransactions)
+		v1.POST("/internal/charge-and-credit", h.InternalChargeAndCredit)
 
 		// Payout Methods
 		v1.POST("/payout-methods", h.AddPayoutMethod)
@@ -169,10 +175,25 @@ func getUserID(c *gin.Context) (uuid.UUID, bool) {
 }
 
 // ---------------------------------------------------------------------------
-// Wallet
+// Creator earnings ledger (formerly "wallet")
 // ---------------------------------------------------------------------------
+//
+// The on-disk table was renamed from `wallets` to `creator_ledger` on
+// 2026-04-30 (Phase 2 §D4) to remove the ambiguity with the upcoming
+// consumer wallet (lives in wallet-service). The HTTP route is renamed
+// the same day:
+//
+//   - canonical:  GET /v1/monetization/creator-ledger  (handler: GetCreatorLedger)
+//   - deprecated: GET /v1/monetization/wallet          (handler: GetWalletDeprecated)
+//
+// The deprecated route stays alive until 2026-10-30 so already-deployed
+// clients keep working. It returns the same payload, but adds a
+// Deprecation header and an inline `_deprecated_use` hint, and logs a
+// warning per request for ops visibility.
 
-func (h *Handler) GetWallet(c *gin.Context) {
+// GetCreatorLedger returns the creator-earnings ledger row for the
+// caller (auto-creating it on first access).
+func (h *Handler) GetCreatorLedger(c *gin.Context) {
 	userID, ok := getUserID(c)
 	if !ok {
 		return
@@ -185,6 +206,55 @@ func (h *Handler) GetWallet(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, wallet, nil)
+}
+
+// GetWalletDeprecated serves GET /v1/monetization/wallet for backwards
+// compatibility. It returns the same payload as GetCreatorLedger plus a
+// `_deprecated_use` field, and emits a Deprecation header so any caller
+// running with strict HTTP middleware can surface the warning.
+func (h *Handler) GetWalletDeprecated(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+
+	wallet, err := h.svc.GetWallet(c.Request.Context(), userID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+
+	// RFC 8594 / draft-ietf-httpapi-deprecation-header style hints.
+	c.Writer.Header().Set("Deprecation", "true")
+	c.Writer.Header().Set("Sunset", "Fri, 30 Oct 2026 00:00:00 GMT")
+	c.Writer.Header().Set("Link", "</v1/monetization/creator-ledger>; rel=\"successor-version\"")
+
+	slog.WarnContext(c.Request.Context(),
+		"deprecated route called: /v1/monetization/wallet",
+		"successor", "/v1/monetization/creator-ledger",
+		"user_id", userID,
+		"sunset", "2026-10-30",
+	)
+
+	// Return the wallet payload plus an explicit deprecation hint. We
+	// build a flat map so existing clients that read fields like
+	// `balance_paise` keep working.
+	body := map[string]interface{}{
+		"_deprecated_use": "/v1/monetization/creator-ledger",
+		"_deprecated_since": "2026-04-30",
+		"_sunset_after":     "2026-10-30",
+	}
+	if wallet != nil {
+		body["user_id"] = wallet.UserID
+		body["balance_paise"] = wallet.BalancePaise
+		body["lifetime_earnings_paise"] = wallet.LifetimeEarningsPaise
+		body["pending_payout_paise"] = wallet.PendingPayoutPaise
+		body["currency"] = wallet.Currency
+		body["is_frozen"] = wallet.IsFrozen
+		body["created_at"] = wallet.CreatedAt
+		body["updated_at"] = wallet.UpdatedAt
+	}
+	api.JSON(c.Writer, http.StatusOK, body, nil)
 }
 
 // ---------------------------------------------------------------------------
@@ -220,6 +290,48 @@ func (h *Handler) GetTransactions(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, txns, meta)
+}
+
+func (h *Handler) InternalChargeAndCredit(c *gin.Context) {
+	var req struct {
+		FromUserID    string `json:"from_user_id" binding:"required"`
+		ToUserID      string `json:"to_user_id" binding:"required"`
+		AmountPaise   int64  `json:"amount_paise" binding:"required"`
+		Description   string `json:"description"`
+		ReferenceID   string `json:"reference_id"`
+		ReferenceType string `json:"reference_type"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
+		return
+	}
+	fromUserID, err := uuid.Parse(req.FromUserID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_FROM_USER", "invalid from_user_id", nil)
+		return
+	}
+	toUserID, err := uuid.Parse(req.ToUserID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_TO_USER", "invalid to_user_id", nil)
+		return
+	}
+	description := req.Description
+	if description == "" {
+		description = "Internal wallet payment"
+	}
+	if req.ReferenceType != "" || req.ReferenceID != "" {
+		description = description + " (" + req.ReferenceType + ":" + req.ReferenceID + ")"
+	}
+	if err := h.svc.ChargeAndCredit(c.Request.Context(), fromUserID, toUserID, req.AmountPaise, description); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "WALLET_CHARGE_FAILED", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]any{
+		"status":       "completed",
+		"from_user_id": fromUserID,
+		"to_user_id":   toUserID,
+		"amount_paise": req.AmountPaise,
+	}, nil)
 }
 
 // ---------------------------------------------------------------------------

@@ -22,10 +22,10 @@ type EntitlementPublisher interface {
 }
 
 type Service struct {
-	store           *postgres.Store
-	rdb             *redis.Client
-	creatorFundCfg  CreatorFundConfig
-	entitlementPub  EntitlementPublisher
+	store          *postgres.Store
+	rdb            *redis.Client
+	creatorFundCfg CreatorFundConfig
+	entitlementPub EntitlementPublisher
 }
 
 func New(s *postgres.Store, rdb *redis.Client) *Service {
@@ -92,6 +92,25 @@ func (s *Service) GetWallet(ctx context.Context, userID uuid.UUID) (*postgres.Wa
 func (s *Service) GetTransactions(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]postgres.Transaction, error) {
 	t := parseCursor(cursor)
 	return s.store.GetTransactions(ctx, userID, t, limit)
+}
+
+// ChargeAndCredit atomically debits one wallet and credits another. It is used
+// by internal service integrations that need monetization-service to remain the
+// wallet ledger owner.
+func (s *Service) ChargeAndCredit(ctx context.Context, fromUserID, toUserID uuid.UUID, amountPaise int64, description string) error {
+	if fromUserID == uuid.Nil || toUserID == uuid.Nil {
+		return fmt.Errorf("INVALID_USER")
+	}
+	if amountPaise <= 0 || amountPaise > maxAmountPaise {
+		return fmt.Errorf("amount out of valid range: %w", ErrInvalidAmount)
+	}
+	if _, err := s.store.EnsureWallet(ctx, fromUserID); err != nil {
+		return fmt.Errorf("ensure payer wallet: %w", err)
+	}
+	if _, err := s.store.EnsureWallet(ctx, toUserID); err != nil {
+		return fmt.Errorf("ensure payee wallet: %w", err)
+	}
+	return s.store.ChargeAndCredit(ctx, fromUserID.String(), toUserID.String(), amountPaise, description)
 }
 
 // GetPayouts returns paginated payout transactions for a user's wallet.

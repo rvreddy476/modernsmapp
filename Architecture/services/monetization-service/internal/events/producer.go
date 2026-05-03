@@ -23,7 +23,14 @@ const (
 	EventPayoutProcessed      = "payout.processed"
 	EventDonationReceived     = "donation.received"
 	EventAffiliateConversion  = "affiliate.conversion"
-	EventWalletCredited       = "wallet.credited"
+	// EventCreatorLedgerCredited is the canonical event name for a
+	// creator-earnings credit (Phase 2 §D4, 2026-04-30 rename).
+	EventCreatorLedgerCredited = "creator_ledger.credited"
+	// EventWalletCredited is the deprecated original name. It is still
+	// published as an alias for one release so any downstream consumer
+	// that has not been updated keeps receiving the events. Schedule
+	// removal after 2026-10-30.
+	EventWalletCredited = "wallet.credited"
 	EventSubscriptionPaused   = "subscription.paused"
 	EventSubscriptionResumed  = "subscription.resumed"
 	EventSubscriptionGrace    = "subscription.grace_started"
@@ -270,7 +277,22 @@ type WalletCreditedPayload struct {
 	CreditedAt    time.Time `json:"credited_at"`
 }
 
-// PublishWalletCredited publishes a wallet.credited event.
+// PublishWalletCredited publishes a creator_ledger.credited event
+// (canonical) AND a wallet.credited event (deprecated alias) for the
+// same credit.
+//
+// Phase 2 §D4 (2026-04-30) renamed the underlying table from `wallets`
+// to `creator_ledger` to remove ambiguity with the upcoming consumer
+// wallet. We dual-publish for one release so any downstream consumer
+// that has not been updated keeps receiving the old event type. The
+// alias publish becomes a no-op (and the constant goes away) once all
+// known consumers are confirmed to read the new name; target removal
+// after 2026-10-30.
+//
+// The function name is kept as PublishWalletCredited because every
+// call site already imports it — renaming the function would force
+// a coordinated change across services. The event-type rename happens
+// inside the function.
 func (p *Producer) PublishWalletCredited(ctx context.Context, transactionID, userID uuid.UUID, amountPaise int64, currency, reason string) error {
 	payload := WalletCreditedPayload{
 		TransactionID: transactionID.String(),
@@ -281,7 +303,15 @@ func (p *Producer) PublishWalletCredited(ctx context.Context, transactionID, use
 		CreditedAt:    time.Now(),
 	}
 	s := userID.String()
-	return p.publish(ctx, EventWalletCredited, &s, payload)
+	// Canonical event first — this is the one new consumers should
+	// subscribe to.
+	if err := p.publish(ctx, EventCreatorLedgerCredited, &s, payload); err != nil {
+		return err
+	}
+	// Deprecated alias — best-effort. If this fails we still consider
+	// the credit "published" because the canonical event went out.
+	_ = p.publish(ctx, EventWalletCredited, &s, payload)
+	return nil
 }
 
 // ---------------------------------------------------------------------------
