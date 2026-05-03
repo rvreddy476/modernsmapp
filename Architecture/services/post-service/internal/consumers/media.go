@@ -114,8 +114,60 @@ func (c *MediaTranscodeConsumer) handle(ctx context.Context, env *events.EventEn
 	if err := c.store.UpdateVideoMetadata(ctx, vm); err != nil {
 		return fmt.Errorf("update video_metadata for media %s: %w", mediaID, err)
 	}
+
+	// Reclassify the post's content_type now that we know duration +
+	// dimensions. CreatePost falls back to "long_video" when the video
+	// hasn't been transcoded yet, so a vertical reel ≤180s comes in as
+	// long_video and stays there until this consumer flips it back to
+	// "flick". Without this, the reel never appears in /v1/feed/reels.
+	if duration, w, h, ok := lookupMediaDims(ctx, c.store, mediaID); ok {
+		category := classifyForReclassification(duration, w, h)
+		if err := c.store.UpdatePostContentType(ctx, vm.PostID, category); err != nil {
+			slog.Warn("media transcode consumer: reclassify failed",
+				"post_id", vm.PostID, "category", category, "error", err)
+		} else {
+			slog.Info("media transcode consumer: post reclassified",
+				"post_id", vm.PostID, "category", category,
+				"duration_s", duration, "w", w, "h", h)
+		}
+	}
+
 	slog.Info("media transcode consumer: video_metadata updated",
 		"media_id", mediaID, "post_id", vm.PostID,
 		"hls", p.HLSMasterURL != "")
 	return nil
+}
+
+// classifyForReclassification mirrors service.ClassifyVideo without
+// the cyclic-import that would happen if we reached into internal/service
+// from internal/consumers. The 180s + portrait/square rule is the spec —
+// keep this in sync if it ever changes there.
+const flickMaxDurationSeconds = 180
+
+func classifyForReclassification(durationSeconds int, width, height int) string {
+	orientation := "landscape"
+	if width > 0 && height > 0 {
+		if height > width {
+			orientation = "portrait"
+		} else if height == width {
+			orientation = "square"
+		}
+	}
+	if durationSeconds > 0 && durationSeconds <= flickMaxDurationSeconds &&
+		(orientation == "portrait" || orientation == "square") {
+		return "flick"
+	}
+	return "long_video"
+}
+
+// lookupMediaDims fetches the duration + dimensions written by the
+// transcode pipeline. Returns ok=false when the media row is missing
+// or the columns are still NULL.
+func lookupMediaDims(ctx context.Context, store *postgres.Store, mediaID uuid.UUID) (duration, width, height int, ok bool) {
+	d := store.ResolveMediaDuration(ctx, mediaID)
+	w, h, err := store.ResolveMediaDimensions(ctx, mediaID)
+	if err != nil || d <= 0 || w <= 0 || h <= 0 {
+		return 0, 0, 0, false
+	}
+	return d, w, h, true
 }
