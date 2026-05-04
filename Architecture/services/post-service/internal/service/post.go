@@ -399,14 +399,26 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	}
 	if hasVideo {
 		if maxDuration > 0 {
-			// Duration known — classify properly
+			// Duration known — classify properly via the shared rule.
 			w, h, _ := s.pgStore.ResolveMediaDimensions(ctx, videoMediaID)
 			cat, _ := ClassifyVideo(float64(maxDuration), w, h)
 			p.ContentType = cat
-		} else if contentType == "post" || contentType == "flick" || contentType == "reel" {
-			// Duration unknown (media still processing) — safe default to long_video
-			// The video_metadata consumer will reclassify once processing completes
-			p.ContentType = "long_video"
+		} else {
+			// Duration unknown (transcode pending). Respect the
+			// caller's intent: if mobile said "flick"/"reel" — keep
+			// it. The MediaTranscodeConsumer reclassifies once
+			// duration + dimensions land. If the caller said "post"
+			// (a generic post happens to attach a video) we still
+			// safe-default to long_video because there's no explicit
+			// short-form intent to preserve.
+			switch contentType {
+			case "flick", "reel":
+				p.ContentType = "flick"
+			case "post":
+				p.ContentType = "long_video"
+			}
+			// content_type "long_video" or "video" stays as the
+			// caller specified.
 		}
 	}
 

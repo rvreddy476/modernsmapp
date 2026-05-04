@@ -42,6 +42,23 @@ func (p *Producer) PublishPostCreated(ctx context.Context, postID, authorID uuid
 	return p.publish(ctx, events.PostCreated, &authorID, payload)
 }
 
+// PublishPostContentTypeChanged is fired by the MediaTranscodeConsumer
+// after a post is reclassified (typically long_video → flick once
+// transcode reveals the real duration + dimensions). feed-service
+// consumes this and rewrites the matching content_type column on
+// home_timeline_by_user + author_timeline_by_author so feed queries
+// that filter on content_type don't return stale results.
+func (p *Producer) PublishPostContentTypeChanged(ctx context.Context, postID, authorID uuid.UUID, oldType, newType string) error {
+	payload := events.PostContentTypeChangedPayload{
+		PostID:    postID.String(),
+		AuthorID:  authorID.String(),
+		OldType:   oldType,
+		NewType:   newType,
+		ChangedAt: time.Now(),
+	}
+	return p.publish(ctx, events.PostContentTypeChanged, &authorID, payload)
+}
+
 func (p *Producer) PublishPostReacted(ctx context.Context, postID, postAuthorID, reactorID uuid.UUID, reactType string) error {
 	payload := events.PostReactedPayload{
 		PostID:       postID.String(),

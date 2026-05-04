@@ -66,6 +66,79 @@ func (s *TimelineStore) AddToAuthorTimeline(ctx context.Context, authorID uuid.U
 	`, toGocql(authorID), b, gocql.UUIDFromTime(createdAt), toGocql(postID), createdAt, contentType).Exec()
 }
 
+// UpdatePostContentType rewrites the content_type column on every
+// timeline row that references the given post — both the
+// home_timeline_by_user fan-out copies and the author_timeline_by_author
+// canonical row. Without this, /v1/feed/reels (which filters on the
+// timeline's content_type) keeps returning stale results after a
+// MediaTranscodeConsumer reclassification flips a long_video back to
+// flick (or any future content_type transition).
+//
+// Scan + UPDATE pattern: Scylla does not have a secondary index on
+// post_id (post_id is not part of the partition key), so identifying
+// the affected rows requires `ALLOW FILTERING`. That's slow on big
+// tables — fine for the dev/staging volume here, but production
+// should add a `social_feed.posts_to_timeline_index` mapping
+// post_id → (user_id, bucket, ts) so this becomes a partition lookup.
+//
+// Returns (rowsRewritten, err). Idempotent: re-running it with the
+// same newType is a no-op stream of UPDATEs.
+func (s *TimelineStore) UpdatePostContentType(ctx context.Context, postID uuid.UUID, newType string) (int, error) {
+	rows := 0
+
+	// home_timeline_by_user: one row per follower.
+	{
+		iter := s.session.Query(
+			`SELECT user_id, bucket, ts FROM home_timeline_by_user WHERE post_id = ? ALLOW FILTERING`,
+			toGocql(postID),
+		).WithContext(ctx).Iter()
+		var userID gocql.UUID
+		var b int
+		var ts gocql.UUID
+		for iter.Scan(&userID, &b, &ts) {
+			if err := s.session.Query(
+				`UPDATE home_timeline_by_user SET content_type = ?
+				 WHERE user_id = ? AND bucket = ? AND ts = ?`,
+				newType, userID, b, ts,
+			).WithContext(ctx).Exec(); err != nil {
+				_ = iter.Close()
+				return rows, err
+			}
+			rows++
+		}
+		if err := iter.Close(); err != nil {
+			return rows, err
+		}
+	}
+
+	// author_timeline_by_author: one row (the author's canonical copy).
+	{
+		iter := s.session.Query(
+			`SELECT author_id, bucket, ts FROM author_timeline_by_author WHERE post_id = ? ALLOW FILTERING`,
+			toGocql(postID),
+		).WithContext(ctx).Iter()
+		var authorID gocql.UUID
+		var b int
+		var ts gocql.UUID
+		for iter.Scan(&authorID, &b, &ts) {
+			if err := s.session.Query(
+				`UPDATE author_timeline_by_author SET content_type = ?
+				 WHERE author_id = ? AND bucket = ? AND ts = ?`,
+				newType, authorID, b, ts,
+			).WithContext(ctx).Exec(); err != nil {
+				_ = iter.Close()
+				return rows, err
+			}
+			rows++
+		}
+		if err := iter.Close(); err != nil {
+			return rows, err
+		}
+	}
+
+	return rows, nil
+}
+
 // GetHomeTimeline returns all timeline items for the current month bucket.
 func (s *TimelineStore) GetHomeTimeline(ctx context.Context, userID uuid.UUID, limit int) ([]FeedItem, error) {
 	return s.collectHomeTimeline(ctx, userID, time.Now().UTC(), nil, limit)

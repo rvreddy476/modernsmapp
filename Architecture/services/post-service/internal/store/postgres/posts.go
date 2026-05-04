@@ -620,6 +620,21 @@ func (s *Store) GetPostAuthorID(ctx context.Context, postID uuid.UUID) (uuid.UUI
 	return authorID, err
 }
 
+// GetPostAuthorAndContentType returns the (author_id, content_type)
+// pair for a post in one query. Used by the MediaTranscodeConsumer
+// to detect whether a reclassification actually changed the value
+// (so a no-op doesn't fan out a useless event) and to populate the
+// downstream PostContentTypeChanged payload.
+func (s *Store) GetPostAuthorAndContentType(ctx context.Context, postID uuid.UUID) (uuid.UUID, string, error) {
+	var authorID uuid.UUID
+	var contentType string
+	err := s.db.QueryRow(ctx,
+		`SELECT author_id, content_type FROM posts WHERE id = $1 AND deleted_at IS NULL`,
+		postID,
+	).Scan(&authorID, &contentType)
+	return authorID, contentType, err
+}
+
 // UpdatePostCoverMedia updates the cover_media_id of a post.
 func (s *Store) UpdatePostCoverMedia(ctx context.Context, postID uuid.UUID, coverMediaID *uuid.UUID) error {
 	_, err := s.db.Exec(ctx, `UPDATE posts SET cover_media_id = $2, updated_at = NOW() WHERE id = $1`, postID, coverMediaID)

@@ -101,9 +101,43 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 	case events.EventQAQuestionDeleted, events.EventQAQuestionClosed:
 		return c.handleQAQuestionRemoved(ctx, envelope)
 
+	case events.PostContentTypeChanged:
+		return c.handlePostContentTypeChanged(ctx, envelope)
+
 	default:
 		return nil
 	}
+}
+
+// handlePostContentTypeChanged rewrites the content_type column on
+// every Scylla timeline row that references the post. Fired by
+// post-service's MediaTranscodeConsumer after a reclassification
+// flips a post (most commonly long_video → flick once transcode
+// reveals the real duration + dimensions).
+//
+// Without this, /v1/feed/reels and /v1/feed/videos keep returning
+// stale results — the timeline rows carry their own content_type
+// copy that gets written at fan-out time and never updated again.
+func (c *Consumer) handlePostContentTypeChanged(ctx context.Context, envelope events.EventEnvelope) error {
+	if c.timelineStore == nil {
+		return nil
+	}
+	var p events.PostContentTypeChangedPayload
+	payloadBytes, _ := json.Marshal(envelope.Payload)
+	if err := json.Unmarshal(payloadBytes, &p); err != nil {
+		return err
+	}
+	postID, err := uuid.Parse(p.PostID)
+	if err != nil {
+		return fmt.Errorf("PostContentTypeChanged: bad post_id %q: %w", p.PostID, err)
+	}
+	rows, err := c.timelineStore.UpdatePostContentType(ctx, postID, p.NewType)
+	if err != nil {
+		return fmt.Errorf("PostContentTypeChanged: update timeline rows: %w", err)
+	}
+	log.Printf("PostContentTypeChanged: post=%s %s → %s, rewrote %d timeline rows",
+		p.PostID, p.OldType, p.NewType, rows)
+	return nil
 }
 
 // handleQAQuestionCreated fans out a new Q&A question into followers' home

@@ -9,10 +9,12 @@ import (
 	"fmt"
 	"log/slog"
 
+	postEvents "github.com/atpost/post-service/internal/events"
 	"github.com/atpost/post-service/internal/store/postgres"
 	"github.com/atpost/shared/events"
 	sharedkafka "github.com/atpost/shared/kafka"
 	"github.com/atpost/shared/o11y/metrics"
+	"github.com/atpost/shared/postclassify"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
@@ -24,6 +26,7 @@ import (
 // same row each time, and UpdateVideoMetadata is a row UPDATE.
 type MediaTranscodeConsumer struct {
 	store    *postgres.Store
+	producer *postEvents.Producer // optional; nil means no fan-out
 	consumer *sharedkafka.Consumer
 }
 
@@ -43,6 +46,16 @@ func NewMediaTranscodeConsumer(
 		},
 		rdb, m, c.handle,
 	)
+	return c
+}
+
+// WithProducer wires the post-service event producer so a successful
+// reclassification fans a PostContentTypeChanged event out to
+// feed-service. nil-safe: the consumer still reclassifies the
+// posts.content_type column locally; the timeline rows just stay
+// stale until manually fixed or until the next event flushes them.
+func (c *MediaTranscodeConsumer) WithProducer(p *postEvents.Producer) *MediaTranscodeConsumer {
+	c.producer = p
 	return c
 }
 
@@ -116,19 +129,39 @@ func (c *MediaTranscodeConsumer) handle(ctx context.Context, env *events.EventEn
 	}
 
 	// Reclassify the post's content_type now that we know duration +
-	// dimensions. CreatePost falls back to "long_video" when the video
-	// hasn't been transcoded yet, so a vertical reel ≤180s comes in as
-	// long_video and stays there until this consumer flips it back to
-	// "flick". Without this, the reel never appears in /v1/feed/reels.
+	// dimensions. CreatePost falls back to "long_video" when the
+	// video hasn't been transcoded yet, so a vertical reel ≤180s
+	// comes in as long_video and stays there until this consumer
+	// flips it back to "flick". Without this, the reel never
+	// appears in /v1/feed/reels.
+	//
+	// On a successful flip, fan a PostContentTypeChanged event out
+	// so feed-service can rewrite the matching content_type column
+	// on its Scylla timeline rows — those carry their own copy and
+	// would otherwise stay stale.
 	if duration, w, h, ok := lookupMediaDims(ctx, c.store, mediaID); ok {
-		category := classifyForReclassification(duration, w, h)
-		if err := c.store.UpdatePostContentType(ctx, vm.PostID, category); err != nil {
-			slog.Warn("media transcode consumer: reclassify failed",
-				"post_id", vm.PostID, "category", category, "error", err)
-		} else {
-			slog.Info("media transcode consumer: post reclassified",
-				"post_id", vm.PostID, "category", category,
-				"duration_s", duration, "w", w, "h", h)
+		newType := postclassify.Classify(duration, w, h)
+		authorID, oldType, err := c.store.GetPostAuthorAndContentType(ctx, vm.PostID)
+		if err != nil {
+			slog.Warn("media transcode consumer: read author+content_type failed",
+				"post_id", vm.PostID, "error", err)
+		} else if oldType != newType {
+			if err := c.store.UpdatePostContentType(ctx, vm.PostID, newType); err != nil {
+				slog.Warn("media transcode consumer: reclassify failed",
+					"post_id", vm.PostID, "new_type", newType, "error", err)
+			} else {
+				slog.Info("media transcode consumer: post reclassified",
+					"post_id", vm.PostID, "old_type", oldType, "new_type", newType,
+					"duration_s", duration, "w", w, "h", h)
+				if c.producer != nil {
+					if err := c.producer.PublishPostContentTypeChanged(
+						ctx, vm.PostID, authorID, oldType, newType,
+					); err != nil {
+						slog.Warn("media transcode consumer: publish content_type_changed failed",
+							"post_id", vm.PostID, "error", err)
+					}
+				}
+			}
 		}
 	}
 
@@ -136,28 +169,6 @@ func (c *MediaTranscodeConsumer) handle(ctx context.Context, env *events.EventEn
 		"media_id", mediaID, "post_id", vm.PostID,
 		"hls", p.HLSMasterURL != "")
 	return nil
-}
-
-// classifyForReclassification mirrors service.ClassifyVideo without
-// the cyclic-import that would happen if we reached into internal/service
-// from internal/consumers. The 180s + portrait/square rule is the spec —
-// keep this in sync if it ever changes there.
-const flickMaxDurationSeconds = 180
-
-func classifyForReclassification(durationSeconds int, width, height int) string {
-	orientation := "landscape"
-	if width > 0 && height > 0 {
-		if height > width {
-			orientation = "portrait"
-		} else if height == width {
-			orientation = "square"
-		}
-	}
-	if durationSeconds > 0 && durationSeconds <= flickMaxDurationSeconds &&
-		(orientation == "portrait" || orientation == "square") {
-		return "flick"
-	}
-	return "long_video"
 }
 
 // lookupMediaDims fetches the duration + dimensions written by the

@@ -14,8 +14,9 @@ const (
 	UserRegistered = "UserRegistered" // payload: UserRegisteredPayload
 	UserLoggedIn   = "UserLoggedIn"   // payload: UserLoggedInPayload
 
-	PostCreated    = "PostCreated"    // payload: PostCreatedPayload
-	PostDeleted    = "PostDeleted"    // payload: PostDeletedPayload
+	PostCreated              = "PostCreated"              // payload: PostCreatedPayload
+	PostDeleted              = "PostDeleted"              // payload: PostDeletedPayload
+	PostContentTypeChanged   = "PostContentTypeChanged"   // payload: PostContentTypeChangedPayload
 	UserFollowed   = "UserFollowed"   // payload: UserFollowedPayload
 	UserUnfollowed = "UserUnfollowed" // payload: UserUnfollowedPayload
 
@@ -453,6 +454,25 @@ type PostDeletedPayload struct {
 	PostID    string    `json:"post_id"`
 	AuthorID  string    `json:"author_id"`
 	DeletedAt time.Time `json:"deleted_at"`
+}
+
+// PostContentTypeChangedPayload is published by post-service when a
+// reclassification flips a post between flick / long_video (or any
+// other content_type transition). feed-service consumes this and
+// updates the matching rows in social_feed.home_timeline_by_user
+// and social_feed.author_timeline_by_author so the timeline-side
+// content_type column doesn't drift from the source-of-truth in
+// posts.content_type.
+//
+// Most commonly fires after MediaTranscodeCompleted lands real
+// duration + dimensions on a video that was created with the
+// safe-fallback content_type before transcode.
+type PostContentTypeChangedPayload struct {
+	PostID       string    `json:"post_id"`
+	AuthorID     string    `json:"author_id"`
+	OldType      string    `json:"old_type"`
+	NewType      string    `json:"new_type"`
+	ChangedAt    time.Time `json:"changed_at"`
 }
 
 type UserDeletionRequestedPayload struct {
