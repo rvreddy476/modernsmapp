@@ -259,20 +259,26 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           // tab provider on first build so deep links land on the right
           // surface.
           GoRoute(
-            path: '/search',
+            path: '/wallet-tab',
             builder: (_, _) =>
-                const ShellScaffold(initialTab: ShellTabIndex.search),
+                const ShellScaffold(initialTab: ShellTabIndex.wallet),
           ),
           GoRoute(
-            path: '/inbox',
+            path: '/reels-tab',
             builder: (_, _) =>
-                const ShellScaffold(initialTab: ShellTabIndex.inbox),
+                const ShellScaffold(initialTab: ShellTabIndex.reels),
           ),
           GoRoute(
-            path: '/me',
+            path: '/explore',
             builder: (_, _) =>
-                const ShellScaffold(initialTab: ShellTabIndex.me),
+                const ShellScaffold(initialTab: ShellTabIndex.explore),
           ),
+          // Legacy redirects: /search and /me are no longer tabs (search
+          // lives in the home top-bar; profile is reached via avatar tap →
+          // /profile/{id}). /inbox folded into /notifications.
+          GoRoute(path: '/search', redirect: (_, _) => '/'),
+          GoRoute(path: '/inbox', redirect: (_, _) => '/notifications'),
+          GoRoute(path: '/me', redirect: (_, _) => '/'),
           GoRoute(
             path: '/login',
             builder: (context, state) => const LoginScreen(),
