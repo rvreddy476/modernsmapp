@@ -20,24 +20,32 @@
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/features/home/home_feed_screen.dart';
+import 'package:atpost_app/features/reels/reels_screen.dart';
+import 'package:atpost_app/features/services/services_screen.dart';
 import 'package:atpost_app/features/shell/create_options_sheet.dart';
-import 'package:atpost_app/features/shell/inbox_tab.dart';
-import 'package:atpost_app/features/shell/me_tab.dart';
-import 'package:atpost_app/features/shell/search_tab.dart';
 import 'package:atpost_app/features/shell/shell_providers.dart';
+import 'package:atpost_app/features/wallet/wallet_home_screen.dart';
 import 'package:atpost_app/services/shell_telemetry.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-/// Stable index map for the four real tabs. `create` (index 2 in the visual
-/// row) is intentionally NOT a tab — it's a FAB that opens a sheet.
+/// Stable index map for the four real tabs. `create` (visually centered)
+/// is intentionally NOT a tab — it's a FAB that opens a sheet.
+///
+/// Layout (left → right): Home · Wallet · [+] · Reels · Explore
+///   * Home    — feed (For You / Following / #HashTag)
+///   * Wallet  — wallet hero + transactions + send/top-up
+///   * Reels   — vertical short-form video feed
+///   * Explore — mini-app launcher (services_screen.dart). Hosts every
+///               module that doesn't get its own bottom-tab slot
+///               (Pulse, Mopedu, Billpay, Commerce, Figo, etc.).
 class ShellTabIndex {
   ShellTabIndex._();
 
   static const home = 0;
-  static const search = 1;
-  static const inbox = 2;
-  static const me = 3;
+  static const wallet = 1;
+  static const reels = 2;
+  static const explore = 3;
 
   static const count = 4;
 }
@@ -77,15 +85,18 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold> {
       body: IndexedStack(
         index: _safeIndex(current),
         children: const [
-          // Home tab is the original 3-strip feed (For You /
-          // Following / #HashTag) — same shape as Twitter/IG. The
-          // module rail + mixed feed lives in /explore + the
-          // Me-tab launcher grid; the home surface stays
-          // feed-first per product direction.
+          // Home — original 3-strip feed (For You / Following /
+          // #HashTag). Twitter/IG shape; top-bar icons cover the
+          // shortcuts (search, shopping, posttube, notifications,
+          // profile-avatar).
           HomeFeedScreen(),
-          SearchTab(),
-          InboxTab(),
-          MeTab(),
+          // Wallet — balance hero + transactions + top-up + send.
+          WalletHomeScreen(),
+          // Reels — vertical PageView feed.
+          ReelsScreen(),
+          // Explore — mini-app launcher: Pulse, Mopedu, Billpay,
+          // Commerce, Figo, plus the legacy services menu.
+          ServicesScreen(),
         ],
       ),
       floatingActionButton: _CreateFab(
@@ -166,27 +177,28 @@ class _BottomBar extends ConsumerWidget {
               telemetryKey: ShellTab.home,
             ),
             _NavItem(
-              icon: Icons.search,
-              label: 'Search',
-              index: ShellTabIndex.search,
+              icon: Icons.account_balance_wallet_rounded,
+              label: 'Wallet',
+              index: ShellTabIndex.wallet,
               currentIndex: currentIndex,
-              telemetryKey: ShellTab.search,
+              telemetryKey: ShellTab.wallet,
             ),
             // Visual gap for the FAB notch.
             const SizedBox(width: 56),
             _NavItem(
-              icon: Icons.notifications,
-              label: 'Inbox',
-              index: ShellTabIndex.inbox,
+              icon: Icons.movie_creation_rounded,
+              label: 'Reels',
+              index: ShellTabIndex.reels,
               currentIndex: currentIndex,
-              telemetryKey: ShellTab.inbox,
+              telemetryKey: ShellTab.reels,
             ),
             _NavItem(
-              icon: Icons.person,
-              label: 'Me',
-              index: ShellTabIndex.me,
+              // Apps grid icon — the user-facing mini-app center.
+              icon: Icons.apps_rounded,
+              label: 'Explore',
+              index: ShellTabIndex.explore,
               currentIndex: currentIndex,
-              telemetryKey: ShellTab.me,
+              telemetryKey: ShellTab.explore,
             ),
           ],
         ),

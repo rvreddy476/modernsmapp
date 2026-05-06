@@ -181,15 +181,17 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
           onPressed: () => context.push('/notifications'),
         ),
         const SizedBox(width: 8),
-        GestureDetector(
-          onTap: () =>
-              ref.read(shellTabProvider.notifier).state = 4,
-          child: Builder(
-            builder: (_) {
-              final me = ref.watch(currentUserProvider).valueOrNull;
-              final avatar = me?.hasAvatar == true ? me!.avatarUrl : null;
-              final dataSaver = ref.watch(effectiveDataSaverProvider);
-              return CircleAvatar(
+        Builder(
+          builder: (_) {
+            final me = ref.watch(currentUserProvider).valueOrNull;
+            final avatar = me?.hasAvatar == true ? me!.avatarUrl : null;
+            final dataSaver = ref.watch(effectiveDataSaverProvider);
+            return GestureDetector(
+              onTap: () {
+                final id = me?.id;
+                if (id != null) context.push('/profile/$id');
+              },
+              child: CircleAvatar(
                 radius: 18,
                 backgroundColor: AppColors.bgTertiary,
                 backgroundImage: avatar != null
@@ -208,9 +210,9 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
                         color: AppColors.textDim,
                       )
                     : null,
-              );
-            },
-          ),
+              ),
+            );
+          },
         ),
       ],
     );
