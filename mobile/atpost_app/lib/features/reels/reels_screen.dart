@@ -7,6 +7,8 @@ import 'package:atpost_app/data/models/post.dart';
 import 'package:atpost_app/data/repositories/feed_repository.dart';
 import 'package:atpost_app/data/repositories/post_repository.dart';
 import 'package:atpost_app/data/repositories/user_repository.dart';
+import 'package:atpost_app/features/shell/shell_providers.dart';
+import 'package:atpost_app/features/shell/shell_scaffold.dart';
 import 'package:atpost_app/providers/data_saver_provider.dart';
 import 'package:atpost_app/shared/widgets/caption_toggle.dart';
 import 'package:atpost_app/shared/widgets/video_player_widget.dart';
@@ -42,6 +44,11 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> {
   bool _loadingInitial = true;
   bool _loadingMore = false;
   bool _muted = false;
+  // Set on the first build where this screen is the active shell tab
+  // (or always, when entered via the fullscreen /reels route). Prevents
+  // the cold-start network fetch + video controller spin-up while the
+  // user is parked on Home in the IndexedStack super-shell.
+  bool _initialLoadKicked = false;
   // Captions toggle state, keyed by post.id. Captions are off by
   // default per recon §D.5 ("No subtitle/caption toggle in PostTube
   // watch player"). The CaptionToggle widget hides itself entirely
@@ -67,7 +74,13 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> {
     super.initState();
     _pageController = PageController();
     _pageController.addListener(_maybeLoadMoreOnScroll);
-    _loadInitial();
+    // Fullscreen route (/reels) always kicks off immediately. Inside
+    // the shell IndexedStack, defer the fetch + player spin-up until
+    // build() observes the user actually selecting the Reels tab.
+    if (widget.fullscreenRoute) {
+      _initialLoadKicked = true;
+      _loadInitial();
+    }
   }
 
   @override
@@ -362,6 +375,29 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // When mounted inside the shell IndexedStack, this widget is built
+    // even while the user is parked on Home. Treat the screen as
+    // inactive in that case — render a placeholder, skip the fetch,
+    // and (further down) skip the VideoPlayerWidget so no audio plays
+    // in the background.
+    final isActive =
+        widget.fullscreenRoute ||
+        ref.watch(shellTabProvider) == ShellTabIndex.reels;
+
+    if (isActive && !_initialLoadKicked) {
+      _initialLoadKicked = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _loadInitial();
+      });
+    }
+
+    if (!_initialLoadKicked) {
+      // Cold placeholder — never been activated. No spinner: the user
+      // hasn't asked for Reels yet, so a loading indicator would be a
+      // lie about background work.
+      return const Scaffold(backgroundColor: AppColors.bgPrimary);
+    }
+
     if (_loadingInitial) {
       return const Scaffold(
         backgroundColor: AppColors.bgPrimary,
@@ -439,6 +475,7 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> {
                   engagement: engagement,
                   colors: colors,
                   fullscreenRoute: widget.fullscreenRoute,
+                  isActive: isActive,
                   muted: _muted,
                   captionsEnabled: _captionsEnabled(post.id),
                   dataSaver: dataSaver,
@@ -485,6 +522,7 @@ class _ReelPage extends StatefulWidget {
     required this.engagement,
     required this.colors,
     required this.fullscreenRoute,
+    required this.isActive,
     required this.muted,
     required this.captionsEnabled,
     required this.dataSaver,
@@ -505,6 +543,12 @@ class _ReelPage extends StatefulWidget {
   final _ReelEngagement engagement;
   final List<Color> colors;
   final bool fullscreenRoute;
+  // True when this reel page should actually run video. False when the
+  // shell IndexedStack is rendering Reels off-screen (user on Home /
+  // Wallet / Explore) — we still build the page tree to keep scroll
+  // and engagement state, but skip the VideoPlayerWidget so no audio
+  // bleeds out of the inactive tab.
+  final bool isActive;
   final bool muted;
   // Captions overlay state for this single reel. Captions are
   // recon-driven additions; the toggle widget hides itself when
@@ -578,7 +622,11 @@ class _ReelPageState extends State<_ReelPage> {
   @override
   Widget build(BuildContext context) {
     final hasVideo = _videoUrl.isNotEmpty;
-    final shouldAutoplay = !widget.dataSaver || _userTappedPlay;
+    // `isActive=false` means we're rendered off-screen inside the
+    // shell IndexedStack — never autoplay, never even mount the
+    // VideoPlayerWidget (handled below by ANDing into `shouldAutoplay`).
+    final shouldAutoplay =
+        widget.isActive && (!widget.dataSaver || _userTappedPlay);
 
     // Gradient background placeholder (used behind video or as fallback).
     final gradientBg = DecoratedBox(
