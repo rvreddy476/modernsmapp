@@ -213,14 +213,24 @@ class _CallRouteObserver extends ConsumerWidget {
   }
 }
 
+/// Shared RouteObserver. Subscribers (e.g. ReelsScreen) use it via the
+/// RouteAware mixin to find out when a fullscreen route gets pushed
+/// on top of the shell so they can pause expensive work like video
+/// playback.
+final routeObserverProvider = Provider<RouteObserver<ModalRoute<void>>>(
+  (_) => RouteObserver<ModalRoute<void>>(),
+);
+
 final appRouterProvider = Provider<GoRouter>((ref) {
   final authService = ref.watch(authServiceProvider);
   final refresh = _AuthRouterRefresh(authService.stateStream);
   ref.onDispose(refresh.dispose);
+  final routeObserver = ref.watch(routeObserverProvider);
 
   return GoRouter(
     initialLocation: '/splash',
     refreshListenable: refresh,
+    observers: [routeObserver],
     redirect: (context, state) async {
       final path = state.uri.path;
 

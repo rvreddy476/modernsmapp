@@ -5,6 +5,7 @@ import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/models/post.dart';
 import 'package:atpost_app/data/repositories/feed_repository.dart';
+import 'package:atpost_app/app/router.dart';
 import 'package:atpost_app/data/repositories/post_repository.dart';
 import 'package:atpost_app/data/repositories/user_repository.dart';
 import 'package:atpost_app/features/shell/shell_providers.dart';
@@ -26,7 +27,7 @@ class ReelsScreen extends ConsumerStatefulWidget {
   ConsumerState<ReelsScreen> createState() => _ReelsScreenState();
 }
 
-class _ReelsScreenState extends ConsumerState<ReelsScreen> {
+class _ReelsScreenState extends ConsumerState<ReelsScreen> with RouteAware {
   static const List<List<Color>> _palette = [
     [Color(0xFF1D102D), Color(0xFF090913)],
     [Color(0xFF20140D), Color(0xFF0D111B)],
@@ -69,6 +70,13 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> {
   bool _hasMoreFromApi = true;
   String? _error;
 
+  // True while another route (e.g. /reels/editor, /reels/caption,
+  // /comments/:id) sits on top of the host route. RouteAware flips
+  // this from didPushNext / didPopNext so the player gates correctly
+  // even when shellTabProvider is still on Reels.
+  bool _coveredByPushedRoute = false;
+  RouteObserver<ModalRoute<void>>? _routeObserver;
+
   @override
   void initState() {
     super.initState();
@@ -84,7 +92,32 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final observer = ref.read(routeObserverProvider);
+    if (_routeObserver != observer) {
+      _routeObserver?.unsubscribe(this);
+      final route = ModalRoute.of(context);
+      if (route is ModalRoute<void>) {
+        observer.subscribe(this, route);
+        _routeObserver = observer;
+      }
+    }
+  }
+
+  @override
+  void didPushNext() {
+    if (mounted) setState(() => _coveredByPushedRoute = true);
+  }
+
+  @override
+  void didPopNext() {
+    if (mounted) setState(() => _coveredByPushedRoute = false);
+  }
+
+  @override
   void dispose() {
+    _routeObserver?.unsubscribe(this);
     _pageController
       ..removeListener(_maybeLoadMoreOnScroll)
       ..dispose();
@@ -380,9 +413,16 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> {
     // inactive in that case — render a placeholder, skip the fetch,
     // and (further down) skip the VideoPlayerWidget so no audio plays
     // in the background.
+    //
+    // _coveredByPushedRoute also flips this off while a fullscreen
+    // route sits on top (/reels/editor, /reels/caption, /comments/:id,
+    // …). Without it, tapping the Create FAB while parked on the
+    // Reels tab would leave the underlying reel autoplaying audio
+    // behind the composer.
     final isActive =
-        widget.fullscreenRoute ||
-        ref.watch(shellTabProvider) == ShellTabIndex.reels;
+        !_coveredByPushedRoute &&
+        (widget.fullscreenRoute ||
+            ref.watch(shellTabProvider) == ShellTabIndex.reels);
 
     if (isActive && !_initialLoadKicked) {
       _initialLoadKicked = true;
