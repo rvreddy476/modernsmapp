@@ -154,13 +154,20 @@ class ApiClient {
     required String type, // 'image' or 'video'
     void Function(int sent, int total)? onProgress,
   }) async {
+    String step = 'init';
+    String? presignedHost;
+    int? fileSizeForDiag;
     try {
       final fileData = File(file.path);
       final fileSize = await fileData.length();
+      fileSizeForDiag = fileSize;
       final mimeType = lookupMimeType(file.path) ?? 'application/octet-stream';
 
       // 1. Initialize Upload
-      AppLogger.info('Initializing upload for ${file.name}', tag: _tag);
+      AppLogger.info(
+        'Initializing upload for ${file.name} (${fileSize}B, $mimeType)',
+        tag: _tag,
+      );
       final initRes = await post(
         '/v1/media/init',
         data: {
@@ -173,31 +180,47 @@ class ApiClient {
       final initData = initRes.data['data'] as Map<String, dynamic>;
       final mediaId = initData['media_id'] as String;
       final uploadUrl = initData['upload_url'] as String;
+      presignedHost = Uri.tryParse(uploadUrl)?.host;
 
       // 2. Perform Physical Upload (using a raw Dio instance to avoid global interceptors for presigned URL)
-      AppLogger.info('Uploading bytes to presigned URL', tag: _tag);
+      step = 'put';
+      AppLogger.info(
+        'Uploading bytes to presigned URL host=$presignedHost size=${fileSize}B',
+        tag: _tag,
+      );
       await Dio().put(
         uploadUrl,
         data: fileData.openRead(),
         onSendProgress: onProgress,
         options: Options(
           headers: {'Content-Type': mimeType, 'Content-Length': fileSize},
+          // The default 30 s connectTimeout is fine, but receive can
+          // run for a while on a real video — let it finish.
+          sendTimeout: const Duration(minutes: 5),
+          receiveTimeout: const Duration(minutes: 2),
         ),
       );
 
       // 3. Confirm Upload
+      step = 'confirm';
       AppLogger.info('Confirming upload completion', tag: _tag);
       await post('/v1/media/confirm', data: {'media_id': mediaId});
 
       return mediaId;
     } catch (e, st) {
+      // Pull a useful one-liner out of DioException so logcat actually
+      // tells us which step blew up + the underlying status / message.
+      final detail = e is DioException
+          ? 'type=${e.type} status=${e.response?.statusCode} '
+                'msg=${e.message} body=${e.response?.data}'
+          : e.toString();
       AppLogger.error(
-        'Resilient upload failed',
+        'Resilient upload failed [step=$step host=$presignedHost size=${fileSizeForDiag ?? -1}B] $detail',
         tag: _tag,
         error: e,
         stackTrace: st,
       );
-      throw ErrorHandler.handle(e, st, context: 'ApiClient.uploadMedia');
+      throw ErrorHandler.handle(e, st, context: 'ApiClient.uploadMedia.$step');
     }
   }
 
