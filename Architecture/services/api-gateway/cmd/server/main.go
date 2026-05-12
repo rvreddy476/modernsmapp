@@ -85,6 +85,7 @@ func main() {
 		{"/v1/calls", env("CALL_SERVICE_URL", "http://call-service:8097")},
 		{"/v1/chat", env("MESSAGE_SERVICE_URL", "http://message-service:8092")},
 		{"/v1/analytics", env("ANALYTICS_SERVICE_URL", "http://analytics-service:8094")},
+		{"/v1/ai", env("AI_SERVICE_URL", "http://ai-service:8117")},
 		{"/v1/flags", env("FLAGS_SERVICE_URL", "http://feature-flag-service:8095")},
 		{"/v1/admin", env("ADMIN_SERVICE_URL", "http://admin-service:8096")},
 		{"/v1/apps", env("ADMIN_SERVICE_URL", "http://admin-service:8096")},
@@ -107,6 +108,16 @@ func main() {
 		{"/v1/communities", env("COMMUNITY_SERVICE_URL", "http://community-service:8107")},
 		// Q&A service
 		{"/v1/qa", env("QA_SERVICE_URL", "http://qa-service:8108")},
+		// Dating service (Pulse) — see C:\workspace\atpost\dating\PULSE_DATING_SPEC.md
+		{"/v1/dating", env("DATING_SERVICE_URL", "http://dating-service:8112")},
+		// Food service (FiGo mini app)
+		{"/v1/food", env("FOOD_SERVICE_URL", "http://food-service:8113")},
+		// Wallet service (BC-of-PPI consumer wallet) — see services/wallet-service.
+		{"/v1/wallet", env("WALLET_SERVICE_URL", "http://wallet-service:8114")},
+		// Bill-pay service (Setu BBPS aggregator) — see services/bill-pay-service.
+		{"/v1/billpay", env("BILL_PAY_SERVICE_URL", "http://bill-pay-service:8115")},
+		// Rider service (Mopedu mini-app) — see services/rider-service.
+		{"/v1/rider", env("RIDER_SERVICE_URL", "http://rider-service:8116")},
 		// Commerce service (full e-commerce rebuild)
 		{"/v1/commerce", env("COMMERCE_SERVICE_URL", "http://commerce-service:8109")},
 	}
@@ -184,13 +195,29 @@ func main() {
 // Requests with an invalid or expired token receive HTTP 401.
 func jwtExtractMiddleware(jwtSecret string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		authHeader := r.Header.Get("Authorization")
-		if !strings.HasPrefix(authHeader, "Bearer ") {
-			// No token present — pass through for public endpoints.
+		// Resolve JWT from one of (in priority order):
+		//   1. Authorization: Bearer header   — mobile + REST callers
+		//   2. access_token cookie            — browser EventSource
+		//      (and anywhere XHR can't set Authorization)
+		//   3. access_token / token query     — explicit ?token=foo
+		//      override; kept for legacy WebSocket clients that pass
+		//      auth in the query string.
+		// Falling through with no token leaves the request
+		// unauthenticated; downstream handlers may 401 if they care.
+		var token string
+		if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
+			token = strings.TrimPrefix(authHeader, "Bearer ")
+		} else if c, err := r.Cookie("access_token"); err == nil && c.Value != "" {
+			token = c.Value
+		} else if q := r.URL.Query().Get("access_token"); q != "" {
+			token = q
+		} else if q := r.URL.Query().Get("token"); q != "" {
+			token = q
+		}
+		if token == "" {
 			next.ServeHTTP(w, r)
 			return
 		}
-		token := strings.TrimPrefix(authHeader, "Bearer ")
 		userID, scopes, deviceID, err := verifyJWT(token, jwtSecret)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")

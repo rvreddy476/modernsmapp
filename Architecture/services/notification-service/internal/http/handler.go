@@ -7,11 +7,15 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/atpost/notification-service/internal/service"
+	"github.com/atpost/notification-service/internal/store/scylla"
 	"github.com/atpost/shared/api"
 	sharedmiddleware "github.com/atpost/shared/middleware"
 	"github.com/gin-gonic/gin"
+	"github.com/gocql/gocql"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
@@ -534,45 +538,170 @@ func (h *Handler) UpdateNotifPreferences(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, current, nil)
 }
 
-// StreamNotifications uses SSE to push real-time notifications from Redis pub/sub
+// streamHeartbeat is how often the SSE handler emits a `:` comment
+// line to keep Cloudflare-proxied connections alive (the proxy's
+// idle timeout is ~100 s; this stays well below).
+const streamHeartbeat = 25 * time.Second
+
+// StreamNotifications hosts GET /v1/notifications/stream as an SSE
+// channel. Two phases per connection:
+//
+//  1. Replay (if Last-Event-ID header is present): fetch notifications
+//     newer than the cursor from Scylla, emit them as
+//     `event: notification` frames in chronological order — capped at
+//     500 per README §13 — and set an `id:` field on each. The client
+//     persists the latest id locally.
+//  2. Live: subscribe to Redis pub/sub `notify:<userID>` and forward
+//     each push as the same `event: notification` shape, with `id:`
+//     reconstructed from the payload's (bucket, ts) so a future
+//     reconnect can pick up exactly where this one left off.
+//
+// The replay query uses the existing Scylla composite cursor
+// (bucket, ts) so we don't need a separate event-id table. The
+// payload structure produced by service/processor.go carries both
+// values; payloads predating that change just won't get an `id:` and
+// will fall back to client-side timestamp ordering.
 func (h *Handler) StreamNotifications(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
-	if _, err := uuid.Parse(userIDStr); err != nil {
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
 
-	// SSE headers
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
 	c.Writer.Header().Set("Cache-Control", "no-cache")
 	c.Writer.Header().Set("Connection", "keep-alive")
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
 	c.Writer.WriteHeaderNow()
 
-	// Subscribe to the user's notification channel
-	channel := fmt.Sprintf("notify:%s", userIDStr)
 	ctx, cancel := context.WithCancel(c.Request.Context())
 	defer cancel()
 
+	channel := fmt.Sprintf("notify:%s", userIDStr)
 	sub := h.rdb.Subscribe(ctx, channel)
 	defer sub.Close()
-
 	ch := sub.Channel()
 
-	// Send initial heartbeat so client knows connection is alive
 	fmt.Fprintf(c.Writer, "event: connected\ndata: {\"status\":\"ok\"}\n\n")
 	c.Writer.Flush()
 
+	// Phase 1: Last-Event-ID replay. SSE clients (browser EventSource
+	// + our mobile client) automatically send this header on
+	// reconnect; the spec also allows reading it from a query param
+	// for clients that can't set headers.
+	lastID := c.GetHeader("Last-Event-ID")
+	if lastID == "" {
+		lastID = c.Query("last_event_id")
+	}
+	if lastID != "" {
+		bucket, ts, ok := parseEventID(lastID)
+		if ok {
+			missed, err := h.svc.GetNotificationsAfter(ctx, userID, bucket, ts, 500)
+			if err != nil {
+				log.Printf("[notify-stream] replay query failed user=%s err=%v", userIDStr, err)
+			} else {
+				for _, n := range missed {
+					body, eerr := encodeReplayPayload(n)
+					if eerr != nil {
+						continue
+					}
+					fmt.Fprintf(
+						c.Writer,
+						"id: %d:%s\nevent: notification\ndata: %s\n\n",
+						n.Bucket, n.TS.String(), body,
+					)
+				}
+				c.Writer.Flush()
+			}
+		}
+	}
+
+	// Phase 2: live pub/sub.
+	heartbeat := time.NewTicker(streamHeartbeat)
+	defer heartbeat.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-heartbeat.C:
+			fmt.Fprintf(c.Writer, ": keepalive\n\n")
+			c.Writer.Flush()
 		case msg, ok := <-ch:
 			if !ok {
 				return
+			}
+			id := extractEventID(msg.Payload)
+			if id != "" {
+				fmt.Fprintf(c.Writer, "id: %s\n", id)
 			}
 			fmt.Fprintf(c.Writer, "event: notification\ndata: %s\n\n", msg.Payload)
 			c.Writer.Flush()
 		}
 	}
+}
+
+// parseEventID decodes "<bucket>:<ts-uuid>" into its parts. Returns
+// ok=false for any malformed input — caller skips replay in that
+// case and goes straight to live.
+func parseEventID(raw string) (int, gocql.UUID, bool) {
+	sep := strings.IndexByte(raw, ':')
+	if sep <= 0 || sep == len(raw)-1 {
+		return 0, gocql.UUID{}, false
+	}
+	bucket, err := strconv.Atoi(raw[:sep])
+	if err != nil {
+		return 0, gocql.UUID{}, false
+	}
+	ts, err := gocql.ParseUUID(raw[sep+1:])
+	if err != nil {
+		return 0, gocql.UUID{}, false
+	}
+	return bucket, ts, true
+}
+
+// extractEventID pulls "<bucket>:<ts>" out of the Redis envelope.
+// payload shape is `{"type":"notification","payload":{"bucket":X,
+// "ts":"<uuid>",...}}` (see service/processor.go). Returns empty when
+// either field is missing — caller omits the `id:` SSE line, which is
+// spec-legal.
+func extractEventID(raw string) string {
+	var env struct {
+		Payload struct {
+			Bucket int    `json:"bucket"`
+			TS     string `json:"ts"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(raw), &env); err != nil {
+		return ""
+	}
+	if env.Payload.Bucket == 0 || env.Payload.TS == "" {
+		return ""
+	}
+	return fmt.Sprintf("%d:%s", env.Payload.Bucket, env.Payload.TS)
+}
+
+// encodeReplayPayload renders a stored Notification into the same
+// JSON envelope shape that live pub/sub messages use, so clients can
+// reuse one parser for replay + live.
+func encodeReplayPayload(n scylla.Notification) ([]byte, error) {
+	return json.Marshal(map[string]interface{}{
+		"type": "notification",
+		"payload": map[string]interface{}{
+			"notification_id": n.NotificationID.String(),
+			"event_type":      n.Type,
+			"actor_id":        n.ActorUserID.String(),
+			"target_id":       n.EntityID.String(),
+			"target_type":     n.EntityType,
+			"deep_link":       n.DeepLink,
+			"created_at":      n.CreatedAt,
+			"bucket":          n.Bucket,
+			"ts":              n.TS.String(),
+			// title/body are NOT in the Scylla row — the client should
+			// re-render from the notification center API if needed.
+			// Most clients only use replay to update unread state +
+			// keep the badge in sync, not to re-show toasts.
+			"replay": true,
+		},
+	})
 }

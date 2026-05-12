@@ -320,6 +320,34 @@ class NotificationEvent extends RealtimeEvent {
   DateTime get createdAt =>
       DateTime.tryParse(payload['created_at'] as String? ?? '')?.toLocal() ??
       DateTime.now();
+
+  /// Pre-computed collapse key — same algorithm push_collapse.go uses
+  /// for FCM/APNs thread-id. Toasts with matching keys merge into one
+  /// surface ("Ravi and 3 others liked your post") instead of stacking.
+  /// Empty when the backend chose not to collapse this event type
+  /// (mentions, security alerts, urgent broadcasts).
+  String get collapseKey => payload['collapse_key'] as String? ?? '';
+
+  String get targetId => payload['target_id'] as String? ?? '';
+  String get targetType => payload['target_type'] as String? ?? '';
+
+  /// Scylla composite cursor — paired with [ts] forms the Last-Event-ID
+  /// the client persists across reconnects.
+  int get bucket {
+    final v = payload['bucket'];
+    if (v is int) return v;
+    if (v is num) return v.toInt();
+    return 0;
+  }
+
+  String get ts => payload['ts'] as String? ?? '';
+
+  /// Encoded "bucket:ts" — the value to send back as Last-Event-ID
+  /// on SSE reconnect. Empty when either component is missing.
+  String get eventId {
+    if (bucket == 0 || ts.isEmpty) return '';
+    return '$bucket:$ts';
+  }
 }
 
 class UnknownEvent extends RealtimeEvent {

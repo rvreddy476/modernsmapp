@@ -121,6 +121,98 @@ func (s *NotificationStore) queryBucket(userID uuid.UUID, bucket int, beforeTS *
 	return notifications, nil
 }
 
+// GetNotificationsAfter returns rows newer than the (cursorBucket,
+// cursorTS) cursor, in chronological order. Drives the SSE
+// Last-Event-ID replay path: a client that reconnects after being
+// offline sends the last id it saw, and the server replays everything
+// the client missed up to `limit`.
+//
+// The walk goes forward in time: starts at cursorBucket with
+// `ts > cursor`, then advances bucket-by-bucket up to the current
+// bucket. Capped at `limit` to match the README §13 guidance
+// (default 500 events per reconnect).
+func (s *NotificationStore) GetNotificationsAfter(ctx context.Context, userID uuid.UUID, cursorBucket int, cursorTS gocql.UUID, limit int) ([]Notification, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	current := time.Now().Year()*100 + int(time.Now().Month())
+	if cursorBucket > current || cursorBucket == 0 {
+		// Defensive: treat invalid cursor as "from current bucket
+		// onward with no lower-bound" which still hits the live path
+		// after replay finishes (just produces 0 replays).
+		cursorBucket = current
+	}
+
+	var out []Notification
+	bucket := cursorBucket
+	remaining := limit
+	for bucket <= current && remaining > 0 {
+		var ts *gocql.UUID
+		if bucket == cursorBucket {
+			ts = &cursorTS // exclusive lower bound on the first bucket only
+		}
+		notifs, err := s.queryBucketAfter(ctx, userID, bucket, ts, remaining)
+		if err != nil {
+			return out, err
+		}
+		out = append(out, notifs...)
+		remaining -= len(notifs)
+		bucket = nextBucket(bucket)
+	}
+	return out, nil
+}
+
+// queryBucketAfter is the forward-walking sibling of queryBucket.
+// Returns rows ascending by ts so the SSE handler can replay them in
+// the order they happened.
+func (s *NotificationStore) queryBucketAfter(ctx context.Context, userID uuid.UUID, bucket int, afterTS *gocql.UUID, limit int) ([]Notification, error) {
+	var iter *gocql.Iter
+	if afterTS != nil {
+		iter = s.session.Query(`
+			SELECT user_id, bucket, ts, notification_id, type, actor_user_id, entity_type, entity_id, deep_link, is_read, created_at
+			FROM notifications_by_user
+			WHERE user_id = ? AND bucket = ? AND ts > ?
+			ORDER BY ts ASC
+			LIMIT ?
+		`, gocql.UUID(userID), bucket, *afterTS, limit).WithContext(ctx).Iter()
+	} else {
+		iter = s.session.Query(`
+			SELECT user_id, bucket, ts, notification_id, type, actor_user_id, entity_type, entity_id, deep_link, is_read, created_at
+			FROM notifications_by_user
+			WHERE user_id = ? AND bucket = ?
+			ORDER BY ts ASC
+			LIMIT ?
+		`, gocql.UUID(userID), bucket, limit).WithContext(ctx).Iter()
+	}
+
+	var notifications []Notification
+	var n Notification
+	var uid, nid, aid, eid gocql.UUID
+	for iter.Scan(&uid, &n.Bucket, &n.TS, &nid, &n.Type, &aid, &n.EntityType, &eid, &n.DeepLink, &n.IsRead, &n.CreatedAt) {
+		n.UserID = uuid.UUID(uid)
+		n.NotificationID = uuid.UUID(nid)
+		n.ActorUserID = uuid.UUID(aid)
+		n.EntityID = uuid.UUID(eid)
+		notifications = append(notifications, n)
+	}
+	if err := iter.Close(); err != nil {
+		return nil, err
+	}
+	return notifications, nil
+}
+
+// nextBucket returns the YYYYMM bucket for the next month.
+func nextBucket(bucket int) int {
+	year := bucket / 100
+	month := bucket % 100
+	month++
+	if month > 12 {
+		month = 1
+		year++
+	}
+	return year*100 + month
+}
+
 // prevBucket returns the YYYYMM bucket for the previous month.
 func prevBucket(bucket int) int {
 	year := bucket / 100

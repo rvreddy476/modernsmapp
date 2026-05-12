@@ -194,6 +194,14 @@ func (s *Service) GetNotifications(ctx context.Context, userID uuid.UUID, limit 
 	return s.scyllaStore.GetNotifications(ctx, userID, limit)
 }
 
+// GetNotificationsAfter is the forward-walking cursor query used by
+// the SSE Last-Event-ID replay path. cursorBucket+cursorTS identify
+// the last event the client saw; this returns everything newer in
+// chronological order, capped at `limit` (default 500 — README §13).
+func (s *Service) GetNotificationsAfter(ctx context.Context, userID uuid.UUID, cursorBucket int, cursorTS gocql.UUID, limit int) ([]scylla.Notification, error) {
+	return s.scyllaStore.GetNotificationsAfter(ctx, userID, cursorBucket, cursorTS, limit)
+}
+
 // GetNotificationsPage returns a cursor-paginated page of notifications.
 // Cursor format: "bucket:timeuuid" (e.g. "202603:550e8400-e29b-41d4-a716-446655440000").
 // When category is non-empty and recognized (currently only "qa"), notifications

@@ -24,6 +24,7 @@ import 'package:atpost_app/features/home/home_feed_screen.dart';
 import 'package:atpost_app/features/reels/reels_screen.dart';
 import 'package:atpost_app/features/services/services_screen.dart';
 import 'package:atpost_app/features/shell/create_options_sheet.dart';
+import 'package:atpost_app/features/shell/notification_toast_queue.dart';
 import 'package:atpost_app/features/shell/shell_providers.dart';
 import 'package:atpost_app/features/wallet/wallet_home_screen.dart';
 import 'package:atpost_app/providers/notification_provider.dart';
@@ -63,9 +64,12 @@ class ShellScaffold extends ConsumerStatefulWidget {
 }
 
 class _ShellScaffoldState extends ConsumerState<ShellScaffold> {
+  late final NotificationToastQueue _toastQueue;
+
   @override
   void initState() {
     super.initState();
+    _toastQueue = NotificationToastQueue(onView: _renderToast);
     // Hop the active tab to whatever the deep-link asked for. We do this in
     // a post-frame callback so we don't mutate provider state during the
     // first build.
@@ -76,6 +80,12 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold> {
         ref.read(shellTabProvider.notifier).state = desired;
       }
     });
+  }
+
+  @override
+  void dispose() {
+    _toastQueue.dispose();
+    super.dispose();
   }
 
   @override
@@ -97,7 +107,10 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold> {
       if (evt == null || !mounted) return;
       ref.invalidate(unreadNotificationCountProvider);
       ref.invalidate(notificationsProvider);
-      _showNotificationToast(evt);
+      // Hand to the queue: it debounces bursts and collapses
+      // matching collapse_keys into a single toast view, then calls
+      // _renderToast with the merged result.
+      _toastQueue.add(evt);
     });
 
     return Scaffold(
@@ -156,16 +169,16 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold> {
     return trimmed;
   }
 
-  /// Render the incoming NotificationEvent as a tap-to-open
-  /// SnackBar. Title + body come straight from the server-rendered
-  /// template (notification-service applies `RenderTitle` already),
-  /// so we just surface them. Tapping pushes the deep link when one
-  /// is present; otherwise the toast is informational.
-  void _showNotificationToast(NotificationEvent evt) {
+  /// Render a (potentially merged) toast view from the queue. The
+  /// queue handles the bursty merge logic; this method only knows how
+  /// to paint pixels. Dismissing the current snackbar before showing
+  /// the new one keeps the visible stack at one — the queue already
+  /// folded the prior bursts into the view we're about to render.
+  void _renderToast(NotificationToastView view) {
     final messenger = ScaffoldMessenger.maybeOf(context);
     if (messenger == null) return;
-    final hasBody = evt.body.isNotEmpty && evt.body != evt.title;
-    final deepLink = evt.deepLink;
+    final hasBody = view.body.isNotEmpty && view.body != view.title;
+    final deepLink = view.deepLink;
     messenger.removeCurrentSnackBar();
     messenger.showSnackBar(
       SnackBar(
@@ -195,7 +208,7 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Text(
-                    evt.title.isNotEmpty ? evt.title : 'New notification',
+                    view.title.isNotEmpty ? view.title : 'New notification',
                     style: AppTextStyles.label.copyWith(
                       color: Colors.white,
                       fontWeight: FontWeight.w700,
@@ -205,7 +218,7 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold> {
                   ),
                   if (hasBody)
                     Text(
-                      evt.body,
+                      view.body,
                       style: AppTextStyles.labelSmall.copyWith(
                         color: Colors.white70,
                       ),

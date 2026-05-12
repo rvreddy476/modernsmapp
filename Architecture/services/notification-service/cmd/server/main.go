@@ -172,6 +172,71 @@ func main() {
 	go callConsumer.Start(ctx)
 	slog.Info("kafka call consumer started", "topic", "call.notifications")
 
+	// QA events live on a dedicated topic by default. Reuse the main consumer
+	// type — its processMessage routes Q&A events through handleQAEvent.
+	qaTopic := env("KAFKA_QA_TOPIC", "qa-events")
+	qaConsumer := events.NewConsumerWithDialer(
+		strings.Split(kafkaBrokers, ","),
+		"notification-service-qa-group",
+		qaTopic,
+		notifSvc,
+		kafkaDialer,
+	)
+	go qaConsumer.Start(ctx)
+	slog.Info("kafka qa consumer started", "topic", qaTopic)
+
+	// Sprint 3: Dating events live on dating-events topic. Same Consumer
+	// type, separate consumer-group so dating-event lag doesn't impact
+	// QA delivery.
+	datingTopic := env("KAFKA_DATING_TOPIC", "dating-events")
+	datingConsumer := events.NewConsumerWithDialer(
+		strings.Split(kafkaBrokers, ","),
+		"notification-service-dating-group",
+		datingTopic,
+		notifSvc,
+		kafkaDialer,
+	)
+	go datingConsumer.Start(ctx)
+	slog.Info("kafka dating consumer started", "topic", datingTopic)
+
+	// Phase 2 mini-apps: each has its own Kafka topic + consumer group so
+	// lag in one domain (e.g. wallet replay during a payments incident)
+	// doesn't block other domains' notification delivery. The shared
+	// processMessage dispatcher routes to handleWalletEvent /
+	// handleBillPayEvent / handleRiderEvent based on event-type prefix.
+	walletTopic := env("KAFKA_WALLET_TOPIC", "wallet-events")
+	walletConsumer := events.NewConsumerWithDialer(
+		strings.Split(kafkaBrokers, ","),
+		"notification-service-wallet-group",
+		walletTopic,
+		notifSvc,
+		kafkaDialer,
+	)
+	go walletConsumer.Start(ctx)
+	slog.Info("kafka wallet consumer started", "topic", walletTopic)
+
+	billpayTopic := env("KAFKA_BILLPAY_TOPIC", "billpay-events")
+	billpayConsumer := events.NewConsumerWithDialer(
+		strings.Split(kafkaBrokers, ","),
+		"notification-service-billpay-group",
+		billpayTopic,
+		notifSvc,
+		kafkaDialer,
+	)
+	go billpayConsumer.Start(ctx)
+	slog.Info("kafka billpay consumer started", "topic", billpayTopic)
+
+	riderTopic := env("KAFKA_RIDER_TOPIC", "rider-events")
+	riderConsumer := events.NewConsumerWithDialer(
+		strings.Split(kafkaBrokers, ","),
+		"notification-service-rider-group",
+		riderTopic,
+		notifSvc,
+		kafkaDialer,
+	)
+	go riderConsumer.Start(ctx)
+	slog.Info("kafka rider consumer started", "topic", riderTopic)
+
 	// 9b. Background workers
 	go workers.StartCleanupWorker(ctx, session)
 	go workers.StartReconciliationWorker(ctx, session, rdb)
