@@ -11,6 +11,7 @@ import (
 	"github.com/atpost/post-service/internal/http/middleware"
 	"github.com/atpost/post-service/internal/service"
 	"github.com/atpost/post-service/internal/store/postgres"
+	"github.com/atpost/post-service/internal/streamhub"
 	"github.com/atpost/shared/api"
 	sharedmiddleware "github.com/atpost/shared/middleware"
 	"github.com/gin-gonic/gin"
@@ -21,11 +22,21 @@ import (
 type Handler struct {
 	svc         *service.Service
 	rdb         *redis.Client
+	hub         *streamhub.Hub
 	internalKey string
 }
 
 func New(svc *service.Service, rdb *redis.Client) *Handler {
 	return &Handler{svc: svc, rdb: rdb}
+}
+
+// WithStreamHub installs the shared Redis-pubsub fan-out hub. Both
+// SSE handlers (hashtag per-tag stream, trending stream) attach to
+// it instead of opening a Redis SUB per HTTP connection. Falling back
+// gracefully — if no hub is set the old per-connection path runs.
+func (h *Handler) WithStreamHub(hub *streamhub.Hub) *Handler {
+	h.hub = hub
+	return h
 }
 
 // WithInternalKey sets the internal service key used to authenticate

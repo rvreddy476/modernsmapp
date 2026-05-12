@@ -60,10 +60,6 @@ func (h *Handler) StreamHashtagPosts(c *gin.Context) {
 	ctx, cancel := context.WithCancel(c.Request.Context())
 	defer cancel()
 
-	sub := h.rdb.Subscribe(ctx, HashtagChannel(tag))
-	defer sub.Close()
-	ch := sub.Channel()
-
 	// Initial event so clients know the stream is live even before the
 	// first post lands.
 	fmt.Fprintf(c.Writer, "event: connected\ndata: {\"tag\":%q}\n\n", tag)
@@ -72,13 +68,44 @@ func (h *Handler) StreamHashtagPosts(c *gin.Context) {
 	heartbeat := time.NewTicker(hashtagStreamHeartbeat)
 	defer heartbeat.Stop()
 
+	channel := HashtagChannel(tag)
+	if h.hub != nil {
+		// Pooled path: one Redis SUB per channel shared across all
+		// HTTP listeners for that tag. See internal/streamhub.
+		sub, err := h.hub.Subscribe(ctx, channel)
+		if err != nil {
+			// Hub failure → degrade gracefully. We've already sent the
+			// `connected` event, so close cleanly.
+			return
+		}
+		defer sub.Cancel()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-heartbeat.C:
+				fmt.Fprintf(c.Writer, ": keepalive\n\n")
+				c.Writer.Flush()
+			case payload, ok := <-sub.Msgs:
+				if !ok {
+					return
+				}
+				fmt.Fprintf(c.Writer, "event: new_post\ndata: %s\n\n", payload)
+				c.Writer.Flush()
+			}
+		}
+	}
+
+	// Fallback path (no hub installed): one Redis SUB per HTTP client.
+	// Kept so the handler still works in a degraded config.
+	sub := h.rdb.Subscribe(ctx, channel)
+	defer sub.Close()
+	ch := sub.Channel()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-heartbeat.C:
-			// `:` is the SSE comment syntax — ignored by the client
-			// but resets proxy idle timers.
 			fmt.Fprintf(c.Writer, ": keepalive\n\n")
 			c.Writer.Flush()
 		case msg, ok := <-ch:

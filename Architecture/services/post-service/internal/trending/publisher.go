@@ -111,25 +111,38 @@ func (p *Publisher) run(ctx context.Context) {
 	}
 }
 
+// extendIfOwnerScript implements check-and-extend atomically. The
+// naive GET → EXPIRE pair has a race window in which a second replica
+// can SETNX in between, producing duplicate publishes. Doing both in
+// one Lua call keeps the leader unique even when N replicas wake at
+// the same tick.
+var extendIfOwnerScript = redis.NewScript(`
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+  return redis.call("PEXPIRE", KEYS[1], ARGV[2])
+end
+return 0
+`)
+
 func (p *Publisher) tickIfLeader(ctx context.Context) {
-	// SETNX with TTL = 2× interval. Tick to tick, we re-acquire to
-	// keep ownership; if we crash, the lock auto-expires and a
-	// neighbour picks up within one tick.
+	// First try to acquire as fresh leader. SETNX is atomic.
 	ok, err := p.rdb.SetNX(ctx, LeaderLockKey, p.leaderID, 2*p.interval).Result()
 	if err != nil {
 		p.log.Warn("leader lock acquire failed", "err", err)
 		return
 	}
 	if !ok {
-		// Refresh TTL only if WE already own the lock. Avoids the
-		// thundering-herd risk of every replica resetting the TTL on
-		// the same key.
-		cur, err := p.rdb.Get(ctx, LeaderLockKey).Result()
-		if err != nil || cur != p.leaderID {
+		// Lock already held — atomically extend the TTL iff we still
+		// own it. The Lua script avoids the GET/EXPIRE race that
+		// could let two replicas both think they're leader.
+		ttlMs := int64((2 * p.interval).Milliseconds())
+		res, err := extendIfOwnerScript.Run(
+			ctx, p.rdb,
+			[]string{LeaderLockKey},
+			p.leaderID, ttlMs,
+		).Int()
+		if err != nil || res == 0 {
+			// Not the owner; another replica is publishing this tick.
 			return
-		}
-		if _, err := p.rdb.Expire(ctx, LeaderLockKey, 2*p.interval).Result(); err != nil {
-			p.log.Warn("leader lock refresh failed", "err", err)
 		}
 	}
 
@@ -138,33 +151,33 @@ func (p *Publisher) tickIfLeader(ctx context.Context) {
 	}
 }
 
-// publishIfChanged reads the current top-N from the daily ZSET and
-// publishes a snapshot iff the (name → rank, name → count) pairs
-// have changed since the previous tick. Returns nil on a no-op
-// (empty set, or unchanged).
+// publishIfChanged reads the current top-N and publishes a snapshot
+// iff the (name, rank, count) tuple has changed since the previous
+// tick. Returns nil on a no-op.
+//
+// UTC rollover handling: at 00:00 UTC the daily bucket key flips to
+// the new date and starts empty. Without fallback, the publisher
+// would push an empty top-N and every connected client would clear
+// its chip strip for hours until traffic accumulates. Reads both
+// today's and yesterday's buckets and uses whichever has data,
+// preferring today. (The 48 h TTL on each bucket — set by
+// post-service CreatePost — guarantees yesterday's data is still
+// available across the rollover.)
+//
+// Empty-snapshot guard: if BOTH buckets are empty (cold-start /
+// post-purge), we don't publish at all. Subscribers keep showing
+// whatever they had on the initial REST load; the next CreatePost
+// will populate Redis and the following tick will publish.
 func (p *Publisher) publishIfChanged(ctx context.Context) error {
-	today := time.Now().UTC().Format("2006-01-02")
-	key := "trending:hashtags:" + today
-
-	results, err := p.rdb.ZRevRangeWithScores(ctx, key, 0, int64(p.topN-1)).Result()
+	now := time.Now().UTC()
+	entries, err := p.readTopN(ctx, now)
 	if err != nil {
-		return fmt.Errorf("zrevrange: %w", err)
+		return err
 	}
-	entries := make([]Entry, 0, len(results))
-	for _, z := range results {
-		name, _ := z.Member.(string)
-		name = strings.TrimSpace(strings.ToLower(strings.TrimPrefix(name, "#")))
-		if name == "" {
-			continue
-		}
-		entries = append(entries, Entry{
-			NormalizedName: name,
-			DisplayName:    name,
-			PostCount:      int64(z.Score),
-			IsTrending:     true,
-		})
+	if len(entries) == 0 {
+		// Cold start or post-purge; don't broadcast emptiness.
+		return nil
 	}
-
 	if !p.snapshotChanged(entries) {
 		return nil
 	}
@@ -172,7 +185,7 @@ func (p *Publisher) publishIfChanged(ctx context.Context) error {
 
 	payload, err := json.Marshal(Snapshot{
 		Tags:      entries,
-		UpdatedAt: time.Now().UTC(),
+		UpdatedAt: now,
 	})
 	if err != nil {
 		return fmt.Errorf("marshal snapshot: %w", err)
@@ -182,6 +195,38 @@ func (p *Publisher) publishIfChanged(ctx context.Context) error {
 	}
 	p.log.Info("trending snapshot published", "count", len(entries))
 	return nil
+}
+
+// readTopN reads today's bucket, falling back to yesterday's when
+// today is empty (handles the UTC rollover window).
+func (p *Publisher) readTopN(ctx context.Context, now time.Time) ([]Entry, error) {
+	for offset := 0; offset <= 1; offset++ {
+		day := now.AddDate(0, 0, -offset).Format("2006-01-02")
+		key := "trending:hashtags:" + day
+		results, err := p.rdb.ZRevRangeWithScores(ctx, key, 0, int64(p.topN-1)).Result()
+		if err != nil {
+			return nil, fmt.Errorf("zrevrange %s: %w", key, err)
+		}
+		if len(results) == 0 {
+			continue
+		}
+		entries := make([]Entry, 0, len(results))
+		for _, z := range results {
+			name, _ := z.Member.(string)
+			name = strings.TrimSpace(strings.ToLower(strings.TrimPrefix(name, "#")))
+			if name == "" {
+				continue
+			}
+			entries = append(entries, Entry{
+				NormalizedName: name,
+				DisplayName:    name,
+				PostCount:      int64(z.Score),
+				IsTrending:     true,
+			})
+		}
+		return entries, nil
+	}
+	return nil, nil
 }
 
 // snapshotChanged returns true when the new list differs from the

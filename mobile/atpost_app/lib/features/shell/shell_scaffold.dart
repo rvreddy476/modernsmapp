@@ -136,6 +136,26 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold> {
     return v;
   }
 
+  /// Returns the deep link only if it's a safe in-app path
+  /// ("/foo/bar"). Rejects external URLs, scheme-prefixed inputs,
+  /// query-string-only fragments, and malformed strings — go_router
+  /// crashes on anything but a route path, and a server that emits a
+  /// `https://evil.example/...` deep link must NOT be allowed to
+  /// punt the user out of the app.
+  String? _validateDeepLink(String? raw) {
+    if (raw == null) return null;
+    final trimmed = raw.trim();
+    if (trimmed.isEmpty) return null;
+    if (!trimmed.startsWith('/')) return null;
+    if (trimmed.startsWith('//')) return null; // protocol-relative
+    // Path can include query + fragment but the prefix must look like
+    // a route — letters, digits, `_`, `-`, `/`, `:` for params, and
+    // common URL chars after.
+    final pathOnly = trimmed.split('?').first.split('#').first;
+    if (!RegExp(r'^[A-Za-z0-9_\-/:%.]+$').hasMatch(pathOnly)) return null;
+    return trimmed;
+  }
+
   /// Render the incoming NotificationEvent as a tap-to-open
   /// SnackBar. Title + body come straight from the server-rendered
   /// template (notification-service applies `RenderTitle` already),
@@ -197,13 +217,14 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold> {
             ),
           ],
         ),
-        action: deepLink != null
+        action: _validateDeepLink(deepLink) != null
             ? SnackBarAction(
                 label: 'Open',
                 textColor: AppColors.postbookPrimary,
                 onPressed: () {
-                  if (!mounted) return;
-                  context.push(deepLink);
+                  final path = _validateDeepLink(deepLink);
+                  if (!mounted || path == null) return;
+                  context.push(path);
                 },
               )
             : null,

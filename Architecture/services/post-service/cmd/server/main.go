@@ -16,6 +16,7 @@ import (
 	"github.com/atpost/post-service/internal/service"
 	"github.com/atpost/post-service/internal/store/postgres"
 	"github.com/atpost/post-service/internal/store/scylla"
+	"github.com/atpost/post-service/internal/streamhub"
 	"github.com/atpost/post-service/internal/trending"
 	"github.com/atpost/shared/health"
 	"github.com/atpost/shared/middleware"
@@ -238,7 +239,15 @@ func main() {
 	slog.Info("reconciler, outbox, and cleanup workers started")
 
 	// 12. HTTP Server
-	postHandler := http.New(postSvc, rdb)
+	// Shared SSE fan-out hub: one Redis SUB per channel, in-memory
+	// broadcast to all attached HTTP listeners. Without this, the
+	// /v1/hashtags/:tag/stream + /v1/hashtags/trending/stream
+	// handlers would each open a Redis SUB per connected client —
+	// 50k clients = 50k Redis subs per instance. With the hub it's
+	// O(distinct channels) instead. See internal/streamhub.
+	sseHub := streamhub.New(rdb, slog.Default())
+
+	postHandler := http.New(postSvc, rdb).WithStreamHub(sseHub)
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()

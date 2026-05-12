@@ -36,10 +36,6 @@ func (h *Handler) StreamTrendingHashtags(c *gin.Context) {
 	ctx, cancel := context.WithCancel(c.Request.Context())
 	defer cancel()
 
-	sub := h.rdb.Subscribe(ctx, trending.PubSubChannel)
-	defer sub.Close()
-	ch := sub.Channel()
-
 	// Send an initial connected event so the client knows it's live
 	// before the first publish tick fires.
 	fmt.Fprintf(c.Writer, "event: connected\ndata: {\"channel\":%q}\n\n", trending.PubSubChannel)
@@ -48,6 +44,33 @@ func (h *Handler) StreamTrendingHashtags(c *gin.Context) {
 	heartbeat := time.NewTicker(trendingStreamHeartbeat)
 	defer heartbeat.Stop()
 
+	if h.hub != nil {
+		sub, err := h.hub.Subscribe(ctx, trending.PubSubChannel)
+		if err != nil {
+			return
+		}
+		defer sub.Cancel()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-heartbeat.C:
+				fmt.Fprintf(c.Writer, ": keepalive\n\n")
+				c.Writer.Flush()
+			case payload, ok := <-sub.Msgs:
+				if !ok {
+					return
+				}
+				fmt.Fprintf(c.Writer, "event: trending\ndata: %s\n\n", payload)
+				c.Writer.Flush()
+			}
+		}
+	}
+
+	// Fallback when no hub is installed — one Redis SUB per HTTP client.
+	sub := h.rdb.Subscribe(ctx, trending.PubSubChannel)
+	defer sub.Close()
+	ch := sub.Channel()
 	for {
 		select {
 		case <-ctx.Done():
