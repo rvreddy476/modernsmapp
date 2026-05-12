@@ -104,9 +104,65 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 	case events.PostContentTypeChanged:
 		return c.handlePostContentTypeChanged(ctx, envelope)
 
+	case events.UserFollowed:
+		return c.handleUserFollowed(ctx, envelope)
+
 	default:
 		return nil
 	}
+}
+
+// handleUserFollowed backfills the follower's home timeline with the
+// followee's recent posts so a freshly-followed account becomes
+// visible immediately. Without this, only posts created AFTER the
+// follow landed (via PostCreated fan-out on write) ever reached the
+// follower, which surfaced as "I followed X but my feed is empty."
+//
+// We pull the current month's bucket from author_timeline_by_author
+// (capped at backfillLimit) and write each row into the follower's
+// home_timeline_by_user. Idempotent: AddToHomeTimeline upserts on
+// (user_id, bucket, ts, post_id) so re-running on an unfollow + refollow
+// cycle is safe.
+func (c *Consumer) handleUserFollowed(ctx context.Context, envelope events.EventEnvelope) error {
+	if c.timelineStore == nil {
+		return nil
+	}
+
+	const backfillLimit = 50
+
+	var p events.UserFollowedPayload
+	payloadBytes, _ := json.Marshal(envelope.Payload)
+	if err := json.Unmarshal(payloadBytes, &p); err != nil {
+		return err
+	}
+
+	followerID, err := uuid.Parse(p.FollowerID)
+	if err != nil {
+		return fmt.Errorf("parse follower_id: %w", err)
+	}
+	followeeID, err := uuid.Parse(p.FolloweeID)
+	if err != nil {
+		return fmt.Errorf("parse followee_id: %w", err)
+	}
+
+	items, err := c.timelineStore.GetAuthorTimeline(ctx, followeeID, backfillLimit)
+	if err != nil {
+		return fmt.Errorf("read author timeline for backfill: %w", err)
+	}
+	if len(items) == 0 {
+		log.Printf("[feed] UserFollowed: nothing to backfill (follower=%s followee=%s)", followerID, followeeID)
+		return nil
+	}
+
+	var failures int
+	for _, it := range items {
+		if err := c.timelineStore.AddToHomeTimeline(ctx, followerID, it.PostID, followeeID, it.CreatedAt, it.ContentType); err != nil {
+			failures++
+			log.Printf("[feed] UserFollowed backfill: AddToHomeTimeline failed post=%s err=%v", it.PostID, err)
+		}
+	}
+	log.Printf("[feed] UserFollowed backfill: follower=%s followee=%s injected=%d failed=%d", followerID, followeeID, len(items)-failures, failures)
+	return nil
 }
 
 // handlePostContentTypeChanged rewrites the content_type column on
