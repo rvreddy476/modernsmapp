@@ -68,6 +68,11 @@ func (s *Server) Routes() nethttp.Handler {
 	mux := nethttp.NewServeMux()
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/v1/ws/connect", s.handleWS)
+	// Web's notificationSocket.ts opens against this path; keep it as
+	// an alias so a stale frontend deployment still connects. Same
+	// handler — chat + posts + presence + notifications all multiplex
+	// over the single connection.
+	mux.HandleFunc("/v1/ws/notifications", s.handleWS)
 	return loggingMiddleware(s.log, mux)
 }
 
@@ -111,8 +116,14 @@ func (s *Server) handleWS(w nethttp.ResponseWriter, r *nethttp.Request) {
 		s.rdb.Publish(delCtx, "presence:updates", fmt.Sprintf(`{"user_id":"%s","online":false}`, userID.String()))
 	}()
 
-	// Subscribe to chat messages, new posts, post interaction updates, and presence changes
-	pubsub := s.rdb.Subscribe(ctx, chatChannel, "feed:new_post", "feed:post_update", "presence:updates")
+	// Subscribe to chat messages, new posts, post interaction updates,
+	// presence changes, and personal notifications.
+	// `notify:<userID>` is published by notification-service whenever a
+	// new notification lands for this user (likes, comments, follows,
+	// mentions, etc.). Multiplexing it over the chat connection means
+	// mobile + web don't need a second long-lived WS per device.
+	notifyChannel := fmt.Sprintf("notify:%s", userID.String())
+	pubsub := s.rdb.Subscribe(ctx, chatChannel, notifyChannel, "feed:new_post", "feed:post_update", "presence:updates")
 	defer func() {
 		_ = pubsub.Close()
 	}()

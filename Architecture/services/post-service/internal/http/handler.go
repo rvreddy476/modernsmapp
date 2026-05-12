@@ -117,6 +117,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// hashtag endpoint lives under /v1/hashtags/trending to keep it in
 	// post-service where the data lives.
 	r.GET("/v1/hashtags/trending", h.GetTrendingHashtagsFeed)
+	// Live top-N stream — debounced 30 s pushes from
+	// internal/trending.Publisher; implementation in trending_stream.go.
+	r.GET("/v1/hashtags/trending/stream", h.StreamTrendingHashtags)
 	r.GET("/v1/posts/trending", h.GetTrendingPosts)
 	// Spec §7.6: 30 req/min per user, burst small. ~0.5 req/sec sustained.
 	hashtagSearchLimit := sharedmiddleware.RateLimit(sharedmiddleware.RateLimitConfig{

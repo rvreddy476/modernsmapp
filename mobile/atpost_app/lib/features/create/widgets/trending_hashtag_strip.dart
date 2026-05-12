@@ -1,6 +1,9 @@
 // Reusable trending-hashtag chip strip. Fetched once on mount via
-// HashtagRepository.getTrending and renders the top N tags as one-tap
-// chips. Used by both the post composer (create_post_screen) and the
+// HashtagRepository.getTrending, then kept live by subscribing to the
+// /v1/hashtags/trending/stream SSE endpoint — post-service's
+// trending.Publisher pushes a debounced snapshot whenever the top-N
+// changes (typically every 30 s when activity is high, never when
+// idle). Used by both the post composer (create_post_screen) and the
 // reels caption composer to anchor canonical tag choices instead of
 // letting users invent fresh near-duplicates.
 //
@@ -9,10 +12,14 @@
 // splice it into its own input shape — text-field insert vs. chip
 // list vs. dropdown reuse.
 
+import 'dart:async';
+
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_app/features/hashtag_feed/data/hashtag_live_stream.dart';
 import 'package:atpost_app/features/hashtag_feed/data/hashtag_repository.dart';
 import 'package:atpost_app/features/hashtag_feed/models/hashtag_model.dart';
+import 'package:atpost_app/features/hashtag_feed/state/hashtag_feed_notifier.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -50,13 +57,22 @@ class _TrendingHashtagStripState extends ConsumerState<TrendingHashtagStrip> {
   List<HashtagModel> _trending = const <HashtagModel>[];
   bool _loading = true;
   bool _failed = false;
+  StreamSubscription<HashtagSnapshot>? _liveSub;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _load();
+      if (!mounted) return;
+      _load();
+      _openLiveStream();
     });
+  }
+
+  @override
+  void dispose() {
+    _liveSub?.cancel();
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -76,6 +92,30 @@ class _TrendingHashtagStripState extends ConsumerState<TrendingHashtagStrip> {
         _loading = false;
       });
     }
+  }
+
+  /// Open the SSE subscription so the chip strip refreshes whenever
+  /// the post-service publisher emits a new top-N snapshot. Cancelled
+  /// in dispose. Errors are logged at the stream layer and fall back
+  /// to the initial REST load.
+  void _openLiveStream() {
+    _liveSub?.cancel();
+    final stream = ref.read(hashtagLiveStreamProvider).subscribeTrending();
+    _liveSub = stream.listen(
+      (snapshot) {
+        if (!mounted || snapshot.tags.isEmpty) return;
+        setState(() {
+          _trending = snapshot.tags;
+          // Successful push implicitly clears any prior failure state.
+          _failed = false;
+          _loading = false;
+        });
+      },
+      onError: (_) {
+        // Push channel down — keep showing whatever we last loaded.
+      },
+      cancelOnError: false,
+    );
   }
 
   bool _isExcluded(String name) {

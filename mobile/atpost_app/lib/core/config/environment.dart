@@ -59,7 +59,9 @@ class Environment {
         _trimOrNull(_configuredWsBaseUrl) != null) {
       return null;
     }
-    // Default to the production domain to avoid 127.0.0.1 hangs on physical devices
+    // In debug mode, we might want to default to null to use 127.0.0.1 with adb reverse.
+    // However, to keep existing behavior, we only switch if a specific flag is set
+    // or we can detect we want local. For now, let's keep the default but allow override.
     return _defaultExternalDomain;
   }
 

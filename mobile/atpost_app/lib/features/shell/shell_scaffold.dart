@@ -19,15 +19,18 @@
 
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_app/data/models/realtime_event.dart';
 import 'package:atpost_app/features/home/home_feed_screen.dart';
 import 'package:atpost_app/features/reels/reels_screen.dart';
 import 'package:atpost_app/features/services/services_screen.dart';
 import 'package:atpost_app/features/shell/create_options_sheet.dart';
 import 'package:atpost_app/features/shell/shell_providers.dart';
 import 'package:atpost_app/features/wallet/wallet_home_screen.dart';
+import 'package:atpost_app/providers/notification_provider.dart';
 import 'package:atpost_app/services/shell_telemetry.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 /// Stable index map for the four real tabs. `create` (visually centered)
 /// is intentionally NOT a tab — it's a FAB that opens a sheet.
@@ -79,6 +82,24 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold> {
   Widget build(BuildContext context) {
     final current = ref.watch(shellTabProvider);
 
+    // Live notifications. Every NotificationEvent off the WS multiplex
+    // surfaces here exactly once: we invalidate the bell + inbox so
+    // the badge updates without a refetch, then show a tap-to-open
+    // toast. Sitting at the shell level means the toast is reachable
+    // from every tab, but a fullscreen route on top (e.g. /reels) can
+    // still cover it — that's intentional, the snackbar host follows
+    // the topmost Scaffold.
+    ref.listen<AsyncValue<NotificationEvent>>(liveNotificationsProvider, (
+      _,
+      next,
+    ) {
+      final evt = next.valueOrNull;
+      if (evt == null || !mounted) return;
+      ref.invalidate(unreadNotificationCountProvider);
+      ref.invalidate(notificationsProvider);
+      _showNotificationToast(evt);
+    });
+
     return Scaffold(
       backgroundColor: AppColors.bgPrimary,
       extendBody: true,
@@ -113,6 +134,81 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold> {
   int _safeIndex(int v) {
     if (v < 0 || v >= ShellTabIndex.count) return ShellTabIndex.home;
     return v;
+  }
+
+  /// Render the incoming NotificationEvent as a tap-to-open
+  /// SnackBar. Title + body come straight from the server-rendered
+  /// template (notification-service applies `RenderTitle` already),
+  /// so we just surface them. Tapping pushes the deep link when one
+  /// is present; otherwise the toast is informational.
+  void _showNotificationToast(NotificationEvent evt) {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    if (messenger == null) return;
+    final hasBody = evt.body.isNotEmpty && evt.body != evt.title;
+    final deepLink = evt.deepLink;
+    messenger.removeCurrentSnackBar();
+    messenger.showSnackBar(
+      SnackBar(
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: AppColors.bgSecondary,
+        duration: const Duration(seconds: 4),
+        content: Row(
+          children: [
+            Container(
+              width: 32,
+              height: 32,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: AppColors.postbookPrimary.withValues(alpha: 0.18),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Icon(
+                Icons.notifications_rounded,
+                size: 18,
+                color: AppColors.postbookPrimary,
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    evt.title.isNotEmpty ? evt.title : 'New notification',
+                    style: AppTextStyles.label.copyWith(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w700,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  if (hasBody)
+                    Text(
+                      evt.body,
+                      style: AppTextStyles.labelSmall.copyWith(
+                        color: Colors.white70,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        action: deepLink != null
+            ? SnackBarAction(
+                label: 'Open',
+                textColor: AppColors.postbookPrimary,
+                onPressed: () {
+                  if (!mounted) return;
+                  context.push(deepLink);
+                },
+              )
+            : null,
+      ),
+    );
   }
 }
 

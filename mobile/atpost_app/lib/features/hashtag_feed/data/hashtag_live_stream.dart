@@ -1,28 +1,43 @@
-// Minimal SSE client for the hashtag real-time stream. Connects to
-// GET /v1/hashtags/<tag>/stream, parses incoming text into SSE
-// events, and forwards each `new_post` event as a tick on the
-// returned broadcast stream.
+// Minimal SSE client for the hashtag real-time streams. Two public
+// entry points:
+//   - subscribe(tag)      → /v1/hashtags/<tag>/stream, emits one
+//                            HashtagStreamEvent per `new_post` frame
+//   - subscribeTrending() → /v1/hashtags/trending/stream, emits one
+//                            HashtagSnapshot per `trending` frame
 //
 // Not a general-purpose SSE library — only the subset post-service
 // emits: `event: <name>\ndata: <json>\n\n`, optionally preceded by
-// `:` keepalive comments. That's enough for the hashtag-feed pill.
+// `:` keepalive comments. That's enough for the per-tag pill + the
+// trending chip strip.
 
 import 'dart:async';
 import 'dart:convert';
 
 import 'package:atpost_app/core/config/environment.dart';
 import 'package:atpost_app/core/utils/app_logger.dart';
+import 'package:atpost_app/features/hashtag_feed/models/hashtag_model.dart';
 import 'package:dio/dio.dart';
 
-/// One decoded `new_post` event off the stream. We don't bind to a
-/// strict shape so the SSE payload can grow without forcing a client
-/// rebuild — the UI only cares "something new happened".
+/// One decoded `new_post` event off the per-tag stream. We don't
+/// bind to a strict shape so the SSE payload can grow without
+/// forcing a client rebuild — the UI only cares "something new
+/// happened".
 class HashtagStreamEvent {
   const HashtagStreamEvent(this.payload);
 
   /// Decoded JSON body of the `data:` line. Empty map on parse failure
   /// (e.g. heartbeat — though those are filtered above).
   final Map<String, dynamic> payload;
+}
+
+/// One decoded `trending` snapshot off the global stream. The
+/// publisher debounces to ~30 s so each emission represents a real
+/// change in the top-N (membership, rank, or post count).
+class HashtagSnapshot {
+  const HashtagSnapshot({required this.tags, required this.updatedAt});
+
+  final List<HashtagModel> tags;
+  final DateTime updatedAt;
 }
 
 class HashtagLiveStream {
@@ -48,14 +63,48 @@ class HashtagLiveStream {
       cancelToken.cancel('stream closed by client');
     };
 
-    _open(url, cancelToken, controller);
+    _open(url, 'new_post', cancelToken, controller,
+        (data) => HashtagStreamEvent(data));
     return controller.stream;
   }
 
-  Future<void> _open(
+  /// Opens GET /v1/hashtags/trending/stream and emits one
+  /// HashtagSnapshot per `trending` event. The publisher in
+  /// post-service is leader-elected + debounced so this stream is
+  /// quiet by design — typically 0–2 messages/min cluster-wide
+  /// regardless of how many clients are subscribed.
+  Stream<HashtagSnapshot> subscribeTrending() {
+    final url = '${Environment.apiBaseUrl}/v1/hashtags/trending/stream';
+    final controller = StreamController<HashtagSnapshot>();
+    final cancelToken = CancelToken();
+    controller.onCancel = () => cancelToken.cancel('stream closed by client');
+    _open(url, 'trending', cancelToken, controller, _decodeTrending);
+    return controller.stream;
+  }
+
+  HashtagSnapshot _decodeTrending(Map<String, dynamic> data) {
+    final rawTags = (data['hashtags'] as List?) ?? const [];
+    final tags = <HashtagModel>[];
+    for (final raw in rawTags) {
+      if (raw is Map<String, dynamic>) {
+        tags.add(HashtagModel.fromJson(raw));
+      } else if (raw is Map) {
+        tags.add(HashtagModel.fromJson(Map<String, dynamic>.from(raw)));
+      }
+    }
+    final updatedRaw = data['updated_at'];
+    final updatedAt = updatedRaw is String
+        ? DateTime.tryParse(updatedRaw)?.toLocal() ?? DateTime.now()
+        : DateTime.now();
+    return HashtagSnapshot(tags: tags, updatedAt: updatedAt);
+  }
+
+  Future<void> _open<T>(
     String url,
+    String acceptedEventName,
     CancelToken cancelToken,
-    StreamController<HashtagStreamEvent> controller,
+    StreamController<T> controller,
+    T Function(Map<String, dynamic> data) mapper,
   ) async {
     try {
       final response = await _dio.get<ResponseBody>(
@@ -87,8 +136,8 @@ class HashtagLiveStream {
           if (boundary < 0) break;
           final raw = buffer.substring(0, boundary);
           buffer = buffer.substring(boundary + 2);
-          final parsed = _parseEvent(raw);
-          if (parsed != null) controller.add(parsed);
+          final data = _parsePayload(raw, acceptedEventName);
+          if (data != null) controller.add(mapper(data));
         }
       }
       await controller.close();
@@ -116,11 +165,12 @@ class HashtagLiveStream {
     }
   }
 
-  /// Parses one SSE event block. Returns null when:
-  /// - the block is a `:` keepalive comment, or
-  /// - the event name isn't `new_post`, or
-  /// - the data line isn't JSON.
-  HashtagStreamEvent? _parseEvent(String raw) {
+  /// Parses one SSE event block. Returns the decoded JSON payload when
+  /// the block names [acceptedEventName] and has a valid `data:` line,
+  /// otherwise null. Keepalive comments (`:`-prefixed lines) and other
+  /// event names (`connected`, `keepalive`, …) drop through to null
+  /// silently.
+  Map<String, dynamic>? _parsePayload(String raw, String acceptedEventName) {
     String? event;
     final dataLines = <String>[];
     for (final line in raw.split('\n')) {
@@ -132,10 +182,12 @@ class HashtagLiveStream {
         dataLines.add(line.substring(5).trim());
       }
     }
-    if (event != 'new_post' || dataLines.isEmpty) return null;
+    if (event != acceptedEventName || dataLines.isEmpty) return null;
     try {
-      final payload = jsonDecode(dataLines.join('\n')) as Map<String, dynamic>;
-      return HashtagStreamEvent(payload);
+      final decoded = jsonDecode(dataLines.join('\n'));
+      if (decoded is Map<String, dynamic>) return decoded;
+      if (decoded is Map) return Map<String, dynamic>.from(decoded);
+      return null;
     } catch (_) {
       return null;
     }

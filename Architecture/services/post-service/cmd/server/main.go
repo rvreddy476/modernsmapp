@@ -16,6 +16,7 @@ import (
 	"github.com/atpost/post-service/internal/service"
 	"github.com/atpost/post-service/internal/store/postgres"
 	"github.com/atpost/post-service/internal/store/scylla"
+	"github.com/atpost/post-service/internal/trending"
 	"github.com/atpost/shared/health"
 	"github.com/atpost/shared/middleware"
 	"github.com/atpost/shared/o11y/logging"
@@ -162,15 +163,37 @@ func main() {
 	reelAnalytics := consumers.NewReelAnalyticsConsumer(dbPool, rdb)
 	go reelAnalytics.Start(consumerCtx, brokers, engTopic)
 
+	// Single Prometheus metrics handle shared by every Kafka consumer in
+	// this service. Two `NewKafkaConsumerMetrics("post-service")` calls
+	// trip a `duplicate metrics collector registration` panic — promauto
+	// hates two collectors with the same fully-qualified name.
+	consumerMetrics := metrics.NewKafkaConsumerMetrics("post-service")
+
 	// Media transcode consumer: listens to media-service's `media.events`
 	// topic and updates video_metadata.playback_url with the HLS master URL
 	// once transcoding finishes. Without this the watch screen always falls
 	// back to the raw MP4 even though HLS variants exist on storage.
-	mediaTranscodeMetrics := metrics.NewKafkaConsumerMetrics("post-service")
-	mediaTranscodeConsumer := mediaConsumers.NewMediaTranscodeConsumer(pgStore, brokers, rdb, mediaTranscodeMetrics)
+	mediaTranscodeConsumer := mediaConsumers.
+		NewMediaTranscodeConsumer(pgStore, brokers, rdb, consumerMetrics).
+		WithProducer(legacyProducer) // fan PostContentTypeChanged out to feed-service
 	go mediaTranscodeConsumer.Start(consumerCtx)
 
-	slog.Info("engagement consumers + media transcode consumer started")
+	// Tier 1a phase 2: invalidate the local entitlement cache the
+	// moment monetization-service publishes a subscribe/unsubscribe
+	// event. Without this, the TTL (60s) is the floor on how fast a
+	// new subscription unlocks gated content.
+	entitlementConsumer := mediaConsumers.NewEntitlementChangedConsumer(postSvc, brokers, rdb, consumerMetrics)
+	go entitlementConsumer.Start(consumerCtx)
+
+	slog.Info("engagement consumers + media + entitlement consumers started")
+
+	// Real-time trending leaderboard. Single goroutine per replica;
+	// only the leader-locked instance actually publishes, so adding
+	// more replicas doesn't multiply the work. Subscribers attach via
+	// the SSE handler in internal/http/trending_stream.go.
+	trendingPub := trending.New(rdb, slog.Default())
+	trendingPub.Start(consumerCtx)
+	slog.Info("trending publisher started")
 
 	// 11. Reconciliation worker (every 5 min)
 	reconciler := engagement.NewReconciler(rdb, scyllaSession, dbPool)
@@ -323,6 +346,12 @@ func ensureSchema(ctx context.Context, db *pgxpool.Pool) {
 		`CREATE INDEX IF NOT EXISTS idx_comments_post ON comments (post_id, created_at DESC) WHERE is_deleted = FALSE`,
 		`CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments (parent_id, created_at ASC) WHERE parent_id IS NOT NULL AND is_deleted = FALSE`,
 		`CREATE INDEX IF NOT EXISTS idx_comments_author ON comments (author_id, created_at DESC) WHERE is_deleted = FALSE`,
+		// Tier 2b: comment moderation queue
+		`ALTER TABLE comments ADD COLUMN IF NOT EXISTS moderation_status TEXT NOT NULL DEFAULT 'visible'
+			CHECK (moderation_status IN ('visible','hidden','removed','review'))`,
+		`ALTER TABLE comments ADD COLUMN IF NOT EXISTS flagged_count INTEGER NOT NULL DEFAULT 0`,
+		`CREATE INDEX IF NOT EXISTS idx_comments_moderation_status ON comments (moderation_status, created_at DESC) WHERE moderation_status IN ('hidden','removed','review')`,
+		`CREATE INDEX IF NOT EXISTS idx_comments_flagged ON comments (flagged_count DESC, created_at DESC) WHERE flagged_count > 0`,
 		`CREATE TABLE IF NOT EXISTS post_engagement_counts (
 			post_id         UUID PRIMARY KEY REFERENCES posts(id),
 			like_count      INTEGER NOT NULL DEFAULT 0,

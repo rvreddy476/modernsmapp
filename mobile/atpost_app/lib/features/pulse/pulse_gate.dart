@@ -45,7 +45,7 @@ final pulseEnabledProvider = FutureProvider<bool>((ref) async {
   final api = ref.watch(pulseApiClientProvider);
   try {
     final response = await api.get(
-      '/v1/feature-flags/check',
+      '/v1/flags/me',
       queryParameters: {'key': 'pulse_enabled_master'},
     );
     final body = response.data;
