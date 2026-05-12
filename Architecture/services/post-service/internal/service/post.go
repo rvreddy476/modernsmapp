@@ -557,6 +557,19 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 			},
 		})
 		s.rdb.Publish(bgCtx, "feed:new_post", feedSignal)
+
+		// Per-hashtag real-time push. Same shape as feed:new_post so
+		// the SSE handler in internal/http/hashtag_stream.go can
+		// forward straight through. One channel per tag — clients
+		// subscribed to a specific tag only see posts that actually
+		// carry it, no client-side filtering needed.
+		for _, tag := range p.Hashtags {
+			cleaned := strings.ToLower(strings.TrimPrefix(tag, "#"))
+			if cleaned == "" {
+				continue
+			}
+			s.rdb.Publish(bgCtx, "hashtag:"+cleaned+":new_post", feedSignal)
+		}
 	}()
 
 	return p, nil

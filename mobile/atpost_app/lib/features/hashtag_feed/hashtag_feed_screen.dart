@@ -128,6 +128,17 @@ class _HashtagFeedScreenState extends ConsumerState<HashtagFeedScreen>
         padding: AppSpacing.pagePadding.copyWith(top: 8),
         child: Column(
           children: [
+            // Real-time SSE pill: post-service publishes on
+            // `hashtag:<tag>:new_post` whenever someone creates a post
+            // with the active tag. Tap to refetch + reset the counter.
+            if (state.newPostCount > 0)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: _NewPostsPill(
+                  count: state.newPostCount,
+                  onTap: notifier.acknowledgeNewPosts,
+                ),
+              ),
             for (final post in state.posts)
               Padding(
                 padding: const EdgeInsets.only(bottom: 12),
@@ -161,6 +172,63 @@ class _HashtagFeedScreenState extends ConsumerState<HashtagFeedScreen>
           ),
         ),
     ];
+  }
+}
+
+// ---------------- "N new posts" pill ----------------
+
+class _NewPostsPill extends StatelessWidget {
+  const _NewPostsPill({required this.count, required this.onTap});
+
+  final int count;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = count == 1 ? '1 new post' : '$count new posts';
+    return Center(
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(999),
+          onTap: onTap,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                colors: [
+                  AppColors.postbookPrimary,
+                  AppColors.posttubePrimary,
+                ],
+              ),
+              borderRadius: BorderRadius.circular(999),
+              boxShadow: [
+                BoxShadow(
+                  color: AppColors.postbookPrimary.withValues(alpha: 0.35),
+                  blurRadius: 12,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.arrow_upward_rounded,
+                    color: Colors.white, size: 16),
+                const SizedBox(width: 6),
+                Text(
+                  label,
+                  style: AppTextStyles.labelSmall.copyWith(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 

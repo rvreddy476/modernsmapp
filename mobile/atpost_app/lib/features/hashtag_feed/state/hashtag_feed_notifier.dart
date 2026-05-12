@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:atpost_app/core/utils/app_logger.dart';
+import 'package:atpost_app/features/hashtag_feed/data/hashtag_live_stream.dart';
 import 'package:atpost_app/features/hashtag_feed/data/hashtag_repository.dart';
 import 'package:atpost_app/features/hashtag_feed/models/hashtag_model.dart';
 import 'package:atpost_app/features/hashtag_feed/state/hashtag_feed_state.dart';
@@ -9,15 +10,21 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 /// Owns the #Hashtag tab state. Public methods cover the transitions
 /// described in spec §9.3.
 class HashtagFeedNotifier extends StateNotifier<HashtagFeedState> {
-  HashtagFeedNotifier(this._repo) : super(const HashtagFeedState()) {
+  HashtagFeedNotifier(this._repo, this._liveStream)
+      : super(const HashtagFeedState()) {
     _bootstrap();
   }
 
   static const _tag = 'HashtagFeed';
   final HashtagRepository _repo;
+  final HashtagLiveStream _liveStream;
 
   Timer? _searchDebounce;
   int _searchSeq = 0;
+  // Live SSE subscription for the currently selected hashtag. Cancelled
+  // and re-opened whenever the selection changes; null while no tag
+  // is selected (initial state / clearSelectedHashtag).
+  StreamSubscription<HashtagStreamEvent>? _streamSub;
 
   Future<void> _bootstrap() async {
     await refresh();
@@ -84,7 +91,9 @@ class HashtagFeedNotifier extends StateNotifier<HashtagFeedState> {
       searchSuggestions: const [],
       status: HashtagFeedStatus.loading,
       clearErrorMessage: true,
+      newPostCount: 0,
     );
+    _subscribeStream(hashtag.normalizedName);
     await _loadPosts(reset: true);
   }
 
@@ -105,6 +114,7 @@ class HashtagFeedNotifier extends StateNotifier<HashtagFeedState> {
 
   /// Clears the selected hashtag and reverts to the default view.
   Future<void> clearSelectedHashtag() async {
+    _cancelStream();
     state = state.copyWith(
       clearSelectedHashtag: true,
       query: '',
@@ -113,8 +123,51 @@ class HashtagFeedNotifier extends StateNotifier<HashtagFeedState> {
       hasMore: false,
       clearNextCursor: true,
       searchSuggestions: const [],
+      newPostCount: 0,
     );
     await refresh();
+  }
+
+  /// Pull-to-refresh from the inline "N new posts" pill at the top of
+  /// the list. Resets the SSE counter and reloads the first page so
+  /// the new posts are merged into the visible list.
+  Future<void> acknowledgeNewPosts() async {
+    if (state.selectedHashtag == null) return;
+    state = state.copyWith(newPostCount: 0);
+    await _loadPosts(reset: true);
+  }
+
+  /// Opens an SSE subscription for [normalized]. Caller is responsible
+  /// for clearing newPostCount in the same state transition so the pill
+  /// doesn't briefly flash with the previous tag's count.
+  void _subscribeStream(String normalized) {
+    _cancelStream();
+    final cleaned = normalized.replaceAll('#', '').trim().toLowerCase();
+    if (cleaned.isEmpty) return;
+    _streamSub = _liveStream.subscribe(cleaned).listen(
+      (_) {
+        // Bail if the user has navigated away to a different tag
+        // mid-flight — the subscription will be replaced on the next
+        // selectHashtag() call, but events already in transit are
+        // discarded here so they don't poison the new counter.
+        if (state.selectedHashtag?.normalizedName != cleaned) return;
+        state = state.copyWith(newPostCount: state.newPostCount + 1);
+      },
+      onError: (err, st) {
+        AppLogger.warn(
+          'hashtag stream subscription error',
+          tag: _tag,
+          error: err,
+          stackTrace: st is StackTrace ? st : null,
+        );
+      },
+      cancelOnError: false,
+    );
+  }
+
+  void _cancelStream() {
+    _streamSub?.cancel();
+    _streamSub = null;
   }
 
   /// Update the sort mode for the current hashtag.
@@ -220,11 +273,19 @@ class HashtagFeedNotifier extends StateNotifier<HashtagFeedState> {
   @override
   void dispose() {
     _searchDebounce?.cancel();
+    _cancelStream();
     super.dispose();
   }
 }
 
+final hashtagLiveStreamProvider = Provider<HashtagLiveStream>(
+  (_) => HashtagLiveStream(),
+);
+
 final hashtagFeedProvider =
     StateNotifierProvider.autoDispose<HashtagFeedNotifier, HashtagFeedState>(
-  (ref) => HashtagFeedNotifier(ref.watch(hashtagRepositoryProvider)),
+  (ref) => HashtagFeedNotifier(
+    ref.watch(hashtagRepositoryProvider),
+    ref.watch(hashtagLiveStreamProvider),
+  ),
 );

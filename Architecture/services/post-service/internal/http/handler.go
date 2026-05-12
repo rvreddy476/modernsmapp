@@ -125,6 +125,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	})
 	r.GET("/v1/hashtags/search", hashtagSearchLimit, h.SearchHashtags)
 	r.GET("/v1/hashtags/:tag/posts", h.GetPostsByHashtag)
+	// Real-time hashtag-feed push. Holds an SSE connection open and
+	// forwards every new post that includes :tag (via Redis pub/sub
+	// channel `hashtag:<tag>:new_post`). Implementation lives in
+	// hashtag_stream.go.
+	r.GET("/v1/hashtags/:tag/stream", h.StreamHashtagPosts)
 
 	// Video creator tools
 	videos := r.Group("/v1/videos")
