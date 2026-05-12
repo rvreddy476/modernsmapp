@@ -117,13 +117,13 @@ func (s *Server) handleWS(w nethttp.ResponseWriter, r *nethttp.Request) {
 	}()
 
 	// Subscribe to chat messages, new posts, post interaction updates,
-	// presence changes, and personal notifications.
-	// `notify:<userID>` is published by notification-service whenever a
-	// new notification lands for this user (likes, comments, follows,
-	// mentions, etc.). Multiplexing it over the chat connection means
-	// mobile + web don't need a second long-lived WS per device.
-	notifyChannel := fmt.Sprintf("notify:%s", userID.String())
-	pubsub := s.rdb.Subscribe(ctx, chatChannel, notifyChannel, "feed:new_post", "feed:post_update", "presence:updates")
+	// and presence changes. Notifications used to ride this multiplex
+	// too via `notify:<userID>`, but the realtime-transport split
+	// moved them to a dedicated SSE channel
+	// (notification-service /v1/notifications/stream) per README §1
+	// and §17. Keeping the subscription here would burn Redis fan-out
+	// bandwidth per connected client with no consumer.
+	pubsub := s.rdb.Subscribe(ctx, chatChannel, "feed:new_post", "feed:post_update", "presence:updates")
 	defer func() {
 		_ = pubsub.Close()
 	}()
