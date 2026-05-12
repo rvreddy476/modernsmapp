@@ -107,6 +107,9 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 	case events.UserFollowed:
 		return c.handleUserFollowed(ctx, envelope)
 
+	case events.UserUnfollowed:
+		return c.handleUserUnfollowed(ctx, envelope)
+
 	default:
 		return nil
 	}
@@ -118,17 +121,18 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 // follow landed (via PostCreated fan-out on write) ever reached the
 // follower, which surfaced as "I followed X but my feed is empty."
 //
-// We pull the current month's bucket from author_timeline_by_author
-// (capped at backfillLimit) and write each row into the follower's
+// We pull up to backfillLimit rows from author_timeline_by_author
+// across the last bucketLookback months and write each into
 // home_timeline_by_user. Idempotent: AddToHomeTimeline upserts on
-// (user_id, bucket, ts, post_id) so re-running on an unfollow + refollow
-// cycle is safe.
+// (user_id, bucket, ts, post_id) so an unfollow → refollow cycle is
+// safe.
 func (c *Consumer) handleUserFollowed(ctx context.Context, envelope events.EventEnvelope) error {
 	if c.timelineStore == nil {
 		return nil
 	}
 
 	const backfillLimit = 50
+	const bucketLookback = 3
 
 	var p events.UserFollowedPayload
 	payloadBytes, _ := json.Marshal(envelope.Payload)
@@ -145,7 +149,7 @@ func (c *Consumer) handleUserFollowed(ctx context.Context, envelope events.Event
 		return fmt.Errorf("parse followee_id: %w", err)
 	}
 
-	items, err := c.timelineStore.GetAuthorTimeline(ctx, followeeID, backfillLimit)
+	items, err := c.timelineStore.GetAuthorTimelineMultiBucket(ctx, followeeID, backfillLimit, bucketLookback)
 	if err != nil {
 		return fmt.Errorf("read author timeline for backfill: %w", err)
 	}
@@ -162,6 +166,40 @@ func (c *Consumer) handleUserFollowed(ctx context.Context, envelope events.Event
 		}
 	}
 	log.Printf("[feed] UserFollowed backfill: follower=%s followee=%s injected=%d failed=%d", followerID, followeeID, len(items)-failures, failures)
+	return nil
+}
+
+// handleUserUnfollowed purges every row from the follower's
+// home_timeline_by_user where author_id == followee, so an unfollow
+// reflects immediately in the feed (both the fan-out-on-write rows and
+// the backfilled rows from the matching UserFollowed event go away).
+// Scoped to the last 3 buckets — older entries age out naturally.
+func (c *Consumer) handleUserUnfollowed(ctx context.Context, envelope events.EventEnvelope) error {
+	if c.timelineStore == nil {
+		return nil
+	}
+
+	const bucketLookback = 3
+
+	var p events.UserUnfollowedPayload
+	payloadBytes, _ := json.Marshal(envelope.Payload)
+	if err := json.Unmarshal(payloadBytes, &p); err != nil {
+		return err
+	}
+
+	followerID, err := uuid.Parse(p.FollowerID)
+	if err != nil {
+		return fmt.Errorf("parse follower_id: %w", err)
+	}
+	followeeID, err := uuid.Parse(p.FolloweeID)
+	if err != nil {
+		return fmt.Errorf("parse followee_id: %w", err)
+	}
+
+	if err := c.timelineStore.DeleteHomeTimelineEntriesByAuthorForUser(ctx, followerID, followeeID, bucketLookback); err != nil {
+		return fmt.Errorf("purge home timeline on unfollow: %w", err)
+	}
+	log.Printf("[feed] UserUnfollowed: purged follower=%s entries from followee=%s", followerID, followeeID)
 	return nil
 }
 

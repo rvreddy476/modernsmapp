@@ -300,6 +300,108 @@ func (s *TimelineStore) GetAuthorTimeline(ctx context.Context, authorID uuid.UUI
 	return items, nil
 }
 
+// DeleteHomeTimelineEntriesByAuthorForUser removes from a single user's
+// home_timeline_by_user every row whose author_id matches the given
+// author. Used by the UserUnfollowed consumer to make unfollows
+// immediate: the followee's previously-fanned-out (and previously-
+// backfilled) posts disappear from the follower's feed on next read.
+//
+// home_timeline_by_user is keyed (user_id, bucket) PARTITION, (ts,
+// post_id) CLUSTERING — there's no secondary index on author_id, so
+// we scan the user's buckets and delete by their full primary key.
+// Scoped to the last `bucketLookback` months (default 3) to bound the
+// scan; older entries age out naturally.
+func (s *TimelineStore) DeleteHomeTimelineEntriesByAuthorForUser(ctx context.Context, userID, authorID uuid.UUID, bucketLookback int) error {
+	if bucketLookback <= 0 {
+		bucketLookback = 3
+	}
+	now := time.Now().UTC()
+	gAuthor := toGocql(authorID)
+	gUser := toGocql(userID)
+
+	for i := 0; i < bucketLookback; i++ {
+		b := bucket(now.AddDate(0, -i, 0))
+
+		// Find every (ts, post_id) the followee authored in this bucket
+		// for this user. We scan the partition (cheap — keyed by
+		// user_id+bucket) and filter author_id client-side.
+		iter := s.session.Query(`
+			SELECT ts, post_id, author_id FROM home_timeline_by_user
+			WHERE user_id = ? AND bucket = ?
+		`, gUser, b).WithContext(ctx).Iter()
+
+		type pk struct {
+			ts     gocql.UUID
+			postID gocql.UUID
+		}
+		var doomed []pk
+		var ts, pid, aid gocql.UUID
+		for iter.Scan(&ts, &pid, &aid) {
+			if aid == gAuthor {
+				doomed = append(doomed, pk{ts: ts, postID: pid})
+			}
+		}
+		if err := iter.Close(); err != nil {
+			return err
+		}
+
+		for _, d := range doomed {
+			if err := s.session.Query(`
+				DELETE FROM home_timeline_by_user
+				WHERE user_id = ? AND bucket = ? AND ts = ? AND post_id = ?
+			`, gUser, b, d.ts, d.postID).WithContext(ctx).Exec(); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// GetAuthorTimelineMultiBucket pulls recent author-timeline entries
+// across `bucketLookback` rolling months (oldest-bucket-first then
+// reversed to newest-first). Used by the UserFollowed backfill so a
+// freshly-followed account with no posts in the current bucket still
+// shows up if they posted in the previous month.
+func (s *TimelineStore) GetAuthorTimelineMultiBucket(ctx context.Context, authorID uuid.UUID, limit, bucketLookback int) ([]FeedItem, error) {
+	if bucketLookback <= 0 {
+		bucketLookback = 3
+	}
+	now := time.Now().UTC()
+	gAuthor := toGocql(authorID)
+
+	out := make([]FeedItem, 0, limit)
+	for i := 0; i < bucketLookback && len(out) < limit; i++ {
+		b := bucket(now.AddDate(0, -i, 0))
+		remaining := limit - len(out)
+		iter := s.session.Query(`
+			SELECT post_id, created_at, content_type FROM author_timeline_by_author
+			WHERE author_id = ? AND bucket = ?
+			ORDER BY ts DESC
+			LIMIT ?
+		`, gAuthor, b, remaining).WithContext(ctx).Iter()
+
+		var pid gocql.UUID
+		var createdAt time.Time
+		var contentType *string
+		for iter.Scan(&pid, &createdAt, &contentType) {
+			ct := "post"
+			if contentType != nil && *contentType != "" {
+				ct = *contentType
+			}
+			out = append(out, FeedItem{
+				PostID:      uuid.UUID(pid),
+				AuthorID:    authorID,
+				CreatedAt:   createdAt,
+				ContentType: ct,
+			})
+		}
+		if err := iter.Close(); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
 // DeleteTimelineEntriesByAuthor removes all author-timeline entries for the given
 // author (GDPR right-to-erasure). It deletes across a rolling window of the
 // current and previous two months from author_timeline_by_author.
