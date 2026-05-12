@@ -3,6 +3,7 @@ import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/features/create/providers/creation_provider.dart';
 import 'package:atpost_app/features/create/widgets/mention_field.dart';
+import 'package:atpost_app/features/create/widgets/trending_hashtag_strip.dart';
 import 'package:atpost_app/providers/feed_provider.dart';
 import 'package:atpost_app/providers/user_provider.dart';
 import 'package:flutter/material.dart';
@@ -337,8 +338,49 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
             },
           ),
         ),
+        const SizedBox(height: 16),
+        // Trending tag strip — one-tap insertion at the current caret
+        // so users default to canonical tags. Tapping a chip splices
+        // `#tag ` into the caption; the MentionField's existing
+        // listener will resolve the inserted token like any other.
+        TrendingHashtagStrip(
+          onTagSelected: _insertTagAtCaret,
+          excluded: _currentHashtagsInCaption(),
+        ),
       ],
     );
+  }
+
+  /// Returns the set of `#tag` tokens already present in the caption,
+  /// lowercased for cheap membership check. Used by
+  /// TrendingHashtagStrip to hide chips the user has already added.
+  Set<String> _currentHashtagsInCaption() {
+    final text = _textController.text.toLowerCase();
+    final matches = RegExp(r'#(\w{1,50})').allMatches(text);
+    return {for (final m in matches) '#${m.group(1)!}'};
+  }
+
+  /// Inserts the chip's text at the caret position with a single
+  /// leading and trailing space so the surrounding tokens don't fuse.
+  /// Idempotent — does nothing if the same tag is already present.
+  void _insertTagAtCaret(String chip) {
+    final tag = chip.startsWith('#') ? chip : '#$chip';
+    final text = _textController.text;
+    if (text.toLowerCase().contains(tag.toLowerCase())) return;
+    final selection = _textController.selection;
+    final cursor = selection.isValid ? selection.baseOffset : text.length;
+    final before = text.substring(0, cursor);
+    final after = cursor >= text.length ? '' : text.substring(cursor);
+    final pad = before.isEmpty || before.endsWith(' ') || before.endsWith('\n') ? '' : ' ';
+    final replacement = '$pad$tag ';
+    final next = '$before$replacement$after';
+    _textController.value = TextEditingValue(
+      text: next,
+      selection: TextSelection.collapsed(
+        offset: (before + replacement).length,
+      ),
+    );
+    ref.read(creationProvider.notifier).setText(next);
   }
 
   Widget _buildAiMagicButton(CreationState state) {
