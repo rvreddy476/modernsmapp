@@ -168,6 +168,59 @@ func (s *Store) ResolveMediaKind(ctx context.Context, mediaID uuid.UUID) string 
 	return fileType
 }
 
+// MediaMetadata is the per-media row shape returned by
+// BatchGetMediaMetadata. Fields default to zero values for missing
+// rows so callers can iterate the original input order without
+// per-id error handling.
+type MediaMetadata struct {
+	Kind            string
+	DurationSeconds int
+	Width           int
+	Height          int
+}
+
+// BatchGetMediaMetadata fetches file_type + duration_seconds + width
+// + height for every media id in a single SQL trip. Replaces the
+// per-media N+1 the CreatePost path used to do via
+// ResolveMediaKind / ResolveMediaDuration / ResolveMediaDimensions —
+// audit H1 from the 2026-05-13 sweep.
+//
+// Missing rows are silently absent from the map (caller treats them
+// as the legacy default: kind="image", everything else zero).
+func (s *Store) BatchGetMediaMetadata(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]MediaMetadata, error) {
+	out := make(map[uuid.UUID]MediaMetadata, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT id,
+		       file_type,
+		       COALESCE(duration_seconds, 0),
+		       COALESCE(width, 0),
+		       COALESCE(height, 0)
+		FROM media_assets
+		WHERE id = ANY($1)
+	`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("batch media lookup: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			id   uuid.UUID
+			meta MediaMetadata
+		)
+		if err := rows.Scan(&id, &meta.Kind, &meta.DurationSeconds, &meta.Width, &meta.Height); err != nil {
+			return nil, fmt.Errorf("batch media scan: %w", err)
+		}
+		if meta.Kind == "" {
+			meta.Kind = "image"
+		}
+		out[id] = meta
+	}
+	return out, rows.Err()
+}
+
 // ResolveMediaDuration queries media_assets for the video duration in seconds.
 // Returns 0 if the media is not found, not a video, or duration is not yet set.
 func (s *Store) ResolveMediaDuration(ctx context.Context, mediaID uuid.UUID) int {

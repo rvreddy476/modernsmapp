@@ -17,6 +17,7 @@ import (
 	"github.com/atpost/post-service/internal/spam"
 	"github.com/atpost/post-service/internal/store/postgres"
 	"github.com/atpost/post-service/internal/store/scylla"
+	"github.com/atpost/shared/events"
 	"github.com/gocql/gocql"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -25,6 +26,11 @@ import (
 var (
 	hashtagRegex = regexp.MustCompile(`#(\w{1,50})`)
 	mentionRegex = regexp.MustCompile(`@(\w{1,30})`)
+	// dbMentionRegex is the persistence-side mention pattern — 3+
+	// chars and `.` allowed (handles handles like `john.doe`).
+	// Compiled once at startup; previously this re-compiled on every
+	// post create from inside DetectAndStoreMentions.
+	dbMentionRegex = regexp.MustCompile(`@([a-zA-Z0-9_.]{3,30})`)
 
 	// ErrPostNotVisible is returned when a viewer tries to react /
 	// bookmark / engage with a post whose visibility excludes them
@@ -33,6 +39,13 @@ var (
 	// and leak engagement counts for restricted-visibility posts.
 	// (ErrPostNotFound is declared in my_uploads.go and reused here.)
 	ErrPostNotVisible = errors.New("post not visible to this user")
+
+	// ErrLikesDisabled / ErrCommentsDisabled surface the per-post
+	// engagement flags. Pushed into the service layer (was: handler-
+	// layer GetPost round trip) per audit H2 so engagement no longer
+	// double-fetches the post.
+	ErrLikesDisabled    = errors.New("likes are disabled on this post")
+	ErrCommentsDisabled = errors.New("comments are disabled on this post")
 )
 
 type Service struct {
@@ -175,6 +188,15 @@ func extractHashtags(text string) []string {
 }
 
 // extractMentions parses @username patterns from text.
+// maxMentionsPerPost caps the number of unique @-mentions extracted
+// from a single post. Audit H3: the per-mention resolver fans out one
+// goroutine + one HTTP call to user-service per mention. Without a
+// cap, a post containing 100 `@x` tokens spawns 100 in-flight
+// requests — a DoS amplifier dressed as a feature. Anything beyond
+// this cap is silently dropped; the same cap is used by the
+// `user.mentioned` event fan-out below.
+const maxMentionsPerPost = 10
+
 func extractMentions(text string) []string {
 	matches := mentionRegex.FindAllStringSubmatch(text, -1)
 	seen := make(map[string]bool)
@@ -184,6 +206,9 @@ func extractMentions(text string) []string {
 		if !seen[username] {
 			seen[username] = true
 			usernames = append(usernames, username)
+			if len(usernames) >= maxMentionsPerPost {
+				break
+			}
 		}
 	}
 	return usernames
@@ -194,15 +219,23 @@ func extractMentions(text string) []string {
 // post ID and post type. Resolution from username to user_id happens at
 // notification time.
 func DetectAndStoreMentions(ctx context.Context, postID uuid.UUID, postType string, body string, store *postgres.Store) {
-	mentionPattern := regexp.MustCompile(`@([a-zA-Z0-9_.]{3,30})`)
-	matches := mentionPattern.FindAllStringSubmatch(body, -1)
+	// Use the package-level compiled regex (audit H6: was being
+	// recompiled per call) and cap at maxMentionsPerPost (audit H3:
+	// was unbounded, allowing a post with 100 @-tokens to fire 100
+	// INSERTs).
+	matches := dbMentionRegex.FindAllStringSubmatch(body, -1)
 	seen := make(map[string]bool)
+	inserted := 0
 	for _, match := range matches {
+		if inserted >= maxMentionsPerPost {
+			break
+		}
 		username := match[1]
 		if seen[username] {
 			continue
 		}
 		seen[username] = true
+		inserted++
 		if err := store.InsertMention(ctx, postID, postType, username); err != nil {
 			log.Printf("Warning: failed to insert mention for @%s on post %s: %v", username, postID, err)
 		}
@@ -378,19 +411,46 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		CreatedAt:         time.Now(),
 	}
 
-	// Attach media (resolve kind and duration from media_assets table)
+	// Attach media in a single round trip — audit H1.
+	// Previously this loop did 1 SELECT per media-id (kind), plus a
+	// second SELECT per video (duration), plus a third SELECT for
+	// dimensions of the first video. For N media that's ~2N+1
+	// queries. BatchGetMediaMetadata folds it into one.
+	mediaMeta, mediaErr := s.pgStore.BatchGetMediaMetadata(ctx, input.MediaIDs)
+	if mediaErr != nil {
+		// Fall back to the per-row helpers below if the batch query
+		// fails — keeps post creation working through a transient
+		// DB hiccup, just at the old query cost.
+		log.Printf("Warning: batch media metadata lookup failed; falling back to per-row: %v", mediaErr)
+		mediaMeta = nil
+	}
+
 	var maxDuration int
 	for _, mediaID := range input.MediaIDs {
-		kind := s.pgStore.ResolveMediaKind(ctx, mediaID)
+		var kind string
+		var dur int
+		if meta, ok := mediaMeta[mediaID]; ok {
+			kind = meta.Kind
+			dur = meta.DurationSeconds
+		} else {
+			// Either the batch failed entirely or the row didn't
+			// exist in media_assets. Preserve the legacy
+			// "default to image" behaviour from ResolveMediaKind.
+			if mediaMeta == nil {
+				kind = s.pgStore.ResolveMediaKind(ctx, mediaID)
+				if kind == "video" {
+					dur = s.pgStore.ResolveMediaDuration(ctx, mediaID)
+				}
+			} else {
+				kind = "image"
+			}
+		}
 		p.Media = append(p.Media, postgres.PostMedia{
 			MediaID: mediaID,
 			Kind:    kind,
 		})
-		if kind == "video" {
-			dur := s.pgStore.ResolveMediaDuration(ctx, mediaID)
-			if dur > maxDuration {
-				maxDuration = dur
-			}
+		if kind == "video" && dur > maxDuration {
+			maxDuration = dur
 		}
 	}
 
@@ -409,7 +469,15 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	if hasVideo {
 		if maxDuration > 0 {
 			// Duration known — classify properly via the shared rule.
-			w, h, _ := s.pgStore.ResolveMediaDimensions(ctx, videoMediaID)
+			// Reuse the dimensions from the batch when available;
+			// fall back to the per-row helper for the unlikely
+			// batch-failed-but-loop-succeeded path.
+			var w, h int
+			if meta, ok := mediaMeta[videoMediaID]; ok {
+				w, h = meta.Width, meta.Height
+			} else {
+				w, h, _ = s.pgStore.ResolveMediaDimensions(ctx, videoMediaID)
+			}
 			cat, _ := ClassifyVideo(float64(maxDuration), w, h)
 			p.ContentType = cat
 		} else {
@@ -523,7 +591,32 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	// Invalidate author content counts cache
 	s.rdb.Del(ctx, fmt.Sprintf("post:author-counts:%s", input.AuthorID))
 
-	// Fire-and-forget: Kafka + Redis publish in background
+	// Audit H4: route PostCreated through the outbox. The previous
+	// path was `go s.producer.PublishPostCreated(...)` — fire and
+	// forget; a crash in the goroutine window between row commit
+	// and Kafka publish silently dropped the event. Insert here
+	// synchronously so the outbox worker (StartOutboxWorker) picks
+	// it up on its next 5 s tick and PublishRaw's it to Kafka, with
+	// the unpublished row driving retry until success.
+	if s.producer != nil {
+		postCreated := events.PostCreatedPayload{
+			PostID:          p.ID.String(),
+			AuthorID:        p.AuthorID.String(),
+			Text:            p.Text,
+			Visibility:      p.Visibility,
+			ContentType:     p.ContentType,
+			DurationSeconds: maxDuration,
+			CreatedAt:       p.CreatedAt,
+		}
+		if err := s.pgStore.InsertOutboxEvent(ctx, events.PostCreated, "post", p.ID, postCreated); err != nil {
+			log.Printf("Warning: failed to enqueue PostCreated to outbox: %v", err)
+		}
+	}
+
+	// Fire-and-forget: ephemeral Redis pub/sub for live signaling.
+	// Not durable — clients tolerate missing one notification and
+	// catch up on next REST fetch; SSE replay covers the gap. The
+	// durable Kafka event goes through the outbox above.
 	go func() {
 		bgCtx := context.Background()
 
@@ -542,12 +635,6 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 			pipe.Expire(bgCtx, key, 48*time.Hour)
 			if _, err := pipe.Exec(bgCtx); err != nil {
 				log.Printf("Warning: failed to update trending:hashtags: %v", err)
-			}
-		}
-
-		if s.producer != nil {
-			if err := s.producer.PublishPostCreated(bgCtx, p.ID, p.AuthorID, p.Text, p.Visibility, p.ContentType, maxDuration); err != nil {
-				log.Printf("Warning: failed to publish PostCreated event: %v", err)
 			}
 		}
 
@@ -752,28 +839,36 @@ func (s *Service) TogglePin(ctx context.Context, postID, authorID uuid.UUID, pin
 }
 
 func (s *Service) React(ctx context.Context, postID, userID uuid.UUID, reaction string) error {
-	if err := s.checkEngagementVisibility(ctx, postID, userID); err != nil {
+	// Audit C5 + H2: one fetch covers visibility + author-id for
+	// the PostReacted event. Was: visibility check did a GetPost,
+	// the goroutine below did *another* GetPost just for AuthorID.
+	post, err := s.loadPostForEngagement(ctx, postID, userID)
+	if err != nil {
 		return err
 	}
 	if err := s.scyllaStore.React(ctx, postID, userID, reaction); err != nil {
 		return err
 	}
 
-	// Fire-and-forget: Kafka + Redis publish in background
+	// Audit H4: PostReacted via outbox. Synchronous insert so a
+	// process crash in the React goroutine window doesn't drop the
+	// notification trigger.
+	if s.producer != nil {
+		payload := events.PostReactedPayload{
+			PostID:       postID.String(),
+			PostAuthorID: post.AuthorID.String(),
+			ReactorID:    userID.String(),
+			ReactType:    reaction,
+			CreatedAt:    time.Now(),
+		}
+		if err := s.pgStore.InsertOutboxEvent(ctx, events.PostReacted, "post", postID, payload); err != nil {
+			log.Printf("Warning: failed to enqueue PostReacted to outbox: %v", err)
+		}
+	}
+
+	// Ephemeral Redis pub/sub for live feed viewers — best-effort.
 	go func() {
 		bgCtx := context.Background()
-
-		// Emit Kafka event
-		if s.producer != nil {
-			post, err := s.pgStore.GetPost(bgCtx, postID)
-			if err == nil && post != nil {
-				if err := s.producer.PublishPostReacted(bgCtx, postID, post.AuthorID, userID, reaction); err != nil {
-					log.Printf("Warning: failed to publish PostReacted event: %v", err)
-				}
-			}
-		}
-
-		// Publish real-time update for live feed viewers
 		counts, _ := s.scyllaStore.GetCounts(bgCtx, postID)
 		if counts != nil {
 			signal, _ := json.Marshal(map[string]any{
@@ -961,6 +1056,19 @@ type LikeToggleResult struct {
 
 // ToggleLike executes the atomic Lua toggle and publishes an engagement event.
 func (s *Service) ToggleLike(ctx context.Context, postID, userID uuid.UUID) (*LikeToggleResult, error) {
+	// Audit C5 + H2: one fetch covers visibility, NoLikes flag, and
+	// the author-id used for the PostReacted event below.
+	// Previously the handler did a GetPost just to check NoLikes,
+	// then the service did another GetPost just to read AuthorID —
+	// two full Postgres+Scylla fetches per like toggle.
+	post, err := s.loadPostForEngagement(ctx, postID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if post.NoLikes {
+		return nil, ErrLikesDisabled
+	}
+
 	// Rate limit
 	if !s.rateLimiter.Allow(ctx, fmt.Sprintf("rl:like:%s", userID), engagement.LikeLimitPerHour, time.Hour) {
 		return nil, fmt.Errorf("RATE_LIMITED")
@@ -983,12 +1091,8 @@ func (s *Service) ToggleLike(ctx context.Context, postID, userID uuid.UUID) (*Li
 		}
 	}
 
-	// Get post author for event
-	post, _ := s.pgStore.GetPost(ctx, postID)
-	var authorID uuid.UUID
-	if post != nil {
-		authorID = post.AuthorID
-	}
+	// Author already loaded above — no second GetPost needed.
+	authorID := post.AuthorID
 
 	// Self-engagement check (return early but don't error, Lua already toggled)
 	// We do the check here for the event publishing. The handler should block self-likes before calling this.
@@ -1008,13 +1112,20 @@ func (s *Service) ToggleLike(ctx context.Context, postID, userID uuid.UUID) (*Li
 		}()
 	}
 
-	// Also publish legacy event for notification-service compatibility
-	if s.producer != nil && result.IsSet && post != nil {
-		go func() {
-			if err := s.producer.PublishPostReacted(context.Background(), postID, authorID, userID, "like"); err != nil {
-				log.Printf("Warning: failed to publish legacy PostReacted event: %v", err)
-			}
-		}()
+	// Audit H4: route the legacy PostReacted notification trigger
+	// through the outbox. Was fire-and-forget Kafka in a goroutine;
+	// a crash window dropped the notification.
+	if s.producer != nil && result.IsSet {
+		payload := events.PostReactedPayload{
+			PostID:       postID.String(),
+			PostAuthorID: authorID.String(),
+			ReactorID:    userID.String(),
+			ReactType:    "like",
+			CreatedAt:    time.Now(),
+		}
+		if err := s.pgStore.InsertOutboxEvent(ctx, events.PostReacted, "post", postID, payload); err != nil {
+			log.Printf("Warning: failed to enqueue PostReacted (ToggleLike) to outbox: %v", err)
+		}
 	}
 
 	return &LikeToggleResult{Liked: result.IsSet, Count: result.Count}, nil
@@ -1291,6 +1402,19 @@ func (s *Service) IsSharedFromRedis(ctx context.Context, userID, postID uuid.UUI
 
 // CreateCommentPG creates a comment in PostgreSQL with counter update.
 func (s *Service) CreateCommentPG(ctx context.Context, postID, authorID uuid.UUID, body string) (*postgres.Comment, error) {
+	// Audit C5 + H2: one fetch covers visibility, NoComments flag,
+	// and the post-author-id used for the CommentCreated event below.
+	// Previously the handler did a GetPost just to check NoComments,
+	// then this service did another GetPost just for AuthorID — two
+	// full Postgres+Scylla fetches per comment.
+	post, err := s.loadPostForEngagement(ctx, postID, authorID)
+	if err != nil {
+		return nil, err
+	}
+	if post.NoComments {
+		return nil, ErrCommentsDisabled
+	}
+
 	if !s.rateLimiter.Allow(ctx, fmt.Sprintf("rl:comment:%s", authorID), engagement.CommentLimitPerMin, time.Minute) {
 		return nil, fmt.Errorf("RATE_LIMITED")
 	}
@@ -1304,12 +1428,8 @@ func (s *Service) CreateCommentPG(ctx context.Context, postID, authorID uuid.UUI
 	engKey := fmt.Sprintf("post:eng:%s", postID)
 	s.rdb.HIncrBy(ctx, engKey, "comments", 1)
 
-	// Get post author for event
-	post, _ := s.pgStore.GetPost(ctx, postID)
-	var postAuthorID uuid.UUID
-	if post != nil {
-		postAuthorID = post.AuthorID
-	}
+	// Author already loaded above.
+	postAuthorID := post.AuthorID
 
 	// Publish engagement event
 	if s.engProducer != nil {
@@ -1326,13 +1446,23 @@ func (s *Service) CreateCommentPG(ctx context.Context, postID, authorID uuid.UUI
 		}()
 	}
 
-	// Also publish legacy event for notification-service
-	if s.producer != nil && post != nil {
-		go func() {
-			if err := s.producer.PublishCommentCreated(context.Background(), comment.ID, postID, postAuthorID, authorID, body); err != nil {
-				log.Printf("Warning: failed to publish legacy CommentCreated event: %v", err)
-			}
-		}()
+	// Audit H4: route CommentCreated through the outbox so a
+	// crash in the previous goroutine window can't silently drop
+	// the notification trigger. The synchronous INSERT runs after
+	// the comment row is committed; the outbox worker publishes
+	// to Kafka with at-least-once delivery.
+	if s.producer != nil {
+		payload := events.CommentCreatedPayload{
+			CommentID:    comment.ID.String(),
+			PostID:       postID.String(),
+			PostAuthorID: postAuthorID.String(),
+			AuthorID:     authorID.String(),
+			Text:         body,
+			CreatedAt:    time.Now(),
+		}
+		if err := s.pgStore.InsertOutboxEvent(ctx, events.CommentCreated, "post", postID, payload); err != nil {
+			log.Printf("Warning: failed to enqueue CommentCreated to outbox: %v", err)
+		}
 	}
 
 	return comment, nil
@@ -1529,35 +1659,50 @@ func (s *Service) CleanupExpiredStories(ctx context.Context) (int64, error) {
 // alternative (fail-open) was the exploit path called out by audit
 // C5 ("engagement on private posts leaks counts via React").
 func (s *Service) checkEngagementVisibility(ctx context.Context, postID, viewerID uuid.UUID) error {
+	_, err := s.loadPostForEngagement(ctx, postID, viewerID)
+	return err
+}
+
+// loadPostForEngagement is the shared "fetch + visibility-gate" helper
+// behind every engagement endpoint. Audit H2: handlers used to
+// double-fetch the post (handler did a GetPost to read NoComments /
+// NoLikes flags, then the service called GetPost again inside
+// checkEngagementVisibility). Now they share one fetch through this
+// helper; callers can read the returned Post's NoComments / NoLikes
+// without an extra DB round trip.
+//
+// Hot path; uses pgStore.GetPost which already has a Redis-cached
+// path for repeat reads of the same post.
+func (s *Service) loadPostForEngagement(ctx context.Context, postID, viewerID uuid.UUID) (*postgres.Post, error) {
 	post, err := s.pgStore.GetPost(ctx, postID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if post == nil {
-		return ErrPostNotFound
+		return nil, ErrPostNotFound
 	}
 	if post.AuthorID == viewerID {
-		return nil
+		return post, nil
 	}
 	switch strings.ToLower(post.Visibility) {
 	case "", "public":
-		return nil
+		return post, nil
 	case "private":
-		return ErrPostNotVisible
+		return nil, ErrPostNotVisible
 	case "followers", "circle":
 		follows, err := s.checkViewerFollowsAuthor(ctx, viewerID, post.AuthorID)
 		if err != nil {
 			log.Printf("Warning: visibility check graph lookup failed; rejecting: %v", err)
-			return ErrPostNotVisible
+			return nil, ErrPostNotVisible
 		}
 		if !follows {
-			return ErrPostNotVisible
+			return nil, ErrPostNotVisible
 		}
-		return nil
+		return post, nil
 	default:
 		// Unknown visibility value: treat as private (defense in
 		// depth — a typo in a migration shouldn't open up engagement).
-		return ErrPostNotVisible
+		return nil, ErrPostNotVisible
 	}
 }
 
@@ -1677,14 +1822,16 @@ func (s *Service) ToggleReaction(ctx context.Context, postID, userID uuid.UUID, 
 		return nil, fmt.Errorf("INVALID_REACTION_TYPE")
 	}
 
-	// Audit C5: gate engagement on the post's visibility. Same fix
-	// path as Service.React / Service.AddBookmark. The legacy
-	// `/v1/posts/:postId/reactions` route already hits the gate via
-	// Service.React; this is the modern `/v1/posts/:postId/react`
-	// path which used to skip it entirely (and would happily insert
-	// a reaction row for a non-existent or private post).
-	if err := s.checkEngagementVisibility(ctx, postID, userID); err != nil {
+	// Audit C5 + H2 combined: one fetch checks visibility *and*
+	// reads the per-post NoLikes flag — handler used to do its own
+	// GetPost just for that, then the service called GetPost again
+	// inside the visibility gate.
+	post, err := s.loadPostForEngagement(ctx, postID, userID)
+	if err != nil {
 		return nil, err
+	}
+	if post.NoLikes {
+		return nil, ErrLikesDisabled
 	}
 
 	if !s.rateLimiter.Allow(ctx, fmt.Sprintf("rl:react:%s", userID), engagement.LikeLimitPerHour, time.Hour) {
@@ -1713,14 +1860,21 @@ func (s *Service) ToggleReaction(ctx context.Context, postID, userID uuid.UUID, 
 		log.Printf("Warning: failed to get reaction counts: %v", err)
 	}
 
-	// Publish event for notifications
-	if s.producer != nil && isSet {
-		go func() {
-			post, err := s.pgStore.GetPost(context.Background(), postID)
-			if err == nil && post != nil && post.AuthorID != userID {
-				s.producer.PublishPostReacted(context.Background(), postID, post.AuthorID, userID, newType)
-			}
-		}()
+	// Audit H4: PostReacted via outbox. Skip self-reactions same as
+	// before — those don't generate notifications. `post` is already
+	// in scope from the H2 visibility check at the top of this
+	// function, so no extra GetPost round trip is needed.
+	if s.producer != nil && isSet && post.AuthorID != userID {
+		payload := events.PostReactedPayload{
+			PostID:       postID.String(),
+			PostAuthorID: post.AuthorID.String(),
+			ReactorID:    userID.String(),
+			ReactType:    newType,
+			CreatedAt:    time.Now(),
+		}
+		if err := s.pgStore.InsertOutboxEvent(ctx, events.PostReacted, "post", postID, payload); err != nil {
+			log.Printf("Warning: failed to enqueue PostReacted (ToggleReaction) to outbox: %v", err)
+		}
 	}
 
 	return &ReactionToggleResult{

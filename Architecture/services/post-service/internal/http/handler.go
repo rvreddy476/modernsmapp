@@ -647,13 +647,8 @@ func (h *Handler) AddComment(c *gin.Context) {
 		return
 	}
 
-	// Check if comments are disabled on this post
-	post, _ := h.svc.GetPost(c.Request.Context(), postID, nil)
-	if post != nil && post.NoComments {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "COMMENTS_DISABLED", "Comments are disabled on this post", nil)
-		return
-	}
-
+	// NoComments check is now inside the service (audit H2 — no
+	// more handler-level GetPost just to read engagement flags).
 	var req CommentRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
@@ -662,11 +657,16 @@ func (h *Handler) AddComment(c *gin.Context) {
 
 	comment, err := h.svc.CreateCommentPG(c.Request.Context(), postID, userID, req.Text)
 	if err != nil {
-		if err.Error() == "RATE_LIMITED" {
+		switch {
+		case err.Error() == "RATE_LIMITED":
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many comments, please slow down", nil)
-			return
+		case errors.Is(err, service.ErrCommentsDisabled):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "COMMENTS_DISABLED", "Comments are disabled on this post", nil)
+		case errors.Is(err, service.ErrPostNotFound), errors.Is(err, service.ErrPostNotVisible):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "POST_NOT_FOUND", "post not found", nil)
+		default:
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -969,18 +969,16 @@ func (h *Handler) ToggleLike(c *gin.Context) {
 		return
 	}
 
-	// Check if likes are disabled on this post
-	post, _ := h.svc.GetPost(c.Request.Context(), postID, nil)
-	if post != nil && post.NoLikes {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "LIKES_DISABLED", "Likes are disabled on this post", nil)
-		return
-	}
-
+	// NoLikes check is now inside the service (audit H2).
 	result, err := h.svc.ToggleLike(c.Request.Context(), postID, userID)
 	if err != nil {
-		switch err.Error() {
-		case "RATE_LIMITED":
+		switch {
+		case err.Error() == "RATE_LIMITED":
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many like toggles, please slow down", nil)
+		case errors.Is(err, service.ErrLikesDisabled):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "LIKES_DISABLED", "Likes are disabled on this post", nil)
+		case errors.Is(err, service.ErrPostNotFound), errors.Is(err, service.ErrPostNotVisible):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "POST_NOT_FOUND", "post not found", nil)
 		default:
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
