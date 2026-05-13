@@ -15,19 +15,33 @@ import (
 )
 
 func authenticateUserFromJWT(r *http.Request, jwtSecret string, allowQueryToken bool) (uuid.UUID, error) {
+	userID, _, err := authenticateUserFromJWTWithExpiry(r, jwtSecret, allowQueryToken)
+	return userID, err
+}
+
+// authenticateUserFromJWTWithExpiry is the same one-shot validation
+// as authenticateUserFromJWT, plus returns the token's `exp` claim
+// (or zero Time when the token omits exp — uncommon, but the parser
+// tolerates it because the existing tests do).
+//
+// Used by handleWS so the connection can be closed when the JWT
+// expires mid-session — without it the audit's C6 stays open: a
+// revoked or expired token keeps the WS alive until the client
+// disconnects on its own.
+func authenticateUserFromJWTWithExpiry(r *http.Request, jwtSecret string, allowQueryToken bool) (uuid.UUID, time.Time, error) {
 	secret := []byte(strings.TrimSpace(jwtSecret))
 	if len(secret) == 0 {
-		return uuid.Nil, errors.New("jwt secret not configured")
+		return uuid.Nil, time.Time{}, errors.New("jwt secret not configured")
 	}
 	token := readBearerToken(r, allowQueryToken)
 	if token == "" {
-		return uuid.Nil, errors.New("missing bearer token")
+		return uuid.Nil, time.Time{}, errors.New("missing bearer token")
 	}
-	userID, err := parseAndValidateJWT(token, secret)
+	userID, exp, err := parseAndValidateJWT(token, secret)
 	if err != nil {
-		return uuid.Nil, err
+		return uuid.Nil, time.Time{}, err
 	}
-	return userID, nil
+	return userID, exp, nil
 }
 
 func readBearerToken(r *http.Request, allowQueryToken bool) string {
@@ -60,32 +74,32 @@ func readSubprotocolBearerToken(r *http.Request) string {
 	return ""
 }
 
-func parseAndValidateJWT(token string, secret []byte) (uuid.UUID, error) {
+func parseAndValidateJWT(token string, secret []byte) (uuid.UUID, time.Time, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		return uuid.Nil, errors.New("invalid token format")
+		return uuid.Nil, time.Time{}, errors.New("invalid token format")
 	}
 
 	headerRaw, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
-		return uuid.Nil, errors.New("invalid token header")
+		return uuid.Nil, time.Time{}, errors.New("invalid token header")
 	}
 	payloadRaw, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return uuid.Nil, errors.New("invalid token payload")
+		return uuid.Nil, time.Time{}, errors.New("invalid token payload")
 	}
 	signatureRaw, err := base64.RawURLEncoding.DecodeString(parts[2])
 	if err != nil {
-		return uuid.Nil, errors.New("invalid token signature")
+		return uuid.Nil, time.Time{}, errors.New("invalid token signature")
 	}
 
 	var header map[string]any
 	if err := json.Unmarshal(headerRaw, &header); err != nil {
-		return uuid.Nil, errors.New("invalid token header json")
+		return uuid.Nil, time.Time{}, errors.New("invalid token header json")
 	}
 	alg, _ := header["alg"].(string)
 	if alg != "HS256" {
-		return uuid.Nil, errors.New("unsupported jwt algorithm")
+		return uuid.Nil, time.Time{}, errors.New("unsupported jwt algorithm")
 	}
 
 	signingInput := parts[0] + "." + parts[1]
@@ -93,20 +107,24 @@ func parseAndValidateJWT(token string, secret []byte) (uuid.UUID, error) {
 	_, _ = mac.Write([]byte(signingInput))
 	expected := mac.Sum(nil)
 	if !hmac.Equal(signatureRaw, expected) {
-		return uuid.Nil, errors.New("invalid token signature")
+		return uuid.Nil, time.Time{}, errors.New("invalid token signature")
 	}
 
 	var payload map[string]any
 	if err := json.Unmarshal(payloadRaw, &payload); err != nil {
-		return uuid.Nil, errors.New("invalid token payload json")
+		return uuid.Nil, time.Time{}, errors.New("invalid token payload json")
 	}
 
 	nowUnix := time.Now().Unix()
-	if exp, ok := readNumericClaim(payload["exp"]); ok && nowUnix >= exp {
-		return uuid.Nil, errors.New("token expired")
+	var expAt time.Time
+	if exp, ok := readNumericClaim(payload["exp"]); ok {
+		if nowUnix >= exp {
+			return uuid.Nil, time.Time{}, errors.New("token expired")
+		}
+		expAt = time.Unix(exp, 0)
 	}
 	if nbf, ok := readNumericClaim(payload["nbf"]); ok && nowUnix < nbf {
-		return uuid.Nil, errors.New("token not active yet")
+		return uuid.Nil, time.Time{}, errors.New("token not active yet")
 	}
 
 	idStr, _ := payload["sub"].(string)
@@ -114,13 +132,13 @@ func parseAndValidateJWT(token string, secret []byte) (uuid.UUID, error) {
 		idStr, _ = payload["user_id"].(string)
 	}
 	if idStr == "" {
-		return uuid.Nil, errors.New("missing subject claim")
+		return uuid.Nil, time.Time{}, errors.New("missing subject claim")
 	}
 	id, err := uuid.Parse(idStr)
 	if err != nil {
-		return uuid.Nil, errors.New("invalid subject claim")
+		return uuid.Nil, time.Time{}, errors.New("invalid subject claim")
 	}
-	return id, nil
+	return id, expAt, nil
 }
 
 func readNumericClaim(raw any) (int64, bool) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,6 +16,12 @@ var (
 	ErrInviteRateLimitExceeded = errors.New("invite rate limit exceeded: max 100 invites per day")
 	ErrJoinRateLimitExceeded   = errors.New("join rate limit exceeded: max 5 joins per minute")
 	ErrRingAntiSpam            = errors.New("anti-spam: too many unanswered calls to this user, cooldown active")
+	// ErrRateLimiterUnavailable surfaces when Redis itself is sick.
+	// We reject the request rather than allow it through (fail-closed)
+	// so a Redis blip can't be used to amplify spam — the trade-off
+	// for safety is a short-lived 503-style error on the client during
+	// a Redis incident.
+	ErrRateLimiterUnavailable = errors.New("rate limiter unavailable, try again shortly")
 )
 
 // RateLimiter uses Redis sliding-window counters for call rate limiting.
@@ -45,11 +52,19 @@ func (r *RateLimiter) CheckJoinRate(ctx context.Context, userID uuid.UUID, callI
 }
 
 // CheckRingAntiSpam enforces 3 unanswered calls in 5 minutes → 30 minute cooldown.
+//
+// Fails closed on Redis errors: without a working counter we can't
+// distinguish a first-time caller from a spammer, so we reject the
+// request. This trade is deliberate — the alternative (fail-open)
+// was the documented exploit path in the realtime audit (C4): an
+// attacker who can stress Redis amplifies their own spam window.
 func (r *RateLimiter) CheckRingAntiSpam(ctx context.Context, callerID, targetID uuid.UUID) error {
 	cooldownKey := fmt.Sprintf("rl:call:cooldown:%s:%s", callerID, targetID)
 	exists, err := r.rdb.Exists(ctx, cooldownKey).Result()
 	if err != nil {
-		return nil // fail open
+		slog.Warn("rate limiter: cooldown lookup failed; failing closed",
+			"caller", callerID, "target", targetID, "err", err)
+		return ErrRateLimiterUnavailable
 	}
 	if exists > 0 {
 		return ErrRingAntiSpam
@@ -58,7 +73,9 @@ func (r *RateLimiter) CheckRingAntiSpam(ctx context.Context, callerID, targetID 
 	ringKey := fmt.Sprintf("rl:call:ring:%s:%s", callerID, targetID)
 	count, err := r.rdb.Incr(ctx, ringKey).Result()
 	if err != nil {
-		return nil // fail open
+		slog.Warn("rate limiter: ring incr failed; failing closed",
+			"caller", callerID, "target", targetID, "err", err)
+		return ErrRateLimiterUnavailable
 	}
 	if count == 1 {
 		r.rdb.Expire(ctx, ringKey, 5*time.Minute)
@@ -83,7 +100,13 @@ func (r *RateLimiter) checkLimit(ctx context.Context, key string, maxCount int64
 	pipe.Expire(ctx, key, window)
 	_, err := pipe.Exec(ctx)
 	if err != nil {
-		return nil // fail open on Redis errors
+		// Fail-closed: see CheckRingAntiSpam comment. Without a
+		// working counter we can't distinguish a legitimate request
+		// from the Nth spam burst, so we reject and let the caller
+		// retry once Redis recovers.
+		slog.Warn("rate limiter: checkLimit pipeline failed; failing closed",
+			"key", key, "err", err)
+		return ErrRateLimiterUnavailable
 	}
 	if incrCmd.Val() > maxCount {
 		switch {

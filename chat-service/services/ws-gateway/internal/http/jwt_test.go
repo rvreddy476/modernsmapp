@@ -17,12 +17,15 @@ func TestParseAndValidateJWT_ValidToken(t *testing.T) {
 		"exp": time.Now().Add(5 * time.Minute).Unix(),
 	})
 
-	id, err := parseAndValidateJWT(token, secret)
+	id, exp, err := parseAndValidateJWT(token, secret)
 	if err != nil {
 		t.Fatalf("expected token to be valid, got error: %v", err)
 	}
 	if id.String() != "7d16ea6b-8799-4289-a4dc-fd77fb2d9dd8" {
 		t.Fatalf("unexpected user id: %s", id.String())
+	}
+	if exp.IsZero() {
+		t.Fatal("expected exp to be returned for a token that carries `exp`")
 	}
 }
 
@@ -34,7 +37,7 @@ func TestParseAndValidateJWT_InvalidSignature(t *testing.T) {
 		"exp": time.Now().Add(5 * time.Minute).Unix(),
 	})
 
-	if _, err := parseAndValidateJWT(token, secret); err == nil {
+	if _, _, err := parseAndValidateJWT(token, secret); err == nil {
 		t.Fatal("expected invalid signature error")
 	}
 }
@@ -46,7 +49,7 @@ func TestParseAndValidateJWT_ExpiredToken(t *testing.T) {
 		"exp": time.Now().Add(-1 * time.Minute).Unix(),
 	})
 
-	if _, err := parseAndValidateJWT(token, secret); err == nil {
+	if _, _, err := parseAndValidateJWT(token, secret); err == nil {
 		t.Fatal("expected expired token error")
 	}
 }

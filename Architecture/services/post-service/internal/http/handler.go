@@ -2,6 +2,7 @@ package http
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -1501,11 +1502,17 @@ func (h *Handler) ToggleReaction(c *gin.Context) {
 
 	result, err := h.svc.ToggleReaction(c.Request.Context(), postID, userID, req.ReactionType)
 	if err != nil {
-		switch err.Error() {
-		case "INVALID_REACTION_TYPE":
+		switch {
+		case err.Error() == "INVALID_REACTION_TYPE":
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REACTION_TYPE", "Valid types: like, love, haha, wow, sad, angry", nil)
-		case "RATE_LIMITED":
+		case err.Error() == "RATE_LIMITED":
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many reactions, please slow down", nil)
+		case errors.Is(err, service.ErrPostNotFound), errors.Is(err, service.ErrPostNotVisible):
+			// Collapse "not found" + "not visible" into the same
+			// response so the engagement endpoint doesn't disclose
+			// the existence of a restricted post to a non-allowed
+			// viewer. 404 + generic message.
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "POST_NOT_FOUND", "post not found", nil)
 		default:
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}

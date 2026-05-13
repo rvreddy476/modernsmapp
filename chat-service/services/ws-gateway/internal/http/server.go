@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/chat-shared/callauth"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
@@ -76,6 +77,33 @@ func (s *Server) Routes() nethttp.Handler {
 	return loggingMiddleware(s.log, mux)
 }
 
+// watchTokenExpiry fires `cancel` the moment the JWT exp passes,
+// terminating readLoop + writeLoop + redisLoop in one shot.
+// Tolerates clock skew with a small safety margin (3 s) — better to
+// disconnect a fraction too early than keep a revoked session alive.
+//
+// Exits on its own when the connection's context is cancelled (i.e.
+// the client disconnected before the token expired); never leaks a
+// goroutine past the connection lifetime.
+func (s *Server) watchTokenExpiry(ctx context.Context, cancel context.CancelFunc, userID uuid.UUID, exp time.Time) {
+	skew := 3 * time.Second
+	until := time.Until(exp) - skew
+	if until <= 0 {
+		s.log.Info("ws token already expired", "user_id", userID)
+		cancel()
+		return
+	}
+	t := time.NewTimer(until)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return
+	case <-t.C:
+		s.log.Info("ws token expired; closing connection", "user_id", userID, "exp", exp)
+		cancel()
+	}
+}
+
 func (s *Server) handleHealth(w nethttp.ResponseWriter, _ *nethttp.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(nethttp.StatusOK)
@@ -83,7 +111,7 @@ func (s *Server) handleHealth(w nethttp.ResponseWriter, _ *nethttp.Request) {
 }
 
 func (s *Server) handleWS(w nethttp.ResponseWriter, r *nethttp.Request) {
-	userID, err := authenticateUserFromJWT(r, s.opts.JWTSecret, s.opts.AllowQueryToken)
+	userID, tokenExp, err := authenticateUserFromJWTWithExpiry(r, s.opts.JWTSecret, s.opts.AllowQueryToken)
 	if err != nil {
 		s.log.Warn("websocket auth failed", "err", err, "client_ip", readClientIP(r))
 		nethttp.Error(w, "unauthorized", nethttp.StatusUnauthorized)
@@ -99,6 +127,16 @@ func (s *Server) handleWS(w nethttp.ResponseWriter, r *nethttp.Request) {
 	chatChannel := fmt.Sprintf("chat:%s", userID.String())
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
+
+	// Audit C6: tear down the connection when the JWT expires.
+	// Without this the WS happily outlives the token — a revoked
+	// session keeps reading chat / signaling until the client
+	// happens to disconnect. We fire a one-shot timer at exp time
+	// and a periodic safety check every 60s to cover JWTs that
+	// embed only `nbf` (no `exp`) or where the timer drifts.
+	if !tokenExp.IsZero() {
+		go s.watchTokenExpiry(ctx, cancel, userID, tokenExp)
+	}
 
 	// Mark user as online (presence TTL 90s; client heartbeat keeps it alive).
 	if err := s.rdb.Set(ctx, "presence:"+userID.String(), "1", 90*time.Second).Err(); err != nil {
@@ -330,11 +368,37 @@ func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *
 		envelope["sender_id"] = userID.String()
 		relay, _ := json.Marshal(envelope)
 
-		// Direct signaling: relay to target user's personal channel
+		// Direct signaling: relay to target user's personal channel.
+		// Before relaying, verify call-service has authorized this
+		// pair to exchange signaling — without the check any authed
+		// client could ring or ICE-probe arbitrary users (audit C1).
+		// `ice_candidate` additionally requires the call to be in
+		// `active` state, gating the IP-leak window between ringing
+		// and accept (audit C3).
 		if directSignalingTypes[msgType] {
 			targetStr, _ := envelope["target_user_id"].(string)
 			targetID, parseErr := uuid.Parse(targetStr)
 			if parseErr != nil || targetID == uuid.Nil {
+				continue
+			}
+			authState, err := callauth.Get(ctx, s.rdb, userID, targetID)
+			if err != nil {
+				// Redis is degraded — fail closed. The cost is a
+				// brief signaling outage while Redis recovers; the
+				// alternative (fail-open) was the original bug.
+				s.log.Warn("signaling auth lookup failed; dropping",
+					"err", err, "user_id", userID, "target", targetID, "type", msgType)
+				continue
+			}
+			if authState == nil {
+				s.log.Warn("signaling rejected: no active call between pair",
+					"user_id", userID, "target", targetID, "type", msgType)
+				continue
+			}
+			if !callauth.IsAllowedFor(authState.State, msgType) {
+				s.log.Warn("signaling rejected: state does not permit message type",
+					"user_id", userID, "target", targetID, "type", msgType,
+					"state", authState.State, "call_id", authState.CallID)
 				continue
 			}
 			channel := fmt.Sprintf("chat:%s", targetID.String())

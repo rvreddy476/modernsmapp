@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -24,6 +25,14 @@ import (
 var (
 	hashtagRegex = regexp.MustCompile(`#(\w{1,50})`)
 	mentionRegex = regexp.MustCompile(`@(\w{1,30})`)
+
+	// ErrPostNotVisible is returned when a viewer tries to react /
+	// bookmark / engage with a post whose visibility excludes them
+	// (private, or followers-only when the viewer doesn't follow).
+	// Audit C5 — engagement endpoints used to skip this entirely
+	// and leak engagement counts for restricted-visibility posts.
+	// (ErrPostNotFound is declared in my_uploads.go and reused here.)
+	ErrPostNotVisible = errors.New("post not visible to this user")
 )
 
 type Service struct {
@@ -743,6 +752,9 @@ func (s *Service) TogglePin(ctx context.Context, postID, authorID uuid.UUID, pin
 }
 
 func (s *Service) React(ctx context.Context, postID, userID uuid.UUID, reaction string) error {
+	if err := s.checkEngagementVisibility(ctx, postID, userID); err != nil {
+		return err
+	}
 	if err := s.scyllaStore.React(ctx, postID, userID, reaction); err != nil {
 		return err
 	}
@@ -782,6 +794,9 @@ func (s *Service) React(ctx context.Context, postID, userID uuid.UUID, reaction 
 }
 
 func (s *Service) Unreact(ctx context.Context, postID, userID uuid.UUID) error {
+	if err := s.checkEngagementVisibility(ctx, postID, userID); err != nil {
+		return err
+	}
 	if err := s.scyllaStore.Unreact(ctx, postID, userID); err != nil {
 		return err
 	}
@@ -860,10 +875,16 @@ func (s *Service) ListComments(ctx context.Context, postID uuid.UUID, limit int)
 // --- Bookmark methods ---
 
 func (s *Service) AddBookmark(ctx context.Context, userID, postID uuid.UUID) error {
+	if err := s.checkEngagementVisibility(ctx, postID, userID); err != nil {
+		return err
+	}
 	return s.pgStore.AddBookmark(ctx, userID, postID)
 }
 
 func (s *Service) RemoveBookmark(ctx context.Context, userID, postID uuid.UUID) error {
+	// No visibility gate on remove — a user who already bookmarked
+	// must always be able to clean up their own row even if the
+	// post's visibility tightened (author switched to followers-only).
 	return s.pgStore.RemoveBookmark(ctx, userID, postID)
 }
 
@@ -1493,6 +1514,97 @@ func (s *Service) CleanupExpiredStories(ctx context.Context) (int64, error) {
 	return s.pgStore.CleanupExpiredStories(ctx)
 }
 
+// checkEngagementVisibility enforces the post's visibility scope on
+// engagement mutations (react / unreact / bookmark). Returns nil
+// when the viewer is allowed to engage:
+//
+//   - the viewer is the author (always allowed)
+//   - visibility == "public" (everyone)
+//   - visibility == "followers" or "circle" AND the viewer follows
+//     the author
+//
+// All other cases return ErrPostNotVisible. Graph errors fail closed:
+// without a working relationship check we can't distinguish a
+// follower from a stranger, so the engagement is rejected — the
+// alternative (fail-open) was the exploit path called out by audit
+// C5 ("engagement on private posts leaks counts via React").
+func (s *Service) checkEngagementVisibility(ctx context.Context, postID, viewerID uuid.UUID) error {
+	post, err := s.pgStore.GetPost(ctx, postID)
+	if err != nil {
+		return err
+	}
+	if post == nil {
+		return ErrPostNotFound
+	}
+	if post.AuthorID == viewerID {
+		return nil
+	}
+	switch strings.ToLower(post.Visibility) {
+	case "", "public":
+		return nil
+	case "private":
+		return ErrPostNotVisible
+	case "followers", "circle":
+		follows, err := s.checkViewerFollowsAuthor(ctx, viewerID, post.AuthorID)
+		if err != nil {
+			log.Printf("Warning: visibility check graph lookup failed; rejecting: %v", err)
+			return ErrPostNotVisible
+		}
+		if !follows {
+			return ErrPostNotVisible
+		}
+		return nil
+	default:
+		// Unknown visibility value: treat as private (defense in
+		// depth — a typo in a migration shouldn't open up engagement).
+		return ErrPostNotVisible
+	}
+}
+
+// checkViewerFollowsAuthor does a single graph-service relationship
+// lookup. Returns (follows=true) when viewer→author edge exists.
+// Empty graphServiceURL is treated as "no policy" — same as the
+// existing fetchFollowing helper — so unit tests + dev rigs without
+// graph-service skip the gate cleanly.
+func (s *Service) checkViewerFollowsAuthor(ctx context.Context, viewerID, authorID uuid.UUID) (bool, error) {
+	if s.graphServiceURL == "" {
+		return true, nil
+	}
+	client := s.httpClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	url := fmt.Sprintf(
+		"%s/v1/graph/relationship?user_id=%s&other_id=%s",
+		s.graphServiceURL, viewerID, authorID,
+	)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return false, fmt.Errorf("build relationship request: %w", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("relationship request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("graph-service status %d", resp.StatusCode)
+	}
+	var envelope struct {
+		Data struct {
+			Follows bool `json:"follows"`
+		} `json:"data"`
+		Follows bool `json:"follows"` // legacy un-wrapped shape tolerated
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		return false, fmt.Errorf("decode relationship: %w", err)
+	}
+	if envelope.Data.Follows {
+		return true, nil
+	}
+	return envelope.Follows, nil
+}
+
 func (s *Service) fetchFollowing(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
 	if s.graphServiceURL == "" {
 		return nil, nil
@@ -1563,6 +1675,16 @@ type ReactionToggleResult struct {
 func (s *Service) ToggleReaction(ctx context.Context, postID, userID uuid.UUID, reactionType string) (*ReactionToggleResult, error) {
 	if !postgres.ValidReactionTypes[reactionType] {
 		return nil, fmt.Errorf("INVALID_REACTION_TYPE")
+	}
+
+	// Audit C5: gate engagement on the post's visibility. Same fix
+	// path as Service.React / Service.AddBookmark. The legacy
+	// `/v1/posts/:postId/reactions` route already hits the gate via
+	// Service.React; this is the modern `/v1/posts/:postId/react`
+	// path which used to skip it entirely (and would happily insert
+	// a reaction row for a non-existent or private post).
+	if err := s.checkEngagementVisibility(ctx, postID, userID); err != nil {
+		return nil, err
 	}
 
 	if !s.rateLimiter.Allow(ctx, fmt.Sprintf("rl:react:%s", userID), engagement.LikeLimitPerHour, time.Hour) {
