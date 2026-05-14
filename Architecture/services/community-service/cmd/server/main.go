@@ -7,11 +7,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/atpost/group-service/database"
-	groupevents "github.com/atpost/group-service/internal/events"
-	"github.com/atpost/group-service/internal/http"
-	"github.com/atpost/group-service/internal/service"
-	"github.com/atpost/group-service/internal/store"
+	"github.com/atpost/community-service/database"
+	communityevents "github.com/atpost/community-service/internal/events"
+	"github.com/atpost/community-service/internal/http"
+	"github.com/atpost/community-service/internal/service"
+	"github.com/atpost/community-service/internal/store"
+	pgstore "github.com/atpost/community-service/internal/store/postgres"
 	"github.com/atpost/shared/health"
 	"github.com/atpost/shared/middleware"
 	"github.com/atpost/shared/o11y/logging"
@@ -24,30 +25,27 @@ import (
 
 func main() {
 	// 1. Structured logging
-	logging.Init(logging.Config{ServiceName: "group-service"})
+	logging.Init(logging.Config{ServiceName: "community-service"})
 
 	// 2. Config
-	port := env("HTTP_PORT", "8090")
+	port := env("HTTP_PORT", "8107")
 	pgDSN := os.Getenv("POSTGRES_DSN")
 	redisAddr := os.Getenv("REDIS_ADDR")
-	msgURL := env("MESSAGE_SERVICE_URL", "http://chat-message-service:8092")
-	postURL := env("POST_SERVICE_URL", "http://post-service:8084")
-	userURL := env("USER_SERVICE_URL", "http://user-service:8082")
-	// Audit CG4: previously defaulted to the literal string
-	// "dev_secret_change_me" if JWT_SECRET was unset — every group
-	// deploy that forgot the env var ran with a public secret in
-	// every prod logfile. Fail loud at boot instead.
-	jwtSecret := os.Getenv("JWT_SECRET")
-	if jwtSecret == "" {
-		slog.Error("JWT_SECRET environment variable is required")
-		os.Exit(1)
-	}
 	kafkaBrokers := strings.Split(env("KAFKA_BROKERS", "redpanda:9092"), ",")
-	kafkaTopic := env("KAFKA_TOPIC", "group-events")
+	kafkaTopic := env("KAFKA_TOPIC", "community-events")
 
 	// 3. Database
 	ctx := context.Background()
-	dbPool, err := pgxpool.New(ctx, pgDSN)
+	poolCfg, err := pgxpool.ParseConfig(pgDSN)
+	if err != nil {
+		slog.Error("parse db config", "error", err)
+		os.Exit(1)
+	}
+	poolCfg.MaxConns = 25
+	poolCfg.MinConns = 5
+	poolCfg.MaxConnLifetime = 15 * time.Minute
+	poolCfg.MaxConnIdleTime = 5 * time.Minute
+	dbPool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
 		slog.Error("failed to connect to postgres", "error", err)
 		os.Exit(1)
@@ -59,12 +57,6 @@ func main() {
 		os.Exit(1)
 	}
 	slog.Info("connected to postgres")
-
-	if err := store.BootstrapSchema(ctx, dbPool, database.SetupSQL); err != nil {
-		slog.Error("failed to bootstrap group schema", "error", err)
-		os.Exit(1)
-	}
-	slog.Info("group schema ready")
 
 	// 4. Redis
 	rdb, err := transport.NewRedisClientFromEnv(redisAddr)
@@ -79,51 +71,58 @@ func main() {
 	defer rdb.Close()
 	slog.Info("connected to redis")
 
-	// 5. Prometheus metrics
-	httpMetrics := metrics.NewHTTPMetrics("group-service")
-	dbMetrics := metrics.NewDBPoolMetrics("group-service", "postgres")
-
-	go collectDBPoolStats(ctx, dbPool, dbMetrics)
-
-	// 6. Health checker
-	checker := health.New("group-service")
-	checker.Register("postgres", health.PingCheck(dbPool))
-	checker.Register("redis", health.RedisPingCheck(func(ctx context.Context) error {
-		return rdb.Ping(ctx).Err()
-	}))
-
-	// 7. Dependencies
-	groupStore := store.New(dbPool)
-	groupSvc := service.New(groupStore, rdb, msgURL, postURL, userURL, jwtSecret)
-
-	// 8. Kafka producer
 	kafkaDialer, err := transport.KafkaDialerFromEnv()
 	if err != nil {
 		slog.Error("failed to configure kafka dialer", "error", err)
 		os.Exit(1)
 	}
 
-	producer := groupevents.NewProducerWithDialer(kafkaBrokers, kafkaTopic, rdb, kafkaDialer)
-	groupSvc.SetProducer(producer)
+	if err := pgstore.BootstrapSchema(ctx, dbPool, database.SetupSQL); err != nil {
+		slog.Error("failed to bootstrap community schema", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("community schema ready")
+
+	// 5. Prometheus metrics
+	httpMetrics := metrics.NewHTTPMetrics("community-service")
+	dbMetrics := metrics.NewDBPoolMetrics("community-service", "postgres")
+
+	go collectDBPoolStats(ctx, dbPool, dbMetrics)
+
+	// 6. Health checker
+	checker := health.New("community-service")
+	checker.Register("postgres", health.PingCheck(dbPool))
+	checker.Register("redis", health.RedisPingCheck(func(ctx context.Context) error {
+		return rdb.Ping(ctx).Err()
+	}))
+
+	// 7. Dependencies
+	communityStore := store.New(dbPool)
+	communitySvc := service.New(communityStore, rdb)
+
+	// 8. Kafka producer
+	producer := communityevents.NewProducerWithDialer(kafkaBrokers, kafkaTopic, kafkaDialer)
+	communitySvc.SetProducer(producer)
 	slog.Info("kafka producer initialized", "topic", kafkaTopic)
 
-	// 9. Kafka consumer (GDPR + cache invalidation)
-	consumer := groupevents.NewConsumerWithDialer(kafkaBrokers, "group-service-consumer", groupStore, rdb, kafkaDialer)
+	// 9. Kafka consumer (GDPR)
+	consumer := communityevents.NewConsumerWithDialer(kafkaBrokers, "community-service-consumer", communityStore, rdb, kafkaDialer)
 	consumerCtx, cancelConsumer := context.WithCancel(ctx)
 	go consumer.Start(consumerCtx)
 	slog.Info("kafka consumer started")
 
-	groupHandler := http.New(groupSvc)
+	communityHandler := http.New(communitySvc)
 
-	// Audit CG2: gate every /v1/groups/* endpoint behind the shared
-	// internal service key. The handler supports the middleware but
-	// main.go previously never wired the env var, so direct callers
-	// could spoof X-User-Id and impersonate any user.
+	// Audit CC1: gate every /v1/communities/* endpoint behind the
+	// shared internal service key. The handler supports the middleware
+	// but main.go previously never wired the env var, leaving the
+	// entire surface — including wiki edits and moderation actions —
+	// callable directly without going through the API gateway.
 	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
-		groupHandler.WithInternalKey(key)
-		slog.Info("group-service: internal-service-key gate enabled")
+		communityHandler.WithInternalKey(key)
+		slog.Info("community-service: internal-service-key gate enabled")
 	} else {
-		slog.Warn("group-service: INTERNAL_SERVICE_KEY not set — every endpoint is unauthenticated. Do not run this configuration in production.")
+		slog.Warn("community-service: INTERNAL_SERVICE_KEY not set — every endpoint is unauthenticated. Do not run this configuration in production.")
 	}
 
 	// 10. Gin with middleware stack
@@ -136,7 +135,7 @@ func main() {
 
 	checker.RegisterRoutes(r)
 	r.GET("/metrics", metrics.Handler())
-	groupHandler.RegisterRoutes(r)
+	communityHandler.RegisterRoutes(r)
 
 	// 11. Graceful shutdown
 	if err := server.Run(r, server.Config{
