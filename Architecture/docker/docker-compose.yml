@@ -446,6 +446,10 @@ services:
       KAFKA_BROKERS: redpanda:9092
       MESSAGE_SERVICE_URL: http://chat-message-service:8092
       POST_SERVICE_URL: http://post-service:8084
+      # Audit CG4: group-service now refuses boot when JWT_SECRET is
+      # unset (previously defaulted to the literal "dev_secret_change_me").
+      JWT_SECRET: ${JWT_SECRET:-local_dev_jwt_change_me}
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
     ports:
       - "8090:8090"
     depends_on:
@@ -996,9 +1000,14 @@ services:
       HTTP_PORT: "8102"
       POSTGRES_DSN: *commerce_postgres_dsn
       KAFKA_BROKERS: redpanda:9092
-      # Razorpay credentials — omit to use StubGateway in dev
+      # Razorpay credentials — omit to use StubGateway in dev.
+      # Audit P8: payments-service refuses boot when RAZORPAY_KEY_ID
+      # is empty unless PAYMENTS_ALLOW_STUB=true. Default true here so
+      # local docker compose comes up; prod overrides with real creds.
       RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
       RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
+      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-}
+      PAYMENTS_ALLOW_STUB: ${PAYMENTS_ALLOW_STUB:-true}
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
     ports:
       - "8102:8102"
