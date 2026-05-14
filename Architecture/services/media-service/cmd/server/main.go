@@ -116,6 +116,13 @@ func main() {
 		mediaSvc.SetRedis(rdb)
 	}
 
+	// Audit H9: sweep media_assets stuck at `pending_upload` past
+	// 24 h and reclaim the row + blob. Without this an upload that
+	// never reached /v1/media/confirm (client crash, network drop)
+	// stayed in the table forever; storage grew unbounded.
+	service.NewOrphanGCWorker(mediaSvc).Start(ctx)
+	slog.Info("orphan media GC worker started")
+
 	// 6. Kafka producer for video transcode events
 	brokers := strings.Split(kafkaBrokers, ",")
 	producer := mediaEvents.NewProducerWithDialer(brokers, "media.events", kafkaDialer)

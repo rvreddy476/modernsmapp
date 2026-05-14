@@ -39,13 +39,15 @@ type Service struct {
 }
 
 func New(pg *postgres.MediaAssetStore, blobStore *blob.Store) *Service {
-	return &Service{
+	s := &Service{
 		pgStore:   pg,
 		blobStore: blobStore,
 		cfg:       config.Load(),
 		scanner:   &processing.StubScanner{},
 		captions:  captions.SelectBackend(),
 	}
+	s.logScannerPolicy()
+	return s
 }
 
 // WithCaptionsBackend overrides the auto-selected captions backend.
@@ -61,11 +63,36 @@ func NewWithConfig(pg *postgres.MediaAssetStore, blobStore *blob.Store, cfg *con
 	if scanner == nil {
 		scanner = &processing.StubScanner{}
 	}
-	return &Service{
+	s := &Service{
 		pgStore:   pg,
 		blobStore: blobStore,
 		cfg:       cfg,
 		scanner:   scanner,
+	}
+	s.logScannerPolicy()
+	return s
+}
+
+// logScannerPolicy emits a loud startup log describing the active
+// content-safety scanning policy. Audit H8: leaving the stub wired
+// while ScannerEnabled=true is the same as leaving the gate off —
+// except it looks compliant. Make the choice visible at boot.
+func (s *Service) logScannerPolicy() {
+	if s.cfg == nil {
+		return
+	}
+	_, isStub := s.scanner.(*processing.StubScanner)
+	switch {
+	case !s.cfg.ScannerEnabled:
+		slog.Info("media scanner: disabled (no content safety gate)")
+	case isStub && s.cfg.ScannerAllowStub:
+		slog.Warn("media scanner: STUB SCANNER ACTIVE — every image will pass. " +
+			"Set MEDIA_SCANNER_ALLOW_STUB=false in production and wire a real scanner.")
+	case isStub:
+		slog.Error("media scanner: enabled but only StubScanner is wired and MEDIA_SCANNER_ALLOW_STUB=false. " +
+			"All image uploads will be REJECTED until a real scanner is configured.")
+	default:
+		slog.Info("media scanner: enabled with real backend (fail-closed on scanner errors)")
 	}
 }
 
@@ -264,22 +291,49 @@ func (s *Service) ConfirmUpload(ctx context.Context, mediaID uuid.UUID, userID u
 
 // processImage handles synchronous image processing (resize + upload variants).
 func (s *Service) processImage(ctx context.Context, media *postgres.MediaAsset) error {
-	// Content safety scan for images
+	// Content safety scan for images.
+	//
+	// Audit H8: previously this block "skipped" the scan on download
+	// failure or scanner error and continued to admit the image — so
+	// any transient MinIO blip or scanner outage created a silent
+	// bypass. Policy now is fail-closed:
+	//
+	//   - Stub scanner + AllowStub=false → reject every image upload
+	//     (refuses to silently pretend it's scanning).
+	//   - Download error                 → reject (can't scan, can't admit).
+	//   - Scanner error                  → reject (same reasoning).
+	//   - IsSafe=false                   → reject.
+	//
+	// When the scanner is disabled entirely the block is skipped and
+	// the image is admitted unscanned (dev / behind-perimeter mode).
 	if s.cfg.ScannerEnabled && isImage(media.MimeType) {
+		if _, isStub := s.scanner.(*processing.StubScanner); isStub && !s.cfg.ScannerAllowStub {
+			slog.Error("media: rejecting upload — scanner enabled but only StubScanner configured",
+				"media_id", media.ID)
+			_ = s.pgStore.UpdateStatus(ctx, media.ID, "rejected")
+			return fmt.Errorf("media rejected: content safety scanner not configured")
+		}
+
 		imageData, err := s.blobStore.DownloadObject(ctx, media.StorageKey)
 		if err != nil {
-			slog.Warn("media: failed to download image for scanning, skipping scan",
+			slog.Error("media: rejecting upload — failed to download image for scanning",
 				"media_id", media.ID, "error", err)
-		} else {
-			result, err := s.scanner.ScanImage(ctx, imageData)
-			if err != nil {
-				slog.Warn("media: scanner error, skipping scan", "media_id", media.ID, "error", err)
-			} else if !result.IsSafe {
-				slog.Warn("media: content rejected by scanner",
-					"media_id", media.ID, "reason", result.Reason, "score", result.Score)
-				_ = s.pgStore.UpdateStatus(ctx, media.ID, "rejected")
-				return fmt.Errorf("media rejected: %s", result.Reason)
-			}
+			_ = s.pgStore.UpdateStatus(ctx, media.ID, "rejected")
+			return fmt.Errorf("media rejected: cannot fetch for scan: %w", err)
+		}
+
+		result, err := s.scanner.ScanImage(ctx, imageData)
+		if err != nil {
+			slog.Error("media: rejecting upload — scanner error",
+				"media_id", media.ID, "error", err)
+			_ = s.pgStore.UpdateStatus(ctx, media.ID, "rejected")
+			return fmt.Errorf("media rejected: scanner error: %w", err)
+		}
+		if !result.IsSafe {
+			slog.Warn("media: content rejected by scanner",
+				"media_id", media.ID, "reason", result.Reason, "score", result.Score)
+			_ = s.pgStore.UpdateStatus(ctx, media.ID, "rejected")
+			return fmt.Errorf("media rejected: %s", result.Reason)
 		}
 	}
 

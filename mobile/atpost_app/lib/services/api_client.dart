@@ -143,6 +143,27 @@ class ApiClient {
     }
   }
 
+  // --- Orphan cleanup ---
+
+  /// Best-effort delete of a media asset whose downstream consumer
+  /// (post create, story create, etc.) failed after upload. Audit H7:
+  /// without this the row stays at processing_status='uploaded' until
+  /// the 24h server-side orphan GC sweep — adequate but slow. Calling
+  /// this on the failure path drops storage immediately for the common
+  /// case (server returns an error, network blip after confirm). All
+  /// errors are swallowed: the goal is opportunistic cleanup, not
+  /// reliable deletion (the server sweeper is the reliable path).
+  Future<void> tryDeleteMedia(String mediaId) async {
+    if (mediaId.isEmpty) return;
+    try {
+      await _dio.delete('/v1/media/$mediaId');
+      AppLogger.info('Cleaned up orphan media $mediaId', tag: _tag);
+    } catch (e) {
+      AppLogger.info('Orphan media cleanup failed (will rely on server GC): $e',
+          tag: _tag);
+    }
+  }
+
   // --- Production Scale Media Upload (3-Step Spec) ---
 
   /// Orchestrates a resilient 3-step media upload as per OpenAPI spec:

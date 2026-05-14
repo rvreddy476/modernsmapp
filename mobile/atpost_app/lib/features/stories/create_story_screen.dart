@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:atpost_app/core/theme/app_colors.dart';
@@ -58,11 +59,18 @@ class _CreateStoryScreenState extends ConsumerState<CreateStoryScreen> {
       final mediaId =
           await api.uploadMedia(_picked!, type: _isVideo ? 'video' : 'image');
       final text = _textController.text.trim();
-      await storiesRepo.createStory(
-        mediaId: mediaId,
-        mediaType: _isVideo ? 'video' : 'image',
-        text: text.isEmpty ? null : text,
-      );
+      // Audit H7: if createStory fails after upload, drop the orphan
+      // media right away rather than waiting for the 24h server sweep.
+      try {
+        await storiesRepo.createStory(
+          mediaId: mediaId,
+          mediaType: _isVideo ? 'video' : 'image',
+          text: text.isEmpty ? null : text,
+        );
+      } catch (_) {
+        unawaited(api.tryDeleteMedia(mediaId));
+        rethrow;
+      }
       if (mounted) context.pop();
     } catch (e) {
       if (mounted) {

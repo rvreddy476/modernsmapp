@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	nethttp "net/http"
 	"strings"
 	"time"
@@ -19,6 +20,24 @@ type ServerOptions struct {
 	JWTSecret      string
 	AllowedOrigins []string
 	AllowQueryToken bool
+
+	// AllowAllOriginsForDev opts into the "no policy" mode where any
+	// browser origin is accepted. Audit H10: the previous default
+	// was *always* allow-all when AllowedOrigins was empty, which is
+	// a CSRF / data-scrape vector in production. Now defaults to
+	// false; deployments without an allowlist refuse browser
+	// upgrades but still accept native clients that don't send the
+	// Origin header.
+	AllowAllOriginsForDev bool
+
+	// TrustedProxies is the set of peer addresses (exact match on
+	// the connecting socket's RemoteAddr host) whose
+	// `X-Forwarded-For` header is trusted. Empty means the gateway
+	// is directly facing untrusted clients and XFF is ignored — the
+	// previous default of trusting any XFF was a logging-side
+	// spoof vector flagged in audit H10.
+	TrustedProxies []string
+
 	WriteWait      time.Duration
 	PongWait       time.Duration
 	PingPeriod     time.Duration
@@ -59,7 +78,7 @@ func NewServer(rdb *redis.Client, log *slog.Logger, opts ServerOptions) *Server 
 		WriteBufferSize: 1024,
 		Subprotocols:    []string{"bearer", "jwt"},
 		CheckOrigin: func(r *nethttp.Request) bool {
-			return isOriginAllowed(r, opts.AllowedOrigins)
+			return isOriginAllowed(r, opts.AllowedOrigins, opts.AllowAllOriginsForDev)
 		},
 	}
 	return s
@@ -74,7 +93,7 @@ func (s *Server) Routes() nethttp.Handler {
 	// handler — chat + posts + presence + notifications all multiplex
 	// over the single connection.
 	mux.HandleFunc("/v1/ws/notifications", s.handleWS)
-	return loggingMiddleware(s.log, mux)
+	return loggingMiddleware(s.log, s.opts.TrustedProxies, mux)
 }
 
 // watchTokenExpiry fires `cancel` the moment the JWT exp passes,
@@ -113,7 +132,7 @@ func (s *Server) handleHealth(w nethttp.ResponseWriter, _ *nethttp.Request) {
 func (s *Server) handleWS(w nethttp.ResponseWriter, r *nethttp.Request) {
 	userID, tokenExp, err := authenticateUserFromJWTWithExpiry(r, s.opts.JWTSecret, s.opts.AllowQueryToken)
 	if err != nil {
-		s.log.Warn("websocket auth failed", "err", err, "client_ip", readClientIP(r))
+		s.log.Warn("websocket auth failed", "err", err, "client_ip", s.readClientIP(r))
 		nethttp.Error(w, "unauthorized", nethttp.StatusUnauthorized)
 		return
 	}
@@ -171,7 +190,7 @@ func (s *Server) handleWS(w nethttp.ResponseWriter, r *nethttp.Request) {
 		return
 	}
 
-	s.log.Info("websocket connected", "user_id", userID, "channel", chatChannel, "client_ip", readClientIP(r))
+	s.log.Info("websocket connected", "user_id", userID, "channel", chatChannel, "client_ip", s.readClientIP(r))
 	s.serveConnection(ctx, cancel, conn, pubsub, userID)
 }
 
@@ -458,16 +477,32 @@ func (s *Server) redisLoop(
 				}
 				continue
 			}
-			// For feed/post messages, skip if authored/acted by this connected user
-			if msg.Channel == "feed:new_post" || msg.Channel == "feed:post_update" || strings.HasPrefix(msg.Channel, "post:") || strings.HasPrefix(msg.Channel, "update:") || strings.HasPrefix(msg.Channel, "group_post:") {
-				var data map[string]any
-				if json.Unmarshal([]byte(msg.Payload), &data) == nil {
-					if pl, ok := data["payload"].(map[string]any); ok {
-						if authorID, _ := pl["author_id"].(string); authorID == uid {
-							continue
-						}
-						if actorID, _ := pl["actor_id"].(string); actorID == uid {
-							continue
+			// For feed/post messages, skip if authored/acted by the
+			// connected user. Audit H6: the previous version JSON-
+			// unmarshaled every message into a map[string]any just to
+			// peek at two fields — expensive on the hot path (one of
+			// these channels fires on every post create + every
+			// engagement). Substring-scan the raw payload first; only
+			// fall through to a full parse when the user's UUID
+			// actually appears, which is the rare case.
+			if msg.Channel == "feed:new_post" || msg.Channel == "feed:post_update" ||
+				strings.HasPrefix(msg.Channel, "post:") ||
+				strings.HasPrefix(msg.Channel, "update:") ||
+				strings.HasPrefix(msg.Channel, "group_post:") {
+				if strings.Contains(msg.Payload, uid) {
+					// UUID appears somewhere — could be the actor /
+					// author. Confirm with a parse before dropping
+					// (avoid false-positive drops when the same UUID
+					// shows up as a target/mention id, etc.).
+					var data map[string]any
+					if json.Unmarshal([]byte(msg.Payload), &data) == nil {
+						if pl, ok := data["payload"].(map[string]any); ok {
+							if authorID, _ := pl["author_id"].(string); authorID == uid {
+								continue
+							}
+							if actorID, _ := pl["actor_id"].(string); actorID == uid {
+								continue
+							}
 						}
 					}
 				}
@@ -512,13 +547,20 @@ func (s *Server) writeLoop(ctx context.Context, cancel context.CancelFunc, conn 
 	}
 }
 
-func isOriginAllowed(r *nethttp.Request, allowed []string) bool {
-	if len(allowed) == 0 {
-		return true
-	}
+func isOriginAllowed(r *nethttp.Request, allowed []string, allowAllForDev bool) bool {
 	origin := strings.TrimSpace(r.Header.Get("Origin"))
 	if origin == "" {
+		// Native clients (mobile WebSocket libraries, server-to-
+		// server) typically don't send Origin. CSRF only applies to
+		// browser-issued requests; refusing here would break every
+		// non-browser caller for no security benefit.
 		return true
+	}
+	if len(allowed) == 0 {
+		// Audit H10: previously allow-all here. Now only allowed in
+		// explicit dev mode. Production deployments without an
+		// allowlist refuse browser upgrades to close the CSRF gap.
+		return allowAllForDev
 	}
 	for _, item := range allowed {
 		value := strings.TrimSpace(item)
@@ -532,11 +574,43 @@ func isOriginAllowed(r *nethttp.Request, allowed []string) bool {
 	return false
 }
 
-func readClientIP(r *nethttp.Request) string {
-	xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For"))
-	if xff != "" {
-		parts := strings.Split(xff, ",")
-		return strings.TrimSpace(parts[0])
+// readClientIP returns a best-effort peer IP for log lines and
+// rate-limit keys. Audit H10: the previous version blindly trusted
+// the first `X-Forwarded-For` entry — anyone could spoof the logged
+// client IP by setting that header. Now XFF is only honored when
+// the immediate TCP peer (`RemoteAddr` host) is in `trustedProxies`;
+// everywhere else we use `RemoteAddr` so the IP corresponds to the
+// actual TCP origin.
+//
+// Package-level so the request-logging middleware (which doesn't hold
+// a Server reference) can use it too.
+func readClientIP(r *nethttp.Request, trustedProxies []string) string {
+	remote := strings.TrimSpace(r.RemoteAddr)
+	peerHost := remote
+	if h, _, err := net.SplitHostPort(remote); err == nil {
+		peerHost = h
 	}
-	return strings.TrimSpace(r.RemoteAddr)
+	if len(trustedProxies) > 0 && peerHost != "" {
+		trusted := false
+		for _, p := range trustedProxies {
+			if strings.EqualFold(strings.TrimSpace(p), peerHost) {
+				trusted = true
+				break
+			}
+		}
+		if trusted {
+			if xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xff != "" {
+				parts := strings.Split(xff, ",")
+				return strings.TrimSpace(parts[0])
+			}
+		}
+	}
+	return remote
+}
+
+// readClientIP is the Server-bound wrapper used by handlers that
+// have an *s. Same trusted-proxies policy as the package-level
+// helper.
+func (s *Server) readClientIP(r *nethttp.Request) string {
+	return readClientIP(r, s.opts.TrustedProxies)
 }

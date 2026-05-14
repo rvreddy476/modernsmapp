@@ -460,7 +460,44 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 			}
 		}()
 
-		// 4. Real-time delivery via Redis pub/sub to all members
+		// 4. Outbox event — critical synchronous handoff.
+		//
+		// Audit H5: this previously discarded the error with `_ =`. A
+		// transient Postgres blip would silently drop the downstream
+		// notification path (push, email) — the recipient would see the
+		// message only if they were already connected via Redis pub/sub.
+		//
+		// Now: retry briefly to absorb transient failures, then log
+		// CRITICAL if the row never lands. We still return success to
+		// the sender because Scylla has durably persisted the message;
+		// the alternative (failing the request) would create a duplicate
+		// on retry because the idempotency key gets released on error
+		// and a fresh msgID is generated.
+		outboxPayload := sharedEvents.MessageCreatedPayload{
+			MessageID:      msgID.String(),
+			ConversationID: conversationID.String(),
+			SenderID:       userID.String(),
+			Type:           msgType,
+			CreatedAt:      now,
+		}
+		var outboxErr error
+		for attempt := 0; attempt < 3; attempt++ {
+			outboxErr = s.convStore.InsertOutboxEvent(ctx, sharedEvents.MessageCreated, outboxPayload)
+			if outboxErr == nil {
+				break
+			}
+			if attempt < 2 {
+				time.Sleep(time.Duration(100*(attempt+1)) * time.Millisecond)
+			}
+		}
+		if outboxErr != nil {
+			l.Error("CRITICAL: outbox insert failed for chat message — downstream notifications will be lost",
+				"err", outboxErr)
+		}
+
+		// 5. Real-time delivery via Redis pub/sub to all members (best-effort).
+		// Runs after the durable outbox handoff so a successful publish
+		// always corresponds to a queued outbox event.
 		go func() {
 			pubCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
@@ -487,7 +524,7 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 			}
 		}()
 
-		// 5. Redis cache update (async)
+		// 6. Redis cache update (best-effort).
 		go func() {
 			cacheCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
@@ -500,15 +537,6 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 				l.Warn("failed to update redis cache", "err", err)
 			}
 		}()
-
-		// 6. Outbox event
-		_ = s.convStore.InsertOutboxEvent(ctx, sharedEvents.MessageCreated, sharedEvents.MessageCreatedPayload{
-			MessageID:      msgID.String(),
-			ConversationID: conversationID.String(),
-			SenderID:       userID.String(),
-			Type:           msgType,
-			CreatedAt:      now,
-		})
 
 		return &MessageResponse{
 			ConversationID: conversationID,

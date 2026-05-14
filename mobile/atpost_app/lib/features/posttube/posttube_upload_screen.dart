@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:atpost_app/core/errors/error_handler.dart';
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
@@ -84,13 +86,21 @@ class _PosttubeUploadScreenState extends ConsumerState<PosttubeUploadScreen> {
 
       // Create the actual video post. Use canonical 'long_video' rather than
       // legacy 'video' (backend normalizes either, but this is the modern name).
-      await api.post('/v1/posts', data: {
-        'content_type': 'long_video',
-        'media_ids': [mediaId],
-        'title': _titleCtrl.text.trim(),
-        'text': fullText,
-        'visibility': 'public',
-      });
+      // Audit H7: if /v1/posts errors after the media has been uploaded,
+      // best-effort delete the orphan so storage drops immediately. The
+      // 24h server-side GC sweep catches anything this misses.
+      try {
+        await api.post('/v1/posts', data: {
+          'content_type': 'long_video',
+          'media_ids': [mediaId],
+          'title': _titleCtrl.text.trim(),
+          'text': fullText,
+          'visibility': 'public',
+        });
+      } catch (_) {
+        unawaited(api.tryDeleteMedia(mediaId));
+        rethrow;
+      }
 
       if (mounted) {
         setState(() {

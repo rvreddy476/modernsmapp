@@ -362,6 +362,41 @@ func (s *MediaAssetStore) DeleteMedia(ctx context.Context, id uuid.UUID) ([]stri
 	return objectKeys, nil
 }
 
+// ListOrphanedPendingUploads returns the IDs of media assets stuck
+// in `pending_upload` past the cutoff time — audit H9. The 3-step
+// upload flow has a window where a client crashes between
+// /v1/media/init and /v1/media/confirm; the row sits at
+// `pending_upload` forever with no GC. The OrphanGCWorker polls this
+// every 15 min and purges anything older than 24 h.
+//
+// Bounded by `limit` so a backlog doesn't pin the connection. Ordered
+// by created_at ASC so the oldest orphans get cleaned first.
+func (s *MediaAssetStore) ListOrphanedPendingUploads(ctx context.Context, olderThan time.Time, limit int) ([]uuid.UUID, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT id FROM media_assets
+		WHERE processing_status = 'pending_upload'
+		  AND created_at < $1
+		ORDER BY created_at ASC
+		LIMIT $2
+	`, olderThan, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list orphan pending uploads: %w", err)
+	}
+	defer rows.Close()
+	var out []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // SoftDeleteMediaByUploader marks all media assets belonging to the given uploader
 // as deleted (GDPR right-to-erasure). The actual blob objects are not removed here;
 // a separate background job should purge them using the stored object keys.
