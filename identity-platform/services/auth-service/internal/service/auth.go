@@ -296,7 +296,8 @@ func (s *Service) RegisterWithPassword(ctx context.Context, phone, email, passwo
 		return nil, err
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	// Audit A9: bcrypt cost env-tunable via BCRYPT_COST.
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), s.cfg.BcryptCost)
 	if err != nil {
 		return nil, err
 	}
@@ -622,13 +623,22 @@ func (s *Service) RevokeSessionByID(ctx context.Context, userID, sessionID uuid.
 }
 
 // DeleteAccount soft-deletes a user account with 30-day grace period.
+//
+// Audit A14: previously revoked sessions AFTER the soft-delete flip and
+// silently dropped the revoke error. A late attacker holding a stolen
+// access token (15-min TTL window) could keep using it post-deletion
+// because the access-token check doesn't re-fetch user state on every
+// call — only refresh does. Now we revoke first so the refresh window
+// closes immediately, and surface the revoke error so we don't leave
+// the user in a half-deleted state.
 func (s *Service) DeleteAccount(ctx context.Context, userID uuid.UUID) error {
+	if revoked, err := s.store.RevokeAllSessions(ctx, userID); err != nil {
+		return fmt.Errorf("account deletion: failed to revoke sessions: %w", err)
+	} else {
+		s.log.Info("account deletion: revoked sessions", "user_id", userID, "revoked", revoked)
+	}
 	if err := s.store.SoftDeleteUser(ctx, userID); err != nil {
 		return fmt.Errorf("failed to soft delete user: %w", err)
-	}
-	// Revoke all sessions
-	if _, err := s.store.RevokeAllSessions(ctx, userID); err != nil {
-		s.log.Warn("failed to revoke sessions during account deletion", "err", err, "user_id", userID)
 	}
 	return nil
 }
@@ -772,7 +782,7 @@ func (s *Service) ResetPassword(ctx context.Context, identifier, code, newPasswo
 	}
 
 	// Hash new password and update
-	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), s.cfg.BcryptCost)
 	if err != nil {
 		return err
 	}
@@ -781,8 +791,22 @@ func (s *Service) ResetPassword(ctx context.Context, identifier, code, newPasswo
 		return err
 	}
 
-	// Revoke all existing sessions for security
-	s.store.RevokeAllSessions(ctx, user.ID)
+	// Revoke all existing sessions for security. Audit A4: previously
+	// the error was silently dropped (`s.store.RevokeAllSessions(...)`
+	// with no error capture), so a Postgres blip during the revoke
+	// would leave the attacker's session alive even after the user
+	// successfully reset their password — defeating the whole purpose
+	// of the reset. Now we surface the error: the password is already
+	// new (the attacker's stale token still won't pass refresh, since
+	// refresh checks revoked_at), but ops sees the failure and the
+	// caller knows to retry the revocation.
+	if revoked, err := s.store.RevokeAllSessions(ctx, user.ID); err != nil {
+		s.log.Error("password reset: failed to revoke sessions — user should be advised to log out everywhere",
+			"err", err, "user_id", user.ID)
+		return fmt.Errorf("password updated but session revocation failed: %w", err)
+	} else {
+		s.log.Info("password reset: revoked active sessions", "user_id", user.ID, "revoked", revoked)
+	}
 
 	s.log.Info("password reset successful", "user_id", user.ID)
 	return nil
@@ -923,6 +947,25 @@ func (s *Service) RemoveTrustedDevice(ctx context.Context, userID, deviceID uuid
 
 // createSessionForUser is a helper to create a full session (shared logic).
 func (s *Service) createSessionForUser(ctx context.Context, user *store.User, deviceID, platform, ip, userAgent string) (*AuthResponse, error) {
+	// Audit A6: enforce 2FA at every full-session entry point, not just
+	// the password-login path. Previously OAuth (Google/Apple) called
+	// this directly and skipped the TwoFactorEnabled check that
+	// auth.go:213 enforces for password logins — a 2FA-enabled user
+	// could still sign in with only a stolen OAuth refresh token.
+	// Returning a pending 2FA session here funnels every login flow
+	// through the same second-factor gate.
+	if user.TwoFactorEnabled {
+		pendingToken, err := s.StorePending2FASession(ctx, user.ID, deviceID, platform, ip, userAgent)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create pending 2FA session: %w", err)
+		}
+		return &AuthResponse{
+			Requires2FA:  true,
+			PendingToken: pendingToken,
+			User:         user,
+		}, nil
+	}
+
 	sessionID := uuid.New()
 	refreshToken, err := generateOpaqueToken(32)
 	if err != nil {

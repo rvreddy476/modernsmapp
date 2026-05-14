@@ -76,6 +76,15 @@ func main() {
 	userStore := store.New(dbPool)
 	userSvc := service.New(userStore, rdb, cfg, logger)
 	userHandler := http.New(userSvc, logger)
+	// Audit UC1: wire the internal-service-key gate. Without this,
+	// X-User-Id is effectively a public header — every other audit
+	// closed the same gap; this is the matching identity-platform fix.
+	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
+		userHandler.WithInternalKey(key)
+		logger.Info("user-service: internal-service-key gate enabled")
+	} else {
+		logger.Warn("user-service: INTERNAL_SERVICE_KEY not set — every endpoint is unauthenticated. Do not run this configuration in production.")
+	}
 
 	// 3b. Kafka consumer (inbox-dedup enabled)
 	consumer := events.NewConsumerWithDialer(cfg.KafkaBrokers, cfg.KafkaTopic, cfg.KafkaGroupID, kafkaDialer, dbPool, userSvc, logger)

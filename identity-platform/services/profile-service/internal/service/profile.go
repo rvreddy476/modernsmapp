@@ -261,17 +261,22 @@ func (s *Service) FollowUser(ctx context.Context, followerID, followingID uuid.U
 		return nil, errors.New("cannot follow this user")
 	}
 
-	f, err := s.store.CreateFollow(ctx, followerID, followingID)
+	f, changed, err := s.store.CreateFollow(ctx, followerID, followingID)
 	if err != nil {
 		return nil, err
 	}
 
-	// Update denormalized counts
-	if err := s.store.IncrementFollowingCount(ctx, followerID); err != nil {
-		s.log.Warn("failed to increment following_count", "err", err, "user_id", followerID)
-	}
-	if err := s.store.IncrementFollowerCount(ctx, followingID); err != nil {
-		s.log.Warn("failed to increment follower_count", "err", err, "user_id", followingID)
+	// Audit UC2: only bump denormalized counters when the follow edge
+	// actually changed state (new insert or re-activation). Previously
+	// the increments fired unconditionally so a duplicate or re-follow
+	// drifted counters upward.
+	if changed {
+		if err := s.store.IncrementFollowingCount(ctx, followerID); err != nil {
+			s.log.Warn("failed to increment following_count", "err", err, "user_id", followerID)
+		}
+		if err := s.store.IncrementFollowerCount(ctx, followingID); err != nil {
+			s.log.Warn("failed to increment follower_count", "err", err, "user_id", followingID)
+		}
 	}
 
 	// Invalidate caches

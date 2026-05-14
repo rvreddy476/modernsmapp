@@ -2,6 +2,7 @@ package http
 
 import (
 	"crypto/hmac"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
@@ -131,7 +132,17 @@ func AuthMiddleware(jwtSecret string) gin.HandlerFunc {
 		}
 
 		claims := &AccessClaims{}
+		// Audit A1: defense-in-depth algorithm pin. golang-jwt/jwt v5
+		// already rejects `alg: none` and prevents RSA→HMAC confusion
+		// (type-asserts the keyfunc's return against the algorithm's
+		// expected key type), but we pin the algorithm explicitly here
+		// so a future library downgrade or accidental method
+		// registration can't reintroduce the classic alg-confusion
+		// vulnerability. Tokens not signed with HS256 are rejected.
 		token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
+			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
+			}
 			return []byte(jwtSecret), nil
 		})
 		if err != nil || !token.Valid {

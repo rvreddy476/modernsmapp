@@ -569,19 +569,74 @@ func (s *Store) IncrementLinkClick(ctx context.Context, linkID uuid.UUID) error 
 // Follows
 // ---------------------------------------------------------------
 
-func (s *Store) CreateFollow(ctx context.Context, followerID, followingID uuid.UUID) (*Follow, error) {
-	var f Follow
-	err := s.db.QueryRow(ctx, `
-		INSERT INTO profile.follows (id, follower_id, following_id, status)
-		VALUES ($1, $2, $3, 'active')
-		ON CONFLICT (follower_id, following_id) DO UPDATE SET status = 'active'
-		RETURNING id, follower_id, following_id, status, created_at
-	`, uuid.New(), followerID, followingID).
-		Scan(&f.ID, &f.FollowerID, &f.FollowingID, &f.Status, &f.CreatedAt)
+// CreateFollow inserts (or re-activates) a follow edge and returns
+// whether the operation actually changed state so the caller can gate
+// counter increments. Audit UC2: previously the function returned a row
+// regardless of whether the insert was new, re-activation, or no-op
+// (already active). The service-layer code then bumped follower_count
+// + following_count on every call, so repeated follows from the same
+// user (or a follow-unfollow-follow cycle racing against itself)
+// drifted counters upward. Now CreateFollow runs the INSERT-or-UPDATE
+// inside a transaction, checks the prior status, and the returned
+// `changed` flag tells the service whether to fire the counter
+// increments. This mirrors the graph-service HG5 fix.
+func (s *Store) CreateFollow(ctx context.Context, followerID, followingID uuid.UUID) (*Follow, bool, error) {
+	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return &f, nil
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	// Read the prior state (if any) under a row lock so concurrent
+	// follow/unfollow operations on the same pair serialize.
+	var priorStatus string
+	priorErr := tx.QueryRow(ctx, `
+		SELECT status FROM profile.follows
+		WHERE follower_id = $1 AND following_id = $2 FOR UPDATE
+	`, followerID, followingID).Scan(&priorStatus)
+
+	var f Follow
+	if errors.Is(priorErr, pgx.ErrNoRows) {
+		// Fresh follow.
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO profile.follows (id, follower_id, following_id, status)
+			VALUES ($1, $2, $3, 'active')
+			RETURNING id, follower_id, following_id, status, created_at
+		`, uuid.New(), followerID, followingID).
+			Scan(&f.ID, &f.FollowerID, &f.FollowingID, &f.Status, &f.CreatedAt); err != nil {
+			return nil, false, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, false, err
+		}
+		return &f, true, nil
+	}
+	if priorErr != nil {
+		return nil, false, priorErr
+	}
+
+	// Row already exists — re-activate only if it wasn't already active.
+	changed := priorStatus != "active"
+	if changed {
+		if _, err := tx.Exec(ctx, `
+			UPDATE profile.follows SET status = 'active'
+			WHERE follower_id = $1 AND following_id = $2
+		`, followerID, followingID); err != nil {
+			return nil, false, err
+		}
+	}
+	if err := tx.QueryRow(ctx, `
+		SELECT id, follower_id, following_id, status, created_at
+		FROM profile.follows
+		WHERE follower_id = $1 AND following_id = $2
+	`, followerID, followingID).
+		Scan(&f.ID, &f.FollowerID, &f.FollowingID, &f.Status, &f.CreatedAt); err != nil {
+		return nil, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, false, err
+	}
+	return &f, changed, nil
 }
 
 func (s *Store) DeleteFollow(ctx context.Context, followerID, followingID uuid.UUID) error {

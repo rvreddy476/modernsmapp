@@ -18,6 +18,13 @@ type Config struct {
 	OTPDigits                int
 	OTPExpiry                time.Duration
 	OTPMaxAttempts           int
+	// BcryptCost is the bcrypt work factor used for password hashing.
+	// Audit A9: default was bcrypt.DefaultCost (10), but under high
+	// login load this was the throughput bottleneck. Make it tunable
+	// so production can dial up the cost for sensitive deploys (12+)
+	// and CI / test can dial down to 4 for fast suites. 10 is the
+	// safe default for everyone else.
+	BcryptCost               int
 	AccessTokenTTL           time.Duration
 	RefreshTokenTTL          time.Duration
 	JWTSecret                string
@@ -47,6 +54,7 @@ func Load() *Config {
 		OTPDigits:                getEnvInt("OTP_DIGITS", 6),
 		OTPExpiry:                getEnvDuration("OTP_EXPIRY", 5*time.Minute),
 		OTPMaxAttempts:           getEnvInt("OTP_MAX_ATTEMPTS", 5),
+		BcryptCost:               getEnvInt("BCRYPT_COST", 10),
 		AccessTokenTTL:           getEnvDuration("ACCESS_TOKEN_TTL", 15*time.Minute),
 		RefreshTokenTTL:          getEnvDuration("REFRESH_TOKEN_TTL", 30*24*time.Hour),
 		JWTSecret:                getEnv("JWT_SECRET", ""),

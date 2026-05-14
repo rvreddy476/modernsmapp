@@ -13,8 +13,9 @@ import (
 )
 
 type Handler struct {
-	svc UserService
-	log *slog.Logger
+	svc         UserService
+	log         *slog.Logger
+	internalKey string
 }
 
 type UserService interface {
@@ -31,7 +32,18 @@ func New(svc UserService, logger *slog.Logger) *Handler {
 	return &Handler{svc: svc, log: logger}
 }
 
+// WithInternalKey enables the X-Internal-Service-Key gate on every
+// gated /v1/users/* route. Audit UC1: without this, X-User-Id was a
+// trust-the-caller header that any direct connection could spoof.
+func (h *Handler) WithInternalKey(key string) *Handler {
+	h.internalKey = key
+	return h
+}
+
 func (h *Handler) RegisterRoutes(r *gin.Engine, auth gin.HandlerFunc, csrf gin.HandlerFunc) {
+	if h.internalKey != "" {
+		r.Use(RequireInternalServiceKey(h.internalKey))
+	}
 	v1 := r.Group("/v1/users")
 	{
 		v1.GET("", h.ListUsers)

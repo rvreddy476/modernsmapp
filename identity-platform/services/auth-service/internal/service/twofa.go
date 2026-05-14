@@ -295,7 +295,7 @@ func generateRecoveryCodes(count int) ([]string, error) {
 func (s *Service) storeRecoveryCodesTemp(ctx context.Context, userID uuid.UUID, codes []string) error {
 	hashed := make([]string, len(codes))
 	for i, code := range codes {
-		h, err := bcrypt.GenerateFromPassword([]byte(code), bcrypt.DefaultCost)
+		h, err := bcrypt.GenerateFromPassword([]byte(code), s.cfg.BcryptCost)
 		if err != nil {
 			return err
 		}

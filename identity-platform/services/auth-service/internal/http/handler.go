@@ -103,8 +103,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 		v1.GET("/.well-known/jwks.json", h.MiniAppJWKS)
 
 		// Password reset (public)
-		v1.POST("/forgot-password", h.ForgotPassword)
-		v1.POST("/reset-password", h.ResetPassword)
+		// Audit A12: rate-limit both endpoints so an attacker can't spam
+		// SMS/email resets and lock the victim out via provider abuse.
+		// Reset tokens themselves remain server-issued and short-lived.
+		v1.POST("/forgot-password", middleware.PasswordResetRateLimit(h.rdb), h.ForgotPassword)
+		v1.POST("/reset-password", middleware.PasswordResetRateLimit(h.rdb), h.ResetPassword)
 
 		// Token introspection — auth only (no CSRF; safe GET used by server-side proxies)
 		v1.GET("/me", authMW, h.Me)
