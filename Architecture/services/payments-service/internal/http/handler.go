@@ -40,17 +40,26 @@ func (h *Handler) WithWebhookSecret(secret string) *Handler {
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
-	if h.internalKey != "" {
-		r.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
-	}
+	// Audit P5: /webhook must NOT live behind the internal-service-key
+	// gate — Razorpay's webhook delivery has no way to send that header,
+	// so a configuration with both internalKey and webhookSecret set
+	// (the production target) would lock Razorpay out and break every
+	// payment status update. The webhook is authenticated solely by
+	// its HMAC-SHA256 X-Razorpay-Signature; that check happens inside
+	// HandleWebhook itself. Register the webhook route on the bare
+	// engine before applying the internal-key middleware to /v1/payments.
+	r.POST("/v1/payments/webhook", h.HandleWebhook)
+
 	v1 := r.Group("/v1/payments")
+	if h.internalKey != "" {
+		v1.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
+	}
 	{
 		v1.POST("/intents", h.InitiatePayment)
 		v1.GET("/intents/:id", h.GetIntent)
 		v1.PATCH("/intents/:id/status", h.UpdateStatus)
 		v1.POST("/intents/:id/refund", h.InitiateRefund)
 		v1.GET("/intents", h.ListByReference)
-		v1.POST("/webhook", h.HandleWebhook)
 		v1.POST("/holds/:intentId/release", h.ReleaseHold)
 	}
 }
@@ -230,6 +239,7 @@ func (h *Handler) HandleWebhook(c *gin.Context) {
 
 	var event struct {
 		Event   string          `json:"event"`
+		EventID string          `json:"id"`
 		Payload json.RawMessage `json:"payload"`
 	}
 	if err := json.Unmarshal(body, &event); err != nil {
@@ -250,6 +260,20 @@ func (h *Handler) HandleWebhook(c *gin.Context) {
 
 	paymentID := payloadData.Payment.Entity.ID
 	orderID := payloadData.Payment.Entity.OrderID
+
+	// Audit P3: dedup by Razorpay event_id. A duplicate retry returns
+	// 200 without re-running side effects. The check fails open (treats
+	// as new) if event_id is empty or Redis/Postgres is briefly down;
+	// the state-machine in UpdateStatusByProviderRef (audit P2) is the
+	// second line of defense.
+	fresh, err := h.svc.MarkWebhookSeen(c.Request.Context(), event.EventID, event.Event, orderID)
+	if err != nil {
+		slog.Warn("razorpay webhook dedup check failed; processing anyway", "err", err)
+	}
+	if !fresh {
+		c.Status(http.StatusOK)
+		return
+	}
 
 	switch event.Event {
 	case "payment.captured":

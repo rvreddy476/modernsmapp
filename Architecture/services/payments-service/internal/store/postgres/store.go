@@ -195,16 +195,96 @@ func (s *Store) ListByReference(ctx context.Context, refType string, refID uuid.
 	return intents, rows.Err()
 }
 
-// UpdateStatusByProviderRef updates the status of an intent matched by its provider_ref (gateway order ID).
+// validStatusTransitions encodes the allowed state-machine edges for
+// payment_intents. Audit P2: previously UpdateStatusByProviderRef did
+// an unconditional UPDATE — a late payment.captured webhook could flip
+// `refunded` back to `succeeded`, and a duplicate refund.processed
+// could flip `succeeded` → `refunded` → `succeeded` via reordering.
+//
+// `pending` is the initial state; terminal states (failed, refunded,
+// cancelled) accept no further transitions. `succeeded` only moves
+// forward to refunded.
+var validStatusTransitions = map[string]map[string]bool{
+	"pending": {
+		"processing": true, "succeeded": true, "failed": true, "cancelled": true,
+	},
+	"processing": {
+		"succeeded": true, "failed": true,
+	},
+	"succeeded": {
+		"refunded": true,
+	},
+	"failed":    {},
+	"refunded":  {},
+	"cancelled": {},
+}
+
+// ErrInvalidStatusTransition is returned when a status update would
+// violate the payment-intent state machine.
+var ErrInvalidStatusTransition = errors.New("invalid payment status transition")
+
+// UpdateStatusByProviderRef updates the status of an intent matched by
+// its provider_ref (gateway order ID). Returns ErrPaymentNotFound when
+// no intent matches, ErrInvalidStatusTransition when the requested
+// transition is forbidden by the state machine. The transition is
+// applied atomically inside a single UPDATE so two concurrent webhook
+// retries can't both succeed.
 func (s *Store) UpdateStatusByProviderRef(ctx context.Context, providerRef, newStatus, paymentID string) error {
-	_, err := s.db.Exec(ctx, `
+	// Build the allowed-current-status list for newStatus.
+	allowedCurrent := make([]string, 0, 4)
+	for from, edges := range validStatusTransitions {
+		if edges[newStatus] {
+			allowedCurrent = append(allowedCurrent, from)
+		}
+	}
+	if len(allowedCurrent) == 0 {
+		return fmt.Errorf("%w: unknown target status %q", ErrInvalidStatusTransition, newStatus)
+	}
+
+	cmd, err := s.db.Exec(ctx, `
 		UPDATE payments.payment_intents
 		SET status = $1,
 		    provider_ref = CASE WHEN $2 <> '' THEN $2 ELSE provider_ref END,
 		    updated_at = NOW()
-		WHERE provider_ref = $3
-	`, newStatus, paymentID, providerRef)
-	return err
+		WHERE provider_ref = $3 AND status = ANY($4)
+	`, newStatus, paymentID, providerRef, allowedCurrent)
+	if err != nil {
+		return err
+	}
+	if cmd.RowsAffected() == 0 {
+		// Distinguish "no such intent" from "invalid transition" so the
+		// caller (handler) can return the right error to the caller.
+		var existsCount int
+		_ = s.db.QueryRow(ctx,
+			`SELECT COUNT(*) FROM payments.payment_intents WHERE provider_ref = $1`,
+			providerRef).Scan(&existsCount)
+		if existsCount == 0 {
+			return ErrPaymentNotFound
+		}
+		return ErrInvalidStatusTransition
+	}
+	return nil
+}
+
+// RecordWebhookEventIfNew inserts a row into payments.webhook_events
+// returning true iff the event_id is new. Audit P3: Razorpay retries
+// webhooks aggressively; previously every retry re-ran the status
+// update and re-published a Kafka event. Now the handler can short-
+// circuit duplicates with a single SELECT-INSERT.
+func (s *Store) RecordWebhookEventIfNew(ctx context.Context, eventID, eventType, providerRef string) (bool, error) {
+	if eventID == "" {
+		// No event_id in the payload → can't dedup. Caller treats as new.
+		return true, nil
+	}
+	cmd, err := s.db.Exec(ctx, `
+		INSERT INTO payments.webhook_events (event_id, event_type, provider_ref, received_at)
+		VALUES ($1, $2, $3, NOW())
+		ON CONFLICT (event_id) DO NOTHING
+	`, eventID, eventType, providerRef)
+	if err != nil {
+		return false, err
+	}
+	return cmd.RowsAffected() == 1, nil
 }
 
 // CreateHold creates a payment hold record for an escrow payment.

@@ -2,7 +2,9 @@ package http
 
 import (
 	"net/http"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/atpost/orders-service/internal/service"
@@ -14,17 +16,62 @@ import (
 )
 
 type Handler struct {
-	svc         *service.Service
-	internalKey string
+	svc          *service.Service
+	internalKey  string
+	moderatorIDs map[uuid.UUID]struct{}
 }
 
 func New(svc *service.Service) *Handler {
-	return &Handler{svc: svc}
+	return &Handler{svc: svc, moderatorIDs: parseModeratorIDs()}
 }
 
 func (h *Handler) WithInternalKey(key string) *Handler {
 	h.internalKey = key
 	return h
+}
+
+// parseModeratorIDs reads ORDERS_MODERATOR_USER_IDS (comma-separated
+// UUIDs) into a set. Audit O4: dispute resolution + status mutation
+// previously had no role check at all — once past the internal-key
+// gate, every authenticated user could resolve any dispute and trigger
+// refunds. Proper cross-service role lookup needs a user-service
+// dependency this audit can't add. This allowlist is a stopgap that
+// ships now and gives operators a real gate, matching the qa-service
+// moderator pattern.
+func parseModeratorIDs() map[uuid.UUID]struct{} {
+	raw := strings.TrimSpace(os.Getenv("ORDERS_MODERATOR_USER_IDS"))
+	if raw == "" {
+		return nil
+	}
+	set := make(map[uuid.UUID]struct{})
+	for _, part := range strings.Split(raw, ",") {
+		id, err := uuid.Parse(strings.TrimSpace(part))
+		if err == nil {
+			set[id] = struct{}{}
+		}
+	}
+	return set
+}
+
+// requireModerator gates a moderation handler. When the env allowlist
+// is empty the entire moderation surface fails closed — explicit deny
+// beats accidental allow-all.
+func (h *Handler) requireModerator(c *gin.Context) bool {
+	userID, ok := getUserID(c)
+	if !ok {
+		return false
+	}
+	if h.moderatorIDs == nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "MODERATION_DISABLED",
+			"dispute moderation surface is not configured on this deployment", nil)
+		return false
+	}
+	if _, ok := h.moderatorIDs[userID]; !ok {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NOT_MODERATOR",
+			"only moderators can perform this action", nil)
+		return false
+	}
+	return true
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
@@ -254,6 +301,9 @@ func (h *Handler) OpenDispute(c *gin.Context) {
 
 // ResolveDispute PATCH /v1/orders/disputes/:id/resolve
 func (h *Handler) ResolveDispute(c *gin.Context) {
+	if !h.requireModerator(c) {
+		return
+	}
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid dispute id", nil)
@@ -273,6 +323,9 @@ func (h *Handler) ResolveDispute(c *gin.Context) {
 
 // UpdateDisputeStatus PATCH /v1/orders/disputes/:id/status
 func (h *Handler) UpdateDisputeStatus(c *gin.Context) {
+	if !h.requireModerator(c) {
+		return
+	}
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid dispute id", nil)

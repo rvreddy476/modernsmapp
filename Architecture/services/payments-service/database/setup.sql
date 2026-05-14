@@ -57,3 +57,17 @@ CREATE TABLE IF NOT EXISTS payments.outbox_events (
 );
 CREATE INDEX IF NOT EXISTS idx_payments_outbox_unpublished
     ON payments.outbox_events(id) WHERE published_at IS NULL;
+
+-- Audit P3: webhook idempotency. Razorpay retries deliveries; without
+-- this table every retry re-runs the state-machine update and re-
+-- publishes the Kafka event. The handler now SELECT-INSERTs each
+-- event_id and short-circuits when ON CONFLICT DO NOTHING returns 0
+-- rows affected.
+CREATE TABLE IF NOT EXISTS payments.webhook_events (
+    event_id     TEXT PRIMARY KEY,
+    event_type   TEXT NOT NULL,
+    provider_ref TEXT,
+    received_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_webhook_events_received_at
+    ON payments.webhook_events(received_at DESC);

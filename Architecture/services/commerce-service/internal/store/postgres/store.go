@@ -828,6 +828,17 @@ func (s *Store) GetCouponByCode(ctx context.Context, code string) (*Coupon, erro
 	return &c, err
 }
 
+// CountCouponUsagesByUser returns how many times a user has already
+// redeemed a coupon. Audit O10: the service uses this against
+// max_uses_per_user before applying the discount at checkout.
+func (s *Store) CountCouponUsagesByUser(ctx context.Context, couponID, userID uuid.UUID) (int, error) {
+	var n int
+	err := s.db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM coupon_usages WHERE coupon_id = $1 AND user_id = $2`,
+		couponID, userID).Scan(&n)
+	return n, err
+}
+
 func (s *Store) IncrCouponUsage(ctx context.Context, couponID, userID, orderID uuid.UUID) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {

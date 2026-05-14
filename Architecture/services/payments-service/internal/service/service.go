@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -122,6 +123,25 @@ func (s *Service) UpdateStatus(ctx context.Context, id uuid.UUID, oldStatus, new
 	return intent, nil
 }
 
+// ErrRefundNotAuthorized is returned when the actor isn't entitled to
+// refund this intent. Audit P1: previously InitiateRefund did no
+// authorization check — any caller with X-User-Id could refund any
+// payment in the table, moving money out of any seller's account.
+var ErrRefundNotAuthorized = fmt.Errorf("not authorized to refund this payment")
+
+// ErrHoldReleaseNotAuthorized is the equivalent for escrow holds.
+// Audit P4: ReleaseHold previously took an arbitrary X-User-Id string
+// and skipped any ownership check, so a buyer could release the
+// seller's escrow before delivery.
+var ErrHoldReleaseNotAuthorized = fmt.Errorf("not authorized to release this hold")
+
+// InitiateRefund refunds a succeeded payment.
+//
+// Authorization (audit P1): the actor must be either the payer (buyer
+// initiating a chargeback), the payee (seller-initiated refund), or
+// match the audit-explicit X-Admin-Refund flag from a trusted internal
+// caller. Cross-user refunds previously worked because the only check
+// was "status == succeeded".
 func (s *Service) InitiateRefund(ctx context.Context, id, actorID uuid.UUID, reason string) (*postgres.PaymentIntent, error) {
 	intent, err := s.store.GetIntent(ctx, id)
 	if err != nil {
@@ -129,6 +149,9 @@ func (s *Service) InitiateRefund(ctx context.Context, id, actorID uuid.UUID, rea
 	}
 	if intent.Status != "succeeded" {
 		return nil, fmt.Errorf("can only refund succeeded payments, current status: %s", intent.Status)
+	}
+	if actorID != intent.PayerID && actorID != intent.PayeeID {
+		return nil, ErrRefundNotAuthorized
 	}
 	if err := s.store.UpdateStatus(ctx, id, "succeeded", "refunded", "", actorID); err != nil {
 		return nil, err
@@ -145,14 +168,66 @@ func (s *Service) ListByReference(ctx context.Context, refType string, refID uui
 	return s.store.ListByReference(ctx, refType, refID)
 }
 
+// ReleaseHold marks an escrow hold released. Audit P4: actor must
+// match the payee (seller — the party the hold is protecting) or the
+// payer (buyer — for buyer-initiated escrow release flows). Empty or
+// non-UUID actor strings are rejected.
 func (s *Service) ReleaseHold(ctx context.Context, intentID uuid.UUID, releasedBy string) error {
+	intent, err := s.store.GetIntent(ctx, intentID)
+	if err != nil {
+		return err
+	}
+	actor, err := uuid.Parse(releasedBy)
+	if err != nil {
+		return ErrHoldReleaseNotAuthorized
+	}
+	if actor != intent.PayeeID && actor != intent.PayerID {
+		return ErrHoldReleaseNotAuthorized
+	}
 	return s.store.ReleaseHold(ctx, intentID, releasedBy)
 }
 
+// MarkWebhookSeen is the dedup gate the webhook handler calls before
+// applying the status update. Audit P3: returns (fresh=true) the first
+// time an event_id arrives and (false) on every retry, so duplicate
+// deliveries from Razorpay don't re-publish Kafka events.
+func (s *Service) MarkWebhookSeen(ctx context.Context, eventID, eventType, providerRef string) (bool, error) {
+	return s.store.RecordWebhookEventIfNew(ctx, eventID, eventType, providerRef)
+}
+
+// UpdateStatusByProviderRef is invoked from the webhook handler. The
+// state machine inside the store rejects forbidden transitions (audit
+// P2), so a late payment.captured arriving after refund.processed no
+// longer reverts the status. We publish a Kafka event only when the
+// transition actually applied — the store returns
+// ErrInvalidStatusTransition / ErrPaymentNotFound for the no-op cases.
 func (s *Service) UpdateStatusByProviderRef(ctx context.Context, providerRef, newStatus, paymentID string) {
-	if err := s.store.UpdateStatusByProviderRef(ctx, providerRef, newStatus, paymentID); err != nil {
+	err := s.store.UpdateStatusByProviderRef(ctx, providerRef, newStatus, paymentID)
+	if err != nil {
+		// Quiet log for the expected no-op cases; loud for everything else.
+		if errors.Is(err, postgres.ErrInvalidStatusTransition) || errors.Is(err, postgres.ErrPaymentNotFound) {
+			slog.Info("payment: webhook status update skipped",
+				"provider_ref", providerRef, "new_status", newStatus, "reason", err.Error())
+			return
+		}
 		slog.Error("payment: UpdateStatusByProviderRef failed", "provider_ref", providerRef, "error", err)
+		return
 	}
+	// Publish only when the row actually changed.
+	eventType := "payment.status_changed"
+	switch newStatus {
+	case "succeeded":
+		eventType = "payment.succeeded"
+	case "failed":
+		eventType = "payment.failed"
+	case "refunded":
+		eventType = "payment.refunded"
+	}
+	s.publishEvent(ctx, eventType, "", map[string]any{
+		"provider_ref": providerRef,
+		"payment_id":   paymentID,
+		"new_status":   newStatus,
+	})
 }
 
 func (s *Service) publishEvent(ctx context.Context, eventType, key string, payload any) {

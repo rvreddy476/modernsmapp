@@ -390,6 +390,30 @@ func round2(v float64) float64 {
 	return float64(int(v*100+0.5)) / 100
 }
 
+// couponWithinCaps returns true iff the coupon still has global +
+// per-user redemptions available. Audit O10: GetCouponByCode already
+// filters by is_active and expiry at the SQL layer, but the prior
+// checkout never enforced max_uses or max_uses_per_user — a permissive
+// public code could be redeemed unboundedly by anyone. max_uses == 0
+// is treated as "unlimited"; same for max_uses_per_user.
+func couponWithinCaps(ctx context.Context, s *Service, c *postgres.Coupon, userID uuid.UUID) bool {
+	if c.MaxUses != nil && *c.MaxUses > 0 && c.UsesCount >= *c.MaxUses {
+		return false
+	}
+	if c.MaxUsesPerUser > 0 {
+		n, err := s.store.CountCouponUsagesByUser(ctx, c.ID, userID)
+		if err != nil {
+			// Fail closed on Postgres errors — reject the coupon rather
+			// than risk over-redemption under a transient blip.
+			return false
+		}
+		if n >= c.MaxUsesPerUser {
+			return false
+		}
+	}
+	return true
+}
+
 // ─── Checkout & Orders ───────────────────────────────────────
 
 type CheckoutInput struct {
@@ -458,12 +482,19 @@ func (s *Service) Checkout(ctx context.Context, in CheckoutInput) (*postgres.Ord
 		})
 	}
 
-	// 3. Apply coupon if provided
+	// 3. Apply coupon if provided.
+	//
+	// Audit O10: GetCouponByCode already filters by is_active / starts_at /
+	// expires_at at the SQL layer, but the prior implementation never
+	// enforced max_uses (global cap) or max_uses_per_user (per-user cap).
+	// A single permissive coupon could be redeemed unboundedly. Now we
+	// require uses_count < max_uses and the per-user usage from
+	// coupon_usages to be below max_uses_per_user before applying.
 	couponDiscount := 0.0
 	var couponCodePtr *string
 	if in.CouponCode != "" {
 		c, err := s.store.GetCouponByCode(ctx, in.CouponCode)
-		if err == nil && subtotal >= c.MinOrderAmount {
+		if err == nil && subtotal >= c.MinOrderAmount && couponWithinCaps(ctx, s, c, in.UserID) {
 			switch c.DiscountType {
 			case "percentage":
 				d := subtotal * c.DiscountValue / 100

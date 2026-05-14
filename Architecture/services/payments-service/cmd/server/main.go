@@ -98,18 +98,43 @@ func main() {
 
 	store := postgres.New(dbPool)
 
-	// Select payment gateway: use Razorpay if credentials are set, otherwise stub.
+	// Select payment gateway. Audit P8: previously a missing
+	// RAZORPAY_KEY_ID silently selected the stub — production deploys
+	// that forgot the env ran with a stub that never moved real money
+	// (matches media-service H8 stub-in-prod pattern). Now require
+	// PAYMENTS_ALLOW_STUB=true to opt into the stub explicitly; if
+	// neither real creds nor the opt-in are set, refuse to start so
+	// the misconfiguration is visible at boot.
 	var gw gateway.PaymentGateway
 	if keyID := os.Getenv("RAZORPAY_KEY_ID"); keyID != "" {
 		gw = gateway.NewRazorpayGateway(keyID, os.Getenv("RAZORPAY_KEY_SECRET"))
-		slog.Info("using Razorpay payment gateway")
-	} else {
+		slog.Info("payments: using Razorpay gateway (production credentials detected)")
+	} else if os.Getenv("PAYMENTS_ALLOW_STUB") == "true" {
 		gw = &gateway.StubGateway{}
-		slog.Info("using stub payment gateway")
+		slog.Warn("payments: STUB GATEWAY ACTIVE — no real money will move. Set RAZORPAY_KEY_ID + RAZORPAY_KEY_SECRET in production and remove PAYMENTS_ALLOW_STUB.")
+	} else {
+		slog.Error("payments: RAZORPAY_KEY_ID is required in production; set PAYMENTS_ALLOW_STUB=true for dev/test")
+		os.Exit(1)
+	}
+
+	webhookSecret := os.Getenv("RAZORPAY_WEBHOOK_SECRET")
+	if webhookSecret == "" && os.Getenv("PAYMENTS_ALLOW_STUB") != "true" {
+		slog.Error("payments: RAZORPAY_WEBHOOK_SECRET is required when running with the Razorpay gateway")
+		os.Exit(1)
 	}
 
 	svc := service.NewWithDialer(store, kafkaBrokers, gw, kafkaDialer)
-	handler := nethttp.New(svc).WithWebhookSecret(os.Getenv("RAZORPAY_WEBHOOK_SECRET"))
+	handler := nethttp.New(svc).WithWebhookSecret(webhookSecret)
+	// Audit P-internal: gate /v1/payments/* behind the shared internal-
+	// service-key. /webhook is registered outside this gate inside
+	// handler.RegisterRoutes (audit P5). Empty key keeps dev unblocked
+	// behind a loud WARN, matching every other service in the platform.
+	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
+		handler.WithInternalKey(key)
+		slog.Info("payments-service: internal-service-key gate enabled")
+	} else {
+		slog.Warn("payments-service: INTERNAL_SERVICE_KEY not set — /v1/payments endpoints are unauthenticated. Do not run this configuration in production.")
+	}
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()

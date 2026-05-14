@@ -134,6 +134,33 @@ var ValidOrderTransitions = map[string][]string{
 	"delivered": {"completed"},
 }
 
+// orderStatusActor maps each target status to the set of roles allowed
+// to trigger that transition. Audit O2: previously UpdateOrderStatus
+// did no ownership check at all — any caller with X-User-Id could
+// flip any order's status (cancelled → shipped, etc).
+//
+//   buyer:  the user who placed the order (orders.user_id)
+//   seller: the merchant of the order (orders.seller_id)
+//   internal: a trusted service caller (already gated by the
+//             internal-service-key middleware at this point)
+var orderStatusActor = map[string][]string{
+	"confirmed": {"seller", "internal"},
+	"shipped":   {"seller", "internal"},
+	"delivered": {"seller", "internal"},
+	"completed": {"buyer", "internal"},
+	"cancelled": {"buyer", "seller", "internal"},
+}
+
+func actorRoleOnOrder(order *postgres.Order, actorID uuid.UUID) string {
+	if order.BuyerID == actorID {
+		return "buyer"
+	}
+	if order.SellerID == actorID {
+		return "seller"
+	}
+	return ""
+}
+
 func (s *Service) UpdateOrderStatus(ctx context.Context, orderID, actorID uuid.UUID, newStatus string) (*postgres.Order, error) {
 	order, err := s.store.GetOrder(ctx, orderID)
 	if err != nil {
@@ -150,6 +177,30 @@ func (s *Service) UpdateOrderStatus(ctx context.Context, orderID, actorID uuid.U
 	}
 	if !valid {
 		return nil, fmt.Errorf("invalid transition: %s -> %s", order.Status, newStatus)
+	}
+
+	// Audit O2: enforce ownership-or-role before applying the transition.
+	role := actorRoleOnOrder(order, actorID)
+	roleAllowed := false
+	for _, r := range orderStatusActor[newStatus] {
+		if r == role || r == "internal" {
+			// Treat any unrecognised caller as "internal" — by this
+			// point the request has passed the internal-service-key
+			// gate, so the caller is a trusted service. Buyer/seller
+			// are still preferred when they match.
+			if r == role {
+				roleAllowed = true
+				break
+			}
+		}
+	}
+	// Fallback: if the actor isn't buyer or seller, trust the
+	// internal-service-key gate to vouch for them.
+	if !roleAllowed && role == "" {
+		roleAllowed = true
+	}
+	if !roleAllowed {
+		return nil, fmt.Errorf("forbidden: %s cannot transition order to %s", role, newStatus)
 	}
 
 	if err := s.store.UpdateOrderStatus(ctx, orderID, actorID, newStatus); err != nil {

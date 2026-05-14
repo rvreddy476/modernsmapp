@@ -98,6 +98,15 @@ func main() {
 	store := postgres.New(dbPool)
 	svc := service.NewWithDialer(store, kafkaBrokers, kafkaDialer)
 	handler := nethttp.New(svc)
+	// Audit O1: same internal-key wiring as the rest of the platform.
+	// Without this every /v1/orders endpoint, including UpdateOrderStatus
+	// and ResolveDispute, was reachable directly.
+	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
+		handler.WithInternalKey(key)
+		slog.Info("orders-service: internal-service-key gate enabled")
+	} else {
+		slog.Warn("orders-service: INTERNAL_SERVICE_KEY not set — every endpoint is unauthenticated. Do not run this configuration in production.")
+	}
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
