@@ -14,6 +14,34 @@ CREATE TABLE IF NOT EXISTS creator_ledger (
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Migrate any legacy `wallets` TABLE into creator_ledger before swapping
+-- it for a view alias. Older deploys created `wallets` as a real table;
+-- when this schema re-runs, `CREATE OR REPLACE VIEW wallets` fails with
+-- `"wallets" is not a view (SQLSTATE 42809)` because a table by that
+-- name still exists. The block below copies any surviving rows into
+-- creator_ledger (idempotent via ON CONFLICT), drops the table, then
+-- the view creation below succeeds. Schemas drifted? Worst case the
+-- INSERT errors and the deploy stops — that's the right outcome for
+-- a non-trivial column mismatch.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_class
+        WHERE relname = 'wallets' AND relkind = 'r'
+    ) THEN
+        INSERT INTO creator_ledger (
+            user_id, balance, lifetime_earnings, pending_payout,
+            currency, is_frozen, created_at, updated_at
+        )
+        SELECT
+            user_id, balance, lifetime_earnings, pending_payout,
+            currency, is_frozen, created_at, updated_at
+        FROM wallets
+        ON CONFLICT (user_id) DO NOTHING;
+        DROP TABLE wallets CASCADE;
+    END IF;
+END $$;
+
 -- Deprecated read-only alias (drop after 2026-10-30).
 CREATE OR REPLACE VIEW wallets AS SELECT * FROM creator_ledger;
 
