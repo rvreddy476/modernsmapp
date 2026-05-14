@@ -2,6 +2,7 @@ package http
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -11,6 +12,43 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
+
+// authorizeViewerFromHeader runs the visibility gate using the
+// X-User-Id header (may be empty for unauthenticated callers; the
+// service handles nil viewer cleanly). Returns nil iff the viewer is
+// allowed to read content from the community.
+func (h *Handler) authorizeViewerFromHeader(c *gin.Context, communityID uuid.UUID) error {
+	rawUser := c.GetHeader("X-User-Id")
+	var viewer *uuid.UUID
+	if u, err := uuid.Parse(rawUser); err == nil {
+		viewer = &u
+	}
+	return h.svc.AuthorizeViewer(c.Request.Context(), communityID, viewer)
+}
+
+// writeAuthError maps service.AuthError sentinels onto the right HTTP
+// status. Audit CC2-CC7: we use a single chokepoint so all the post +
+// wiki handlers respond consistently when the actor isn't authorized.
+// Returns true when the error was handled (caller should bail out).
+func writeAuthError(c *gin.Context, err error) bool {
+	var ae *service.AuthError
+	if !errors.As(err, &ae) {
+		return false
+	}
+	switch ae {
+	case service.ErrNotCommunityMember:
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NOT_MEMBER", "not a community member", nil)
+	case service.ErrMemberBanned:
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "MEMBER_BANNED", "membership is banned or suspended", nil)
+	case service.ErrInsufficientRole:
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "INSUFFICIENT_ROLE", "role does not permit this action", nil)
+	case service.ErrNotPostAuthor:
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NOT_AUTHOR", "only the post author can perform this action", nil)
+	default:
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", ae.Error(), nil)
+	}
+	return true
+}
 
 type Handler struct {
 	svc         *service.Service
@@ -389,6 +427,15 @@ func (h *Handler) ListMembers(c *gin.Context) {
 	communityID, err := uuid.Parse(c.Param("communityId"))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid community ID", nil)
+		return
+	}
+
+	// Audit CC3: previously returned full member list (incl. banned and
+	// pending) with no auth check on the caller. Treat the member list
+	// like any other community content: gate non-public communities
+	// behind active membership.
+	if err := h.authorizeViewerFromHeader(c, communityID); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "community not found", nil)
 		return
 	}
 

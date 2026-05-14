@@ -2,24 +2,85 @@ package http
 
 import (
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 
 	"github.com/atpost/qa-service/internal/service"
 	"github.com/atpost/shared/api"
+	sharedmiddleware "github.com/atpost/shared/middleware"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
 type Handler struct {
-	svc *service.Service
+	svc           *service.Service
+	internalKey   string
+	moderatorIDs  map[uuid.UUID]struct{}
 }
 
 func New(svc *service.Service) *Handler {
-	return &Handler{svc: svc}
+	return &Handler{svc: svc, moderatorIDs: parseModeratorIDs()}
+}
+
+// parseModeratorIDs reads QA_MODERATOR_USER_IDS (comma-separated UUIDs)
+// and builds a set used by requireModerator. Empty/unset means no one
+// is a moderator — the entire moderation surface is closed except via
+// the internal-key gate. Audit CQ4: previously the moderation handlers
+// (ListReports, HideQuestion, LockQuestion, MergeQuestion, ...) had no
+// role check at all. A proper fix needs cross-service role lookup
+// against user-service; this allowlist is a stopgap that ships now and
+// lets operators name moderators via env.
+func parseModeratorIDs() map[uuid.UUID]struct{} {
+	raw := strings.TrimSpace(os.Getenv("QA_MODERATOR_USER_IDS"))
+	if raw == "" {
+		return nil
+	}
+	set := make(map[uuid.UUID]struct{})
+	for _, part := range strings.Split(raw, ",") {
+		id, err := uuid.Parse(strings.TrimSpace(part))
+		if err == nil {
+			set[id] = struct{}{}
+		}
+	}
+	return set
+}
+
+// requireModerator gates a moderation handler. Returns true on success.
+// If QA_MODERATOR_USER_IDS is empty, every caller is rejected with 403
+// rather than fail-open — explicit deny beats silent admin escalation.
+func (h *Handler) requireModerator(c *gin.Context) bool {
+	userID, ok := getUserID(c)
+	if !ok {
+		return false
+	}
+	if h.moderatorIDs == nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "MODERATION_DISABLED",
+			"moderation surface is not configured on this deployment", nil)
+		return false
+	}
+	if _, ok := h.moderatorIDs[userID]; !ok {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NOT_MODERATOR",
+			"only moderators can perform this action", nil)
+		return false
+	}
+	return true
+}
+
+// WithInternalKey sets the shared internal-service-key required on every
+// inbound request. Audit (Communities/Q&A 2026-05-14): qa-service had
+// no internal-key gate at all — every endpoint was reachable directly
+// without going through the API gateway, including the entire
+// moderation surface. Empty key keeps dev unblocked.
+func (h *Handler) WithInternalKey(key string) *Handler {
+	h.internalKey = key
+	return h
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
+	if h.internalKey != "" {
+		r.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
+	}
 	qa := r.Group("/v1/qa")
 	{
 		// Questions
@@ -200,8 +261,11 @@ func parsePagination(c *gin.Context) (limit, offset int) {
 			limit = n
 		}
 	}
+	// Audit HQ3: bound offset to keep PostgreSQL's worst-case scan
+	// cost finite (same pattern as graph HG2). Runaway clients with
+	// offset > 10k were issuing scans of millions of rows.
 	if v := c.Query("offset"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 && n <= 10000 {
 			offset = n
 		}
 	}

@@ -56,6 +56,81 @@ func isAtLeast(userRole, requiredRole string) bool {
 	return roleLevel(userRole) >= roleLevel(requiredRole)
 }
 
+// AuthError discriminates the two reasons we deny a request — useful for
+// the handler to map to 404 vs 403 appropriately. Audit (CC2-CC7):
+// previously the handlers called h.svc.Store() directly, bypassing
+// every membership/role gate. These helpers + their sentinel errors
+// give handlers a single chokepoint to enforce authorization.
+type AuthError struct {
+	Reason string // "not_member", "insufficient_role", "banned", "not_owner"
+}
+
+func (e *AuthError) Error() string { return "community auth: " + e.Reason }
+
+var (
+	ErrNotCommunityMember   = &AuthError{Reason: "not_member"}
+	ErrInsufficientRole     = &AuthError{Reason: "insufficient_role"}
+	ErrMemberBanned         = &AuthError{Reason: "banned"}
+	ErrNotPostAuthor        = &AuthError{Reason: "not_owner"}
+)
+
+// AuthorizeMembership returns nil if userID is an active (non-banned)
+// member of communityID; returns ErrNotCommunityMember / ErrMemberBanned
+// otherwise. Use this on every write that should require being in the
+// community (post creation, engagement on member-only content).
+func (s *Service) AuthorizeMembership(ctx context.Context, communityID, userID uuid.UUID) (*store.CommunityMember, error) {
+	m, err := s.store.GetMember(ctx, communityID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if m == nil {
+		return nil, ErrNotCommunityMember
+	}
+	if m.Role == "banned" || m.Role == "suspended" {
+		return nil, ErrMemberBanned
+	}
+	return m, nil
+}
+
+// AuthorizeRole returns nil if userID is a member of communityID with a
+// role at least `minRole`; otherwise returns ErrInsufficientRole (or
+// ErrNotCommunityMember / ErrMemberBanned for the precedent failures).
+// Used for moderation actions: pin, feature, ban, wiki edit, etc.
+func (s *Service) AuthorizeRole(ctx context.Context, communityID, userID uuid.UUID, minRole string) (*store.CommunityMember, error) {
+	m, err := s.AuthorizeMembership(ctx, communityID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if !isAtLeast(m.Role, minRole) {
+		return nil, ErrInsufficientRole
+	}
+	return m, nil
+}
+
+// AuthorizeViewer returns nil if userID may view content in communityID
+// (anyone for public/education, members only for private). Pass empty
+// userID for unauthenticated callers — only public communities pass.
+func (s *Service) AuthorizeViewer(ctx context.Context, communityID uuid.UUID, userID *uuid.UUID) error {
+	c, err := s.store.GetCommunityByID(ctx, communityID)
+	if err != nil {
+		return err
+	}
+	if c == nil {
+		return ErrNotCommunityMember
+	}
+	// Public / discovery-friendly types: anyone can read.
+	switch c.CommunityType {
+	case "public", "education", "professional":
+		return nil
+	}
+	// Private / invite-only / secret: require active membership.
+	if userID == nil {
+		return ErrNotCommunityMember
+	}
+	_, err = s.AuthorizeMembership(ctx, communityID, *userID)
+	return err
+}
+
 type Service struct {
 	store    *store.Store
 	rdb      *redis.Client
@@ -200,7 +275,7 @@ func (s *Service) CreateCommunity(ctx context.Context, ownerID uuid.UUID, params
 		UserID:      ownerID,
 		Role:        "owner",
 	}
-	if err := s.store.AddMember(ctx, member); err != nil {
+	if _, err := s.store.AddMember(ctx, member); err != nil {
 		slog.Warn("failed to add owner as member", "community_id", c.ID, "error", err)
 	}
 
@@ -396,11 +471,17 @@ func (s *Service) JoinCommunity(ctx context.Context, communityID, userID uuid.UU
 			UserID:      userID,
 			Role:        "member",
 		}
-		if err := s.store.AddMember(ctx, member); err != nil {
+		inserted, err := s.store.AddMember(ctx, member)
+		if err != nil {
 			return nil, nil, fmt.Errorf("failed to join: %w", err)
 		}
-		if err := s.store.IncrementMemberCount(ctx, communityID, 1); err != nil {
-			slog.Warn("failed to increment member count", "error", err)
+		// Audit HC1: only increment member_count on a genuinely new row
+		// — concurrent duplicate joins previously each ran
+		// IncrementMemberCount and drifted the counter upward.
+		if inserted {
+			if err := s.store.IncrementMemberCount(ctx, communityID, 1); err != nil {
+				slog.Warn("failed to increment member count", "error", err)
+			}
 		}
 		// Auto-follow default spaces (announcements, welcome, is_default)
 		if err := s.store.AutoFollowDefaultSpaces(ctx, communityID, userID); err != nil {
@@ -547,8 +628,12 @@ func (s *Service) BanMember(ctx context.Context, communityID, targetUserID, acto
 		TargetID:    targetUserID,
 		Reason:      &reason,
 	}
+	// Audit HC6: previously this swallowed the error with a Warn log so
+	// a ban/unban/role-change without an audit trail looked successful.
+	// The audit log is safety-critical — fail the action so the actor
+	// can retry and operators see the gap in metrics.
 	if err := s.store.AddModlogEntry(ctx, entry); err != nil {
-		slog.Warn("failed to add modlog entry", "error", err)
+		return fmt.Errorf("failed to record moderation audit log: %w", err)
 	}
 
 	if s.producer != nil {
@@ -582,8 +667,12 @@ func (s *Service) UnbanMember(ctx context.Context, communityID, targetUserID, ac
 		TargetType:  "user",
 		TargetID:    targetUserID,
 	}
+	// Audit HC6: previously this swallowed the error with a Warn log so
+	// a ban/unban/role-change without an audit trail looked successful.
+	// The audit log is safety-critical — fail the action so the actor
+	// can retry and operators see the gap in metrics.
 	if err := s.store.AddModlogEntry(ctx, entry); err != nil {
-		slog.Warn("failed to add modlog entry", "error", err)
+		return fmt.Errorf("failed to record moderation audit log: %w", err)
 	}
 
 	return nil
@@ -780,8 +869,12 @@ func (s *Service) QuarantineSpace(ctx context.Context, communityID, spaceID, act
 		TargetID:    spaceID,
 		Reason:      &reason,
 	}
+	// Audit HC6: previously this swallowed the error with a Warn log so
+	// a ban/unban/role-change without an audit trail looked successful.
+	// The audit log is safety-critical — fail the action so the actor
+	// can retry and operators see the gap in metrics.
 	if err := s.store.AddModlogEntry(ctx, entry); err != nil {
-		slog.Warn("failed to add modlog entry", "error", err)
+		return fmt.Errorf("failed to record moderation audit log: %w", err)
 	}
 
 	if s.producer != nil {
@@ -823,6 +916,18 @@ func (s *Service) ApproveRequest(ctx context.Context, communityID, requestID, ac
 	if jr.CommunityID != communityID {
 		return fmt.Errorf("join request not found")
 	}
+	// Audit HC3: join requests previously had no expiration or
+	// single-use semantics. A stale "pending" row from months ago
+	// could be approved into a fresh membership. Reject anything
+	// older than 30 days, and refuse to approve non-pending rows
+	// so a malicious moderator can't double-approve the same
+	// request to undo a prior rejection.
+	if jr.Status != "pending" {
+		return fmt.Errorf("join request is not pending (status=%s)", jr.Status)
+	}
+	if time.Since(jr.CreatedAt) > 30*24*time.Hour {
+		return fmt.Errorf("join request expired")
+	}
 
 	if err := s.store.ApproveRequest(ctx, requestID, actorID); err != nil {
 		return err
@@ -834,12 +939,14 @@ func (s *Service) ApproveRequest(ctx context.Context, communityID, requestID, ac
 		UserID:      jr.UserID,
 		Role:        "member",
 	}
-	if err := s.store.AddMember(ctx, newMember); err != nil {
+	inserted, err := s.store.AddMember(ctx, newMember)
+	if err != nil {
 		return fmt.Errorf("failed to add member after approval: %w", err)
 	}
-
-	if err := s.store.IncrementMemberCount(ctx, communityID, 1); err != nil {
-		slog.Warn("failed to increment member count", "error", err)
+	if inserted {
+		if err := s.store.IncrementMemberCount(ctx, communityID, 1); err != nil {
+			slog.Warn("failed to increment member count", "error", err)
+		}
 	}
 
 	// Auto-follow default spaces for approved member
@@ -871,6 +978,10 @@ func (s *Service) RejectRequest(ctx context.Context, communityID, requestID, act
 	}
 	if jr.CommunityID != communityID {
 		return fmt.Errorf("join request not found")
+	}
+	// Audit HC3: same single-use gate as ApproveRequest.
+	if jr.Status != "pending" {
+		return fmt.Errorf("join request is not pending (status=%s)", jr.Status)
 	}
 
 	return s.store.RejectRequest(ctx, requestID, actorID)

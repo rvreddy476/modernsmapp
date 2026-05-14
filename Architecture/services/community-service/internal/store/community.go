@@ -269,12 +269,22 @@ func (s *Store) scanCommunities(ctx context.Context, query string, args ...any) 
 
 // --- Member operations ---
 
-func (s *Store) AddMember(ctx context.Context, m *CommunityMember) error {
+// AddMember inserts the membership row. The boolean returned is true
+// iff a NEW row was added (false when the user was already a member,
+// even if role is being upgraded). Audit HC1: callers need this signal
+// so they only increment member_count on a fresh join — concurrent
+// duplicate joins previously double-counted because ON CONFLICT
+// DO UPDATE always reports RowsAffected > 0.
+func (s *Store) AddMember(ctx context.Context, m *CommunityMember) (bool, error) {
 	query := `INSERT INTO community_members (community_id, user_id, role)
 		VALUES ($1, $2, $3)
-		ON CONFLICT (community_id, user_id) DO UPDATE SET role = $3`
-	_, err := s.db.Exec(ctx, query, m.CommunityID, m.UserID, m.Role)
-	return err
+		ON CONFLICT (community_id, user_id) DO UPDATE SET role = $3
+		RETURNING (xmax = 0) AS inserted`
+	var inserted bool
+	if err := s.db.QueryRow(ctx, query, m.CommunityID, m.UserID, m.Role).Scan(&inserted); err != nil {
+		return false, err
+	}
+	return inserted, nil
 }
 
 func (s *Store) GetMember(ctx context.Context, communityID, userID uuid.UUID) (*CommunityMember, error) {

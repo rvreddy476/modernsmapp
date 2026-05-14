@@ -573,20 +573,14 @@ func (s *Service) JoinGroup(ctx context.Context, actorID, groupID uuid.UUID) (st
 		return "", fmt.Errorf("forbidden: you are banned from this group")
 	}
 
-	// Enforce max members
-	if g.MaxMembers > 0 {
-		count, err := s.store.GetActiveMemberCount(ctx, groupID)
-		if err != nil {
-			return "", err
-		}
-		if count >= int64(g.MaxMembers) {
-			return "", fmt.Errorf("group has reached its maximum member limit")
-		}
-	}
+	// Audit HG6: the max-members cap is enforced atomically inside the
+	// store's AddMemberWithMax under a row-level lock, so two
+	// concurrent joins can no longer both pass a stale precheck and
+	// push the group over its limit.
 
 	switch g.JoinMode {
 	case "open":
-		if err := s.store.AddMember(ctx, groupID, actorID, "member"); err != nil {
+		if err := s.store.AddMemberWithMax(ctx, groupID, actorID, "member", g.MaxMembers); err != nil {
 			return "", err
 		}
 		if g.ChatConversationID != nil {
@@ -969,6 +963,14 @@ func (s *Service) AcceptInvite(ctx context.Context, actorID uuid.UUID, inviteID 
 	}
 	if inv.Status != "pending" {
 		return fmt.Errorf("invite is no longer pending")
+	}
+	// Audit CG3: invites carry an ExpiresAt set at creation (~7 days)
+	// but the previous code never checked it — a leaked or shared
+	// invite link replayed years later still worked. Reject expired
+	// invites and bump the status so the row is closed out.
+	if inv.ExpiresAt != nil && time.Now().After(*inv.ExpiresAt) {
+		_ = s.store.UpdateInviteStatus(ctx, inviteID, "expired")
+		return fmt.Errorf("invite expired")
 	}
 
 	if err := s.store.UpdateInviteStatus(ctx, inviteID, "accepted"); err != nil {

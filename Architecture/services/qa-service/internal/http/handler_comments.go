@@ -53,6 +53,12 @@ func (h *Handler) UpdateComment(c *gin.Context) {
 	if !ok {
 		return
 	}
+	// Audit CQ5: require X-User-Id and pass to service so ownership
+	// is enforced. Previously the handler didn't even extract a userID.
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
 
 	var body struct {
 		Body string `json:"body"`
@@ -62,7 +68,7 @@ func (h *Handler) UpdateComment(c *gin.Context) {
 		return
 	}
 
-	comment, err := h.svc.UpdateComment(c.Request.Context(), cID, body.Body)
+	comment, err := h.svc.UpdateComment(c.Request.Context(), cID, userID, body.Body)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "UPDATE_FAILED", err.Error(), nil)
 		return
@@ -75,8 +81,13 @@ func (h *Handler) DeleteComment(c *gin.Context) {
 	if !ok {
 		return
 	}
+	// Audit CQ5: ownership check.
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
 
-	if err := h.svc.DeleteComment(c.Request.Context(), cID); err != nil {
+	if err := h.svc.DeleteComment(c.Request.Context(), cID, userID); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "DELETE_FAILED", err.Error(), nil)
 		return
 	}

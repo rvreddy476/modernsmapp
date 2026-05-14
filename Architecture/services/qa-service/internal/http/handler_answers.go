@@ -145,6 +145,22 @@ func (h *Handler) UnselectBestAnswer(c *gin.Context) {
 	if !ok {
 		return
 	}
+	// Audit CQ3: previously bypassed service entirely and called the
+	// store directly with no auth check. Only the question author can
+	// unselect their accepted answer.
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	q, err := h.svc.Store().GetQuestion(c.Request.Context(), qID)
+	if err != nil || q == nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "question not found", nil)
+		return
+	}
+	if q.AuthorID != userID {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NOT_AUTHOR", "only the question author can unselect a best answer", nil)
+		return
+	}
 
 	if err := h.svc.Store().UnselectBestAnswer(c.Request.Context(), qID); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "UNSELECT_FAILED", err.Error(), nil)

@@ -376,12 +376,51 @@ func (s *Store) SetChatConversationID(ctx context.Context, groupID, convID uuid.
 // --- Members ---
 
 // AddMember adds a user to a group with the given role.
+// ErrGroupFull is returned by AddMember when maxMembers > 0 and the
+// group is already at capacity. Audit HG6: previously the service
+// checked GetActiveMemberCount and then called AddMember in a separate
+// statement — two concurrent joins could both pass the check and push
+// the group over its max.
+var ErrGroupFull = fmt.Errorf("group has reached its maximum member limit")
+
 func (s *Store) AddMember(ctx context.Context, groupID, userID uuid.UUID, role string) error {
+	return s.AddMemberWithMax(ctx, groupID, userID, role, 0)
+}
+
+// AddMemberWithMax performs the membership insert atomically against
+// the active-member count. maxMembers == 0 disables the cap (matches
+// the existing schema's "0 means unlimited"). When the cap would be
+// exceeded the function returns ErrGroupFull and leaves the row alone.
+func (s *Store) AddMemberWithMax(ctx context.Context, groupID, userID uuid.UUID, role string, maxMembers int) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
+
+	if maxMembers > 0 {
+		// Lock the count for the duration of the transaction. The
+		// CTE is keyed by group_id so concurrent inserts to other
+		// groups don't block this one.
+		var active int
+		if err := tx.QueryRow(ctx, `
+			SELECT COUNT(*) FROM group_members
+			WHERE group_id = $1 AND status = 'active'
+			FOR UPDATE
+		`, groupID).Scan(&active); err != nil {
+			return err
+		}
+		// If the actor is already an inactive member we'll reactivate,
+		// which doesn't change the active count — allow regardless.
+		var existingActive bool
+		_ = tx.QueryRow(ctx, `
+			SELECT status = 'active' FROM group_members
+			WHERE group_id = $1 AND user_id = $2
+		`, groupID, userID).Scan(&existingActive)
+		if !existingActive && active >= maxMembers {
+			return ErrGroupFull
+		}
+	}
 
 	cmdTag, err := tx.Exec(ctx, `
 		INSERT INTO group_members (group_id, user_id, role, status)

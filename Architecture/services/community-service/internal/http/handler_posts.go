@@ -50,6 +50,22 @@ func (h *Handler) CreateCommunityPost(c *gin.Context) {
 		return
 	}
 
+	// Audit CC4: previously trusted X-User-Id and wrote a post without
+	// confirming the actor is even in the community. Now we require an
+	// active membership before persisting the row.
+	actorUUID, err := uuid.Parse(userID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "AUTH_REQUIRED", "invalid user id", nil)
+		return
+	}
+	if _, err := h.svc.AuthorizeMembership(c.Request.Context(), communityID, actorUUID); err != nil {
+		if writeAuthError(c, err) {
+			return
+		}
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "AUTH_FAILED", err.Error(), nil)
+		return
+	}
+
 	var body struct {
 		ContentType  string          `json:"content_type"`
 		Title        *string         `json:"title"`
@@ -110,7 +126,14 @@ func (h *Handler) GetCommunityPost(c *gin.Context) {
 		return
 	}
 	post, err := h.svc.Store().GetCommunityPost(c.Request.Context(), postID)
-	if err != nil {
+	if err != nil || post == nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "post not found", nil)
+		return
+	}
+	// Audit CC5: for non-public communities, require viewer to be a
+	// member before exposing post content. The handler returns 404 for
+	// auth failures here so an outsider can't probe post existence.
+	if err := h.authorizeViewerFromHeader(c, post.CommunityID); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "post not found", nil)
 		return
 	}
@@ -152,6 +175,11 @@ func (h *Handler) ListCommunityPosts(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid community id", nil)
 		return
 	}
+	// Audit CC5: gate non-public community post lists on viewer membership.
+	if err := h.authorizeViewerFromHeader(c, communityID); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "community not found", nil)
+		return
+	}
 	// List all posts across community (aggregated feed)
 	posts, err := h.svc.Store().ListCommunityPosts(c.Request.Context(), communityID, limit, offset)
 	if err != nil {
@@ -180,6 +208,29 @@ func (h *Handler) DeleteCommunityPost(c *gin.Context) {
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid post id", nil)
 		return
+	}
+	// Audit CC2: previously called Store().DeleteCommunityPost directly —
+	// any X-User-Id could erase any post. Require the actor be the post
+	// author or hold a moderator+ role in the post's community.
+	userID := c.GetHeader("X-User-Id")
+	actorUUID, err := uuid.Parse(userID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "AUTH_REQUIRED", "missing user id", nil)
+		return
+	}
+	post, err := h.svc.Store().GetCommunityPost(c.Request.Context(), postID)
+	if err != nil || post == nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "post not found", nil)
+		return
+	}
+	if post.AuthorID != userID {
+		if _, err := h.svc.AuthorizeRole(c.Request.Context(), post.CommunityID, actorUUID, "moderator"); err != nil {
+			if writeAuthError(c, err) {
+				return
+			}
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "AUTH_FAILED", err.Error(), nil)
+			return
+		}
 	}
 	if err := h.svc.Store().DeleteCommunityPost(c.Request.Context(), postID); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "DELETE_FAILED", err.Error(), nil)
@@ -237,10 +288,39 @@ func (h *Handler) RecordCommunityPostView(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "recorded"}, nil)
 }
 
+// requireModeratorOnPost is the shared gate for moderator-only mutations
+// on a community post (feature, pin). Returns true on success; on
+// failure it has already written the HTTP error.
+func (h *Handler) requireModeratorOnPost(c *gin.Context, postID uuid.UUID) bool {
+	userID := c.GetHeader("X-User-Id")
+	actorUUID, err := uuid.Parse(userID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "AUTH_REQUIRED", "missing user id", nil)
+		return false
+	}
+	post, err := h.svc.Store().GetCommunityPost(c.Request.Context(), postID)
+	if err != nil || post == nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "post not found", nil)
+		return false
+	}
+	if _, err := h.svc.AuthorizeRole(c.Request.Context(), post.CommunityID, actorUUID, "moderator"); err != nil {
+		if writeAuthError(c, err) {
+			return false
+		}
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "AUTH_FAILED", err.Error(), nil)
+		return false
+	}
+	return true
+}
+
 func (h *Handler) FeaturePost(c *gin.Context) {
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid post id", nil)
+		return
+	}
+	// Audit CC2: feature is a moderation action; restrict to moderator+.
+	if !h.requireModeratorOnPost(c, postID) {
 		return
 	}
 	var body struct {
@@ -260,6 +340,10 @@ func (h *Handler) PinCommunityPost(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid post id", nil)
 		return
 	}
+	// Audit CC2: pin is a moderation action; restrict to moderator+.
+	if !h.requireModeratorOnPost(c, postID) {
+		return
+	}
 	if err := h.svc.Store().PinCommunityPost(c.Request.Context(), postID); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "PIN_FAILED", err.Error(), nil)
 		return
@@ -271,6 +355,18 @@ func (h *Handler) AcceptAnswerPost(c *gin.Context) {
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid post id", nil)
+		return
+	}
+	// Audit CC2: only the post (question) author can mark an answer
+	// accepted. Anyone else doing so would rewrite the canonical answer.
+	userID := c.GetHeader("X-User-Id")
+	post, err := h.svc.Store().GetCommunityPost(c.Request.Context(), postID)
+	if err != nil || post == nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "post not found", nil)
+		return
+	}
+	if post.AuthorID != userID {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NOT_AUTHOR", "only the post author can accept an answer", nil)
 		return
 	}
 	var body struct {
@@ -310,6 +406,21 @@ func (h *Handler) CreateWikiPage(c *gin.Context) {
 		return
 	}
 	userID := c.GetHeader("X-User-Id")
+	// Audit CC7: wiki pages are durable shared community content; allow
+	// only moderator+ to author/edit. Previously any X-User-Id wrote a
+	// new page with no check.
+	actorUUID, err := uuid.Parse(userID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "AUTH_REQUIRED", "missing user id", nil)
+		return
+	}
+	if _, err := h.svc.AuthorizeRole(c.Request.Context(), communityID, actorUUID, "moderator"); err != nil {
+		if writeAuthError(c, err) {
+			return
+		}
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "AUTH_FAILED", err.Error(), nil)
+		return
+	}
 	var body struct {
 		Title    string  `json:"title" binding:"required"`
 		Slug     string  `json:"slug" binding:"required"`
@@ -354,6 +465,19 @@ func (h *Handler) UpdateWikiPage(c *gin.Context) {
 	communityID, _ := uuid.Parse(c.Param("communityId"))
 	slug := c.Param("slug")
 	userID := c.GetHeader("X-User-Id")
+	// Audit CC7: same gate as CreateWikiPage.
+	actorUUID, err := uuid.Parse(userID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "AUTH_REQUIRED", "missing user id", nil)
+		return
+	}
+	if _, err := h.svc.AuthorizeRole(c.Request.Context(), communityID, actorUUID, "moderator"); err != nil {
+		if writeAuthError(c, err) {
+			return
+		}
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "AUTH_FAILED", err.Error(), nil)
+		return
+	}
 	var body struct {
 		Title   string `json:"title" binding:"required"`
 		Content string `json:"content" binding:"required"`
