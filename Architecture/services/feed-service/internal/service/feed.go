@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/atpost/feed-service/internal/ranking"
@@ -66,13 +67,17 @@ type FeedItem struct {
 }
 
 func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, feedMode string, excludeSelf bool, circleOnly bool, followingOnly bool, before *time.Time) ([]FeedItem, error) {
-	// Over-fetch for ranking headroom: 5x when ranked, normal otherwise
-	// Also over-fetch slightly when excluding self to compensate for filtered items
+	// Audit HF1: ranking over-fetch was 5x with a 500-row ceiling — each
+	// feed request hit Scylla for up to 500 timeline rows and then the
+	// ranker did per-post Redis reads on every one (audit HF2). 2.5x is
+	// plenty of headroom for blocks/mutes/dedup churn while halving the
+	// per-request cost. 200 is the hard ceiling because beyond that the
+	// ranker's signal noise dominates the ordering anyway.
 	fetchLimit := limit
 	if feedMode == "ranked" || feedMode == "shadow" {
-		fetchLimit = limit * 5
-		if fetchLimit > 500 {
-			fetchLimit = 500
+		fetchLimit = (limit * 5) / 2
+		if fetchLimit > 200 {
+			fetchLimit = 200
 		}
 	} else if excludeSelf {
 		fetchLimit = limit + 10 // extra headroom for own posts removed
@@ -411,6 +416,12 @@ func (s *Service) RecordSignal(ctx context.Context, userID, postID uuid.UUID, si
 	return s.pgStore.RecordSignal(ctx, userID, postID, signal)
 }
 
+// IsCelebAuthor exposes the celeb check to the Kafka consumer so it
+// can short-circuit follow-backfill for pull-model authors (audit HF6).
+func (s *Service) IsCelebAuthor(ctx context.Context, authorID uuid.UUID) (bool, error) {
+	return s.pgStore.IsCeleb(ctx, authorID)
+}
+
 // DebugFeed returns full score breakdown for the user's feed candidates.
 func (s *Service) DebugFeed(ctx context.Context, userID uuid.UUID) (interface{}, error) {
 	items, err := s.scyllaStore.GetHomeTimeline(ctx, userID, 100)
@@ -469,39 +480,72 @@ func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, cr
 		return nil
 	}
 
-	// 4. Collect unique recipient IDs from followers + circle members
+	// 4. Collect unique recipient IDs from followers + circle members.
+	//
+	// Audit HF5: previously the follower fetch and the circle-member
+	// fetch ran serially even though they hit independent services
+	// (graph-service vs profile-service). Run them in parallel — for
+	// a non-celeb author with 5k followers + 200 friends, the wall
+	// clock used to be ~50 graph pages + ~1 profile call back-to-back;
+	// now those overlap.
 	recipientSet := make(map[uuid.UUID]struct{})
 
-	// 4a. Fetch Followers
-	followerIDs, err := s.fetchFollowers(ctx, authorID)
-	if err != nil {
-		log.Printf("Failed to fetch followers for fanout: %v", err)
-	} else {
-		for _, id := range followerIDs {
+	type fetchResult struct {
+		ids []uuid.UUID
+		err error
+		tag string
+	}
+	results := make(chan fetchResult, 2)
+	go func() {
+		ids, err := s.fetchFollowers(ctx, authorID)
+		results <- fetchResult{ids: ids, err: err, tag: "followers"}
+	}()
+	go func() {
+		ids, err := s.fetchCircleMembers(ctx, authorID)
+		results <- fetchResult{ids: ids, err: err, tag: "circle"}
+	}()
+	for i := 0; i < 2; i++ {
+		r := <-results
+		if r.err != nil {
+			log.Printf("Failed to fetch %s for fanout: %v", r.tag, r.err)
+			continue
+		}
+		for _, id := range r.ids {
 			recipientSet[id] = struct{}{}
 		}
 	}
 
-	// 4b. Fetch Circle Members (friends from profile-service)
-	friendIDs, err := s.fetchCircleMembers(ctx, authorID)
-	if err != nil {
-		log.Printf("Failed to fetch circle members for fanout: %v", err)
-	} else {
-		for _, id := range friendIDs {
-			recipientSet[id] = struct{}{}
-		}
+	// 5. Push to all recipients' Home Timelines.
+	//
+	// Audit CF4: previously a sequential loop — a non-celeb author
+	// with 100k followers blocked the Kafka consumer goroutine on
+	// 100k serial Scylla writes. Real "celeb" status (gates the pull
+	// model) is already short-circuited above; this path is the
+	// "almost-celeb" tier. Parallelize through a bounded worker pool
+	// so total wall-clock is concurrency-bounded but per-event Scylla
+	// load can't explode beyond the worker count.
+	const fanoutWorkers = 16
+	recipientCh := make(chan uuid.UUID, fanoutWorkers*4)
+	var fanoutWG sync.WaitGroup
+	for w := 0; w < fanoutWorkers; w++ {
+		fanoutWG.Add(1)
+		go func() {
+			defer fanoutWG.Done()
+			for recipientID := range recipientCh {
+				if err := s.scyllaStore.AddToHomeTimeline(ctx, recipientID, postID, authorID, createdAt, contentType); err != nil {
+					log.Printf("Failed to push to timeline for user %s: %v", recipientID, err)
+				}
+			}
+		}()
 	}
-
-	// 5. Push to all recipients' Home Timelines
 	for recipientID := range recipientSet {
 		if recipientID == authorID {
 			continue // already pushed above
 		}
-		if err := s.scyllaStore.AddToHomeTimeline(ctx, recipientID, postID, authorID, createdAt, contentType); err != nil {
-			log.Printf("Failed to push to timeline for user %s: %v", recipientID, err)
-		}
+		recipientCh <- recipientID
 	}
-
+	close(recipientCh)
+	fanoutWG.Wait()
 	return nil
 }
 
@@ -537,6 +581,11 @@ func (s *Service) fetchFollowers(ctx context.Context, userID uuid.UUID) ([]uuid.
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
 			return nil, fmt.Errorf("create request: %w", err)
+		}
+		// Forward the internal-service key so graph-service's CG2 gate
+		// accepts the request when configured.
+		if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
+			req.Header.Set("X-Internal-Service-Key", key)
 		}
 
 		resp, err := http.DefaultClient.Do(req)
@@ -587,6 +636,11 @@ func (s *Service) fetchFollowing(ctx context.Context, userID uuid.UUID) ([]uuid.
 		if err != nil {
 			return nil, fmt.Errorf("create request: %w", err)
 		}
+		// Forward the internal-service key so graph-service's CG2 gate
+		// accepts the request when configured.
+		if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
+			req.Header.Set("X-Internal-Service-Key", key)
+		}
 
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -633,6 +687,11 @@ func (s *Service) fetchCircleMembers(ctx context.Context, userID uuid.UUID) ([]u
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
 			return nil, fmt.Errorf("create request: %w", err)
+		}
+		// Forward the internal-service key so graph-service's CG2 gate
+		// accepts the request when configured.
+		if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
+			req.Header.Set("X-Internal-Service-Key", key)
 		}
 
 		resp, err := http.DefaultClient.Do(req)

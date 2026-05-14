@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"time"
 
@@ -34,9 +35,17 @@ func New(url string) (*Store, error) {
 
 func (s *Store) initIndices() {
 	ctx := context.Background()
+	// Audit HS5 + HS6: shards / replicas / refresh_interval are
+	// env-tunable so prod deploys can run shards=3/replicas=1/refresh=10s
+	// (parallel reads, HA, balanced indexer load) without flipping a
+	// single-node dev cluster into a permanently-yellow state. Existing
+	// indices keep their original settings until a settings-migration
+	// runs — createIndexIfNotExists is a no-op for present indices.
+	settings := opensearchSettingsJSON()
+
 	// Users Index
 	s.createIndexIfNotExists(ctx, "users_v1", `{
-		"settings": { "number_of_shards": 1, "number_of_replicas": 0 },
+		"settings": `+settings+`,
 		"mappings": {
 			"properties": {
 				"user_id":         { "type": "keyword" },
@@ -51,7 +60,7 @@ func (s *Store) initIndices() {
 
 	// Posts Index
 	s.createIndexIfNotExists(ctx, "posts_v1", `{
-		"settings": { "number_of_shards": 1, "number_of_replicas": 0 },
+		"settings": `+settings+`,
 		"mappings": {
 			"properties": {
 				"post_id":         { "type": "keyword" },
@@ -71,7 +80,7 @@ func (s *Store) initIndices() {
 
 	// Products index
 	s.createIndexIfNotExists(ctx, "products_v1", `{
-		"settings": { "number_of_shards": 1, "number_of_replicas": 0 },
+		"settings": `+settings+`,
 		"mappings": {
 			"properties": {
 				"product_id":   { "type": "keyword" },
@@ -88,7 +97,7 @@ func (s *Store) initIndices() {
 
 	// Events index
 	s.createIndexIfNotExists(ctx, "events_v1", `{
-		"settings": { "number_of_shards": 1, "number_of_replicas": 0 },
+		"settings": `+settings+`,
 		"mappings": {
 			"properties": {
 				"event_id":     { "type": "keyword" },
@@ -102,7 +111,7 @@ func (s *Store) initIndices() {
 
 	// Messages index (search within chat)
 	s.createIndexIfNotExists(ctx, "messages_v1", `{
-		"settings": { "number_of_shards": 1, "number_of_replicas": 0 },
+		"settings": `+settings+`,
 		"mappings": {
 			"properties": {
 				"message_id":       { "type": "keyword" },
@@ -113,6 +122,41 @@ func (s *Store) initIndices() {
 			}
 		}
 	}`)
+}
+
+// opensearchSettingsJSON returns the per-index settings block. Reads
+// OPENSEARCH_INDEX_SHARDS / OPENSEARCH_INDEX_REPLICAS / OPENSEARCH_INDEX_REFRESH
+// with safe dev defaults (1/0/1s).
+func opensearchSettingsJSON() string {
+	shards := envOrDefault("OPENSEARCH_INDEX_SHARDS", "1")
+	replicas := envOrDefault("OPENSEARCH_INDEX_REPLICAS", "0")
+	refresh := envOrDefault("OPENSEARCH_INDEX_REFRESH", "1s")
+	return fmt.Sprintf(`{ "number_of_shards": %s, "number_of_replicas": %s, "refresh_interval": "%s" }`,
+		shards, replicas, refresh)
+}
+
+func envOrDefault(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+// regexEscape escapes OpenSearch regex metacharacters so a user-
+// supplied prefix can be safely spliced into a `include` regex.
+// OpenSearch regex syntax mirrors Lucene's; the set below covers
+// every reserved character.
+func regexEscape(s string) string {
+	const meta = `.+*?(){}[]|\^$"`
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if strings.ContainsRune(meta, r) {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 func (s *Store) createIndexIfNotExists(ctx context.Context, index, body string) {
@@ -177,7 +221,11 @@ func (s *Store) IndexUser(ctx context.Context, doc UserDoc) error {
 		Index:      "users_v1",
 		DocumentID: doc.UserID,
 		Body:       bytes.NewReader(data),
-		Refresh:    "true", // Immediate refresh for dev, remove for prod performance
+		// Audit HS1: dropped Refresh: "true". Forcing a refresh on every
+		// write blocked the post-create / user-update path on
+		// OpenSearch's refresh cycle and starved the indexer. The
+		// index-level refresh_interval (set in createIndexIfNotExists)
+		// surfaces new docs within a few seconds — fine for search.
 	}
 	res, err := req.Do(ctx, s.client)
 	if err != nil {
@@ -197,7 +245,6 @@ func (s *Store) IndexPost(ctx context.Context, doc PostDoc) error {
 		Index:      "posts_v1",
 		DocumentID: doc.PostID,
 		Body:       bytes.NewReader(data),
-		Refresh:    "true",
 	}
 	res, err := req.Do(ctx, s.client)
 	if err != nil {
@@ -229,7 +276,7 @@ func (s *Store) BulkIndexUsers(ctx context.Context, docs []UserDoc) (int, error)
 	res, err := s.client.Bulk(
 		bytes.NewReader(buf.Bytes()),
 		s.client.Bulk.WithContext(ctx),
-		s.client.Bulk.WithRefresh("true"),
+		// Audit HS1: previously WithRefresh("true") — see IndexUser comment.
 	)
 	if err != nil {
 		return 0, err
@@ -240,7 +287,37 @@ func (s *Store) BulkIndexUsers(ctx context.Context, docs []UserDoc) (int, error)
 		return 0, fmt.Errorf("bulk index error: %s", res.String())
 	}
 
-	return len(docs), nil
+	// Audit HS8: parse the per-doc bulk response so partial failures
+	// don't silently inflate the success count. OpenSearch returns
+	// HTTP 200 even when some items 4xx/5xx individually.
+	var bulkResp struct {
+		Errors bool `json:"errors"`
+		Items  []map[string]struct {
+			Status int    `json:"status"`
+			Error  any    `json:"error,omitempty"`
+			ID     string `json:"_id"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&bulkResp); err != nil {
+		// Body parse failed but HTTP was 200 — fall back to assume
+		// success, but log so ops sees the visibility gap.
+		slog.Warn("search: bulk index response unparseable, assuming success", "error", err, "count", len(docs))
+		return len(docs), nil
+	}
+	if !bulkResp.Errors {
+		return len(docs), nil
+	}
+	succeeded := 0
+	for _, item := range bulkResp.Items {
+		for op, st := range item {
+			if st.Status >= 200 && st.Status < 300 {
+				succeeded++
+			} else {
+				slog.Warn("search: bulk doc failed", "op", op, "id", st.ID, "status", st.Status, "error", st.Error)
+			}
+		}
+	}
+	return succeeded, nil
 }
 
 // SearchUsers performs prefix + fuzzy search across username, display_name, bio.
@@ -335,11 +412,20 @@ func (s *Store) SearchPosts(ctx context.Context, query string, limit int) ([]Pos
 // Implementation: bool query with a `must` text match + an optional
 // `terms` filter on content_type. Cheaper than running per-type searches
 // because OpenSearch handles the term-level filter via doc_values.
+//
+// Audit CS1: a mandatory visibility=public filter is always applied.
+// Without it, friends-only / circle / private posts were returned to
+// any caller. Per-viewer visibility (friends, circles, mutuals) is
+// out of scope here — `public` is the only safe default for an
+// unauthenticated/cross-graph search endpoint. Feed-service handles
+// the richer per-viewer visibility model for ranked/home timelines.
 func (s *Store) SearchPostsFiltered(ctx context.Context, query string, contentTypes []string, limit int) ([]PostDoc, error) {
 	mustClauses := []map[string]interface{}{
 		{"match": map[string]interface{}{"text": query}},
 	}
-	filter := []map[string]interface{}{}
+	filter := []map[string]interface{}{
+		{"term": map[string]interface{}{"visibility": "public"}},
+	}
 	if len(contentTypes) > 0 {
 		filter = append(filter, map[string]interface{}{
 			"terms": map[string]interface{}{"content_type": contentTypes},
@@ -397,8 +483,26 @@ func (s *Store) execPostSearch(ctx context.Context, query interface{}) ([]PostDo
 
 // SearchHashtags performs a prefix-filtered terms aggregation on the hashtags field
 // and returns the top matching hashtag strings for autocomplete.
+//
+// Audit HS4: previously the prefix was injected verbatim into a regex
+// (`include`: `<prefix>.*`) with no length or character validation. A
+// 1-character prefix made OpenSearch enumerate the full hashtag
+// keyword space; a crafted prefix with regex metacharacters could
+// cost still more. Now: require ≥2 characters, escape metacharacters,
+// cap aggregation size, and apply a request-side timeout.
 func (s *Store) SearchHashtags(ctx context.Context, prefix string, limit int) ([]string, error) {
-	prefix = strings.ToLower(prefix)
+	prefix = strings.ToLower(strings.TrimSpace(prefix))
+	if len(prefix) < 2 {
+		return []string{}, nil
+	}
+	if len(prefix) > 32 {
+		prefix = prefix[:32]
+	}
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+	// Escape OpenSearch regex metacharacters before splicing into `include`.
+	escaped := regexEscape(prefix)
 
 	q := map[string]interface{}{
 		"size": 0, // No document hits needed, only aggregation results
@@ -410,9 +514,9 @@ func (s *Store) SearchHashtags(ctx context.Context, prefix string, limit int) ([
 		"aggs": map[string]interface{}{
 			"hashtag_counts": map[string]interface{}{
 				"terms": map[string]interface{}{
-					"field": "hashtags",
-					"size":  limit,
-					"include": fmt.Sprintf("%s.*", prefix),
+					"field":   "hashtags",
+					"size":    limit,
+					"include": fmt.Sprintf("%s.*", escaped),
 				},
 			},
 		},
@@ -701,11 +805,19 @@ func (s *Store) Autocomplete(ctx context.Context, prefix string, limit int) ([]A
 }
 
 // GetPopularPosts returns posts sorted by like_count descending (for discovery).
+//
+// Audit CS3: previously `match_all`, which surfaced friends-only and
+// circle posts in the public discovery feed. Filter is now constrained
+// to visibility=public.
 func (s *Store) GetPopularPosts(ctx context.Context, limit int) ([]PostDoc, error) {
 	q := map[string]interface{}{
 		"size": limit,
 		"query": map[string]interface{}{
-			"match_all": map[string]interface{}{},
+			"bool": map[string]interface{}{
+				"filter": []interface{}{
+					map[string]interface{}{"term": map[string]interface{}{"visibility": "public"}},
+				},
+			},
 		},
 		"sort": []interface{}{
 			map[string]interface{}{
@@ -762,7 +874,6 @@ func (s *Store) IndexProduct(ctx context.Context, doc map[string]any) error {
 		Index:      "products_v1",
 		DocumentID: id,
 		Body:       bytes.NewReader(data),
-		Refresh:    "true",
 	}
 	res, err := req.Do(ctx, s.client)
 	if err != nil {
@@ -783,7 +894,6 @@ func (s *Store) IndexEvent(ctx context.Context, doc map[string]any) error {
 		Index:      "events_v1",
 		DocumentID: id,
 		Body:       bytes.NewReader(data),
-		Refresh:    "true",
 	}
 	res, err := req.Do(ctx, s.client)
 	if err != nil {
@@ -804,7 +914,6 @@ func (s *Store) IndexMessage(ctx context.Context, doc map[string]any) error {
 		Index:      "messages_v1",
 		DocumentID: id,
 		Body:       bytes.NewReader(data),
-		Refresh:    "true",
 	}
 	res, err := req.Do(ctx, s.client)
 	if err != nil {

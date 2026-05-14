@@ -145,6 +145,17 @@ func main() {
 
 	feedHandler := http.New(feedSvc)
 
+	// Audit CF2: gate every /v1/feed route behind the shared internal
+	// service key. The handler supports the middleware but main.go
+	// previously never wired the env var, leaving every endpoint
+	// callable directly without going through the API gateway.
+	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
+		feedHandler.WithInternalKey(key)
+		slog.Info("feed-service: internal-service-key gate enabled")
+	} else {
+		slog.Warn("feed-service: INTERNAL_SERVICE_KEY not set — every /v1/feed endpoint is unauthenticated. Do not run this configuration in production.")
+	}
+
 	// 11. Kafka Consumer (now also handles PostReacted and CommentCreated)
 	consumer := events.NewConsumerWithDialer(
 		[]string{kafkaBrokers},

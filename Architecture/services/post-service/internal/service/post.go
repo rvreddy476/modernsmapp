@@ -786,6 +786,20 @@ func (s *Service) GetPostsByIDs(ctx context.Context, ids []uuid.UUID, viewerID *
 	result := make(map[uuid.UUID]*PostDetail, len(posts))
 	for _, p := range posts {
 		post := p // copy to avoid pointer reuse
+
+		// Audit CF1: defense-in-depth visibility filter on the batch
+		// path. Feed-service's fanout writes recipient timelines without
+		// consulting post visibility, so a `private` post still ends up
+		// in follower timelines. Drop it here unconditionally unless the
+		// viewer is the author. `followers`/`circle` are trusted to be
+		// gated by the recipient-set the fanout produced; the broader
+		// fix (visibility-aware fanout) is tracked separately.
+		if strings.EqualFold(post.Visibility, "private") {
+			if viewerID == nil || *viewerID != post.AuthorID {
+				continue
+			}
+		}
+
 		counts, _ := s.scyllaStore.GetCounts(ctx, post.ID)
 
 		detail := &PostDetail{Post: &post, Counts: counts}

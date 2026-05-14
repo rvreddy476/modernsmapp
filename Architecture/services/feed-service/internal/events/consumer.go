@@ -149,6 +149,20 @@ func (c *Consumer) handleUserFollowed(ctx context.Context, envelope events.Event
 		return fmt.Errorf("parse followee_id: %w", err)
 	}
 
+	// Audit HF6: celebs use the pull model (FanoutPost short-circuits
+	// for them — feed.go:467), so a backfill into the new follower's
+	// timeline would diverge from the read path: nothing else lands
+	// there until the next celeb post is fetched on-read. Skip the
+	// inline backfill and let the read-time hydrator surface celeb
+	// content. Also avoids a thundering-herd of backfills when many
+	// follows arrive for a single celeb in a short window.
+	if c.service != nil {
+		if isCeleb, _ := c.service.IsCelebAuthor(ctx, followeeID); isCeleb {
+			log.Printf("[feed] UserFollowed backfill skipped — followee=%s is celeb (pull model)", followeeID)
+			return nil
+		}
+	}
+
 	items, err := c.timelineStore.GetAuthorTimelineMultiBucket(ctx, followeeID, backfillLimit, bucketLookback)
 	if err != nil {
 		return fmt.Errorf("read author timeline for backfill: %w", err)

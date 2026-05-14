@@ -66,6 +66,12 @@ func (s *Store) CheckBlock(ctx context.Context, blockerID, blockedID uuid.UUID) 
 }
 
 // CreateFollow adds a follow relationship.
+//
+// Audit HG5: previously the count increments fired unconditionally
+// even when ON CONFLICT DO NOTHING skipped the insert, so concurrent
+// duplicate follows drifted the counters upward forever (reconciler
+// only ran hourly). Now the increments are gated on the insert's
+// RowsAffected — duplicate calls are no-ops on both sides.
 func (s *Store) CreateFollow(ctx context.Context, followerID, followeeID uuid.UUID) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -73,13 +79,17 @@ func (s *Store) CreateFollow(ctx context.Context, followerID, followeeID uuid.UU
 	}
 	defer tx.Rollback(ctx)
 
-	_, err = tx.Exec(ctx, `
+	cmdTag, err := tx.Exec(ctx, `
 		INSERT INTO follows (follower_id, followee_id, created_at)
 		VALUES ($1, $2, NOW())
 		ON CONFLICT (follower_id, followee_id) DO NOTHING
 	`, followerID, followeeID)
 	if err != nil {
 		return err
+	}
+	if cmdTag.RowsAffected() == 0 {
+		// Duplicate follow — return success without touching counts.
+		return tx.Commit(ctx)
 	}
 
 	_, err = tx.Exec(ctx, `
@@ -481,6 +491,66 @@ func (s *Store) Unmute(ctx context.Context, muterID, mutedID uuid.UUID) error {
 		`DELETE FROM graph.mutes WHERE muter_id = $1 AND muted_id = $2`,
 		muterID, mutedID)
 	return err
+}
+
+// CheckMute returns true when muterID has muted mutedID.
+//
+// Audit CG1: previously absent, so service.GetRelationship returned
+// IsMuted=false even when the row existed in graph.mutes — feed-service
+// (and any client that gates UI on this flag) silently broke for muted
+// pairs.
+func (s *Store) CheckMute(ctx context.Context, muterID, mutedID uuid.UUID) (bool, error) {
+	var exists bool
+	err := s.db.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM graph.mutes WHERE muter_id = $1 AND muted_id = $2)`,
+		muterID, mutedID).Scan(&exists)
+	return exists, err
+}
+
+// RelationshipFull is the consolidated relationship snapshot returned
+// by GetRelationshipFull. It carries everything service.GetRelationship
+// needs in a single DB round trip.
+type RelationshipFull struct {
+	Follows                bool
+	FollowedBy             bool
+	Blocked                bool
+	IsMuted                bool
+	IsFriend               bool
+	FriendRequestSent      bool // actor → target row exists with status='pending'
+	FriendRequestReceived  bool // target → actor row exists with status='pending'
+}
+
+// GetRelationshipFull collapses CheckFollow (×2) + CheckBlock + CheckMute
+// + CheckFriendship + GetFriendRequestStatus (×2) into a single
+// EXISTS-based query. Audit HG1: the previous service-layer code did
+// up to 6 sequential pg round trips per /v1/graph/relationship hit,
+// which is the dominant cost of the feed-hydration profile bar.
+func (s *Store) GetRelationshipFull(ctx context.Context, actorID, targetID uuid.UUID) (*RelationshipFull, error) {
+	friendA, friendB := normalizePair(actorID, targetID)
+	row := s.db.QueryRow(ctx, `
+		SELECT
+			EXISTS(SELECT 1 FROM follows WHERE follower_id = $1 AND followee_id = $2),
+			EXISTS(SELECT 1 FROM follows WHERE follower_id = $2 AND followee_id = $1),
+			EXISTS(SELECT 1 FROM blocks  WHERE blocker_id  = $2 AND blocked_id  = $1),
+			EXISTS(SELECT 1 FROM graph.mutes WHERE muter_id = $1 AND muted_id = $2),
+			EXISTS(SELECT 1 FROM friends WHERE user_a = $3 AND user_b = $4),
+			EXISTS(SELECT 1 FROM friend_requests WHERE sender_id = $1 AND receiver_id = $2 AND status = 'pending'),
+			EXISTS(SELECT 1 FROM friend_requests WHERE sender_id = $2 AND receiver_id = $1 AND status = 'pending')
+	`, actorID, targetID, friendA, friendB)
+
+	var r RelationshipFull
+	if err := row.Scan(
+		&r.Follows,
+		&r.FollowedBy,
+		&r.Blocked,
+		&r.IsMuted,
+		&r.IsFriend,
+		&r.FriendRequestSent,
+		&r.FriendRequestReceived,
+	); err != nil {
+		return nil, err
+	}
+	return &r, nil
 }
 
 // GetBlockedAndMuted returns all user IDs that the given user has blocked OR muted

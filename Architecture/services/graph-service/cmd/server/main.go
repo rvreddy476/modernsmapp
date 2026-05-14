@@ -96,6 +96,18 @@ func main() {
 	graphSvc := service.New(graphStore, rdb, producer)
 	graphHandler := graphHttp.New(graphSvc)
 
+	// Audit CG2: gate every /v1/graph route behind the shared internal
+	// service key. The handler already supports the middleware, but
+	// previously main.go never wired the env var so the gate was a
+	// no-op and every endpoint was open. Empty key keeps the dev
+	// loop unblocked but emits a loud startup warning.
+	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
+		graphHandler.WithInternalKey(key)
+		slog.Info("graph-service: internal-service-key gate enabled")
+	} else {
+		slog.Warn("graph-service: INTERNAL_SERVICE_KEY not set — every /v1/graph endpoint is unauthenticated. Do not run this configuration in production.")
+	}
+
 	// 9. Gin with middleware stack
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()

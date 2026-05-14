@@ -50,12 +50,10 @@ func (s *Service) Follow(ctx context.Context, followerID, followeeID uuid.UUID) 
 	s.invalidateRel(ctx, followerID, followeeID)
 	s.invalidateCounts(ctx, followerID, followeeID)
 
-	// Publish UserFollowed event for notification-service
-	if s.producer != nil {
-		if err := s.producer.PublishUserFollowed(ctx, followerID, followeeID); err != nil {
-			log.Printf("[graph] Failed to publish UserFollowed event: %v", err)
-		}
-	}
+	// Audit CG3: publish asynchronously so the follow ack doesn't wait
+	// on the Kafka broker. A 50-200 ms WriteMessages ACK was on the
+	// critical path of every follow request.
+	s.publishUserFollowedAsync(followerID, followeeID)
 	return nil
 }
 
@@ -66,12 +64,7 @@ func (s *Service) Unfollow(ctx context.Context, followerID, followeeID uuid.UUID
 	s.invalidateRel(ctx, followerID, followeeID)
 	s.invalidateCounts(ctx, followerID, followeeID)
 
-	// Publish UserUnfollowed event for notification-service
-	if s.producer != nil {
-		if err := s.producer.PublishUserUnfollowed(ctx, followerID, followeeID); err != nil {
-			log.Printf("[graph] Failed to publish UserUnfollowed event: %v", err)
-		}
-	}
+	s.publishUserUnfollowedAsync(followerID, followeeID)
 	return nil
 }
 
@@ -89,12 +82,52 @@ func (s *Service) Block(ctx context.Context, blockerID, blockedID uuid.UUID) err
 	s.invalidateRel(ctx, blockedID, blockerID)
 	s.invalidateCounts(ctx, blockerID, blockedID)
 
-	if s.producer != nil {
-		if err := s.producer.PublishUserBlocked(ctx, blockerID, blockedID); err != nil {
-			log.Printf("[graph] Failed to publish UserBlocked event: %v", err)
-		}
-	}
+	s.publishUserBlockedAsync(blockerID, blockedID)
 	return nil
+}
+
+// publishUserFollowedAsync / Unfollowed / Blocked fire-and-forget the
+// Kafka publish on a fresh background context so the HTTP handler can
+// ack the user action immediately. If the broker is slow or unavailable
+// the failure is logged and the durable downstream path (counter
+// reconciliation + outbox replay) closes the gap.
+func (s *Service) publishUserFollowedAsync(followerID, followeeID uuid.UUID) {
+	if s.producer == nil {
+		return
+	}
+	go func() {
+		pubCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.producer.PublishUserFollowed(pubCtx, followerID, followeeID); err != nil {
+			log.Printf("[graph] async PublishUserFollowed failed: %v", err)
+		}
+	}()
+}
+
+func (s *Service) publishUserUnfollowedAsync(followerID, followeeID uuid.UUID) {
+	if s.producer == nil {
+		return
+	}
+	go func() {
+		pubCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.producer.PublishUserUnfollowed(pubCtx, followerID, followeeID); err != nil {
+			log.Printf("[graph] async PublishUserUnfollowed failed: %v", err)
+		}
+	}()
+}
+
+func (s *Service) publishUserBlockedAsync(blockerID, blockedID uuid.UUID) {
+	if s.producer == nil {
+		return
+	}
+	go func() {
+		pubCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.producer.PublishUserBlocked(pubCtx, blockerID, blockedID); err != nil {
+			log.Printf("[graph] async PublishUserBlocked failed: %v", err)
+		}
+	}()
 }
 
 func (s *Service) GetRelationship(ctx context.Context, actorID, targetID uuid.UUID) (*Relationship, error) {
@@ -108,41 +141,30 @@ func (s *Service) GetRelationship(ctx context.Context, actorID, targetID uuid.UU
 		}
 	}
 
-	follows, err := s.store.CheckFollow(ctx, actorID, targetID)
-	if err != nil {
-		return nil, err
-	}
-
-	followedBy, err := s.store.CheckFollow(ctx, targetID, actorID)
-	if err != nil {
-		return nil, err
-	}
-
-	blocked, err := s.store.CheckBlock(ctx, targetID, actorID)
-	if err != nil {
-		return nil, err
-	}
-
-	isFriend, err := s.store.CheckFriendship(ctx, actorID, targetID)
+	// Audit HG1: collapse 6 sequential round trips (CheckFollow ×2 +
+	// CheckBlock + CheckMute + CheckFriendship + GetFriendRequestStatus
+	// ×2) into a single EXISTS-based query.
+	full, err := s.store.GetRelationshipFull(ctx, actorID, targetID)
 	if err != nil {
 		return nil, err
 	}
 
 	friendStatus := "none"
-	if isFriend {
+	switch {
+	case full.IsFriend:
 		friendStatus = "accepted"
-	} else {
-		friendStatus, err = s.store.GetFriendRequestStatus(ctx, actorID, targetID)
-		if err != nil {
-			return nil, err
-		}
+	case full.FriendRequestSent:
+		friendStatus = "pending_sent"
+	case full.FriendRequestReceived:
+		friendStatus = "pending_received"
 	}
 
 	rel := &Relationship{
-		Follows:      follows,
-		FollowedBy:   followedBy,
-		Blocked:      blocked,
-		IsFriend:     isFriend,
+		Follows:      full.Follows,
+		FollowedBy:   full.FollowedBy,
+		Blocked:      full.Blocked,
+		IsMuted:      full.IsMuted,
+		IsFriend:     full.IsFriend,
 		FriendStatus: friendStatus,
 	}
 
@@ -303,6 +325,14 @@ func (s *Service) Unmute(ctx context.Context, muterID, mutedID uuid.UUID) error 
 	err := s.store.Unmute(ctx, muterID, mutedID)
 	s.invalidateRel(ctx, muterID, mutedID)
 	return err
+}
+
+// IsBlockedBy returns true when blockerID has blocked candidateID.
+// Used by handlers that need to suppress responses (e.g., the
+// follower/following list cannot be read by users the owner has
+// blocked — audit HG4).
+func (s *Service) IsBlockedBy(ctx context.Context, blockerID, candidateID uuid.UUID) (bool, error) {
+	return s.store.CheckBlock(ctx, blockerID, candidateID)
 }
 
 func (s *Service) GetBlockedAndMuted(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {

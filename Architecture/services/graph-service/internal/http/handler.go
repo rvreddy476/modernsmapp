@@ -140,6 +140,17 @@ func parsePaginatedUserID(c *gin.Context) (uuid.UUID, int, int, bool) {
 	if o, err := strconv.Atoi(c.DefaultQuery("offset", "0")); err == nil && o >= 0 {
 		offset = o
 	}
+	// Audit HG2: bound offset to keep PostgreSQL's worst-case scan
+	// cost finite. A user with 10M followers asked for page 100k by a
+	// runaway client would scan ~2M rows per request. Real UIs don't
+	// scroll past a few thousand entries; a true millions-scale browser
+	// needs the cursor path, tracked separately.
+	const maxOffset = 10000
+	if offset > maxOffset {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "OFFSET_TOO_LARGE",
+			"offset exceeds maximum; use cursor pagination for deep scrolls", nil)
+		return uuid.Nil, 0, 0, false
+	}
 	return userID, limit, offset, true
 }
 
@@ -217,6 +228,14 @@ func (h *Handler) GetFollowers(c *gin.Context) {
 	if !ok {
 		return
 	}
+	// Audit HG4: hide follower/following lists from users the owner has
+	// blocked (matches the Twitter-style "blocked users can't see your
+	// connections" rule). The owner themselves and the API gateway
+	// always pass — internal callers don't send X-User-Id.
+	if !h.callerAllowedToReadConnections(c, userID) {
+		api.JSON(c.Writer, http.StatusOK, []uuid.UUID{}, nil)
+		return
+	}
 	ids, err := h.svc.GetFollowers(c.Request.Context(), userID, limit, offset)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
@@ -233,6 +252,10 @@ func (h *Handler) GetFollowing(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if !h.callerAllowedToReadConnections(c, userID) {
+		api.JSON(c.Writer, http.StatusOK, []uuid.UUID{}, nil)
+		return
+	}
 	ids, err := h.svc.GetFollowing(c.Request.Context(), userID, limit, offset)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
@@ -242,6 +265,29 @@ func (h *Handler) GetFollowing(c *gin.Context) {
 		ids = []uuid.UUID{}
 	}
 	api.JSON(c.Writer, http.StatusOK, ids, nil)
+}
+
+// callerAllowedToReadConnections returns false when the X-User-Id
+// caller is non-empty, distinct from the owner whose connections are
+// being viewed, and present in the owner's blocked set. Missing /
+// invalid X-User-Id (internal callers, unauthenticated) and self-views
+// always pass — the block rule only suppresses the blocked user's view.
+func (h *Handler) callerAllowedToReadConnections(c *gin.Context, ownerID uuid.UUID) bool {
+	rawCaller := c.GetHeader("X-User-Id")
+	if rawCaller == "" {
+		return true
+	}
+	callerID, err := uuid.Parse(rawCaller)
+	if err != nil || callerID == ownerID {
+		return true
+	}
+	blocked, err := h.svc.IsBlockedBy(c.Request.Context(), ownerID, callerID)
+	if err != nil {
+		// Fail open on graph-store errors — surfacing a 500 here would
+		// break the entire profile screen for healthy callers.
+		return true
+	}
+	return !blocked
 }
 
 func (h *Handler) GetMutualFollowers(c *gin.Context) {

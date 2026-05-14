@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -37,8 +38,12 @@ func extractHashtags(text string) []string {
 }
 
 type Consumer struct {
-	reader *kafka.Reader
-	store  *search.Store
+	reader    *kafka.Reader
+	store     *search.Store
+	dlq       *kafka.Writer // optional; nil = log-only on failure
+	dlqTopic  string
+	groupID   string
+	topic     string
 }
 
 func NewConsumer(brokers []string, groupID string, topic string, store *search.Store) *Consumer {
@@ -54,7 +59,34 @@ func NewConsumerWithDialer(brokers []string, groupID string, topic string, store
 		MaxBytes: 10e6,
 		Dialer:   dialer,
 	})
-	return &Consumer{reader: reader, store: store}
+
+	// Audit HS2: configure a DLQ writer so failed messages don't fall
+	// silently off the back of the indexer. Topic is env-tunable;
+	// empty disables DLQ (the default for unit tests).
+	dlqTopic := os.Getenv("SEARCH_DLQ_TOPIC")
+	if dlqTopic == "" {
+		dlqTopic = "search.events.v1.dlq"
+	}
+	var dlqWriter *kafka.Writer
+	if dlqTopic != "-" { // "-" explicitly disables
+		dlqWriter = &kafka.Writer{
+			Addr:     kafka.TCP(brokers...),
+			Topic:    dlqTopic,
+			Balancer: &kafka.Hash{},
+		}
+		if dialer != nil {
+			dlqWriter.Transport = &kafka.Transport{Dial: dialer.DialFunc}
+		}
+	}
+
+	return &Consumer{
+		reader:   reader,
+		store:    store,
+		dlq:      dlqWriter,
+		dlqTopic: dlqTopic,
+		groupID:  groupID,
+		topic:    topic,
+	}
 }
 
 func (c *Consumer) Start(ctx context.Context) {
@@ -72,8 +104,34 @@ func (c *Consumer) Start(ctx context.Context) {
 
 		if err := c.processMessage(ctx, m); err != nil {
 			slog.Error("failed to process message", "topic", m.Topic, "offset", m.Offset, "error", err)
+			c.sendToDLQ(ctx, m, err)
 		}
 	}
+}
+
+// sendToDLQ best-effort writes a failed message to the DLQ topic so an
+// operator/sweeper can inspect it. We never block on DLQ failure —
+// the search index isn't critical-path durable storage.
+func (c *Consumer) sendToDLQ(ctx context.Context, m kafka.Message, processErr error) {
+	if c.dlq == nil {
+		return
+	}
+	dlqCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	headers := append(m.Headers,
+		kafka.Header{Key: "x-dlq-error", Value: []byte(processErr.Error())},
+		kafka.Header{Key: "x-dlq-original-topic", Value: []byte(c.topic)},
+		kafka.Header{Key: "x-dlq-consumer-group", Value: []byte(c.groupID)},
+	)
+	if err := c.dlq.WriteMessages(dlqCtx, kafka.Message{
+		Key:     m.Key,
+		Value:   m.Value,
+		Headers: headers,
+	}); err != nil {
+		slog.Error("search: DLQ write failed", "error", err, "dlq_topic", c.dlqTopic)
+		return
+	}
+	slog.Warn("search: message routed to DLQ", "dlq_topic", c.dlqTopic, "offset", m.Offset)
 }
 
 func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
@@ -188,6 +246,9 @@ func unmarshalPayload(raw json.RawMessage, v interface{}) error {
 }
 
 func (c *Consumer) Close() error {
+	if c.dlq != nil {
+		_ = c.dlq.Close()
+	}
 	return c.reader.Close()
 }
 
