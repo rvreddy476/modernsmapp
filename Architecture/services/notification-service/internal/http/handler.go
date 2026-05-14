@@ -405,6 +405,15 @@ func (h *Handler) GetNotifPreferences(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing user ID", nil)
 		return
 	}
+	// Audit CS3: validate X-User-Id is a UUID before passing it to
+	// SQL. The internal-key gate (CS1) already restricts direct callers
+	// to trusted gateways, but a runaway client + malformed header
+	// could otherwise feed an arbitrary string straight into the
+	// query layer. Defense-in-depth.
+	if _, err := uuid.Parse(userID); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
+		return
+	}
 
 	prefs, err := h.svc.GetNotifPreferences(c.Request.Context(), userID)
 	if err != nil {

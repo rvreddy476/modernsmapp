@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -27,12 +28,18 @@ const (
 
 // CheckSourceRateLimit returns true if the source user has NOT exceeded the
 // per-hour notification generation limit. Uses Redis INCR with a 1-hour TTL.
+//
+// Audit HS5: previously returned `true` (allow) on Redis error — under
+// a Redis outage every spam-prevention gate disappeared at once, which
+// is exactly the wrong direction (a misbehaving Redis is when you most
+// need the gate). Now fails closed (returns false) and logs WARN so
+// ops gets a visible signal rather than a silent spam-storm.
 func CheckSourceRateLimit(ctx context.Context, rdb *redis.Client, sourceUserID string) bool {
 	key := fmt.Sprintf("rl:notif:source:%s", sourceUserID)
 	count, err := rdb.Incr(ctx, key).Result()
 	if err != nil {
-		// On Redis error, allow the notification (fail open).
-		return true
+		slog.Warn("notification rate limiter Redis error — failing closed", "source", sourceUserID, "err", err)
+		return false
 	}
 	if count == 1 {
 		rdb.Expire(ctx, key, time.Hour)
@@ -42,11 +49,13 @@ func CheckSourceRateLimit(ctx context.Context, rdb *redis.Client, sourceUserID s
 
 // CheckPushRateLimit returns true if the recipient has NOT exceeded the
 // per-hour push notification limit. Prevents notification fatigue.
+// Same fail-closed semantics as CheckSourceRateLimit — audit HS5.
 func CheckPushRateLimit(ctx context.Context, rdb *redis.Client, recipientID string) bool {
 	key := fmt.Sprintf("rl:push:recipient:%s", recipientID)
 	count, err := rdb.Incr(ctx, key).Result()
 	if err != nil {
-		return true
+		slog.Warn("push rate limiter Redis error — failing closed", "recipient", recipientID, "err", err)
+		return false
 	}
 	if count == 1 {
 		rdb.Expire(ctx, key, time.Hour)

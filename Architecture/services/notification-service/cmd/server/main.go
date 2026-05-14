@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -39,10 +40,14 @@ func main() {
 	ctx := context.Background()
 
 	// 3. Database (Scylla)
+	// Audit HS3: NumConns was hardcoded to 10 — at 100k notifications/sec
+	// with 50 ms Scylla latency that means ~5k concurrent requests
+	// queueing on 10 conns. Make it env-tunable; default bumped to 40
+	// which matches the postgres pool sizing pattern in other services.
 	cluster := gocql.NewCluster(strings.Split(scyllaHosts, ",")...)
 	cluster.Keyspace = "social_notify"
 	cluster.Consistency = gocql.Quorum
-	cluster.NumConns = 10
+	cluster.NumConns = envInt("SCYLLA_NUM_CONNS", 40)
 	cluster.MaxPreparedStmts = 1000
 	session, err := cluster.CreateSession()
 	if err != nil {
@@ -146,6 +151,19 @@ func main() {
 
 	notifHandler := http.New(notifSvc, rdb)
 
+	// Audit CS1: previously the handler defined WithInternalKey but
+	// main.go never called it — every /v1/notifications/* endpoint
+	// was reachable directly, including the bundle endpoint that
+	// accepts an arbitrary recipient user_id. The env was already
+	// being read (for the graph client below) but not passed here.
+	internalKey := os.Getenv("INTERNAL_SERVICE_KEY")
+	if internalKey != "" {
+		notifHandler.WithInternalKey(internalKey)
+		slog.Info("notification-service: internal-service-key gate enabled")
+	} else {
+		slog.Warn("notification-service: INTERNAL_SERVICE_KEY not set — every endpoint is unauthenticated. Do not run this configuration in production.")
+	}
+
 	// 9. Kafka Consumers
 	consumer := events.NewConsumerWithDialer(
 		strings.Split(kafkaBrokers, ","),
@@ -156,7 +174,6 @@ func main() {
 	)
 	// Attach graph-service client so PostCreated events fan out to followers.
 	graphURL := env("GRAPH_SERVICE_URL", "http://graph-service:8083")
-	internalKey := os.Getenv("INTERNAL_SERVICE_KEY")
 	consumer.WithGraph(graph.New(graphURL, internalKey))
 	slog.Info("graph client attached", "graph_url", graphURL)
 	go consumer.Start(ctx)
@@ -279,6 +296,15 @@ func main() {
 func env(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+func envInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
 	}
 	return fallback
 }

@@ -66,18 +66,53 @@ func NewConsumerWithDialer(brokers []string, groupID string, topic string, svc *
 	}
 }
 
+// Start runs the consumer with a bounded worker pool. Audit CR1:
+// previously processMessage ran inline on the read loop, so one slow
+// handler (Scylla timeout, graph round-trip, follower fan-out) stalled
+// the entire topic. Now a buffered channel decouples reading from
+// dispatching; numWorkers handlers run in parallel.
+//
+// Ordering trade-off: events are processed concurrently, so two
+// updates against the same recipient can race. The aggregation layer
+// (CR4) is now atomic in Redis so per-recipient state stays consistent;
+// rare reorderings between distinct event types are acceptable —
+// notifications are individually idempotent on the dedup table.
 func (c *Consumer) Start(ctx context.Context) {
+	const numWorkers = 16
+	const bufferSize = 1024
+
+	jobs := make(chan kafka.Message, bufferSize)
+	var wg sync.WaitGroup
+	wg.Add(numWorkers)
+	for i := 0; i < numWorkers; i++ {
+		go func(id int) {
+			defer wg.Done()
+			for m := range jobs {
+				if err := c.processMessage(ctx, m); err != nil {
+					log.Printf("worker %d failed to process message: %v\n", id, err)
+				}
+			}
+		}(i)
+	}
+
 	for {
 		m, err := c.reader.ReadMessage(ctx)
 		if err != nil {
-			log.Printf("Consumer error: %v\n", err)
+			if ctx.Err() != nil {
+				slog.Info("notification consumer shutting down")
+			} else {
+				log.Printf("Consumer error: %v\n", err)
+			}
 			break
 		}
-
-		if err := c.processMessage(ctx, m); err != nil {
-			log.Printf("Failed to process message: %v\n", err)
+		select {
+		case jobs <- m:
+		case <-ctx.Done():
+			break
 		}
 	}
+	close(jobs)
+	wg.Wait()
 }
 
 func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
@@ -107,7 +142,11 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		if err := unmarshalPayload(envelope.Payload, &e); err != nil {
 			return err
 		}
-		return c.fanOutCreatorUpload(ctx, e)
+		// Audit CR2: dispatch fanout asynchronously so the consumer
+		// goroutine isn't pinned on a 5k-follower upload for tens of
+		// seconds.
+		c.FanOutCreatorUploadAsync(e)
+		return nil
 
 	case events.PostReacted:
 		var e events.PostReactedPayload
@@ -398,8 +437,13 @@ func unmarshalPayload(raw json.RawMessage, v interface{}) error {
 //   - Author themselves is excluded by graph-service (followers != self).
 //
 // Page size 200, capped at 5,000 followers per upload to bound the cost.
-// At-scale this should move to a paginated background job, but for now
-// inline fan-out covers normal creator follower counts.
+// Audit CR2: this used to run synchronously inside processMessage, so
+// a celeb upload pinned the consumer goroutine for tens of seconds
+// (5,000 sequential Scylla writes + 25 graph paginations). Now the
+// caller dispatches via FanOutCreatorUploadAsync, and within this
+// function the per-recipient CreateNotification calls run on a
+// per-event sub-pool of 16 workers so even one event's fan-out
+// doesn't sit waiting on serial Scylla latency.
 func (c *Consumer) fanOutCreatorUpload(ctx context.Context, e events.PostCreatedPayload) error {
 	switch e.ContentType {
 	case "flick", "long_video", "reel", "video":
@@ -436,7 +480,33 @@ func (c *Consumer) fanOutCreatorUpload(ctx context.Context, e events.PostCreated
 		notifType = "creator_uploaded_flick"
 	}
 
+	// Per-event sub-pool: parallelize the Scylla writes for one
+	// upload so a 5,000-follower fanout finishes in ~5k/16/ratePerWorker
+	// instead of serial.
+	const fanoutWorkers = 16
+	jobs := make(chan uuid.UUID, fanoutWorkers*2)
+	var wg sync.WaitGroup
+	var deliveredMu sync.Mutex
 	delivered := 0
+	for w := 0; w < fanoutWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for fid := range jobs {
+				if err := c.service.CreateNotification(
+					ctx, fid, authorID, notifType, "post", postID, deepLink, e.CreatedAt,
+				); err != nil {
+					slog.Warn("creator upload fan-out: notify failed",
+						"follower", fid, "post_id", postID, "error", err)
+					continue
+				}
+				deliveredMu.Lock()
+				delivered++
+				deliveredMu.Unlock()
+			}
+		}()
+	}
+
 	for offset := 0; offset < maxFollowers; offset += pageSize {
 		followers, err := c.graph.GetFollowers(ctx, authorID, pageSize, offset)
 		if err != nil {
@@ -448,23 +518,34 @@ func (c *Consumer) fanOutCreatorUpload(ctx context.Context, e events.PostCreated
 			break
 		}
 		for _, fid := range followers {
-			if err := c.service.CreateNotification(
-				ctx, fid, authorID, notifType, "post", postID, deepLink, e.CreatedAt,
-			); err != nil {
-				slog.Warn("creator upload fan-out: notify failed",
-					"follower", fid, "post_id", postID, "error", err)
-				continue
-			}
-			delivered++
+			jobs <- fid
 		}
 		if len(followers) < pageSize {
 			break
 		}
 	}
+	close(jobs)
+	wg.Wait()
 	slog.Info("creator upload fan-out complete",
 		"author_id", authorID, "post_id", postID,
 		"content_type", e.ContentType, "delivered", delivered)
 	return nil
+}
+
+// FanOutCreatorUploadAsync wraps fanOutCreatorUpload in a goroutine so
+// the consumer loop never blocks on it. Audit CR2: a single celeb
+// upload (5k followers, ~25 graph paginations) previously paused the
+// consumer for tens of seconds and starved every other event behind it.
+// Now the consumer continues immediately; fanout runs on a fresh
+// background context so request-cancel doesn't stop the delivery.
+func (c *Consumer) FanOutCreatorUploadAsync(e events.PostCreatedPayload) {
+	go func() {
+		bg, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		if err := c.fanOutCreatorUpload(bg, e); err != nil {
+			slog.Warn("async creator upload fan-out failed", "post_id", e.PostID, "error", err)
+		}
+	}()
 }
 
 func (c *Consumer) Close() error {

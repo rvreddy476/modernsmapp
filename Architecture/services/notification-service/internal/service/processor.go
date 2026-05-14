@@ -202,9 +202,27 @@ func (s *Service) sendTemplatePush(ctx context.Context, recipientID uuid.UUID, t
 		"icon":      tmpl.Icon,
 		"priority":  tmpl.Priority,
 	}
+	// Audit HS2: cap how many devices we hit per recipient and dedup
+	// per (platform, token) so an attacker can't make the service do
+	// dozens of serial FCM/APNs RTTs by registering many devices.
+	// Most users have <5 active devices; cap at 10 with a stable order
+	// (most-recently-registered first is implicit from the DB ORDER).
+	const maxDevicesPerRecipient = 10
+	seen := make(map[string]struct{}, len(tokens))
+	sent := 0
 	for _, t := range tokens {
+		if sent >= maxDevicesPerRecipient {
+			break
+		}
+		key := t.Platform + ":" + t.PushToken
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
 		if err := s.pusher.Send(ctx, t.PushToken, t.Platform, title, body, data); err != nil {
 			slog.Warn("processor: push send failed", "error", err, "platform", t.Platform)
+			continue
 		}
+		sent++
 	}
 }
