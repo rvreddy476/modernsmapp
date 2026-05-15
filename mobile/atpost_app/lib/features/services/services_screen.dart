@@ -261,8 +261,14 @@ class _FeaturedRail extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Bumped from 168 → 176 to absorb the 5px overflow the featured card
+    // hits when the inner Column has all rows (status badge + name +
+    // 2-line description + verified row). The Column's intrinsic height
+    // is ~140 against a 140 budget, and real text leading pushes it 5px
+    // past. 176 gives the inner column 148 — comfortable margin without
+    // making the strip visibly taller.
     return SizedBox(
-      height: 168,
+      height: 176,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 18),

@@ -11,6 +11,7 @@ import 'package:atpost_app/providers/data_saver_provider.dart';
 import 'package:atpost_app/providers/feed_provider.dart';
 import 'package:atpost_app/providers/notification_provider.dart';
 import 'package:atpost_app/providers/stories_provider.dart';
+import 'package:atpost_app/services/auth_service.dart';
 import 'package:atpost_app/providers/user_provider.dart';
 import 'package:atpost_app/services/image_url_helper.dart';
 import 'package:atpost_app/shared/widgets/badge_icon_button.dart';
@@ -188,8 +189,19 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
             final dataSaver = ref.watch(effectiveDataSaverProvider);
             return GestureDetector(
               onTap: () {
-                final id = me?.id;
-                if (id != null) context.push('/profile/$id');
+                // Fall back to the authenticated user-id from authState when
+                // currentUserProvider hasn't resolved yet (cold start, slow
+                // network, transient API failure). Without this fallback the
+                // icon silently no-ops in exactly the cases users notice it
+                // — first open after install, weak connection, etc.
+                final id =
+                    me?.id ??
+                    ref.read(authStateProvider).valueOrNull?.userId;
+                if (id != null && id.isNotEmpty) {
+                  context.push('/profile/$id');
+                } else {
+                  context.push('/login');
+                }
               },
               child: CircleAvatar(
                 radius: 18,

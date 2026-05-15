@@ -57,18 +57,32 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 5. Kafka Consumer
-	consumer := events.NewConsumerWithDialer(
-		strings.Split(kafkaBrokers, ","),
-		"search-service-group",
-		"social.events.v1",
-		searchStore,
-		kafkaDialer,
-	)
+	// 5. Kafka Consumers — search-service indexes events from BOTH the
+	// social events topic (post/feed/graph publish here) AND the
+	// identity events topic (auth-service publishes UserRegistered /
+	// UserProfileUpdated / HandleChanged here). Without the identity
+	// consumer the users_v1 OpenSearch index stays empty no matter how
+	// many people register, because identity events never traverse the
+	// social topic. Same dual-consumer pattern chat-service uses for
+	// its KAFKA_TOPIC + IDENTITY_KAFKA_TOPIC config.
+	socialTopic := env("KAFKA_TOPIC", "social.events.v1")
+	identityTopic := env("IDENTITY_KAFKA_TOPIC", "identity.events.v1")
+	brokerList := strings.Split(kafkaBrokers, ",")
+
 	consumerCtx, consumerCancel := context.WithCancel(ctx)
 	defer consumerCancel()
-	go consumer.Start(consumerCtx)
-	slog.Info("started kafka consumer")
+
+	socialConsumer := events.NewConsumerWithDialer(
+		brokerList, "search-service-group", socialTopic, searchStore, kafkaDialer,
+	)
+	go socialConsumer.Start(consumerCtx)
+	slog.Info("started kafka consumer", "topic", socialTopic, "group", "search-service-group")
+
+	identityConsumer := events.NewConsumerWithDialer(
+		brokerList, "search-service-identity-group", identityTopic, searchStore, kafkaDialer,
+	)
+	go identityConsumer.Start(consumerCtx)
+	slog.Info("started kafka consumer", "topic", identityTopic, "group", "search-service-identity-group")
 
 	// 6. Prometheus metrics
 	httpMetrics := metrics.NewHTTPMetrics("search-service")
