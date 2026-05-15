@@ -674,6 +674,9 @@ services:
       KAFKA_BROKERS: redpanda:9092
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
+      # Source of truth for the users_v1 reindex / startup auto-heal.
+      PROFILE_SERVICE_URL: http://identity-profile:8098
+      IDENTITY_KAFKA_TOPIC: identity.events.v1
     ports:
       - "8089:8089"
     depends_on:

@@ -320,6 +320,30 @@ func (s *Store) BulkIndexUsers(ctx context.Context, docs []UserDoc) (int, error)
 	return succeeded, nil
 }
 
+// CountUsers returns the number of documents in users_v1. Used by the
+// startup auto-heal check — a count of 0 means the index was wiped or
+// freshly created and needs a reconciliation pass from profile-service.
+func (s *Store) CountUsers(ctx context.Context) (int64, error) {
+	res, err := s.client.Count(
+		s.client.Count.WithContext(ctx),
+		s.client.Count.WithIndex("users_v1"),
+	)
+	if err != nil {
+		return 0, err
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return 0, fmt.Errorf("count error: %s", res.String())
+	}
+	var r struct {
+		Count int64 `json:"count"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&r); err != nil {
+		return 0, err
+	}
+	return r.Count, nil
+}
+
 // SearchUsers performs prefix + fuzzy search across username, display_name, bio.
 func (s *Store) SearchUsers(ctx context.Context, query string, limit int) ([]UserDoc, error) {
 	q := map[string]interface{}{

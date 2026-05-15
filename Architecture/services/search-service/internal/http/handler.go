@@ -17,19 +17,32 @@ import (
 )
 
 type Handler struct {
-	store       *search.Store
-	rdb         *redis.Client
-	internalKey string
-	extrasStore *postgres.SearchExtrasStore
+	store             *search.Store
+	rdb               *redis.Client
+	internalKey       string
+	extrasStore       *postgres.SearchExtrasStore
+	profileServiceURL string
+	httpClient        *http.Client
 }
 
 func New(store *search.Store, rdb *redis.Client) *Handler {
-	return &Handler{store: store, rdb: rdb}
+	return &Handler{
+		store:      store,
+		rdb:        rdb,
+		httpClient: &http.Client{Timeout: 15 * time.Second},
+	}
 }
 
 // WithExtrasStore sets the Postgres extras store (saved searches, history).
 func (h *Handler) WithExtrasStore(s *postgres.SearchExtrasStore) *Handler {
 	h.extrasStore = s
+	return h
+}
+
+// WithReindexSource sets the profile-service base URL used by the admin
+// reindex endpoint to rebuild users_v1 from the source of truth.
+func (h *Handler) WithReindexSource(profileServiceURL string) *Handler {
+	h.profileServiceURL = profileServiceURL
 	return h
 }
 
@@ -75,6 +88,12 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/products", h.SearchProducts)
 		v1.GET("/events", h.SearchEvents)
 		v1.GET("/messages", h.SearchMessages)
+
+		// Admin reconciliation — rebuild users_v1 from profile-service.
+		// Internal-key gated (the whole engine is when internalKey is
+		// set). Use this after an OpenSearch wipe or any time search
+		// has drifted from reality.
+		v1.POST("/internal/reindex/users", h.ReindexUsers)
 	}
 
 	discover := r.Group("/v1/discover")

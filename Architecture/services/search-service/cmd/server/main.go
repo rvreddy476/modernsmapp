@@ -9,6 +9,7 @@ import (
 
 	"github.com/atpost/search-service/internal/events"
 	"github.com/atpost/search-service/internal/http"
+	"github.com/atpost/search-service/internal/reindex"
 	"github.com/atpost/search-service/internal/store/search"
 	"github.com/atpost/shared/health"
 	"github.com/atpost/shared/middleware"
@@ -94,7 +95,21 @@ func main() {
 	}))
 
 	// 8. HTTP Handlers
-	handler := http.New(searchStore, rdb)
+	profileServiceURL := env("PROFILE_SERVICE_URL", "http://identity-profile:8098")
+	internalKey := os.Getenv("INTERNAL_SERVICE_KEY")
+	handler := http.New(searchStore, rdb).WithReindexSource(profileServiceURL)
+	if internalKey != "" {
+		handler.WithInternalKey(internalKey)
+		slog.Info("search-service: internal-service-key gate enabled")
+	} else {
+		slog.Warn("search-service: INTERNAL_SERVICE_KEY not set — endpoints, including the admin reindex, are unauthenticated. Do not run this in production.")
+	}
+
+	// Startup auto-heal: if users_v1 is empty (wiped index / fresh
+	// OpenSearch volume / events lost beyond Kafka retention), rebuild
+	// it from profile-service rather than waiting for users to
+	// re-register. A populated index is left alone.
+	reindex.AutoHealUsersOnStartup(ctx, nil, profileServiceURL, internalKey, searchStore, slog.Default())
 
 	// 9. Gin with middleware stack
 	gin.SetMode(gin.ReleaseMode)
