@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"log"
 
 	"github.com/atpost/post-service/internal/store/postgres"
 	"github.com/google/uuid"
@@ -27,18 +28,41 @@ func (s *Service) GetReelModerationReviews(ctx context.Context, reelID uuid.UUID
 	return s.pgStore.GetModerationReviewsByReel(ctx, reelID)
 }
 
-// AutoModeratePendingReel creates an automatic moderation review for a newly published reel.
-// This is a placeholder that marks reels as "approved" by default. In production,
-// this would integrate with an AI content safety API.
-func (s *Service) AutoModeratePendingReel(ctx context.Context, reelID uuid.UUID) error {
-	confidence := 1.0
-	reviewerType := "auto"
+// RecordVideoModeration writes an automatic moderation review for a
+// freshly-created video post, giving every reel / video an auditable
+// verdict row. It is called synchronously from CreatePost.
+//
+// v1 decisioning is heuristic: it mirrors the text-spam verdict that
+// CreatePost already computed (passed in as reviewStatus). The marked
+// HOOK below is the single integration point for a visual content-safety
+// classifier (CSAM / nudity / graphic-violence detection run against the
+// transcoded video). Until that provider is integrated, video frames are
+// not scanned — a known, deliberate gap, not a silent omission.
+func (s *Service) RecordVideoModeration(ctx context.Context, postID uuid.UUID, reviewStatus string, spamScore float64) {
 	decision := "approved"
+	switch reviewStatus {
+	case "flagged":
+		decision = "flagged"
+	case "rejected":
+		decision = "rejected"
+	}
+
+	// HOOK: integrate a visual content-safety classifier here. Run it
+	// against the transcoded video and override `decision` (e.g. to
+	// "rejected" on a CSAM hit), updating the post's review_status to
+	// match so the GetPost / GetPostsByIDs gate hides it.
+
+	confidence := 1.0
+	if spamScore > 0 {
+		confidence = spamScore
+	}
 	review := &postgres.ModerationReview{
-		ReelID:       reelID,
-		ReviewerType: reviewerType,
+		ReelID:       postID,
+		ReviewerType: "auto",
 		Decision:     decision,
 		Confidence:   &confidence,
 	}
-	return s.pgStore.InsertModerationReview(ctx, review)
+	if err := s.pgStore.InsertModerationReview(ctx, review); err != nil {
+		log.Printf("Warning: failed to record moderation review for post %s: %v", postID, err)
+	}
 }

@@ -291,8 +291,39 @@ func validatePassword(pw string) error {
 	return nil
 }
 
+// minimumAgeYears is the hard floor for self-service registration.
+// India's DPDP Act additionally requires verifiable parental consent for
+// users under 18 — that consent flow is a separate effort; this gate is
+// the absolute minimum age, enforced whenever a date of birth is supplied.
+const minimumAgeYears = 13
+
+// validateMinimumAge rejects registrations below minimumAgeYears. An
+// absent DOB is not enforced here (the registration form may not collect
+// one); a malformed DOB is rejected outright.
+func validateMinimumAge(dob string) error {
+	if strings.TrimSpace(dob) == "" {
+		return nil
+	}
+	born, err := time.Parse("2006-01-02", dob)
+	if err != nil {
+		return fmt.Errorf("invalid date of birth")
+	}
+	now := time.Now()
+	age := now.Year() - born.Year()
+	if now.YearDay() < born.YearDay() {
+		age--
+	}
+	if age < minimumAgeYears {
+		return fmt.Errorf("you must be at least %d years old to register", minimumAgeYears)
+	}
+	return nil
+}
+
 func (s *Service) RegisterWithPassword(ctx context.Context, phone, email, password, firstName, lastName, dob, gender string) (*AuthResponse, error) {
 	if err := validatePassword(password); err != nil {
+		return nil, err
+	}
+	if err := validateMinimumAge(dob); err != nil {
 		return nil, err
 	}
 

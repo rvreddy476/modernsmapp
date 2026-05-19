@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 )
 
 const (
@@ -42,6 +43,10 @@ type HydratedPost struct {
 	UpdatedAt      string          `json:"updated_at"`
 	Media          json.RawMessage `json:"media,omitempty"`
 	Counts         json.RawMessage `json:"counts,omitempty"`
+	// ViewCount is the display view count from analytics-service's
+	// Redis counter (post:views:{id} → display). Enriched at hydration
+	// time; `counts` carries likes/comments/shares only.
+	ViewCount      int64           `json:"view_count"`
 	ViewerReaction *string         `json:"viewer_reaction,omitempty"`
 	IsBookmarked   bool            `json:"is_bookmarked"`
 	Poll           json.RawMessage `json:"poll,omitempty"`
@@ -102,7 +107,9 @@ func (s *Service) HydratePosts(ctx context.Context, items []FeedItem, viewerID u
 
 	if len(ids) == 0 {
 		// Entire batch served from cache — skip the HTTP call.
-		return s.mergeHydratedItems(items, envelopeData, nil), nil
+		merged := s.mergeHydratedItems(items, envelopeData, nil)
+		s.enrichViewCounts(ctx, merged)
+		return merged, nil
 	}
 
 	// 2. Build request body
@@ -158,7 +165,36 @@ func (s *Service) HydratePosts(ctx context.Context, items []FeedItem, viewerID u
 	// reuse them. Fire-and-forget; never block the response.
 	s.storeHydratedCache(viewerID, envelope.Data)
 
-	return s.mergeHydratedItems(items, envelopeData, nil), nil
+	merged := s.mergeHydratedItems(items, envelopeData, nil)
+	s.enrichViewCounts(ctx, merged)
+	return merged, nil
+}
+
+// enrichViewCounts fills HydratedPost.ViewCount from the shared Redis
+// view counter (post:views:{id} hash, "display" field) that
+// analytics-service maintains. One pipelined round trip for the whole
+// page; best-effort — on any Redis error the counts stay 0 rather than
+// failing the feed. View counts intentionally aren't part of the
+// hydration cache blob, so this always reflects the live counter.
+func (s *Service) enrichViewCounts(ctx context.Context, posts []HydratedPost) {
+	if s.rdb == nil || len(posts) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer cancel()
+	pipe := s.rdb.Pipeline()
+	cmds := make([]*redis.StringCmd, len(posts))
+	for i, p := range posts {
+		cmds[i] = pipe.HGet(ctx, "post:views:"+p.ID.String(), "display")
+	}
+	// Exec returns redis.Nil when any key/field is missing — expected for
+	// posts with no views yet. Per-command parsing below handles it.
+	_, _ = pipe.Exec(ctx)
+	for i := range posts {
+		if n, err := cmds[i].Int64(); err == nil {
+			posts[i].ViewCount = n
+		}
+	}
 }
 
 // mergeHydratedItems flattens (feed item × hydrated post) into the

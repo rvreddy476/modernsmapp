@@ -50,3 +50,19 @@ CREATE TABLE IF NOT EXISTS transcoding_jobs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_transcoding_jobs_media ON transcoding_jobs(media_asset_id);
+
+-- Idempotent schema upgrades — applied on every boot by BootstrapSchema.
+-- migration 008: per-asset content-moderation verdict (video frame scan).
+ALTER TABLE media_assets ADD COLUMN IF NOT EXISTS moderation_status TEXT NOT NULL DEFAULT 'pending';
+
+-- migration 007: real S3/MinIO multipart upload backing for resumable uploads.
+ALTER TABLE resumable_uploads ADD COLUMN IF NOT EXISTS storage_upload_id TEXT NOT NULL DEFAULT '';
+
+CREATE TABLE IF NOT EXISTS resumable_upload_parts (
+    upload_id   UUID        NOT NULL REFERENCES resumable_uploads(upload_id) ON DELETE CASCADE,
+    part_number INT         NOT NULL,
+    etag        TEXT        NOT NULL,
+    size_bytes  BIGINT      NOT NULL,
+    uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (upload_id, part_number)
+);

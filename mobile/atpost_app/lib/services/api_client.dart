@@ -245,6 +245,94 @@ class ApiClient {
     }
   }
 
+  /// Files at or above this size use the resumable (chunked) upload path.
+  static const int resumableUploadThreshold = 20 * 1024 * 1024; // 20 MB
+
+  /// Resumable multipart upload: init -> upload each part (with per-part
+  /// retry) -> complete. A dropped connection costs one 5 MB part's
+  /// re-send rather than the whole file. Used for large videos.
+  Future<String> uploadMediaResumable(
+    XFile file, {
+    required String type, // 'image' or 'video'
+    void Function(int sent, int total)? onProgress,
+  }) async {
+    String step = 'init';
+    try {
+      final fileData = File(file.path);
+      final fileSize = await fileData.length();
+      final mimeType = lookupMimeType(file.path) ?? 'application/octet-stream';
+
+      // 1. Open the resumable session.
+      final initRes = await post(
+        '/v1/media/upload/resumable/init',
+        data: {
+          'file_type': type,
+          'mime_type': mimeType,
+          'total_bytes': fileSize,
+        },
+      );
+      final initData = initRes.data['data'] as Map<String, dynamic>;
+      final uploadId = initData['upload_id'] as String;
+      final mediaId = initData['media_id'] as String;
+      final chunkSize = initData['chunk_size'] as int;
+      final totalParts = initData['total_parts'] as int;
+
+      // 2. Upload each part.
+      step = 'chunk';
+      for (var part = 1; part <= totalParts; part++) {
+        final start = (part - 1) * chunkSize;
+        final end = (start + chunkSize < fileSize) ? start + chunkSize : fileSize;
+        final bytes = <int>[];
+        await for (final slice in fileData.openRead(start, end)) {
+          bytes.addAll(slice);
+        }
+        await _uploadPartWithRetry(uploadId, part, bytes);
+        onProgress?.call(part, totalParts);
+      }
+
+      // 3. Assemble the object + trigger processing.
+      step = 'complete';
+      await post('/v1/media/upload/resumable/$uploadId/complete');
+
+      return mediaId;
+    } catch (e, st) {
+      AppLogger.error(
+        'Resumable upload failed [step=$step]',
+        tag: _tag,
+        error: e,
+        stackTrace: st,
+      );
+      throw ErrorHandler.handle(e, st,
+          context: 'ApiClient.uploadMediaResumable.$step');
+    }
+  }
+
+  Future<void> _uploadPartWithRetry(
+    String uploadId,
+    int partNumber,
+    List<int> bytes, {
+    int maxAttempts = 3,
+  }) async {
+    Object? lastErr;
+    for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        await post(
+          '/v1/media/upload/resumable/$uploadId/chunk',
+          data: bytes,
+          queryParameters: {'part_number': partNumber},
+          options: Options(contentType: 'application/octet-stream'),
+        );
+        return;
+      } catch (e) {
+        lastErr = e;
+        if (attempt < maxAttempts) {
+          await Future<void>.delayed(Duration(milliseconds: 500 * attempt));
+        }
+      }
+    }
+    throw lastErr!;
+  }
+
   Never _handleError(Object error, String path) {
     final st = error is DioException ? error.stackTrace : StackTrace.current;
     final appException = ErrorHandler.handle(

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:atpost_app/core/errors/error_handler.dart';
 import 'package:atpost_app/core/theme/app_colors.dart';
@@ -66,14 +67,25 @@ class _PosttubeUploadScreenState extends ConsumerState<PosttubeUploadScreen> {
     try {
       final api = ref.read(apiClientProvider);
 
-      // Executes the 3-step orchestration defined in the new ApiClient
-      final mediaId = await api.uploadMedia(
-        _videoFile!,
-        type: 'video',
-        onProgress: (sent, total) {
-          if (mounted) setState(() => _uploadProgress = sent / total);
-        },
-      );
+      void onProgress(int sent, int total) {
+        if (mounted && total > 0) setState(() => _uploadProgress = sent / total);
+      }
+
+      // Large videos take the resumable (chunked) path so a dropped
+      // connection costs one 5 MB part, not the whole upload; smaller
+      // files use the single-shot presigned PUT.
+      final fileSize = await File(_videoFile!.path).length();
+      final mediaId = fileSize >= ApiClient.resumableUploadThreshold
+          ? await api.uploadMediaResumable(
+              _videoFile!,
+              type: 'video',
+              onProgress: onProgress,
+            )
+          : await api.uploadMedia(
+              _videoFile!,
+              type: 'video',
+              onProgress: onProgress,
+            );
 
       if (mounted) setState(() => _status = 'Finalizing post...');
 

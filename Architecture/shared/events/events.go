@@ -568,6 +568,10 @@ type MediaTranscodeCompletedPayload struct {
 	HLSMasterURL string `json:"hls_master_url,omitempty"`
 	MP4URL       string `json:"mp4_url,omitempty"`
 	ThumbnailURL string `json:"thumbnail_url,omitempty"`
+
+	// ModerationStatus is the transcode worker's frame-scan verdict
+	// ("passed" / "rejected"); empty on the failed-transcode path.
+	ModerationStatus string `json:"moderation_status,omitempty"`
 }
 
 type ConnectionRequestedPayload struct {

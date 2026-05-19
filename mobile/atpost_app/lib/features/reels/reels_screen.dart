@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:atpost_app/core/config/environment.dart';
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/models/post.dart';
+import 'package:atpost_app/data/repositories/analytics_repository.dart';
 import 'package:atpost_app/data/repositories/feed_repository.dart';
 import 'package:atpost_app/app/router.dart';
 import 'package:atpost_app/data/repositories/post_repository.dart';
@@ -70,6 +72,12 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> with RouteAware {
   bool _hasMoreFromApi = true;
   String? _error;
 
+  // View tracking — the reel the viewer is currently dwelling on, plus the
+  // set of reels already counted this session so the loop-feed recycling
+  // (_appendLoopBatch) never re-fires a view for the same reel.
+  _ReelViewWatch? _activeView;
+  final Set<String> _viewedReelIds = <String>{};
+
   // True while another route (e.g. /reels/editor, /reels/caption,
   // /comments/:id) sits on top of the host route. RouteAware flips
   // this from didPushNext / didPopNext so the player gates correctly
@@ -117,11 +125,55 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> with RouteAware {
 
   @override
   void dispose() {
+    _flushActiveView();
     _routeObserver?.unsubscribe(this);
     _pageController
       ..removeListener(_maybeLoadMoreOnScroll)
       ..dispose();
     super.dispose();
+  }
+
+  // Begin a dwell timer for [post]. The view fires when the viewer
+  // scrolls away (or the screen is disposed) via _flushActiveView.
+  void _startView(Post post) {
+    _activeView = _ReelViewWatch(post: post, startedAt: DateTime.now());
+  }
+
+  // Emit a play_end view event for whichever reel the viewer just left.
+  void _flushActiveView() {
+    final watch = _activeView;
+    _activeView = null;
+    if (watch == null) return;
+
+    final post = watch.post;
+    // Loop guard: a reel recycled by _appendLoopBatch must not re-count.
+    // (analytics-service also dedups per session+content — this just
+    // avoids a pointless network call.)
+    if (post.id.isEmpty || _viewedReelIds.contains(post.id)) return;
+
+    final watchedMs = DateTime.now().difference(watch.startedAt).inMilliseconds;
+    if (watchedMs <= 1000) return;
+
+    _viewedReelIds.add(post.id);
+    unawaited(
+      ref.read(analyticsRepositoryProvider).recordVideoView(
+        contentId: post.id,
+        creatorId: post.authorId,
+        contentType: post.contentType == 'video' ? 'long_video' : 'reel',
+        watchedMs: watchedMs,
+        durationMs: (post.durationSeconds ?? 30) * 1000,
+        surface: 'reels_feed',
+      ),
+    );
+  }
+
+  // PageView reached a new reel: count the one just left, start the new.
+  void _onPageChanged(int index) {
+    _flushActiveView();
+    if (index >= 0 && index < _reels.length) {
+      _startView(_reels[index]);
+    }
+    _loadMore();
   }
 
   Future<void> _loadInitial() async {
@@ -148,6 +200,12 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> with RouteAware {
         _hasMoreFromApi =
             page.nextCursor != null && page.nextCursor!.isNotEmpty;
       });
+
+      // PageView opens on index 0 without firing onPageChanged — start
+      // the dwell timer for the first reel here.
+      if (_reels.isNotEmpty) {
+        _startView(_reels.first);
+      }
 
       if (_reels.isNotEmpty && !_hasMoreFromApi) {
         _appendLoopBatch();
@@ -500,7 +558,7 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> with RouteAware {
             itemCount: _reels.length,
             // data-saver: PageView precaches just current + next; nothing
             // further to do here without a custom delegate.
-            onPageChanged: (_) => _loadMore(),
+            onPageChanged: _onPageChanged,
             itemBuilder: (context, index) {
               final post = _reels[index];
               final engagement = _ensureEngagement(post);
@@ -1121,6 +1179,15 @@ class _BottomInfo extends StatelessWidget {
       ],
     );
   }
+}
+
+// Tracks the reel currently on screen and when the viewer landed on it,
+// so _flushActiveView can compute watched-ms when they scroll away.
+class _ReelViewWatch {
+  _ReelViewWatch({required this.post, required this.startedAt});
+
+  final Post post;
+  final DateTime startedAt;
 }
 
 class _ReelEngagement {

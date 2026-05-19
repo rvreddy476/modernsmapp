@@ -257,8 +257,39 @@ type ChannelWithMembership struct {
 	ViewerRole string `json:"viewer_role,omitempty"`
 }
 
-func (s *Service) GetChannel(ctx context.Context, channelID uuid.UUID, viewerID *uuid.UUID) (*ChannelWithMembership, error) {
+// channelMetaCacheTTL bounds how stale a cached channel record may be.
+// 60s is well within tolerance for channel metadata (name, bio, avatar)
+// while absorbing the read load on a hot channel page; no explicit
+// invalidation is needed — an edit shows within the window.
+const channelMetaCacheTTL = 60 * time.Second
+
+// cachedChannelByID is a Redis cache-aside over store.GetChannelByID. The
+// channel record is viewer-independent, so it caches cleanly; the
+// per-viewer role in GetChannel stays a live lookup.
+func (s *Service) cachedChannelByID(ctx context.Context, channelID uuid.UUID) (*store.BroadcastChannel, error) {
+	key := "channel:meta:" + channelID.String()
+	if s.rdb != nil {
+		if raw, err := s.rdb.Get(ctx, key).Bytes(); err == nil {
+			var ch store.BroadcastChannel
+			if json.Unmarshal(raw, &ch) == nil {
+				return &ch, nil
+			}
+		}
+	}
 	ch, err := s.store.GetChannelByID(ctx, channelID)
+	if err != nil || ch == nil {
+		return ch, err
+	}
+	if s.rdb != nil {
+		if data, mErr := json.Marshal(ch); mErr == nil {
+			_ = s.rdb.Set(ctx, key, data, channelMetaCacheTTL).Err()
+		}
+	}
+	return ch, nil
+}
+
+func (s *Service) GetChannel(ctx context.Context, channelID uuid.UUID, viewerID *uuid.UUID) (*ChannelWithMembership, error) {
+	ch, err := s.cachedChannelByID(ctx, channelID)
 	if err != nil {
 		return nil, err
 	}

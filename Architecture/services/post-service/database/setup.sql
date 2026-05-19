@@ -103,3 +103,9 @@ CREATE TABLE IF NOT EXISTS engagement_event_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_event_log_age ON engagement_event_log (processed_at);
+
+-- Idempotent schema upgrades — applied on every boot by BootstrapSchema.
+-- migration 018: allow the 'pending' review state for the video publish gate.
+ALTER TABLE posts DROP CONSTRAINT IF EXISTS posts_review_status_check;
+ALTER TABLE posts ADD CONSTRAINT posts_review_status_check
+    CHECK (review_status IN ('approved', 'flagged', 'rejected', 'pending'));

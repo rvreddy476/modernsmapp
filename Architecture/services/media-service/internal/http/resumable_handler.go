@@ -2,6 +2,7 @@ package http
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
@@ -69,10 +70,10 @@ func (h *Handler) GetResumableUploadStatus(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, upload, nil)
 }
 
-type UploadChunkRequest struct {
-	ChunkBytes int64 `json:"chunk_bytes" binding:"required,min=1"`
-}
-
+// UploadChunk receives one part's raw bytes as the request body. The part
+// index comes from the `part_number` query parameter (1-based) and the
+// size from Content-Length. media-service streams the body straight into
+// the object store's multipart upload.
 func (h *Handler) UploadChunk(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
@@ -86,13 +87,19 @@ func (h *Handler) UploadChunk(c *gin.Context) {
 		return
 	}
 
-	var req UploadChunkRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
+	partNumber, err := strconv.Atoi(c.Query("part_number"))
+	if err != nil || partNumber < 1 {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "part_number query parameter required", nil)
 		return
 	}
 
-	resp, err := h.svc.UploadChunk(c.Request.Context(), uploadID, userID, req.ChunkBytes)
+	size := c.Request.ContentLength
+	if size <= 0 {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Content-Length header required", nil)
+		return
+	}
+
+	resp, err := h.svc.UploadPart(c.Request.Context(), uploadID, userID, partNumber, c.Request.Body, size)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return

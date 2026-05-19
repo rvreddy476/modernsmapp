@@ -420,16 +420,14 @@ func (s *Service) GetMediaURL(ctx context.Context, mediaID uuid.UUID) (*MediaURL
 	variants := make(map[string]string)
 
 	// Original
-	origURL, err := s.blobStore.GeneratePresignedGetURL(ctx, media.StorageKey, expiry)
-	if err == nil {
-		variants["original"] = origURL.String()
+	if origURL, err := s.blobStore.ObjectURL(ctx, media.StorageKey, expiry); err == nil {
+		variants["original"] = origURL
 	}
 
 	// Each variant
 	for _, v := range media.Variants {
-		vURL, err := s.blobStore.GeneratePresignedGetURL(ctx, v.ObjectKey, expiry)
-		if err == nil {
-			variants[v.Name] = vURL.String()
+		if vURL, err := s.blobStore.ObjectURL(ctx, v.ObjectKey, expiry); err == nil {
+			variants[v.Name] = vURL
 		}
 	}
 
@@ -445,9 +443,8 @@ func (s *Service) GetMediaURL(ctx context.Context, mediaID uuid.UUID) (*MediaURL
 
 	// Include HLS URL when available
 	if media.HLSMasterKey != "" {
-		hlsURL, err := s.blobStore.GeneratePresignedGetURL(ctx, media.HLSMasterKey, expiry)
-		if err == nil {
-			response.HLSURL = hlsURL.String()
+		if hlsURL, err := s.blobStore.ObjectURL(ctx, media.HLSMasterKey, expiry); err == nil {
+			response.HLSURL = hlsURL
 		}
 	}
 
@@ -461,11 +458,7 @@ func (s *Service) GetMediaVariantURL(ctx context.Context, mediaID uuid.UUID, var
 		if err != nil {
 			return "", err
 		}
-		u, err := s.blobStore.GeneratePresignedGetURL(ctx, media.StorageKey, 15*time.Minute)
-		if err != nil {
-			return "", err
-		}
-		return u.String(), nil
+		return s.blobStore.ObjectURL(ctx, media.StorageKey, 15*time.Minute)
 	}
 
 	variants, err := s.pgStore.GetVariants(ctx, mediaID)
@@ -474,11 +467,7 @@ func (s *Service) GetMediaVariantURL(ctx context.Context, mediaID uuid.UUID, var
 	}
 	for _, v := range variants {
 		if v.Name == variant {
-			u, err := s.blobStore.GeneratePresignedGetURL(ctx, v.ObjectKey, 15*time.Minute)
-			if err != nil {
-				return "", err
-			}
-			return u.String(), nil
+			return s.blobStore.ObjectURL(ctx, v.ObjectKey, 15*time.Minute)
 		}
 	}
 	return "", fmt.Errorf("variant %q not found", variant)
@@ -500,14 +489,12 @@ func (s *Service) BatchMediaURLs(ctx context.Context, ids []uuid.UUID) (map[uuid
 
 	for _, m := range medias {
 		variants := make(map[string]string)
-		origURL, err := s.blobStore.GeneratePresignedGetURL(ctx, m.StorageKey, expiry)
-		if err == nil {
-			variants["original"] = origURL.String()
+		if origURL, err := s.blobStore.ObjectURL(ctx, m.StorageKey, expiry); err == nil {
+			variants["original"] = origURL
 		}
 		for _, v := range m.Variants {
-			vURL, err := s.blobStore.GeneratePresignedGetURL(ctx, v.ObjectKey, expiry)
-			if err == nil {
-				variants[v.Name] = vURL.String()
+			if vURL, err := s.blobStore.ObjectURL(ctx, v.ObjectKey, expiry); err == nil {
+				variants[v.Name] = vURL
 			}
 		}
 		resp := &MediaURLResponse{
@@ -520,9 +507,8 @@ func (s *Service) BatchMediaURLs(ctx context.Context, ids []uuid.UUID) (map[uuid
 			Variants: variants,
 		}
 		if m.HLSMasterKey != "" {
-			hlsURL, err := s.blobStore.GeneratePresignedGetURL(ctx, m.HLSMasterKey, expiry)
-			if err == nil {
-				resp.HLSURL = hlsURL.String()
+			if hlsURL, err := s.blobStore.ObjectURL(ctx, m.HLSMasterKey, expiry); err == nil {
+				resp.HLSURL = hlsURL
 			}
 		}
 		result[m.ID] = resp

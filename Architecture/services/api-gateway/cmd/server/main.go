@@ -81,6 +81,7 @@ func main() {
 		{"/v1/search", env("SEARCH_SERVICE_URL", "http://search-service:8089")},
 		{"/v1/groups", env("GROUP_SERVICE_URL", "http://group-service:8090")},
 		{"/v1/reports", env("TRUST_SAFETY_SERVICE_URL", "http://trust-safety-service:8091")},
+		{"/v1/grievances", env("TRUST_SAFETY_SERVICE_URL", "http://trust-safety-service:8091")},
 		{"/v1/ws", env("WS_GATEWAY_URL", "http://ws-gateway:8093")},
 		{"/v1/calls", env("CALL_SERVICE_URL", "http://call-service:8097")},
 		{"/v1/chat", env("MESSAGE_SERVICE_URL", "http://message-service:8092")},

@@ -20,6 +20,9 @@ var Migration005 string
 //go:embed migrations/006_user_trust_state.sql
 var Migration006 string
 
+//go:embed migrations/007_grievances.sql
+var Migration007 string
+
 // Migrations holds all incremental migration SQL in order. setup.sql (which is
 // equivalent to 001_initial.sql) is applied separately by BootstrapSchema.
 // Every migration uses IF NOT EXISTS / IF EXISTS guards so re-runs are safe.
@@ -29,4 +32,5 @@ var Migrations = []string{
 	Migration004,
 	Migration005,
 	Migration006,
+	Migration007,
 }

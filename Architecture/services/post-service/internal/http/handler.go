@@ -528,7 +528,14 @@ func (h *Handler) GetPostsByAuthor(c *gin.Context) {
 		limit = l
 	}
 
-	posts, nextCursor, err := h.svc.GetPostsByAuthor(c.Request.Context(), authorID, contentType, limit, cursor)
+	var viewerID *uuid.UUID
+	if v := c.GetHeader("X-User-Id"); v != "" {
+		if id, err := uuid.Parse(v); err == nil {
+			viewerID = &id
+		}
+	}
+
+	posts, nextCursor, err := h.svc.GetPostsByAuthor(c.Request.Context(), authorID, contentType, limit, cursor, viewerID)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return

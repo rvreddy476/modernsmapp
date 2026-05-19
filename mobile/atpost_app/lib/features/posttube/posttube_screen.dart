@@ -6,6 +6,7 @@ import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/models/post.dart';
+import 'package:atpost_app/data/repositories/analytics_repository.dart';
 import 'package:atpost_app/data/repositories/post_repository.dart';
 import 'package:atpost_app/data/repositories/user_repository.dart';
 import 'package:atpost_app/providers/comments_provider.dart';
@@ -33,6 +34,10 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
   List<Post> _videos = const [];
   int _currentVideoIndex = 0;
 
+  // When the viewer landed on the current video — used to emit a
+  // play_end view event on dispose.
+  DateTime? _videoViewStartedAt;
+
   // Per-video engagement state, keyed by post.id. Lifted out of individual
   // widgets so optimistic updates survive scroll-driven rebuilds. Mirrors the
   // pattern used by reels_screen.dart so future maintenance only has to learn
@@ -46,6 +51,32 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
   // Captions toggle state, keyed by post.id so the user's preference
   // persists when they scroll between videos in the watch surface.
   final Map<String, bool> _captionsEnabledByPostId = {};
+
+  @override
+  void dispose() {
+    _flushVideoView();
+    super.dispose();
+  }
+
+  // Emit a play_end view event for the video the viewer was watching.
+  void _flushVideoView() {
+    final startedAt = _videoViewStartedAt;
+    if (startedAt == null || _videos.isEmpty) return;
+    final post = _videos[_currentVideoIndex.clamp(0, _videos.length - 1)];
+    if (post.id.isEmpty) return;
+    final watchedMs = DateTime.now().difference(startedAt).inMilliseconds;
+    if (watchedMs <= 1000) return;
+    unawaited(
+      ref.read(analyticsRepositoryProvider).recordVideoView(
+        contentId: post.id,
+        creatorId: post.authorId,
+        contentType: post.contentType == 'reel' ? 'reel' : 'long_video',
+        watchedMs: watchedMs,
+        durationMs: (post.durationSeconds ?? 0) * 1000,
+        surface: 'posttube_watch',
+      ),
+    );
+  }
 
   bool _captionsEnabled(String postId) =>
       _captionsEnabledByPostId[postId] ?? false;
@@ -222,6 +253,7 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
             _videos = posts;
             _currentVideoIndex = 0;
           });
+          _videoViewStartedAt ??= DateTime.now();
         }
       });
     });
@@ -293,7 +325,7 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
                     const SizedBox(height: 6),
                     Text(
                       currentVideo != null
-                          ? '${_formatCount(currentVideo.likeCount)} views  •  ${_timeAgo(currentVideo.createdAt)}'
+                          ? '${_formatCount(currentVideo.viewCount)} views  •  ${_timeAgo(currentVideo.createdAt)}'
                           : '',
                       style: AppTextStyles.bodySmall.copyWith(
                         color: AppColors.textDim,
@@ -1106,7 +1138,7 @@ class _UpNextSection extends StatelessWidget {
                     ? '${v.content.substring(0, 60)}...'
                     : v.content,
                 stats:
-                    '${_formatCount(v.likeCount)} views • ${_timeAgo(v.createdAt)}',
+                    '${_formatCount(v.viewCount)} views • ${_timeAgo(v.createdAt)}',
               ),
             ),
           )

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/minio/minio-go/v7"
@@ -14,8 +16,12 @@ import (
 
 type Store struct {
 	client       *minio.Client
+	core         *minio.Core   // low-level client — exposes the multipart upload API
 	presignClient *minio.Client // separate client for presigned URL generation (uses public endpoint)
 	bucket       string
+	// cdnBaseURL, when set (MEDIA_CDN_BASE_URL), fronts object reads with
+	// a CDN so bytes are served from the edge instead of MinIO directly.
+	cdnBaseURL string
 }
 
 func New(endpoint, accessKey, secretKey, bucket string, useSSL bool) (*Store, error) {
@@ -43,6 +49,16 @@ func NewWithPublicEndpoint(endpoint, accessKey, secretKey, bucket string, useSSL
 		}
 	}
 
+	// Low-level Core client for multipart (resumable) uploads. Same
+	// credentials/endpoint as the internal client.
+	core, err := minio.NewCore(endpoint, &minio.Options{
+		Creds:  credentials.NewStaticV4(accessKey, secretKey, ""),
+		Secure: useSSL,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create multipart client: %w", err)
+	}
+
 	// Create a second client for presigned URLs using the public endpoint.
 	// Presigned URL generation is a client-side crypto operation — the URL
 	// host must match what the browser sends so MinIO's signature check passes.
@@ -68,9 +84,26 @@ func NewWithPublicEndpoint(endpoint, accessKey, secretKey, bucket string, useSSL
 
 	return &Store{
 		client:       minioClient,
+		core:         core,
 		presignClient: presignClient,
 		bucket:       bucket,
+		cdnBaseURL:   strings.TrimRight(os.Getenv("MEDIA_CDN_BASE_URL"), "/"),
 	}, nil
+}
+
+// ObjectURL returns a URL for reading objectKey. When a CDN base is
+// configured (MEDIA_CDN_BASE_URL) it returns a stable CDN-fronted URL so
+// bytes are served from the edge; otherwise it falls back to a short-lived
+// presigned URL straight from the object store.
+func (s *Store) ObjectURL(ctx context.Context, objectKey string, expiry time.Duration) (string, error) {
+	if s.cdnBaseURL != "" {
+		return s.cdnBaseURL + "/" + s.bucket + "/" + objectKey, nil
+	}
+	u, err := s.GeneratePresignedGetURL(ctx, objectKey, expiry)
+	if err != nil {
+		return "", err
+	}
+	return u.String(), nil
 }
 
 func (s *Store) GeneratePresignedPutURL(ctx context.Context, objectKey string, expiry time.Duration) (*url.URL, error) {
@@ -116,4 +149,49 @@ func (s *Store) DeleteObject(ctx context.Context, objectKey string) error {
 
 func (s *Store) Bucket() string {
 	return s.bucket
+}
+
+// MultipartPart is one finished part of a multipart upload.
+type MultipartPart struct {
+	PartNumber int
+	ETag       string
+	Size       int64
+}
+
+// InitMultipartUpload starts an S3/MinIO multipart upload and returns the
+// object-store upload id that subsequent parts must reference.
+func (s *Store) InitMultipartUpload(ctx context.Context, objectKey, contentType string) (string, error) {
+	return s.core.NewMultipartUpload(ctx, s.bucket, objectKey, minio.PutObjectOptions{
+		ContentType: contentType,
+	})
+}
+
+// UploadPart streams one part's bytes into an in-progress multipart upload
+// and returns the ETag the object store assigns it.
+func (s *Store) UploadPart(ctx context.Context, objectKey, storageUploadID string, partNumber int, data io.Reader, size int64) (MultipartPart, error) {
+	p, err := s.core.PutObjectPart(ctx, s.bucket, objectKey, storageUploadID, partNumber, data, size, minio.PutObjectPartOptions{})
+	if err != nil {
+		return MultipartPart{}, fmt.Errorf("upload part %d: %w", partNumber, err)
+	}
+	return MultipartPart{PartNumber: p.PartNumber, ETag: p.ETag, Size: p.Size}, nil
+}
+
+// CompleteMultipartUpload assembles the uploaded parts into the final object.
+// parts must be ordered by PartNumber.
+func (s *Store) CompleteMultipartUpload(ctx context.Context, objectKey, storageUploadID string, parts []MultipartPart) error {
+	cps := make([]minio.CompletePart, len(parts))
+	for i, p := range parts {
+		cps[i] = minio.CompletePart{PartNumber: p.PartNumber, ETag: p.ETag}
+	}
+	_, err := s.core.CompleteMultipartUpload(ctx, s.bucket, objectKey, storageUploadID, cps, minio.PutObjectOptions{})
+	if err != nil {
+		return fmt.Errorf("complete multipart upload: %w", err)
+	}
+	return nil
+}
+
+// AbortMultipartUpload discards an in-progress multipart upload so the
+// object store does not retain its orphaned parts.
+func (s *Store) AbortMultipartUpload(ctx context.Context, objectKey, storageUploadID string) error {
+	return s.core.AbortMultipartUpload(ctx, s.bucket, objectKey, storageUploadID)
 }

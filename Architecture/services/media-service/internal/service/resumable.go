@@ -3,26 +3,32 @@ package service
 import (
 	"context"
 	"fmt"
+	"io"
 	"time"
 
+	"github.com/atpost/media-service/internal/store/blob"
 	"github.com/atpost/media-service/internal/store/postgres"
 	"github.com/google/uuid"
 )
 
 const (
-	defaultChunkSize     = 5 * 1024 * 1024 // 5 MB
-	resumableUploadTTL   = 24 * time.Hour
+	// defaultChunkSize is also the S3/MinIO minimum part size — every part
+	// except the last must be at least this large.
+	defaultChunkSize   = 5 * 1024 * 1024 // 5 MB
+	resumableUploadTTL = 24 * time.Hour
 )
 
 // InitResumableUploadResponse is returned when initiating a multipart upload.
 type InitResumableUploadResponse struct {
-	UploadID  uuid.UUID `json:"upload_id"`
-	MediaID   uuid.UUID `json:"media_id"`
-	ChunkSize int       `json:"chunk_size"`
-	ExpiresAt time.Time `json:"expires_at"`
+	UploadID   uuid.UUID `json:"upload_id"`
+	MediaID    uuid.UUID `json:"media_id"`
+	ChunkSize  int       `json:"chunk_size"`
+	TotalParts int       `json:"total_parts"`
+	ExpiresAt  time.Time `json:"expires_at"`
 }
 
-// InitResumableUpload creates a media asset record and a resumable upload session.
+// InitResumableUpload creates a media asset record, opens an object-store
+// multipart upload, and records a resumable upload session.
 func (s *Service) InitResumableUpload(ctx context.Context, userID uuid.UUID, fileType, mimeType string, totalBytes int64) (*InitResumableUploadResponse, error) {
 	if err := ValidateUpload(fileType, "general", mimeType, totalBytes); err != nil {
 		return nil, err
@@ -31,7 +37,13 @@ func (s *Service) InitResumableUpload(ctx context.Context, userID uuid.UUID, fil
 	mediaID := uuid.New()
 	objectKey := fmt.Sprintf("user/%s/%s/original", userID, mediaID)
 
-	// Create the media asset record in pending_upload state
+	// Open the multipart upload on the object store first — if this fails
+	// we never create the half-built media / session rows.
+	storageUploadID, err := s.blobStore.InitMultipartUpload(ctx, objectKey, mimeType)
+	if err != nil {
+		return nil, fmt.Errorf("open multipart upload: %w", err)
+	}
+
 	media := &postgres.MediaAsset{
 		ID:               mediaID,
 		UploaderID:       userID,
@@ -45,6 +57,7 @@ func (s *Service) InitResumableUpload(ctx context.Context, userID uuid.UUID, fil
 		CreatedAt:        time.Now(),
 	}
 	if err := s.pgStore.CreateMedia(ctx, media); err != nil {
+		_ = s.blobStore.AbortMultipartUpload(ctx, objectKey, storageUploadID)
 		return nil, fmt.Errorf("create media record: %w", err)
 	}
 
@@ -55,32 +68,42 @@ func (s *Service) InitResumableUpload(ctx context.Context, userID uuid.UUID, fil
 	}
 
 	expiresAt := time.Now().Add(resumableUploadTTL)
-
 	upload := &postgres.ResumableUpload{
-		MediaID:    mediaID,
-		UploaderID: userID,
-		TotalBytes: totalBytes,
-		ChunkSize:  chunkSize,
-		TotalParts: totalParts,
-		Status:     "initiated",
-		MimeType:   mimeType,
-		ObjectKey:  objectKey,
-		ExpiresAt:  expiresAt,
+		MediaID:         mediaID,
+		UploaderID:      userID,
+		TotalBytes:      totalBytes,
+		ChunkSize:       chunkSize,
+		TotalParts:      totalParts,
+		Status:          "initiated",
+		MimeType:        mimeType,
+		ObjectKey:       objectKey,
+		StorageUploadID: storageUploadID,
+		ExpiresAt:       expiresAt,
 	}
 	if err := s.pgStore.CreateResumableUpload(ctx, upload); err != nil {
+		_ = s.blobStore.AbortMultipartUpload(ctx, objectKey, storageUploadID)
 		return nil, fmt.Errorf("create resumable upload: %w", err)
 	}
 
 	return &InitResumableUploadResponse{
-		UploadID:  upload.UploadID,
-		MediaID:   mediaID,
-		ChunkSize: chunkSize,
-		ExpiresAt: expiresAt,
+		UploadID:   upload.UploadID,
+		MediaID:    mediaID,
+		ChunkSize:  chunkSize,
+		TotalParts: totalParts,
+		ExpiresAt:  expiresAt,
 	}, nil
 }
 
-// GetResumableUploadStatus returns the current state of a resumable upload session.
-func (s *Service) GetResumableUploadStatus(ctx context.Context, uploadID uuid.UUID, userID uuid.UUID) (*postgres.ResumableUpload, error) {
+// ResumableUploadStatus is the GET-status payload: the session plus the
+// part numbers already stored, so a resuming client can skip them.
+type ResumableUploadStatus struct {
+	*postgres.ResumableUpload
+	UploadedParts []int `json:"uploaded_parts"`
+}
+
+// GetResumableUploadStatus returns the current state of a resumable upload
+// session, including which parts have already landed.
+func (s *Service) GetResumableUploadStatus(ctx context.Context, uploadID, userID uuid.UUID) (*ResumableUploadStatus, error) {
 	upload, err := s.pgStore.GetResumableUpload(ctx, uploadID)
 	if err != nil {
 		return nil, fmt.Errorf("upload not found: %w", err)
@@ -88,21 +111,30 @@ func (s *Service) GetResumableUploadStatus(ctx context.Context, uploadID uuid.UU
 	if upload.UploaderID != userID {
 		return nil, fmt.Errorf("forbidden: you do not own this upload")
 	}
-	return upload, nil
+	parts, err := s.pgStore.ListUploadParts(ctx, uploadID)
+	if err != nil {
+		return nil, fmt.Errorf("list parts: %w", err)
+	}
+	nums := make([]int, len(parts))
+	for i, p := range parts {
+		nums[i] = p.PartNumber
+	}
+	return &ResumableUploadStatus{ResumableUpload: upload, UploadedParts: nums}, nil
 }
 
-// UploadChunkResponse is returned after a chunk is uploaded.
+// UploadChunkResponse is returned after a part is uploaded.
 type UploadChunkResponse struct {
 	UploadID      uuid.UUID `json:"upload_id"`
+	PartNumber    int       `json:"part_number"`
 	UploadedBytes int64     `json:"uploaded_bytes"`
 	TotalBytes    int64     `json:"total_bytes"`
-	IsComplete    bool      `json:"is_complete"`
+	AllPartsIn    bool      `json:"all_parts_in"`
 }
 
-// UploadChunk records that a chunk has been uploaded. In a real implementation,
-// the client uploads directly to S3/MinIO using presigned URLs for each part.
-// This method just tracks progress.
-func (s *Service) UploadChunk(ctx context.Context, uploadID uuid.UUID, userID uuid.UUID, chunkBytes int64) (*UploadChunkResponse, error) {
+// UploadPart streams one part's bytes to the object store and records its
+// ETag. Re-uploading a part number is safe — the ETag is overwritten and
+// progress recomputed from the recorded parts.
+func (s *Service) UploadPart(ctx context.Context, uploadID, userID uuid.UUID, partNumber int, data io.Reader, size int64) (*UploadChunkResponse, error) {
 	upload, err := s.pgStore.GetResumableUpload(ctx, uploadID)
 	if err != nil {
 		return nil, fmt.Errorf("upload not found: %w", err)
@@ -113,35 +145,50 @@ func (s *Service) UploadChunk(ctx context.Context, uploadID uuid.UUID, userID uu
 	if upload.Status == "completed" {
 		return nil, fmt.Errorf("upload already completed")
 	}
-	if time.Now().After(upload.ExpiresAt) {
+	if upload.Status == "expired" || time.Now().After(upload.ExpiresAt) {
 		return nil, fmt.Errorf("upload expired")
 	}
-
-	newTotal := upload.UploadedBytes + chunkBytes
-	if newTotal > upload.TotalBytes {
-		newTotal = upload.TotalBytes
+	if partNumber < 1 || partNumber > upload.TotalParts {
+		return nil, fmt.Errorf("part_number %d out of range (1..%d)", partNumber, upload.TotalParts)
+	}
+	if size <= 0 {
+		return nil, fmt.Errorf("empty part")
 	}
 
-	status := "uploading"
-	isComplete := newTotal >= upload.TotalBytes
-	if isComplete {
-		status = "completed"
+	part, err := s.blobStore.UploadPart(ctx, upload.ObjectKey, upload.StorageUploadID, partNumber, data, size)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.pgStore.RecordUploadPart(ctx, uploadID, partNumber, part.ETag, part.Size); err != nil {
+		return nil, fmt.Errorf("record part: %w", err)
 	}
 
-	if err := s.pgStore.UpdateResumableUploadProgress(ctx, uploadID, newTotal, status); err != nil {
+	// Recompute progress from the recorded parts so a re-uploaded part
+	// does not double-count.
+	parts, err := s.pgStore.ListUploadParts(ctx, uploadID)
+	if err != nil {
+		return nil, fmt.Errorf("list parts: %w", err)
+	}
+	var uploaded int64
+	for _, p := range parts {
+		uploaded += p.SizeBytes
+	}
+	if err := s.pgStore.UpdateResumableUploadProgress(ctx, uploadID, uploaded, "uploading"); err != nil {
 		return nil, fmt.Errorf("update progress: %w", err)
 	}
 
 	return &UploadChunkResponse{
 		UploadID:      uploadID,
-		UploadedBytes: newTotal,
+		PartNumber:    partNumber,
+		UploadedBytes: uploaded,
 		TotalBytes:    upload.TotalBytes,
-		IsComplete:    isComplete,
+		AllPartsIn:    len(parts) >= upload.TotalParts,
 	}, nil
 }
 
-// CompleteResumableUpload finalizes a resumable upload and triggers processing.
-func (s *Service) CompleteResumableUpload(ctx context.Context, uploadID uuid.UUID, userID uuid.UUID) (*postgres.MediaAsset, error) {
+// CompleteResumableUpload assembles the uploaded parts into the final
+// object, then runs the same confirm / processing flow as a simple upload.
+func (s *Service) CompleteResumableUpload(ctx context.Context, uploadID, userID uuid.UUID) (*postgres.MediaAsset, error) {
 	upload, err := s.pgStore.GetResumableUpload(ctx, uploadID)
 	if err != nil {
 		return nil, fmt.Errorf("upload not found: %w", err)
@@ -149,11 +196,32 @@ func (s *Service) CompleteResumableUpload(ctx context.Context, uploadID uuid.UUI
 	if upload.UploaderID != userID {
 		return nil, fmt.Errorf("forbidden")
 	}
-
-	if err := s.pgStore.CompleteResumableUpload(ctx, uploadID); err != nil {
-		return nil, fmt.Errorf("complete upload record: %w", err)
+	if upload.Status == "completed" {
+		// Idempotent — a retried complete just re-confirms.
+		return s.ConfirmUpload(ctx, upload.MediaID, userID)
 	}
 
-	// Trigger the same confirm flow as simple uploads
+	parts, err := s.pgStore.ListUploadParts(ctx, uploadID)
+	if err != nil {
+		return nil, fmt.Errorf("list parts: %w", err)
+	}
+	if len(parts) < upload.TotalParts {
+		return nil, fmt.Errorf("incomplete: %d of %d parts uploaded", len(parts), upload.TotalParts)
+	}
+
+	blobParts := make([]blob.MultipartPart, len(parts))
+	for i, p := range parts {
+		blobParts[i] = blob.MultipartPart{PartNumber: p.PartNumber, ETag: p.ETag, Size: p.SizeBytes}
+	}
+	if err := s.blobStore.CompleteMultipartUpload(ctx, upload.ObjectKey, upload.StorageUploadID, blobParts); err != nil {
+		return nil, err
+	}
+
+	if err := s.pgStore.CompleteResumableUpload(ctx, uploadID); err != nil {
+		return nil, fmt.Errorf("mark complete: %w", err)
+	}
+
+	// Same confirm flow as simple uploads — validates the object exists
+	// and triggers image processing / video transcode.
 	return s.ConfirmUpload(ctx, upload.MediaID, userID)
 }

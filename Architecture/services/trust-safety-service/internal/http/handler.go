@@ -76,6 +76,15 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		verification.GET("", h.AdminListVerificationRequests)
 		verification.PATCH("/:id", h.ReviewVerificationRequest)
 	}
+
+	// IT Rules 2021 grievance redressal.
+	grievances := r.Group("/v1/grievances")
+	{
+		grievances.POST("", h.FileGrievance)        // any user lodges a grievance
+		grievances.GET("", h.ListGrievances)        // ?mine=true: own; else officer queue
+		grievances.GET("/:id", h.GetGrievance)      // complainant or officer
+		grievances.PATCH("/:id", h.UpdateGrievance) // officer verdict
+	}
 }
 
 type FileReportRequest struct {

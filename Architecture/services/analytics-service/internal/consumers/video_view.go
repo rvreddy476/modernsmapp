@@ -100,15 +100,24 @@ func isVideoEvent(eventType string) bool {
 }
 
 func (c *VideoViewConsumer) processEvent(ctx context.Context, env *events.EventEnvelope) error {
+	// actorID is the authenticated viewer the gateway stamped onto the
+	// envelope (from the JWT's X-User-Id). Clients do not need to — and
+	// for unique-viewer integrity should not be trusted to — self-report
+	// the viewer in the event payload; resolveViewerID falls back to this.
+	actorID := ""
+	if env.ActorUserID != nil {
+		actorID = *env.ActorUserID
+	}
+
 	switch env.EventType {
 	case events.VideoPlayStart:
-		return c.handlePlayStart(ctx, env.Payload)
+		return c.handlePlayStart(ctx, env.Payload, actorID)
 	case events.VideoHeartbeat:
-		return c.handleHeartbeat(ctx, env.Payload)
+		return c.handleHeartbeat(ctx, env.Payload, actorID)
 	case events.VideoMilestone:
 		return c.handleMilestone(ctx, env.Payload)
 	case events.VideoPlayEnd:
-		return c.handlePlayEnd(ctx, env.Payload)
+		return c.handlePlayEnd(ctx, env.Payload, actorID)
 	case events.VideoFollowFromContent,
 		events.VideoNotInterested,
 		events.VideoReport,
@@ -118,14 +127,26 @@ func (c *VideoViewConsumer) processEvent(ctx context.Context, env *events.EventE
 	return nil
 }
 
-func (c *VideoViewConsumer) handlePlayStart(ctx context.Context, payload json.RawMessage) error {
+// resolveViewerID returns the viewer UUID, preferring the payload's
+// viewer_id but falling back to the authenticated actor (the X-User-Id
+// the gateway carries on the envelope) when the client left it blank.
+func resolveViewerID(payloadViewerID, actorID string) uuid.UUID {
+	id := payloadViewerID
+	if id == "" {
+		id = actorID
+	}
+	parsed, _ := uuid.Parse(id)
+	return parsed
+}
+
+func (c *VideoViewConsumer) handlePlayStart(ctx context.Context, payload json.RawMessage, actorID string) error {
 	var p events.VideoPlayStartPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return err
 	}
 
 	contentID, _ := uuid.Parse(p.ContentID)
-	viewerID, _ := uuid.Parse(p.ViewerID)
+	viewerID := resolveViewerID(p.ViewerID, actorID)
 
 	now := time.Now()
 	ws := &scylla.WatchSession{
@@ -146,14 +167,14 @@ func (c *VideoViewConsumer) handlePlayStart(ctx context.Context, payload json.Ra
 	return c.watch.UpsertWatchSession(ctx, ws)
 }
 
-func (c *VideoViewConsumer) handleHeartbeat(ctx context.Context, payload json.RawMessage) error {
+func (c *VideoViewConsumer) handleHeartbeat(ctx context.Context, payload json.RawMessage, actorID string) error {
 	var p events.VideoHeartbeatPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return err
 	}
 
 	contentID, _ := uuid.Parse(p.ContentID)
-	viewerID, _ := uuid.Parse(p.ViewerID)
+	viewerID := resolveViewerID(p.ViewerID, actorID)
 
 	// Update ScyllaDB session with latest watch state
 	ws, err := c.watch.GetWatchSession(ctx, contentID, p.SessionID)
@@ -209,14 +230,14 @@ func (c *VideoViewConsumer) handleMilestone(ctx context.Context, payload json.Ra
 	return nil
 }
 
-func (c *VideoViewConsumer) handlePlayEnd(ctx context.Context, payload json.RawMessage) error {
+func (c *VideoViewConsumer) handlePlayEnd(ctx context.Context, payload json.RawMessage, actorID string) error {
 	var p events.VideoPlayEndPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return err
 	}
 
 	contentID, _ := uuid.Parse(p.ContentID)
-	viewerID, _ := uuid.Parse(p.ViewerID)
+	viewerID := resolveViewerID(p.ViewerID, actorID)
 
 	// Check display view rules
 	isView := model.IsDisplayView(

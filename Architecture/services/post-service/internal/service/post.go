@@ -116,6 +116,7 @@ func (s *Service) SetScyllaSession(session *gocql.Session) {
 type PostDetail struct {
 	*postgres.Post
 	Counts         *scylla.Counts     `json:"counts"`
+	ViewCount      int64              `json:"view_count"`
 	ViewerReaction *string            `json:"viewer_reaction,omitempty"`
 	IsBookmarked   bool               `json:"is_bookmarked"`
 	RepostCount    int                `json:"repost_count"`
@@ -532,10 +533,27 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 			go s.producer.PublishSpamDetected(context.Background(), input.AuthorID, spamResult.Reason, spamResult.Score)
 		}
 	}
+
+	// reels/posttube items 2+3 — video publish gate: a video post is not
+	// publicly visible until its media is transcoded AND content-scanned.
+	// If the media is already ready, finalize the verdict now; otherwise
+	// hold it 'pending' and the MediaTranscodeConsumer flips it when
+	// transcode completes. The chunk-1 read-filters already hide every
+	// non-'approved' post, so no event-flow change is needed.
+	if reviewStatus == "approved" && isVideoContentType(p.ContentType) && videoMediaID != uuid.Nil {
+		reviewStatus = s.gateVideoReviewStatus(ctx, videoMediaID)
+	}
 	p.ReviewStatus = reviewStatus
 
 	if err := s.pgStore.CreatePost(ctx, p); err != nil {
 		return nil, err
+	}
+
+	// Record the auto-moderation verdict for video content (audit trail).
+	// Skipped while 'pending' — the transcode consumer records the
+	// terminal verdict when it finalizes the gate.
+	if isVideoContentType(p.ContentType) && reviewStatus != "pending" {
+		s.RecordVideoModeration(ctx, p.ID, reviewStatus, spamResult.Score)
 	}
 
 	// Persist @mentions to post_mentions table
@@ -672,6 +690,88 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	return p, nil
 }
 
+// getViewCount reads the display view counter analytics-service maintains
+// in shared Redis (post:views:{id} hash, "display" field). Best-effort:
+// returns 0 on any miss / Redis error.
+func (s *Service) getViewCount(ctx context.Context, postID uuid.UUID) int64 {
+	if s.rdb == nil {
+		return 0
+	}
+	n, err := s.rdb.HGet(ctx, "post:views:"+postID.String(), "display").Int64()
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// isVideoContentType reports whether a post content_type carries video
+// (short-form reel / flick or long-form). Used to scope auto-moderation.
+func isVideoContentType(ct string) bool {
+	switch ct {
+	case "reel", "flick", "long_video", "video":
+		return true
+	}
+	return false
+}
+
+// gateVideoReviewStatus decides a fresh video post's review_status from
+// its media's processing + moderation state:
+//   - media still processing  → "pending" (transcode consumer flips it)
+//   - ready + scan rejected    → "rejected"
+//   - ready + scan clean       → "approved"
+//
+// On a media-service error it fails safe to "pending" — the post stays
+// hidden rather than risking an unprocessed or unscanned video going live.
+func (s *Service) gateVideoReviewStatus(ctx context.Context, mediaID uuid.UUID) string {
+	procStatus, modStatus, err := s.getMediaModeration(ctx, mediaID)
+	if err != nil {
+		log.Printf("Warning: media moderation check failed for %s, holding pending: %v", mediaID, err)
+		return "pending"
+	}
+	if procStatus != "ready" {
+		return "pending"
+	}
+	if modStatus == "rejected" {
+		return "rejected"
+	}
+	return "approved"
+}
+
+// getMediaModeration fetches a media asset's processing_status and
+// moderation_status from media-service (GET /v1/media/:id).
+func (s *Service) getMediaModeration(ctx context.Context, mediaID uuid.UUID) (processingStatus, moderationStatus string, err error) {
+	base := os.Getenv("MEDIA_SERVICE_URL")
+	if base == "" {
+		base = "http://media-service:8087"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		strings.TrimRight(base, "/")+"/v1/media/"+mediaID.String(), nil)
+	if err != nil {
+		return "", "", err
+	}
+	if s.internalServiceKey != "" {
+		req.Header.Set("X-Internal-Service-Key", s.internalServiceKey)
+	}
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return "", "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", "", fmt.Errorf("media-service returned %d", resp.StatusCode)
+	}
+	var env struct {
+		Data struct {
+			ProcessingStatus string `json:"processing_status"`
+			ModerationStatus string `json:"moderation_status"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		return "", "", err
+	}
+	return env.Data.ProcessingStatus, env.Data.ModerationStatus, nil
+}
+
 func (s *Service) GetPost(ctx context.Context, id uuid.UUID, viewerID *uuid.UUID) (*PostDetail, error) {
 	// Tier 1b: cached read. Falls through to pgStore on miss; nil
 	// rdb is supported.
@@ -681,6 +781,16 @@ func (s *Service) GetPost(ctx context.Context, id uuid.UUID, viewerID *uuid.UUID
 	}
 	if p == nil {
 		return nil, nil
+	}
+
+	// reels/posttube item 5: a post the spam detector or auto-moderation
+	// flagged/rejected — or one still pending a verdict — must not be
+	// reachable by direct link. Feeds already filter on review_status;
+	// this closes the GetPost hole. The author still sees their own.
+	if p.ReviewStatus != "" && p.ReviewStatus != "approved" {
+		if viewerID == nil || *viewerID != p.AuthorID {
+			return nil, nil
+		}
 	}
 
 	counts, err := s.scyllaStore.GetCounts(ctx, id)
@@ -702,6 +812,7 @@ func (s *Service) GetPost(ctx context.Context, id uuid.UUID, viewerID *uuid.UUID
 	}
 
 	detail := &PostDetail{Post: p, Counts: counts}
+	detail.ViewCount = s.getViewCount(ctx, id)
 
 	// Repost count from PG
 	repostCount, _ := s.pgStore.GetRepostCount(ctx, id)
@@ -729,9 +840,12 @@ func (s *Service) GetPost(ctx context.Context, id uuid.UUID, viewerID *uuid.UUID
 	return detail, nil
 }
 
-// GetPostsByAuthor returns paginated posts by a specific author.
-func (s *Service) GetPostsByAuthor(ctx context.Context, authorID uuid.UUID, contentType string, limit int, cursor string) ([]PostDetail, string, error) {
-	posts, nextCursor, err := s.pgStore.GetPostsByAuthor(ctx, authorID, contentType, limit, cursor)
+// GetPostsByAuthor returns paginated posts by a specific author. The author
+// sees their own posts regardless of review status (a flagged reel still
+// shows in their own profile grid); every other viewer sees only approved.
+func (s *Service) GetPostsByAuthor(ctx context.Context, authorID uuid.UUID, contentType string, limit int, cursor string, viewerID *uuid.UUID) ([]PostDetail, string, error) {
+	includeNonApproved := viewerID != nil && *viewerID == authorID
+	posts, nextCursor, err := s.pgStore.GetPostsByAuthor(ctx, authorID, contentType, limit, cursor, includeNonApproved)
 	if err != nil {
 		return nil, "", err
 	}
@@ -796,6 +910,16 @@ func (s *Service) GetPostsByIDs(ctx context.Context, ids []uuid.UUID, viewerID *
 		// gated by the recipient-set the fanout produced; the broader
 		// fix (visibility-aware fanout) is tracked separately.
 		if strings.EqualFold(post.Visibility, "private") {
+			if viewerID == nil || *viewerID != post.AuthorID {
+				continue
+			}
+		}
+
+		// reels/posttube item 5: hide non-approved posts (flagged /
+		// rejected / pending) from everyone but the author — mirrors the
+		// GetPost gate so feed hydration never surfaces moderated-out
+		// content even when fanout already wrote a recipient timeline row.
+		if post.ReviewStatus != "" && !strings.EqualFold(post.ReviewStatus, "approved") {
 			if viewerID == nil || *viewerID != post.AuthorID {
 				continue
 			}
