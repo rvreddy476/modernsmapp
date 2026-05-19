@@ -726,7 +726,7 @@ class _InvitePickerSheetState extends ConsumerState<_InvitePickerSheet> {
                                 return ListTile(
                                   leading: _UserAvatar(user: user, radius: 20),
                                   title: Text(
-                                    user.displayName.isEmpty ? 'PostBook user' : user.displayName,
+                                    user.displayName.isEmpty ? 'VChat user' : user.displayName,
                                     style: AppTextStyles.body,
                                   ),
                                   subtitle: Text(
@@ -855,7 +855,7 @@ class _OpinionItemCard extends StatelessWidget {
                       ? 'Anonymous'
                       : (item.responderDisplayName?.trim().isNotEmpty ?? false)
                           ? item.responderDisplayName!
-                          : 'PostBook user',
+                          : 'VChat user',
                   style: AppTextStyles.labelSmall,
                 ),
               ),

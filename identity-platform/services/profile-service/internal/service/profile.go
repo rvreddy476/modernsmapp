@@ -98,6 +98,12 @@ func (s *Service) ListProfiles(ctx context.Context, limit, offset int) ([]store.
 	return s.store.ListProfiles(ctx, limit, offset)
 }
 
+// ListProfilesChangedSince returns profiles updated at or after `since`,
+// oldest-first — the feed for downstream projection reconcile jobs.
+func (s *Service) ListProfilesChangedSince(ctx context.Context, since time.Time, limit int) ([]store.Profile, error) {
+	return s.store.ListProfilesChangedSince(ctx, since, limit)
+}
+
 // UpdateProfile updates profile and invalidates cache.
 func (s *Service) UpdateProfile(ctx context.Context, userID uuid.UUID, params store.UpdateProfileParams) (*store.Profile, error) {
 	// Strip leading "@" from username — it's a display convention, not part of the stored value.
@@ -331,115 +337,7 @@ func (s *Service) UnfollowUser(ctx context.Context, followerID, followingID uuid
 	return nil
 }
 
-// ---------------------------------------------------------------
-// Friendships
-// ---------------------------------------------------------------
-
-func (s *Service) SendFriendRequest(ctx context.Context, requesterID, addresseeID uuid.UUID) (*store.Friendship, error) {
-	if requesterID == addresseeID {
-		return nil, errors.New("cannot send friend request to yourself")
-	}
-
-	// Check if either user has blocked the other
-	blocked, err := s.store.GetBlockBidirectional(ctx, requesterID, addresseeID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to check block status: %w", err)
-	}
-	if blocked {
-		return nil, errors.New("cannot send friend request to this user")
-	}
-
-	// Check for existing friendship/request in either direction
-	existing, err := s.store.GetFriendshipBetween(ctx, requesterID, addresseeID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to check existing friendship: %w", err)
-	}
-	if existing != nil {
-		switch existing.Status {
-		case "accepted":
-			return nil, errors.New("already connected")
-		case "pending":
-			if existing.RequesterID == requesterID {
-				return nil, errors.New("friend request already sent")
-			}
-			// Reverse request exists — auto-accept
-			resp, err := s.RespondToFriendRequest(ctx, requesterID, existing.ID, true)
-			if err != nil {
-				return nil, fmt.Errorf("failed to auto-accept reverse request: %w", err)
-			}
-			return resp, nil
-		case "rejected":
-			// Allow resending by deleting the old rejected row and creating fresh
-			if err := s.store.DeleteFriendshipByID(ctx, existing.ID); err != nil {
-				return nil, fmt.Errorf("failed to clear rejected request: %w", err)
-			}
-		}
-	}
-
-	fr, err := s.store.CreateFriendRequest(ctx, requesterID, addresseeID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Publish event (best-effort)
-	if err := s.producer.PublishFriendRequestSent(ctx, requesterID, addresseeID); err != nil {
-		s.log.Warn("failed to publish friend request sent event", "err", err, "requester_id", requesterID, "addressee_id", addresseeID)
-	}
-
-	return fr, nil
-}
-
-func (s *Service) RespondToFriendRequest(ctx context.Context, userID, friendshipID uuid.UUID, accept bool) (*store.Friendship, error) {
-	fr, err := s.store.GetFriendship(ctx, friendshipID)
-	if err != nil {
-		return nil, err
-	}
-	if fr == nil {
-		return nil, errors.New("friend request not found")
-	}
-	if fr.AddresseeID != userID {
-		return nil, errors.New("not authorized to respond to this request")
-	}
-	if fr.Status != "pending" {
-		return nil, errors.New("friend request already responded to")
-	}
-
-	status := "rejected"
-	if accept {
-		status = "accepted"
-	}
-
-	updated, err := s.store.UpdateFriendshipStatus(ctx, friendshipID, status)
-	if err != nil {
-		return nil, err
-	}
-
-	if accept {
-		if err := s.store.IncrementFriendCount(ctx, fr.RequesterID); err != nil {
-			s.log.Warn("failed to increment friend_count", "err", err, "user_id", fr.RequesterID)
-		}
-		if err := s.store.IncrementFriendCount(ctx, fr.AddresseeID); err != nil {
-			s.log.Warn("failed to increment friend_count", "err", err, "user_id", fr.AddresseeID)
-		}
-		s.rdb.Del(ctx, fmt.Sprintf("profile:card:%s", fr.RequesterID))
-		s.rdb.Del(ctx, fmt.Sprintf("profile:card:%s", fr.AddresseeID))
-
-		// Update Redis circle sets
-		s.updateCircleSetsAdd(ctx, fr.RequesterID, fr.AddresseeID)
-
-		// Publish event (best-effort)
-		if err := s.producer.PublishFriendRequestAccepted(ctx, fr.RequesterID, fr.AddresseeID); err != nil {
-			s.log.Warn("failed to publish friend request accepted event", "err", err, "requester_id", fr.RequesterID, "addressee_id", fr.AddresseeID)
-		}
-	} else {
-		// Publish event (best-effort)
-		if err := s.producer.PublishFriendRequestRejected(ctx, fr.RequesterID, fr.AddresseeID); err != nil {
-			s.log.Warn("failed to publish friend request rejected event", "err", err, "requester_id", fr.RequesterID, "addressee_id", fr.AddresseeID)
-		}
-	}
-
-	return updated, nil
-}
+// Friend system retired — see graph-service connections; profile.friendships kept dormant for backfill
 
 // ---------------------------------------------------------------
 // Social Lists
@@ -455,47 +353,7 @@ func (s *Service) ListFollowing(ctx context.Context, userID uuid.UUID, limit, of
 	return s.store.ListFollowing(ctx, userID, limit, offset)
 }
 
-// ListFriends returns accepted friends for the given userID.
-func (s *Service) ListFriends(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.FriendEntry, int64, error) {
-	return s.store.ListFriends(ctx, userID, limit, offset)
-}
-
-// ListFriendRequests returns pending incoming friend requests for the given userID.
-func (s *Service) ListFriendRequests(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.FriendRequestEntry, int64, error) {
-	return s.store.ListFriendRequests(ctx, userID, limit, offset)
-}
-
-// ListSentFriendRequests returns pending outgoing friend requests sent by the given userID.
-func (s *Service) ListSentFriendRequests(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.FriendRequestEntry, int64, error) {
-	return s.store.ListSentFriendRequests(ctx, userID, limit, offset)
-}
-
-// CancelFriendRequest cancels a pending outgoing friend request.
-func (s *Service) CancelFriendRequest(ctx context.Context, requesterID, friendshipID uuid.UUID) error {
-	if err := s.store.CancelFriendRequest(ctx, requesterID, friendshipID); err != nil {
-		return fmt.Errorf("failed to cancel friend request: %w", err)
-	}
-	s.rdb.Del(ctx, fmt.Sprintf("profile:card:%s", requesterID))
-	return nil
-}
-
-// RemoveFriend removes an accepted friendship and decrements counts.
-func (s *Service) RemoveFriend(ctx context.Context, userID, friendID uuid.UUID) error {
-	if userID == friendID {
-		return errors.New("cannot remove yourself")
-	}
-	if err := s.store.DeleteFriendship(ctx, userID, friendID); err != nil {
-		return fmt.Errorf("failed to remove friend: %w", err)
-	}
-	// Invalidate caches
-	s.rdb.Del(ctx, fmt.Sprintf("profile:card:%s", userID))
-	s.rdb.Del(ctx, fmt.Sprintf("profile:card:%s", friendID))
-
-	// Update Redis circle sets
-	s.updateCircleSetsRemove(ctx, userID, friendID)
-
-	return nil
-}
+// Friend system retired — see graph-service connections; profile.friendships kept dormant for backfill
 
 // ListBlocks returns users blocked by the given userID.
 func (s *Service) ListBlocks(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.Block, int64, error) {
@@ -506,7 +364,7 @@ func (s *Service) ListBlocks(ctx context.Context, userID uuid.UUID, limit, offse
 // Block / Unblock
 // ---------------------------------------------------------------
 
-// BlockUser creates a block, auto-unfollows in both directions, and rejects pending friend requests.
+// BlockUser creates a block and auto-unfollows in both directions.
 func (s *Service) BlockUser(ctx context.Context, blockerID, blockedID uuid.UUID) error {
 	if blockerID == blockedID {
 		return errors.New("cannot block yourself")
@@ -546,19 +404,15 @@ func (s *Service) BlockUser(ctx context.Context, blockerID, blockedID uuid.UUID)
 		}
 	}
 
-	// Reject any pending friend requests in both directions
-	if err := s.store.RejectFriendRequestsBetween(ctx, blockerID, blockedID); err != nil {
-		s.log.Warn("failed to reject friend requests between users", "err", err, "blocker_id", blockerID, "blocked_id", blockedID)
-	}
+	// Friend system retired — see graph-service connections; profile.friendships kept dormant for backfill
 
 	// Invalidate caches
 	s.rdb.Del(ctx, fmt.Sprintf("profile:card:%s", blockerID))
 	s.rdb.Del(ctx, fmt.Sprintf("profile:card:%s", blockedID))
 
-	// Clean up Redis follow and circle sets
+	// Clean up Redis follow sets
 	s.updateFollowSetsRemove(ctx, blockerID, blockedID)
 	s.updateFollowSetsRemove(ctx, blockedID, blockerID)
-	s.updateCircleSetsRemove(ctx, blockerID, blockedID)
 
 	// Publish event (best-effort)
 	if err := s.producer.PublishUserBlocked(ctx, blockerID, blockedID); err != nil {
@@ -619,29 +473,7 @@ func (s *Service) updateFollowSetsRemove(ctx context.Context, followerID, follow
 	}()
 }
 
-func (s *Service) updateCircleSetsAdd(ctx context.Context, userA, userB uuid.UUID) {
-	go func() {
-		bgCtx := context.Background()
-		if err := s.rdb.SAdd(bgCtx, fmt.Sprintf("circle:%s", userA), userB.String()).Err(); err != nil {
-			s.log.Warn("failed to SADD circle set", "err", err)
-		}
-		if err := s.rdb.SAdd(bgCtx, fmt.Sprintf("circle:%s", userB), userA.String()).Err(); err != nil {
-			s.log.Warn("failed to SADD circle set", "err", err)
-		}
-	}()
-}
-
-func (s *Service) updateCircleSetsRemove(ctx context.Context, userA, userB uuid.UUID) {
-	go func() {
-		bgCtx := context.Background()
-		if err := s.rdb.SRem(bgCtx, fmt.Sprintf("circle:%s", userA), userB.String()).Err(); err != nil {
-			s.log.Warn("failed to SREM circle set", "err", err)
-		}
-		if err := s.rdb.SRem(bgCtx, fmt.Sprintf("circle:%s", userB), userA.String()).Err(); err != nil {
-			s.log.Warn("failed to SREM circle set", "err", err)
-		}
-	}()
-}
+// Friend system retired — see graph-service connections; profile.friendships kept dormant for backfill
 
 // ---------------------------------------------------------------
 // Module Profiles

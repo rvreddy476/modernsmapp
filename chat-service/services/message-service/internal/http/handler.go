@@ -181,6 +181,9 @@ func (h *Handler) CreateDirectConversation(c *gin.Context) {
 		if handled := writeIdempotencyError(c, err); handled {
 			return
 		}
+		if handled := writeMessagingError(c, err); handled {
+			return
+		}
 		h.log.Error("failed to create direct conversation", "err", err, "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
 		return
@@ -418,6 +421,9 @@ func (h *Handler) SendMessage(c *gin.Context) {
 	msg, err := h.svc.SendMessage(c.Request.Context(), userID, convID, req.Type, req.Text, req.MediaID, idempotencyKey)
 	if err != nil {
 		if handled := writeIdempotencyError(c, err); handled {
+			return
+		}
+		if handled := writeMessagingError(c, err); handled {
 			return
 		}
 		h.log.Error("failed to send message", "err", err, "request_id", RequestIDFromContext(c))
@@ -738,6 +744,27 @@ func writeIdempotencyError(c *gin.Context, err error) bool {
 		return true
 	case errors.Is(err, service.ErrIdempotencyInProgress):
 		api.Error(c.Writer, http.StatusConflict, "IDEMPOTENCY_IN_PROGRESS", err.Error(), nil, nil)
+		return true
+	default:
+		return false
+	}
+}
+
+// writeMessagingError maps DM-gating / message-request errors (spec §4, §9.5)
+// to their HTTP statuses. Returns true when the error was handled.
+func writeMessagingError(c *gin.Context, err error) bool {
+	switch {
+	case errors.Is(err, service.ErrMessagingNotAllowed):
+		api.Error(c.Writer, http.StatusForbidden, "MESSAGING_NOT_ALLOWED", err.Error(), nil, nil)
+		return true
+	case errors.Is(err, service.ErrRequestFirstMessageInvalid):
+		api.Error(c.Writer, http.StatusUnprocessableEntity, "INVALID_REQUEST_MESSAGE", err.Error(), nil, nil)
+		return true
+	case errors.Is(err, service.ErrAwaitingRequestAcceptance):
+		api.Error(c.Writer, http.StatusConflict, "AWAITING_REQUEST_ACCEPTANCE", err.Error(), nil, nil)
+		return true
+	case errors.Is(err, service.ErrRateLimited):
+		api.Error(c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", err.Error(), nil, nil)
 		return true
 	default:
 		return false

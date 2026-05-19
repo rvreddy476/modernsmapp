@@ -29,6 +29,7 @@ func (h *Handler) WithInternalKey(key string) *Handler {
 
 type ProfileService interface {
 	ListProfiles(ctx context.Context, limit, offset int) ([]store.Profile, int64, error)
+	ListProfilesChangedSince(ctx context.Context, since time.Time, limit int) ([]store.Profile, error)
 	GetProfile(ctx context.Context, userID uuid.UUID) (*store.Profile, error)
 	GetProfileByUsername(ctx context.Context, username string) (*store.Profile, error)
 	UpdateProfile(ctx context.Context, userID uuid.UUID, params store.UpdateProfileParams) (*store.Profile, error)
@@ -52,19 +53,11 @@ type ProfileService interface {
 	// Follow
 	FollowUser(ctx context.Context, followerID, followingID uuid.UUID) (*store.Follow, error)
 	UnfollowUser(ctx context.Context, followerID, followingID uuid.UUID) error
-	// Friend
-	SendFriendRequest(ctx context.Context, requesterID, addresseeID uuid.UUID) (*store.Friendship, error)
-	RespondToFriendRequest(ctx context.Context, userID, friendshipID uuid.UUID, accept bool) (*store.Friendship, error)
+	// Friend system retired — see graph-service connections; profile.friendships kept dormant for backfill
 	// Social lists
 	ListFollowers(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.FollowerEntry, int64, error)
 	ListFollowing(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.FollowerEntry, int64, error)
-	ListFriends(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.FriendEntry, int64, error)
-	ListFriendRequests(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.FriendRequestEntry, int64, error)
-	ListSentFriendRequests(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.FriendRequestEntry, int64, error)
 	ListBlocks(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.Block, int64, error)
-	// Circle management
-	CancelFriendRequest(ctx context.Context, requesterID, friendshipID uuid.UUID) error
-	RemoveFriend(ctx context.Context, userID, friendID uuid.UUID) error
 	// Block
 	BlockUser(ctx context.Context, blockerID, blockedID uuid.UUID) error
 	UnblockUser(ctx context.Context, blockerID, blockedID uuid.UUID) error
@@ -101,6 +94,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, auth gin.HandlerFunc, csrf gin.H
 	{
 		v1.GET("/health", h.Health)
 		v1.GET("/discover", h.DiscoverProfiles)
+		v1.GET("/changes", h.ListProfileChanges)
 		v1.GET("/by-username/:username", h.GetProfileByUsername)
 		v1.POST("/batch", h.GetProfilesBatch)
 		v1.GET("/:userId", h.GetProfile)
@@ -110,7 +104,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, auth gin.HandlerFunc, csrf gin.H
 		// Public social lists
 		v1.GET("/:userId/followers", h.ListFollowers)
 		v1.GET("/:userId/following", h.ListFollowing)
-		v1.GET("/:userId/friends", h.ListFriends)
+		// Friend system retired — see graph-service connections; profile.friendships kept dormant for backfill
 		// Relationship (public GET — viewer ID from X-User-Id header, set by gateway or forwarded by BFF)
 		v1.GET("/:userId/relationship", h.GetRelationship)
 		// Profile Stats
@@ -138,16 +132,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, auth gin.HandlerFunc, csrf gin.H
 		// Follow
 		protected.POST("/:username/follow", csrf, h.FollowUser)
 		protected.DELETE("/:username/follow", csrf, h.UnfollowUser)
-		// Friend requests
-		protected.POST("/:username/friend-request", csrf, h.SendFriendRequest)
-		protected.PATCH("/friend-requests/:id", csrf, h.RespondToFriendRequest)
-		protected.DELETE("/friend-requests/:id", csrf, h.CancelFriendRequest)
+		// Friend system retired — see graph-service connections; profile.friendships kept dormant for backfill
 		// Social lists (own data)
-		protected.GET("/me/friend-requests", h.ListFriendRequests)
-		protected.GET("/me/sent-friend-requests", h.ListSentFriendRequests)
 		protected.GET("/me/blocks", h.ListBlocks)
-		// Circle management
-		protected.DELETE("/:username/friend", csrf, h.RemoveFriend)
 		// Block / Unblock
 		protected.POST("/:username/block", csrf, h.BlockUser)
 		protected.DELETE("/:username/block", csrf, h.UnblockUser)
@@ -206,6 +193,57 @@ func (h *Handler) DiscoverProfiles(c *gin.Context) {
 			Total:   total,
 			HasNext: int64(offset+limit) < total,
 		},
+	}, nil)
+}
+
+// ListProfileChanges feeds downstream projection reconcile jobs (e.g.
+// user-service rebuilding app.users). Returns profiles updated at or after
+// ?since= (RFC3339; omitted = epoch = full snapshot), oldest-change-first,
+// plus next_since — the cursor the caller passes back to continue paging.
+func (h *Handler) ListProfileChanges(c *gin.Context) {
+	var since time.Time
+	if raw := c.Query("since"); raw != "" {
+		t, err := time.Parse(time.RFC3339Nano, raw)
+		if err != nil {
+			api.Error(c.Writer, http.StatusBadRequest, "INVALID_SINCE", "since must be RFC3339", nil, nil)
+			return
+		}
+		since = t
+	}
+
+	limit := 200
+	if raw := c.Query("limit"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if limit > 500 {
+		limit = 500
+	}
+
+	profiles, err := h.svc.ListProfilesChangedSince(c.Request.Context(), since, limit)
+	if err != nil {
+		h.log.Error("failed to list profile changes", "err", err, "request_id", RequestIDFromContext(c))
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
+		return
+	}
+	if profiles == nil {
+		profiles = []store.Profile{}
+	}
+
+	// next_since = max updated_at in this page; a short page means caught up.
+	next := since
+	for i := range profiles {
+		if profiles[i].UpdatedAt.After(next) {
+			next = profiles[i].UpdatedAt
+		}
+	}
+
+	api.JSON(c.Writer, http.StatusOK, gin.H{
+		"items":       profiles,
+		"count":       len(profiles),
+		"next_since":  next,
+		"server_time": time.Now().UTC(),
 	}, nil)
 }
 
@@ -811,71 +849,7 @@ func (h *Handler) UnfollowUser(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, gin.H{"status": "ok"}, nil)
 }
 
-// ---------------------------------------------------------------
-// Friend Requests
-// ---------------------------------------------------------------
-
-func (h *Handler) SendFriendRequest(c *gin.Context) {
-	requesterID, err := parseUserHeader(c)
-	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
-		return
-	}
-
-	identifier := c.Param("username")
-	target, err := h.resolveTargetUser(c.Request.Context(), identifier)
-	if err != nil {
-		h.log.Error("failed to look up user", "err", err, "identifier", identifier, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
-		return
-	}
-	if target == nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "User not found", nil, nil)
-		return
-	}
-
-	fr, err := h.svc.SendFriendRequest(c.Request.Context(), requesterID, target.UserID)
-	if err != nil {
-		h.log.Error("failed to send friend request", "err", err, "requester_id", requesterID, "addressee_id", target.UserID, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "FRIEND_REQUEST_FAILED", err.Error(), nil, nil)
-		return
-	}
-
-	api.JSON(c.Writer, http.StatusCreated, fr, nil)
-}
-
-type RespondFriendRequestBody struct {
-	Accept bool `json:"accept"`
-}
-
-func (h *Handler) RespondToFriendRequest(c *gin.Context) {
-	userID, err := parseUserHeader(c)
-	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
-		return
-	}
-
-	friendshipID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid friendship ID", nil, nil)
-		return
-	}
-
-	var req RespondFriendRequestBody
-	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
-		return
-	}
-
-	fr, err := h.svc.RespondToFriendRequest(c.Request.Context(), userID, friendshipID, req.Accept)
-	if err != nil {
-		h.log.Error("failed to respond to friend request", "err", err, "user_id", userID, "friendship_id", friendshipID, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "FRIEND_REQUEST_FAILED", err.Error(), nil, nil)
-		return
-	}
-
-	api.JSON(c.Writer, http.StatusOK, fr, nil)
-}
+// Friend system retired — see graph-service connections; profile.friendships kept dormant for backfill
 
 // ---------------------------------------------------------------
 // Social Lists
@@ -973,148 +947,7 @@ func (h *Handler) ListFollowing(c *gin.Context) {
 	}, nil)
 }
 
-func (h *Handler) ListFriends(c *gin.Context) {
-	userID, err := uuid.Parse(c.Param("userId"))
-	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil, nil)
-		return
-	}
-
-	limit, offset := parsePagination(c)
-
-	entries, total, err := h.svc.ListFriends(c.Request.Context(), userID, limit, offset)
-	if err != nil {
-		h.log.Error("failed to list friends", "err", err, "user_id", userID, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
-		return
-	}
-
-	if entries == nil {
-		entries = []store.FriendEntry{}
-	}
-
-	api.JSON(c.Writer, http.StatusOK, gin.H{
-		"items": entries,
-		"meta": paginationMeta{
-			Limit:   limit,
-			Offset:  offset,
-			Total:   total,
-			HasNext: int64(offset+limit) < total,
-		},
-	}, nil)
-}
-
-func (h *Handler) ListFriendRequests(c *gin.Context) {
-	userID, err := parseUserHeader(c)
-	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
-		return
-	}
-
-	limit, offset := parsePagination(c)
-
-	requests, total, err := h.svc.ListFriendRequests(c.Request.Context(), userID, limit, offset)
-	if err != nil {
-		h.log.Error("failed to list friend requests", "err", err, "user_id", userID, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
-		return
-	}
-
-	if requests == nil {
-		requests = []store.FriendRequestEntry{}
-	}
-
-	api.JSON(c.Writer, http.StatusOK, gin.H{
-		"items": requests,
-		"meta": paginationMeta{
-			Limit:   limit,
-			Offset:  offset,
-			Total:   total,
-			HasNext: int64(offset+limit) < total,
-		},
-	}, nil)
-}
-
-func (h *Handler) ListSentFriendRequests(c *gin.Context) {
-	userID, err := parseUserHeader(c)
-	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
-		return
-	}
-
-	limit, offset := parsePagination(c)
-
-	requests, total, err := h.svc.ListSentFriendRequests(c.Request.Context(), userID, limit, offset)
-	if err != nil {
-		h.log.Error("failed to list sent friend requests", "err", err, "user_id", userID, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
-		return
-	}
-
-	if requests == nil {
-		requests = []store.FriendRequestEntry{}
-	}
-
-	api.JSON(c.Writer, http.StatusOK, gin.H{
-		"items": requests,
-		"meta": paginationMeta{
-			Limit:   limit,
-			Offset:  offset,
-			Total:   total,
-			HasNext: int64(offset+limit) < total,
-		},
-	}, nil)
-}
-
-func (h *Handler) CancelFriendRequest(c *gin.Context) {
-	userID, err := parseUserHeader(c)
-	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
-		return
-	}
-
-	friendshipID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid friendship ID", nil, nil)
-		return
-	}
-
-	if err := h.svc.CancelFriendRequest(c.Request.Context(), userID, friendshipID); err != nil {
-		h.log.Error("failed to cancel friend request", "err", err, "user_id", userID, "friendship_id", friendshipID, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "CANCEL_FAILED", err.Error(), nil, nil)
-		return
-	}
-
-	api.JSON(c.Writer, http.StatusOK, gin.H{"status": "ok"}, nil)
-}
-
-func (h *Handler) RemoveFriend(c *gin.Context) {
-	userID, err := parseUserHeader(c)
-	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
-		return
-	}
-
-	identifier := c.Param("username")
-	target, err := h.resolveTargetUser(c.Request.Context(), identifier)
-	if err != nil {
-		h.log.Error("failed to look up user", "err", err, "identifier", identifier, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
-		return
-	}
-	if target == nil {
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "User not found", nil, nil)
-		return
-	}
-
-	if err := h.svc.RemoveFriend(c.Request.Context(), userID, target.UserID); err != nil {
-		h.log.Error("failed to remove friend", "err", err, "user_id", userID, "friend_id", target.UserID, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "REMOVE_FAILED", err.Error(), nil, nil)
-		return
-	}
-
-	api.JSON(c.Writer, http.StatusOK, gin.H{"status": "ok"}, nil)
-}
+// Friend system retired — see graph-service connections; profile.friendships kept dormant for backfill
 
 func (h *Handler) ListBlocks(c *gin.Context) {
 	userID, err := parseUserHeader(c)

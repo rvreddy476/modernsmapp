@@ -119,7 +119,7 @@ class _ServiceAppShellState extends ConsumerState<ServiceAppShell> {
                   ),
                   if (widget.app.isVerified)
                     Text(
-                      'Verified by AtPost',
+                      'Verified by VChat',
                       style: AppTextStyles.labelTiny.copyWith(
                         color: AppColors.posttubePrimary,
                       ),

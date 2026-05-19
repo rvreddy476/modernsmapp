@@ -111,7 +111,7 @@ class _ExploreBottomSheetState extends ConsumerState<_ExploreBottomSheet> {
                     Text('Explore', style: AppTextStyles.h1),
                     const SizedBox(height: 2),
                     Text(
-                      'Everything inside AtPost',
+                      'Everything inside VChat',
                       style: AppTextStyles.body
                           .copyWith(color: AppColors.textTertiary),
                     ),

@@ -67,3 +67,52 @@ func (c *Client) GetFollowers(ctx context.Context, userID uuid.UUID, limit, offs
 	}
 	return out, nil
 }
+
+// GetFilteredConnectionRequestSenders returns the set of sender IDs whose
+// connection requests to `receiverID` were auto-filtered (hidden) by
+// trust-safety-service. Used by the friend-request notification path
+// (P1.4b) to suppress the push for abusive requests.
+//
+// The endpoint authorizes via X-User-Id (the recipient) plus the internal
+// service key. Response is the standard envelope whose `data` is an array
+// of connection-request objects, each carrying a `sender_id`.
+//
+// Safe on a nil receiver — returns (nil, nil).
+func (c *Client) GetFilteredConnectionRequestSenders(ctx context.Context, receiverID uuid.UUID) (map[uuid.UUID]struct{}, error) {
+	if c == nil || c.baseURL == "" {
+		return nil, nil
+	}
+	url := fmt.Sprintf("%s/v1/graph/connection-requests/filtered", c.baseURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-User-Id", receiverID.String())
+	if c.internalKey != "" {
+		req.Header.Set("X-Internal-Service-Key", c.internalKey)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("graph filtered connection-requests: status %d", resp.StatusCode)
+	}
+	// Envelope: {"data": [{"sender_id": "uuid", ...}, ...]}
+	var env struct {
+		Data []struct {
+			SenderID string `json:"sender_id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		return nil, err
+	}
+	out := make(map[uuid.UUID]struct{}, len(env.Data))
+	for _, r := range env.Data {
+		if id, err := uuid.Parse(r.SenderID); err == nil {
+			out[id] = struct{}{}
+		}
+	}
+	return out, nil
+}

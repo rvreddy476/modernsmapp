@@ -179,6 +179,21 @@ func main() {
 	go channelConsumer.Start(ctx)
 	defer channelConsumer.Close()
 
+	// 11c. QA events live on a dedicated topic — reuse the main consumer
+	// type so QA question fan-out hits the same processMessage switch.
+	qaTopic := env("KAFKA_QA_TOPIC", "qa-events")
+	qaConsumer := events.NewConsumerWithDialer(
+		[]string{kafkaBrokers},
+		"feed-service-qa-group",
+		qaTopic,
+		feedSvc,
+		rdb,
+		timelineStore,
+		kafkaDialer,
+	)
+	go qaConsumer.Start(ctx)
+	defer qaConsumer.Close()
+
 	// 12. Gin with middleware stack
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()

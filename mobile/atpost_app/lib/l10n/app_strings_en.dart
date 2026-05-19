@@ -94,9 +94,9 @@ const Map<String, String> appStringsEn = {
   'pulse.tune.education.right': 'A lot',
 
   // ---- Pulse onboarding: echoes consent (B3) ------------------------------
-  'pulse.echoes.title': 'Bring your AtPost into Pulse?',
+  'pulse.echoes.title': 'Bring your VChat into Pulse?',
   'pulse.echoes.body':
-      'Pulse can show your recent AtPost activity on your profile (your last 3 reels, top Q&A answers, communities you\'re active in). This makes Pulse signal-rich. You can hide individual items anytime.',
+      'Pulse can show your recent VChat activity on your profile (your last 3 reels, top Q&A answers, communities you\'re active in). This makes Pulse signal-rich. You can hide individual items anytime.',
   'pulse.echoes.yes': 'Yes, surface my Echoes',
   'pulse.echoes.no': 'Not yet, only show what I add manually',
   'pulse.echoes.warning':

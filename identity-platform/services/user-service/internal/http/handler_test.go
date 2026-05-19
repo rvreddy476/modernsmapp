@@ -25,6 +25,10 @@ func (s *stubUserService) GetUser(ctx context.Context, id uuid.UUID) (*store.Use
 	return s.getUserFn(id)
 }
 
+func (s *stubUserService) ListUsers(ctx context.Context, limit, offset int) ([]store.User, int, error) {
+	return nil, 0, nil
+}
+
 func (s *stubUserService) GetSettings(ctx context.Context, id uuid.UUID) (*store.UserSettings, error) {
 	if s.getSettingsFn == nil {
 		return nil, nil

@@ -161,7 +161,7 @@ class ServiceCard extends StatelessWidget {
                   ),
                   const SizedBox(width: 4),
                   Text(
-                    'Verified by AtPost',
+                    'Verified by VChat',
                     style: AppTextStyles.labelTiny.copyWith(
                       color: AppColors.posttubePrimary,
                     ),

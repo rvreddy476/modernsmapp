@@ -18,6 +18,25 @@ var validEntityTypes = map[string]bool{
 	"comment": true,
 }
 
+// validReportCategories is the report category/reason allowlist from
+// messaging/privacy spec §10.5 — exactly these 12 values are accepted. The
+// category is stored in trust.reports.reason and enforced at the DB layer by
+// the reports_reason_check CHECK constraint (migration 005).
+var validReportCategories = map[string]bool{
+	"spam":                  true,
+	"harassment":            true,
+	"scam_fraud":            true,
+	"sexual_content":        true,
+	"hate_abuse":            true,
+	"impersonation":         true,
+	"child_safety":          true,
+	"violence_threat":       true,
+	"self_harm":             true,
+	"misinformation":        true,
+	"intellectual_property": true,
+	"other":                 true,
+}
+
 var validTransitions = map[string][]string{
 	"open":      {"reviewing"},
 	"reviewing": {"resolved", "dismissed"},
@@ -39,6 +58,11 @@ func (s *Service) FileReport(ctx context.Context, reporterID, entityID uuid.UUID
 	// 1. Validate entityType
 	if !validEntityTypes[entityType] {
 		return nil, fmt.Errorf("invalid entity_type: %s (must be user, post, or comment)", entityType)
+	}
+
+	// 1b. Validate report category against the spec §10.5 allowlist.
+	if !validReportCategories[reason] {
+		return nil, fmt.Errorf("invalid reason: %s (must be one of the 12 spec report categories)", reason)
 	}
 
 	// 2. Check for duplicate open report

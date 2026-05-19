@@ -1,6 +1,7 @@
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_app/data/repositories/chat_repository.dart';
 import 'package:atpost_app/data/repositories/user_repository.dart';
 import 'package:atpost_app/features/monetization/widgets/tier_picker_sheet.dart';
 import 'package:atpost_app/features/monetization/widgets/tip_sheet.dart';
@@ -23,6 +24,30 @@ class ProfileDetailScreen extends ConsumerStatefulWidget {
 class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
   bool _following = false;
   bool _subscribed = false;
+  bool _openingConversation = false;
+
+  // Opens (or creates) a 1:1 conversation with this profile's user and
+  // navigates to it. DM gating is enforced server-side: a non-connection is
+  // routed to a Message Request, a blocked pair is rejected (spec §4).
+  Future<void> _openConversation() async {
+    if (_openingConversation) return;
+    setState(() => _openingConversation = true);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final conversation = await ref
+          .read(chatRepositoryProvider)
+          .createDirectConversation(widget.userId);
+      if (!mounted) return;
+      context.push('/chat/${conversation.id}');
+    } catch (_) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        const SnackBar(content: Text("Couldn't open the conversation")),
+      );
+    } finally {
+      if (mounted) setState(() => _openingConversation = false);
+    }
+  }
 
   void _showProfileOptions(
     BuildContext context,
@@ -384,6 +409,10 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
                               ),
                             ),
                           ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: _ConnectionButton(userId: widget.userId),
+                          ),
                           if (user.isVerified) ...[
                             const SizedBox(width: 8),
                             GestureDetector(
@@ -457,19 +486,27 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
                             ),
                           ],
                           const SizedBox(width: 8),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 18,
-                              vertical: 12,
-                            ),
-                            decoration: BoxDecoration(
-                              color: AppColors.bgCard,
-                              borderRadius: BorderRadius.circular(
-                                AppSpacing.radiusLarge,
+                          GestureDetector(
+                            onTap: _openConversation,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 18,
+                                vertical: 12,
                               ),
-                              border: Border.all(color: AppColors.borderSubtle),
+                              decoration: BoxDecoration(
+                                color: AppColors.bgCard,
+                                borderRadius: BorderRadius.circular(
+                                  AppSpacing.radiusLarge,
+                                ),
+                                border: Border.all(
+                                  color: AppColors.borderSubtle,
+                                ),
+                              ),
+                              child: Text(
+                                'Message',
+                                style: AppTextStyles.label,
+                              ),
                             ),
-                            child: Text('Message', style: AppTextStyles.label),
                           ),
                         ],
                       ),
@@ -566,5 +603,94 @@ class _StatBadge extends StatelessWidget {
     if (count >= 1000000) return '${(count / 1000000).toStringAsFixed(1)}M';
     if (count >= 1000) return '${(count / 1000).toStringAsFixed(1)}K';
     return count.toString();
+  }
+}
+
+/// Status-aware connection ("Add Friend") button shown on another user's
+/// profile. Reflects the live connection state and drives send / cancel /
+/// accept against graph-service.
+class _ConnectionButton extends ConsumerStatefulWidget {
+  const _ConnectionButton({required this.userId});
+
+  final String userId;
+
+  @override
+  ConsumerState<_ConnectionButton> createState() => _ConnectionButtonState();
+}
+
+class _ConnectionButtonState extends ConsumerState<_ConnectionButton> {
+  // Local override applied once the user acts, so the button updates
+  // immediately. Null means "use connectionStatusProvider's value".
+  String? _status;
+  bool _busy = false;
+
+  Future<void> _act(String status) async {
+    final repo = ref.read(userRepositoryProvider);
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _busy = true);
+    try {
+      if (status == 'none') {
+        await repo.sendConnectionRequest(widget.userId);
+        _status = 'pending_sent';
+      } else if (status == 'pending_sent') {
+        await repo.cancelConnectionRequest(widget.userId);
+        _status = 'none';
+      } else if (status == 'pending_received') {
+        await repo.acceptConnectionRequest(widget.userId);
+        _status = 'accepted';
+      }
+    } catch (_) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text("Couldn't update connection")),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final statusAsync = ref.watch(connectionStatusProvider(widget.userId));
+    final status = _status ?? statusAsync.valueOrNull ?? 'none';
+
+    final label = switch (status) {
+      'accepted' => 'Connected',
+      'pending_sent' => 'Requested',
+      'pending_received' => 'Accept',
+      _ => 'Add Friend',
+    };
+    // Gradient (primary) for the actionable states "Add Friend" / "Accept";
+    // neutral for "Requested" / "Connected".
+    final filled = status == 'none' || status == 'pending_received';
+    // "Connected" is a status indicator, not an action.
+    final tappable = status != 'accepted';
+
+    return GestureDetector(
+      onTap: (_busy || !tappable) ? null : () => _act(status),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        decoration: BoxDecoration(
+          gradient: filled ? AppColors.postbookGradient : null,
+          color: filled ? null : AppColors.bgCard,
+          borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
+          border: Border.all(
+            color: filled
+                ? AppColors.postbookPrimary.withValues(alpha: 0.4)
+                : AppColors.borderSubtle,
+          ),
+        ),
+        child: Center(
+          child: Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: AppTextStyles.label.copyWith(
+              color: filled ? Colors.white : AppColors.textSecondary,
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }

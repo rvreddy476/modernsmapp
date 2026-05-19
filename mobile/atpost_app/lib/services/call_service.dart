@@ -5,6 +5,7 @@ import 'package:atpost_app/core/errors/app_exception.dart';
 import 'package:atpost_app/core/utils/app_logger.dart';
 import 'package:atpost_app/data/models/call.dart' as models;
 import 'package:atpost_app/data/repositories/calls_repository.dart';
+import 'package:atpost_app/data/repositories/user_repository.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:livekit_client/livekit_client.dart' as lk;
@@ -113,6 +114,7 @@ class CallInfo {
 class CallNotifier extends StateNotifier<CallInfo?> {
   final SignalingService _signaling;
   final CallsRepository? _callsRepo;
+  final UserRepository? _userRepo;
   final Random _random = Random.secure();
 
   StreamSubscription? _signalSub;
@@ -126,7 +128,7 @@ class CallNotifier extends StateNotifier<CallInfo?> {
   bool _localAudioEnabled = true;
   bool _localVideoEnabled = false;
 
-  CallNotifier(this._signaling, [this._callsRepo]) : super(null) {
+  CallNotifier(this._signaling, [this._callsRepo, this._userRepo]) : super(null) {
     _signalSub = _signaling.signals.listen(_handleSignal);
   }
 
@@ -796,11 +798,12 @@ class CallNotifier extends StateNotifier<CallInfo?> {
       state: CallState.incoming,
       type: _signalTypeToCallType(signal.callType),
       peerId: signal.senderId,
-      peerName: signal.senderId,
+      peerName: '',
       isInitiator: false,
       callId: signal.callId,
       inviteId: signal.inviteId,
     );
+    unawaited(_hydratePeer(signal.senderId));
 
     if (signal.callId case final callId?) {
       _signaling.subscribeToCallRoom(callId);
@@ -824,14 +827,34 @@ class CallNotifier extends StateNotifier<CallInfo?> {
       state: CallState.incoming,
       type: _signalTypeToCallType(signal.callType),
       peerId: signal.senderId,
-      peerName: signal.senderId,
+      peerName: '',
       isInitiator: false,
       callId: signal.callId,
       inviteId: signal.inviteId,
     );
+    unawaited(_hydratePeer(signal.senderId));
 
     if (signal.callId case final callId?) {
       _signaling.subscribeToCallRoom(callId);
+    }
+  }
+
+  /// Resolve the peer's display name + avatar from their user ID. Incoming
+  /// call signals carry only the sender's UUID, so without this the call UI
+  /// would show a raw ID. Best-effort: keeps the fallback if the lookup fails.
+  Future<void> _hydratePeer(String userId) async {
+    final repo = _userRepo;
+    if (repo == null || userId.isEmpty) return;
+    try {
+      final user = await repo.getUser(userId);
+      final current = state;
+      if (current == null || current.peerId != userId) return;
+      state = current.copyWith(
+        peerName: user.displayName,
+        peerAvatar: user.hasAvatar ? user.avatarUrl : '',
+      );
+    } catch (_) {
+      // Best-effort — the call still works without a resolved name.
     }
   }
 
@@ -974,5 +997,11 @@ final callProvider = StateNotifierProvider<CallNotifier, CallInfo?>((ref) {
   } catch (_) {
     // Repository not available in tests.
   }
-  return CallNotifier(signaling, callsRepo);
+  UserRepository? userRepo;
+  try {
+    userRepo = ref.watch(userRepositoryProvider);
+  } catch (_) {
+    // Repository not available in tests.
+  }
+  return CallNotifier(signaling, callsRepo, userRepo);
 });

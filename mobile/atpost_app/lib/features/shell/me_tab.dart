@@ -204,7 +204,7 @@ class _WalletCard extends ConsumerWidget {
                   ),
                   const SizedBox(width: 6),
                   Text(
-                    'AtPost Wallet',
+                    'VChat Wallet',
                     style: AppTextStyles.label.copyWith(color: Colors.white),
                   ),
                   const Spacer(),

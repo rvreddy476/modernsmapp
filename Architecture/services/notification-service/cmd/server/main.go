@@ -189,6 +189,20 @@ func main() {
 	go callConsumer.Start(ctx)
 	slog.Info("kafka call consumer started", "topic", "call.notifications")
 
+	// Chat events (spec §18): DM + message-request notifications. Separate
+	// topic + consumer group so chat-event lag doesn't block social/call
+	// notification delivery.
+	chatTopic := env("CHAT_KAFKA_TOPIC", "chat.events.v1")
+	chatConsumer := events.NewChatConsumerWithDialer(
+		strings.Split(kafkaBrokers, ","),
+		env("CHAT_KAFKA_GROUP_ID", "notification-service-chat"),
+		chatTopic,
+		notifSvc,
+		kafkaDialer,
+	)
+	go chatConsumer.Start(ctx)
+	slog.Info("kafka chat consumer started", "topic", chatTopic)
+
 	// QA events live on a dedicated topic by default. Reuse the main consumer
 	// type — its processMessage routes Q&A events through handleQAEvent.
 	qaTopic := env("KAFKA_QA_TOPIC", "qa-events")

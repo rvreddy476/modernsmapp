@@ -179,7 +179,7 @@ String _titleForNotification(AppNotification n) {
       return 'New comment';
     case 'system':
     case 'announcement':
-      return 'AtPost';
+      return 'VChat';
     default:
       return 'Notification';
   }

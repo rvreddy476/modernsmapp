@@ -19,13 +19,13 @@ const Map<String, MiniAppPermissionDefinition> miniAppPermissionDefinitions = {
   'user.profile.read': MiniAppPermissionDefinition(
     key: 'user.profile.read',
     title: 'Read profile basics',
-    description: 'Lets the mini app read your basic public AtPost profile.',
+    description: 'Lets the mini app read your basic public VChat profile.',
   ),
   'notifications.send': MiniAppPermissionDefinition(
     key: 'notifications.send',
     title: 'Show host alerts',
     description:
-        'Lets the mini app show native AtPost alerts inside the mobile app.',
+        'Lets the mini app show native VChat alerts inside the mobile app.',
   ),
   'device.camera': MiniAppPermissionDefinition(
     key: 'device.camera',

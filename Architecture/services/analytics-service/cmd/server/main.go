@@ -143,7 +143,7 @@ func main() {
 	aggStore := postgres.NewAggregateStore(dbPool)
 	svc := service.New(ctx, store, kafkaWriter)
 	handler := httpHandler.New(svc, rdb)
-	dashHandler := httpHandler.NewDashboardHandler(aggStore)
+	dashHandler := httpHandler.NewDashboardHandler(aggStore).WithWatchStore(watchStore)
 
 	workerCtx, workerCancel := context.WithCancel(ctx)
 	defer workerCancel()

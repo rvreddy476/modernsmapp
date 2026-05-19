@@ -61,8 +61,8 @@ class ShellTelemetryEvents {
 
 /// Tabs in the bottom nav. Used as the `tab` enum on `tabSelected`.
 ///
-/// Active tabs (May 2026 redesign): home, wallet, create (FAB),
-/// reels, explore. The legacy keys (search, inbox, me) remain
+/// Active tabs (May 2026 redesign): home, friends, create (FAB),
+/// reels, explore. The legacy keys (wallet, search, inbox, me) remain
 /// declared so downstream telemetry queries don't blow up if old
 /// rows replay through the pipeline; new emit sites should use the
 /// active set.
@@ -70,12 +70,13 @@ class ShellTab {
   ShellTab._();
 
   static const home = 'home';
-  static const wallet = 'wallet';
+  static const friends = 'friends';
   static const create = 'create';
   static const reels = 'reels';
   static const explore = 'explore';
 
   // Legacy / pre-May-2026 — retained for replay compat.
+  static const wallet = 'wallet';
   static const search = 'search';
   static const inbox = 'inbox';
   static const me = 'me';

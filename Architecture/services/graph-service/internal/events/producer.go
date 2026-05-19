@@ -29,41 +29,50 @@ func NewProducerWithDialer(brokers []string, topic string, dialer *kafka.Dialer)
 	return &Producer{writer: w}
 }
 
-func (p *Producer) PublishFriendRequestSent(ctx context.Context, senderID, receiverID uuid.UUID) error {
-	payload := events.FriendRequestSentPayload{
+func (p *Producer) PublishConnectionRequested(ctx context.Context, senderID, receiverID uuid.UUID) error {
+	payload := events.ConnectionRequestedPayload{
 		SenderID:   senderID.String(),
 		ReceiverID: receiverID.String(),
 		CreatedAt:  time.Now(),
 	}
-	return p.publish(ctx, events.FriendRequestSent, &senderID, payload)
+	return p.publish(ctx, events.ConnectionRequested, &senderID, payload)
 }
 
-func (p *Producer) PublishFriendRequestAccepted(ctx context.Context, senderID, receiverID uuid.UUID) error {
-	payload := events.FriendRequestAcceptedPayload{
+func (p *Producer) PublishConnectionAccepted(ctx context.Context, senderID, receiverID uuid.UUID) error {
+	payload := events.ConnectionAcceptedPayload{
 		SenderID:   senderID.String(),
 		ReceiverID: receiverID.String(),
 		AcceptedAt: time.Now(),
 	}
-	return p.publish(ctx, events.FriendRequestAccepted, &receiverID, payload)
+	return p.publish(ctx, events.ConnectionAccepted, &receiverID, payload)
 }
 
-func (p *Producer) PublishFriendRequestDeclined(ctx context.Context, senderID, receiverID uuid.UUID) error {
-	payload := events.FriendRequestDeclinedPayload{
+func (p *Producer) PublishConnectionDeclined(ctx context.Context, senderID, receiverID uuid.UUID) error {
+	payload := events.ConnectionDeclinedPayload{
 		SenderID:   senderID.String(),
 		ReceiverID: receiverID.String(),
 		DeclinedAt: time.Now(),
 	}
-	return p.publish(ctx, events.FriendRequestDeclined, &receiverID, payload)
+	return p.publish(ctx, events.ConnectionDeclined, &receiverID, payload)
 }
 
-func (p *Producer) PublishFriendRemoved(ctx context.Context, userA, userB, removedBy uuid.UUID) error {
-	payload := events.FriendRemovedPayload{
+func (p *Producer) PublishConnectionRequestCancelled(ctx context.Context, senderID, receiverID uuid.UUID) error {
+	payload := events.ConnectionRequestCancelledPayload{
+		SenderID:    senderID.String(),
+		ReceiverID:  receiverID.String(),
+		CancelledAt: time.Now(),
+	}
+	return p.publish(ctx, events.ConnectionRequestCancelled, &senderID, payload)
+}
+
+func (p *Producer) PublishConnectionRemoved(ctx context.Context, userA, userB, removedBy uuid.UUID) error {
+	payload := events.ConnectionRemovedPayload{
 		UserA:     userA.String(),
 		UserB:     userB.String(),
 		RemovedBy: removedBy.String(),
 		RemovedAt: time.Now(),
 	}
-	return p.publish(ctx, events.FriendRemoved, &removedBy, payload)
+	return p.publish(ctx, events.ConnectionRemoved, &removedBy, payload)
 }
 
 func (p *Producer) PublishUserBlocked(ctx context.Context, blockerID, blockedID uuid.UUID) error {
@@ -73,6 +82,33 @@ func (p *Producer) PublishUserBlocked(ctx context.Context, blockerID, blockedID 
 		BlockedAt: time.Now(),
 	}
 	return p.publish(ctx, events.UserBlocked, &blockerID, payload)
+}
+
+func (p *Producer) PublishUserUnblocked(ctx context.Context, blockerID, blockedID uuid.UUID) error {
+	payload := events.UserUnblockedPayload{
+		BlockerID:   blockerID.String(),
+		BlockedID:   blockedID.String(),
+		UnblockedAt: time.Now(),
+	}
+	return p.publish(ctx, events.UserUnblocked, &blockerID, payload)
+}
+
+func (p *Producer) PublishCloseFriendAdded(ctx context.Context, ownerID, memberID uuid.UUID) error {
+	payload := events.CloseFriendChangedPayload{
+		OwnerID:    ownerID.String(),
+		MemberID:   memberID.String(),
+		OccurredAt: time.Now(),
+	}
+	return p.publish(ctx, events.CloseFriendAdded, &ownerID, payload)
+}
+
+func (p *Producer) PublishCloseFriendRemoved(ctx context.Context, ownerID, memberID uuid.UUID) error {
+	payload := events.CloseFriendChangedPayload{
+		OwnerID:    ownerID.String(),
+		MemberID:   memberID.String(),
+		OccurredAt: time.Now(),
+	}
+	return p.publish(ctx, events.CloseFriendRemoved, &ownerID, payload)
 }
 
 func (p *Producer) PublishUserFollowed(ctx context.Context, followerID, followeeID uuid.UUID) error {

@@ -26,8 +26,10 @@ import 'package:atpost_app/features/services/services_screen.dart';
 import 'package:atpost_app/features/shell/create_options_sheet.dart';
 import 'package:atpost_app/features/shell/notification_toast_queue.dart';
 import 'package:atpost_app/features/shell/shell_providers.dart';
-import 'package:atpost_app/features/wallet/wallet_home_screen.dart';
+import 'package:atpost_app/features/social/friends_screen.dart';
 import 'package:atpost_app/providers/notification_provider.dart';
+import 'package:atpost_app/services/presence_service.dart';
+import 'package:atpost_app/services/realtime_service.dart';
 import 'package:atpost_app/services/shell_telemetry.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -36,18 +38,21 @@ import 'package:go_router/go_router.dart';
 /// Stable index map for the four real tabs. `create` (visually centered)
 /// is intentionally NOT a tab — it's a FAB that opens a sheet.
 ///
-/// Layout (left → right): Home · Wallet · [+] · Reels · Explore
+/// Layout (left → right): Home · Friends · [+] · Reels · Explore
 ///   * Home    — feed (For You / Following / #HashTag)
-///   * Wallet  — wallet hero + transactions + send/top-up
+///   * Friends — connections list (search, requests, refresh)
 ///   * Reels   — vertical short-form video feed
 ///   * Explore — mini-app launcher (services_screen.dart). Hosts every
 ///               module that doesn't get its own bottom-tab slot
 ///               (Pulse, Mopedu, Billpay, Commerce, Figo, etc.).
+///
+/// Wallet is still reachable via the `/wallet` route and the Me-tab
+/// launcher tile — it just no longer occupies a bottom-nav slot.
 class ShellTabIndex {
   ShellTabIndex._();
 
   static const home = 0;
-  static const wallet = 1;
+  static const friends = 1;
   static const reels = 2;
   static const explore = 3;
 
@@ -63,13 +68,17 @@ class ShellScaffold extends ConsumerStatefulWidget {
   ConsumerState<ShellScaffold> createState() => _ShellScaffoldState();
 }
 
-class _ShellScaffoldState extends ConsumerState<ShellScaffold> {
+class _ShellScaffoldState extends ConsumerState<ShellScaffold>
+    with WidgetsBindingObserver {
   late final NotificationToastQueue _toastQueue;
 
   @override
   void initState() {
     super.initState();
     _toastQueue = NotificationToastQueue(onView: _renderToast);
+    // Observe app lifecycle so the presence heartbeat pauses while the
+    // app is backgrounded and resumes (with an immediate beat) on return.
+    WidgetsBinding.instance.addObserver(this);
     // Hop the active tab to whatever the deep-link asked for. We do this in
     // a post-frame callback so we don't mutate provider state during the
     // first build.
@@ -83,7 +92,27 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    final presence = ref.read(presenceServiceProvider);
+    switch (state) {
+      case AppLifecycleState.resumed:
+        // Foregrounded: resume heartbeats and flip the dot back on now.
+        presence.start();
+        presence.beatNow();
+      case AppLifecycleState.paused:
+      case AppLifecycleState.detached:
+      case AppLifecycleState.hidden:
+        // Backgrounded: stop pinging — the 90 s TTL lets presence lapse.
+        presence.stop();
+      case AppLifecycleState.inactive:
+        break; // transient (e.g. system overlay) — keep heartbeating.
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _toastQueue.dispose();
     super.dispose();
   }
@@ -91,6 +120,21 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold> {
   @override
   Widget build(BuildContext context) {
     final current = ref.watch(shellTabProvider);
+
+    // Instantiate the presence heartbeat for the whole authenticated
+    // session. Watching it here (rather than relying on a lazy read)
+    // guarantees the user is marked online the moment the shell mounts,
+    // regardless of which tab they land on — without this, opening the
+    // Friends tab first meant no `presence:` key was ever written and
+    // the user (plus everyone they viewed) showed as offline.
+    ref.watch(presenceServiceProvider);
+
+    // Hold the realtime WebSocket open for the whole authenticated session.
+    // The WS gateway treats an open connection as "online" and broadcasts
+    // presence changes over it — watching it here (not lazily on a chat
+    // screen) is what lets a friend coming online flip green instantly on
+    // the Friends tab. See friendsPresenceProvider.
+    ref.watch(realtimeServiceProvider);
 
     // Live notifications. Every NotificationEvent off the WS multiplex
     // surfaces here exactly once: we invalidate the bell + inbox so
@@ -124,8 +168,8 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold> {
           // shortcuts (search, shopping, posttube, notifications,
           // profile-avatar).
           HomeFeedScreen(),
-          // Wallet — balance hero + transactions + top-up + send.
-          WalletHomeScreen(),
+          // Friends — connections list with search, requests, refresh.
+          FriendsScreen(),
           // Reels — vertical PageView feed.
           ReelsScreen(),
           // Explore — mini-app launcher: Pulse, Mopedu, Billpay,
@@ -307,11 +351,11 @@ class _BottomBar extends ConsumerWidget {
               telemetryKey: ShellTab.home,
             ),
             _NavItem(
-              icon: Icons.account_balance_wallet_rounded,
-              label: 'Wallet',
-              index: ShellTabIndex.wallet,
+              icon: Icons.people_alt_rounded,
+              label: 'Friends',
+              index: ShellTabIndex.friends,
               currentIndex: currentIndex,
-              telemetryKey: ShellTab.wallet,
+              telemetryKey: ShellTab.friends,
             ),
             // Visual gap for the FAB notch.
             const SizedBox(width: 56),

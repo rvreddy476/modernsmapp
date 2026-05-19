@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/google/uuid"
@@ -79,6 +80,11 @@ func (p *CallPolicy) CanCall(ctx context.Context, callerID, targetID uuid.UUID) 
 	if err != nil {
 		slog.Warn("call_policy: build request failed", "err", err)
 		return ErrGraphUnavailable
+	}
+	// graph-service gates /v1/graph/* behind the internal service key —
+	// without it the call 401s and CanCall fails closed on every call.
+	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
+		req.Header.Set("X-Internal-Service-Key", key)
 	}
 	resp, err := p.httpClient.Do(req)
 	if err != nil {

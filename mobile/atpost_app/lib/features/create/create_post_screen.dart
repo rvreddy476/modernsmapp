@@ -127,6 +127,18 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
               },
             ),
             _VisibilityOption(
+              icon: Icons.verified_user,
+              label: 'Trusted Circle',
+              description: 'Only your close friends can see it',
+              selected: state.visibility == PostVisibility.trusted,
+              onTap: () {
+                ref
+                    .read(creationProvider.notifier)
+                    .setVisibility(PostVisibility.trusted);
+                Navigator.of(ctx).pop();
+              },
+            ),
+            _VisibilityOption(
               icon: Icons.lock,
               label: 'Private',
               description: 'Only you can see it',
@@ -429,9 +441,12 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
-              state.visibility == PostVisibility.public
-                  ? Icons.public
-                  : Icons.people,
+              switch (state.visibility) {
+                PostVisibility.public => Icons.public,
+                PostVisibility.followers => Icons.people,
+                PostVisibility.trusted => Icons.verified_user,
+                PostVisibility.private => Icons.lock,
+              },
               size: 10,
               color: Colors.grey,
             ),

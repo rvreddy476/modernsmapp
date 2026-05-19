@@ -41,6 +41,11 @@ class Conversation {
   final int unreadCount;
   final bool isArchived;
 
+  /// True when the conversation is a pending message request (spec §3.3).
+  /// Request conversations are kept out of the main list and surfaced
+  /// under a dedicated "Requests" folder until accepted.
+  final bool isRequest;
+
   const Conversation({
     required this.id,
     this.type = 'direct',
@@ -55,6 +60,7 @@ class Conversation {
     this.updatedAt,
     this.unreadCount = 0,
     this.isArchived = false,
+    this.isRequest = false,
   });
 
   factory Conversation.fromJson(Map<String, dynamic> json) {
@@ -81,6 +87,7 @@ class Conversation {
         updatedAt: _parseDateNullable(json['updated_at']),
         unreadCount: _toInt(json['unread_count']),
         isArchived: json['is_archived'] == true,
+        isRequest: json['is_request'] == true,
       );
     } catch (e, st) {
       AppLogger.error('Conversation.fromJson failed', error: e, stackTrace: st);
@@ -105,6 +112,19 @@ class Conversation {
   String? directPeerId(String? currentUserId) {
     if (type == 'group') return null;
     return participantIds.firstWhere((id) => id != currentUserId, orElse: () => '');
+  }
+
+  /// Resolves a member's display name by user id — used to label group
+  /// typing indicators ("Ravi is typing…"). Returns null when the
+  /// member is unknown or has no display name loaded.
+  String? memberNameFor(String userId) {
+    for (final member in members) {
+      if (member.userId == userId) {
+        final name = (member.displayName ?? '').trim();
+        return name.isEmpty ? null : name;
+      }
+    }
+    return null;
   }
 
   int participantCountFor(String? currentUserId) {

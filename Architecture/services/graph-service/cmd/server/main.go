@@ -9,8 +9,10 @@ import (
 
 	"github.com/atpost/graph-service/internal/events"
 	graphHttp "github.com/atpost/graph-service/internal/http"
+	"github.com/atpost/graph-service/internal/reconcile"
 	"github.com/atpost/graph-service/internal/service"
 	"github.com/atpost/graph-service/internal/store"
+	"github.com/atpost/graph-service/internal/userclient"
 	"github.com/atpost/shared/health"
 	"github.com/atpost/shared/middleware"
 	"github.com/atpost/shared/o11y/logging"
@@ -30,6 +32,9 @@ func main() {
 	pgDSN := os.Getenv("POSTGRES_DSN")
 	redisAddr := os.Getenv("REDIS_ADDR")
 	kafkaBrokers := env("KAFKA_BROKERS", "redpanda:9092")
+	userServiceURL := env("USER_SERVICE_URL", "http://identity-user:8110")
+	appUserURL := env("APP_USER_SERVICE_URL", "http://user-service:8082")
+	internalKey := os.Getenv("INTERNAL_SERVICE_KEY")
 
 	// 3. Database
 	ctx := context.Background()
@@ -94,15 +99,22 @@ func main() {
 	// 8. Dependencies
 	graphStore := store.New(dbPool)
 	graphSvc := service.New(graphStore, rdb, producer)
+	// Wire the permission resolver's privacy-settings source (spec §9.8).
+	graphSvc.WithPermissionSource(userServiceURL, internalKey)
+	// Wire read-through repair of the app.users projection for close-friends.
+	graphSvc.WithUserEnsurer(userclient.New(appUserURL, internalKey))
 	graphHandler := graphHttp.New(graphSvc)
+
+	// Expire stale connection requests hourly (spec §8.3).
+	go reconcile.NewConnectionRequestSweeper(graphStore).Start(ctx)
 
 	// Audit CG2: gate every /v1/graph route behind the shared internal
 	// service key. The handler already supports the middleware, but
 	// previously main.go never wired the env var so the gate was a
 	// no-op and every endpoint was open. Empty key keeps the dev
 	// loop unblocked but emits a loud startup warning.
-	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
-		graphHandler.WithInternalKey(key)
+	if internalKey != "" {
+		graphHandler.WithInternalKey(internalKey)
 		slog.Info("graph-service: internal-service-key gate enabled")
 	} else {
 		slog.Warn("graph-service: INTERNAL_SERVICE_KEY not set — every /v1/graph endpoint is unauthenticated. Do not run this configuration in production.")

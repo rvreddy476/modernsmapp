@@ -881,7 +881,7 @@ class _CartCard extends StatelessWidget {
               'COD' => 'Cash payment confirms the order immediately.',
               // Phase 2 §D4: wallet is "coming soon" until wallet-service ships.
               'WALLET' =>
-                'AtPost wallet is launching in this Phase 2 sprint. Use COD or Online for now.',
+                'VChat wallet is launching in this Phase 2 sprint. Use COD or Online for now.',
               _ =>
                 'Online creates a payment intent. Complete prepaid checkout on web.',
             }, style: AppTextStyles.bodySmall),

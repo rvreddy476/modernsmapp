@@ -51,9 +51,14 @@ class _NotificationsScreenState extends ConsumerState<NotificationsScreen>
       if (!mounted) return;
       // Prefer the server-supplied deep link; otherwise fall back to a
       // type-based resolver. Sprint 3 added the four dating cases.
-      final link = (notification.deepLink ?? '').isNotEmpty
+      var link = (notification.deepLink ?? '').isNotEmpty
           ? notification.deepLink!
           : _resolveDeepLink(notification);
+      // notification-service emits web-style "/u/<id>" profile links;
+      // the mobile profile route is "/profile/<id>".
+      if (link.startsWith('/u/')) {
+        link = '/profile/${link.substring(3)}';
+      }
       if (link.isNotEmpty) {
         context.push(link);
       }
@@ -121,6 +126,18 @@ class _NotificationsScreenState extends ConsumerState<NotificationsScreen>
           color: AppColors.accentPurple,
           text: 'mentioned you',
         );
+      case 'friend_request':
+        return const _NotifMeta(
+          icon: Icons.person_add_alt_1_rounded,
+          color: AppColors.postbookPrimary,
+          text: 'sent you a connection request',
+        );
+      case 'friend_accepted':
+        return const _NotifMeta(
+          icon: Icons.how_to_reg_rounded,
+          color: AppColors.posttubePrimary,
+          text: 'accepted your connection request',
+        );
       // Sprint 3 — Pulse dating notifications.
       case 'dating.spark.created':
         return const _NotifMeta(
@@ -174,6 +191,12 @@ class _NotificationsScreenState extends ConsumerState<NotificationsScreen>
         return '/pulse/matches';
       case 'dating.spark.created':
         return '/pulse/matches?tab=sparks';
+      case 'friend_request':
+        // Land on the requester's profile — its connection button shows
+        // "Accept" for a pending incoming request.
+        return n.entityId.isNotEmpty ? '/profile/${n.entityId}' : '/friend-requests';
+      case 'friend_accepted':
+        return n.entityId.isNotEmpty ? '/profile/${n.entityId}' : '/friends';
       default:
         return '';
     }

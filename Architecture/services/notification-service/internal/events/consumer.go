@@ -18,6 +18,12 @@ import (
 
 const likeAggWindow = 5 * time.Second
 
+// friendRequestGraceWindow delays the friend-request push so the
+// asynchronous trust-safety verdict (which lands a few hundred ms after
+// the ConnectionRequested event) has time to mark abusive requests
+// filtered. 5s comfortably exceeds trust-safety's scoring latency. P1.4b.
+const friendRequestGraceWindow = 5 * time.Second
+
 // likeAggEntry tracks accumulated likes for a single post+author pair.
 type likeAggEntry struct {
 	postAuthorID uuid.UUID
@@ -28,6 +34,16 @@ type likeAggEntry struct {
 	createdAt    time.Time
 }
 
+// friendReqEntry holds a pending friend-request notification awaiting the
+// trust-safety grace window. P1.4b.
+type friendReqEntry struct {
+	senderID   uuid.UUID
+	receiverID uuid.UUID
+	deepLink   string
+	createdAt  time.Time
+	timer      *time.Timer
+}
+
 type Consumer struct {
 	reader  *kafka.Reader
 	service *service.Service
@@ -36,6 +52,10 @@ type Consumer struct {
 	// Like aggregation: key = "postID:postAuthorID"
 	likeAgg   map[string]*likeAggEntry
 	likeAggMu sync.Mutex
+
+	// Friend-request grace timers: key = "senderID:receiverID". P1.4b.
+	friendReq   map[string]*friendReqEntry
+	friendReqMu sync.Mutex
 }
 
 // WithGraph attaches a graph-service client. Required for fanning out
@@ -60,9 +80,10 @@ func NewConsumerWithDialer(brokers []string, groupID string, topic string, svc *
 		Dialer:   dialer,
 	})
 	return &Consumer{
-		reader:  reader,
-		service: svc,
-		likeAgg: make(map[string]*likeAggEntry),
+		reader:    reader,
+		service:   svc,
+		likeAgg:   make(map[string]*likeAggEntry),
+		friendReq: make(map[string]*friendReqEntry),
 	}
 }
 
@@ -203,8 +224,8 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		deepLink := fmt.Sprintf("/post/%s?focusComment=%s", e.PostID, e.CommentID)
 		return c.service.CreateNotification(ctx, postAuthorID, commentAuthorID, "comment", "post", postID, deepLink, e.CreatedAt)
 
-	case events.FriendRequestSent:
-		var e events.FriendRequestSentPayload
+	case events.ConnectionRequested:
+		var e events.ConnectionRequestedPayload
 		if err := unmarshalPayload(envelope.Payload, &e); err != nil {
 			return err
 		}
@@ -212,11 +233,16 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		senderID, _ := uuid.Parse(e.SenderID)
 		receiverID, _ := uuid.Parse(e.ReceiverID)
 
+		// P1.4b: do NOT push immediately. trust-safety-service scores the
+		// request asynchronously and may mark it filtered a few hundred ms
+		// after this event. Delay behind a grace window, then re-check the
+		// verdict before dispatching.
 		deepLink := fmt.Sprintf("/u/%s", e.SenderID)
-		return c.service.CreateNotification(ctx, receiverID, senderID, "friend_request", "user", senderID, deepLink, e.CreatedAt)
+		c.scheduleFriendRequest(senderID, receiverID, deepLink, e.CreatedAt)
+		return nil
 
-	case events.FriendRequestAccepted:
-		var e events.FriendRequestAcceptedPayload
+	case events.ConnectionAccepted:
+		var e events.ConnectionAcceptedPayload
 		if err := unmarshalPayload(envelope.Payload, &e); err != nil {
 			return err
 		}
@@ -421,6 +447,91 @@ func (c *Consumer) flushLikeAgg(key string) {
 	}
 }
 
+// scheduleFriendRequest registers a friend-request notification to be
+// dispatched after friendRequestGraceWindow. P1.4b: the push is delayed so
+// trust-safety-service has time to mark abusive requests filtered. Mirrors
+// the aggregateLike timer pattern (mutex-guarded map + *time.Timer).
+//
+// A duplicate ConnectionRequested for the same sender+receiver pair within
+// the window is ignored — the existing timer already covers it.
+func (c *Consumer) scheduleFriendRequest(senderID, receiverID uuid.UUID, deepLink string, createdAt time.Time) {
+	key := fmt.Sprintf("%s:%s", senderID.String(), receiverID.String())
+
+	c.friendReqMu.Lock()
+	defer c.friendReqMu.Unlock()
+
+	if _, exists := c.friendReq[key]; exists {
+		return
+	}
+
+	entry := &friendReqEntry{
+		senderID:   senderID,
+		receiverID: receiverID,
+		deepLink:   deepLink,
+		createdAt:  createdAt,
+	}
+	entry.timer = time.AfterFunc(friendRequestGraceWindow, func() {
+		c.flushFriendRequest(key)
+	})
+	c.friendReq[key] = entry
+}
+
+// flushFriendRequest fires when the grace window expires. It asks
+// graph-service for the recipient's auto-filtered (hidden) requests; if the
+// event's sender is in that set the push is suppressed, otherwise the
+// friend-request notification is dispatched as the original handler did.
+//
+// Fail-open: on ANY graph error (request fails, non-200, parse error) the
+// push is dispatched — an internal blip must never drop a legitimate
+// notification. Recovers from panics so a misbehaving timer can't crash the
+// consumer.
+func (c *Consumer) flushFriendRequest(key string) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("friend-request grace timer panicked", "key", key, "panic", r)
+		}
+	}()
+
+	c.friendReqMu.Lock()
+	entry, exists := c.friendReq[key]
+	if !exists {
+		c.friendReqMu.Unlock()
+		return
+	}
+	delete(c.friendReq, key)
+	c.friendReqMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Check the trust-safety verdict via graph-service. Fail-open on error.
+	if c.graph != nil {
+		filtered, err := c.graph.GetFilteredConnectionRequestSenders(ctx, entry.receiverID)
+		if err != nil {
+			slog.Warn("friend-request: filtered-requests lookup failed; failing open",
+				"sender", entry.senderID, "receiver", entry.receiverID, "error", err)
+		} else if _, isFiltered := filtered[entry.senderID]; isFiltered {
+			slog.Info("friend-request push suppressed: request was auto-filtered",
+				"sender", entry.senderID, "receiver", entry.receiverID)
+			return
+		}
+	}
+
+	if err := c.service.CreateNotification(
+		ctx,
+		entry.receiverID,
+		entry.senderID,
+		"friend_request",
+		"user",
+		entry.senderID,
+		entry.deepLink,
+		entry.createdAt,
+	); err != nil {
+		slog.Error("friend-request: failed to dispatch notification",
+			"sender", entry.senderID, "receiver", entry.receiverID, "error", err)
+	}
+}
+
 func unmarshalPayload(raw json.RawMessage, v interface{}) error {
 	b, _ := json.Marshal(raw)
 	return json.Unmarshal(b, v)
@@ -549,5 +660,26 @@ func (c *Consumer) FanOutCreatorUploadAsync(e events.PostCreatedPayload) {
 }
 
 func (c *Consumer) Close() error {
+	// Stop any pending delayed-dispatch timers so they don't fire after the
+	// consumer has shut down. Like-aggregation and friend-request grace
+	// timers are handled identically.
+	c.likeAggMu.Lock()
+	for key, entry := range c.likeAgg {
+		if entry.timer != nil {
+			entry.timer.Stop()
+		}
+		delete(c.likeAgg, key)
+	}
+	c.likeAggMu.Unlock()
+
+	c.friendReqMu.Lock()
+	for key, entry := range c.friendReq {
+		if entry.timer != nil {
+			entry.timer.Stop()
+		}
+		delete(c.friendReq, key)
+	}
+	c.friendReqMu.Unlock()
+
 	return c.reader.Close()
 }

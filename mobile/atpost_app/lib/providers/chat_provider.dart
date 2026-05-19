@@ -7,8 +7,15 @@ import 'package:atpost_app/services/auth_service.dart';
 import 'package:atpost_app/services/realtime_service.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+/// Live conversation list. Emits an initial fetch, then re-pulls the
+/// authoritative list (debounced) whenever a message or read-receipt
+/// arrives over the realtime WebSocket — so unread counts on the Messages
+/// and Friends screens update without a manual refresh. The server owns
+/// `unread_count`, so a refetch is simpler and more correct than
+/// client-side increments. Stays an `AsyncValue<List<Conversation>>`
+/// (StreamProvider) so every existing consumer keeps working unchanged.
 final chatConversationsProvider =
-    FutureProvider.autoDispose<List<Conversation>>((ref) async {
+    StreamProvider.autoDispose<List<Conversation>>((ref) async* {
       final auth = ref.watch(authServiceProvider);
       // Wait for session to be restored before making API calls
       await auth.sessionReady;
@@ -18,7 +25,71 @@ final chatConversationsProvider =
       }
 
       final repo = ref.watch(chatRepositoryProvider);
-      return repo.getConversations();
+      yield await repo.getConversations();
+
+      final out = StreamController<List<Conversation>>();
+      Timer? debounce;
+      void scheduleRefresh() {
+        debounce?.cancel();
+        debounce = Timer(const Duration(milliseconds: 600), () async {
+          try {
+            out.add(await repo.getConversations());
+          } catch (_) {
+            // best-effort — the next event or a manual pull recovers it
+          }
+        });
+      }
+
+      final realtime = ref.watch(realtimeServiceProvider);
+      final sub = realtime.events.listen((event) {
+        if (event is ChatMessageEvent || event is ReadReceiptEvent) {
+          scheduleRefresh();
+        }
+      });
+
+      ref.onDispose(() {
+        debounce?.cancel();
+        sub.cancel();
+        out.close();
+      });
+
+      yield* out.stream;
+    });
+
+/// Unread message count keyed by the *other* user of each direct
+/// conversation — powers the per-friend unread badge on the Friends
+/// screen. Derived from [chatConversationsProvider], so it updates in
+/// real time right alongside the Messages screen.
+final conversationUnreadByUserProvider =
+    Provider.autoDispose<Map<String, int>>((ref) {
+      final conversations =
+          ref.watch(chatConversationsProvider).valueOrNull ?? const [];
+      final me = ref.watch(authServiceProvider).userId;
+      final byUser = <String, int>{};
+      for (final c in conversations) {
+        if (c.type == 'group' || c.unreadCount <= 0) continue;
+        final peer = c.directPeerId(me);
+        if (peer != null && peer.isNotEmpty) {
+          byUser[peer] = (byUser[peer] ?? 0) + c.unreadCount;
+        }
+      }
+      return byUser;
+    });
+
+/// Pending message-request conversations (spec §3.3).
+/// Surfaced separately from [chatConversationsProvider] so the main
+/// conversation list never shows un-accepted requests.
+final messageRequestsProvider =
+    FutureProvider.autoDispose<List<Conversation>>((ref) async {
+      final auth = ref.watch(authServiceProvider);
+      await auth.sessionReady;
+
+      if (!auth.isAuthenticated) {
+        throw Exception('User not authenticated');
+      }
+
+      final repo = ref.watch(chatRepositoryProvider);
+      return repo.getMessageRequests();
     });
 
 final chatConversationProvider = FutureProvider.autoDispose
@@ -42,6 +113,10 @@ final filteredConversationsProvider =
 
       return conversationsAsync.whenData((list) {
         return list.where((conversation) {
+          // Pending message requests live in the dedicated Requests folder
+          // and must never appear in the main conversation list (spec §3.3).
+          if (conversation.isRequest) return false;
+
           final matchesFilter = switch (activeFilter) {
             0 => !conversation.isArchived, // All (active)
             1 => conversation.unreadCount > 0 && !conversation.isArchived, // Unread
@@ -117,8 +192,18 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
   final String conversationId;
 
   StreamSubscription? _realtimeSub;
-  Timer? _typingDebounce;
+  Timer? _typingIdleTimer;
+  DateTime? _lastTypingSentAt;
   final Map<String, Timer> _typingExpiryTimers = <String, Timer>{};
+
+  /// Minimum interval between outbound typing pings while the user keeps
+  /// typing. The server typing key has a 3s TTL, so re-pinging every 2s
+  /// keeps the recipient's indicator alive without flooding the API.
+  static const Duration _typingThrottle = Duration(seconds: 2);
+
+  /// If the composer goes quiet for this long we consider the user to
+  /// have stopped, so the next keystroke emits a fresh leading ping.
+  static const Duration _typingIdleReset = Duration(milliseconds: 2500);
 
   ChatMessagesNotifier(
     this._repo,
@@ -213,15 +298,33 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
     }
   }
 
+  /// Called on every composer keystroke. Emits a typing ping to the
+  /// backend on a *leading + throttled* schedule: the first keystroke
+  /// after an idle gap fires immediately so the recipient sees the
+  /// indicator while the user is actively composing, then subsequent
+  /// keystrokes re-ping at most once per [_typingThrottle]. A pure
+  /// trailing debounce (the previous behaviour) only fired once the
+  /// user *stopped* typing, so a continuously-typing user never
+  /// surfaced an indicator at all.
   void onComposerChanged(String value) {
     if (value.trim().isEmpty) {
-      _typingDebounce?.cancel();
+      _typingIdleTimer?.cancel();
+      _lastTypingSentAt = null;
       return;
     }
 
-    _typingDebounce?.cancel();
-    _typingDebounce = Timer(const Duration(milliseconds: 350), () {
+    final now = DateTime.now();
+    final last = _lastTypingSentAt;
+    if (last == null || now.difference(last) >= _typingThrottle) {
+      _lastTypingSentAt = now;
       unawaited(_repo.sendTyping(conversationId));
+    }
+
+    // Reset the idle marker so that, after a pause, the next keystroke
+    // counts as a fresh leading ping again.
+    _typingIdleTimer?.cancel();
+    _typingIdleTimer = Timer(_typingIdleReset, () {
+      _lastTypingSentAt = null;
     });
   }
 
@@ -291,7 +394,7 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
 
   @override
   void dispose() {
-    _typingDebounce?.cancel();
+    _typingIdleTimer?.cancel();
     for (final timer in _typingExpiryTimers.values) {
       timer.cancel();
     }

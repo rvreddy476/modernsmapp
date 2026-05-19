@@ -40,6 +40,13 @@ func (r *OutboxRelay) Start(ctx context.Context) {
 	}
 }
 
+// backlogWarnCount / backlogWarnAge bound a healthy outbox. Crossing either
+// means the relay or Kafka has stalled and downstream projections are drifting.
+const (
+	backlogWarnCount = 100
+	backlogWarnAge   = 2 * time.Minute
+)
+
 func (r *OutboxRelay) process(ctx context.Context) {
 	events, err := r.store.FetchUnpublishedOutboxEvents(ctx, 50)
 	if err != nil {
@@ -53,6 +60,15 @@ func (r *OutboxRelay) process(ctx context.Context) {
 		}
 		if err := r.store.MarkOutboxEventPublished(ctx, e.ID); err != nil {
 			r.log.Warn("failed to mark outbox event published", "err", err, "event_id", e.ID)
+		}
+	}
+
+	// Surface a stalled relay: a backlog that is large or aging means
+	// user.registered events are not reaching the projections.
+	if count, oldest, err := r.store.OutboxBacklog(ctx); err == nil {
+		if count > backlogWarnCount || (count > 0 && time.Since(oldest) > backlogWarnAge) {
+			r.log.Warn("outbox backlog — relay or Kafka may be stalled",
+				"unpublished", count, "oldest_age_seconds", int(time.Since(oldest).Seconds()))
 		}
 	}
 }

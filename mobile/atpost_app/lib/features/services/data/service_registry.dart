@@ -15,7 +15,7 @@ class ServiceRegistry {
     ServiceApp(
       id: 'commerce',
       slug: 'commerce',
-      name: 'AtPost Market',
+      name: 'VChat Market',
       shortDescription: 'Buy and sell products from verified sellers.',
       longDescription:
           'Discover products from local sellers, businesses, and creators. '

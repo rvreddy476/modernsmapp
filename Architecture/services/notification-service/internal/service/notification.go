@@ -169,6 +169,10 @@ func notifTitleBody(notifType string) (string, string) {
 		return "New Upvote", "Your answer was upvoted"
 	case "qa.question.pinned":
 		return "Question Pinned", "Your question was pinned"
+	case "dm":
+		return "New Message", "You have a new message"
+	case "message_request":
+		return "Message Request", "You have a new message request"
 	default:
 		return "New Notification", "You have a new notification"
 	}

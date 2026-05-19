@@ -109,11 +109,17 @@ func main() {
 	msgStore := scyllaStore.New(scyllaSession)
 	svc := service.New(convStore, msgStore, rdb, producer, logger, cfg.OutboxPollInterval)
 	svc.SetUserDirectory(cfg.UserServiceURL, cfg.InternalServiceKey)
+	svc.SetGraphService(cfg.GraphServiceURL)
 	handler := http.New(svc, logger)
 
 	// 6. Identity Event Consumer (background)
 	identityConsumer := events.NewIdentityConsumerWithDialer(cfg.KafkaBrokers, cfg.IdentityKafkaTopic, cfg.IdentityKafkaGroupID, kafkaDialer, convStore, logger)
 	go identityConsumer.Start(ctx)
+
+	// 6b. Social (graph) Event Consumer (background) — auto-promote message
+	// requests on ConnectionAccepted and block-sever on UserBlocked.
+	socialConsumer := events.NewSocialConsumerWithDialer(cfg.KafkaBrokers, cfg.SocialKafkaTopic, cfg.SocialKafkaGroupID, kafkaDialer, convStore, logger)
+	go socialConsumer.Start(ctx)
 
 	// 7. Outbox Relay (background)
 	go svc.StartOutboxRelay(ctx)

@@ -135,7 +135,7 @@ func isFriend(ctx context.Context, db *pgxpool.Pool, a, b uuid.UUID) (bool, erro
 	}
 	var exists bool
 	err := db.QueryRow(ctx,
-		`SELECT EXISTS(SELECT 1 FROM friends WHERE user_a = $1 AND user_b = $2)`,
+		`SELECT EXISTS(SELECT 1 FROM connections WHERE user_a = $1 AND user_b = $2)`,
 		u1, u2,
 	).Scan(&exists)
 	return exists, err

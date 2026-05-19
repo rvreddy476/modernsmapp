@@ -16,12 +16,15 @@ type Config struct {
 	KafkaTopic           string
 	JWTSecret            string
 	UserServiceURL       string
+	GraphServiceURL      string
 	InternalServiceKey   string
 	TrustedProxies       []string
 	OutboxPollInterval   time.Duration
 	CacheTTL             time.Duration
 	IdentityKafkaTopic   string
 	IdentityKafkaGroupID string
+	SocialKafkaTopic     string
+	SocialKafkaGroupID   string
 }
 
 func Load() *Config {
@@ -35,12 +38,15 @@ func Load() *Config {
 		KafkaTopic:           getEnv("KAFKA_TOPIC", "chat.events.v1"),
 		JWTSecret:            getEnv("JWT_SECRET", ""),
 		UserServiceURL:       getEnv("USER_SERVICE_URL", "http://user-service:8082"),
+		GraphServiceURL:      getEnv("GRAPH_SERVICE_URL", "http://graph-service:8083"),
 		InternalServiceKey:   getEnv("INTERNAL_SERVICE_KEY", ""),
 		TrustedProxies:       splitAndClean(getEnv("TRUSTED_PROXIES", "")),
 		OutboxPollInterval:   getEnvDuration("OUTBOX_POLL_INTERVAL", 1*time.Second),
 		CacheTTL:             getEnvDuration("CACHE_TTL", 5*time.Minute),
 		IdentityKafkaTopic:   getEnv("IDENTITY_KAFKA_TOPIC", "identity.events.v1"),
 		IdentityKafkaGroupID: getEnv("IDENTITY_KAFKA_GROUP_ID", "chat-service-identity"),
+		SocialKafkaTopic:     getEnv("SOCIAL_KAFKA_TOPIC", "social.events.v1"),
+		SocialKafkaGroupID:   getEnv("SOCIAL_KAFKA_GROUP_ID", "chat-service-social"),
 	}
 }
 

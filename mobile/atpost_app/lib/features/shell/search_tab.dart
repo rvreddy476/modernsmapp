@@ -159,7 +159,7 @@ class _SearchTabState extends ConsumerState<SearchTab>
                       decoration: const InputDecoration(
                         border: InputBorder.none,
                         isCollapsed: true,
-                        hintText: 'Search AtPost',
+                        hintText: 'Search VChat',
                         hintStyle: TextStyle(color: AppColors.textDim),
                       ),
                       textInputAction: TextInputAction.search,

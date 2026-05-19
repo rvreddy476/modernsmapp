@@ -674,6 +674,18 @@ func (s *Store) MarkOutboxEventPublished(ctx context.Context, id int64) error {
 	return err
 }
 
+// OutboxBacklog returns the count of unpublished outbox events and the
+// creation time of the oldest. A growing backlog, or an old oldest-event,
+// means the relay (or Kafka) has stalled — user.registered events are not
+// reaching downstream projections, and drift will accumulate.
+func (s *Store) OutboxBacklog(ctx context.Context) (count int, oldest time.Time, err error) {
+	err = s.db.QueryRow(ctx, `
+		SELECT COUNT(*), COALESCE(MIN(created_at), NOW())
+		FROM auth.outbox_events WHERE published_at IS NULL
+	`).Scan(&count, &oldest)
+	return count, oldest, err
+}
+
 // --- auth.recovery_codes ---
 
 // StoreRecoveryCodes inserts hashed recovery codes into Postgres for the given user,

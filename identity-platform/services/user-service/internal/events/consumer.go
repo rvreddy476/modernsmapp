@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"time"
 
 	sharedEvents "github.com/atpost/identity-shared/events"
 	"github.com/google/uuid"
@@ -13,7 +14,21 @@ import (
 
 // UserHandler is the interface the consumer uses to act on events.
 type UserHandler interface {
-	CreateUser(ctx context.Context, id uuid.UUID) error
+	CreateUser(ctx context.Context, id uuid.UUID, under18 bool) error
+}
+
+// isMinor reports whether a "YYYY-MM-DD" date of birth places the user under
+// 18 today. An empty or unparseable DOB is treated as not-a-minor — spec §22
+// open-decision #8 leaves missing-DOB handling to a later flow.
+func isMinor(dob string) bool {
+	if dob == "" {
+		return false
+	}
+	t, err := time.Parse("2006-01-02", dob)
+	if err != nil {
+		return false
+	}
+	return time.Now().Before(t.AddDate(18, 0, 0))
 }
 
 // Consumer reads events from Kafka and applies them to the user-service.
@@ -116,7 +131,7 @@ func (c *Consumer) dispatch(ctx context.Context, env sharedEvents.EventEnvelope)
 			c.log.Warn("invalid user_id in UserRegistered event", "err", err, "event_id", env.EventID)
 			return nil
 		}
-		if err := c.handler.CreateUser(ctx, userID); err != nil {
+		if err := c.handler.CreateUser(ctx, userID, isMinor(p.DOB)); err != nil {
 			return err
 		}
 		c.log.Info("created user record for new registration", "user_id", userID)

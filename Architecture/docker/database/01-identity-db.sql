@@ -122,6 +122,28 @@ CREATE TABLE IF NOT EXISTS usr.user_settings (
     account_visibility   TEXT        NOT NULL DEFAULT 'public',
     allow_messages_from  TEXT        NOT NULL DEFAULT 'everyone',
     allow_comments_from  TEXT        NOT NULL DEFAULT 'everyone',
+    -- Messaging/privacy spec v2 §5.1 fields (added by migration 013).
+    who_can_message                   TEXT    NOT NULL DEFAULT 'connections_only',
+    who_can_send_connection_request   TEXT    NOT NULL DEFAULT 'friends_of_friends_or_contacts',
+    who_can_call                      TEXT    NOT NULL DEFAULT 'connections_only',
+    who_can_add_to_groups             TEXT    NOT NULL DEFAULT 'connections_only',
+    who_can_see_online_status         TEXT    NOT NULL DEFAULT 'connections_only',
+    who_can_see_read_receipts         TEXT    NOT NULL DEFAULT 'connections_only',
+    who_can_see_last_seen             TEXT    NOT NULL DEFAULT 'connections_only',
+    who_can_see_profile_photo         TEXT    NOT NULL DEFAULT 'everyone',
+    allow_phone_discovery             BOOLEAN NOT NULL DEFAULT FALSE,
+    allow_contact_sync_match          BOOLEAN NOT NULL DEFAULT FALSE,
+    discoverable_by_phone_to_contacts BOOLEAN NOT NULL DEFAULT FALSE,
+    strict_privacy_mode               BOOLEAN NOT NULL DEFAULT FALSE,
+    block_unknown_calls               BOOLEAN NOT NULL DEFAULT TRUE,
+    auto_filter_abusive_content       BOOLEAN NOT NULL DEFAULT TRUE,
+    under_18_mode                     BOOLEAN NOT NULL DEFAULT FALSE,
+    -- Trusted Circle per-feature toggles (friends-sheets spec §3.3; migration 014).
+    tc_close_friends_posts            BOOLEAN NOT NULL DEFAULT TRUE,
+    tc_location_pings                 BOOLEAN NOT NULL DEFAULT TRUE,
+    tc_after_hours_posts              BOOLEAN NOT NULL DEFAULT TRUE,
+    tc_audio_room_invite              BOOLEAN NOT NULL DEFAULT FALSE,
+    privacy_version                   INTEGER NOT NULL DEFAULT 1,
     created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

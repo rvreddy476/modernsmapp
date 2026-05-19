@@ -122,6 +122,9 @@ func (s *stubAuthService) RemoveTrustedDevice(_ context.Context, _, _ uuid.UUID)
 func (s *stubAuthService) ExportUserData(_ context.Context, _ string) (*service.DataExport, error) {
 	return &service.DataExport{}, nil
 }
+func (s *stubAuthService) GetUserContact(_ context.Context, _ uuid.UUID) (*store.User, error) {
+	return &store.User{}, nil
+}
 func (s *stubAuthService) IssueMiniAppSession(_ context.Context, appID, userID uuid.UUID, grantedPermissions []string) (*service.MiniAppSessionResponse, error) {
 	if s.issueMiniAppFn != nil {
 		return s.issueMiniAppFn(appID, userID, grantedPermissions)

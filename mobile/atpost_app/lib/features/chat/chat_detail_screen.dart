@@ -122,6 +122,11 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
                 conversation: conversation,
               ),
             ),
+            _buildTypingIndicator(
+              chatState: chatState,
+              currentUserId: currentUserId,
+              conversation: conversation,
+            ),
             if (_attachmentOpen) const _AttachmentMenu(),
             _buildComposer(chatState, chatNotifier),
           ],
@@ -294,6 +299,69 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
         );
       },
     );
+  }
+
+  /// Renders an animated "X is typing…" indicator above the composer
+  /// whenever a remote participant is typing. The set of typing users
+  /// is driven by realtime `TypingEvent`s and auto-clears via the
+  /// notifier's per-user expiry timers, so a stale signal disappears
+  /// on its own if no further ping arrives.
+  Widget _buildTypingIndicator({
+    required ChatMessagesState chatState,
+    required String? currentUserId,
+    required Conversation? conversation,
+  }) {
+    final remoteTypers = chatState.typingUserIds
+        .where((id) => id != currentUserId)
+        .toList();
+    if (remoteTypers.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    final isGroup = conversation?.type == 'group';
+    final label = _typingLabel(
+      remoteTypers: remoteTypers,
+      conversation: conversation,
+      isGroup: isGroup,
+    );
+
+    return Padding(
+      padding: AppSpacing.pagePadding.copyWith(top: 0, bottom: 6),
+      child: Row(
+        children: [
+          const _TypingDots(),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Text(
+              label,
+              style: AppTextStyles.bodySmall.copyWith(
+                color: AppColors.textSecondary,
+                fontStyle: FontStyle.italic,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _typingLabel({
+    required List<String> remoteTypers,
+    required Conversation? conversation,
+    required bool isGroup,
+  }) {
+    if (!isGroup) {
+      return 'typing…';
+    }
+    if (remoteTypers.length == 1) {
+      final name = conversation?.memberNameFor(remoteTypers.first);
+      return name != null && name.isNotEmpty
+          ? '$name is typing…'
+          : 'Someone is typing…';
+    }
+    return '${remoteTypers.length} people are typing…';
   }
 
   Widget _buildComposer(
@@ -520,6 +588,74 @@ class _MessageBubble extends StatelessWidget {
 
   String _formatTime(DateTime dt) {
     return '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+  }
+}
+
+/// Three softly pulsing dots, staggered, used by the typing indicator.
+/// Self-contained so it can be dropped beside any "is typing…" label.
+class _TypingDots extends StatefulWidget {
+  const _TypingDots();
+
+  @override
+  State<_TypingDots> createState() => _TypingDotsState();
+}
+
+class _TypingDotsState extends State<_TypingDots>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1100),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 30,
+      height: 10,
+      child: AnimatedBuilder(
+        animation: _controller,
+        builder: (context, _) {
+          return Row(
+            mainAxisSize: MainAxisSize.min,
+            children: List.generate(3, (index) {
+              // Stagger each dot by a third of the cycle.
+              final phase = (_controller.value + index / 3) % 1.0;
+              // Triangle wave 0..1..0 → smooth pulse.
+              final pulse = phase < 0.5 ? phase * 2 : (1 - phase) * 2;
+              final scale = 0.6 + pulse * 0.4;
+              return Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 1.5),
+                child: Transform.scale(
+                  scale: scale,
+                  child: Container(
+                    width: 7,
+                    height: 7,
+                    decoration: BoxDecoration(
+                      color: AppColors.postbookPrimary.withValues(
+                        alpha: 0.45 + pulse * 0.45,
+                      ),
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                ),
+              );
+            }),
+          );
+        },
+      ),
+    );
   }
 }
 

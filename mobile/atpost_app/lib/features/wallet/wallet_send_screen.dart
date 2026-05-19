@@ -237,7 +237,7 @@ class _WalletSendScreenState extends ConsumerState<WalletSendScreen>
           indicatorColor: AppColors.posttubePrimary,
           tabs: const [
             Tab(text: 'Frequent'),
-            Tab(text: 'AtPost user'),
+            Tab(text: 'VChat user'),
             Tab(text: 'Phone'),
           ],
         ),
@@ -652,7 +652,7 @@ class _AtPostUserPickerState extends ConsumerState<_AtPostUserPicker> {
           decoration: InputDecoration(
             prefixIcon: const Icon(Icons.search,
                 color: AppColors.textTertiary),
-            hintText: 'Search AtPost users by name or @handle',
+            hintText: 'Search VChat users by name or @handle',
             hintStyle: AppTextStyles.body.copyWith(color: AppColors.textGhost),
             filled: true,
             fillColor: AppColors.bgCard,
@@ -792,7 +792,7 @@ class _PhonePickerState extends State<_PhonePicker> {
         ),
         const SizedBox(height: AppSpacing.l),
         Text(
-          'If the recipient is not yet on AtPost we hold the receive until '
+          'If the recipient is not yet on VChat we hold the receive until '
           'their first login (up to 7 days). They get an SMS prompt.',
           style: AppTextStyles.bodySmall,
         ),

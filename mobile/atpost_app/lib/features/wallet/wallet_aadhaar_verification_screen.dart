@@ -230,7 +230,7 @@ class _Explainer extends StatelessWidget {
           Text('• Send up to ₹50,000 per transaction',
               style: AppTextStyles.bodySmall),
           const SizedBox(height: 4),
-          Text('• Verified ID badge on your AtPost profile',
+          Text('• Verified ID badge on your VChat profile',
               style: AppTextStyles.bodySmall),
         ],
       ),

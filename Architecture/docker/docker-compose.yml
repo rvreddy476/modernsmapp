@@ -331,6 +331,9 @@ services:
       POSTGRES_DSN: *identity_postgres_dsn
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
+      # Gates /v1/users/* (incl. the privacy-settings endpoint the graph
+      # permission resolver reads). The api-gateway injects this key.
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
     ports:
       - "8110:8110"
     depends_on:
@@ -386,6 +389,8 @@ services:
       POSTGRES_DSN: *app_postgres_dsn
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      PROFILE_SERVICE_URL: http://identity-profile:8098
     ports:
       - "8082:8082"
     depends_on:
@@ -415,6 +420,10 @@ services:
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      # Permission resolver reads privacy settings from the identity user-service.
+      USER_SERVICE_URL: http://identity-user:8110
+      # Read-through projection repair targets the app.users-owning user-service.
+      APP_USER_SERVICE_URL: http://user-service:8082
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
     ports:
       - "8083:8083"
@@ -512,6 +521,8 @@ services:
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
       GRAPH_SERVICE_URL: http://graph-service:8083
+      # Reads tc_close_friends_posts to gate close-friends ("trusted") fanout.
+      USER_SERVICE_URL: http://identity-user:8110
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
     ports:

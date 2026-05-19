@@ -274,7 +274,7 @@ class _ReceiptBody extends StatelessWidget {
 String _methodLabel(String method) {
   switch (method) {
     case 'wallet':
-      return 'AtPost Wallet';
+      return 'VChat Wallet';
     case 'upi':
       return 'UPI';
     case 'card':

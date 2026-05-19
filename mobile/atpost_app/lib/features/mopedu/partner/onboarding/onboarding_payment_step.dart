@@ -64,7 +64,7 @@ class _OnboardingPaymentStepState
               _MethodTile(
                 value: 'wallet',
                 groupValue: _method,
-                title: 'AtPost Wallet (recommended)',
+                title: 'VChat Wallet (recommended)',
                 subtitle: 'Balance: $balanceLabel',
                 icon: Icons.account_balance_wallet,
                 disabled: !plan.isTrial && !hasBalance,

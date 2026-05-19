@@ -11,7 +11,7 @@ import (
 type VisibilityPolicy struct {
 	ID         uuid.UUID   `json:"id"`
 	OwnerID    uuid.UUID   `json:"owner_id"`
-	Mode       string      `json:"mode"` // public|followers|friends|circles|only_me
+	Mode       string      `json:"mode"` // public|followers|friends|circles|trusted|only_me
 	AllowLists []uuid.UUID `json:"allow_lists,omitempty"`
 	AllowUsers []uuid.UUID `json:"allow_users,omitempty"`
 	DenyUsers  []uuid.UUID `json:"deny_users,omitempty"`

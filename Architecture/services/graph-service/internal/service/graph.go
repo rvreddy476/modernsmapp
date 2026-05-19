@@ -3,38 +3,105 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/atpost/graph-service/internal/events"
+	"github.com/atpost/graph-service/internal/ratelimit"
 	"github.com/atpost/graph-service/internal/store"
+	"github.com/atpost/graph-service/internal/userclient"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/redis/go-redis/v9"
 )
 
+// ErrRateLimited is returned by write actions when the caller has exceeded
+// the per-user, per-action quota (spec §10.4). Handlers map it to HTTP 429.
+var ErrRateLimited = errors.New("rate limit exceeded")
+
+// Trusted Circle (close-friends) validation errors — friends-sheets spec §4.1.
+// Handlers map each to its own HTTP status + error code.
+var (
+	ErrCannotAddSelf    = errors.New("cannot add yourself to your Trusted Circle")
+	ErrNotAFriend       = errors.New("user is not a connection")
+	ErrCircleCapReached = errors.New("Trusted Circle is full")
+	ErrAlreadyMember    = errors.New("already in your Trusted Circle")
+	// ErrUserUnavailable means the target is a graph connection but has no row
+	// in the local users projection yet — close_friends FK-references users,
+	// so the insert would 23503. Surfaced as a clean 4xx instead of a raw 500.
+	ErrUserUnavailable = errors.New("this person's profile isn't ready yet")
+)
+
+// isForeignKeyViolation reports whether err is a Postgres FK-violation (23503).
+func isForeignKeyViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23503"
+}
+
 type Service struct {
-	store    *store.Store
-	rdb      *redis.Client
-	producer *events.Producer
+	store     *store.Store
+	rdb       *redis.Client
+	producer  *events.Producer
+	rateLimit *ratelimit.Limiter
+
+	// Permission resolver dependencies (spec §4 / §9.8). userServiceURL is
+	// the base URL of user-service; internalKey authenticates the call.
+	userServiceURL string
+	internalKey    string
+	httpClient     *http.Client
+
+	// userClient repairs the app.users projection on demand before a write
+	// whose FK references it (e.g. close_friends). Nil = no read-through.
+	userClient *userclient.Client
 }
 
 func New(s *store.Store, rdb *redis.Client, producer *events.Producer) *Service {
-	return &Service{store: s, rdb: rdb, producer: producer}
+	return &Service{
+		store:      s,
+		rdb:        rdb,
+		producer:   producer,
+		rateLimit:  ratelimit.New(rdb),
+		httpClient: &http.Client{Timeout: 5 * time.Second},
+	}
+}
+
+// WithPermissionSource wires the user-service endpoint the permission
+// resolver reads privacy settings from. Without it the resolver falls back
+// to strict defaults.
+func (s *Service) WithPermissionSource(userServiceURL, internalKey string) *Service {
+	s.userServiceURL = strings.TrimRight(userServiceURL, "/")
+	s.internalKey = internalKey
+	return s
+}
+
+// WithUserEnsurer wires the user-service client used for read-through repair
+// of the app.users projection before close_friends inserts.
+func (s *Service) WithUserEnsurer(c *userclient.Client) *Service {
+	s.userClient = c
+	return s
 }
 
 type Relationship struct {
-	Follows      bool   `json:"follows"`
-	FollowedBy   bool   `json:"followed_by"`
-	Blocked      bool   `json:"blocked"`
-	IsMuted      bool   `json:"is_muted"`
-	IsFriend     bool   `json:"is_friend"`
-	FriendStatus string `json:"friend_status"` // none, pending_sent, pending_received, accepted
+	Follows          bool   `json:"follows"`
+	FollowedBy       bool   `json:"followed_by"`
+	Blocked          bool   `json:"blocked"`
+	IsMuted          bool   `json:"is_muted"`
+	IsConnection     bool   `json:"is_connection"`
+	ConnectionStatus string `json:"connection_status"` // none, pending_sent, pending_received, accepted
 }
 
 // --- Follows ---
 
 func (s *Service) Follow(ctx context.Context, followerID, followeeID uuid.UUID) error {
+	// Per-action rate limit (spec §10.4): 200 follows / 24h / user.
+	if allowed, _ := s.rateLimit.Allow(ctx, ratelimit.ActionFollow, followerID); !allowed {
+		return ErrRateLimited
+	}
+
 	blocked, err := s.store.CheckBlock(ctx, followeeID, followerID)
 	if err != nil {
 		return err
@@ -75,14 +142,26 @@ func (s *Service) Block(ctx context.Context, blockerID, blockedID uuid.UUID) err
 	s.store.DeleteFollow(ctx, blockedID, blockerID)
 	s.store.DeleteFollow(ctx, blockerID, blockedID)
 
-	// Also remove friendship if exists
-	s.store.RemoveFriend(ctx, blockerID, blockedID)
+	// Also remove the connection if one exists.
+	s.store.RemoveConnection(ctx, blockerID, blockedID)
 
 	s.invalidateRel(ctx, blockerID, blockedID)
 	s.invalidateRel(ctx, blockedID, blockerID)
 	s.invalidateCounts(ctx, blockerID, blockedID)
 
 	s.publishUserBlockedAsync(blockerID, blockedID)
+	return nil
+}
+
+// Unblock removes a block. The block event consumers (chat-service severs
+// active conversations on block) need the matching unblock signal.
+func (s *Service) Unblock(ctx context.Context, blockerID, blockedID uuid.UUID) error {
+	if err := s.store.DeleteBlock(ctx, blockerID, blockedID); err != nil {
+		return err
+	}
+	s.invalidateRel(ctx, blockerID, blockedID)
+	s.invalidateRel(ctx, blockedID, blockerID)
+	s.publishUserUnblockedAsync(blockerID, blockedID)
 	return nil
 }
 
@@ -130,6 +209,19 @@ func (s *Service) publishUserBlockedAsync(blockerID, blockedID uuid.UUID) {
 	}()
 }
 
+func (s *Service) publishUserUnblockedAsync(blockerID, blockedID uuid.UUID) {
+	if s.producer == nil {
+		return
+	}
+	go func() {
+		pubCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.producer.PublishUserUnblocked(pubCtx, blockerID, blockedID); err != nil {
+			log.Printf("[graph] async PublishUserUnblocked failed: %v", err)
+		}
+	}()
+}
+
 func (s *Service) GetRelationship(ctx context.Context, actorID, targetID uuid.UUID) (*Relationship, error) {
 	cacheKey := fmt.Sprintf("rel:%s:%s", actorID, targetID)
 
@@ -149,23 +241,23 @@ func (s *Service) GetRelationship(ctx context.Context, actorID, targetID uuid.UU
 		return nil, err
 	}
 
-	friendStatus := "none"
+	connectionStatus := "none"
 	switch {
-	case full.IsFriend:
-		friendStatus = "accepted"
-	case full.FriendRequestSent:
-		friendStatus = "pending_sent"
-	case full.FriendRequestReceived:
-		friendStatus = "pending_received"
+	case full.IsConnection:
+		connectionStatus = "accepted"
+	case full.ConnectionRequestSent:
+		connectionStatus = "pending_sent"
+	case full.ConnectionRequestReceived:
+		connectionStatus = "pending_received"
 	}
 
 	rel := &Relationship{
-		Follows:      full.Follows,
-		FollowedBy:   full.FollowedBy,
-		Blocked:      full.Blocked,
-		IsMuted:      full.IsMuted,
-		IsFriend:     full.IsFriend,
-		FriendStatus: friendStatus,
+		Follows:          full.Follows,
+		FollowedBy:       full.FollowedBy,
+		Blocked:          full.Blocked,
+		IsMuted:          full.IsMuted,
+		IsConnection:     full.IsConnection,
+		ConnectionStatus: connectionStatus,
 	}
 
 	go func() {
@@ -216,45 +308,49 @@ func (s *Service) GetMutualFollowers(ctx context.Context, userA, userB uuid.UUID
 	return s.store.GetMutualFollowers(ctx, userA, userB, limit)
 }
 
-// --- Friends ---
+// --- Connections ---
 
-func (s *Service) SendFriendRequest(ctx context.Context, senderID, receiverID uuid.UUID) error {
+func (s *Service) SendConnectionRequest(ctx context.Context, senderID, receiverID uuid.UUID, source, message string) error {
+	// Per-action rate limit (spec §10.4): 30 connection requests / 24h / user.
+	if allowed, _ := s.rateLimit.Allow(ctx, ratelimit.ActionConnectionRequest, senderID); !allowed {
+		return ErrRateLimited
+	}
+
 	// Check not blocked
 	blocked, err := s.store.CheckBlock(ctx, receiverID, senderID)
 	if err != nil {
 		return err
 	}
 	if blocked {
-		return fmt.Errorf("cannot send friend request: blocked")
+		return fmt.Errorf("cannot send connection request: blocked")
 	}
 
-	// Check not already friends
-	isFriend, err := s.store.CheckFriendship(ctx, senderID, receiverID)
+	// Check not already connected
+	isConnection, err := s.store.CheckConnection(ctx, senderID, receiverID)
 	if err != nil {
 		return err
 	}
-	if isFriend {
-		return fmt.Errorf("already friends")
+	if isConnection {
+		return fmt.Errorf("already connected")
 	}
 
-	if err := s.store.SendFriendRequest(ctx, senderID, receiverID); err != nil {
+	if err := s.store.SendConnectionRequest(ctx, senderID, receiverID, source, message); err != nil {
 		return err
 	}
 
 	s.invalidateRel(ctx, senderID, receiverID)
 	s.invalidateRel(ctx, receiverID, senderID)
 
-	// Publish event for notifications
 	if s.producer != nil {
-		if err := s.producer.PublishFriendRequestSent(ctx, senderID, receiverID); err != nil {
-			log.Printf("[graph] Failed to publish FriendRequestSent event: %v", err)
+		if err := s.producer.PublishConnectionRequested(ctx, senderID, receiverID); err != nil {
+			log.Printf("[graph] Failed to publish ConnectionRequested event: %v", err)
 		}
 	}
 	return nil
 }
 
-func (s *Service) AcceptFriendRequest(ctx context.Context, senderID, receiverID uuid.UUID) error {
-	if err := s.store.AcceptFriendRequest(ctx, senderID, receiverID); err != nil {
+func (s *Service) AcceptConnectionRequest(ctx context.Context, senderID, receiverID uuid.UUID) error {
+	if err := s.store.AcceptConnectionRequest(ctx, senderID, receiverID); err != nil {
 		return err
 	}
 
@@ -262,17 +358,16 @@ func (s *Service) AcceptFriendRequest(ctx context.Context, senderID, receiverID 
 	s.invalidateRel(ctx, receiverID, senderID)
 	s.invalidateCounts(ctx, senderID, receiverID)
 
-	// Publish event for notifications
 	if s.producer != nil {
-		if err := s.producer.PublishFriendRequestAccepted(ctx, senderID, receiverID); err != nil {
-			log.Printf("[graph] Failed to publish FriendRequestAccepted event: %v", err)
+		if err := s.producer.PublishConnectionAccepted(ctx, senderID, receiverID); err != nil {
+			log.Printf("[graph] Failed to publish ConnectionAccepted event: %v", err)
 		}
 	}
 	return nil
 }
 
-func (s *Service) RejectFriendRequest(ctx context.Context, senderID, receiverID uuid.UUID) error {
-	if err := s.store.RejectFriendRequest(ctx, senderID, receiverID); err != nil {
+func (s *Service) DeclineConnectionRequest(ctx context.Context, senderID, receiverID uuid.UUID) error {
+	if err := s.store.DeclineConnectionRequest(ctx, senderID, receiverID); err != nil {
 		return err
 	}
 
@@ -280,15 +375,36 @@ func (s *Service) RejectFriendRequest(ctx context.Context, senderID, receiverID 
 	s.invalidateRel(ctx, receiverID, senderID)
 
 	if s.producer != nil {
-		if err := s.producer.PublishFriendRequestDeclined(ctx, senderID, receiverID); err != nil {
-			log.Printf("[graph] Failed to publish FriendRequestDeclined event: %v", err)
+		if err := s.producer.PublishConnectionDeclined(ctx, senderID, receiverID); err != nil {
+			log.Printf("[graph] Failed to publish ConnectionDeclined event: %v", err)
 		}
 	}
 	return nil
 }
 
-func (s *Service) RemoveFriend(ctx context.Context, userA, userB uuid.UUID) error {
-	if err := s.store.RemoveFriend(ctx, userA, userB); err != nil {
+// CancelConnectionRequest withdraws the actor's own pending request to target.
+func (s *Service) CancelConnectionRequest(ctx context.Context, senderID, receiverID uuid.UUID) error {
+	cancelled, err := s.store.CancelConnectionRequest(ctx, senderID, receiverID)
+	if err != nil {
+		return err
+	}
+	if !cancelled {
+		return fmt.Errorf("no pending connection request to cancel")
+	}
+
+	s.invalidateRel(ctx, senderID, receiverID)
+	s.invalidateRel(ctx, receiverID, senderID)
+
+	if s.producer != nil {
+		if err := s.producer.PublishConnectionRequestCancelled(ctx, senderID, receiverID); err != nil {
+			log.Printf("[graph] Failed to publish ConnectionRequestCancelled event: %v", err)
+		}
+	}
+	return nil
+}
+
+func (s *Service) RemoveConnection(ctx context.Context, userA, userB uuid.UUID) error {
+	if err := s.store.RemoveConnection(ctx, userA, userB); err != nil {
 		return err
 	}
 
@@ -297,19 +413,41 @@ func (s *Service) RemoveFriend(ctx context.Context, userA, userB uuid.UUID) erro
 	s.invalidateCounts(ctx, userA, userB)
 
 	if s.producer != nil {
-		if err := s.producer.PublishFriendRemoved(ctx, userA, userB, userA); err != nil {
-			log.Printf("[graph] Failed to publish FriendRemoved event: %v", err)
+		if err := s.producer.PublishConnectionRemoved(ctx, userA, userB, userA); err != nil {
+			log.Printf("[graph] Failed to publish ConnectionRemoved event: %v", err)
 		}
 	}
 	return nil
 }
 
-func (s *Service) GetFriends(ctx context.Context, userID uuid.UUID, limit, offset int) ([]uuid.UUID, error) {
-	return s.store.GetFriends(ctx, userID, limit, offset)
+func (s *Service) GetConnections(ctx context.Context, userID uuid.UUID, limit, offset int) ([]uuid.UUID, error) {
+	return s.store.GetConnections(ctx, userID, limit, offset)
 }
 
-func (s *Service) GetPendingRequests(ctx context.Context, userID uuid.UUID) ([]store.FriendRequest, error) {
-	return s.store.GetPendingRequests(ctx, userID)
+func (s *Service) GetPendingConnectionRequests(ctx context.Context, userID uuid.UUID) ([]store.ConnectionRequest, error) {
+	return s.store.GetPendingConnectionRequests(ctx, userID)
+}
+
+func (s *Service) GetSentConnectionRequests(ctx context.Context, userID uuid.UUID) ([]store.ConnectionRequest, error) {
+	return s.store.GetSentConnectionRequests(ctx, userID)
+}
+
+// GetFilteredConnectionRequests lists the user's auto-filtered (hidden) pending
+// connection requests.
+func (s *Service) GetFilteredConnectionRequests(ctx context.Context, userID uuid.UUID) ([]store.ConnectionRequest, error) {
+	return s.store.GetFilteredConnectionRequests(ctx, userID)
+}
+
+// SetRequestFiltered marks a pending request as auto-filtered. Driven by
+// trust-safety-service.
+func (s *Service) SetRequestFiltered(ctx context.Context, senderID, receiverID uuid.UUID) error {
+	return s.store.SetRequestFiltered(ctx, senderID, receiverID)
+}
+
+// UnfilterConnectionRequest moves a request back into the recipient's visible
+// inbox.
+func (s *Service) UnfilterConnectionRequest(ctx context.Context, senderID, receiverID uuid.UUID) error {
+	return s.store.UnfilterConnectionRequest(ctx, senderID, receiverID)
 }
 
 // --- Mutes ---
@@ -361,12 +499,78 @@ func (s *Service) invalidateCounts(ctx context.Context, a, b uuid.UUID) {
 // Close Friends
 // ═══════════════════════════════════════════════════════════
 
+// CloseFriendCap is the maximum Trusted Circle size (friends-sheets spec §3.1,
+// decision D3 — hardcoded for v1).
+const CloseFriendCap = 10
+
 func (s *Service) AddCloseFriend(ctx context.Context, userID, friendID uuid.UUID) error {
-	return s.store.AddCloseFriend(ctx, userID, friendID)
+	if userID == friendID {
+		return ErrCannotAddSelf
+	}
+	// Per-action rate limit: 30 Trusted Circle adds / 24h / user.
+	if allowed, _ := s.rateLimit.Allow(ctx, ratelimit.ActionCloseFriendAdd, userID); !allowed {
+		return ErrRateLimited
+	}
+	// A close friend must be an existing connection (spec §3.1).
+	connected, err := s.store.CheckConnection(ctx, userID, friendID)
+	if err != nil {
+		return err
+	}
+	if !connected {
+		return ErrNotAFriend
+	}
+	already, err := s.store.IsCloseFriend(ctx, userID, friendID)
+	if err != nil {
+		return err
+	}
+	if already {
+		return ErrAlreadyMember
+	}
+	count, err := s.store.CountCloseFriends(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if count >= CloseFriendCap {
+		return ErrCircleCapReached
+	}
+	// Read-through repair: close_friends FK-references the app.users
+	// projection. If a UserRegistered event was lost, the row is missing and
+	// the insert would 23503. Repair it from identity first so the action
+	// succeeds. ErrUserNotFound = the user genuinely does not exist; a
+	// transport error is non-fatal — fall through and let the FK backstop.
+	if s.userClient != nil {
+		if err := s.userClient.EnsureUser(ctx, friendID); err != nil {
+			if errors.Is(err, userclient.ErrUserNotFound) {
+				return ErrUserUnavailable
+			}
+			log.Printf("[graph] EnsureUser(%s) failed, proceeding: %v", friendID, err)
+		}
+	}
+	if err := s.store.AddCloseFriend(ctx, userID, friendID, "manual"); err != nil {
+		if isForeignKeyViolation(err) {
+			// Connection exists but the user projection hasn't caught up.
+			return ErrUserUnavailable
+		}
+		return err
+	}
+	if s.producer != nil {
+		if err := s.producer.PublishCloseFriendAdded(ctx, userID, friendID); err != nil {
+			log.Printf("[graph] Failed to publish CloseFriendAdded event: %v", err)
+		}
+	}
+	return nil
 }
 
 func (s *Service) RemoveCloseFriend(ctx context.Context, userID, friendID uuid.UUID) error {
-	return s.store.RemoveCloseFriend(ctx, userID, friendID)
+	if err := s.store.RemoveCloseFriend(ctx, userID, friendID); err != nil {
+		return err
+	}
+	if s.producer != nil {
+		if err := s.producer.PublishCloseFriendRemoved(ctx, userID, friendID); err != nil {
+			log.Printf("[graph] Failed to publish CloseFriendRemoved event: %v", err)
+		}
+	}
+	return nil
 }
 
 func (s *Service) GetCloseFriends(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {

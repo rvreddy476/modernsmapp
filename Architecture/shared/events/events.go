@@ -31,11 +31,23 @@ const (
 	MediaTranscodeRequested = "MediaTranscodeRequested" // payload: MediaTranscodeRequestedPayload
 	MediaTranscodeCompleted = "MediaTranscodeCompleted" // payload: MediaTranscodeCompletedPayload
 
-	FriendRequestSent     = "FriendRequestSent"     // payload: FriendRequestSentPayload
-	FriendRequestAccepted = "FriendRequestAccepted" // payload: FriendRequestAcceptedPayload
-	FriendRequestDeclined = "FriendRequestDeclined" // payload: FriendRequestDeclinedPayload
-	FriendRemoved         = "FriendRemoved"         // payload: FriendRemovedPayload
-	UserBlocked           = "UserBlocked"           // payload: UserBlockedPayload
+	// Connection lifecycle (messaging/privacy spec v2 §7.1 — the canonical
+	// backend term is "connection", formerly "friend").
+	ConnectionRequested        = "ConnectionRequested"        // payload: ConnectionRequestedPayload
+	ConnectionAccepted         = "ConnectionAccepted"         // payload: ConnectionAcceptedPayload
+	ConnectionDeclined         = "ConnectionDeclined"         // payload: ConnectionDeclinedPayload
+	ConnectionRequestCancelled = "ConnectionRequestCancelled" // payload: ConnectionRequestCancelledPayload
+	ConnectionRemoved          = "ConnectionRemoved"          // payload: ConnectionRemovedPayload
+	UserBlocked                = "UserBlocked"                // payload: UserBlockedPayload
+	UserUnblocked              = "UserUnblocked"              // payload: UserUnblockedPayload
+
+	// Close-friends ("Trusted Circle") membership — friends-sheets spec §3.1.
+	CloseFriendAdded   = "CloseFriendAdded"   // payload: CloseFriendChangedPayload
+	CloseFriendRemoved = "CloseFriendRemoved" // payload: CloseFriendChangedPayload
+
+	// Connection-request auto-filter — friends-sheets spec §5.1, §9.2.
+	// Emitted by trust-safety after it moves a request to the filtered queue.
+	ConnectionRequestFiltered = "ConnectionRequestFiltered" // payload: ConnectionRequestFilteredPayload
 
 	GroupCreated       = "GroupCreated"       // payload: GroupCreatedPayload
 	GroupMemberJoined  = "GroupMemberJoined"  // payload: GroupMemberJoinedPayload
@@ -558,25 +570,31 @@ type MediaTranscodeCompletedPayload struct {
 	ThumbnailURL string `json:"thumbnail_url,omitempty"`
 }
 
-type FriendRequestSentPayload struct {
+type ConnectionRequestedPayload struct {
 	SenderID   string    `json:"sender_id"`
 	ReceiverID string    `json:"receiver_id"`
 	CreatedAt  time.Time `json:"created_at"`
 }
 
-type FriendRequestAcceptedPayload struct {
+type ConnectionAcceptedPayload struct {
 	SenderID   string    `json:"sender_id"`
 	ReceiverID string    `json:"receiver_id"`
 	AcceptedAt time.Time `json:"accepted_at"`
 }
 
-type FriendRequestDeclinedPayload struct {
+type ConnectionDeclinedPayload struct {
 	SenderID   string    `json:"sender_id"`
 	ReceiverID string    `json:"receiver_id"`
 	DeclinedAt time.Time `json:"declined_at"`
 }
 
-type FriendRemovedPayload struct {
+type ConnectionRequestCancelledPayload struct {
+	SenderID    string    `json:"sender_id"`
+	ReceiverID  string    `json:"receiver_id"`
+	CancelledAt time.Time `json:"cancelled_at"`
+}
+
+type ConnectionRemovedPayload struct {
 	UserA     string    `json:"user_a"`
 	UserB     string    `json:"user_b"`
 	RemovedBy string    `json:"removed_by"`
@@ -587,6 +605,29 @@ type UserBlockedPayload struct {
 	BlockerID string    `json:"blocker_id"`
 	BlockedID string    `json:"blocked_id"`
 	BlockedAt time.Time `json:"blocked_at"`
+}
+
+type UserUnblockedPayload struct {
+	BlockerID   string    `json:"blocker_id"`
+	BlockedID   string    `json:"blocked_id"`
+	UnblockedAt time.Time `json:"unblocked_at"`
+}
+
+// CloseFriendChangedPayload is emitted on CloseFriendAdded / CloseFriendRemoved.
+// feed-service consumes it to refresh the author's close-friends audience cache.
+type CloseFriendChangedPayload struct {
+	OwnerID    string    `json:"owner_id"`
+	MemberID   string    `json:"member_id"`
+	OccurredAt time.Time `json:"occurred_at"`
+}
+
+// ConnectionRequestFilteredPayload is emitted by trust-safety when a connection
+// request is auto-filtered into the recipient's hidden queue (spec §9.2).
+type ConnectionRequestFilteredPayload struct {
+	SenderID   string    `json:"sender_id"`
+	ReceiverID string    `json:"receiver_id"`
+	Reason     string    `json:"reason"`
+	FilteredAt time.Time `json:"filtered_at"`
 }
 
 type GroupCreatedPayload struct {

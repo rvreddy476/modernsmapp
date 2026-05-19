@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/atpost/shared/httpclient"
@@ -33,6 +34,11 @@ func (p *DMPolicy) CanDM(ctx context.Context, userAID, userBID string) (bool, er
 	if err != nil {
 		slog.Warn("dm_policy: graph service unreachable, rejecting DM", "error", err)
 		return false, nil
+	}
+	// graph-service gates /v1/graph/* behind the internal service key —
+	// without it the call 401s and CanDM wrongly denies every DM.
+	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
+		req.Header.Set("X-Internal-Service-Key", key)
 	}
 	resp, err := p.httpClient.Do(req)
 	if err != nil {

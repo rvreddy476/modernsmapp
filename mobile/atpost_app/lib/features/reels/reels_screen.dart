@@ -637,7 +637,7 @@ class _ReelPageState extends State<_ReelPage> {
   }
 
   String get _tags {
-    if (widget.post.tags.isEmpty) return '#reels #atpost';
+    if (widget.post.tags.isEmpty) return '#reels #vchat';
     return widget.post.tags.take(4).map((tag) => '#$tag').join(' ');
   }
 

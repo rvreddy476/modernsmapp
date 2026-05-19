@@ -29,7 +29,9 @@ bool _isVideoFile(String path) {
   return false;
 }
 
-enum PostVisibility { public, followers, private }
+/// Post audience. The enum name is sent verbatim as the `visibility`
+/// value to post-service (e.g. `trusted` → close-friends-only).
+enum PostVisibility { public, followers, trusted, private }
 
 class CreationState {
   final PostType type;

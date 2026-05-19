@@ -97,3 +97,49 @@ groups:
             Service {{ $labels.job }} database pool utilization has
             exceeded 90% for 2 minutes
             (current: {{ $value | humanizePercentage }}).
+
+  - name: atpost_projection_alerts
+    rules:
+      # ── User Projection Drift ──────────────────────────────────────────
+      # Users exist in the identity master but are missing from app.users —
+      # the failure mode behind the Trusted Circle 500. The reconcile job
+      # should close this within ~5 minutes; a sustained gap means it cannot.
+      - alert: UserProjectionDrift
+        expr: atpost_projection_missing_total > 0
+        for: 10m
+        labels:
+          severity: high
+        annotations:
+          summary: "app.users projection is missing users"
+          description: >
+            {{ $value }} user(s) present in the identity master are missing
+            from the user-service app.users projection for over 10 minutes —
+            the reconcile job is not converging.
+
+      # ── Reconcile Stalled ──────────────────────────────────────────────
+      # The reconcile job runs every 5m; no success in 30m means it (or
+      # profile-service) has stalled and drift will accumulate unrepaired.
+      - alert: UserProjectionReconcileStalled
+        expr: >
+          time() - atpost_projection_reconcile_last_success_timestamp_seconds > 1800
+        for: 5m
+        labels:
+          severity: high
+        annotations:
+          summary: "user-service projection reconcile has stalled"
+          description: >
+            No successful app.users reconcile run in over 30 minutes
+            (expected every 5 minutes).
+
+      # ── Consumer DLQ Not Empty ─────────────────────────────────────────
+      - alert: ConsumerDLQNotEmpty
+        expr: atpost_projection_dlq_unreplayed_total > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "user-service consumer DLQ has unreplayed events"
+          description: >
+            {{ $value }} event(s) failed processing and are parked in the
+            consumer DLQ — inspect via GET /internal/dlq and replay after
+            fixing the cause.

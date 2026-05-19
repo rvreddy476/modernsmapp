@@ -174,6 +174,13 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
         ),
         const SizedBox(width: 8),
         BadgeIconButton(
+          icon: Icons.chat_bubble_rounded,
+          tooltip: 'Messages',
+          tintColor: AppColors.accentPurple,
+          onPressed: () => context.push('/chat'),
+        ),
+        const SizedBox(width: 8),
+        BadgeIconButton(
           icon: Icons.notifications_rounded,
           tooltip: 'Notifications',
           tintColor: AppColors.postbookPrimary,

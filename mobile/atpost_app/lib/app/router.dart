@@ -68,6 +68,7 @@ import 'package:atpost_app/features/stories/create_story_screen.dart';
 import 'package:atpost_app/features/stories/story_viewer_screen.dart';
 import 'package:atpost_app/features/chat/chat_detail_screen.dart';
 import 'package:atpost_app/features/chat/chat_list_screen.dart';
+import 'package:atpost_app/features/chat/message_requests_screen.dart';
 import 'package:atpost_app/features/calls/call_screen.dart';
 import 'package:atpost_app/features/live/live_screen.dart';
 import 'package:atpost_app/features/live/broadcast_screen.dart';
@@ -269,9 +270,9 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           // tab provider on first build so deep links land on the right
           // surface.
           GoRoute(
-            path: '/wallet-tab',
+            path: '/friends-tab',
             builder: (_, _) =>
-                const ShellScaffold(initialTab: ShellTabIndex.wallet),
+                const ShellScaffold(initialTab: ShellTabIndex.friends),
           ),
           GoRoute(
             path: '/reels-tab',
@@ -311,6 +312,10 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: '/chat',
             builder: (context, state) => const ChatListScreen(),
+          ),
+          GoRoute(
+            path: '/chat/requests',
+            builder: (context, state) => const MessageRequestsScreen(),
           ),
           GoRoute(
             path: '/chat/:conversationId',

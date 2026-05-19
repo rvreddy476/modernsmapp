@@ -26,6 +26,7 @@ type Service struct {
 	graphURL          string
 	postServiceURL    string
 	profileServiceURL string
+	userServiceURL    string
 	ranker            *ranking.Ranker
 }
 
@@ -42,6 +43,10 @@ func New(scylla *scylla.TimelineStore, pg *postgres.MetaStore, rdb *redis.Client
 	if profileServiceURL == "" {
 		profileServiceURL = "http://identity-profile:8098"
 	}
+	userServiceURL := os.Getenv("USER_SERVICE_URL")
+	if userServiceURL == "" {
+		userServiceURL = "http://identity-user:8110"
+	}
 	return &Service{
 		scyllaStore:       scylla,
 		pgStore:           pg,
@@ -49,6 +54,7 @@ func New(scylla *scylla.TimelineStore, pg *postgres.MetaStore, rdb *redis.Client
 		graphURL:          graphURL,
 		postServiceURL:    postServiceURL,
 		profileServiceURL: profileServiceURL,
+		userServiceURL:    userServiceURL,
 	}
 }
 
@@ -458,7 +464,7 @@ func (s *Service) DebugFeed(ctx context.Context, userID uuid.UUID) (interface{},
 	}, nil
 }
 
-func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, createdAt time.Time, contentType string) error {
+func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, createdAt time.Time, contentType, visibility string) error {
 	// 1. Always add to Author Timeline
 	if err := s.scyllaStore.AddToAuthorTimeline(ctx, authorID, postID, createdAt, contentType); err != nil {
 		return err
@@ -467,6 +473,32 @@ func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, cr
 	// 2. Also add to Author's own Home Timeline (so they see their own posts)
 	if err := s.scyllaStore.AddToHomeTimeline(ctx, authorID, postID, authorID, createdAt, contentType); err != nil {
 		log.Printf("Failed to push to author's own home timeline: %v", err)
+	}
+
+	// 2b. Trusted ("close friends") audience: fan out only to the author's
+	// Trusted Circle — not followers, not circle members — and only if the
+	// author has the close-friends-posts feature on (friends-sheets spec §3.3,
+	// §11 step 12). Independent of celeb status: the circle is small (≤10) so
+	// a push is always cheap, and the pull model would not reliably surface a
+	// restricted-audience post.
+	if visibility == "trusted" {
+		if !s.closeFriendsPostsEnabled(ctx, authorID) {
+			return nil // toggle off — post stays on the author's own timeline
+		}
+		closeFriends, err := s.fetchCloseFriends(ctx, authorID)
+		if err != nil {
+			log.Printf("Failed to fetch close friends for trusted fanout: %v", err)
+			return nil
+		}
+		for _, recipientID := range closeFriends {
+			if recipientID == authorID {
+				continue // already pushed above
+			}
+			if err := s.scyllaStore.AddToHomeTimeline(ctx, recipientID, postID, authorID, createdAt, contentType); err != nil {
+				log.Printf("Failed to push trusted post to timeline for user %s: %v", recipientID, err)
+			}
+		}
+		return nil
 	}
 
 	// 3. Check Celeb Status
@@ -556,6 +588,12 @@ func (s *Service) getBlockedAndMuted(ctx context.Context, userID uuid.UUID) ([]u
 	if err != nil {
 		return nil, err
 	}
+	// Forward the internal-service key so graph-service's CG2 gate accepts
+	// the request — without it the call 401s and block/mute filtering
+	// silently no-ops (blocked/muted authors leak back into the feed).
+	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
+		req.Header.Set("X-Internal-Service-Key", key)
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -566,6 +604,72 @@ func (s *Service) getBlockedAndMuted(ctx context.Context, userID uuid.UUID) ([]u
 	}
 	json.NewDecoder(resp.Body).Decode(&result)
 	return result.UserIDs, nil
+}
+
+// fetchCloseFriends calls graph-service for a user's Trusted Circle. The
+// close-friends endpoint resolves its subject from X-User-Id, so the call
+// acts as the author. Returns the close-friend user IDs.
+func (s *Service) fetchCloseFriends(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	url := fmt.Sprintf("%s/v1/graph/close-friends", s.graphURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-User-Id", userID.String())
+	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
+		req.Header.Set("X-Internal-Service-Key", key)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("graph-service returned %d: %s", resp.StatusCode, string(body))
+	}
+	var envelope struct {
+		Data []uuid.UUID `json:"data"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil, fmt.Errorf("unmarshal close friends: %w", err)
+	}
+	return envelope.Data, nil
+}
+
+// closeFriendsPostsEnabled reports whether the author has the close-friends-
+// posts feature on (usr.user_settings.tc_close_friends_posts). Fail-open: a
+// user-service blip must not silently drop a post the author chose to make
+// "trusted".
+func (s *Service) closeFriendsPostsEnabled(ctx context.Context, userID uuid.UUID) bool {
+	url := fmt.Sprintf("%s/v1/users/%s/settings", s.userServiceURL, userID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return true
+	}
+	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
+		req.Header.Set("X-Internal-Service-Key", key)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return true // fail-open
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return true // fail-open
+	}
+	var envelope struct {
+		Data struct {
+			TcCloseFriendsPosts bool `json:"tc_close_friends_posts"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		return true // fail-open
+	}
+	return envelope.Data.TcCloseFriendsPosts
 }
 
 // fetchFollowers calls graph-service to get the follower list for a user.
@@ -675,14 +779,18 @@ func (s *Service) fetchFollowing(ctx context.Context, userID uuid.UUID) ([]uuid.
 	return allFollowing, nil
 }
 
-// fetchCircleMembers calls profile-service to get the friends list for a user.
+// fetchCircleMembers returns the author's connections ("friends"). The friend
+// system was consolidated onto graph-service, so this reads
+// GET /v1/graph/connections/{userId} — the single source of truth the apps
+// use — NOT the retired profile-service friends endpoint (which now returns
+// nothing, so a post never reached the author's friends). Mirrors fetchFollowers.
 func (s *Service) fetchCircleMembers(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
-	var allFriends []uuid.UUID
+	var allMembers []uuid.UUID
 	offset := 0
 	limit := 100
 
 	for {
-		url := fmt.Sprintf("%s/v1/profiles/%s/friends?limit=%d&offset=%d", s.profileServiceURL, userID.String(), limit, offset)
+		url := fmt.Sprintf("%s/v1/graph/connections/%s?limit=%d&offset=%d", s.graphURL, userID.String(), limit, offset)
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
@@ -696,7 +804,7 @@ func (s *Service) fetchCircleMembers(ctx context.Context, userID uuid.UUID) ([]u
 
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			return nil, fmt.Errorf("profile-service request failed: %w", err)
+			return nil, fmt.Errorf("graph-service request failed: %w", err)
 		}
 
 		body, err := io.ReadAll(resp.Body)
@@ -706,38 +814,25 @@ func (s *Service) fetchCircleMembers(ctx context.Context, userID uuid.UUID) ([]u
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("profile-service returned %d: %s", resp.StatusCode, string(body))
+			return nil, fmt.Errorf("graph-service returned %d: %s", resp.StatusCode, string(body))
 		}
 
 		var envelope struct {
-			Data struct {
-				Items []struct {
-					UserID string `json:"user_id"`
-				} `json:"items"`
-				Meta struct {
-					HasNext bool `json:"has_next"`
-				} `json:"meta"`
-			} `json:"data"`
+			Data []uuid.UUID `json:"data"`
 		}
 		if err := json.Unmarshal(body, &envelope); err != nil {
-			return nil, fmt.Errorf("unmarshal friends: %w", err)
+			return nil, fmt.Errorf("unmarshal connections: %w", err)
 		}
 
-		for _, item := range envelope.Data.Items {
-			id, err := uuid.Parse(item.UserID)
-			if err != nil {
-				continue
-			}
-			allFriends = append(allFriends, id)
-		}
+		allMembers = append(allMembers, envelope.Data...)
 
-		if !envelope.Data.Meta.HasNext || len(envelope.Data.Items) < limit {
+		if len(envelope.Data) < limit {
 			break
 		}
 		offset += limit
 	}
 
-	return allFriends, nil
+	return allMembers, nil
 }
 
 // getRecentPublicPosts fetches recent public posts from post-service as a cold-start fallback

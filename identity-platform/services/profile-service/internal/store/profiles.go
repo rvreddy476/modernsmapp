@@ -82,15 +82,7 @@ type Follow struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
-// Friendship represents a friend request/relationship.
-type Friendship struct {
-	ID          uuid.UUID `json:"id"`
-	RequesterID uuid.UUID `json:"requester_id"`
-	AddresseeID uuid.UUID `json:"addressee_id"`
-	Status      string    `json:"status"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
-}
+// Friend system retired — see graph-service connections; profile.friendships kept dormant for backfill
 
 // Block represents a block relationship.
 type Block struct {
@@ -109,24 +101,7 @@ type FollowerEntry struct {
 	FollowedAt    time.Time  `json:"followed_at"`
 }
 
-// FriendEntry represents a user in the circle list (only accepted members).
-type FriendEntry struct {
-	UserID        uuid.UUID  `json:"user_id"`
-	DisplayName   string     `json:"display_name"`
-	Username      *string    `json:"username,omitempty"`
-	AvatarMediaID *uuid.UUID `json:"avatar_media_id,omitempty"`
-	FriendSince   time.Time  `json:"friend_since"`
-}
-
-// FriendRequestEntry represents a friend request with the other user's profile info.
-type FriendRequestEntry struct {
-	FriendshipID  uuid.UUID  `json:"friendship_id"`
-	UserID        uuid.UUID  `json:"user_id"`
-	DisplayName   string     `json:"display_name"`
-	Username      *string    `json:"username,omitempty"`
-	AvatarMediaID *uuid.UUID `json:"avatar_media_id,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
-}
+// Friend system retired — see graph-service connections; profile.friendships kept dormant for backfill
 
 // RelationshipStatus represents the full relationship state between two users.
 type RelationshipStatus struct {
@@ -273,6 +248,42 @@ func (s *Store) ListProfiles(ctx context.Context, limit, offset int) ([]Profile,
 		profiles = append(profiles, p)
 	}
 	return profiles, total, rows.Err()
+}
+
+// ListProfilesChangedSince returns profiles whose updated_at is at or after
+// `since`, ordered oldest-change-first. It backs the projection reconcile job:
+// callers page through with `since` set to the highest updated_at they have
+// seen. A zero `since` returns every profile (full reconciliation).
+func (s *Store) ListProfilesChangedSince(ctx context.Context, since time.Time, limit int) ([]Profile, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT `+allProfileCols+` FROM profile.profiles
+		 WHERE updated_at >= $1
+		 ORDER BY updated_at ASC, user_id ASC
+		 LIMIT $2`, since, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var profiles []Profile
+	for rows.Next() {
+		var p Profile
+		err := rows.Scan(
+			&p.UserID, &p.Username, &p.DisplayName, &p.FirstName, &p.LastName,
+			&p.PreferredName, &p.Pronouns, &p.Bio, &p.DoB, &p.Gender,
+			&p.AvatarMediaID, &p.CoverMediaID, &p.Category, &p.Profession, &p.Website, &p.Location, &p.BadgeFlags,
+			&p.IsVerified, &p.VerificationLevel, &p.StatusText, &p.StatusEmoji, &p.StatusExpiresAt,
+			&p.ProfileThemeColor, &p.IntroMediaURL, &p.IntroMediaType, &p.CTALabel, &p.CTAURL,
+			&p.MemberSinceBadge, &p.Timezone,
+			&p.FollowerCount, &p.FollowingCount, &p.FriendCount, &p.PostCount,
+			&p.CreatedAt, &p.UpdatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		profiles = append(profiles, p)
+	}
+	return profiles, rows.Err()
 }
 
 // UpdateProfileParams groups all fields that can be updated on a profile.
@@ -682,93 +693,7 @@ func (s *Store) DecrementFollowingCount(ctx context.Context, userID uuid.UUID) e
 	return err
 }
 
-// ---------------------------------------------------------------
-// Friendships
-// ---------------------------------------------------------------
-
-func (s *Store) CreateFriendRequest(ctx context.Context, requesterID, addresseeID uuid.UUID) (*Friendship, error) {
-	var f Friendship
-	err := s.db.QueryRow(ctx, `
-		INSERT INTO profile.friendships (id, requester_id, addressee_id, status, created_at, updated_at)
-		VALUES ($1, $2, $3, 'pending', NOW(), NOW())
-		RETURNING id, requester_id, addressee_id, status, created_at, updated_at
-	`, uuid.New(), requesterID, addresseeID).
-		Scan(&f.ID, &f.RequesterID, &f.AddresseeID, &f.Status, &f.CreatedAt, &f.UpdatedAt)
-	if err != nil {
-		return nil, err
-	}
-	return &f, nil
-}
-
-func (s *Store) UpdateFriendshipStatus(ctx context.Context, friendshipID uuid.UUID, status string) (*Friendship, error) {
-	var f Friendship
-	err := s.db.QueryRow(ctx, `
-		UPDATE profile.friendships
-		SET status = $2, updated_at = NOW()
-		WHERE id = $1
-		RETURNING id, requester_id, addressee_id, status, created_at, updated_at
-	`, friendshipID, status).
-		Scan(&f.ID, &f.RequesterID, &f.AddresseeID, &f.Status, &f.CreatedAt, &f.UpdatedAt)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return &f, nil
-}
-
-func (s *Store) GetFriendship(ctx context.Context, friendshipID uuid.UUID) (*Friendship, error) {
-	var f Friendship
-	err := s.db.QueryRow(ctx, `
-		SELECT id, requester_id, addressee_id, status, created_at, updated_at
-		FROM profile.friendships
-		WHERE id = $1
-	`, friendshipID).Scan(&f.ID, &f.RequesterID, &f.AddresseeID, &f.Status, &f.CreatedAt, &f.UpdatedAt)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return &f, nil
-}
-
-// GetFriendshipBetween returns any friendship row between two users (in either direction).
-func (s *Store) GetFriendshipBetween(ctx context.Context, userA, userB uuid.UUID) (*Friendship, error) {
-	var f Friendship
-	err := s.db.QueryRow(ctx, `
-		SELECT id, requester_id, addressee_id, status, created_at, updated_at
-		FROM profile.friendships
-		WHERE (requester_id = $1 AND addressee_id = $2)
-		   OR (requester_id = $2 AND addressee_id = $1)
-		ORDER BY created_at DESC
-		LIMIT 1
-	`, userA, userB).Scan(&f.ID, &f.RequesterID, &f.AddresseeID, &f.Status, &f.CreatedAt, &f.UpdatedAt)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return &f, nil
-}
-
-// DeleteFriendshipByID removes a friendship row by its ID.
-func (s *Store) DeleteFriendshipByID(ctx context.Context, friendshipID uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `DELETE FROM profile.friendships WHERE id = $1`, friendshipID)
-	return err
-}
-
-func (s *Store) IncrementFriendCount(ctx context.Context, userID uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `UPDATE profile.profiles SET friend_count = friend_count + 1 WHERE user_id = $1`, userID)
-	return err
-}
-
-func (s *Store) DecrementFriendCount(ctx context.Context, userID uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `UPDATE profile.profiles SET friend_count = GREATEST(friend_count - 1, 0) WHERE user_id = $1`, userID)
-	return err
-}
+// Friend system retired — see graph-service connections; profile.friendships kept dormant for backfill
 
 // ---------------------------------------------------------------
 // Blocks
@@ -916,156 +841,7 @@ func (s *Store) ListFollowing(ctx context.Context, userID uuid.UUID, limit, offs
 	return entries, total, rows.Err()
 }
 
-// ListFriends returns only accepted circle members for the given userID.
-// Only friendships with status='accepted' are returned — pending/rejected are excluded.
-func (s *Store) ListFriends(ctx context.Context, userID uuid.UUID, limit, offset int) ([]FriendEntry, int64, error) {
-	var total int64
-	err := s.db.QueryRow(ctx, `
-		SELECT COUNT(*)
-		FROM profile.friendships
-		WHERE status = 'accepted'
-		  AND (requester_id = $1 OR addressee_id = $1)
-	`, userID).Scan(&total)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	rows, err := s.db.Query(ctx, `
-		SELECT p.user_id, p.display_name, p.username, p.avatar_media_id, fr.updated_at
-		FROM profile.friendships fr
-		JOIN profile.profiles p ON p.user_id = CASE
-			WHEN fr.requester_id = $1 THEN fr.addressee_id
-			ELSE fr.requester_id
-		END
-		WHERE fr.status = 'accepted'
-		  AND (fr.requester_id = $1 OR fr.addressee_id = $1)
-		ORDER BY fr.updated_at DESC
-		LIMIT $2 OFFSET $3
-	`, userID, limit, offset)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer rows.Close()
-
-	var entries []FriendEntry
-	for rows.Next() {
-		var e FriendEntry
-		if err := rows.Scan(&e.UserID, &e.DisplayName, &e.Username, &e.AvatarMediaID, &e.FriendSince); err != nil {
-			return nil, 0, err
-		}
-		entries = append(entries, e)
-	}
-	return entries, total, rows.Err()
-}
-
-// ListFriendRequests returns pending incoming friend requests for the given userID, enriched with requester profile info.
-func (s *Store) ListFriendRequests(ctx context.Context, userID uuid.UUID, limit, offset int) ([]FriendRequestEntry, int64, error) {
-	var total int64
-	err := s.db.QueryRow(ctx, `
-		SELECT COUNT(*)
-		FROM profile.friendships
-		WHERE addressee_id = $1 AND status = 'pending'
-	`, userID).Scan(&total)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	rows, err := s.db.Query(ctx, `
-		SELECT f.id, f.requester_id, p.display_name, p.username, p.avatar_media_id, f.created_at
-		FROM profile.friendships f
-		JOIN profile.profiles p ON p.user_id = f.requester_id
-		WHERE f.addressee_id = $1 AND f.status = 'pending'
-		ORDER BY f.created_at DESC
-		LIMIT $2 OFFSET $3
-	`, userID, limit, offset)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer rows.Close()
-
-	var entries []FriendRequestEntry
-	for rows.Next() {
-		var e FriendRequestEntry
-		if err := rows.Scan(&e.FriendshipID, &e.UserID, &e.DisplayName, &e.Username, &e.AvatarMediaID, &e.CreatedAt); err != nil {
-			return nil, 0, err
-		}
-		entries = append(entries, e)
-	}
-	return entries, total, rows.Err()
-}
-
-// ListSentFriendRequests returns pending outgoing friend requests sent by the given userID, enriched with addressee profile info.
-func (s *Store) ListSentFriendRequests(ctx context.Context, userID uuid.UUID, limit, offset int) ([]FriendRequestEntry, int64, error) {
-	var total int64
-	err := s.db.QueryRow(ctx, `
-		SELECT COUNT(*)
-		FROM profile.friendships
-		WHERE requester_id = $1 AND status = 'pending'
-	`, userID).Scan(&total)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	rows, err := s.db.Query(ctx, `
-		SELECT f.id, f.addressee_id, p.display_name, p.username, p.avatar_media_id, f.created_at
-		FROM profile.friendships f
-		JOIN profile.profiles p ON p.user_id = f.addressee_id
-		WHERE f.requester_id = $1 AND f.status = 'pending'
-		ORDER BY f.created_at DESC
-		LIMIT $2 OFFSET $3
-	`, userID, limit, offset)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer rows.Close()
-
-	var entries []FriendRequestEntry
-	for rows.Next() {
-		var e FriendRequestEntry
-		if err := rows.Scan(&e.FriendshipID, &e.UserID, &e.DisplayName, &e.Username, &e.AvatarMediaID, &e.CreatedAt); err != nil {
-			return nil, 0, err
-		}
-		entries = append(entries, e)
-	}
-	return entries, total, rows.Err()
-}
-
-// CancelFriendRequest deletes a pending friend request sent by the given user.
-func (s *Store) CancelFriendRequest(ctx context.Context, requesterID, friendshipID uuid.UUID) error {
-	tag, err := s.db.Exec(ctx, `
-		DELETE FROM profile.friendships
-		WHERE id = $1 AND requester_id = $2 AND status = 'pending'
-	`, friendshipID, requesterID)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return errors.New("friend request not found or already responded")
-	}
-	return nil
-}
-
-// DeleteFriendship removes an accepted friendship between two users and decrements friend counts.
-func (s *Store) DeleteFriendship(ctx context.Context, userID, friendID uuid.UUID) error {
-	tag, err := s.db.Exec(ctx, `
-		DELETE FROM profile.friendships
-		WHERE status = 'accepted'
-		  AND ((requester_id = $1 AND addressee_id = $2)
-		    OR (requester_id = $2 AND addressee_id = $1))
-	`, userID, friendID)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return errors.New("friendship not found")
-	}
-
-	// Decrement friend counts for both users
-	if err := s.DecrementFriendCount(ctx, userID); err != nil {
-		return err
-	}
-	return s.DecrementFriendCount(ctx, friendID)
-}
+// Friend system retired — see graph-service connections; profile.friendships kept dormant for backfill
 
 // DeleteFollowsBetween deletes follows in both directions between two users.
 func (s *Store) DeleteFollowsBetween(ctx context.Context, userAID, userBID uuid.UUID) (int64, error) {
@@ -1080,17 +856,7 @@ func (s *Store) DeleteFollowsBetween(ctx context.Context, userAID, userBID uuid.
 	return tag.RowsAffected(), nil
 }
 
-// RejectFriendRequestsBetween rejects any pending friend requests in both directions.
-func (s *Store) RejectFriendRequestsBetween(ctx context.Context, userAID, userBID uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `
-		UPDATE profile.friendships
-		SET status = 'rejected', updated_at = NOW()
-		WHERE status = 'pending'
-		  AND ((requester_id = $1 AND addressee_id = $2)
-		    OR (requester_id = $2 AND addressee_id = $1))
-	`, userAID, userBID)
-	return err
-}
+// Friend system retired — see graph-service connections; profile.friendships kept dormant for backfill
 
 // CountFollowsBetween returns the number of active follows between two users (0, 1, or 2).
 func (s *Store) CountFollowsBetween(ctx context.Context, userAID, userBID uuid.UUID) (aFollowsB, bFollowsA bool, err error) {
@@ -1132,25 +898,9 @@ func (s *Store) GetRelationship(ctx context.Context, viewerID, targetID uuid.UUI
 	rel.Following = viewerFollows
 	rel.FollowedBy = targetFollows
 
-	// Check circle (accepted friendship = in circle)
-	friendship, err := s.GetFriendshipBetween(ctx, viewerID, targetID)
-	if err != nil {
-		return nil, err
-	}
-	if friendship != nil {
-		switch friendship.Status {
-		case "accepted":
-			rel.InCircle = true
-		case "pending":
-			reqID := friendship.ID.String()
-			rel.CircleRequestID = &reqID
-			if friendship.RequesterID == viewerID {
-				rel.CircleRequestSent = true
-			} else {
-				rel.CircleRequestReceived = true
-			}
-		}
-	}
+	// Friend system retired — see graph-service connections; profile.friendships kept dormant
+	// for backfill. Circle/mutual fields are no longer derived here; consumers should query
+	// graph-service connections for circle state.
 
 	// Check blocks
 	viewerBlocked, err := s.IsBlocked(ctx, viewerID, targetID)
@@ -1160,18 +910,6 @@ func (s *Store) GetRelationship(ctx context.Context, viewerID, targetID uuid.UUI
 	rel.Blocked = viewerBlocked
 	// Never reveal if target blocked viewer (spec: blocked_by always false)
 	rel.BlockedBy = false
-
-	// Derived permissions based on circle membership
-	rel.CanDM = rel.InCircle
-	rel.CanSeeOnline = rel.InCircle
-	rel.CanAddToGroup = rel.InCircle
-
-	// Mutual circle count: count friends they have in common
-	rel.MutualCircleCount, err = s.CountMutualFriends(ctx, viewerID, targetID)
-	if err != nil {
-		// Non-fatal: log and continue with 0
-		rel.MutualCircleCount = 0
-	}
 
 	return rel, nil
 }
@@ -1301,20 +1039,4 @@ func (s *Store) RecalculateProfileStats(ctx context.Context, userID uuid.UUID) (
 	return &ps, nil
 }
 
-// CountMutualFriends counts how many accepted friends viewerID and targetID have in common.
-func (s *Store) CountMutualFriends(ctx context.Context, userA, userB uuid.UUID) (int, error) {
-	var count int
-	err := s.db.QueryRow(ctx, `
-		SELECT COUNT(*) FROM (
-			SELECT CASE WHEN requester_id = $1 THEN addressee_id ELSE requester_id END AS friend_id
-			FROM profile.friendships
-			WHERE status = 'accepted' AND (requester_id = $1 OR addressee_id = $1)
-		) a
-		INNER JOIN (
-			SELECT CASE WHEN requester_id = $2 THEN addressee_id ELSE requester_id END AS friend_id
-			FROM profile.friendships
-			WHERE status = 'accepted' AND (requester_id = $2 OR addressee_id = $2)
-		) b ON a.friend_id = b.friend_id
-	`, userA, userB).Scan(&count)
-	return count, err
-}
+// Friend system retired — see graph-service connections; profile.friendships kept dormant for backfill

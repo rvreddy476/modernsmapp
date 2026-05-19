@@ -318,7 +318,7 @@ func (c *Consumer) handlePostCreated(ctx context.Context, envelope events.EventE
 	}
 
 	fmt.Printf("Processing PostCreated: %s by %s type=%s\n", event.PostID, event.AuthorID, contentType)
-	return c.service.FanoutPost(ctx, postID, authorID, event.CreatedAt, contentType)
+	return c.service.FanoutPost(ctx, postID, authorID, event.CreatedAt, contentType, event.Visibility)
 }
 
 func (c *Consumer) handlePostReacted(ctx context.Context, envelope events.EventEnvelope) error {

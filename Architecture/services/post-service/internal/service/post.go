@@ -8,6 +8,7 @@ import (
 	"log"
 	"log/slog"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -1741,6 +1742,10 @@ func (s *Service) checkViewerFollowsAuthor(ctx context.Context, viewerID, author
 	if err != nil {
 		return false, fmt.Errorf("build relationship request: %w", err)
 	}
+	// graph-service gates /v1/graph/* behind the internal service key.
+	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
+		req.Header.Set("X-Internal-Service-Key", key)
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return false, fmt.Errorf("relationship request: %w", err)
@@ -1790,6 +1795,10 @@ func (s *Service) fetchFollowing(ctx context.Context, userID uuid.UUID) ([]uuid.
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
 			return nil, fmt.Errorf("create following request: %w", err)
+		}
+		// graph-service gates /v1/graph/* behind the internal service key.
+		if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
+			req.Header.Set("X-Internal-Service-Key", key)
 		}
 
 		resp, err := client.Do(req)

@@ -166,7 +166,7 @@ class _Greeting extends ConsumerWidget {
           Text(greeting, style: AppTextStyles.h1),
           const SizedBox(height: 4),
           Text(
-            'Discover AtPost services and mini-apps.',
+            'Discover VChat services and mini-apps.',
             style: AppTextStyles.body.copyWith(color: AppColors.textTertiary),
           ),
         ],
