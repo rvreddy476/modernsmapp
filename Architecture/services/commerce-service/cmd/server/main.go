@@ -18,6 +18,7 @@ import (
 	"github.com/atpost/commerce-service/internal/service"
 	"github.com/atpost/commerce-service/internal/store/blob"
 	pgstore "github.com/atpost/commerce-service/internal/store/postgres"
+	"github.com/atpost/commerce-service/internal/workers"
 	"github.com/atpost/shared/health"
 	"github.com/atpost/shared/middleware"
 	"github.com/atpost/shared/o11y/logging"
@@ -168,6 +169,18 @@ func main() {
 	go paymentsConsumer.Start(consumerCtx)
 	slog.Info("payments consumer started")
 
+	// Phase 6.1 — durable fulfillment worker. Replaces the old
+	// `go s.fulfillPaidOrder()` goroutines that disappeared on restart.
+	fulfillmentWorker := workers.NewFulfillmentWorker(store, svc)
+	go fulfillmentWorker.Run(consumerCtx)
+	slog.Info("fulfillment worker started")
+
+	// Phase 6.2 — inventory reservation expiry sweeper. Runs every minute
+	// and frees cart reservations whose 30-minute hold has elapsed so
+	// inventory doesn't stay locked behind abandoned checkouts.
+	go runInventoryExpiry(consumerCtx, store)
+	slog.Info("inventory expiry worker started")
+
 	// 11. HTTP handler
 	handler := commercehttp.New(svc).WithInternalKey(internalKey)
 
@@ -198,6 +211,25 @@ func main() {
 	}); err != nil {
 		slog.Error("server error", "error", err)
 		os.Exit(1)
+	}
+}
+
+// runInventoryExpiry sweeps expired cart reservations every minute so
+// abandoned checkouts free their hold for other shoppers. Phase 6.2.
+func runInventoryExpiry(ctx context.Context, store *pgstore.Store) {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if n, err := store.ExpireInventoryReservations(ctx); err != nil {
+				slog.Warn("inventory expiry sweep failed", "error", err)
+			} else if n > 0 {
+				slog.Info("inventory expiry sweep", "freed", n)
+			}
+		}
 	}
 }
 

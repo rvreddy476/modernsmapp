@@ -40,6 +40,7 @@ func (h *Handler) RegisterOnboardingRoutes(r *gin.Engine) {
 	adm.POST("/sellers/:sellerId/suspend", h.AdminSuspendSeller)
 	adm.POST("/sellers/:sellerId/kyc/verify", h.AdminVerifySellerKYC)
 	adm.GET("/payouts/pending", h.AdminListPendingPayouts)
+	adm.GET("/jobs/dead-letter", h.AdminListDeadLetterJobs)
 	adm.GET("/products/queue", h.AdminListProductQueue)
 	adm.POST("/products/:productId/approve", h.AdminApproveProduct)
 	adm.POST("/products/:productId/reject", h.AdminRejectProduct)
@@ -463,6 +464,24 @@ func (h *Handler) AdminRequestProductChanges(c *gin.Context) {
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+// AdminListDeadLetterJobs GET /v1/commerce/internal/jobs/dead-letter —
+// Phase 6.3. Surfaces the durable fulfillment queue's dead-lettered rows
+// so ops can replay or investigate persistent failures.
+func (h *Handler) AdminListDeadLetterJobs(c *gin.Context) {
+	limit := 50
+	if v := c.Query("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 500 {
+			limit = n
+		}
+	}
+	out, err := h.svc.AdminListDeadLetterJobs(c.Request.Context(), limit)
+	if err != nil {
+		handleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"jobs": out}, nil)
 }
 
 // AdminListPendingPayouts GET /v1/commerce/internal/payouts/pending —

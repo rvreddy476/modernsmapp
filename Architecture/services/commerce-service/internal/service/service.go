@@ -1158,7 +1158,8 @@ func (s *Service) Checkout(ctx context.Context, in CheckoutInput) (*postgres.Ord
 			"buyer_email":    buyerEmail,
 			"buyer_name":     buyerName,
 		})
-		go s.fulfillPaidOrder(order.ID)
+		// Phase 6.1 — durable enqueue replaces the fire-and-forget goroutine.
+		s.EnqueueFulfillPaidOrder(ctx, order.ID)
 	}
 	return order, nil
 }
@@ -1314,9 +1315,11 @@ func (s *Service) applyPaidStatus(ctx context.Context, orderID uuid.UUID, paymen
 		"buyer_email":  buyerEmail,
 	})
 
-	// Best-effort fulfillment automation. Run in a detached goroutine so a
-	// slow courier API or invoice render doesn't stall the payment callback.
-	go s.fulfillPaidOrder(orderID)
+	// Phase 6.1 — enqueue a durable fulfillment job rather than firing
+	// `go s.fulfillPaidOrder(orderID)`. A service restart between this
+	// point and the side effects (invoice + shipment) used to drop the
+	// work entirely; now the worker picks it back up.
+	s.EnqueueFulfillPaidOrder(ctx, orderID)
 	return nil
 }
 
@@ -1497,8 +1500,10 @@ func (s *Service) ApproveReturn(ctx context.Context, returnID, actorID uuid.UUID
 	// Reverse-pickup label.
 	s.bookReturnPickup(ctx, r)
 
-	// Refund.
-	s.initiateReturnRefund(ctx, r, actorID)
+	// Phase 6.1 — refund happens via the durable fulfillment worker so a
+	// payments-service blip doesn't leave the buyer unrefunded after a
+	// successful approve API call.
+	s.EnqueueProcessReturnApproved(ctx, returnID)
 
 	out, _ := s.store.GetReturnRequestByID(ctx, returnID)
 	if out == nil {

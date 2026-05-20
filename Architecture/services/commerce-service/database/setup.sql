@@ -794,6 +794,43 @@ ALTER TABLE products DROP CONSTRAINT IF EXISTS products_approval_status_check;
 ALTER TABLE products ADD CONSTRAINT products_approval_status_check
     CHECK (approval_status IN ('draft','pending','approved','rejected','flagged','changes_requested','live'));
 
+-- ─── Phase 6.1 — Fulfillment job queue ─────────────────────────
+-- Replaces `go s.fulfillPaidOrder()` with a durable retry-with-backoff
+-- worker so a service restart no longer drops in-flight side effects
+-- (invoice issuance, shipment booking, refund initiation).
+
+CREATE TABLE IF NOT EXISTS fulfillment_jobs (
+    id              BIGSERIAL PRIMARY KEY,
+    kind            TEXT NOT NULL
+                       CHECK (kind IN (
+                           'fulfill_paid_order',
+                           'process_return_approved'
+                       )),
+    payload         JSONB NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending'
+                       CHECK (status IN ('pending','processing','done','dead')),
+    attempts        INT NOT NULL DEFAULT 0,
+    next_run_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_error      TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    started_at      TIMESTAMPTZ,
+    completed_at    TIMESTAMPTZ,
+    dead_letter_at  TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_fulfillment_jobs_pending
+    ON fulfillment_jobs(status, next_run_at)
+    WHERE status IN ('pending','processing');
+CREATE INDEX IF NOT EXISTS idx_fulfillment_jobs_dead
+    ON fulfillment_jobs(dead_letter_at DESC)
+    WHERE status = 'dead';
+
+-- ─── Phase 6.2 — Stock reservation expiry tracking ─────────────
+-- The reservation table existed but lacked an explicit expiry-only
+-- index; the worker needs to find rows where expires_at <= NOW()
+-- cheaply, separate from the variant-scoped lookup index.
+CREATE INDEX IF NOT EXISTS idx_inventory_reservations_expiry
+    ON inventory_reservations(expires_at);
+
 -- ─── Phase 5 — B2B / Organizations ─────────────────────────────
 -- Business customers (corporates, schools, govt) buying through the
 -- same checkout, but with org context: shared billing address, GSTIN
