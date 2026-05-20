@@ -179,11 +179,13 @@ final pincodeServiceabilityProvider = FutureProvider.autoDispose
 
 /// Light-weight order list for `MyOrdersScreen`. AutoDisposes when the user
 /// navigates away — the screen invalidates this provider on pull-to-refresh
-/// and after order-cancel / return-create mutations.
+/// and after order-cancel / return-create mutations. Returns the first
+/// page only; the dedicated paginated provider lives in the screen.
 final myOrdersProvider =
     FutureProvider.autoDispose<List<OrderListItem>>((ref) async {
   final repo = ref.watch(commerceRepositoryProvider);
-  return repo.getMyOrders();
+  final page = await repo.getMyOrders();
+  return page.items;
 });
 
 /// Full order detail (with items + shipments). Keyed on order id.

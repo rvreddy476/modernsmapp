@@ -1095,7 +1095,10 @@ class OrderListItem {
       itemCount: count,
       placedAt: _toDate(json['created_at'] ?? json['placed_at']),
       primaryThumbUrl: thumb ?? _toStrOrNull(json['primary_image_url']),
-      firstItemTitle: firstTitle ?? _toStrOrNull(json['first_item_title']),
+      // Phase 2.1 backend ships `first_product_title`; older payloads
+      // may carry `first_item_title`. Either is accepted.
+      firstItemTitle: firstTitle ??
+          _toStrOrNull(json['first_product_title'] ?? json['first_item_title']),
     );
   }
 }

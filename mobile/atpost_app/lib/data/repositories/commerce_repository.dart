@@ -362,26 +362,35 @@ class CommerceRepository {
   // ─── Orders list (Sprint 2) ───────────────────────────────────────
 
   /// Page of light-weight order summaries for the "My orders" screen.
-  /// Backend route: `GET /v1/commerce/orders?limit=&offset=`. The brief
-  /// asks for cursor pagination; we accept a stringified offset so callers
-  /// can switch to a real keyset cursor without churn.
-  Future<List<OrderListItem>> getMyOrders({
+  /// Backend route: `GET /v1/commerce/orders?limit=&cursor=`. Phase 2.1
+  /// switched the customer order list to keyset cursors — the previous
+  /// offset path triggered a full-table COUNT(*) on every page. The
+  /// response now also carries item/seller counts + the first item's
+  /// product so the customer order-list screen can render rich cards.
+  ///
+  /// Returns the page + the opaque next-page cursor (empty on last page).
+  Future<({List<OrderListItem> items, String nextCursor})> getMyOrders({
     int limit = 20,
     String? cursor,
   }) async {
-    final offset = int.tryParse(cursor ?? '') ?? 0;
     final res = await _api.get(
       '/v1/commerce/orders',
-      queryParameters: {'limit': limit, 'offset': offset},
+      queryParameters: {
+        'limit': limit,
+        if (cursor != null && cursor.isNotEmpty) 'cursor': cursor,
+      },
     );
     final data = res.data['data'];
     final raw = data is List
         ? data
         : (data is Map ? (data['items'] as List? ?? const []) : const []);
-    return raw
+    final items = raw
         .whereType<Map>()
         .map((m) => OrderListItem.fromJson(Map<String, dynamic>.from(m)))
         .toList(growable: false);
+    final meta = res.data['meta'];
+    final next = (meta is Map ? meta['next_cursor'] : null)?.toString() ?? '';
+    return (items: items, nextCursor: next);
   }
 
   // ─── Shipment / live tracking (Sprint 2) ──────────────────────────
@@ -405,11 +414,11 @@ class CommerceRepository {
 
   // ─── Returns (Sprint 2) ───────────────────────────────────────────
 
-  /// Submits a return request. Backend `POST /v1/commerce/orders/:id/returns`
-  /// accepts a single `{order_item_id, seller_id, reason_code}` shape today
-  /// (see `handler.go#createReturnReq`); the brief asks for multi-item, so
-  /// we fan out one POST per item and return the first request created. If
-  /// any single call fails the whole batch errors out.
+  /// Submits a multi-item return in a single backend call. Phase 2.3
+  /// replaced the N-call fan-out with a bulk `{items:[...]}` endpoint —
+  /// the previous loop here lost atomicity (partial successes were
+  /// invisible to the caller). Returns the first return request created
+  /// (mirrors the prior contract); the others are persisted server-side.
   Future<ReturnRequest> requestReturn({
     required String orderId,
     required List<ReturnItem> items,
@@ -420,25 +429,39 @@ class CommerceRepository {
     if (items.isEmpty) {
       throw ArgumentError('requestReturn requires at least one item');
     }
-    ReturnRequest? first;
-    for (final item in items) {
-      final res = await _api.post(
-        '/v1/commerce/orders/$orderId/returns',
-        data: {
-          'order_item_id': item.orderItemId,
-          'seller_id': sellerId,
-          'reason_code': item.reason.wireValue,
-          'quantity': item.qty,
-          'pickup_address_id': pickupAddressId,
-          if (reasonDescription != null && reasonDescription.isNotEmpty)
-            'reason_description': reasonDescription,
-        },
-      );
-      final body = Map<String, dynamic>.from(res.data['data'] as Map);
-      final ret = ReturnRequest.fromJson(body);
-      first ??= ret;
+    final res = await _api.post(
+      '/v1/commerce/orders/$orderId/returns',
+      data: {
+        'pickup_address_id': pickupAddressId,
+        'items': [
+          for (final item in items)
+            {
+              'order_item_id': item.orderItemId,
+              'seller_id': sellerId,
+              'reason_code': item.reason.wireValue,
+              'quantity': item.qty,
+              if (reasonDescription != null && reasonDescription.isNotEmpty)
+                'reason_description': reasonDescription,
+            },
+        ],
+      },
+    );
+    final body = res.data['data'];
+    // Backend may answer with `{items:[...]}` (multi-item path) or a bare
+    // single item when only one was requested — handle both.
+    if (body is Map && body['items'] is List) {
+      final list = body['items'] as List;
+      if (list.isEmpty) throw StateError('empty return response');
+      return ReturnRequest.fromJson(Map<String, dynamic>.from(list.first as Map));
     }
-    return first!;
+    return ReturnRequest.fromJson(Map<String, dynamic>.from(body as Map));
+  }
+
+  /// Fetches a single return — Phase 2.2 detail endpoint. Replaces the
+  /// previous "list /me/returns and find the one I want" workaround.
+  Future<ReturnRequest> getReturn(String returnId) async {
+    final res = await _api.get('/v1/commerce/returns/$returnId');
+    return ReturnRequest.fromJson(Map<String, dynamic>.from(res.data['data'] as Map));
   }
 
   /// Backend route: `GET /v1/commerce/me/returns`.
