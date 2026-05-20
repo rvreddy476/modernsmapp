@@ -33,6 +33,82 @@ class EarningsSummary {
 }
 
 /// Production-ready Payout record model.
+/// Phase F1.2 — per-line commerce earning row from
+/// /v1/commerce/seller/earnings (Phase 4.4 backend). Replaces the legacy
+/// /v1/shop/payouts ledger on the seller monetization dashboard.
+class SellerEarning {
+  final String orderItemId;
+  final String orderId;
+  final String orderNumber;
+  final String productTitle;
+  final String sku;
+  final int quantity;
+  final double grossAmount;
+  final double commissionAmount;
+  final double platformFee;
+  final double tdsAmount;
+  final double netAmount;
+  final String? paymentMethod;
+  final String status;
+  final DateTime? deliveredAt;
+
+  const SellerEarning({
+    required this.orderItemId,
+    required this.orderId,
+    required this.orderNumber,
+    required this.productTitle,
+    required this.sku,
+    required this.quantity,
+    required this.grossAmount,
+    required this.commissionAmount,
+    required this.platformFee,
+    required this.tdsAmount,
+    required this.netAmount,
+    this.paymentMethod,
+    required this.status,
+    this.deliveredAt,
+  });
+
+  factory SellerEarning.fromJson(Map<String, dynamic> json) {
+    try {
+      return SellerEarning(
+        orderItemId: (json['order_item_id'] ?? '').toString(),
+        orderId: (json['order_id'] ?? '').toString(),
+        orderNumber: (json['order_number'] ?? '').toString(),
+        productTitle: (json['product_title'] ?? '').toString(),
+        sku: (json['sku'] ?? '').toString(),
+        quantity: (json['quantity'] is num) ? (json['quantity'] as num).toInt() : 0,
+        grossAmount: _toDouble(json['gross_amount']),
+        commissionAmount: _toDouble(json['commission_amount']),
+        platformFee: _toDouble(json['platform_fee']),
+        tdsAmount: _toDouble(json['tds_amount']),
+        netAmount: _toDouble(json['net_amount']),
+        paymentMethod: json['payment_method']?.toString(),
+        status: (json['status'] ?? '').toString(),
+        deliveredAt: json['delivered_at'] is String
+            ? DateTime.tryParse(json['delivered_at'] as String)
+            : null,
+      );
+    } catch (e, st) {
+      AppLogger.error('SellerEarning.fromJson failed', error: e, stackTrace: st);
+      return const SellerEarning(
+        orderItemId: 'err',
+        orderId: '',
+        orderNumber: '',
+        productTitle: '',
+        sku: '',
+        quantity: 0,
+        grossAmount: 0,
+        commissionAmount: 0,
+        platformFee: 0,
+        tdsAmount: 0,
+        netAmount: 0,
+        status: 'error',
+      );
+    }
+  }
+}
+
 class PayoutRecord {
   final String id;
   final double amount;

@@ -271,30 +271,56 @@ func (s *Store) ListSellerProducts(ctx context.Context, sellerID uuid.UUID, stat
 // paused, archived. approval_status: draft, submitted, under_review,
 // approved, rejected, live, hidden, archived. We surface active+approved.
 func (s *Store) ListProducts(ctx context.Context, categoryID *uuid.UUID, query string, limit, offset int) ([]*Product, int, error) {
-	conds := []string{"status = 'active'", "approval_status = 'approved'"}
+	conds := []string{"p.status = 'active'", "p.approval_status = 'approved'"}
 	args := []any{}
 	idx := 1
 	if categoryID != nil {
-		conds = append(conds, fmt.Sprintf("category_id = $%d", idx))
+		conds = append(conds, fmt.Sprintf("p.category_id = $%d", idx))
 		args = append(args, *categoryID)
 		idx++
 	}
 	if q := strings.TrimSpace(query); q != "" {
-		conds = append(conds, fmt.Sprintf("title ILIKE $%d", idx))
+		conds = append(conds, fmt.Sprintf("p.title ILIKE $%d", idx))
 		args = append(args, "%"+q+"%")
 		idx++
 	}
 	where := "WHERE " + strings.Join(conds, " AND ")
 
 	var total int
-	if err := s.db.QueryRow(ctx, "SELECT COUNT(*) FROM products "+where, args...).Scan(&total); err != nil {
+	if err := s.db.QueryRow(ctx, "SELECT COUNT(*) FROM products p "+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
 	args = append(args, limit, offset)
-	rows, err := s.db.Query(ctx, `SELECT id,seller_id,category_id,title,slug,status,approval_status,
-		avg_rating,review_count,order_count,view_count,created_at,updated_at FROM products `+
-		where+fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d OFFSET $%d", idx, idx+1), args...)
+	// Phase F1 — enrich each row with variant pricing + stock so the
+	// catalog grid renders without N+1 detail fetches. LATERAL picks
+	// the cheapest active variant as the card's "from price"; mobile
+	// uses default_variant_id to add to cart in one click.
+	rows, err := s.db.Query(ctx, `
+		SELECT p.id, p.seller_id, p.category_id, p.title, p.slug, p.status, p.approval_status,
+		       p.avg_rating, p.review_count, p.order_count, p.view_count, p.created_at, p.updated_at,
+		       p.primary_image_media_id,
+		       v.id  AS default_variant_id,
+		       v.min_selling_price,
+		       v.min_mrp,
+		       COALESCE(s.total_stock, 0) AS total_stock
+		FROM products p
+		LEFT JOIN LATERAL (
+			SELECT id, selling_price AS min_selling_price, mrp AS min_mrp
+			FROM product_variants
+			WHERE product_id = p.id AND status = 'active'
+			ORDER BY selling_price ASC
+			LIMIT 1
+		) v ON true
+		LEFT JOIN LATERAL (
+			SELECT SUM(GREATEST(i.total_qty - i.reserved_qty, 0))::int AS total_stock
+			FROM product_variants pv
+			JOIN inventory_items i ON i.variant_id = pv.id
+			WHERE pv.product_id = p.id AND pv.status = 'active'
+		) s ON true
+		` + where + fmt.Sprintf(`
+		ORDER BY p.created_at DESC
+		LIMIT $%d OFFSET $%d`, idx, idx+1), args...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -304,7 +330,9 @@ func (s *Store) ListProducts(ctx context.Context, categoryID *uuid.UUID, query s
 		var p Product
 		if err := rows.Scan(&p.ID, &p.SellerID, &p.CategoryID, &p.Title, &p.Slug,
 			&p.Status, &p.ApprovalStatus, &p.AvgRating, &p.ReviewCount, &p.OrderCount,
-			&p.ViewCount, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			&p.ViewCount, &p.CreatedAt, &p.UpdatedAt,
+			&p.PrimaryImageMediaID,
+			&p.DefaultVariantID, &p.MinSellingPrice, &p.MinMRP, &p.TotalStock); err != nil {
 			return nil, 0, err
 		}
 		products = append(products, &p)

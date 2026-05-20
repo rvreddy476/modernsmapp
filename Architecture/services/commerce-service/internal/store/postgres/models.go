@@ -179,6 +179,16 @@ type Product struct {
 	CreatedAt            time.Time  `db:"created_at" json:"created_at,omitempty"`
 	UpdatedAt            time.Time  `db:"updated_at" json:"updated_at,omitempty"`
 	PublishedAt          *time.Time `db:"published_at" json:"published_at,omitempty"`
+
+	// Phase F1 — list-view enrichment. Populated by ListProducts via
+	// LATERAL subqueries against product_variants so mobile/web can
+	// render the catalog grid + add-to-cart without an N+1 detail
+	// fetch. Nil on the detail endpoint (use the wrapped variants
+	// array there instead).
+	DefaultVariantID *uuid.UUID `json:"default_variant_id,omitempty"`
+	MinSellingPrice  *float64   `json:"min_selling_price,omitempty"`
+	MinMRP           *float64   `json:"min_mrp,omitempty"`
+	TotalStock       *int       `json:"total_stock,omitempty"`
 }
 
 // ProductMedia is one image / video / size-chart / infographic in a

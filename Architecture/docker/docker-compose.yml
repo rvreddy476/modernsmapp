@@ -275,9 +275,7 @@ services:
       GROUP_SERVICE_URL: http://group-service:8090
       ADMIN_SERVICE_URL: http://admin-service:8096
       PROFILE_SERVICE_URL: http://identity-profile:8098
-      ORDERS_SERVICE_URL: http://orders-service:8101
       PAYMENTS_SERVICE_URL: http://payments-service:8102
-      SHOP_SERVICE_URL: http://shop-service:8105
       LIVE_SERVICE_URL: http://live-service:8103
       MEMORIES_SERVICE_URL: http://memories-service:8104
       CHANNEL_SERVICE_URL: http://channel-service:8106
@@ -993,32 +991,9 @@ services:
 
   # ─── Commerce Services (v2.1) ────────────────────────────────
 
-  orders-service:
-    build:
-      context: ..
-      dockerfile: services/orders-service/Dockerfile
-    environment:
-      <<: *kafka_client_env
-      HTTP_PORT: "8101"
-      POSTGRES_DSN: *commerce_postgres_dsn
-      KAFKA_BROKERS: redpanda:9092
-      PAYMENTS_SERVICE_URL: http://payments-service:8102
-      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
-    ports:
-      - "8101:8101"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redpanda:
-        condition: service_started
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
-        reservations:
-          cpus: '0.25'
-          memory: 256M
+  # Phase F1.4 — orders-service retired. /v1/commerce/orders in
+  # commerce-service is the single source of truth; the gateway no
+  # longer proxies /v1/orders. Source removed from go.work.
 
   payments-service:
     build:
@@ -1086,30 +1061,8 @@ services:
           cpus: '0.25'
           memory: 256M
 
-  shop-service:
-    build:
-      context: ..
-      dockerfile: services/shop-service/Dockerfile
-    environment:
-      <<: *kafka_client_env
-      HTTP_PORT: "8105"
-      POSTGRES_DSN: *commerce_postgres_dsn
-      KAFKA_BROKERS: redpanda:9092
-    ports:
-      - "8105:8105"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redpanda:
-        condition: service_started
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
-        reservations:
-          cpus: '0.25'
-          memory: 256M
+  # Phase F1.4 — shop-service retired. Catalog, cart, checkout, and
+  # payouts all live under /v1/commerce/* in commerce-service.
 
   commerce-service:
     build:

@@ -110,30 +110,17 @@ func main() {
 		{"/v1/monetization", env("MONETIZATION_SERVICE_URL", "http://monetization-service:8099")},
 		// Suggestion service
 		{"/v1/suggestions", env("SUGGESTION_SERVICE_URL", "http://suggestion-service:8100")},
-		// Orders / Bookings service (v2.1)
-		// DEPRECATED (Phase 0.7, audit 2026-05-19; reaffirmed Phase 6.4):
-		// /v1/orders is retired for commerce — all commerce orders now
-		// live under /v1/commerce/orders in commerce-service. The only
-		// remaining caller is the mobile `OrdersRepository`
-		// (lib/data/repositories/orders_repository.dart) which still hits
-		// `/v1/orders/:id` and `/v1/orders/:id/cancel`. Drop both this
-		// gateway entry AND the orders-service source directory after the
-		// mobile re-point ships. `/v1/bookings` is a non-commerce surface
-		// and stays.
-		{"/v1/orders", env("ORDERS_SERVICE_URL", "http://orders-service:8101")},
-		{"/v1/bookings", env("ORDERS_SERVICE_URL", "http://orders-service:8101")},
+		// Phase F1.4 — `/v1/orders` and `/v1/shop` routes RETIRED. Both
+		// commerce-domain surfaces now live under `/v1/commerce/*` in
+		// commerce-service; mobile and web have re-pointed. The
+		// orders-service and shop-service source directories are
+		// deleted in this same PR. `/v1/bookings` is a non-commerce
+		// surface — it had nowhere to migrate to and is dropped with
+		// orders-service; if a bookings product reappears it should be
+		// its own service.
 		// Payments service (v2.1)
 		{"/v1/payments", env("PAYMENTS_SERVICE_URL", "http://payments-service:8102")},
-		// Shop / Live / Memories services
-		// DEPRECATED (Phase 0.7, audit 2026-05-19; reaffirmed Phase 6.4):
-		// /v1/shop is retired for commerce — catalog, wishlist, and
-		// payouts all live under /v1/commerce in commerce-service.
-		// Remaining mobile callers:
-		//   - shop_repository.dart        (/v1/shop/products + /cart)
-		//   - monetization_repository.dart (/v1/shop/payouts)
-		// After mobile re-points these to /v1/commerce, drop this gateway
-		// entry AND the shop-service source directory in the same PR.
-		{"/v1/shop", env("SHOP_SERVICE_URL", "http://shop-service:8105")},
+		// Live / Memories services
 		{"/v1/live", env("LIVE_SERVICE_URL", "http://live-service:8103")},
 		{"/v1/memories", env("MEMORIES_SERVICE_URL", "http://memories-service:8104")},
 		// Broadcast Channels / Communities (GCC Phase 4)

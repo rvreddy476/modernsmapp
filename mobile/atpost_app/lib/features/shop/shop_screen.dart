@@ -460,16 +460,15 @@ class _CartBottomSheet extends ConsumerWidget {
             SizedBox(
               width: double.infinity,
               child: ElevatedButton(
+                // Phase F1.3 — commerce-service checkout now requires
+                // address + payment method. Route to the dedicated
+                // /commerce/checkout flow that collects both rather
+                // than calling the bare checkout method.
                 onPressed: shopState.cartItems.isEmpty
                     ? null
-                    : () async {
-                        final order = await ref
-                            .read(shopProvider.notifier)
-                            .checkout();
-                        if (context.mounted && order != null) {
-                          context.pop();
-                          context.push('/orders/${order.id}');
-                        }
+                    : () {
+                        context.pop();
+                        context.push('/commerce/checkout');
                       },
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AppColors.postbookPrimary,
@@ -521,7 +520,7 @@ class _CartItemTile extends ConsumerWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  item.product?.title ?? 'Product',
+                  item.productTitle ?? item.product?.title ?? 'Product',
                   style: AppTextStyles.label.copyWith(
                     fontWeight: FontWeight.bold,
                   ),
@@ -536,7 +535,13 @@ class _CartItemTile extends ConsumerWidget {
             ),
           ),
           Text(
-            '\$${((item.product?.price ?? 0) * item.quantity).toStringAsFixed(2)}',
+            // Phase F1.3 — commerce-service supplies per-line totals
+            // server-side; prefer those over a client multiplication
+            // (avoids drift when tiered pricing kicks in).
+            '₹${(item.finalPrice > 0
+                    ? item.finalPrice
+                    : item.sellingPrice * item.quantity)
+                .toStringAsFixed(2)}',
             style: AppTextStyles.label.copyWith(color: Colors.white70),
           ),
           const SizedBox(width: 10),
@@ -546,8 +551,9 @@ class _CartItemTile extends ConsumerWidget {
               color: Colors.redAccent,
               size: 20,
             ),
+            // Cart key is variantId on commerce-service (Phase 1.2).
             onPressed: () =>
-                ref.read(shopProvider.notifier).removeFromCart(item.productId),
+                ref.read(shopProvider.notifier).removeFromCart(item.variantId),
           ),
         ],
       ),
