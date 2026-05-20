@@ -776,6 +776,22 @@ func (s *Service) priceCart(ctx context.Context, userID uuid.UUID, paymentMethod
 		return nil, fmt.Errorf("cart is empty")
 	}
 
+	// Phase F2.1 — preload tiered prices for every variant in the cart
+	// in one round trip. The fast-path `resolveLinePrice` below uses the
+	// resulting map; falls back to variant.selling_price when a variant
+	// has no tier ladder.
+	variantIDs := make([]uuid.UUID, 0, len(cartItems))
+	for _, ci := range cartItems {
+		variantIDs = append(variantIDs, ci.VariantID)
+	}
+	tiersByVariant, err := s.store.ListPriceTiersForVariants(ctx, variantIDs)
+	if err != nil {
+		// Tier lookup failure is non-fatal — we fall back to the
+		// variant's catalog price so checkout still completes.
+		slog.Warn("priceCart: tier lookup failed; using catalog price", "error", err)
+		tiersByVariant = map[uuid.UUID][]*postgres.PriceTier{}
+	}
+
 	var orderItems []*postgres.OrderItem
 	var unavailable []UnavailableQuoteItem
 	var subtotal float64
@@ -808,7 +824,11 @@ func (s *Service) priceCart(ctx context.Context, userID uuid.UUID, paymentMethod
 			continue
 		}
 
-		lineTotal := variant.SellingPrice * float64(ci.Quantity)
+		// Phase F2.1 — resolve unit price via tier ladder if one
+		// exists. The walk is short (typical seller defines ≤5 tiers
+		// per variant) and the slice is already sorted by min_qty.
+		unitPrice := resolveTieredPrice(tiersByVariant[ci.VariantID], variant.SellingPrice, ci.Quantity)
+		lineTotal := round2(unitPrice * float64(ci.Quantity))
 		subtotal += lineTotal
 
 		returnUntil := time.Now().AddDate(0, 0, product.ReturnPolicyDays)
@@ -820,7 +840,7 @@ func (s *Service) priceCart(ctx context.Context, userID uuid.UUID, paymentMethod
 			SKU:                 variant.SKU,
 			Quantity:            ci.Quantity,
 			UnitMRP:             variant.MRP,
-			UnitPrice:           variant.SellingPrice,
+			UnitPrice:           unitPrice,
 			DiscountAmount:      0,
 			TaxAmount:           0,
 			FinalPrice:          lineTotal,

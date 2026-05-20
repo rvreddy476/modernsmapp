@@ -44,6 +44,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	v1.POST("/products/:productId/media", h.AddProductMedia)
 	v1.GET("/products/:productId/attributes", h.GetProductAttributes)
 	v1.PUT("/products/:productId/attributes", h.SetProductAttributes)
+	// Phase F2.1 — variant tier pricing.
+	v1.GET("/variants/:variantId/price-tiers", h.GetPriceTiers)
+	v1.PUT("/variants/:variantId/price-tiers", h.SetPriceTiers)
 	v1.GET("/products/:productId/reviews", h.GetProductReviews)
 	v1.POST("/products/:productId/reviews", h.CreateReview)
 
@@ -103,6 +106,12 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 	// ── Phase 5 — B2B / Organizations ─────────────────────────
 	h.RegisterOrganizationRoutes(v1)
+
+	// ── Phase F2.2 — RFQ (Request For Quote) ──────────────────
+	h.RegisterRFQRoutes(v1)
+
+	// ── Phase F2.3 — bulk SKU upload ──────────────────────────
+	h.RegisterBulkImportRoutes(v1)
 }
 
 // ─── helpers ─────────────────────────────────────────────────────
@@ -374,6 +383,75 @@ func (h *Handler) GetProductAttributes(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"attributes": out}, nil)
+}
+
+// ─── Phase F2.1 — variant tier pricing handlers ──────────────
+
+type priceTierReq struct {
+	Tiers []struct {
+		MinQty int     `json:"min_qty" binding:"required"`
+		MaxQty *int    `json:"max_qty"`
+		Price  float64 `json:"price" binding:"required"`
+	} `json:"tiers"`
+}
+
+// SetPriceTiers PUT /v1/commerce/variants/:variantId/price-tiers —
+// seller manages the qty discount ladder for one variant. Empty
+// `tiers` clears the ladder (variant returns to flat selling_price).
+func (h *Handler) SetPriceTiers(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	variantID, ok := parseUUID(c, "variantId")
+	if !ok {
+		return
+	}
+	seller, err := h.svc.GetSellerProfile(c.Request.Context(), userID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil)
+		return
+	}
+	var req priceTierReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	tiers := make([]service.PriceTierInput, 0, len(req.Tiers))
+	for _, t := range req.Tiers {
+		tiers = append(tiers, service.PriceTierInput{MinQty: t.MinQty, MaxQty: t.MaxQty, Price: t.Price})
+	}
+	out, err := h.svc.SetPriceTiers(c.Request.Context(), seller.ID, service.SetPriceTiersInput{
+		VariantID: variantID, Tiers: tiers,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrTierOverlap), errors.Is(err, service.ErrTierInvalidBand):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_TIERS", err.Error(), nil)
+			return
+		case errors.Is(err, service.ErrTierNotSeller):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NOT_OWNER", err.Error(), nil)
+			return
+		}
+		handleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"tiers": out}, nil)
+}
+
+// GetPriceTiers GET /v1/commerce/variants/:variantId/price-tiers —
+// public read so the PDP can render the discount ladder to buyers.
+func (h *Handler) GetPriceTiers(c *gin.Context) {
+	variantID, ok := parseUUID(c, "variantId")
+	if !ok {
+		return
+	}
+	out, err := h.svc.GetPriceTiers(c.Request.Context(), variantID)
+	if err != nil {
+		handleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"tiers": out}, nil)
 }
 
 func (h *Handler) GetProductReviews(c *gin.Context) {

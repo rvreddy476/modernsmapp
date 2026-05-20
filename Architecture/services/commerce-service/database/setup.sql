@@ -794,6 +794,18 @@ ALTER TABLE products DROP CONSTRAINT IF EXISTS products_approval_status_check;
 ALTER TABLE products ADD CONSTRAINT products_approval_status_check
     CHECK (approval_status IN ('draft','pending','approved','rejected','flagged','changes_requested','live'));
 
+-- Phase F2.3 — bulk SKU import + Phase F2.2 RFQ added two new fulfillment
+-- job kinds. Idempotent ALTER so existing deployments accept the new
+-- enum values without a manual migration.
+ALTER TABLE fulfillment_jobs DROP CONSTRAINT IF EXISTS fulfillment_jobs_kind_check;
+ALTER TABLE fulfillment_jobs ADD CONSTRAINT fulfillment_jobs_kind_check
+    CHECK (kind IN (
+        'fulfill_paid_order',
+        'process_return_approved',
+        'bulk_import_validate',
+        'bulk_import_execute'
+    ));
+
 -- ─── Phase 6.1 — Fulfillment job queue ─────────────────────────
 -- Replaces `go s.fulfillPaidOrder()` with a durable retry-with-backoff
 -- worker so a service restart no longer drops in-flight side effects
@@ -804,7 +816,9 @@ CREATE TABLE IF NOT EXISTS fulfillment_jobs (
     kind            TEXT NOT NULL
                        CHECK (kind IN (
                            'fulfill_paid_order',
-                           'process_return_approved'
+                           'process_return_approved',
+                           'bulk_import_validate',
+                           'bulk_import_execute'
                        )),
     payload         JSONB NOT NULL,
     status          TEXT NOT NULL DEFAULT 'pending'
@@ -830,6 +844,72 @@ CREATE INDEX IF NOT EXISTS idx_fulfillment_jobs_dead
 -- cheaply, separate from the variant-scoped lookup index.
 CREATE INDEX IF NOT EXISTS idx_inventory_reservations_expiry
     ON inventory_reservations(expires_at);
+
+-- ─── Phase F2.1 — Tiered B2B pricing ──────────────────────────
+-- Seller-defined quantity tier breaks per variant. priceCart looks up
+-- the highest min_qty band <= cart_line.quantity and uses that price
+-- instead of variant.selling_price. Non-overlapping tiers are enforced
+-- by the (variant_id, min_qty) UNIQUE constraint plus a service-layer
+-- check on max_qty.
+CREATE TABLE IF NOT EXISTS product_price_tiers (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    variant_id    UUID NOT NULL REFERENCES product_variants(id) ON DELETE CASCADE,
+    min_qty       INT  NOT NULL CHECK (min_qty >= 1),
+    max_qty       INT  CHECK (max_qty IS NULL OR max_qty >= min_qty),
+    price         NUMERIC(10,2) NOT NULL CHECK (price > 0),
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(variant_id, min_qty)
+);
+CREATE INDEX IF NOT EXISTS idx_price_tiers_variant ON product_price_tiers(variant_id);
+
+-- ─── Phase F2.2 — Request For Quote (RFQ) ─────────────────────
+-- Buyer-initiated quote requests. The seller responds with a quote
+-- (rfq_quotes); on acceptance, AcceptRFQQuote bypasses priceCart and
+-- creates an order at the negotiated price. Personal + org buyers
+-- both supported (organization_id is nullable).
+CREATE TABLE IF NOT EXISTS rfqs (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    buyer_user_id   UUID NOT NULL,
+    organization_id UUID REFERENCES organizations(id),
+    seller_id       UUID NOT NULL REFERENCES sellers(id),
+    status          TEXT NOT NULL DEFAULT 'requested'
+                       CHECK (status IN ('requested','quoted','accepted','expired','rejected','cancelled')),
+    message_text    TEXT,
+    requested_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at      TIMESTAMPTZ NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_rfqs_buyer  ON rfqs(buyer_user_id);
+CREATE INDEX IF NOT EXISTS idx_rfqs_seller ON rfqs(seller_id, status);
+CREATE INDEX IF NOT EXISTS idx_rfqs_org    ON rfqs(organization_id) WHERE organization_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS rfq_items (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    rfq_id          UUID NOT NULL REFERENCES rfqs(id) ON DELETE CASCADE,
+    variant_id      UUID NOT NULL REFERENCES product_variants(id),
+    quantity        INT  NOT NULL CHECK (quantity > 0),
+    notes           TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_rfq_items_rfq ON rfq_items(rfq_id);
+
+CREATE TABLE IF NOT EXISTS rfq_quotes (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    rfq_id          UUID NOT NULL REFERENCES rfqs(id) ON DELETE CASCADE,
+    quoted_total    NUMERIC(12,2) NOT NULL CHECK (quoted_total > 0),
+    line_prices     JSONB NOT NULL,
+    validity_days   INT NOT NULL CHECK (validity_days BETWEEN 1 AND 90),
+    quoted_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at      TIMESTAMPTZ NOT NULL,
+    accepted_at     TIMESTAMPTZ,
+    order_id        UUID REFERENCES orders(id)
+);
+CREATE INDEX IF NOT EXISTS idx_rfq_quotes_rfq ON rfq_quotes(rfq_id);
+
+-- ─── Phase F2.3 — Bulk SKU upload — already-present table ────
+-- product_import_jobs already exists from earlier work (status,
+-- total_rows, valid_rows, imported_rows, error_file_id). No new
+-- table needed; service layer fills it in.
 
 -- ─── Phase 5 — B2B / Organizations ─────────────────────────────
 -- Business customers (corporates, schools, govt) buying through the

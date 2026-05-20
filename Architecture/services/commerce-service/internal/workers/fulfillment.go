@@ -20,6 +20,9 @@ import (
 type FulfillmentDispatcher interface {
 	FulfillPaidOrderJob(ctx context.Context, orderID uuid.UUID) error
 	ProcessReturnApprovedJob(ctx context.Context, returnID uuid.UUID) error
+	// Phase F2.3 — bulk SKU import.
+	ValidateBulkImportJob(ctx context.Context, jobID uuid.UUID) error
+	ExecuteBulkImportJob(ctx context.Context, jobID uuid.UUID) error
 }
 
 // FulfillmentWorker drains fulfillment_jobs. Multiple instances can run
@@ -117,6 +120,24 @@ func (w *FulfillmentWorker) handle(ctx context.Context, job *postgres.Fulfillmen
 			break
 		}
 		execErr = w.dispatcher.ProcessReturnApprovedJob(ctx, p.ReturnID)
+	case "bulk_import_validate":
+		var p struct {
+			JobID uuid.UUID `json:"job_id"`
+		}
+		if err := json.Unmarshal(job.Payload, &p); err != nil {
+			execErr = err
+			break
+		}
+		execErr = w.dispatcher.ValidateBulkImportJob(ctx, p.JobID)
+	case "bulk_import_execute":
+		var p struct {
+			JobID uuid.UUID `json:"job_id"`
+		}
+		if err := json.Unmarshal(job.Payload, &p); err != nil {
+			execErr = err
+			break
+		}
+		execErr = w.dispatcher.ExecuteBulkImportJob(ctx, p.JobID)
 	default:
 		execErr = errors.New("unknown job kind: " + job.Kind)
 	}

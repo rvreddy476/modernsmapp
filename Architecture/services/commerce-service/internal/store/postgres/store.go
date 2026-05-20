@@ -18,6 +18,12 @@ type Store struct {
 
 func New(db *pgxpool.Pool) *Store { return &Store{db: db} }
 
+// DB returns the underlying pool for callers that need to open a
+// cross-domain transaction (e.g. AcceptRFQQuote spans orders +
+// rfq_quotes + rfqs). Most code paths should use the helper methods
+// on Store; reach for DB() sparingly.
+func (s *Store) DB() *pgxpool.Pool { return s.db }
+
 // ─── Seller ──────────────────────────────────────────────────
 
 func (s *Store) CreateSeller(ctx context.Context, sel *Seller) error {
