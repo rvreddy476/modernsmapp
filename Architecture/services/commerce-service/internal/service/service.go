@@ -3,6 +3,7 @@ package service
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -34,6 +35,10 @@ var (
 	ErrNotReturnSeller        = fmt.Errorf("actor is not the seller for this return")
 	ErrReviewOrderItemInvalid = fmt.Errorf("order item does not belong to reviewer or does not match product/seller")
 	ErrReviewItemNotDelivered = fmt.Errorf("order item must be delivered before review")
+	ErrReturnNotFound         = fmt.Errorf("return not found")
+	ErrNotReturnParty         = fmt.Errorf("actor is not the customer or seller for this return")
+	ErrReviewNotFound         = fmt.Errorf("review not found")
+	ErrNotReviewSeller        = fmt.Errorf("actor is not the seller for this review")
 )
 
 // ConfirmPaymentInput is the request body the customer-facing confirm
@@ -280,6 +285,73 @@ func (s *Service) ListProducts(ctx context.Context, categoryID *uuid.UUID, query
 func (s *Service) ListOrders(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*postgres.Order, error) {
 	orders, _, err := s.store.GetOrdersByCustomer(ctx, userID, limit, offset)
 	return orders, err
+}
+
+// ListOrderCardsResult is the customer order-list response — Phase 2.1.
+// NextCursor is empty on the last page.
+type ListOrderCardsResult struct {
+	Items      []postgres.OrderCard
+	NextCursor string
+}
+
+// ListOrderCards returns one page of order cards for the customer using
+// keyset pagination over (created_at, id). The richer shape (item count,
+// seller count, first item) replaces the old anemic list the customer
+// couldn't tell orders apart from. Replaces the offset/COUNT(*) path —
+// no more table-scan on every page.
+func (s *Service) ListOrderCards(ctx context.Context, userID uuid.UUID, limit int, cursor string) (*ListOrderCardsResult, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+	var cursorTime *time.Time
+	var cursorID *uuid.UUID
+	if cursor != "" {
+		t, id, err := decodeOrderCursor(cursor)
+		if err != nil {
+			return nil, fmt.Errorf("invalid cursor")
+		}
+		cursorTime = &t
+		cursorID = &id
+	}
+	cards, hasMore, err := s.store.ListOrderCardsByCustomer(ctx, userID, cursorTime, cursorID, limit)
+	if err != nil {
+		return nil, err
+	}
+	res := &ListOrderCardsResult{Items: cards}
+	if hasMore && len(cards) > 0 {
+		last := cards[len(cards)-1]
+		res.NextCursor = encodeOrderCursor(last.CreatedAt, last.ID)
+	}
+	return res, nil
+}
+
+// encodeOrderCursor / decodeOrderCursor are deliberately opaque to the
+// client. Format is rfc3339nano|uuid wrapped in URL-safe base64; bumping
+// the format only requires a server-side change because clients never
+// crack it open.
+func encodeOrderCursor(t time.Time, id uuid.UUID) string {
+	raw := t.UTC().Format(time.RFC3339Nano) + "|" + id.String()
+	return base64.URLEncoding.EncodeToString([]byte(raw))
+}
+
+func decodeOrderCursor(s string) (time.Time, uuid.UUID, error) {
+	b, err := base64.URLEncoding.DecodeString(s)
+	if err != nil {
+		return time.Time{}, uuid.Nil, err
+	}
+	parts := strings.SplitN(string(b), "|", 2)
+	if len(parts) != 2 {
+		return time.Time{}, uuid.Nil, fmt.Errorf("bad cursor")
+	}
+	t, err := time.Parse(time.RFC3339Nano, parts[0])
+	if err != nil {
+		return time.Time{}, uuid.Nil, err
+	}
+	id, err := uuid.Parse(parts[1])
+	if err != nil {
+		return time.Time{}, uuid.Nil, err
+	}
+	return t, id, nil
 }
 
 // GetOrderWithItems returns the order and its line items, verifying ownership.
@@ -1097,6 +1169,57 @@ func (s *Service) CancelOrder(ctx context.Context, orderID, actorID uuid.UUID, a
 
 // ─── Returns ─────────────────────────────────────────────────
 
+// GetReturnRequest fetches a return for read by either the customer or
+// the seller. Phase 2.2 — adds the missing detail endpoint mobile was
+// emulating by listing all returns and filtering client-side.
+func (s *Service) GetReturnRequest(ctx context.Context, returnID, actorID uuid.UUID) (*postgres.ReturnRequest, error) {
+	r, err := s.store.GetReturnRequestByID(ctx, returnID)
+	if err != nil || r == nil {
+		return nil, ErrReturnNotFound
+	}
+	if r.CustomerUserID != actorID && r.SellerID != actorID {
+		return nil, ErrNotReturnParty
+	}
+	return r, nil
+}
+
+// BulkReturnItemInput is one line in a multi-item return request. Phase 2.3
+// replaces the mobile fan-out (N HTTP calls) with a single endpoint.
+type BulkReturnItemInput struct {
+	OrderItemID       uuid.UUID
+	SellerID          uuid.UUID
+	ReasonCode        string
+	ReasonDescription *string
+}
+
+// CreateReturnRequestBulk creates a return row per supplied item. Each
+// row goes through the existing single-item validation + publish path,
+// so multi-seller orders correctly notify each seller. On partial
+// failure (e.g. item 2 of 3 is ineligible) the first N successfully-
+// created return rows are returned alongside the error so the caller
+// can surface what landed and what didn't.
+func (s *Service) CreateReturnRequestBulk(ctx context.Context, orderID, customerUserID uuid.UUID, items []BulkReturnItemInput) ([]*postgres.ReturnRequest, error) {
+	if len(items) == 0 {
+		return nil, fmt.Errorf("at least one item required")
+	}
+	out := make([]*postgres.ReturnRequest, 0, len(items))
+	for _, it := range items {
+		r, err := s.CreateReturnRequest(ctx, CreateReturnInput{
+			OrderID:           orderID,
+			OrderItemID:       it.OrderItemID,
+			CustomerUserID:    customerUserID,
+			SellerID:          it.SellerID,
+			ReasonCode:        it.ReasonCode,
+			ReasonDescription: it.ReasonDescription,
+		})
+		if err != nil {
+			return out, err
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
 type CreateReturnInput struct {
 	OrderID           uuid.UUID
 	OrderItemID       uuid.UUID
@@ -1405,6 +1528,23 @@ func (s *Service) CreateReview(ctx context.Context, r *postgres.Review) error {
 
 func (s *Service) GetProductReviews(ctx context.Context, productID uuid.UUID, limit, offset int) ([]*postgres.Review, int, error) {
 	return s.store.GetProductReviews(ctx, productID, limit, offset)
+}
+
+// AddSellerResponseToReview lets the seller of a reviewed product attach
+// a public response. Phase 2.4. Only the seller may respond; the response
+// timestamp is set on first write and overwritten on a subsequent edit.
+func (s *Service) AddSellerResponseToReview(ctx context.Context, reviewID, actorID uuid.UUID, response string) (*postgres.Review, error) {
+	r, err := s.store.GetReviewByID(ctx, reviewID)
+	if err != nil || r == nil {
+		return nil, ErrReviewNotFound
+	}
+	if r.SellerID != actorID {
+		return nil, ErrNotReviewSeller
+	}
+	if err := s.store.SetSellerResponse(ctx, reviewID, response); err != nil {
+		return nil, err
+	}
+	return s.store.GetReviewByID(ctx, reviewID)
 }
 
 // ─── Addresses ───────────────────────────────────────────────

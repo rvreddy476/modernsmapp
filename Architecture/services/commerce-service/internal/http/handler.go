@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/atpost/commerce-service/internal/service"
 	"github.com/atpost/commerce-service/internal/store/postgres"
@@ -67,6 +68,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	v1.POST("/orders/:orderId/returns", h.CreateReturn)
 	v1.POST("/returns/:returnId/approve", h.ApproveReturn)
 	v1.POST("/returns/:returnId/reject", h.RejectReturn)
+	v1.GET("/returns/:returnId", h.GetReturn)
+	v1.POST("/reviews/:reviewId/seller-response", h.SellerRespondToReview)
 
 	// ── Addresses ────────────────────────────────────────────
 	v1.GET("/addresses", h.ListAddresses)
@@ -669,20 +672,25 @@ func (h *Handler) Checkout(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusCreated, order, nil)
 }
 
+// ListOrders GET /v1/commerce/orders — Phase 2.1.
+// Returns rich order cards (item count, seller count, first item) with
+// keyset pagination. next_cursor lives on the meta envelope; clients
+// thread it back as ?cursor=... on the next page. The legacy ?offset=
+// query param is accepted but ignored — keyset is the only path now,
+// since offset over orders required a table-scanning COUNT(*) per page.
 func (h *Handler) ListOrders(c *gin.Context) {
 	userID, ok := getUserID(c)
 	if !ok {
 		return
 	}
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
-	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
-
-	orders, err := h.svc.ListOrders(c.Request.Context(), userID, limit, offset)
+	cursor := c.Query("cursor")
+	res, err := h.svc.ListOrderCards(c.Request.Context(), userID, limit, cursor)
 	if err != nil {
-		handleErr(c, err)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "LIST_ORDERS_FAILED", err.Error(), nil)
 		return
 	}
-	api.JSON(c.Writer, http.StatusOK, orders, nil)
+	api.JSON(c.Writer, http.StatusOK, res.Items, &api.Meta{NextCursor: res.NextCursor})
 }
 
 func (h *Handler) GetOrder(c *gin.Context) {
@@ -803,11 +811,26 @@ func (h *Handler) ConfirmPayment(c *gin.Context) {
 
 // ─── Return handlers ─────────────────────────────────────────────
 
-type createReturnReq struct {
+// createReturnItem is one line of the multi-item return body (Phase 2.3).
+type createReturnItem struct {
 	OrderItemID       uuid.UUID `json:"order_item_id" binding:"required"`
 	SellerID          uuid.UUID `json:"seller_id" binding:"required"`
 	ReasonCode        string    `json:"reason_code" binding:"required"`
 	ReasonDescription *string   `json:"reason_description"`
+}
+
+// createReturnReq accepts both the multi-item shape `{items:[...]}` and
+// the legacy single-item top-level shape — Phase 2.3 lets the mobile app
+// fold its current N-call fan-out into a single request without breaking
+// the existing single-item callers.
+type createReturnReq struct {
+	Items           []createReturnItem `json:"items"`
+	PickupAddressID *uuid.UUID         `json:"pickup_address_id"`
+	// Legacy single-item top-level fields:
+	OrderItemID       *uuid.UUID `json:"order_item_id"`
+	SellerID          *uuid.UUID `json:"seller_id"`
+	ReasonCode        string     `json:"reason_code"`
+	ReasonDescription *string    `json:"reason_description"`
 }
 
 func (h *Handler) CreateReturn(c *gin.Context) {
@@ -824,19 +847,114 @@ func (h *Handler) CreateReturn(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
-	ret, err := h.svc.CreateReturnRequest(c.Request.Context(), service.CreateReturnInput{
-		OrderID:           orderID,
-		OrderItemID:       req.OrderItemID,
-		CustomerUserID:    userID,
-		SellerID:          req.SellerID,
-		ReasonCode:        req.ReasonCode,
-		ReasonDescription: req.ReasonDescription,
-	})
-	if err != nil {
+
+	var items []service.BulkReturnItemInput
+	multiItem := len(req.Items) > 0
+	if multiItem {
+		items = make([]service.BulkReturnItemInput, 0, len(req.Items))
+		for _, it := range req.Items {
+			items = append(items, service.BulkReturnItemInput{
+				OrderItemID:       it.OrderItemID,
+				SellerID:          it.SellerID,
+				ReasonCode:        it.ReasonCode,
+				ReasonDescription: it.ReasonDescription,
+			})
+		}
+	} else if req.OrderItemID != nil && req.SellerID != nil {
+		items = []service.BulkReturnItemInput{{
+			OrderItemID:       *req.OrderItemID,
+			SellerID:          *req.SellerID,
+			ReasonCode:        req.ReasonCode,
+			ReasonDescription: req.ReasonDescription,
+		}}
+	} else {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY",
+			"either items[] or order_item_id+seller_id is required", nil)
+		return
+	}
+
+	out, err := h.svc.CreateReturnRequestBulk(c.Request.Context(), orderID, userID, items)
+	if err != nil && len(out) == 0 {
 		handleErr(c, err)
 		return
 	}
-	api.JSON(c.Writer, http.StatusCreated, ret, nil)
+	// Single-item legacy callers get the un-wrapped response. Multi-item
+	// callers always get `{items:[...]}` so partial-success is observable.
+	if !multiItem && len(out) == 1 {
+		api.JSON(c.Writer, http.StatusCreated, out[0], nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusCreated, gin.H{"items": out}, nil)
+}
+
+// sellerResponseReq is the body for POST /reviews/:reviewId/seller-response.
+type sellerResponseReq struct {
+	Response string `json:"response" binding:"required"`
+}
+
+// SellerRespondToReview lets the seller of a product attach a public
+// response to a customer review — Phase 2.4. Only that seller may post.
+//
+//	POST /v1/commerce/reviews/:reviewId/seller-response
+func (h *Handler) SellerRespondToReview(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	reviewID, ok := parseUUID(c, "reviewId")
+	if !ok {
+		return
+	}
+	var req sellerResponseReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	if strings.TrimSpace(req.Response) == "" {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", "response cannot be empty", nil)
+		return
+	}
+	r, err := h.svc.AddSellerResponseToReview(c.Request.Context(), reviewID, actorID, req.Response)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrReviewNotFound):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
+		case errors.Is(err, service.ErrNotReviewSeller):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
+		default:
+			handleErr(c, err)
+		}
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, r, nil)
+}
+
+// GetReturn GET /v1/commerce/returns/:returnId — Phase 2.2.
+// Customer or seller of the return only; mobile was previously listing
+// /me/returns and filtering client-side because this endpoint didn't
+// exist.
+func (h *Handler) GetReturn(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	returnID, ok := parseUUID(c, "returnId")
+	if !ok {
+		return
+	}
+	r, err := h.svc.GetReturnRequest(c.Request.Context(), returnID, userID)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrReturnNotFound):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
+		case errors.Is(err, service.ErrNotReturnParty):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
+		default:
+			handleErr(c, err)
+		}
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, r, nil)
 }
 
 // ApproveReturn is called by the seller (or admin) to approve a customer's

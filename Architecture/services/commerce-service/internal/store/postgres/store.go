@@ -535,6 +535,88 @@ func (s *Store) GetOrderByID(ctx context.Context, id uuid.UUID) (*Order, error) 
 	return &o, err
 }
 
+// OrderCard is the customer order-list row — Phase 2.1. Adds item +
+// seller counts and the first item's product so the customer can tell
+// orders apart without opening every one. Aggregates come from a single
+// LATERAL subquery so the list query is O(page-size) instead of N+1.
+type OrderCard struct {
+	ID                uuid.UUID  `json:"id"`
+	OrderNumber       string     `json:"order_number"`
+	FinalAmount       float64    `json:"final_amount"`
+	Currency          string     `json:"currency"`
+	PaymentMethod     *string    `json:"payment_method,omitempty"`
+	PaymentStatus     string     `json:"payment_status"`
+	Status            string     `json:"status"`
+	ItemCount         int        `json:"item_count"`
+	SellerCount       int        `json:"seller_count"`
+	FirstProductID    *uuid.UUID `json:"first_product_id,omitempty"`
+	FirstProductTitle string     `json:"first_product_title,omitempty"`
+	CreatedAt         time.Time  `json:"created_at"`
+}
+
+// ListOrderCardsByCustomer returns one page of order cards for the
+// customer using keyset pagination on (created_at, id). cursorTime nil
+// means first page. Returns the page (up to limit) plus a flag whether
+// more rows exist (so the caller can mint a next cursor).
+func (s *Store) ListOrderCardsByCustomer(ctx context.Context, userID uuid.UUID, cursorTime *time.Time, cursorID *uuid.UUID, limit int) ([]OrderCard, bool, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	// Fetch limit+1 so we can detect whether a next page exists without a
+	// separate COUNT(*) — count would index-scan the full set per request.
+	rows, err := s.db.Query(ctx, `
+		SELECT o.id, o.order_number, o.final_amount, o.currency_code,
+		       o.payment_method, o.payment_status, o.status, o.created_at,
+		       COALESCE(items.item_count, 0),
+		       COALESCE(items.seller_count, 0),
+		       items.first_product_id,
+		       items.first_product_title
+		FROM orders o
+		LEFT JOIN LATERAL (
+			SELECT
+				COUNT(*) AS item_count,
+				COUNT(DISTINCT seller_id) AS seller_count,
+				(ARRAY_AGG(product_id ORDER BY created_at ASC))[1] AS first_product_id,
+				(ARRAY_AGG(product_title ORDER BY created_at ASC))[1] AS first_product_title
+			FROM order_items oi
+			WHERE oi.order_id = o.id
+		) items ON TRUE
+		WHERE o.customer_user_id = $1
+		  AND ($2::TIMESTAMPTZ IS NULL OR (o.created_at, o.id) < ($2, $3::UUID))
+		ORDER BY o.created_at DESC, o.id DESC
+		LIMIT $4
+	`, userID, cursorTime, cursorID, limit+1)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+
+	out := make([]OrderCard, 0, limit+1)
+	for rows.Next() {
+		var c OrderCard
+		var firstProductID *uuid.UUID
+		var firstProductTitle *string
+		if err := rows.Scan(
+			&c.ID, &c.OrderNumber, &c.FinalAmount, &c.Currency,
+			&c.PaymentMethod, &c.PaymentStatus, &c.Status, &c.CreatedAt,
+			&c.ItemCount, &c.SellerCount,
+			&firstProductID, &firstProductTitle,
+		); err != nil {
+			return nil, false, err
+		}
+		c.FirstProductID = firstProductID
+		if firstProductTitle != nil {
+			c.FirstProductTitle = *firstProductTitle
+		}
+		out = append(out, c)
+	}
+	hasMore := len(out) > limit
+	if hasMore {
+		out = out[:limit]
+	}
+	return out, hasMore, nil
+}
+
 func (s *Store) GetOrdersByCustomer(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*Order, int, error) {
 	var total int
 	_ = s.db.QueryRow(ctx, `SELECT COUNT(*) FROM orders WHERE customer_user_id=$1`, userID).Scan(&total)
@@ -810,11 +892,17 @@ func (s *Store) CreateReview(ctx context.Context, r *Review) error {
 
 func (s *Store) GetProductReviews(ctx context.Context, productID uuid.UUID, limit, offset int) ([]*Review, int, error) {
 	var total int
-	_ = s.db.QueryRow(ctx, `SELECT COUNT(*) FROM reviews WHERE product_id=$1 AND is_published=TRUE`, productID).Scan(&total)
+	_ = s.db.QueryRow(ctx, `
+		SELECT COUNT(*) FROM reviews
+		WHERE product_id=$1 AND is_published=TRUE
+		  AND COALESCE(moderation_status,'approved') <> 'rejected'
+	`, productID).Scan(&total)
 
 	rows, err := s.db.Query(ctx, `SELECT id,product_id,seller_id,order_item_id,reviewer_id,
-		rating,title,body,is_verified_purchase,helpful_count,created_at
+		rating,title,body,is_verified_purchase,helpful_count,
+		COALESCE(moderation_status,'approved'),seller_response,seller_responded_at,created_at
 		FROM reviews WHERE product_id=$1 AND is_published=TRUE
+		  AND COALESCE(moderation_status,'approved') <> 'rejected'
 		ORDER BY helpful_count DESC, created_at DESC LIMIT $2 OFFSET $3`, productID, limit, offset)
 	if err != nil {
 		return nil, 0, err
@@ -824,12 +912,43 @@ func (s *Store) GetProductReviews(ctx context.Context, productID uuid.UUID, limi
 	for rows.Next() {
 		var r Review
 		if err := rows.Scan(&r.ID, &r.ProductID, &r.SellerID, &r.OrderItemID, &r.ReviewerID,
-			&r.Rating, &r.Title, &r.Body, &r.IsVerifiedPurchase, &r.HelpfulCount, &r.CreatedAt); err != nil {
+			&r.Rating, &r.Title, &r.Body, &r.IsVerifiedPurchase, &r.HelpfulCount,
+			&r.ModerationStatus, &r.SellerResponse, &r.SellerRespondedAt, &r.CreatedAt); err != nil {
 			return nil, 0, err
 		}
 		reviews = append(reviews, &r)
 	}
 	return reviews, total, nil
+}
+
+// GetReviewByID fetches a single review — used by the seller-response
+// handler (Phase 2.4) to verify the actor is the seller before allowing
+// a response, and to return the updated row.
+func (s *Store) GetReviewByID(ctx context.Context, id uuid.UUID) (*Review, error) {
+	var r Review
+	err := s.db.QueryRow(ctx, `SELECT id,product_id,seller_id,order_item_id,reviewer_id,
+		rating,title,body,is_verified_purchase,helpful_count,
+		COALESCE(moderation_status,'approved'),seller_response,seller_responded_at,created_at
+		FROM reviews WHERE id=$1`, id).Scan(
+		&r.ID, &r.ProductID, &r.SellerID, &r.OrderItemID, &r.ReviewerID,
+		&r.Rating, &r.Title, &r.Body, &r.IsVerifiedPurchase, &r.HelpfulCount,
+		&r.ModerationStatus, &r.SellerResponse, &r.SellerRespondedAt, &r.CreatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
+// SetSellerResponse adds (or replaces) the seller's response to a review.
+// Returns the affected row count so the service layer can distinguish a
+// no-op (id not found) from a legitimate skip.
+func (s *Store) SetSellerResponse(ctx context.Context, id uuid.UUID, response string) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE reviews SET seller_response=$2, seller_responded_at=NOW() WHERE id=$1`,
+		id, response,
+	)
+	return err
 }
 
 // ─── Coupons ─────────────────────────────────────────────────

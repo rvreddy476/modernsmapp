@@ -779,3 +779,9 @@ BEGIN
     RETURN 'ORD-' || TO_CHAR(NOW(), 'YYYY') || '-' || LPAD(nextval('order_number_seq')::TEXT, 6, '0');
 END;
 $$ LANGUAGE plpgsql;
+
+-- ─── Idempotent schema upgrades — applied on every BootstrapSchema boot.
+-- Phase 2.4 — review moderation status + seller response.
+ALTER TABLE reviews ADD COLUMN IF NOT EXISTS moderation_status TEXT NOT NULL DEFAULT 'approved';
+ALTER TABLE reviews ADD COLUMN IF NOT EXISTS seller_response TEXT;
+ALTER TABLE reviews ADD COLUMN IF NOT EXISTS seller_responded_at TIMESTAMPTZ;

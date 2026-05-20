@@ -352,6 +352,9 @@ type Review struct {
 	IsVerifiedPurchase  bool      `db:"is_verified_purchase" json:"is_verified_purchase,omitempty"`
 	IsPublished         bool      `db:"is_published" json:"is_published,omitempty"`
 	HelpfulCount        int       `db:"helpful_count" json:"helpful_count,omitempty"`
+	ModerationStatus    string    `db:"moderation_status" json:"moderation_status,omitempty"`
+	SellerResponse      *string   `db:"seller_response" json:"seller_response,omitempty"`
+	SellerRespondedAt   *time.Time `db:"seller_responded_at" json:"seller_responded_at,omitempty"`
 	CreatedAt           time.Time `db:"created_at" json:"created_at,omitempty"`
 }
 
