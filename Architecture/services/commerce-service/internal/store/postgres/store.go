@@ -576,12 +576,17 @@ func (s *Store) CreateOrder(ctx context.Context, o *Order, items []*OrderItem) e
 	if _, err = tx.Exec(ctx, `
 		INSERT INTO orders (id,customer_user_id,order_number,subtotal,discount_amount,shipping_charges,
 		  tax_amount,coupon_code,coupon_discount,final_amount,currency_code,payment_method,payment_status,
-		  delivery_address_id,delivery_address_snapshot,gift_message,status,idempotency_key,created_at,updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
+		  delivery_address_id,delivery_address_snapshot,gift_message,status,idempotency_key,created_at,updated_at,
+		  organization_id,po_number,cost_center,billing_address_snapshot,invoice_email,
+		  approval_status,credit_terms_days,payment_due_date)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
+		        $21,$22,$23,$24,$25,$26,$27,$28)`,
 		o.ID, o.CustomerUserID, o.OrderNumber, o.Subtotal, o.DiscountAmount, o.ShippingCharges,
 		o.TaxAmount, o.CouponCode, o.CouponDiscount, o.FinalAmount, o.CurrencyCode,
 		o.PaymentMethod, o.PaymentStatus, o.DeliveryAddressID, addrSnapshot, o.GiftMessage,
 		o.Status, o.IdempotencyKey, o.CreatedAt, o.UpdatedAt,
+		o.OrganizationID, o.PONumber, o.CostCenter, o.BillingAddressSnapshot, o.InvoiceEmail,
+		o.ApprovalStatus, o.CreditTermsDays, o.PaymentDueDate,
 	); err != nil {
 		return fmt.Errorf("insert order: %w", err)
 	}
@@ -622,12 +627,18 @@ func (s *Store) GetOrderByID(ctx context.Context, id uuid.UUID) (*Order, error) 
 		shipping_charges,tax_amount,coupon_code,coupon_discount,final_amount,currency_code,
 		payment_method,payment_status,payment_id,payment_gateway,delivery_address_id,
 		delivery_address_snapshot,gift_message,status,cancellation_reason,cancelled_by,
-		idempotency_key,created_at,updated_at FROM orders WHERE id=$1`, id).Scan(
+		idempotency_key,created_at,updated_at,
+		organization_id,po_number,cost_center,billing_address_snapshot,invoice_email,
+		approval_status,approved_by_user_id,approved_at,approval_notes,credit_terms_days,payment_due_date
+		FROM orders WHERE id=$1`, id).Scan(
 		&o.ID, &o.CustomerUserID, &o.OrderNumber, &o.Subtotal, &o.DiscountAmount,
 		&o.ShippingCharges, &o.TaxAmount, &o.CouponCode, &o.CouponDiscount, &o.FinalAmount,
 		&o.CurrencyCode, &o.PaymentMethod, &o.PaymentStatus, &o.PaymentID, &o.PaymentGateway,
 		&o.DeliveryAddressID, &o.DeliveryAddressSnapshot, &o.GiftMessage, &o.Status,
 		&o.CancellationReason, &o.CancelledBy, &o.IdempotencyKey, &o.CreatedAt, &o.UpdatedAt,
+		&o.OrganizationID, &o.PONumber, &o.CostCenter, &o.BillingAddressSnapshot, &o.InvoiceEmail,
+		&o.ApprovalStatus, &o.ApprovedByUserID, &o.ApprovedAt, &o.ApprovalNotes,
+		&o.CreditTermsDays, &o.PaymentDueDate,
 	)
 	return &o, err
 }

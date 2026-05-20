@@ -986,6 +986,15 @@ type CheckoutInput struct {
 	CouponCode     string
 	GiftMessage    *string
 	IdempotencyKey string
+
+	// ─── Phase 5 — Optional B2B context ────────────────────────
+	// When OrganizationID is set, the caller must be an active 'admin'
+	// or 'buyer' member. The org's approval_threshold + credit_terms
+	// are applied at order create time.
+	OrganizationID *uuid.UUID
+	PONumber       *string
+	CostCenter     *string
+	InvoiceEmail   *string
 }
 
 // Checkout commits the user's cart as an order. All pricing (line totals,
@@ -1015,6 +1024,56 @@ func (s *Service) Checkout(ctx context.Context, in CheckoutInput) (*postgres.Ord
 	if isCOD {
 		orderStatus = "confirmed"
 	}
+
+	// Phase 5 — B2B context: validate org membership, apply approval
+	// threshold + credit terms. A buyer on an org with approval_threshold
+	// set and order >= threshold can't pay yet — the order parks in
+	// approval_status=pending and Status="awaiting_approval"; an approver
+	// then green-lights it via ApproveOrgOrder.
+	var (
+		orgID           *uuid.UUID
+		approvalStatus  *string
+		creditTermsDays int
+		paymentDueDate  *time.Time
+	)
+	if in.OrganizationID != nil {
+		member, err := s.requireOrgRole(ctx, *in.OrganizationID, in.UserID, "admin", "buyer")
+		if err != nil {
+			return nil, fmt.Errorf("org checkout: %w", err)
+		}
+		_ = member // role already validated
+		org, err := s.store.GetOrganizationByID(ctx, *in.OrganizationID)
+		if err != nil || org == nil {
+			return nil, ErrOrgNotFound
+		}
+		if org.Status != "active" {
+			return nil, fmt.Errorf("organization not active")
+		}
+		orgID = &org.ID
+		// Approval gate
+		if org.ApprovalThreshold != nil && res.FinalAmount >= *org.ApprovalThreshold {
+			s := "pending"
+			approvalStatus = &s
+			orderStatus = "awaiting_approval"
+			paymentStatus = "pending"
+		} else if in.OrganizationID != nil {
+			s := "not_required"
+			approvalStatus = &s
+		}
+		// Credit terms: net N days. Only applied when the org has terms
+		// configured AND the buyer chose the credit payment method.
+		if org.CreditTermsDays > 0 && strings.EqualFold(pm, "credit") {
+			creditTermsDays = org.CreditTermsDays
+			due := time.Now().AddDate(0, 0, org.CreditTermsDays)
+			paymentDueDate = &due
+			// Credit orders defer payment but the order is otherwise
+			// confirmed once approval clears.
+			if approvalStatus == nil || *approvalStatus != "pending" {
+				orderStatus = "confirmed"
+			}
+		}
+	}
+
 	order := &postgres.Order{
 		CustomerUserID:          in.UserID,
 		Subtotal:                res.Subtotal,
@@ -1032,6 +1091,13 @@ func (s *Service) Checkout(ctx context.Context, in CheckoutInput) (*postgres.Ord
 		GiftMessage:             in.GiftMessage,
 		Status:                  orderStatus,
 		IdempotencyKey:          &idempKey,
+		OrganizationID:          orgID,
+		PONumber:                in.PONumber,
+		CostCenter:              in.CostCenter,
+		InvoiceEmail:            in.InvoiceEmail,
+		ApprovalStatus:          approvalStatus,
+		CreditTermsDays:         creditTermsDays,
+		PaymentDueDate:          paymentDueDate,
 	}
 
 	if err := s.store.CreateOrder(ctx, order, res.OrderItems); err != nil {

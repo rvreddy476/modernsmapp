@@ -793,3 +793,91 @@ ALTER TABLE reviews ADD COLUMN IF NOT EXISTS seller_responded_at TIMESTAMPTZ;
 ALTER TABLE products DROP CONSTRAINT IF EXISTS products_approval_status_check;
 ALTER TABLE products ADD CONSTRAINT products_approval_status_check
     CHECK (approval_status IN ('draft','pending','approved','rejected','flagged','changes_requested','live'));
+
+-- ─── Phase 5 — B2B / Organizations ─────────────────────────────
+-- Business customers (corporates, schools, govt) buying through the
+-- same checkout, but with org context: shared billing address, GSTIN
+-- invoice, PO number, approval workflow, credit terms.
+
+CREATE TABLE IF NOT EXISTS organizations (
+    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name                    TEXT NOT NULL,
+    legal_name              TEXT,
+    gstin                   TEXT,
+    pan                     TEXT,
+    billing_email           TEXT,
+    billing_phone           TEXT,
+    billing_address_id      UUID REFERENCES customer_addresses(id),
+    -- Approval threshold (in INR major). Orders >= threshold need an
+    -- approver. NULL means no approval gate.
+    approval_threshold      NUMERIC(12,2),
+    -- Credit terms — null/0 means prepay only.
+    credit_terms_days       INT NOT NULL DEFAULT 0
+                              CHECK (credit_terms_days >= 0 AND credit_terms_days <= 90),
+    credit_limit            NUMERIC(12,2),
+    status                  TEXT NOT NULL DEFAULT 'active'
+                              CHECK (status IN ('active','suspended','closed')),
+    created_by_user_id      UUID,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_organizations_status ON organizations(status);
+CREATE INDEX IF NOT EXISTS idx_organizations_gstin ON organizations(gstin)
+    WHERE gstin IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS organization_members (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    user_id         UUID NOT NULL,
+    -- Roles drive RBAC:
+    --   admin    — manage org settings + members
+    --   buyer    — place orders up to approval_threshold
+    --   approver — sign off on orders above threshold
+    --   finance  — view invoices + ledger only
+    role            TEXT NOT NULL
+                       CHECK (role IN ('admin','buyer','approver','finance')),
+    status          TEXT NOT NULL DEFAULT 'active'
+                       CHECK (status IN ('invited','active','removed')),
+    invited_email   TEXT,
+    invited_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    joined_at       TIMESTAMPTZ,
+    UNIQUE(organization_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_org_members_user ON organization_members(user_id);
+CREATE INDEX IF NOT EXISTS idx_org_members_org ON organization_members(organization_id);
+
+CREATE TABLE IF NOT EXISTS organization_invites (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    email           TEXT NOT NULL,
+    role            TEXT NOT NULL
+                       CHECK (role IN ('admin','buyer','approver','finance')),
+    token           TEXT NOT NULL UNIQUE,
+    invited_by      UUID NOT NULL,
+    expires_at      TIMESTAMPTZ NOT NULL,
+    accepted_at     TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_org_invites_token ON organization_invites(token);
+CREATE INDEX IF NOT EXISTS idx_org_invites_org ON organization_invites(organization_id);
+
+-- Order-level B2B context. NULL organization_id = retail order; the
+-- existing customer_user_id field continues to identify the placer.
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS organization_id UUID
+    REFERENCES organizations(id);
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS po_number TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS cost_center TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS billing_address_snapshot JSONB;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS invoice_email TEXT;
+-- Approval state machine, parallel to status. NULL = no approval required.
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS approval_status TEXT
+    CHECK (approval_status IN ('not_required','pending','approved','rejected'));
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS approved_by_user_id UUID;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS approval_notes TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS credit_terms_days INT NOT NULL DEFAULT 0;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_due_date TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_orders_organization ON orders(organization_id)
+    WHERE organization_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_orders_approval ON orders(approval_status)
+    WHERE approval_status = 'pending';

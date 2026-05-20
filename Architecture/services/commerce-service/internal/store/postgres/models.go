@@ -290,8 +290,20 @@ type Order struct {
 	CancellationReason      *string    `db:"cancellation_reason" json:"cancellation_reason,omitempty"`
 	CancelledBy             *string    `db:"cancelled_by" json:"cancelled_by,omitempty"`
 	IdempotencyKey          *string    `db:"idempotency_key" json:"idempotency_key,omitempty"`
-	CreatedAt               time.Time  `db:"created_at" json:"created_at,omitempty"`
-	UpdatedAt               time.Time  `db:"updated_at" json:"updated_at,omitempty"`
+	// ─── Phase 5 — B2B context (nullable on retail orders) ─────
+	OrganizationID         *uuid.UUID `db:"organization_id" json:"organization_id,omitempty"`
+	PONumber               *string    `db:"po_number" json:"po_number,omitempty"`
+	CostCenter             *string    `db:"cost_center" json:"cost_center,omitempty"`
+	BillingAddressSnapshot []byte     `db:"billing_address_snapshot" json:"billing_address_snapshot,omitempty"`
+	InvoiceEmail           *string    `db:"invoice_email" json:"invoice_email,omitempty"`
+	ApprovalStatus         *string    `db:"approval_status" json:"approval_status,omitempty"`
+	ApprovedByUserID       *uuid.UUID `db:"approved_by_user_id" json:"approved_by_user_id,omitempty"`
+	ApprovedAt             *time.Time `db:"approved_at" json:"approved_at,omitempty"`
+	ApprovalNotes          *string    `db:"approval_notes" json:"approval_notes,omitempty"`
+	CreditTermsDays        int        `db:"credit_terms_days" json:"credit_terms_days,omitempty"`
+	PaymentDueDate         *time.Time `db:"payment_due_date" json:"payment_due_date,omitempty"`
+	CreatedAt              time.Time  `db:"created_at" json:"created_at,omitempty"`
+	UpdatedAt              time.Time  `db:"updated_at" json:"updated_at,omitempty"`
 }
 
 type OrderItem struct {
@@ -515,4 +527,47 @@ type PayoutTransaction struct {
 	FailureReason    *string    `db:"failure_reason" json:"failure_reason,omitempty"`
 	InitiatedAt      time.Time  `db:"initiated_at" json:"initiated_at,omitempty"`
 	CompletedAt      *time.Time `db:"completed_at" json:"completed_at,omitempty"`
+}
+
+// ─── Phase 5 — B2B / Organizations ───────────────────────────
+
+type Organization struct {
+	ID                 uuid.UUID  `db:"id" json:"id"`
+	Name               string     `db:"name" json:"name"`
+	LegalName          *string    `db:"legal_name" json:"legal_name,omitempty"`
+	GSTIN              *string    `db:"gstin" json:"gstin,omitempty"`
+	PAN                *string    `db:"pan" json:"pan,omitempty"`
+	BillingEmail       *string    `db:"billing_email" json:"billing_email,omitempty"`
+	BillingPhone       *string    `db:"billing_phone" json:"billing_phone,omitempty"`
+	BillingAddressID   *uuid.UUID `db:"billing_address_id" json:"billing_address_id,omitempty"`
+	ApprovalThreshold  *float64   `db:"approval_threshold" json:"approval_threshold,omitempty"`
+	CreditTermsDays    int        `db:"credit_terms_days" json:"credit_terms_days"`
+	CreditLimit        *float64   `db:"credit_limit" json:"credit_limit,omitempty"`
+	Status             string     `db:"status" json:"status"`
+	CreatedByUserID    *uuid.UUID `db:"created_by_user_id" json:"created_by_user_id,omitempty"`
+	CreatedAt          time.Time  `db:"created_at" json:"created_at"`
+	UpdatedAt          time.Time  `db:"updated_at" json:"updated_at"`
+}
+
+type OrganizationMember struct {
+	ID             uuid.UUID  `db:"id" json:"id"`
+	OrganizationID uuid.UUID  `db:"organization_id" json:"organization_id"`
+	UserID         uuid.UUID  `db:"user_id" json:"user_id"`
+	Role           string     `db:"role" json:"role"`
+	Status         string     `db:"status" json:"status"`
+	InvitedEmail   *string    `db:"invited_email" json:"invited_email,omitempty"`
+	InvitedAt      time.Time  `db:"invited_at" json:"invited_at"`
+	JoinedAt       *time.Time `db:"joined_at" json:"joined_at,omitempty"`
+}
+
+type OrganizationInvite struct {
+	ID             uuid.UUID  `db:"id" json:"id"`
+	OrganizationID uuid.UUID  `db:"organization_id" json:"organization_id"`
+	Email          string     `db:"email" json:"email"`
+	Role           string     `db:"role" json:"role"`
+	Token          string     `db:"token" json:"token,omitempty"`
+	InvitedBy      uuid.UUID  `db:"invited_by" json:"invited_by"`
+	ExpiresAt      time.Time  `db:"expires_at" json:"expires_at"`
+	AcceptedAt     *time.Time `db:"accepted_at" json:"accepted_at,omitempty"`
+	CreatedAt      time.Time  `db:"created_at" json:"created_at"`
 }

@@ -100,6 +100,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 	// ── Shipments + Invoices ─────────────────────────────────
 	h.RegisterShipmentRoutes(v1)
+
+	// ── Phase 5 — B2B / Organizations ─────────────────────────
+	h.RegisterOrganizationRoutes(v1)
 }
 
 // ─── helpers ─────────────────────────────────────────────────────
@@ -771,6 +774,12 @@ type checkoutReq struct {
 	CouponCode     string    `json:"coupon_code"`
 	GiftMessage    *string   `json:"gift_message"`
 	IdempotencyKey string    `json:"idempotency_key"`
+
+	// Phase 5 — optional B2B context.
+	OrganizationID *uuid.UUID `json:"organization_id"`
+	PONumber       *string    `json:"po_number"`
+	CostCenter     *string    `json:"cost_center"`
+	InvoiceEmail   *string    `json:"invoice_email"`
 }
 
 // quoteReq mirrors checkoutReq minus the persistence-only fields. Mobile
@@ -869,6 +878,10 @@ func (h *Handler) Checkout(c *gin.Context) {
 		CouponCode:     req.CouponCode,
 		GiftMessage:    req.GiftMessage,
 		IdempotencyKey: req.IdempotencyKey,
+		OrganizationID: req.OrganizationID,
+		PONumber:       req.PONumber,
+		CostCenter:     req.CostCenter,
+		InvoiceEmail:   req.InvoiceEmail,
 	})
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "CHECKOUT_FAILED", err.Error(), nil)
