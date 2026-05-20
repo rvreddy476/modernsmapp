@@ -9,6 +9,7 @@ import (
 
 	"github.com/atpost/commerce-service/internal/courier"
 	"github.com/atpost/commerce-service/internal/identity"
+	"github.com/atpost/commerce-service/internal/kyc"
 	"github.com/atpost/commerce-service/internal/payments"
 	"github.com/atpost/commerce-service/internal/store/blob"
 	"github.com/atpost/commerce-service/internal/store/postgres"
@@ -47,6 +48,14 @@ func (s *Service) WithIdentity(c *identity.Client) *Service {
 // WithPayments attaches the payments-service client for refund initiation.
 func (s *Service) WithPayments(c *payments.Client) *Service {
 	s.payments = c
+	return s
+}
+
+// WithKYC attaches a KYC validator (stub or production vendor adapter).
+// Phase 3.2. Safe to call without a validator wired — admin verify endpoint
+// will refuse with a clear error in that case.
+func (s *Service) WithKYC(v kyc.Validator) *Service {
+	s.kyc = v
 	return s
 }
 

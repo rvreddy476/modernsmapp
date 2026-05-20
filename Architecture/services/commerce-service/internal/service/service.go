@@ -14,6 +14,7 @@ import (
 
 	"github.com/atpost/commerce-service/internal/courier"
 	"github.com/atpost/commerce-service/internal/identity"
+	"github.com/atpost/commerce-service/internal/kyc"
 	"github.com/atpost/commerce-service/internal/payments"
 	"github.com/atpost/commerce-service/internal/store/postgres"
 	"github.com/atpost/shared/events"
@@ -64,6 +65,7 @@ type Service struct {
 	blob     BlobStore
 	identity *identity.Client
 	payments *payments.Client
+	kyc      kyc.Validator
 }
 
 func New(store *postgres.Store, rdb *redis.Client, kafkaBrokers string) *Service {

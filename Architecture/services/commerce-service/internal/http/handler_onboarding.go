@@ -38,6 +38,7 @@ func (h *Handler) RegisterOnboardingRoutes(r *gin.Engine) {
 	adm.POST("/sellers/:sellerId/reject", h.AdminRejectSeller)
 	adm.POST("/sellers/:sellerId/request-changes", h.AdminRequestSellerChanges)
 	adm.POST("/sellers/:sellerId/suspend", h.AdminSuspendSeller)
+	adm.POST("/sellers/:sellerId/kyc/verify", h.AdminVerifySellerKYC)
 	adm.GET("/products/queue", h.AdminListProductQueue)
 	adm.POST("/products/:productId/approve", h.AdminApproveProduct)
 	adm.POST("/products/:productId/reject", h.AdminRejectProduct)
@@ -461,4 +462,26 @@ func (h *Handler) AdminRequestProductChanges(c *gin.Context) {
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+// AdminVerifySellerKYC POST /v1/commerce/internal/sellers/:sellerId/kyc/verify — Phase 3.2.
+// Runs the configured KYC adapter against the seller's GSTIN/PAN + primary
+// payout account; returns the per-field report. The verdict is also stored
+// on the seller row (verification_status = "verified" iff all_valid).
+func (h *Handler) AdminVerifySellerKYC(c *gin.Context) {
+	sellerID, ok := parseUUID(c, "sellerId")
+	if !ok {
+		return
+	}
+	rep, err := h.svc.AdminVerifySellerKYC(c.Request.Context(), sellerID)
+	if err != nil {
+		if err == service.ErrKYCNotConfigured {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable,
+				"KYC_NOT_CONFIGURED", err.Error(), nil)
+			return
+		}
+		handleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, rep, nil)
 }

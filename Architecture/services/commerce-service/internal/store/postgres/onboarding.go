@@ -2,9 +2,11 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // ─── Seller onboarding store methods ────────────────────────────
@@ -134,6 +136,36 @@ func (s *Store) SaveOnboardingPayout(ctx context.Context, sellerID uuid.UUID, in
 	}
 	_, err = s.db.Exec(ctx,
 		`UPDATE sellers SET onboarding_step=GREATEST(onboarding_step,7), updated_at=NOW() WHERE id=$1`, sellerID)
+	return err
+}
+
+// GetPrimaryPayoutAccount returns the seller's primary payout account, or
+// nil if the seller has not completed step 7. Errors only on DB failure.
+// Used by KYC verification (Phase 3.2) to pull bank/UPI for validation.
+func (s *Store) GetPrimaryPayoutAccount(ctx context.Context, sellerID uuid.UUID) (*OnboardingPayoutInput, error) {
+	var out OnboardingPayoutInput
+	err := s.db.QueryRow(ctx, `
+		SELECT account_holder_name, bank_name, account_number, ifsc_code, upi_id
+		FROM seller_payout_accounts
+		WHERE seller_id=$1 AND is_primary=TRUE
+		ORDER BY updated_at DESC LIMIT 1`, sellerID).Scan(
+		&out.AccountHolderName, &out.BankName, &out.AccountNumber, &out.IFSCCode, &out.UPIID,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &out, nil
+}
+
+// SetSellerKYCVerificationStatus records the latest KYC adapter verdict on
+// the seller row so the admin queue can show it inline.
+func (s *Store) SetSellerKYCVerificationStatus(ctx context.Context, sellerID uuid.UUID, status string) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE sellers SET verification_status=$2, updated_at=NOW() WHERE id=$1`,
+		sellerID, status)
 	return err
 }
 

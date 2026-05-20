@@ -4,10 +4,16 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/atpost/commerce-service/internal/kyc"
 	"github.com/atpost/commerce-service/internal/store/postgres"
 	"github.com/atpost/shared/events"
 	"github.com/google/uuid"
 )
+
+// ErrKYCNotConfigured is returned when an admin tries to run KYC verification
+// but no validator has been wired (Phase 3.2). Operators should configure a
+// vendor adapter or accept the stub for dev/QA.
+var ErrKYCNotConfigured = fmt.Errorf("kyc validator not configured")
 
 // ─── Onboarding wizard ───────────────────────────────────────────
 
@@ -159,6 +165,59 @@ func (s *Service) AdminRejectSeller(ctx context.Context, sellerID, actorID uuid.
 
 func (s *Service) AdminRequestSellerChanges(ctx context.Context, sellerID, actorID uuid.UUID, changes, notes string) error {
 	return s.store.RequestSellerChanges(ctx, sellerID, actorID, changes, notes)
+}
+
+// AdminVerifySellerKYC runs the configured KYC adapter against the seller's
+// stored GSTIN/PAN + primary payout account. The adapter's verdict is also
+// stored on the seller row so the admin queue can render verification at a
+// glance. The report is returned for the UI to show per-field detail.
+//
+// Phase 3.2: stub adapter returns format-only checks. A production deployment
+// must wire a vendor (Karza/Signzy/Hyperverge) via WithKYC before approving
+// sellers, otherwise admins are approving on signal alone.
+func (s *Service) AdminVerifySellerKYC(ctx context.Context, sellerID uuid.UUID) (*kyc.Report, error) {
+	if s.kyc == nil {
+		return nil, ErrKYCNotConfigured
+	}
+	sel, err := s.store.GetSellerByID(ctx, sellerID)
+	if err != nil {
+		return nil, fmt.Errorf("load seller: %w", err)
+	}
+	snap := kyc.SellerSnapshot{}
+	if sel.GSTNumber != nil {
+		snap.GSTIN = *sel.GSTNumber
+	}
+	if sel.PANNumber != nil {
+		snap.PAN = *sel.PANNumber
+	}
+	if pa, err := s.store.GetPrimaryPayoutAccount(ctx, sellerID); err == nil && pa != nil {
+		snap.BankAccountNo = pa.AccountNumber
+		if pa.IFSCCode != nil {
+			snap.IFSC = *pa.IFSCCode
+		}
+		if pa.UPIID != nil {
+			snap.UPI = *pa.UPIID
+		}
+	}
+	rep, err := s.kyc.Verify(ctx, snap)
+	if err != nil {
+		return nil, fmt.Errorf("kyc verify: %w", err)
+	}
+	status := "pending"
+	if rep.AllValid {
+		status = "verified"
+	}
+	if err := s.store.SetSellerKYCVerificationStatus(ctx, sellerID, status); err != nil {
+		// Verdict is the user-visible result; persistence failure is
+		// logged via the publish path below and surfaces in the report.
+		s.publish(ctx, "commerce.seller.kyc_persist_failed", map[string]any{
+			"seller_id": sellerID, "error": err.Error(),
+		})
+	}
+	s.publish(ctx, "commerce.seller.kyc_verified", map[string]any{
+		"seller_id": sellerID, "adapter": s.kyc.Name(), "all_valid": rep.AllValid,
+	})
+	return rep, nil
 }
 
 func (s *Service) AdminSuspendSeller(ctx context.Context, sellerID, actorID uuid.UUID, reason, notes string) error {
