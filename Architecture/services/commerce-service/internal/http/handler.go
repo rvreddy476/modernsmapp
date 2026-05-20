@@ -2,6 +2,7 @@
 package http
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -259,18 +260,26 @@ func (h *Handler) CreateReview(c *gin.Context) {
 		return
 	}
 	r := &postgres.Review{
-		ProductID:          productID,
-		SellerID:           req.SellerID,
-		ReviewerID:         userID,
-		OrderItemID:        req.OrderItemID,
-		Rating:             req.Rating,
-		Title:              req.Title,
-		Body:               req.Body,
-		IsVerifiedPurchase: true,
-		IsPublished:        true,
+		ProductID:   productID,
+		SellerID:    req.SellerID,
+		ReviewerID:  userID,
+		OrderItemID: req.OrderItemID,
+		Rating:      req.Rating,
+		Title:       req.Title,
+		Body:        req.Body,
+		// IsVerifiedPurchase is set by the service layer after it
+		// validates the order item; callers may no longer self-declare it.
+		IsPublished: true,
 	}
 	if err := h.svc.CreateReview(c.Request.Context(), r); err != nil {
-		handleErr(c, err)
+		switch {
+		case errors.Is(err, service.ErrReviewOrderItemInvalid):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "REVIEW_NOT_ELIGIBLE", err.Error(), nil)
+		case errors.Is(err, service.ErrReviewItemNotDelivered):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "REVIEW_ITEM_NOT_DELIVERED", err.Error(), nil)
+		default:
+			handleErr(c, err)
+		}
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, r, nil)
@@ -611,12 +620,24 @@ func (h *Handler) CancelOrder(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+// confirmPaymentReq is the customer-facing Razorpay confirmation body.
+// PaymentIntentID is the commerce-side payments-service intent id; the
+// three razorpay_* fields are what Razorpay returns on successful checkout
+// and are forwarded to payments-service for HMAC verification.
 type confirmPaymentReq struct {
-	PaymentID string `json:"payment_id" binding:"required"`
-	Gateway   string `json:"gateway" binding:"required"`
+	PaymentIntentID   uuid.UUID `json:"payment_intent_id" binding:"required"`
+	RazorpayOrderID   string    `json:"razorpay_order_id" binding:"required"`
+	RazorpayPaymentID string    `json:"razorpay_payment_id" binding:"required"`
+	RazorpaySignature string    `json:"razorpay_signature" binding:"required"`
+	AmountMinor       int64     `json:"amount_minor,omitempty"`
+	Gateway           string    `json:"gateway,omitempty"`
 }
 
 func (h *Handler) ConfirmPayment(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
 	orderID, ok := parseUUID(c, "orderId")
 	if !ok {
 		return
@@ -626,8 +647,33 @@ func (h *Handler) ConfirmPayment(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
-	if err := h.svc.ConfirmPayment(c.Request.Context(), orderID, req.PaymentID, req.Gateway); err != nil {
-		handleErr(c, err)
+	err := h.svc.ConfirmPayment(c.Request.Context(), orderID, userID, service.ConfirmPaymentInput{
+		PaymentIntentID:   req.PaymentIntentID,
+		RazorpayOrderID:   req.RazorpayOrderID,
+		RazorpayPaymentID: req.RazorpayPaymentID,
+		RazorpaySignature: req.RazorpaySignature,
+		AmountMinor:       req.AmountMinor,
+		Gateway:           req.Gateway,
+	})
+	if err != nil {
+		// Map domain errors to specific HTTP codes — the old generic
+		// handleErr swallowed wrong-user / wrong-state into 500, which
+		// hid bugs and made misuse hard to debug.
+		switch {
+		case errors.Is(err, service.ErrOrderNotFound):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "ORDER_NOT_FOUND", err.Error(), nil)
+		case errors.Is(err, service.ErrNotOrderOwner):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
+		case errors.Is(err, service.ErrOrderNotPaymentPending):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "ORDER_NOT_PAYMENT_PENDING", err.Error(), nil)
+		case errors.Is(err, service.ErrPaymentVerifyFailed),
+			errors.Is(err, service.ErrPaymentAmountMismatch):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "PAYMENT_VERIFY_FAILED", err.Error(), nil)
+		case errors.Is(err, service.ErrStubGatewayInProd):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "STUB_GATEWAY_NOT_ALLOWED", err.Error(), nil)
+		default:
+			handleErr(c, err)
+		}
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -686,6 +732,10 @@ func (h *Handler) ApproveReturn(c *gin.Context) {
 	}
 	out, err := h.svc.ApproveReturn(c.Request.Context(), returnID, actorID)
 	if err != nil {
+		if errors.Is(err, service.ErrNotReturnSeller) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "APPROVE_FAILED", err.Error(), nil)
 		return
 	}
@@ -715,6 +765,10 @@ func (h *Handler) RejectReturn(c *gin.Context) {
 	}
 	out, err := h.svc.RejectReturn(c.Request.Context(), returnID, actorID, req.Reason)
 	if err != nil {
+		if errors.Is(err, service.ErrNotReturnSeller) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "REJECT_FAILED", err.Error(), nil)
 		return
 	}

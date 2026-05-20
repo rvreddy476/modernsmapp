@@ -98,9 +98,12 @@ func (c *PaymentsConsumer) handle(ctx context.Context, env *events.EventEnvelope
 
 	switch env.EventType {
 	case events.EventPaymentSucceeded:
-		// ConfirmPayment is idempotent — UpdatePaymentStatus is a row-level
-		// update, and DeductStock + invoice + shipment fan out from there.
-		if err := c.svc.ConfirmPayment(ctx, orderID, p.ProviderRef, "razorpay"); err != nil {
+		// payment.succeeded is published only after payments-service has
+		// already HMAC-verified the Razorpay webhook upstream, so this
+		// is the system-trusted entry. ApplyVerifiedPaymentEvent is
+		// idempotent — UpdatePaymentStatus is row-level, and DeductStock
+		// + invoice + shipment fan out from there.
+		if err := c.svc.ApplyVerifiedPaymentEvent(ctx, orderID, p.ProviderRef); err != nil {
 			return fmt.Errorf("confirm payment for order %s: %w", orderID, err)
 		}
 		slog.Info("payments consumer: confirmed order",

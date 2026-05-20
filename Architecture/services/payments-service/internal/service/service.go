@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
 	"time"
 
@@ -15,6 +16,16 @@ import (
 	"github.com/google/uuid"
 	kafka "github.com/segmentio/kafka-go"
 )
+
+// rupeesToPaise converts the API's rupees-major amount to the paise-minor
+// units Razorpay (and other Indian payment gateways) require. `math.Round`
+// pins ₹100.50 to 10050 paise rather than 10049 from float-truncation —
+// reconciliation breaks otherwise. The API contract at the HTTP boundary
+// is rupees-major: every site that ships an amount across that boundary
+// must stay in that unit.
+func rupeesToPaise(amountRupees float64) int64 {
+	return int64(math.Round(amountRupees * 100))
+}
 
 type Service struct {
 	store   *postgres.Store
@@ -64,7 +75,13 @@ func (s *Service) InitiatePayment(ctx context.Context, in InitiateInput) (*postg
 
 	var providerRef string
 	if in.Method != "cod" && in.Method != "wallet" && s.gateway != nil {
-		order, err := s.gateway.CreateOrder(ctx, int64(in.Amount), "INR", in.IdempotencyKey)
+		// in.Amount is rupees-major at the API boundary; Razorpay's
+		// CreateOrder expects paise-minor. The previous code passed
+		// `int64(in.Amount)` directly, which made the provider order
+		// 1/100th of the displayed amount — reconciliation impossible
+		// and a customer-visible bug when ₹X opens as ₹X/100 on the
+		// gateway page.
+		order, err := s.gateway.CreateOrder(ctx, rupeesToPaise(in.Amount), "INR", in.IdempotencyKey)
 		if err != nil {
 			slog.Error("payment: gateway CreateOrder failed", "error", err)
 		} else {
@@ -92,7 +109,11 @@ func (s *Service) InitiatePayment(ctx context.Context, in InitiateInput) (*postg
 	}
 
 	if in.Method == "escrow" {
-		if holdErr := s.store.CreateHold(ctx, res.Intent.ID, int64(in.Amount), orDefault(in.Currency, "INR"), "order_delivered"); holdErr != nil {
+		// Holds are recorded in paise-minor so they line up with the
+		// provider's amount; the prior `int64(in.Amount)` truncated
+		// fractional rupees (₹100.50 → 100) AND used a different unit
+		// than the gateway, making escrow accounting non-reconcilable.
+		if holdErr := s.store.CreateHold(ctx, res.Intent.ID, rupeesToPaise(in.Amount), orDefault(in.Currency, "INR"), "order_delivered"); holdErr != nil {
 			slog.Error("payment: CreateHold failed", "intent_id", res.Intent.ID, "error", holdErr)
 		}
 	}
@@ -127,6 +148,16 @@ func (s *Service) UpdateStatus(ctx context.Context, id uuid.UUID, oldStatus, new
 // refund this intent. Audit P1: previously InitiateRefund did no
 // authorization check — any caller with X-User-Id could refund any
 // payment in the table, moving money out of any seller's account.
+// Errors surfaced by VerifyIntent so HTTP callers can distinguish a bad
+// signature (which must produce a 401/400, never a 200) from a missing
+// intent or a misconfigured gateway.
+var (
+	ErrSignatureVerificationFailed = fmt.Errorf("razorpay signature verification failed")
+	ErrAmountMismatch              = fmt.Errorf("payment amount does not match intent")
+	ErrProviderRefMismatch         = fmt.Errorf("razorpay order id does not match intent")
+	ErrGatewayNotConfigured        = fmt.Errorf("payment gateway not configured")
+)
+
 var ErrRefundNotAuthorized = fmt.Errorf("not authorized to refund this payment")
 
 // ErrHoldReleaseNotAuthorized is the equivalent for escrow holds.
@@ -166,6 +197,70 @@ func (s *Service) InitiateRefund(ctx context.Context, id, actorID uuid.UUID, rea
 
 func (s *Service) ListByReference(ctx context.Context, refType string, refID uuid.UUID) ([]postgres.PaymentIntent, error) {
 	return s.store.ListByReference(ctx, refType, refID)
+}
+
+// VerifyResult is returned by VerifyIntent. Verified is only ever true
+// when the signature, the provider order id, and (when supplied) the
+// amount all match the stored intent.
+type VerifyResult struct {
+	Verified    bool      `json:"verified"`
+	IntentID    uuid.UUID `json:"intent_id"`
+	Status      string    `json:"status"`
+	AmountMinor int64     `json:"amount_minor"`
+	ProviderRef string    `json:"provider_ref"`
+}
+
+// VerifyIntent is the synchronous gateway-verification path commerce-service
+// uses to confirm a payment immediately after the customer completes Razorpay
+// checkout. The webhook remains the canonical async signal; this exists so
+// the order page can transition without waiting for webhook delivery.
+//
+// Checks, in order:
+//  1. The intent's stored provider_ref matches the razorpay_order_id the
+//     client returned (no cross-order replay).
+//  2. The supplied amount_minor (if > 0) matches the intent amount in paise
+//     (prevents a low-amount payment confirming a high-amount order).
+//  3. The Razorpay signature HMAC-verifies for (order_id|payment_id).
+//
+// On success the intent is transitioned pending → succeeded if it is still
+// pending — idempotent, the state-machine rejects re-applying succeeded.
+// The webhook still publishes the canonical payment.succeeded event; verify
+// does not double-publish.
+func (s *Service) VerifyIntent(ctx context.Context, id uuid.UUID, rzpOrderID, rzpPaymentID, rzpSignature string, amountMinor int64) (*VerifyResult, error) {
+	intent, err := s.store.GetIntent(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if s.gateway == nil {
+		return nil, ErrGatewayNotConfigured
+	}
+
+	intentAmountMinor := rupeesToPaise(intent.Amount)
+
+	if intent.ProviderRef == "" || intent.ProviderRef != rzpOrderID {
+		return nil, ErrProviderRefMismatch
+	}
+	if amountMinor > 0 && amountMinor != intentAmountMinor {
+		return nil, ErrAmountMismatch
+	}
+	if !s.gateway.VerifySignature(rzpOrderID, rzpPaymentID, rzpSignature) {
+		return nil, ErrSignatureVerificationFailed
+	}
+
+	// Idempotent transition. If the webhook beat us, the state-machine
+	// returns ErrInvalidStatusTransition and we leave the intent as-is.
+	_ = s.store.UpdateStatus(ctx, id, "pending", "succeeded", rzpPaymentID, intent.PayerID)
+	current, err := s.store.GetIntent(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return &VerifyResult{
+		Verified:    true,
+		IntentID:    id,
+		Status:      current.Status,
+		AmountMinor: intentAmountMinor,
+		ProviderRef: current.ProviderRef,
+	}, nil
 }
 
 // ReleaseHold marks an escrow hold released. Audit P4: actor must

@@ -96,11 +96,23 @@ func main() {
 		// Suggestion service
 		{"/v1/suggestions", env("SUGGESTION_SERVICE_URL", "http://suggestion-service:8100")},
 		// Orders / Bookings service (v2.1)
+		// DEPRECATED (Phase 0.7, audit 2026-05-19): /v1/orders is retired
+		// for commerce — all commerce orders now live under
+		// /v1/commerce/orders in commerce-service. This entry stays only
+		// until the mobile `OrdersRepository` (lib/data/repositories/
+		// orders_repository.dart) is re-pointed to /v1/commerce; drop
+		// then. /v1/bookings is a non-commerce surface and stays.
 		{"/v1/orders", env("ORDERS_SERVICE_URL", "http://orders-service:8101")},
 		{"/v1/bookings", env("ORDERS_SERVICE_URL", "http://orders-service:8101")},
 		// Payments service (v2.1)
 		{"/v1/payments", env("PAYMENTS_SERVICE_URL", "http://payments-service:8102")},
 		// Shop / Live / Memories services
+		// DEPRECATED (Phase 0.7, audit 2026-05-19): /v1/shop is retired
+		// for commerce — catalog, wishlist, and payouts live under
+		// /v1/commerce in commerce-service. This entry stays only until
+		// the mobile `ShopRepository` (lib/data/repositories/
+		// shop_repository.dart) and the /v1/shop/payouts caller in
+		// `monetization_repository.dart:103` are re-pointed; drop then.
 		{"/v1/shop", env("SHOP_SERVICE_URL", "http://shop-service:8105")},
 		{"/v1/live", env("LIVE_SERVICE_URL", "http://live-service:8103")},
 		{"/v1/memories", env("MEMORIES_SERVICE_URL", "http://memories-service:8104")},

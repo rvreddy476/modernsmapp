@@ -58,6 +58,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.POST("/intents", h.InitiatePayment)
 		v1.GET("/intents/:id", h.GetIntent)
 		v1.PATCH("/intents/:id/status", h.UpdateStatus)
+		v1.POST("/intents/:id/verify", h.VerifyIntent) // Phase 0.1b — synchronous signature verify for commerce-service
 		v1.POST("/intents/:id/refund", h.InitiateRefund)
 		v1.GET("/intents", h.ListByReference)
 		v1.POST("/holds/:intentId/release", h.ReleaseHold)
@@ -188,6 +189,36 @@ func (h *Handler) InitiateRefund(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, intent, nil)
+}
+
+// VerifyIntent POST /v1/payments/intents/:id/verify — Phase 0.1b.
+// Internal-only (gated by the X-Internal-Service-Key middleware that wraps
+// the /v1/payments group) so commerce-service can synchronously verify a
+// Razorpay signature + amount and confirm the customer's order without
+// waiting for webhook delivery. Returns 400 on signature / amount / order
+// mismatch so the caller can refuse to mark the order paid.
+func (h *Handler) VerifyIntent(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid intent id", nil)
+		return
+	}
+	var body struct {
+		RazorpayOrderID   string `json:"razorpay_order_id" binding:"required"`
+		RazorpayPaymentID string `json:"razorpay_payment_id" binding:"required"`
+		RazorpaySignature string `json:"razorpay_signature" binding:"required"`
+		AmountMinor       int64  `json:"amount_minor,omitempty"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	result, err := h.svc.VerifyIntent(c.Request.Context(), id, body.RazorpayOrderID, body.RazorpayPaymentID, body.RazorpaySignature, body.AmountMinor)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "VERIFY_FAILED", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, result, nil)
 }
 
 // ListByReference GET /v1/payments/intents?ref_type=order&ref_id=uuid

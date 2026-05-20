@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
+	"os"
 	"strings"
 	"time"
 
@@ -18,6 +20,35 @@ import (
 	"github.com/redis/go-redis/v9"
 	kafka "github.com/segmentio/kafka-go"
 )
+
+// Phase 0.1 — surfaceable errors so the HTTP handler can map them to
+// specific status codes rather than the generic 500 the old code emitted.
+var (
+	ErrOrderNotFound          = fmt.Errorf("order not found")
+	ErrNotOrderOwner          = fmt.Errorf("not authorized for this order")
+	ErrOrderNotPaymentPending = fmt.Errorf("order is not in payment_pending state")
+	ErrPaymentVerifyFailed    = fmt.Errorf("payment verification failed")
+	ErrPaymentAmountMismatch  = fmt.Errorf("payment amount does not match order")
+	ErrStubGatewayInProd      = fmt.Errorf("stub gateway not permitted; set PAYMENTS_ALLOW_STUB=true for dev/test")
+	ErrPaymentsClientMissing  = fmt.Errorf("payments client not configured")
+	ErrNotReturnSeller        = fmt.Errorf("actor is not the seller for this return")
+	ErrReviewOrderItemInvalid = fmt.Errorf("order item does not belong to reviewer or does not match product/seller")
+	ErrReviewItemNotDelivered = fmt.Errorf("order item must be delivered before review")
+)
+
+// ConfirmPaymentInput is the request body the customer-facing confirm
+// endpoint accepts. The signature triple is what Razorpay returns on
+// successful checkout; commerce-service does not trust any of these
+// fields — they are forwarded to payments-service for HMAC verification
+// against the stored intent.
+type ConfirmPaymentInput struct {
+	PaymentIntentID   uuid.UUID
+	RazorpayOrderID   string
+	RazorpayPaymentID string
+	RazorpaySignature string
+	AmountMinor       int64
+	Gateway           string
+}
 
 // Service is the main commerce service.
 type Service struct {
@@ -629,16 +660,127 @@ func sellerIDOrNil(items []*postgres.OrderItem) *uuid.UUID {
 	return &items[0].SellerID
 }
 
-// ConfirmPayment is called after successful payment gateway callback.
-func (s *Service) ConfirmPayment(ctx context.Context, orderID uuid.UUID, paymentID, gateway string) error {
+// ConfirmPayment is the customer-facing confirm path invoked by the HTTP
+// handler after Razorpay checkout returns. It is the safety-critical entry
+// point: previously the handler trusted any (payment_id, gateway) pair the
+// client sent and marked the order paid. Now we:
+//
+//  1. Require the actor to own the order.
+//  2. Require the order to actually be payment_pending.
+//  3. Forward the Razorpay signature triple to payments-service for HMAC
+//     verification + amount check.
+//  4. Refuse gateway=stub unless PAYMENTS_ALLOW_STUB is explicitly set.
+//
+// Idempotent — an already-paid order returns nil without re-running the
+// fulfillment side effects.
+func (s *Service) ConfirmPayment(ctx context.Context, orderID, actorID uuid.UUID, in ConfirmPaymentInput) error {
+	order, err := s.store.GetOrderByID(ctx, orderID)
+	if err != nil {
+		return err
+	}
+	if order == nil {
+		return ErrOrderNotFound
+	}
+	if order.CustomerUserID != actorID {
+		return ErrNotOrderOwner
+	}
+	if order.PaymentStatus == "paid" {
+		return nil // idempotent: payment already applied
+	}
+	if order.PaymentStatus != "payment_pending" {
+		return ErrOrderNotPaymentPending
+	}
+
+	gateway := in.Gateway
+	if gateway == "" {
+		gateway = "razorpay"
+	}
+	if gateway == "stub" && os.Getenv("PAYMENTS_ALLOW_STUB") != "true" {
+		return ErrStubGatewayInProd
+	}
+
+	if gateway != "stub" {
+		if s.payments == nil {
+			return ErrPaymentsClientMissing
+		}
+		expectedMinor := int64(math.Round(order.FinalAmount * 100))
+		if in.AmountMinor != 0 && in.AmountMinor != expectedMinor {
+			return ErrPaymentAmountMismatch
+		}
+		res, err := s.payments.VerifyIntent(ctx, in.PaymentIntentID, in.RazorpayOrderID, in.RazorpayPaymentID, in.RazorpaySignature, expectedMinor)
+		if err != nil {
+			slog.Warn("payment verify failed",
+				"order_id", orderID, "intent_id", in.PaymentIntentID, "error", err)
+			return ErrPaymentVerifyFailed
+		}
+		if res == nil || !res.Verified {
+			return ErrPaymentVerifyFailed
+		}
+	}
+
+	return s.applyPaidStatus(ctx, orderID, in.RazorpayPaymentID, gateway, &actorID, "customer")
+}
+
+// OrderActorRole describes how the supplied actor relates to an order —
+// used by the shipment / invoice / return handlers to gate writes to the
+// seller of at least one item and to gate reads to the customer or a
+// seller. Returns ErrOrderNotFound when the order does not exist.
+type OrderActorRole struct {
+	IsCustomer bool
+	IsSeller   bool
+}
+
+// OrderActor inspects the order + its items and reports whether the
+// supplied actor is the customer and/or a seller of any item.
+func (s *Service) OrderActor(ctx context.Context, orderID, actorID uuid.UUID) (OrderActorRole, error) {
+	order, err := s.store.GetOrderByID(ctx, orderID)
+	if err != nil {
+		return OrderActorRole{}, err
+	}
+	if order == nil {
+		return OrderActorRole{}, ErrOrderNotFound
+	}
+	role := OrderActorRole{IsCustomer: order.CustomerUserID == actorID}
+	items, _ := s.store.GetOrderItems(ctx, orderID)
+	for _, it := range items {
+		if it.SellerID == actorID {
+			role.IsSeller = true
+			break
+		}
+	}
+	return role, nil
+}
+
+// ApplyVerifiedPaymentEvent is the system entry point the Kafka payments
+// consumer uses when payments-service publishes payment.succeeded. The
+// webhook has already verified the Razorpay signature upstream, so we
+// trust the event and apply the paid status directly. Idempotent.
+func (s *Service) ApplyVerifiedPaymentEvent(ctx context.Context, orderID uuid.UUID, paymentID string) error {
+	order, err := s.store.GetOrderByID(ctx, orderID)
+	if err != nil {
+		return err
+	}
+	if order == nil {
+		return ErrOrderNotFound
+	}
+	if order.PaymentStatus == "paid" {
+		return nil
+	}
+	return s.applyPaidStatus(ctx, orderID, paymentID, "razorpay", nil, "system")
+}
+
+// applyPaidStatus is the shared "actually mark this order paid + fire the
+// downstream side effects" core, called from both the customer-driven
+// ConfirmPayment and the webhook-driven ApplyVerifiedPaymentEvent.
+func (s *Service) applyPaidStatus(ctx context.Context, orderID uuid.UUID, paymentID, gateway string, actorID *uuid.UUID, actorType string) error {
 	if err := s.store.UpdatePaymentStatus(ctx, orderID, "paid", paymentID, gateway); err != nil {
 		return err
 	}
-	if err := s.store.UpdateOrderStatus(ctx, orderID, "confirmed", nil, "system", "payment confirmed"); err != nil {
+	if err := s.store.UpdateOrderStatus(ctx, orderID, "confirmed", actorID, actorType, "payment confirmed"); err != nil {
 		return err
 	}
 
-	// Deduct inventory (best-effort)
+	// Deduct inventory (best-effort).
 	items, _ := s.store.GetOrderItems(ctx, orderID)
 	for _, item := range items {
 		if err := s.store.DeductStock(ctx, item.VariantID, item.Quantity, orderID); err != nil {
@@ -662,8 +804,8 @@ func (s *Service) ConfirmPayment(ctx context.Context, orderID uuid.UUID, payment
 		"buyer_email":  buyerEmail,
 	})
 
-	// Best-effort fulfillment automation. Run in a detached goroutine so a slow
-	// courier API or invoice render doesn't stall the payment callback.
+	// Best-effort fulfillment automation. Run in a detached goroutine so a
+	// slow courier API or invoice render doesn't stall the payment callback.
 	go s.fulfillPaidOrder(orderID)
 	return nil
 }
@@ -774,6 +916,10 @@ func (s *Service) ApproveReturn(ctx context.Context, returnID, actorID uuid.UUID
 	r, err := s.store.GetReturnRequestByID(ctx, returnID)
 	if err != nil {
 		return nil, fmt.Errorf("get return: %w", err)
+	}
+	// Phase 0.5: only the seller of the returned item may approve.
+	if r.SellerID != actorID {
+		return nil, ErrNotReturnSeller
 	}
 	if r.Status == "approved" {
 		return r, nil // idempotent
@@ -938,6 +1084,10 @@ func (s *Service) RejectReturn(ctx context.Context, returnID, actorID uuid.UUID,
 	if err != nil {
 		return nil, fmt.Errorf("get return: %w", err)
 	}
+	// Phase 0.5: only the seller of the returned item may reject.
+	if r.SellerID != actorID {
+		return nil, ErrNotReturnSeller
+	}
 	if r.Status == "rejected" {
 		return r, nil
 	}
@@ -980,7 +1130,41 @@ func (s *Service) CalculateSellerPayout(grossAmount float64, commissionPct, plat
 
 // ─── Reviews ─────────────────────────────────────────────────
 
+// CreateReview validates the supplied review against the reviewer's actual
+// order history before persisting. Phase 0.6 — previously the handler set
+// IsVerifiedPurchase=true blindly off the request fields, so any
+// authenticated user could post a "verified" review for any product by
+// supplying a fabricated order_item_id. Now we look up the order item and
+// require:
+//
+//   - The order item belongs to an order owned by the reviewer.
+//   - The item's product_id matches the reviewed product.
+//   - The item's seller_id matches the supplied seller.
+//   - The item is delivered (status=='delivered' or delivered_at set).
+//
+// IsVerifiedPurchase is derived from the validation; callers are no longer
+// trusted to set it.
 func (s *Service) CreateReview(ctx context.Context, r *postgres.Review) error {
+	item, err := s.store.GetOrderItemByID(ctx, r.OrderItemID)
+	if err != nil || item == nil {
+		return ErrReviewOrderItemInvalid
+	}
+	if item.ProductID != r.ProductID || item.SellerID != r.SellerID {
+		return ErrReviewOrderItemInvalid
+	}
+	order, err := s.store.GetOrderByID(ctx, item.OrderID)
+	if err != nil || order == nil {
+		return ErrReviewOrderItemInvalid
+	}
+	if order.CustomerUserID != r.ReviewerID {
+		return ErrReviewOrderItemInvalid
+	}
+	if item.Status != "delivered" && item.DeliveredAt == nil {
+		return ErrReviewItemNotDelivered
+	}
+
+	r.IsVerifiedPurchase = true // derived, not trusted from input
+
 	if err := s.store.CreateReview(ctx, r); err != nil {
 		return err
 	}

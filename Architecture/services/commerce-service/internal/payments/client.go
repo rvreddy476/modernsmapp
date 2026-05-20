@@ -85,6 +85,62 @@ func (c *Client) FindOrderIntent(ctx context.Context, orderID, actorID uuid.UUID
 	return nil, nil
 }
 
+// VerifyResult mirrors payments-service's verify endpoint response.
+// Verified is only true when the Razorpay signature, the provider order
+// id, and (when supplied) the amount all match the stored intent.
+type VerifyResult struct {
+	Verified    bool      `json:"verified"`
+	IntentID    uuid.UUID `json:"intent_id"`
+	Status      string    `json:"status"`
+	AmountMinor int64     `json:"amount_minor"`
+	ProviderRef string    `json:"provider_ref"`
+}
+
+// VerifyIntent asks payments-service to validate the Razorpay signature
+// and amount for the supplied intent. Returns a non-nil result with
+// Verified=true only on a successful verification; any error means
+// commerce-service must NOT mark the order paid.
+//
+// Server-to-server call — only the internal-service-key gate authenticates;
+// no X-User-Id is required by the verify endpoint.
+func (c *Client) VerifyIntent(ctx context.Context, intentID uuid.UUID, rzpOrderID, rzpPaymentID, rzpSignature string, amountMinor int64) (*VerifyResult, error) {
+	if c == nil || c.baseURL == "" {
+		return nil, fmt.Errorf("payments client not configured")
+	}
+	url := fmt.Sprintf("%s/v1/payments/intents/%s/verify", c.baseURL, intentID)
+	body, _ := json.Marshal(map[string]interface{}{
+		"razorpay_order_id":   rzpOrderID,
+		"razorpay_payment_id": rzpPaymentID,
+		"razorpay_signature":  rzpSignature,
+		"amount_minor":        amountMinor,
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.setHeaders(req, uuid.Nil)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		var e envelope[any]
+		_ = json.NewDecoder(resp.Body).Decode(&e)
+		msg := ""
+		if e.Error != nil {
+			msg = e.Error.Message
+		}
+		return nil, fmt.Errorf("payments verify: status %d: %s", resp.StatusCode, msg)
+	}
+	var e envelope[VerifyResult]
+	if err := json.NewDecoder(resp.Body).Decode(&e); err != nil {
+		return nil, err
+	}
+	return &e.Data, nil
+}
+
 // InitiateRefund kicks payments-service's refund pipeline for the intent.
 // Idempotent at the gateway: a second call returns the existing refund.
 func (c *Client) InitiateRefund(ctx context.Context, intentID, actorID uuid.UUID, reason string) (*PaymentIntent, error) {

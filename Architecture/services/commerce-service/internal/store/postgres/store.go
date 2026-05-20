@@ -641,6 +641,26 @@ func (s *Store) GetOrderItems(ctx context.Context, orderID uuid.UUID) ([]*OrderI
 	return items, nil
 }
 
+// GetOrderItemByID fetches a single order item. Used by the review-create
+// path (Phase 0.6) to validate that the reviewer's order item actually
+// matches the product + seller they're trying to review.
+func (s *Store) GetOrderItemByID(ctx context.Context, id uuid.UUID) (*OrderItem, error) {
+	var item OrderItem
+	err := s.db.QueryRow(ctx, `SELECT id,order_id,product_id,variant_id,seller_id,product_title,
+		variant_details,sku,quantity,unit_mrp,unit_price,discount_amount,tax_amount,final_price,
+		status,shipment_id,tracking_number,return_eligible_until,delivered_at,created_at
+		FROM order_items WHERE id=$1`, id).Scan(
+		&item.ID, &item.OrderID, &item.ProductID, &item.VariantID, &item.SellerID,
+		&item.ProductTitle, &item.VariantDetails, &item.SKU, &item.Quantity,
+		&item.UnitMRP, &item.UnitPrice, &item.DiscountAmount, &item.TaxAmount, &item.FinalPrice,
+		&item.Status, &item.ShipmentID, &item.TrackingNumber, &item.ReturnEligibleUntil,
+		&item.DeliveredAt, &item.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &item, nil
+}
+
 func (s *Store) UpdatePaymentStatus(ctx context.Context, orderID uuid.UUID, paymentStatus, paymentID, gateway string) error {
 	_, err := s.db.Exec(ctx, `
 		UPDATE orders SET payment_status=$2, payment_id=$3, payment_gateway=$4, updated_at=NOW()
