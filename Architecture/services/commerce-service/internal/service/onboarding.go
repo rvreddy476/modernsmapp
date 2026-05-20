@@ -167,6 +167,16 @@ func (s *Service) AdminRequestSellerChanges(ctx context.Context, sellerID, actor
 	return s.store.RequestSellerChanges(ctx, sellerID, actorID, changes, notes)
 }
 
+// AdminListPendingPayouts returns one row per seller with outstanding COD
+// remittance balance, oldest delivery first. Phase 4.5 — feeds the admin
+// payout reconciliation dashboard.
+func (s *Service) AdminListPendingPayouts(ctx context.Context, limit int) ([]*postgres.PendingPayoutSummary, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	return s.store.ListPendingPayoutsBySeller(ctx, limit)
+}
+
 // AdminVerifySellerKYC runs the configured KYC adapter against the seller's
 // stored GSTIN/PAN + primary payout account. The adapter's verdict is also
 // stored on the seller row so the admin queue can render verification at a

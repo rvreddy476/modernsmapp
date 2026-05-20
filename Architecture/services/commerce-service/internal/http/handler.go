@@ -2,6 +2,7 @@
 package http
 
 import (
+	"encoding/csv"
 	"errors"
 	"net/http"
 	"strconv"
@@ -51,6 +52,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	v1.GET("/sellers/me", h.GetMySellerProfile)
 	v1.GET("/sellers/:sellerId/products", h.ListSellerProducts)
 	v1.GET("/seller/orders", h.ListMySellerOrders)
+	v1.GET("/seller/orders/:orderId", h.GetSellerOrderDetail)
+	v1.GET("/seller/fulfillment", h.ListSellerFulfillment)
 
 	// ── Cart ─────────────────────────────────────────────────
 	v1.GET("/cart", h.GetCart)
@@ -73,6 +76,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	v1.POST("/returns/:returnId/approve", h.ApproveReturn)
 	v1.POST("/returns/:returnId/reject", h.RejectReturn)
 	v1.GET("/returns/:returnId", h.GetReturn)
+	v1.GET("/returns/:returnId/refund-preview", h.PreviewReturnRefund)
+	v1.GET("/seller/returns", h.ListSellerReturnsInbox)
 	v1.POST("/reviews/:reviewId/seller-response", h.SellerRespondToReview)
 
 	// ── Addresses ────────────────────────────────────────────
@@ -90,6 +95,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 	// ── COD remittances (seller-facing) ──────────────────────
 	v1.GET("/seller/cod-remittances", h.ListMyCODRemittances)
+	v1.GET("/seller/earnings", h.ListSellerEarnings)
+	v1.GET("/seller/earnings.csv", h.ExportSellerEarningsCSV)
 
 	// ── Shipments + Invoices ─────────────────────────────────
 	h.RegisterShipmentRoutes(v1)
@@ -544,6 +551,65 @@ func (h *Handler) ListMySellerOrders(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, orders, nil)
+}
+
+// ListSellerFulfillment GET /v1/commerce/seller/fulfillment — Phase 4.2.
+// Returns the seller's fulfillment queue with item-level + shipment state in
+// a single payload. The `stage` query parameter filters into dashboard tabs:
+// unshipped / in_transit / delivered / cancelled (default: all).
+func (h *Handler) ListSellerFulfillment(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	seller, err := h.svc.GetSellerProfile(c.Request.Context(), userID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil)
+		return
+	}
+	stage := c.DefaultQuery("stage", "all")
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	cards, err := h.svc.ListSellerFulfillment(c.Request.Context(), seller.ID, stage, limit, offset)
+	if err != nil {
+		handleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"orders": cards, "stage": stage}, nil)
+}
+
+// GetSellerOrderDetail GET /v1/commerce/seller/orders/:orderId — Phase 4.2.
+// Returns one order from the seller's perspective (their items + their
+// shipment + delivery snapshot). Forbidden if the seller has no items in
+// the order.
+func (h *Handler) GetSellerOrderDetail(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	orderID, ok := parseUUID(c, "orderId")
+	if !ok {
+		return
+	}
+	seller, err := h.svc.GetSellerProfile(c.Request.Context(), userID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil)
+		return
+	}
+	card, err := h.svc.GetSellerOrderDetail(c.Request.Context(), seller.ID, orderID)
+	if err != nil {
+		if errors.Is(err, service.ErrOrderNotFound) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "order not found", nil)
+			return
+		}
+		if errors.Is(err, service.ErrNotOrderOwner) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "no items for this seller", nil)
+			return
+		}
+		handleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, card, nil)
 }
 
 func (h *Handler) ListSellerProducts(c *gin.Context) {
@@ -1152,6 +1218,126 @@ func (h *Handler) RejectReturn(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, out, nil)
+}
+
+// ListSellerEarnings GET /v1/commerce/seller/earnings — Phase 4.4.
+// Returns delivered prepaid (non-COD) order items with gross / commission
+// / fee / TDS / net broken out. COD earnings live in /seller/cod-remittances.
+func (h *Handler) ListSellerEarnings(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	seller, err := h.svc.GetSellerProfile(c.Request.Context(), userID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil)
+		return
+	}
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	earnings, err := h.svc.ListSellerEarnings(c.Request.Context(), seller.ID, limit, offset)
+	if err != nil {
+		handleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"earnings": earnings}, nil)
+}
+
+// ExportSellerEarningsCSV GET /v1/commerce/seller/earnings.csv — Phase 4.4.
+// CSV download for accountants. Same data as the JSON endpoint, paginated
+// large window (500 rows) — bigger statements should be batched offline.
+func (h *Handler) ExportSellerEarningsCSV(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	seller, err := h.svc.GetSellerProfile(c.Request.Context(), userID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil)
+		return
+	}
+	earnings, err := h.svc.ListSellerEarnings(c.Request.Context(), seller.ID, 500, 0)
+	if err != nil {
+		handleErr(c, err)
+		return
+	}
+	c.Writer.Header().Set("Content-Type", "text/csv")
+	c.Writer.Header().Set("Content-Disposition", "attachment; filename=\"earnings.csv\"")
+	w := csv.NewWriter(c.Writer)
+	_ = w.Write([]string{"delivered_at", "order_number", "order_item_id", "product", "sku", "qty",
+		"gross", "commission", "platform_fee", "tds", "net", "payment_method", "status"})
+	for _, e := range earnings {
+		delivered := ""
+		if e.DeliveredAt != nil {
+			delivered = e.DeliveredAt.Format("2006-01-02")
+		}
+		paymentMethod := ""
+		if e.PaymentMethod != nil {
+			paymentMethod = *e.PaymentMethod
+		}
+		_ = w.Write([]string{
+			delivered, e.OrderNumber, e.OrderItemID.String(), e.ProductTitle, e.SKU,
+			strconv.Itoa(e.Quantity),
+			strconv.FormatFloat(e.GrossAmount, 'f', 2, 64),
+			strconv.FormatFloat(e.CommissionAmount, 'f', 2, 64),
+			strconv.FormatFloat(e.PlatformFee, 'f', 2, 64),
+			strconv.FormatFloat(e.TDSAmount, 'f', 2, 64),
+			strconv.FormatFloat(e.NetAmount, 'f', 2, 64),
+			paymentMethod, e.Status,
+		})
+	}
+	w.Flush()
+}
+
+// ListSellerReturnsInbox GET /v1/commerce/seller/returns — Phase 4.3.
+// Returns the seller's returns inbox with order + item joined inline.
+// Optional ?status= filters to requested / approved / rejected / refunded.
+func (h *Handler) ListSellerReturnsInbox(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	seller, err := h.svc.GetSellerProfile(c.Request.Context(), userID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil)
+		return
+	}
+	status := c.Query("status")
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	cards, err := h.svc.ListSellerReturns(c.Request.Context(), seller.ID, status, limit, offset)
+	if err != nil {
+		handleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"returns": cards, "status": status}, nil)
+}
+
+// PreviewReturnRefund GET /v1/commerce/returns/:returnId/refund-preview —
+// Phase 4.3. Customer or seller can call; refuses other actors.
+func (h *Handler) PreviewReturnRefund(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	returnID, ok := parseUUID(c, "returnId")
+	if !ok {
+		return
+	}
+	amount, err := h.svc.PreviewReturnRefund(c.Request.Context(), returnID, userID)
+	if err != nil {
+		if errors.Is(err, service.ErrReturnNotFound) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "return not found", nil)
+			return
+		}
+		if errors.Is(err, service.ErrNotReturnParty) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "not a party to this return", nil)
+			return
+		}
+		handleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"refund_amount": amount}, nil)
 }
 
 // ─── Address handlers ────────────────────────────────────────────

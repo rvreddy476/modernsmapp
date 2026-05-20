@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -144,6 +145,19 @@ func main() {
 	svc.WithKYC(kyc.StubValidator{})
 	slog.Info("kyc validator ready", "adapter", "stub")
 
+	// Payout fee schedule (Phase 4.1) — env-overridable so finance can
+	// change commission / platform fee / TDS without a code change. Bad
+	// values are clamped to the historical defaults inside WithPayoutConfig.
+	svc.WithPayoutConfig(service.PayoutConfig{
+		CommissionPct:  envFloat("COMMERCE_COMMISSION_PCT", 5.0),
+		PlatformFeePct: envFloat("COMMERCE_PLATFORM_FEE_PCT", 2.0),
+		TDSPct:         envFloat("COMMERCE_TDS_PCT", 1.0),
+	})
+	slog.Info("payout config ready",
+		"commission_pct", env("COMMERCE_COMMISSION_PCT", "5.0"),
+		"platform_fee_pct", env("COMMERCE_PLATFORM_FEE_PCT", "2.0"),
+		"tds_pct", env("COMMERCE_TDS_PCT", "1.0"))
+
 	// 10. Kafka consumer: react to payment lifecycle events from payments-service.
 	// Confirms orders on payment.succeeded; releases stock reservations on
 	// payment.failed. Started in a goroutine; cancelled via consumerCtx on shutdown.
@@ -192,6 +206,19 @@ func env(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func envFloat(key string, fallback float64) float64 {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		slog.Warn("invalid float env, using fallback", "key", key, "value", raw, "fallback", fallback)
+		return fallback
+	}
+	return v
 }
 
 func collectDBPoolStats(ctx context.Context, pool *pgxpool.Pool, m *metrics.DBPoolMetrics) {

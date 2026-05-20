@@ -58,14 +58,15 @@ type ConfirmPaymentInput struct {
 
 // Service is the main commerce service.
 type Service struct {
-	store    *postgres.Store
-	rdb      *redis.Client
-	writer   *kafka.Writer
-	courier  courier.Provider
-	blob     BlobStore
-	identity *identity.Client
-	payments *payments.Client
-	kyc      kyc.Validator
+	store     *postgres.Store
+	rdb       *redis.Client
+	writer    *kafka.Writer
+	courier   courier.Provider
+	blob      BlobStore
+	identity  *identity.Client
+	payments  *payments.Client
+	kyc       kyc.Validator
+	payoutCfg PayoutConfig
 }
 
 func New(store *postgres.Store, rdb *redis.Client, kafkaBrokers string) *Service {
@@ -404,6 +405,119 @@ func (s *Service) GetOrderWithItems(ctx context.Context, orderID, userID uuid.UU
 func (s *Service) ListSellerOrders(ctx context.Context, sellerID uuid.UUID, limit, offset int) ([]*postgres.Order, error) {
 	orders, _, err := s.store.GetOrdersBySeller(ctx, sellerID, limit, offset)
 	return orders, err
+}
+
+// SellerOrderCard is the rich DTO the fulfillment dashboard renders for one
+// order containing the seller's items. The customer's other-seller items in
+// a multi-seller order are intentionally excluded — sellers only see what
+// they're responsible for shipping.
+type SellerOrderCard struct {
+	Order               *postgres.Order      `json:"order"`
+	Items               []*postgres.OrderItem `json:"items"`
+	Shipment            *postgres.Shipment    `json:"shipment,omitempty"`
+	SellerSubtotal      float64              `json:"seller_subtotal"`
+	DeliveryAddress     []byte               `json:"delivery_address,omitempty"`
+}
+
+// ListSellerFulfillment returns the seller's fulfillment queue, optionally
+// filtered by stage:
+//
+//	stage="" / "all"     — every order with the seller's items
+//	stage="unshipped"    — paid but no shipment booked for this seller yet
+//	stage="in_transit"   — shipment booked, not yet delivered
+//	stage="delivered"    — shipment delivered
+//	stage="cancelled"    — order cancelled
+//
+// The DTO carries only this seller's items even in multi-seller orders.
+// Phase 4.2 — replaces the bare ListSellerOrders surface so the dashboard
+// can render item-level state in one round trip.
+func (s *Service) ListSellerFulfillment(ctx context.Context, sellerID uuid.UUID, stage string, limit, offset int) ([]*SellerOrderCard, error) {
+	orders, _, err := s.store.GetOrdersBySeller(ctx, sellerID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*SellerOrderCard, 0, len(orders))
+	for _, o := range orders {
+		items, _ := s.store.GetOrderItems(ctx, o.ID)
+		mine := make([]*postgres.OrderItem, 0, len(items))
+		var subtotal float64
+		for _, it := range items {
+			if it.SellerID == sellerID {
+				mine = append(mine, it)
+				subtotal += it.FinalPrice
+			}
+		}
+		if len(mine) == 0 {
+			continue
+		}
+		shipment, _ := s.store.GetShipmentByOrderAndSeller(ctx, o.ID, sellerID)
+		card := &SellerOrderCard{
+			Order:           o,
+			Items:           mine,
+			Shipment:        shipment,
+			SellerSubtotal:  round2(subtotal),
+			DeliveryAddress: o.DeliveryAddressSnapshot,
+		}
+		if !fulfillmentMatchesStage(card, stage) {
+			continue
+		}
+		out = append(out, card)
+	}
+	return out, nil
+}
+
+// GetSellerOrderDetail returns a single order from the seller's perspective —
+// their items + their shipment + the buyer's delivery snapshot — used by
+// the seller order-detail page. Fails if the caller has no items in the
+// order (authorization).
+func (s *Service) GetSellerOrderDetail(ctx context.Context, sellerID, orderID uuid.UUID) (*SellerOrderCard, error) {
+	order, err := s.store.GetOrderByID(ctx, orderID)
+	if err != nil || order == nil {
+		return nil, ErrOrderNotFound
+	}
+	items, _ := s.store.GetOrderItems(ctx, orderID)
+	mine := make([]*postgres.OrderItem, 0, len(items))
+	var subtotal float64
+	for _, it := range items {
+		if it.SellerID == sellerID {
+			mine = append(mine, it)
+			subtotal += it.FinalPrice
+		}
+	}
+	if len(mine) == 0 {
+		return nil, ErrNotOrderOwner
+	}
+	shipment, _ := s.store.GetShipmentByOrderAndSeller(ctx, orderID, sellerID)
+	return &SellerOrderCard{
+		Order:           order,
+		Items:           mine,
+		Shipment:        shipment,
+		SellerSubtotal:  round2(subtotal),
+		DeliveryAddress: order.DeliveryAddressSnapshot,
+	}, nil
+}
+
+// fulfillmentMatchesStage routes a card into the dashboard tab buckets so
+// callers can filter server-side without each tab issuing its own query.
+func fulfillmentMatchesStage(card *SellerOrderCard, stage string) bool {
+	switch stage {
+	case "", "all":
+		return true
+	case "unshipped":
+		return card.Order.Status != "cancelled" &&
+			card.Order.PaymentStatus == "paid" &&
+			(card.Shipment == nil || card.Shipment.Status == "pending")
+	case "in_transit":
+		return card.Shipment != nil &&
+			card.Shipment.Status != "delivered" &&
+			card.Shipment.Status != "pending" &&
+			card.Order.Status != "cancelled"
+	case "delivered":
+		return card.Shipment != nil && card.Shipment.Status == "delivered"
+	case "cancelled":
+		return card.Order.Status == "cancelled"
+	}
+	return true
 }
 
 func (s *Service) GetOrder(ctx context.Context, orderID, userID uuid.UUID) (*postgres.Order, error) {
@@ -1492,19 +1606,67 @@ func (s *Service) RejectReturn(ctx context.Context, returnID, actorID uuid.UUID,
 
 // ─── Payout Calculation ──────────────────────────────────────
 
-const defaultCommissionPct = 5.0  // 5% platform commission
-const defaultPlatformFeePct = 2.0 // 2% platform fee
+// PayoutConfig holds the platform's commission / platform-fee / TDS rates.
+// Phase 4.1 — previously these were hard-coded constants, making them
+// impossible to change without redeploying. Now they're loaded from env at
+// boot and applied as defaults when the per-call values aren't supplied.
+//
+// All values are percent (5.0 = 5%, not 0.05). Negative or out-of-bound
+// values fall back to compiled defaults so a misconfigured env can't push
+// a seller payout into negative territory.
+type PayoutConfig struct {
+	CommissionPct  float64
+	PlatformFeePct float64
+	TDSPct         float64
+}
 
+// fallbackPayoutConfig is the value the service falls back to when env vars
+// are missing or out of bounds. Matches the historical hard-coded constants
+// (5% commission, 2% platform fee, 1% TDS) so behaviour is unchanged for
+// deployments that don't configure overrides.
+var fallbackPayoutConfig = PayoutConfig{CommissionPct: 5.0, PlatformFeePct: 2.0, TDSPct: 1.0}
+
+// WithPayoutConfig overrides the default fee schedule. Values <=0 or >100
+// are rejected and replaced with the fallback so a misconfigured env can't
+// produce nonsense payouts.
+func (s *Service) WithPayoutConfig(cfg PayoutConfig) *Service {
+	if cfg.CommissionPct <= 0 || cfg.CommissionPct > 100 {
+		cfg.CommissionPct = fallbackPayoutConfig.CommissionPct
+	}
+	if cfg.PlatformFeePct <= 0 || cfg.PlatformFeePct > 100 {
+		cfg.PlatformFeePct = fallbackPayoutConfig.PlatformFeePct
+	}
+	if cfg.TDSPct < 0 || cfg.TDSPct > 100 {
+		cfg.TDSPct = fallbackPayoutConfig.TDSPct
+	}
+	s.payoutCfg = cfg
+	return s
+}
+
+// payoutConfig returns the configured schedule, falling back to defaults if
+// WithPayoutConfig was never called.
+func (s *Service) payoutConfig() PayoutConfig {
+	if s.payoutCfg.CommissionPct == 0 && s.payoutCfg.PlatformFeePct == 0 && s.payoutCfg.TDSPct == 0 {
+		return fallbackPayoutConfig
+	}
+	return s.payoutCfg
+}
+
+// CalculateSellerPayout breaks a gross amount into commission, platform
+// fee, TDS, and the seller's net payout. Per-call overrides (e.g. for a
+// seller with a negotiated rate) win; if 0 is passed for a value the
+// service's configured default is used.
 func (s *Service) CalculateSellerPayout(grossAmount float64, commissionPct, platformFeePct float64) (net float64, commission float64, fee float64, tds float64) {
+	cfg := s.payoutConfig()
 	if commissionPct == 0 {
-		commissionPct = defaultCommissionPct
+		commissionPct = cfg.CommissionPct
 	}
 	if platformFeePct == 0 {
-		platformFeePct = defaultPlatformFeePct
+		platformFeePct = cfg.PlatformFeePct
 	}
 	commission = round2(grossAmount * commissionPct / 100)
 	fee = round2(grossAmount * platformFeePct / 100)
-	tds = round2((grossAmount - commission - fee) * 0.01) // 1% TDS on net
+	tds = round2((grossAmount - commission - fee) * cfg.TDSPct / 100)
 	net = round2(grossAmount - commission - fee - tds)
 	return
 }
@@ -1653,6 +1815,115 @@ func (s *Service) SetDefaultAddress(ctx context.Context, id, userID uuid.UUID) e
 // ListMyReturns returns the calling customer's return history.
 func (s *Service) ListMyReturns(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*postgres.ReturnRequest, error) {
 	return s.store.ListReturnsByCustomer(ctx, userID, limit, offset)
+}
+
+// SellerReturnCard joins a return request with the order item it concerns
+// + the order header. Lets the inbox render reason, item, refund amount,
+// and the buyer's order without N+1 round trips on the UI side.
+type SellerReturnCard struct {
+	Return    *postgres.ReturnRequest `json:"return"`
+	OrderItem *postgres.OrderItem     `json:"order_item,omitempty"`
+	Order     *postgres.Order         `json:"order,omitempty"`
+}
+
+// ListSellerReturns returns the seller's returns inbox, optionally filtered
+// by status (requested / approved / rejected / refunded / closed). Phase 4.3.
+func (s *Service) ListSellerReturns(ctx context.Context, sellerID uuid.UUID, status string, limit, offset int) ([]*SellerReturnCard, error) {
+	returns, err := s.store.ListReturnsBySeller(ctx, sellerID, status, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*SellerReturnCard, 0, len(returns))
+	for _, r := range returns {
+		card := &SellerReturnCard{Return: r}
+		if item, err := s.store.GetOrderItemByID(ctx, r.OrderItemID); err == nil {
+			card.OrderItem = item
+		}
+		if o, err := s.store.GetOrderByID(ctx, r.OrderID); err == nil {
+			card.Order = o
+		}
+		out = append(out, card)
+	}
+	return out, nil
+}
+
+// SellerEarning is one delivered prepaid order item with the gross/commission
+// /fee/tds/net breakdown computed via CalculateSellerPayout. Phase 4.4 — the
+// prepaid analogue of CODRemittance. We don't have a persisted ledger table
+// yet (deferred to Phase 6's outbox/saga work); this is a read-time derivation
+// from order_items so the seller UI can show earnings without a write path.
+type SellerEarning struct {
+	OrderItemID      uuid.UUID  `json:"order_item_id"`
+	OrderID          uuid.UUID  `json:"order_id"`
+	OrderNumber      string     `json:"order_number"`
+	ProductTitle     string     `json:"product_title"`
+	SKU              string     `json:"sku"`
+	Quantity         int        `json:"quantity"`
+	GrossAmount      float64    `json:"gross_amount"`
+	CommissionAmount float64    `json:"commission_amount"`
+	PlatformFee      float64    `json:"platform_fee"`
+	TDSAmount        float64    `json:"tds_amount"`
+	NetAmount        float64    `json:"net_amount"`
+	PaymentMethod    *string    `json:"payment_method,omitempty"`
+	Status           string     `json:"status"`
+	DeliveredAt      *time.Time `json:"delivered_at,omitempty"`
+}
+
+// ListSellerEarnings returns delivered prepaid (non-COD) order items for a
+// seller. COD earnings live in their own remittance ledger so they're not
+// duplicated here. Phase 4.4.
+func (s *Service) ListSellerEarnings(ctx context.Context, sellerID uuid.UUID, limit, offset int) ([]*SellerEarning, error) {
+	items, err := s.store.ListDeliveredItemsForSeller(ctx, sellerID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*SellerEarning, 0, len(items))
+	for _, row := range items {
+		// Skip COD items — they go through the COD remittance ledger.
+		if row.PaymentMethod != nil && *row.PaymentMethod == "cod" {
+			continue
+		}
+		net, commission, fee, tds := s.CalculateSellerPayout(row.Item.FinalPrice, 0, 0)
+		out = append(out, &SellerEarning{
+			OrderItemID:      row.Item.ID,
+			OrderID:          row.Item.OrderID,
+			OrderNumber:      row.OrderNumber,
+			ProductTitle:     row.Item.ProductTitle,
+			SKU:              row.Item.SKU,
+			Quantity:         row.Item.Quantity,
+			GrossAmount:      round2(row.Item.FinalPrice),
+			CommissionAmount: commission,
+			PlatformFee:      fee,
+			TDSAmount:        tds,
+			NetAmount:        net,
+			PaymentMethod:    row.PaymentMethod,
+			Status:           row.Item.Status,
+			DeliveredAt:      row.Item.DeliveredAt,
+		})
+	}
+	return out, nil
+}
+
+// PreviewReturnRefund returns the refund amount the seller would be debited
+// if they approve the return. Reads the order item's FinalPrice; when the
+// return already has an explicit RefundAmount, that wins. Phase 4.3 — keeps
+// the inbox from having to recompute.
+func (s *Service) PreviewReturnRefund(ctx context.Context, returnID, actorID uuid.UUID) (float64, error) {
+	r, err := s.store.GetReturnRequestByID(ctx, returnID)
+	if err != nil || r == nil {
+		return 0, ErrReturnNotFound
+	}
+	if r.SellerID != actorID && r.CustomerUserID != actorID {
+		return 0, ErrNotReturnParty
+	}
+	if r.RefundAmount != nil && *r.RefundAmount > 0 {
+		return *r.RefundAmount, nil
+	}
+	item, err := s.store.GetOrderItemByID(ctx, r.OrderItemID)
+	if err != nil || item == nil {
+		return 0, ErrReturnNotFound
+	}
+	return round2(item.FinalPrice), nil
 }
 
 // ─── Helpers ─────────────────────────────────────────────────
