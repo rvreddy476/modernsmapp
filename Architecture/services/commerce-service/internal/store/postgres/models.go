@@ -156,11 +156,18 @@ type Product struct {
 	RejectionReason      *string    `db:"rejection_reason" json:"rejection_reason,omitempty"`
 	PrimaryImageMediaID  *uuid.UUID `db:"primary_image_media_id" json:"primary_image_media_id,omitempty"`
 	WeightGrams          *int       `db:"weight_grams" json:"weight_grams,omitempty"`
+	LengthCm             *float64   `db:"length_cm" json:"length_cm,omitempty"`
+	WidthCm              *float64   `db:"width_cm" json:"width_cm,omitempty"`
+	HeightCm             *float64   `db:"height_cm" json:"height_cm,omitempty"`
 	CountryOfOrigin      *string    `db:"country_of_origin" json:"country_of_origin,omitempty"`
+	BrandName            *string    `db:"brand_name" json:"brand_name,omitempty"`
+	ManufacturerName     *string    `db:"manufacturer_name" json:"manufacturer_name,omitempty"`
 	WarrantyInfo         *string    `db:"warranty_info" json:"warranty_info,omitempty"`
 	ReturnPolicyType     string     `db:"return_policy_type" json:"return_policy_type,omitempty"`
 	ReturnPolicyDays     int        `db:"return_policy_days" json:"return_policy_days,omitempty"`
 	HSNCode              *string    `db:"hsn_code" json:"hsn_code,omitempty"`
+	VideoMediaID         *uuid.UUID `db:"video_media_id" json:"video_media_id,omitempty"`
+	SearchKeywords       []string   `db:"search_keywords" json:"search_keywords,omitempty"`
 	MetaTitle            *string    `db:"meta_title" json:"meta_title,omitempty"`
 	MetaDescription      *string    `db:"meta_description" json:"meta_description,omitempty"`
 	AvgRating            float64    `db:"avg_rating" json:"avg_rating,omitempty"`
@@ -172,6 +179,28 @@ type Product struct {
 	CreatedAt            time.Time  `db:"created_at" json:"created_at,omitempty"`
 	UpdatedAt            time.Time  `db:"updated_at" json:"updated_at,omitempty"`
 	PublishedAt          *time.Time `db:"published_at" json:"published_at,omitempty"`
+}
+
+// ProductMedia is one image / video / size-chart / infographic in a
+// product's gallery. media_id refers to a media-service-owned asset.
+type ProductMedia struct {
+	ID        uuid.UUID `db:"id" json:"id,omitempty"`
+	ProductID uuid.UUID `db:"product_id" json:"product_id,omitempty"`
+	MediaID   uuid.UUID `db:"media_id" json:"media_id,omitempty"`
+	MediaType string    `db:"media_type" json:"media_type,omitempty"`
+	SortOrder int       `db:"sort_order" json:"sort_order"`
+	CreatedAt time.Time `db:"created_at" json:"created_at,omitempty"`
+}
+
+// ProductAttribute is one free-form spec row (name / value / unit) in the
+// product's structured-specifications block — e.g. {"RAM", "8", "GB"}.
+type ProductAttribute struct {
+	ID        uuid.UUID `db:"id" json:"id,omitempty"`
+	ProductID uuid.UUID `db:"product_id" json:"product_id,omitempty"`
+	Name      string    `db:"name" json:"name"`
+	Value     string    `db:"value" json:"value"`
+	Unit      *string   `db:"unit" json:"unit,omitempty"`
+	SortOrder int       `db:"sort_order" json:"sort_order"`
 }
 
 // ─── Product Variant ─────────────────────────────────────────

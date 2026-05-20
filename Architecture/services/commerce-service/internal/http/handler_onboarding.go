@@ -41,6 +41,7 @@ func (h *Handler) RegisterOnboardingRoutes(r *gin.Engine) {
 	adm.GET("/products/queue", h.AdminListProductQueue)
 	adm.POST("/products/:productId/approve", h.AdminApproveProduct)
 	adm.POST("/products/:productId/reject", h.AdminRejectProduct)
+	adm.POST("/products/:productId/request-changes", h.AdminRequestProductChanges)
 }
 
 // ─── Onboarding handlers ────────────────────────────────────────
@@ -440,6 +441,22 @@ func (h *Handler) AdminRejectProduct(c *gin.Context) {
 	var req adminActionReq
 	_ = c.ShouldBindJSON(&req)
 	if err := h.svc.AdminRejectProduct(c.Request.Context(), productID, actorID(c), req.Reason); err != nil {
+		handleErr(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// AdminRequestProductChanges POST /v1/commerce/internal/products/:productId/request-changes — Phase 3.4.
+// Moderator parks the listing in changes_requested with feedback for the seller.
+func (h *Handler) AdminRequestProductChanges(c *gin.Context) {
+	productID, ok := parseUUID(c, "productId")
+	if !ok {
+		return
+	}
+	var req adminActionReq
+	_ = c.ShouldBindJSON(&req)
+	if err := h.svc.AdminRequestProductChanges(c.Request.Context(), productID, actorID(c), req.Reason); err != nil {
 		handleErr(c, err)
 		return
 	}

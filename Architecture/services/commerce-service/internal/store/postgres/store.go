@@ -100,15 +100,17 @@ func (s *Store) CreateProduct(ctx context.Context, p *Product) error {
 	p.CreatedAt = time.Now()
 	p.UpdatedAt = time.Now()
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO products (id,seller_id,category_id,tax_class_id,title,short_title,slug,description,
-		  short_description,product_type,condition,sku_root,status,visibility,approval_status,
-		  primary_image_media_id,weight_grams,country_of_origin,return_policy_type,return_policy_days,
-		  hsn_code,meta_title,meta_description,created_at,updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)`,
-		p.ID, p.SellerID, p.CategoryID, p.TaxClassID, p.Title, p.ShortTitle, p.Slug, p.Description,
-		p.ShortDescription, p.ProductType, p.Condition, p.SKURoot, p.Status, p.Visibility, p.ApprovalStatus,
-		p.PrimaryImageMediaID, p.WeightGrams, p.CountryOfOrigin, p.ReturnPolicyType, p.ReturnPolicyDays,
-		p.HSNCode, p.MetaTitle, p.MetaDescription, p.CreatedAt, p.UpdatedAt,
+		INSERT INTO products (id,seller_id,category_id,brand_id,tax_class_id,title,short_title,slug,description,
+		  short_description,brand_name,manufacturer_name,product_type,condition,sku_root,status,visibility,approval_status,
+		  primary_image_media_id,video_media_id,weight_grams,length_cm,width_cm,height_cm,
+		  country_of_origin,warranty_info,return_policy_type,return_policy_days,
+		  hsn_code,search_keywords,meta_title,meta_description,created_at,updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34)`,
+		p.ID, p.SellerID, p.CategoryID, p.BrandID, p.TaxClassID, p.Title, p.ShortTitle, p.Slug, p.Description,
+		p.ShortDescription, p.BrandName, p.ManufacturerName, p.ProductType, p.Condition, p.SKURoot, p.Status, p.Visibility, p.ApprovalStatus,
+		p.PrimaryImageMediaID, p.VideoMediaID, p.WeightGrams, p.LengthCm, p.WidthCm, p.HeightCm,
+		p.CountryOfOrigin, p.WarrantyInfo, p.ReturnPolicyType, p.ReturnPolicyDays,
+		p.HSNCode, p.SearchKeywords, p.MetaTitle, p.MetaDescription, p.CreatedAt, p.UpdatedAt,
 	)
 	return err
 }
@@ -117,22 +119,116 @@ func (s *Store) GetProductByID(ctx context.Context, id uuid.UUID) (*Product, err
 	var p Product
 	err := s.db.QueryRow(ctx, `
 		SELECT id,seller_id,category_id,brand_id,tax_class_id,title,short_title,slug,description,
-		  short_description,product_type,condition,sku_root,status,visibility,approval_status,
-		  rejection_reason,primary_image_media_id,weight_grams,country_of_origin,warranty_info,
-		  return_policy_type,return_policy_days,hsn_code,meta_title,meta_description,
+		  short_description,brand_name,manufacturer_name,product_type,condition,sku_root,status,visibility,approval_status,
+		  rejection_reason,primary_image_media_id,video_media_id,weight_grams,length_cm,width_cm,height_cm,
+		  country_of_origin,warranty_info,return_policy_type,return_policy_days,hsn_code,search_keywords,
+		  meta_title,meta_description,
 		  avg_rating,review_count,order_count,view_count,wishlist_count,is_featured,created_at,updated_at,published_at
 		FROM products WHERE id=$1`, id).Scan(
 		&p.ID, &p.SellerID, &p.CategoryID, &p.BrandID, &p.TaxClassID,
 		&p.Title, &p.ShortTitle, &p.Slug, &p.Description, &p.ShortDescription,
+		&p.BrandName, &p.ManufacturerName,
 		&p.ProductType, &p.Condition, &p.SKURoot, &p.Status, &p.Visibility,
-		&p.ApprovalStatus, &p.RejectionReason, &p.PrimaryImageMediaID,
-		&p.WeightGrams, &p.CountryOfOrigin, &p.WarrantyInfo,
-		&p.ReturnPolicyType, &p.ReturnPolicyDays, &p.HSNCode,
+		&p.ApprovalStatus, &p.RejectionReason, &p.PrimaryImageMediaID, &p.VideoMediaID,
+		&p.WeightGrams, &p.LengthCm, &p.WidthCm, &p.HeightCm,
+		&p.CountryOfOrigin, &p.WarrantyInfo,
+		&p.ReturnPolicyType, &p.ReturnPolicyDays, &p.HSNCode, &p.SearchKeywords,
 		&p.MetaTitle, &p.MetaDescription, &p.AvgRating, &p.ReviewCount,
 		&p.OrderCount, &p.ViewCount, &p.WishlistCount, &p.IsFeatured,
 		&p.CreatedAt, &p.UpdatedAt, &p.PublishedAt,
 	)
 	return &p, err
+}
+
+// ─── Product Media + Attributes (Phase 3.1) ─────────────────
+
+// AddProductMedia attaches an image / video / size-chart / infographic
+// (already uploaded via media-service) to a product, ordering it among
+// the product's gallery.
+func (s *Store) AddProductMedia(ctx context.Context, productID, mediaID uuid.UUID, mediaType string, sortOrder int) error {
+	if mediaType == "" {
+		mediaType = "image"
+	}
+	_, err := s.db.Exec(ctx,
+		`INSERT INTO product_media (product_id, media_id, media_type, sort_order)
+		 VALUES ($1, $2, $3, $4)`,
+		productID, mediaID, mediaType, sortOrder,
+	)
+	return err
+}
+
+// ListProductMedia returns the gallery for a product, ordered for display.
+func (s *Store) ListProductMedia(ctx context.Context, productID uuid.UUID) ([]ProductMedia, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT id, product_id, media_id, media_type, sort_order, created_at
+		 FROM product_media WHERE product_id=$1 ORDER BY sort_order ASC, created_at ASC`,
+		productID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ProductMedia
+	for rows.Next() {
+		var m ProductMedia
+		if err := rows.Scan(&m.ID, &m.ProductID, &m.MediaID, &m.MediaType, &m.SortOrder, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, nil
+}
+
+// RemoveProductMedia deletes a media row by id. Caller verifies seller ownership.
+func (s *Store) RemoveProductMedia(ctx context.Context, productMediaID uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `DELETE FROM product_media WHERE id=$1`, productMediaID)
+	return err
+}
+
+// SetProductAttributes replaces the product's attribute list in one
+// atomic UPDATE. The schema allows free-form name/value/unit triples for
+// the structured spec block.
+func (s *Store) SetProductAttributes(ctx context.Context, productID uuid.UUID, attrs []ProductAttribute) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `DELETE FROM product_attributes WHERE product_id=$1`, productID); err != nil {
+		return err
+	}
+	for i, a := range attrs {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO product_attributes (product_id, name, value, unit, sort_order)
+			 VALUES ($1, $2, $3, $4, $5)`,
+			productID, a.Name, a.Value, a.Unit, i,
+		); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+// GetProductAttributes returns the attribute rows for the product.
+func (s *Store) GetProductAttributes(ctx context.Context, productID uuid.UUID) ([]ProductAttribute, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT id, product_id, name, value, unit, sort_order
+		 FROM product_attributes WHERE product_id=$1 ORDER BY sort_order ASC`,
+		productID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ProductAttribute
+	for rows.Next() {
+		var a ProductAttribute
+		if err := rows.Scan(&a.ID, &a.ProductID, &a.Name, &a.Value, &a.Unit, &a.SortOrder); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, nil
 }
 
 func (s *Store) ListSellerProducts(ctx context.Context, sellerID uuid.UUID, status string, limit, offset int) ([]*Product, int, error) {

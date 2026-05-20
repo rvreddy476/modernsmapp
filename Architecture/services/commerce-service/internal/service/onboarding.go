@@ -184,3 +184,9 @@ func (s *Service) AdminApproveProduct(ctx context.Context, productID, actorID uu
 func (s *Service) AdminRejectProduct(ctx context.Context, productID, actorID uuid.UUID, reason string) error {
 	return s.store.RejectProductByAdmin(ctx, productID, actorID, reason)
 }
+
+// AdminRequestProductChanges parks the product so the seller can fix +
+// resubmit. Phase 3.4 — admins previously had only approve/reject.
+func (s *Service) AdminRequestProductChanges(ctx context.Context, productID, actorID uuid.UUID, message string) error {
+	return s.store.RequestProductChangesByAdmin(ctx, productID, actorID, message)
+}

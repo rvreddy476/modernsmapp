@@ -324,6 +324,32 @@ func (s *Store) ApproveProductByAdmin(ctx context.Context, productID, actorID uu
 	return tx.Commit(ctx)
 }
 
+// RequestProductChangesByAdmin parks a product at approval_status=
+// changes_requested with the moderator's feedback in rejection_reason
+// (overloaded as "feedback") so the seller-facing dashboard can surface
+// it. Logged in product_moderation_log as 'request_changes'.
+func (s *Store) RequestProductChangesByAdmin(ctx context.Context, productID, actorID uuid.UUID, message string) error {
+	now := time.Now()
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE products SET approval_status='changes_requested', rejection_reason=$2, updated_at=$3 WHERE id=$1`,
+		productID, message, now); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO product_moderation_log (id,product_id,action,reason,actor_user_id,created_at)
+		 VALUES (gen_random_uuid(),$1,'request_changes',$2,$3,$4)`,
+		productID, message, actorID, now); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 // RejectProductByAdmin sets approval_status=rejected and logs.
 func (s *Store) RejectProductByAdmin(ctx context.Context, productID, actorID uuid.UUID, reason string) error {
 	now := time.Now()

@@ -785,3 +785,11 @@ $$ LANGUAGE plpgsql;
 ALTER TABLE reviews ADD COLUMN IF NOT EXISTS moderation_status TEXT NOT NULL DEFAULT 'approved';
 ALTER TABLE reviews ADD COLUMN IF NOT EXISTS seller_response TEXT;
 ALTER TABLE reviews ADD COLUMN IF NOT EXISTS seller_responded_at TIMESTAMPTZ;
+
+-- Phase 3.4 — admin moderation needs a "request changes" terminal state
+-- distinct from rejection. The original CHECK was already implicitly
+-- broken (CreateProduct writes 'draft', ApproveProductByAdmin writes
+-- 'live'); the rewrite documents the full set the code actually uses.
+ALTER TABLE products DROP CONSTRAINT IF EXISTS products_approval_status_check;
+ALTER TABLE products ADD CONSTRAINT products_approval_status_check
+    CHECK (approval_status IN ('draft','pending','approved','rejected','flagged','changes_requested','live'));

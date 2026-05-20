@@ -159,18 +159,32 @@ func (s *Service) GetSellerProfile(ctx context.Context, userID uuid.UUID) (*post
 type CreateProductInput struct {
 	SellerID         uuid.UUID
 	CategoryID       *uuid.UUID
+	BrandID          *uuid.UUID
 	TaxClassID       *uuid.UUID
 	Title            string
 	ShortTitle       *string
 	Description      *string
 	ShortDescription *string
+	BrandName        *string
+	ManufacturerName *string
 	ProductType      string
 	Condition        string
 	ReturnPolicyType string
 	ReturnPolicyDays int
 	HSNCode          *string
-	WeightGrams      *int
-	Variants         []CreateVariantInput
+	// Logistics & legal-metrology — schema has columns; UI exposes none today.
+	PrimaryImageMediaID *uuid.UUID
+	VideoMediaID        *uuid.UUID
+	WeightGrams         *int
+	LengthCm            *float64
+	WidthCm             *float64
+	HeightCm            *float64
+	CountryOfOrigin     *string
+	WarrantyInfo        *string
+	SearchKeywords      []string
+	MetaTitle           *string
+	MetaDescription     *string
+	Variants            []CreateVariantInput
 }
 
 type CreateVariantInput struct {
@@ -201,23 +215,36 @@ func (s *Service) CreateProduct(ctx context.Context, in CreateProductInput) (*po
 	}
 
 	p := &postgres.Product{
-		SellerID:         in.SellerID,
-		CategoryID:       in.CategoryID,
-		TaxClassID:       in.TaxClassID,
-		Title:            in.Title,
-		ShortTitle:       in.ShortTitle,
-		Slug:             uniqueSlug(slugify(in.Title)),
-		Description:      in.Description,
-		ShortDescription: in.ShortDescription,
-		ProductType:      productType,
-		Condition:        coalesceStr(in.Condition, "new"),
-		Status:           "draft",
-		Visibility:       "public",
-		ApprovalStatus:   "draft",
-		ReturnPolicyType: coalesceStr(in.ReturnPolicyType, "7_days"),
-		ReturnPolicyDays: coalesceInt(in.ReturnPolicyDays, 7),
-		HSNCode:          in.HSNCode,
-		WeightGrams:      in.WeightGrams,
+		SellerID:            in.SellerID,
+		CategoryID:          in.CategoryID,
+		BrandID:             in.BrandID,
+		TaxClassID:          in.TaxClassID,
+		Title:               in.Title,
+		ShortTitle:          in.ShortTitle,
+		Slug:                uniqueSlug(slugify(in.Title)),
+		Description:         in.Description,
+		ShortDescription:    in.ShortDescription,
+		BrandName:           in.BrandName,
+		ManufacturerName:    in.ManufacturerName,
+		ProductType:         productType,
+		Condition:           coalesceStr(in.Condition, "new"),
+		Status:              "draft",
+		Visibility:          "public",
+		ApprovalStatus:      "draft",
+		PrimaryImageMediaID: in.PrimaryImageMediaID,
+		VideoMediaID:        in.VideoMediaID,
+		WeightGrams:         in.WeightGrams,
+		LengthCm:            in.LengthCm,
+		WidthCm:             in.WidthCm,
+		HeightCm:            in.HeightCm,
+		CountryOfOrigin:     in.CountryOfOrigin,
+		WarrantyInfo:        in.WarrantyInfo,
+		ReturnPolicyType:    coalesceStr(in.ReturnPolicyType, "7_days"),
+		ReturnPolicyDays:    coalesceInt(in.ReturnPolicyDays, 7),
+		HSNCode:             in.HSNCode,
+		SearchKeywords:      in.SearchKeywords,
+		MetaTitle:           in.MetaTitle,
+		MetaDescription:     in.MetaDescription,
 	}
 
 	if err := s.store.CreateProduct(ctx, p); err != nil {
@@ -1528,6 +1555,58 @@ func (s *Service) CreateReview(ctx context.Context, r *postgres.Review) error {
 
 func (s *Service) GetProductReviews(ctx context.Context, productID uuid.UUID, limit, offset int) ([]*postgres.Review, int, error) {
 	return s.store.GetProductReviews(ctx, productID, limit, offset)
+}
+
+// ─── Product Media + Attributes (Phase 3.1) ──────────────────
+
+// assertProductSeller verifies the actor's seller account owns the
+// product. Used by the media + attributes mutation endpoints to keep
+// sellers out of each other's catalogs.
+func (s *Service) assertProductSeller(ctx context.Context, productID, actorUserID uuid.UUID) error {
+	product, err := s.store.GetProductByID(ctx, productID)
+	if err != nil || product == nil {
+		return fmt.Errorf("product not found")
+	}
+	seller, err := s.GetSellerProfile(ctx, actorUserID)
+	if err != nil || seller == nil {
+		return ErrNotOrderOwner // reused — caller maps to 403
+	}
+	if product.SellerID != seller.ID {
+		return ErrNotOrderOwner
+	}
+	return nil
+}
+
+// AddProductMedia attaches a media-service asset to a product's gallery.
+func (s *Service) AddProductMedia(ctx context.Context, productID, actorUserID, mediaID uuid.UUID, mediaType string, sortOrder int) ([]postgres.ProductMedia, error) {
+	if err := s.assertProductSeller(ctx, productID, actorUserID); err != nil {
+		return nil, err
+	}
+	if err := s.store.AddProductMedia(ctx, productID, mediaID, mediaType, sortOrder); err != nil {
+		return nil, err
+	}
+	return s.store.ListProductMedia(ctx, productID)
+}
+
+// ListProductMedia is a public read used by the product detail page.
+func (s *Service) ListProductMedia(ctx context.Context, productID uuid.UUID) ([]postgres.ProductMedia, error) {
+	return s.store.ListProductMedia(ctx, productID)
+}
+
+// SetProductAttributes replaces the product's spec block in one call.
+func (s *Service) SetProductAttributes(ctx context.Context, productID, actorUserID uuid.UUID, attrs []postgres.ProductAttribute) ([]postgres.ProductAttribute, error) {
+	if err := s.assertProductSeller(ctx, productID, actorUserID); err != nil {
+		return nil, err
+	}
+	if err := s.store.SetProductAttributes(ctx, productID, attrs); err != nil {
+		return nil, err
+	}
+	return s.store.GetProductAttributes(ctx, productID)
+}
+
+// GetProductAttributes returns the spec block — public.
+func (s *Service) GetProductAttributes(ctx context.Context, productID uuid.UUID) ([]postgres.ProductAttribute, error) {
+	return s.store.GetProductAttributes(ctx, productID)
 }
 
 // AddSellerResponseToReview lets the seller of a reviewed product attach

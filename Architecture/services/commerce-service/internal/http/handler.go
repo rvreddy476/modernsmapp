@@ -39,6 +39,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	v1.GET("/products", h.ListProducts)
 	v1.GET("/products/:productId", h.GetProduct)
 	v1.POST("/products", h.CreateProduct)
+	v1.GET("/products/:productId/media", h.ListProductMedia)
+	v1.POST("/products/:productId/media", h.AddProductMedia)
+	v1.GET("/products/:productId/attributes", h.GetProductAttributes)
+	v1.PUT("/products/:productId/attributes", h.SetProductAttributes)
 	v1.GET("/products/:productId/reviews", h.GetProductReviews)
 	v1.POST("/products/:productId/reviews", h.CreateReview)
 
@@ -141,19 +145,33 @@ func (h *Handler) GetProduct(c *gin.Context) {
 }
 
 type createProductReq struct {
-	CategoryID       *uuid.UUID         `json:"category_id"`
-	TaxClassID       *uuid.UUID         `json:"tax_class_id"`
-	Title            string             `json:"title" binding:"required"`
-	ShortTitle       *string            `json:"short_title"`
-	Description      *string            `json:"description"`
-	ShortDescription *string            `json:"short_description"`
-	ProductType      string             `json:"product_type"`
-	Condition        string             `json:"condition"`
-	ReturnPolicyType string             `json:"return_policy_type"`
-	ReturnPolicyDays int                `json:"return_policy_days"`
-	HSNCode          *string            `json:"hsn_code"`
-	WeightGrams      *int               `json:"weight_grams"`
-	Variants         []createVariantReq `json:"variants" binding:"required,min=1"`
+	CategoryID       *uuid.UUID `json:"category_id"`
+	BrandID          *uuid.UUID `json:"brand_id"`
+	TaxClassID       *uuid.UUID `json:"tax_class_id"`
+	Title            string     `json:"title" binding:"required"`
+	ShortTitle       *string    `json:"short_title"`
+	Description      *string    `json:"description"`
+	ShortDescription *string    `json:"short_description"`
+	BrandName        *string    `json:"brand_name"`
+	ManufacturerName *string    `json:"manufacturer_name"`
+	ProductType      string     `json:"product_type"`
+	Condition        string     `json:"condition"`
+	ReturnPolicyType string     `json:"return_policy_type"`
+	ReturnPolicyDays int        `json:"return_policy_days"`
+	HSNCode          *string    `json:"hsn_code"`
+	// Logistics + legal-metrology (Phase 3.1 — schema has the columns).
+	PrimaryImageMediaID *uuid.UUID         `json:"primary_image_media_id"`
+	VideoMediaID        *uuid.UUID         `json:"video_media_id"`
+	WeightGrams         *int               `json:"weight_grams"`
+	LengthCm            *float64           `json:"length_cm"`
+	WidthCm             *float64           `json:"width_cm"`
+	HeightCm            *float64           `json:"height_cm"`
+	CountryOfOrigin     *string            `json:"country_of_origin"`
+	WarrantyInfo        *string            `json:"warranty_info"`
+	SearchKeywords      []string           `json:"search_keywords"`
+	MetaTitle           *string            `json:"meta_title"`
+	MetaDescription     *string            `json:"meta_description"`
+	Variants            []createVariantReq `json:"variants" binding:"required,min=1"`
 }
 
 type createVariantReq struct {
@@ -205,26 +223,147 @@ func (h *Handler) CreateProduct(c *gin.Context) {
 	}
 
 	p, err := h.svc.CreateProduct(c.Request.Context(), service.CreateProductInput{
-		SellerID:         seller.ID,
-		CategoryID:       req.CategoryID,
-		TaxClassID:       req.TaxClassID,
-		Title:            req.Title,
-		ShortTitle:       req.ShortTitle,
-		Description:      req.Description,
-		ShortDescription: req.ShortDescription,
-		ProductType:      req.ProductType,
-		Condition:        req.Condition,
-		ReturnPolicyType: req.ReturnPolicyType,
-		ReturnPolicyDays: req.ReturnPolicyDays,
-		HSNCode:          req.HSNCode,
-		WeightGrams:      req.WeightGrams,
-		Variants:         variants,
+		SellerID:            seller.ID,
+		CategoryID:          req.CategoryID,
+		BrandID:             req.BrandID,
+		TaxClassID:          req.TaxClassID,
+		Title:               req.Title,
+		ShortTitle:          req.ShortTitle,
+		Description:         req.Description,
+		ShortDescription:    req.ShortDescription,
+		BrandName:           req.BrandName,
+		ManufacturerName:    req.ManufacturerName,
+		ProductType:         req.ProductType,
+		Condition:           req.Condition,
+		ReturnPolicyType:    req.ReturnPolicyType,
+		ReturnPolicyDays:    req.ReturnPolicyDays,
+		HSNCode:             req.HSNCode,
+		PrimaryImageMediaID: req.PrimaryImageMediaID,
+		VideoMediaID:        req.VideoMediaID,
+		WeightGrams:         req.WeightGrams,
+		LengthCm:            req.LengthCm,
+		WidthCm:             req.WidthCm,
+		HeightCm:            req.HeightCm,
+		CountryOfOrigin:     req.CountryOfOrigin,
+		WarrantyInfo:        req.WarrantyInfo,
+		SearchKeywords:      req.SearchKeywords,
+		MetaTitle:           req.MetaTitle,
+		MetaDescription:     req.MetaDescription,
+		Variants:            variants,
 	})
 	if err != nil {
 		handleErr(c, err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, p, nil)
+}
+
+// ─── Product Media + Attributes (Phase 3.1) ──────────────────
+
+type addProductMediaReq struct {
+	MediaID   uuid.UUID `json:"media_id" binding:"required"`
+	MediaType string    `json:"media_type"`
+	SortOrder int       `json:"sort_order"`
+}
+
+// AddProductMedia POST /v1/commerce/products/:productId/media — seller
+// only. Attaches an already-uploaded media asset to the product gallery.
+func (h *Handler) AddProductMedia(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	productID, ok := parseUUID(c, "productId")
+	if !ok {
+		return
+	}
+	var req addProductMediaReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	out, err := h.svc.AddProductMedia(c.Request.Context(), productID, userID, req.MediaID, req.MediaType, req.SortOrder)
+	if err != nil {
+		if errors.Is(err, service.ErrNotOrderOwner) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "not your product", nil)
+			return
+		}
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "ADD_MEDIA_FAILED", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"media": out}, nil)
+}
+
+// ListProductMedia GET /v1/commerce/products/:productId/media — public.
+func (h *Handler) ListProductMedia(c *gin.Context) {
+	productID, ok := parseUUID(c, "productId")
+	if !ok {
+		return
+	}
+	out, err := h.svc.ListProductMedia(c.Request.Context(), productID)
+	if err != nil {
+		handleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"media": out}, nil)
+}
+
+type setProductAttrsReq struct {
+	Attributes []productAttrPayload `json:"attributes"`
+}
+
+type productAttrPayload struct {
+	Name  string  `json:"name" binding:"required"`
+	Value string  `json:"value" binding:"required"`
+	Unit  *string `json:"unit"`
+}
+
+// SetProductAttributes PUT /v1/commerce/products/:productId/attributes —
+// seller only. Replaces the product's structured spec block in one call.
+func (h *Handler) SetProductAttributes(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	productID, ok := parseUUID(c, "productId")
+	if !ok {
+		return
+	}
+	var req setProductAttrsReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	attrs := make([]postgres.ProductAttribute, 0, len(req.Attributes))
+	for _, a := range req.Attributes {
+		attrs = append(attrs, postgres.ProductAttribute{
+			Name: a.Name, Value: a.Value, Unit: a.Unit,
+		})
+	}
+	out, err := h.svc.SetProductAttributes(c.Request.Context(), productID, userID, attrs)
+	if err != nil {
+		if errors.Is(err, service.ErrNotOrderOwner) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "not your product", nil)
+			return
+		}
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "SET_ATTRS_FAILED", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"attributes": out}, nil)
+}
+
+// GetProductAttributes GET /v1/commerce/products/:productId/attributes — public.
+func (h *Handler) GetProductAttributes(c *gin.Context) {
+	productID, ok := parseUUID(c, "productId")
+	if !ok {
+		return
+	}
+	out, err := h.svc.GetProductAttributes(c.Request.Context(), productID)
+	if err != nil {
+		handleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"attributes": out}, nil)
 }
 
 func (h *Handler) GetProductReviews(c *gin.Context) {
