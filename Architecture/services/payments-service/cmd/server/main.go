@@ -15,6 +15,7 @@ import (
 	"github.com/atpost/shared/middleware"
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
+	tracepkg "github.com/atpost/shared/o11y/trace"
 	sharedserver "github.com/atpost/shared/server"
 	"github.com/atpost/shared/transport"
 	"github.com/gin-gonic/gin"
@@ -30,6 +31,14 @@ func env(key, def string) string {
 
 func main() {
 	logging.Init(logging.Config{ServiceName: "payments-service"})
+
+	// Phase F3.5 — tracing init. See commerce-service for the rationale.
+	tracerProvider, _ := tracepkg.InitTracer("payments-service", env("OTEL_EXPORTER_OTLP_ENDPOINT", "http://jaeger:4317"))
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = tracerProvider.Shutdown(shutdownCtx)
+	}()
 
 	port := env("HTTP_PORT", "8102")
 	pgDSN := os.Getenv("POSTGRES_DSN")
@@ -139,6 +148,7 @@ func main() {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
+	r.Use(middleware.OtelTracing("payments-service"))
 	r.Use(middleware.RequestID())
 	r.Use(middleware.Logger())
 	r.Use(middleware.Metrics(httpMetrics))

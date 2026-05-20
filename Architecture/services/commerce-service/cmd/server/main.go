@@ -23,6 +23,7 @@ import (
 	"github.com/atpost/shared/middleware"
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
+	tracepkg "github.com/atpost/shared/o11y/trace"
 	"github.com/atpost/shared/server"
 	"github.com/atpost/shared/transport"
 	"github.com/gin-gonic/gin"
@@ -32,6 +33,16 @@ import (
 func main() {
 	// 1. Structured logging
 	logging.Init(logging.Config{ServiceName: "commerce-service"})
+
+	// 1a. Tracing (Phase F3.5) — OTLP/gRPC exporter to Jaeger. Falls
+	// back to a no-op provider if the collector is unreachable so the
+	// service still boots in environments without observability infra.
+	tracerProvider, _ := tracepkg.InitTracer("commerce-service", env("OTEL_EXPORTER_OTLP_ENDPOINT", "http://jaeger:4317"))
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = tracerProvider.Shutdown(shutdownCtx)
+	}()
 
 	// 2. Config
 	port := env("HTTP_PORT", "8109")
@@ -188,6 +199,10 @@ func main() {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
+	// Phase F3 — tracing middleware runs FIRST so the span context is
+	// available to RequestID + Logger for correlation. Order matters:
+	// otel → request-id → logger so logs carry trace_id + span_id.
+	r.Use(middleware.OtelTracing("commerce-service"))
 	r.Use(middleware.RequestID())
 	r.Use(middleware.Logger())
 	r.Use(middleware.Metrics(httpMetrics))

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/shared/o11y/trace"
 	"github.com/atpost/shared/transport"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -129,12 +130,21 @@ func (p *Publisher) sweep(ctx context.Context, writer *kafka.Writer) error {
 	msgs := make([]kafka.Message, 0, len(events))
 	ids := make([]int64, 0, len(events))
 	for _, e := range events {
+		// Phase F3.3 — inject W3C trace context into the message
+		// headers so consumers can link their child spans back to the
+		// transaction that produced the event. We don't have the
+		// originating request context here (events are read off the
+		// outbox table), so the span will be a fresh top-level one
+		// rooted at the publisher; the value is downstream linkage,
+		// not a one-trace-end-to-end story.
+		headers := []kafka.Header{
+			{Key: "event_type", Value: []byte(e.EventType)},
+		}
+		trace.InjectKafkaHeaders(ctx, &headers)
 		msgs = append(msgs, kafka.Message{
-			Key:   []byte(e.PartitionKey),
-			Value: e.Payload,
-			Headers: []kafka.Header{
-				{Key: "event_type", Value: []byte(e.EventType)},
-			},
+			Key:     []byte(e.PartitionKey),
+			Value:   e.Payload,
+			Headers: headers,
 		})
 		ids = append(ids, e.ID)
 	}

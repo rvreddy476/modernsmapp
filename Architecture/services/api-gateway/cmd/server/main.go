@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -19,6 +20,10 @@ import (
 	"sync"
 	"time"
 
+	tracepkg "github.com/atpost/shared/o11y/trace"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 	"golang.org/x/time/rate"
 )
 
@@ -30,6 +35,16 @@ type route struct {
 
 func main() {
 	port := env("HTTP_PORT", "8080")
+
+	// Phase F3.5 — tracing init before anything else so the proxy
+	// Director can call otel.GetTextMapPropagator().Inject() below.
+	tracerProvider, _ := tracepkg.InitTracer("api-gateway", env("OTEL_EXPORTER_OTLP_ENDPOINT", "http://jaeger:4317"))
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = tracerProvider.Shutdown(shutdownCtx)
+	}()
+
 	allowedOrigins := strings.Split(env("CORS_ORIGINS", "http://localhost:3000"), ",")
 	for _, o := range allowedOrigins {
 		if strings.TrimSpace(o) == "*" {
@@ -146,10 +161,24 @@ func main() {
 		if err != nil {
 			log.Fatalf("invalid target URL %q: %v", rd.target, err)
 		}
+		proxy := httputil.NewSingleHostReverseProxy(target)
+		// Phase F3.5 — wrap the default Director so every upstream
+		// request carries the W3C traceparent header derived from the
+		// active server span. The outer handler is wrapped in
+		// otelhttp.NewHandler below, which establishes the span; here
+		// we just propagate it forward.
+		originalDirector := proxy.Director
+		proxy.Director = func(req *http.Request) {
+			originalDirector(req)
+			otel.GetTextMapPropagator().Inject(req.Context(), propagation.HeaderCarrier(req.Header))
+		}
+		// Otel transport on the proxy gives us a client span per
+		// upstream call so Jaeger shows the gateway→upstream hop.
+		proxy.Transport = otelhttp.NewTransport(http.DefaultTransport)
 		routes = append(routes, route{
 			prefix: rd.prefix,
 			target: target,
-			proxy:  httputil.NewSingleHostReverseProxy(target),
+			proxy:  proxy,
 		})
 		log.Printf("  %s -> %s", rd.prefix, rd.target)
 	}
@@ -179,8 +208,17 @@ func main() {
 	}
 
 	// CORS middleware is outermost so headers are present on ALL responses (including 401/429).
-	handler := corsMiddleware(allowedOrigins,
-		requestIDMiddleware(jwtExtractMiddleware(jwtSecret, rateLimitMiddleware(injectInternalKeyMiddleware(internalKey, coreHandler)))))
+	// Phase F3.5 — otelhttp wraps the chain inside CORS so a server span
+	// is opened on every request. The span name is just the method;
+	// downstream services produce the more specific route names.
+	tracedCore := otelhttp.NewHandler(
+		requestIDMiddleware(jwtExtractMiddleware(jwtSecret, rateLimitMiddleware(injectInternalKeyMiddleware(internalKey, coreHandler)))),
+		"api-gateway",
+		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
+			return r.Method + " " + r.URL.Path
+		}),
+	)
+	handler := corsMiddleware(allowedOrigins, tracedCore)
 
 	// Add a recovery middleware wrapper
 	recoveryHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -5,11 +5,13 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 	"time"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 type Store struct {
@@ -19,9 +21,14 @@ type Store struct {
 }
 
 func New(endpoint, accessKey, secretKey, bucket string, useSSL bool, publicEndpoint string) (*Store, error) {
+	// Phase F3.2 — instrument the MinIO transport so blob uploads /
+	// presigned-URL calls appear as child spans of the invoice / asset
+	// flow. MinIO's SDK accepts a custom http.Client via Options.Transport.
+	tracedTransport := otelhttp.NewTransport(http.DefaultTransport)
 	c, err := minio.New(endpoint, &minio.Options{
-		Creds:  credentials.NewStaticV4(accessKey, secretKey, ""),
-		Secure: useSSL,
+		Creds:     credentials.NewStaticV4(accessKey, secretKey, ""),
+		Secure:    useSSL,
+		Transport: tracedTransport,
 	})
 	if err != nil {
 		return nil, err
@@ -42,9 +49,10 @@ func New(endpoint, accessKey, secretKey, bucket string, useSSL bool, publicEndpo
 		pub, err := url.Parse(publicEndpoint)
 		if err == nil && pub.Host != "" {
 			presign, err = minio.New(pub.Host, &minio.Options{
-				Creds:  credentials.NewStaticV4(accessKey, secretKey, ""),
-				Secure: pub.Scheme == "https",
-				Region: "us-east-1",
+				Creds:     credentials.NewStaticV4(accessKey, secretKey, ""),
+				Secure:    pub.Scheme == "https",
+				Region:    "us-east-1",
+				Transport: tracedTransport,
 			})
 			if err != nil {
 				presign = c

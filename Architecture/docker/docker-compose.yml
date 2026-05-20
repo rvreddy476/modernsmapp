@@ -122,6 +122,21 @@ services:
           cpus: '0.25'
           memory: 256M
 
+  # Phase F3 — Jaeger all-in-one for local W3C trace inspection.
+  # OTLP receivers: 4317 (gRPC) and 4318 (HTTP). The trace package
+  # auto-maps :4318 → :4317 so existing OTEL_EXPORTER_OTLP_ENDPOINT
+  # values keep working. Open http://localhost:16686 to view traces.
+  jaeger:
+    image: jaegertracing/all-in-one:1.62
+    container_name: atpost_jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4317:4317"     # OTLP gRPC receiver
+      - "4318:4318"     # OTLP HTTP receiver
+    restart: unless-stopped
+
   redpanda:
     image: redpandadata/redpanda:latest
     command:

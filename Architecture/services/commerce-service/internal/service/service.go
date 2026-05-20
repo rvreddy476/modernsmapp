@@ -18,6 +18,7 @@ import (
 	"github.com/atpost/commerce-service/internal/payments"
 	"github.com/atpost/commerce-service/internal/store/postgres"
 	"github.com/atpost/shared/events"
+	tracepkg "github.com/atpost/shared/o11y/trace"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	kafka "github.com/segmentio/kafka-go"
@@ -90,6 +91,11 @@ func (s *Service) Close() {
 }
 
 // publish emits a Kafka event. Failures are logged but not fatal (best-effort).
+//
+// Phase F3.3 — injects W3C trace context into the Kafka headers so the
+// downstream consumer's child span links back to the request that
+// produced the event. The event_type header is also lifted up so
+// consumers can route without re-parsing the payload envelope.
 func (s *Service) publish(ctx context.Context, eventType string, payload any) {
 	data, _ := json.Marshal(payload)
 	env := events.EventEnvelope{
@@ -99,7 +105,11 @@ func (s *Service) publish(ctx context.Context, eventType string, payload any) {
 		OccurredAt: time.Now(),
 	}
 	b, _ := json.Marshal(env)
-	if err := s.writer.WriteMessages(ctx, kafka.Message{Value: b}); err != nil {
+	headers := []kafka.Header{
+		{Key: "event_type", Value: []byte(eventType)},
+	}
+	tracepkg.InjectKafkaHeaders(ctx, &headers)
+	if err := s.writer.WriteMessages(ctx, kafka.Message{Value: b, Headers: headers}); err != nil {
 		slog.Warn("kafka publish failed", "event", eventType, "error", err)
 	}
 }

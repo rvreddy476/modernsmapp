@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 // ShiprocketCourier implements Provider over Shiprocket's REST API.
@@ -32,11 +34,16 @@ type ShiprocketCourier struct {
 }
 
 func NewShiprocket(email, password string) *ShiprocketCourier {
+	// Phase F3.2 — otelhttp wraps the courier's transport so Shiprocket
+	// call latency lands in Jaeger as a child of the shipment span.
 	return &ShiprocketCourier{
 		email:    email,
 		password: password,
 		base:     "https://apiv2.shiprocket.in/v1/external",
-		http:     &http.Client{Timeout: 20 * time.Second},
+		http: &http.Client{
+			Timeout:   20 * time.Second,
+			Transport: otelhttp.NewTransport(http.DefaultTransport),
+		},
 	}
 }
 

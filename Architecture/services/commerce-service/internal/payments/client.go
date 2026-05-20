@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 // PaymentIntent mirrors the subset payments-service returns.
@@ -34,10 +35,16 @@ type Client struct {
 }
 
 func New(baseURL, internalKey string) *Client {
+	// Phase F3.2 — otelhttp auto-instruments outbound HTTP so payments
+	// calls appear as a child client span under the originating
+	// checkout / confirm-payment server span in Jaeger.
 	return &Client{
 		baseURL:     baseURL,
 		internalKey: internalKey,
-		http:        &http.Client{Timeout: 8 * time.Second},
+		http: &http.Client{
+			Timeout:   8 * time.Second,
+			Transport: otelhttp.NewTransport(http.DefaultTransport),
+		},
 	}
 }
 
