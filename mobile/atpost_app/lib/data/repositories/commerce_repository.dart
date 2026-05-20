@@ -248,22 +248,57 @@ class CommerceRepository {
     return Order.fromJson(Map<String, dynamic>.from(res.data['data'] as Map));
   }
 
-  /// Confirms a successful Razorpay payment with commerce-service. The
-  /// Kafka consumer is the resilient backup if the user closes the app
-  /// before this fires (matches the web behaviour).
+  /// Creates a payments-service intent for the order. Returns the intent
+  /// id (used by Razorpay verification) and the provider_ref (the Razorpay
+  /// gateway order id the SDK consumes). Phase 1.4.
+  Future<({String intentId, String providerRef, double amount})>
+  createPaymentIntent({
+    required String orderId,
+    required double amount,
+    String method = 'razorpay',
+  }) async {
+    final res = await _api.post(
+      '/v1/payments/intents',
+      data: {
+        'payee_id': orderId,
+        'reference_type': 'order',
+        'reference_id': orderId,
+        'amount': amount,
+        'currency': 'INR',
+        'method': method,
+      },
+    );
+    final data = Map<String, dynamic>.from(res.data['data'] as Map);
+    return (
+      intentId: (data['id'] ?? '').toString(),
+      providerRef: (data['provider_ref'] ?? '').toString(),
+      amount: (data['amount'] as num?)?.toDouble() ?? amount,
+    );
+  }
+
+  /// Confirms a successful Razorpay payment with commerce-service using the
+  /// Phase-0.1 secure body shape. The backend forwards the signature triple
+  /// to payments-service for HMAC verification before marking the order
+  /// paid; the Kafka payment.succeeded consumer remains the resilient
+  /// backup path if the app dies before this returns.
   Future<void> confirmOrderPayment(
     String orderId, {
+    required String paymentIntentId,
     required String razorpayOrderId,
     required String razorpayPaymentId,
     required String razorpaySignature,
+    required int amountMinor,
+    String gateway = 'razorpay',
   }) async {
     await _api.post(
       '/v1/commerce/orders/$orderId/payment/confirm',
       data: {
-        'payment_id': razorpayPaymentId,
-        'gateway': 'razorpay',
-        'gateway_order_id': razorpayOrderId,
-        'signature': razorpaySignature,
+        'payment_intent_id': paymentIntentId,
+        'razorpay_order_id': razorpayOrderId,
+        'razorpay_payment_id': razorpayPaymentId,
+        'razorpay_signature': razorpaySignature,
+        'amount_minor': amountMinor,
+        'gateway': gateway,
       },
     );
   }

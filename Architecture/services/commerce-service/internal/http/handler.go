@@ -50,9 +50,12 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// ── Cart ─────────────────────────────────────────────────
 	v1.GET("/cart", h.GetCart)
 	v1.POST("/cart/items", h.AddToCart)
+	v1.PATCH("/cart/items/by-variant/:variantId", h.UpdateCartItem)
 	v1.DELETE("/cart/items/:variantId", h.RemoveFromCart)
 
 	// ── Orders ───────────────────────────────────────────────
+	v1.POST("/checkout/quote", h.CheckoutQuote)
+	v1.GET("/serviceability", h.CheckServiceability)
 	v1.POST("/orders/checkout", h.Checkout)
 	v1.GET("/orders", h.ListOrders)
 	v1.GET("/orders/:orderId", h.GetOrder)
@@ -512,6 +515,46 @@ func (h *Handler) RemoveFromCart(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+// updateCartItemReq is the body for PATCH /cart/items/by-variant/:variantId
+// — Phase 1.2. Quantity 0 deletes the line; otherwise it is the absolute
+// new quantity (atomic upsert with stock check, not a delta).
+type updateCartItemReq struct {
+	Quantity int `json:"quantity"`
+}
+
+// UpdateCartItem PATCH /v1/commerce/cart/items/by-variant/:variantId.
+// Returns the updated cart summary so the client renders immediately
+// without a separate GET.
+func (h *Handler) UpdateCartItem(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	variantID, ok := parseUUID(c, "variantId")
+	if !ok {
+		return
+	}
+	var req updateCartItemReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	if req.Quantity < 0 {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", "quantity must be >= 0", nil)
+		return
+	}
+	if err := h.svc.UpdateCartItem(c.Request.Context(), userID, variantID, req.Quantity); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "UPDATE_CART_FAILED", err.Error(), nil)
+		return
+	}
+	summary, err := h.svc.GetCart(c.Request.Context(), userID)
+	if err != nil {
+		handleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, summary, nil)
+}
+
 // ─── Order handlers ──────────────────────────────────────────────
 
 type checkoutReq struct {
@@ -520,6 +563,85 @@ type checkoutReq struct {
 	CouponCode     string    `json:"coupon_code"`
 	GiftMessage    *string   `json:"gift_message"`
 	IdempotencyKey string    `json:"idempotency_key"`
+}
+
+// quoteReq mirrors checkoutReq minus the persistence-only fields. Mobile
+// and web call this BEFORE "Place order" so the customer sees server-
+// authoritative totals; the client never recomputes pricing locally.
+type quoteReq struct {
+	AddressID     uuid.UUID `json:"address_id" binding:"required"`
+	PaymentMethod string    `json:"payment_method" binding:"required"`
+	CouponCode    string    `json:"coupon_code"`
+}
+
+// CheckServiceability GET /v1/commerce/serviceability — Phase 1.3.
+// Customer-facing pincode + COD + ETA check used by the product detail
+// page and checkout to replace the mobile pincode heuristic.
+//
+//	?pincode=560001&product_id=<uuid>[&variant_id=<uuid>][&seller_id=<uuid>][&payment_method=prepaid|cod]
+func (h *Handler) CheckServiceability(c *gin.Context) {
+	if _, ok := getUserID(c); !ok {
+		return
+	}
+	pincode := c.Query("pincode")
+	productIDStr := c.Query("product_id")
+	if pincode == "" || productIDStr == "" {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_QUERY", "pincode and product_id are required", nil)
+		return
+	}
+	productID, err := uuid.Parse(productIDStr)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_QUERY", "invalid product_id", nil)
+		return
+	}
+	in := service.ServiceabilityInput{
+		Pincode:       pincode,
+		ProductID:     productID,
+		PaymentMethod: c.DefaultQuery("payment_method", "prepaid"),
+	}
+	if v := c.Query("variant_id"); v != "" {
+		if id, err := uuid.Parse(v); err == nil {
+			in.VariantID = id
+		}
+	}
+	if v := c.Query("seller_id"); v != "" {
+		if id, err := uuid.Parse(v); err == nil {
+			in.SellerID = id
+		}
+	}
+	res, err := h.svc.CheckServiceability(c.Request.Context(), in)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "SERVICEABILITY_FAILED", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, res, nil)
+}
+
+// CheckoutQuote POST /v1/commerce/checkout/quote — Phase 1.1.
+// Returns the same pricing the immediately-following Checkout call will
+// produce, including per-line breakdown, unavailable items, and (Phase
+// 1.3) serviceability + COD eligibility.
+func (h *Handler) CheckoutQuote(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	var req quoteReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	q, err := h.svc.Quote(c.Request.Context(), service.QuoteInput{
+		UserID:        userID,
+		AddressID:     req.AddressID,
+		PaymentMethod: req.PaymentMethod,
+		CouponCode:    req.CouponCode,
+	})
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "QUOTE_FAILED", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, q, nil)
 }
 
 func (h *Handler) Checkout(c *gin.Context) {

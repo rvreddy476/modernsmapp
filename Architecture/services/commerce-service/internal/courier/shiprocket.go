@@ -266,3 +266,27 @@ func (c *ShiprocketCourier) ParseWebhook(_ context.Context, payload []byte) ([]T
 	}
 	return updates, nil
 }
+
+// CheckServiceability — Phase 1.3 placeholder. Shiprocket exposes
+// /courier/serviceability/ with the pickup_postcode + delivery_postcode +
+// weight + cod (0/1) query params; wiring it is straightforward but
+// touches the auth-token cache and a non-trivial response shape. Until
+// that lands the adapter returns the same permissive default as the stub
+// so checkout flows still work in environments configured with
+// COURIER_PROVIDER=shiprocket but no serviceability cache.
+func (c *ShiprocketCourier) CheckServiceability(_ context.Context, req ServiceabilityRequest) (*ServiceabilityResult, error) {
+	if !validIndianPincode(req.PickupPincode) || !validIndianPincode(req.DropPincode) {
+		return &ServiceabilityResult{
+			Serviceable: false,
+			Courier:     "shiprocket",
+			Reason:      "invalid pincode",
+		}, nil
+	}
+	return &ServiceabilityResult{
+		Serviceable:   true,
+		CODSupported:  true,
+		EstimatedDays: 4,
+		EstimatedETA:  time.Now().AddDate(0, 0, 4),
+		Courier:       "shiprocket",
+	}, nil
+}

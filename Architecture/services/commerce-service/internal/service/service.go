@@ -351,6 +351,23 @@ func (s *Service) RemoveFromCart(ctx context.Context, userID, variantID uuid.UUI
 	return s.store.RemoveCartItem(ctx, cart.ID, variantID)
 }
 
+// UpdateCartItem sets the absolute quantity for a variant in the user's
+// cart. Quantity 0 removes the line. Replaces the mobile delete+add
+// roundtrip from commerce_repository.dart (Phase 1.2). UpsertCartItem at
+// the SQL layer is INSERT ... ON CONFLICT DO UPDATE, so this is atomic at
+// the row level — concurrent calls converge on a single final quantity.
+func (s *Service) UpdateCartItem(ctx context.Context, userID, variantID uuid.UUID, qty int) error {
+	if qty < 0 {
+		return fmt.Errorf("quantity must be >= 0")
+	}
+	if qty == 0 {
+		return s.RemoveFromCart(ctx, userID, variantID)
+	}
+	// AddToCart's stock check + upsert semantics are exactly what an
+	// atomic set-to-N needs; reuse rather than duplicate.
+	return s.AddToCart(ctx, userID, variantID, qty)
+}
+
 type CartSummary struct {
 	CartID      uuid.UUID
 	Items       []*CartItemDetail
@@ -447,18 +464,82 @@ func couponWithinCaps(ctx context.Context, s *Service, c *postgres.Coupon, userI
 
 // ─── Checkout & Orders ───────────────────────────────────────
 
-type CheckoutInput struct {
-	UserID         uuid.UUID
-	AddressID      uuid.UUID
-	PaymentMethod  string
-	CouponCode     string
-	GiftMessage    *string
-	IdempotencyKey string
+// QuoteInput is the request body for the server-authoritative checkout
+// quote endpoint (POST /v1/commerce/checkout/quote — Phase 1.1).
+type QuoteInput struct {
+	UserID        uuid.UUID
+	AddressID     uuid.UUID
+	PaymentMethod string
+	CouponCode    string
 }
 
-func (s *Service) Checkout(ctx context.Context, in CheckoutInput) (*postgres.Order, error) {
-	// 1. Get cart
-	cart, err := s.store.GetOrCreateCart(ctx, in.UserID)
+// QuoteItem is one line item in a checkout quote response.
+type QuoteItem struct {
+	VariantID    uuid.UUID `json:"variant_id"`
+	ProductID    uuid.UUID `json:"product_id"`
+	SellerID     uuid.UUID `json:"seller_id"`
+	ProductTitle string    `json:"product_title"`
+	SKU          string    `json:"sku,omitempty"`
+	Quantity     int       `json:"quantity"`
+	UnitPrice    float64   `json:"unit_price"`
+	LineSubtotal float64   `json:"line_subtotal"`
+}
+
+// UnavailableQuoteItem is one cart row whose requested quantity exceeds
+// available stock — surfaced on the Quote response so the UI can warn
+// before "Place order". Strict checkout still fails on these.
+type UnavailableQuoteItem struct {
+	VariantID    uuid.UUID `json:"variant_id"`
+	ProductID    uuid.UUID `json:"product_id"`
+	ProductTitle string    `json:"product_title"`
+	Available    int       `json:"available"`
+	Requested    int       `json:"requested"`
+}
+
+// Quote is the server-authoritative pricing the client must render before
+// placing an order. The same priceCart helper backs both Quote and
+// Checkout, so what the customer sees in the quote is what they get on
+// the order — there is no client-side recomputation.
+type Quote struct {
+	Subtotal         float64                `json:"subtotal"`
+	CouponDiscount   float64                `json:"coupon_discount"`
+	CouponCode       string                 `json:"coupon_code,omitempty"`
+	Shipping         float64                `json:"shipping"`
+	Tax              float64                `json:"tax"`
+	GrandTotal       float64                `json:"grand_total"`
+	Currency         string                 `json:"currency"`
+	Items            []QuoteItem            `json:"items"`
+	UnavailableItems []UnavailableQuoteItem `json:"unavailable_items"`
+	CODEligible      bool                   `json:"cod_eligible"`
+	Serviceable      bool                   `json:"serviceable"`
+	SellerIDs        []uuid.UUID            `json:"seller_ids"`
+}
+
+// pricingResult is the shared, untransformed output of the cart-pricing
+// pipeline. Quote shapes it into a customer-facing DTO; Checkout consumes
+// the OrderItems directly to persist the order.
+type pricingResult struct {
+	Cart             *postgres.Cart
+	CartItems        []*postgres.CartItem
+	OrderItems       []*postgres.OrderItem
+	Subtotal         float64
+	CouponDiscount   float64
+	CouponCodePtr    *string
+	Shipping         float64
+	Tax              float64
+	FinalAmount      float64
+	UnavailableItems []UnavailableQuoteItem
+}
+
+// priceCart resolves the user's current cart into a fully-priced result
+// using server-side product/variant/inventory data. strict=true (Checkout)
+// rejects the call on any out-of-stock line; strict=false (Quote) returns
+// the result with UnavailableItems populated and prices reflecting only
+// the available rows. Coupon, shipping, and tax rules match Checkout 1:1.
+//
+// Caller must validate the user owns the cart; this helper trusts userID.
+func (s *Service) priceCart(ctx context.Context, userID uuid.UUID, paymentMethod, couponCode string, strict bool) (*pricingResult, error) {
+	cart, err := s.store.GetOrCreateCart(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -470,10 +551,10 @@ func (s *Service) Checkout(ctx context.Context, in CheckoutInput) (*postgres.Ord
 		return nil, fmt.Errorf("cart is empty")
 	}
 
-	// 2. Validate stock + build order items
 	var orderItems []*postgres.OrderItem
+	var unavailable []UnavailableQuoteItem
 	var subtotal float64
-	var totalTax float64
+	totalTax := 0.0 // Phase 3+ will compute per-HSN GST; today the schema stores 0.
 
 	for _, ci := range cartItems {
 		variant, err := s.store.GetVariantByID(ctx, ci.VariantID)
@@ -489,7 +570,17 @@ func (s *Service) Checkout(ctx context.Context, in CheckoutInput) (*postgres.Ord
 			return nil, fmt.Errorf("inventory for %s not found", ci.VariantID)
 		}
 		if inv.AvailableQty() < ci.Quantity {
-			return nil, fmt.Errorf("insufficient stock for %s: available %d", product.Title, inv.AvailableQty())
+			if strict {
+				return nil, fmt.Errorf("insufficient stock for %s: available %d", product.Title, inv.AvailableQty())
+			}
+			unavailable = append(unavailable, UnavailableQuoteItem{
+				VariantID:    ci.VariantID,
+				ProductID:    ci.ProductID,
+				ProductTitle: product.Title,
+				Available:    inv.AvailableQty(),
+				Requested:    ci.Quantity,
+			})
+			continue
 		}
 
 		lineTotal := variant.SellingPrice * float64(ci.Quantity)
@@ -513,19 +604,12 @@ func (s *Service) Checkout(ctx context.Context, in CheckoutInput) (*postgres.Ord
 		})
 	}
 
-	// 3. Apply coupon if provided.
-	//
-	// Audit O10: GetCouponByCode already filters by is_active / starts_at /
-	// expires_at at the SQL layer, but the prior implementation never
-	// enforced max_uses (global cap) or max_uses_per_user (per-user cap).
-	// A single permissive coupon could be redeemed unboundedly. Now we
-	// require uses_count < max_uses and the per-user usage from
-	// coupon_usages to be below max_uses_per_user before applying.
+	// Coupon — Audit O10: enforces max_uses + max_uses_per_user caps.
 	couponDiscount := 0.0
 	var couponCodePtr *string
-	if in.CouponCode != "" {
-		c, err := s.store.GetCouponByCode(ctx, in.CouponCode)
-		if err == nil && subtotal >= c.MinOrderAmount && couponWithinCaps(ctx, s, c, in.UserID) {
+	if couponCode != "" {
+		c, err := s.store.GetCouponByCode(ctx, couponCode)
+		if err == nil && subtotal >= c.MinOrderAmount && couponWithinCaps(ctx, s, c, userID) {
 			switch c.DiscountType {
 			case "percentage":
 				d := subtotal * c.DiscountValue / 100
@@ -537,27 +621,177 @@ func (s *Service) Checkout(ctx context.Context, in CheckoutInput) (*postgres.Ord
 				couponDiscount = c.DiscountValue
 			}
 		}
-		couponCodePtr = &in.CouponCode
+		cc := couponCode
+		couponCodePtr = &cc
 	}
 
-	// 4. Shipping (flat ₹40, free above ₹499)
+	// Shipping: flat ₹40, free above ₹499. Phase 1.3 serviceability will
+	// per-courier/per-pincode the real number.
 	shipping := 40.0
 	if subtotal > 499 {
 		shipping = 0
 	}
 
-	finalAmount := subtotal - couponDiscount + shipping + totalTax
+	final := subtotal - couponDiscount + shipping + totalTax
+	return &pricingResult{
+		Cart:             cart,
+		CartItems:        cartItems,
+		OrderItems:       orderItems,
+		Subtotal:         subtotal,
+		CouponDiscount:   couponDiscount,
+		CouponCodePtr:    couponCodePtr,
+		Shipping:         shipping,
+		Tax:              totalTax,
+		FinalAmount:      final,
+		UnavailableItems: unavailable,
+	}, nil
+}
+
+// ServiceabilityInput is the request for CheckServiceability — Phase 1.3.
+// Pincode is the customer's drop pincode; ProductID resolves the seller
+// (and pickup pincode) and the package weight unless overridden.
+type ServiceabilityInput struct {
+	Pincode       string
+	ProductID     uuid.UUID
+	VariantID     uuid.UUID
+	SellerID      uuid.UUID
+	PaymentMethod string
+}
+
+// CheckServiceability is the server-authoritative serviceability +
+// COD-eligibility check that replaces the mobile pincode heuristic.
+// Inputs come from the product's seller pickup address and weight; the
+// courier adapter returns the authoritative answer (currently stub-ish
+// for both adapters — the Shiprocket implementation is a follow-up).
+func (s *Service) CheckServiceability(ctx context.Context, in ServiceabilityInput) (*courier.ServiceabilityResult, error) {
+	if in.Pincode == "" {
+		return &courier.ServiceabilityResult{Serviceable: false, Reason: "pincode required"}, nil
+	}
+	product, err := s.store.GetProductByID(ctx, in.ProductID)
+	if err != nil {
+		return nil, fmt.Errorf("product %s not found", in.ProductID)
+	}
+	sellerID := product.SellerID
+	if in.SellerID != uuid.Nil {
+		sellerID = in.SellerID
+	}
+	seller, err := s.store.GetSellerByID(ctx, sellerID)
+	if err != nil {
+		return nil, fmt.Errorf("seller %s not found", sellerID)
+	}
+	if seller.PostalCode == nil || *seller.PostalCode == "" {
+		return &courier.ServiceabilityResult{
+			Serviceable: false,
+			Reason:      "seller pickup pincode not configured",
+		}, nil
+	}
+	weightKg := 0.5 // sensible default until catalog enforces a weight
+	if product.WeightGrams != nil && *product.WeightGrams > 0 {
+		weightKg = float64(*product.WeightGrams) / 1000.0
+	}
+	pm := in.PaymentMethod
+	if pm == "" {
+		pm = "prepaid"
+	}
+	if s.courier == nil {
+		// No courier wired (test/dev without provider): assume reachable
+		// so the rest of the flow keeps working; production must have
+		// COURIER_PROVIDER set.
+		return &courier.ServiceabilityResult{
+			Serviceable:   true,
+			CODSupported:  true,
+			EstimatedDays: 4,
+			Courier:       "none",
+			Reason:        "courier provider not configured",
+		}, nil
+	}
+	return s.courier.CheckServiceability(ctx, courier.ServiceabilityRequest{
+		PickupPincode: *seller.PostalCode,
+		DropPincode:   in.Pincode,
+		WeightKg:      weightKg,
+		PaymentMethod: pm,
+	})
+}
+
+// Quote returns the server-authoritative pricing for the user's current
+// cart without persisting an order. The web + mobile checkout flows must
+// render this before "Place order" so the customer sees the same numbers
+// the server will use on Checkout.
+//
+// Serviceability and COD eligibility are placeholder true; Phase 1.3
+// replaces them with the real courier + pincode check.
+func (s *Service) Quote(ctx context.Context, in QuoteInput) (*Quote, error) {
+	res, err := s.priceCart(ctx, in.UserID, in.PaymentMethod, in.CouponCode, false)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]QuoteItem, 0, len(res.OrderItems))
+	sellerSet := map[uuid.UUID]struct{}{}
+	for _, oi := range res.OrderItems {
+		items = append(items, QuoteItem{
+			VariantID:    oi.VariantID,
+			ProductID:    oi.ProductID,
+			SellerID:     oi.SellerID,
+			ProductTitle: oi.ProductTitle,
+			SKU:          oi.SKU,
+			Quantity:     oi.Quantity,
+			UnitPrice:    oi.UnitPrice,
+			LineSubtotal: oi.FinalPrice,
+		})
+		sellerSet[oi.SellerID] = struct{}{}
+	}
+	sellerIDs := make([]uuid.UUID, 0, len(sellerSet))
+	for sid := range sellerSet {
+		sellerIDs = append(sellerIDs, sid)
+	}
+	codeStr := ""
+	if res.CouponCodePtr != nil {
+		codeStr = *res.CouponCodePtr
+	}
+	return &Quote{
+		Subtotal:         round2(res.Subtotal),
+		CouponDiscount:   round2(res.CouponDiscount),
+		CouponCode:       codeStr,
+		Shipping:         round2(res.Shipping),
+		Tax:              round2(res.Tax),
+		GrandTotal:       round2(res.FinalAmount),
+		Currency:         "INR",
+		Items:            items,
+		UnavailableItems: res.UnavailableItems,
+		CODEligible:      true, // Phase 1.3 replaces with real check
+		Serviceable:      true, // Phase 1.3 replaces with real check
+		SellerIDs:        sellerIDs,
+	}, nil
+}
+
+type CheckoutInput struct {
+	UserID         uuid.UUID
+	AddressID      uuid.UUID
+	PaymentMethod  string
+	CouponCode     string
+	GiftMessage    *string
+	IdempotencyKey string
+}
+
+// Checkout commits the user's cart as an order. All pricing (line totals,
+// coupon, shipping, tax, grand total) is computed by priceCart so a future
+// quote API and any client-side display can never drift from the value
+// actually persisted on the order.
+func (s *Service) Checkout(ctx context.Context, in CheckoutInput) (*postgres.Order, error) {
+	res, err := s.priceCart(ctx, in.UserID, in.PaymentMethod, in.CouponCode, true)
+	if err != nil {
+		return nil, err
+	}
+
 	idempKey := in.IdempotencyKey
 	if idempKey == "" {
 		idempKey = fmt.Sprintf("%s-%d", in.UserID, time.Now().UnixNano())
 	}
 
-	// 5. Create order (idempotent).
-	// COD orders skip the gateway: confirmed immediately, payment_status stays
-	// "pending" (the orders_payment_status_check constraint allows
-	// pending|processing|paid|failed|refund_pending|refunded|partially_refunded
-	// — there is no cod_pending). Downstream code distinguishes COD by reading
-	// payment_method='cod' instead.
+	// COD orders skip the gateway: confirmed immediately, payment_status
+	// stays "pending" (orders_payment_status_check allows
+	// pending|processing|paid|failed|refund_*; there is no cod_pending —
+	// downstream code distinguishes COD by reading payment_method='cod').
 	addrSnapshot, _ := json.Marshal(map[string]any{"address_id": in.AddressID})
 	pm := in.PaymentMethod
 	isCOD := strings.EqualFold(pm, "cod")
@@ -568,13 +802,13 @@ func (s *Service) Checkout(ctx context.Context, in CheckoutInput) (*postgres.Ord
 	}
 	order := &postgres.Order{
 		CustomerUserID:          in.UserID,
-		Subtotal:                subtotal,
+		Subtotal:                res.Subtotal,
 		DiscountAmount:          0,
-		ShippingCharges:         shipping,
-		TaxAmount:               totalTax,
-		CouponCode:              couponCodePtr,
-		CouponDiscount:          couponDiscount,
-		FinalAmount:             finalAmount,
+		ShippingCharges:         res.Shipping,
+		TaxAmount:               res.Tax,
+		CouponCode:              res.CouponCodePtr,
+		CouponDiscount:          res.CouponDiscount,
+		FinalAmount:             res.FinalAmount,
 		CurrencyCode:            "INR",
 		PaymentMethod:           &pm,
 		PaymentStatus:           paymentStatus,
@@ -585,12 +819,12 @@ func (s *Service) Checkout(ctx context.Context, in CheckoutInput) (*postgres.Ord
 		IdempotencyKey:          &idempKey,
 	}
 
-	if err := s.store.CreateOrder(ctx, order, orderItems); err != nil {
+	if err := s.store.CreateOrder(ctx, order, res.OrderItems); err != nil {
 		return nil, fmt.Errorf("create order: %w", err)
 	}
 
-	// 6. Hard-reserve inventory (COD: immediately deduct since there is no gateway step).
-	for _, ci := range cartItems {
+	// Hard-reserve inventory (COD deducts immediately — no gateway step).
+	for _, ci := range res.CartItems {
 		if isCOD {
 			if err := s.store.DeductStock(ctx, ci.VariantID, ci.Quantity, order.ID); err != nil {
 				slog.Warn("failed to deduct stock for COD", "variant", ci.VariantID, "error", err)
@@ -602,21 +836,18 @@ func (s *Service) Checkout(ctx context.Context, in CheckoutInput) (*postgres.Ord
 		}
 	}
 
-	// 7. Clear cart
-	_ = s.store.ClearCart(ctx, cart.ID)
+	_ = s.store.ClearCart(ctx, res.Cart.ID)
 
-	// 8. Apply coupon usage
-	if couponCodePtr != nil {
-		if c, err := s.store.GetCouponByCode(ctx, *couponCodePtr); err == nil {
+	if res.CouponCodePtr != nil {
+		if c, err := s.store.GetCouponByCode(ctx, *res.CouponCodePtr); err == nil {
 			_ = s.store.IncrCouponUsage(ctx, c.ID, in.UserID, order.ID)
 		}
 	}
 
 	buyerEmail, buyerName := s.resolveBuyer(ctx, in.UserID)
-	// Resolve seller contact for seller-side notifications.
 	var sellerEmail, sellerName string
-	if len(orderItems) > 0 {
-		if seller, err := s.store.GetSellerByID(ctx, orderItems[0].SellerID); err == nil {
+	if len(res.OrderItems) > 0 {
+		if seller, err := s.store.GetSellerByID(ctx, res.OrderItems[0].SellerID); err == nil {
 			sellerEmail, sellerName = s.resolveSeller(seller)
 		}
 	}
@@ -631,14 +862,12 @@ func (s *Service) Checkout(ctx context.Context, in CheckoutInput) (*postgres.Ord
 	s.publish(ctx, events.EventCommerceSellerNewOrder, map[string]any{
 		"order_id":     order.ID,
 		"order_number": order.OrderNumber,
-		"seller_id":    sellerIDOrNil(orderItems),
+		"seller_id":    sellerIDOrNil(res.OrderItems),
 		"amount":       order.FinalAmount,
 		"seller_email": sellerEmail,
 		"seller_name":  sellerName,
 	})
 	if isCOD {
-		// COD is a zero-step payment: signal downstream so invoice + shipment
-		// and seller notifications fire the same way as paid orders.
 		s.publish(ctx, events.EventCommerceOrderPaid, map[string]any{
 			"order_id":       order.ID,
 			"order_number":   order.OrderNumber,

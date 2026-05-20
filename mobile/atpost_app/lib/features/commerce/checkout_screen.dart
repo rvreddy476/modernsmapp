@@ -14,7 +14,9 @@ import 'package:atpost_app/data/models/commerce.dart';
 import 'package:atpost_app/data/repositories/commerce_repository.dart';
 import 'package:atpost_app/providers/commerce_providers.dart';
 import 'package:atpost_app/services/commerce_telemetry.dart';
+import 'package:atpost_app/services/razorpay_commerce.dart';
 import 'package:atpost_app/services/razorpay_commerce_stub.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -220,16 +222,51 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
             'mobile_${DateTime.now().millisecondsSinceEpoch}_${addr.id}',
       );
 
-      // Prepaid → open Razorpay stub. COD → straight to success.
+      // Prepaid → real Razorpay (or the stub if dev + opted in). COD
+      // skips the gateway. Phase 1.4: replaces the stub-only flow with
+      // payments-service intent + razorpay_flutter SDK + the secure
+      // confirm body the Phase-0.1 backend requires.
       if (_paymentMethod != 'cod') {
-        if (!mounted) return;
-        final result = await RazorpayCommerceStub.open(
-          context,
-          args: CommerceStubArgs(
-            orderId: order.id,
-            amountInPaise: (order.amountGrand * 100).round(),
-          ),
+        final amountMinor = (order.amountGrand * 100).round();
+        final intent = await repo.createPaymentIntent(
+          orderId: order.id,
+          amount: order.amountGrand,
         );
+        if (intent.providerRef.isEmpty) {
+          if (!mounted) return;
+          setState(() => _placing = false);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Payment unavailable: gateway not configured'),
+            ),
+          );
+          return;
+        }
+
+        if (!mounted) return;
+        final stubArgs = CommerceStubArgs(
+          orderId: order.id,
+          amountInPaise: amountMinor,
+          razorpayOrderId: intent.providerRef,
+        );
+
+        // Release builds always use the real SDK. Debug builds opt into
+        // the stub with --dart-define=ENABLE_STUB_PAYMENTS=true so QA can
+        // exercise the flow without Razorpay's hosted sheet.
+        const useStub = kDebugMode &&
+            String.fromEnvironment('ENABLE_STUB_PAYMENTS') == 'true';
+        CommerceStubResult result;
+        if (useStub) {
+          result = await RazorpayCommerceStub.open(context, args: stubArgs);
+        } else {
+          const keyId = String.fromEnvironment('RAZORPAY_KEY_ID');
+          result = await RazorpayCommerce.open(
+            context,
+            args: stubArgs,
+            razorpayKeyId: keyId,
+          );
+        }
+
         if (!result.confirmed) {
           if (!mounted) return;
           setState(() => _placing = false);
@@ -242,9 +279,12 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
         }
         await repo.confirmOrderPayment(
           order.id,
-          razorpayOrderId: result.razorpayOrderId ?? '',
+          paymentIntentId: intent.intentId,
+          razorpayOrderId: result.razorpayOrderId ?? intent.providerRef,
           razorpayPaymentId: result.razorpayPaymentId ?? '',
           razorpaySignature: result.razorpaySignature ?? '',
+          amountMinor: amountMinor,
+          gateway: useStub ? 'stub' : 'razorpay',
         );
       }
 
