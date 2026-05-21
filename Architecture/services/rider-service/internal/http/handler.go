@@ -57,6 +57,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		rider.POST("/rides/:id/no-show", h.PostMarkNoShow)
 		rider.POST("/safety/masked-call", h.PostInitiateMaskedCall)
 		rider.POST("/rides/:id/rating/response", h.PostPartnerRespondRating)
+		rider.GET("/rides/:id/messages", h.ListRideMessages)
+		rider.POST("/rides/:id/messages", h.PostRideMessage)
+		rider.POST("/rides/:id/messages/:msgId/read", h.MarkRideMessageRead)
 
 		// --- Partner ops (online/offline/location/dashboard) (S2) ---------
 		rider.POST("/partners/me/online", h.PostGoOnline)

@@ -662,6 +662,18 @@ ALTER TABLE rider_rides
 CREATE INDEX IF NOT EXISTS idx_rider_rides_rating_visibility
     ON rider_rides(rating_visibility) WHERE rating IS NOT NULL AND rating_visibility != 'public';
 
+-- ─── Wave F: per-ride chat + read receipts ────────────────────────────
+CREATE TABLE IF NOT EXISTS rider_ride_messages (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    ride_id     UUID NOT NULL REFERENCES rider_rides(id) ON DELETE CASCADE,
+    author_id   UUID NOT NULL,
+    author_role TEXT NOT NULL CHECK (author_role IN ('customer','partner','admin')),
+    body        TEXT NOT NULL,
+    read_by     JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_rider_ride_messages_ride ON rider_ride_messages(ride_id, created_at);
+
 -- Live partner locations. The hot copy lives in Redis (keyed per city geohash);
 -- this table is the durable mirror used by the cold-path matcher fallback.
 CREATE TABLE IF NOT EXISTS rider_partner_locations (
