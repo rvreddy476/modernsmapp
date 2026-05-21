@@ -1245,3 +1245,42 @@ DROP TRIGGER IF EXISTS trg_food_substitutions_updated_at ON food.order_substitut
 CREATE TRIGGER trg_food_substitutions_updated_at
 BEFORE UPDATE ON food.order_substitutions
 FOR EACH ROW EXECUTE FUNCTION food.set_updated_at();
+
+-- ─── B3: menu moderation ──────────────────────────────────────────────
+--
+-- moderation_status governs whether a menu item is visible to
+-- customers. Default `approved` so existing items stay live; new items
+-- created by partner start `approved` too, with the admin queue
+-- reviewing reports/auto-flags asynchronously. `flagged` items remain
+-- visible but are surfaced in the admin queue; `rejected` items are
+-- hidden from customer-facing listings.
+DO $$ BEGIN
+    CREATE TYPE food.moderation_status AS ENUM ('approved','flagged','rejected','pending_review');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+ALTER TABLE food.menu_items
+    ADD COLUMN IF NOT EXISTS moderation_status food.moderation_status NOT NULL DEFAULT 'approved',
+    ADD COLUMN IF NOT EXISTS moderation_reason TEXT,
+    ADD COLUMN IF NOT EXISTS moderated_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS moderated_by UUID;
+
+CREATE INDEX IF NOT EXISTS ix_food_menu_items_moderation
+    ON food.menu_items(moderation_status)
+    WHERE moderation_status IN ('flagged','pending_review');
+
+-- menu_item_reports captures customer-side complaints (wrong photo,
+-- offensive name, allergen mismatch, …). Many reports on one item
+-- auto-flips moderation_status to `flagged` for admin review.
+CREATE TABLE IF NOT EXISTS food.menu_item_reports (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    menu_item_id UUID NOT NULL REFERENCES food.menu_items(id) ON DELETE CASCADE,
+    reporter_id  UUID NOT NULL,
+    category     VARCHAR(60) NOT NULL,
+    detail       TEXT,
+    resolved_at  TIMESTAMPTZ,
+    resolved_by  UUID,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_food_item_reports_item ON food.menu_item_reports(menu_item_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS ix_food_item_reports_pending ON food.menu_item_reports(created_at DESC) WHERE resolved_at IS NULL;

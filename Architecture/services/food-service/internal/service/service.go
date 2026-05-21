@@ -68,6 +68,9 @@ type Store interface {
 	ProposeSubstitution(ctx context.Context, ownerID uuid.UUID, in postgres.ProposeSubstitutionInput) (*postgres.Substitution, error)
 	RespondToSubstitution(ctx context.Context, customerID, subID uuid.UUID, newStatus string) (*postgres.Substitution, error)
 	ListSubstitutions(ctx context.Context, userID, orderID uuid.UUID) ([]postgres.Substitution, error)
+	ReportMenuItem(ctx context.Context, reporterID, itemID uuid.UUID, category, detail string) (*postgres.MenuItemReport, error)
+	ListPendingModeration(ctx context.Context, limit int) ([]postgres.PendingModerationItem, error)
+	ModerateMenuItem(ctx context.Context, adminID, itemID uuid.UUID, status, reason string) error
 	PartnerRestaurantSettlements(ctx context.Context, ownerID, restaurantID uuid.UUID) ([]map[string]any, error)
 	PartnerRestaurantSummary(ctx context.Context, ownerID, restaurantID uuid.UUID) (map[string]any, error)
 	UpsertDeliveryPartner(ctx context.Context, userID uuid.UUID, in postgres.DeliveryPartnerInput) (*postgres.DeliveryPartner, error)
@@ -767,6 +770,26 @@ func (s *Service) RespondToSubstitution(ctx context.Context, customerID, subID u
 // to either the customer or the owning partner.
 func (s *Service) ListSubstitutions(ctx context.Context, userID, orderID uuid.UUID) ([]postgres.Substitution, error) {
 	return s.store.ListSubstitutions(ctx, userID, orderID)
+}
+
+// ReportMenuItem records a customer complaint against a menu item.
+// Once enough unresolved reports accumulate the item auto-flips to
+// `flagged` so admin reviews it. Idempotent at the store layer.
+func (s *Service) ReportMenuItem(ctx context.Context, reporterID, itemID uuid.UUID, category, detail string) (*postgres.MenuItemReport, error) {
+	return s.store.ReportMenuItem(ctx, reporterID, itemID, category, detail)
+}
+
+// ListPendingModeration returns flagged / pending_review menu items
+// for the admin moderation queue. Admin-only.
+func (s *Service) ListPendingModeration(ctx context.Context, limit int) ([]postgres.PendingModerationItem, error) {
+	return s.store.ListPendingModeration(ctx, limit)
+}
+
+// ModerateMenuItem sets the admin verdict on a flagged item. Approving
+// resolves all open reports against the item; rejecting hides it from
+// customer-facing listings.
+func (s *Service) ModerateMenuItem(ctx context.Context, adminID, itemID uuid.UUID, status, reason string) error {
+	return s.store.ModerateMenuItem(ctx, adminID, itemID, status, reason)
 }
 
 // AutoRejectSLAExpiredOrders is invoked by the background worker every

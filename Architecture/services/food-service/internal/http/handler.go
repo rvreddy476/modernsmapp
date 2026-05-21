@@ -68,6 +68,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			user.POST("/orders/:orderId/cancel", h.CancelOrder)
 			user.GET("/orders/:orderId/substitutions", h.ListSubstitutions)
 			user.POST("/orders/:orderId/substitutions/:subId/respond", h.RespondSubstitution)
+			user.POST("/menu-items/:itemId/report", h.ReportMenuItem)
 			user.POST("/orders/:orderId/ratings/restaurant", h.RateRestaurant)
 			user.POST("/orders/:orderId/ratings/delivery", h.RateDelivery)
 		}
@@ -123,6 +124,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		admin := v1.Group("/admin", h.requireAdminScope())
 		{
 			admin.GET("/dashboard", h.AdminDashboard)
+			admin.GET("/moderation/queue", h.AdminListPendingModeration)
+			admin.POST("/moderation/menu-items/:itemId", h.AdminModerateMenuItem)
 			admin.GET("/restaurants/pending", h.AdminPendingRestaurants)
 			admin.POST("/restaurants/:restaurantId/approve", h.AdminApproveRestaurant)
 			admin.POST("/restaurants/:restaurantId/reject", h.AdminRejectRestaurant)
