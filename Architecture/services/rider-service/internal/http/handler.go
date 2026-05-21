@@ -135,6 +135,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		admin.GET("/rides/live", h.AdminListLiveRides)
 		admin.GET("/safety/incidents/:id/alerts", h.AdminListSafetyContactAlerts)
 		admin.POST("/rides/:id/rating/visibility", h.AdminHideRideRating)
+		admin.GET("/reports/matching-health", h.AdminMatchingHealthReport)
+		admin.GET("/reports/partner-quality", h.AdminPartnerQualityReport)
+		admin.GET("/reports/supply-demand", h.AdminSupplyDemandReport)
+		admin.GET("/reports/safety", h.AdminSafetyIncidentReport)
+		admin.GET("/reports/compliance", h.AdminPartnerComplianceReport)
 		admin.POST("/rides/:id/cancel", h.AdminCancelRide)
 
 		admin.GET("/complaints", h.AdminListComplaints)

@@ -95,3 +95,29 @@ func parseCohortMonth(s string) (time.Time, error) {
 // ErrInvalidReportArg is returned by the reports endpoints for bad input.
 // Reused via the "invalid:" prefix convention.
 var ErrInvalidReportArg = errors.New("invalid report argument")
+
+// ─── Wave D2: Mopedu ops reports ──────────────────────────────────────
+//
+// Five admin-only endpoints powering the ops dashboard's matching,
+// quality, safety + compliance views. Thin pass-through over the
+// store; defaults applied in store.ReportWindow.defaults().
+
+func (s *Service) ReportMatchingHealth(ctx context.Context, w store.ReportWindow) ([]store.MatchingHealthRow, error) {
+	return s.store.ReportMatchingHealth(ctx, w)
+}
+
+func (s *Service) ReportPartnerQuality(ctx context.Context, w store.ReportWindow) ([]store.PartnerQualityRow, error) {
+	return s.store.ReportPartnerQuality(ctx, w)
+}
+
+func (s *Service) ReportSupplyDemand(ctx context.Context, w store.ReportWindow) ([]store.SupplyDemandRow, error) {
+	return s.store.ReportSupplyDemand(ctx, w)
+}
+
+func (s *Service) ReportSafetyIncidents(ctx context.Context, w store.ReportWindow) ([]store.SafetyIncidentReportRow, error) {
+	return s.store.ReportSafetyIncidents(ctx, w)
+}
+
+func (s *Service) ReportPartnerCompliance(ctx context.Context, city string) ([]store.PartnerComplianceRow, error) {
+	return s.store.ReportPartnerCompliance(ctx, city)
+}
