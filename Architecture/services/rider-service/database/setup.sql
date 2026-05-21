@@ -650,6 +650,18 @@ CREATE TABLE IF NOT EXISTS rider_safety_contact_alerts (
 );
 CREATE INDEX IF NOT EXISTS idx_safety_alerts_incident ON rider_safety_contact_alerts(incident_id);
 
+-- ─── C5: ride/partner rating moderation + partner response ────────────
+ALTER TABLE rider_rides
+    ADD COLUMN IF NOT EXISTS rating_visibility TEXT NOT NULL DEFAULT 'public'
+        CHECK (rating_visibility IN ('public','hidden','flagged')),
+    ADD COLUMN IF NOT EXISTS rating_hidden_by  UUID,
+    ADD COLUMN IF NOT EXISTS rating_hidden_at  TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS partner_response  TEXT,
+    ADD COLUMN IF NOT EXISTS partner_responded_at TIMESTAMPTZ;
+
+CREATE INDEX IF NOT EXISTS idx_rider_rides_rating_visibility
+    ON rider_rides(rating_visibility) WHERE rating IS NOT NULL AND rating_visibility != 'public';
+
 -- Live partner locations. The hot copy lives in Redis (keyed per city geohash);
 -- this table is the durable mirror used by the cold-path matcher fallback.
 CREATE TABLE IF NOT EXISTS rider_partner_locations (
