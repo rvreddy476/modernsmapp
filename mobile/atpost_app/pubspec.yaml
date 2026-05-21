@@ -44,6 +44,7 @@ dependencies:
   video_thumbnail: ^0.5.3
   colorfilter_generator: ^0.0.8
   geolocator: ^12.0.0
+  google_maps_flutter: ^2.7.0
 
   # Offline caching
   hive: ^2.2.3

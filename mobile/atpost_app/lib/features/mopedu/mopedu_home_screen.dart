@@ -20,6 +20,7 @@ import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/models/mopedu.dart';
 import 'package:atpost_app/features/mopedu/city_picker_sheet.dart';
+import 'package:atpost_app/features/mopedu/map_picker_screen.dart';
 import 'package:atpost_app/providers/mopedu_providers.dart';
 import 'package:atpost_app/services/money_format.dart';
 import 'package:atpost_app/services/mopedu_crash_breadcrumbs.dart';
@@ -243,10 +244,10 @@ class _PickupDropCard extends ConsumerWidget {
             iconColor: AppColors.postbookPrimary,
             label: 'Pickup',
             point: booking.pickup,
-            onTap: () => _editPoint(
+            onTap: () => _pickOnMap(
               context,
-              title: 'Pickup',
-              point: booking.pickup,
+              mode: MapPickerMode.pickup,
+              current: booking.pickup,
               onSave: notifier.setPickup,
             ),
             onClear: booking.pickup == null
@@ -262,21 +263,15 @@ class _PickupDropCard extends ConsumerWidget {
             iconColor: AppColors.statusError,
             label: 'Drop',
             point: booking.drop,
-            onTap: () => _editPoint(
+            onTap: () => _pickOnMap(
               context,
-              title: 'Drop',
-              point: booking.drop,
+              mode: MapPickerMode.drop,
+              current: booking.drop,
               onSave: notifier.setDrop,
             ),
             onClear: booking.drop == null
                 ? null
                 : () => notifier.setDrop(null),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            'Map view coming in Sprint 2. For now, set the address and '
-            'coordinates manually.',
-            style: AppTextStyles.bodySmall.copyWith(color: AppColors.textMuted),
           ),
         ],
       ),
@@ -312,23 +307,23 @@ class _PickupDropCard extends ConsumerWidget {
     );
   }
 
-  Future<void> _editPoint(
+  /// Opens the Google Maps picker (C6). Falls through to the
+  /// manual-coordinate sheet only when the caller explicitly wants
+  /// the textual fallback (e.g. on a device without Maps).
+  Future<void> _pickOnMap(
     BuildContext context, {
-    required String title,
-    required RidePoint? point,
+    required MapPickerMode mode,
+    required RidePoint? current,
     required void Function(RidePoint?) onSave,
   }) async {
-    final result = await showModalBottomSheet<RidePoint?>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: AppColors.bgSecondary,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (_) => _PointEditorSheet(title: title, initial: point),
+    final result = await MopeduMapPicker.show(
+      context,
+      mode: mode,
+      initial: current,
     );
     if (result != null) onSave(result);
   }
+
 }
 
 class _PointRow extends StatelessWidget {

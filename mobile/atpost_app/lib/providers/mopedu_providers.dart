@@ -18,8 +18,10 @@ import 'dart:math';
 
 import 'package:atpost_app/data/models/mopedu.dart';
 import 'package:atpost_app/data/repositories/mopedu_repository.dart';
+import 'package:atpost_app/services/auth_service.dart';
 import 'package:atpost_app/services/mopedu_location_service.dart';
 import 'package:atpost_app/services/mopedu_telemetry.dart';
+import 'package:atpost_app/services/realtime_stream_service.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 
@@ -960,6 +962,12 @@ final partnerOnlineStateProvider = StateNotifierProvider<
 });
 
 // ─── Incoming offers (polling every 5s when online) ───────────────────
+//
+// The 5s polling provider is kept as the REST snapshot — it shows
+// every pending offer on first paint + recovers state after a
+// reconnect when the SSE stream missed frames. The SSE-driven push
+// path below (incomingOfferPushProvider, C1) is what triggers the
+// modal within ~100ms of arrival.
 
 final incomingOffersProvider =
     FutureProvider.autoDispose<List<RideOffer>>((ref) async {
@@ -968,6 +976,66 @@ final incomingOffersProvider =
   final timer = Timer(const Duration(seconds: 5), ref.invalidateSelf);
   ref.onDispose(timer.cancel);
   return ref.watch(mopeduRepositoryProvider).getIncomingOffers();
+});
+
+// ─── Realtime offer push (C1) ─────────────────────────────────────────
+//
+// 1. Fetches an HMAC topic token from rider-service.
+// 2. Opens an SSE connection to notification-service /v1/realtime/sse
+//    and filters frames where event == "rider.ride.offered".
+// 3. Decodes the payload into a RideOffer and pushes onto a broadcast
+//    stream the dashboard can listen to. The dashboard watches this
+//    stream and surfaces the RideRequestModal as soon as a frame
+//    arrives — eliminating the 5-second polling lag.
+//
+// Lifecycle: the StreamProvider auto-cancels when the dashboard
+// disposes (e.g. partner goes offline or backgrounds the app).
+
+final _realtimeSessionProvider = FutureProvider.autoDispose<
+    RealtimeStreamService?>((ref) async {
+  final isOnline =
+      ref.watch(partnerOnlineStateProvider.select((s) => s.isOnline));
+  if (!isOnline) return null;
+  final repo = ref.read(mopeduRepositoryProvider);
+  final result = await repo.getRealtimeToken();
+  final token = result.token;
+  final topics = result.topics;
+  if (token.isEmpty) return null;
+  // Only subscribe to offer topics; ignore ride-state topics on this
+  // session to keep the inbound chatter minimal.
+  final offerTopics = topics
+      .where((t) => t.startsWith('rider.partner.') && t.endsWith('.offers'))
+      .toList();
+  if (offerTopics.isEmpty) return null;
+  final auth = ref.read(authServiceProvider);
+  final svc = RealtimeStreamService(
+    auth: auth,
+    token: token,
+    topics: offerTopics,
+  );
+  svc.start();
+  ref.onDispose(svc.dispose);
+  return svc;
+});
+
+/// Streams RideOffer payloads as they arrive over SSE. Use this to
+/// trigger the partner offer modal without polling latency.
+final incomingOfferPushProvider =
+    StreamProvider.autoDispose<RideOffer>((ref) async* {
+  final svc = await ref.watch(_realtimeSessionProvider.future);
+  if (svc == null) {
+    return;
+  }
+  await for (final frame in svc.events) {
+    if (frame.event != 'rider.ride.offered') continue;
+    try {
+      yield RideOffer.fromJson(frame.data);
+    } catch (_) {
+      // Malformed payload — skip. The polling provider will pick the
+      // offer up via the next REST refresh.
+      continue;
+    }
+  }
 });
 
 // ─── Partner location service ─────────────────────────────────────────
