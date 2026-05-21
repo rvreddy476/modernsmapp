@@ -108,6 +108,11 @@ func main() {
 	// out new offers to up to 5 nearby online partners per ready order.
 	go svc.StartDeliveryDispatchWorker(outboxCtx)
 
+	// E: fraud score worker. Runs every 6h, writes per-user signals
+	// (refund_abuse + coupon_burn) into food.fraud_scores so the
+	// admin queue can triage high-risk customers.
+	go svc.StartFraudScoreWorker(outboxCtx)
+
 	handler := foodhttp.New(svc).WithInternalKey(internalKey)
 
 	gin.SetMode(gin.ReleaseMode)

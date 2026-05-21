@@ -155,6 +155,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			admin.GET("/reports/refunds", h.AdminRefundsReport)
 			admin.GET("/reports/coupon-abuse", h.AdminCouponAbuseReport)
 			admin.GET("/reports/compliance", h.AdminComplianceReport)
+			admin.GET("/fraud/top", h.AdminTopFraudUsers)
 			admin.GET("/restaurants/pending", h.AdminPendingRestaurants)
 			admin.POST("/restaurants/:restaurantId/approve", h.AdminApproveRestaurant)
 			admin.POST("/restaurants/:restaurantId/reject", h.AdminRejectRestaurant)

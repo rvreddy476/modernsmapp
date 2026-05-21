@@ -1421,3 +1421,32 @@ CREATE INDEX IF NOT EXISTS ix_food_item_reviews_customer ON food.item_reviews(cu
 ALTER TABLE food.menu_items
     ADD COLUMN IF NOT EXISTS avg_rating  NUMERIC(3,2),
     ADD COLUMN IF NOT EXISTS rating_count INTEGER NOT NULL DEFAULT 0;
+
+-- ─── Wave E: fraud scores + finance settlements ───────────────────────
+--
+-- fraud_scores: rolling per-user fraud signal. The worker writes one
+-- row per (user_id, signal) and the admin queue reads aggregated.
+CREATE TABLE IF NOT EXISTS food.fraud_scores (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id     UUID NOT NULL,
+    signal      VARCHAR(60) NOT NULL,
+    score       NUMERIC(6,2) NOT NULL,
+    detail      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_food_fraud_user_signal ON food.fraud_scores(user_id, signal, computed_at DESC);
+CREATE INDEX IF NOT EXISTS ix_food_fraud_recent ON food.fraud_scores(computed_at DESC);
+
+-- settlement_files: ops-team export records (CSV in MinIO + audit row).
+CREATE TABLE IF NOT EXISTS food.settlement_files (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    period_start  DATE NOT NULL,
+    period_end    DATE NOT NULL,
+    kind          VARCHAR(32) NOT NULL CHECK (kind IN ('restaurant','delivery')),
+    file_url      TEXT NOT NULL,
+    row_count     INTEGER NOT NULL DEFAULT 0,
+    total_amount  NUMERIC(12,2) NOT NULL DEFAULT 0,
+    generated_by  UUID,
+    generated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_food_settlement_files_period ON food.settlement_files(period_start, period_end, kind);
