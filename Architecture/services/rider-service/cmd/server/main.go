@@ -168,6 +168,10 @@ func main() {
 	go dispatchConsumer.Start(dispatchCtx)
 	slog.Info("rider dispatch consumer started", "topic", kafkaTopic)
 
+	// C3: stale-GPS auto-offline worker. Pings every 30s and force-
+	// offlines partners whose last GPS update is older than 90s.
+	go riderSvc.StartStaleGPSWorker(dispatchCtx)
+
 	handler := riderhttp.New(riderSvc, internalKey)
 
 	gin.SetMode(gin.ReleaseMode)

@@ -604,6 +604,19 @@ CREATE INDEX IF NOT EXISTS idx_rider_offers_partner
 CREATE INDEX IF NOT EXISTS idx_rider_offers_expires
     ON rider_ride_offers(expires_at) WHERE status = 'sent';
 
+-- ─── C2: accept/reject reasons + no-show signals ──────────────────────
+ALTER TABLE rider_ride_offers
+    ADD COLUMN IF NOT EXISTS reject_reason VARCHAR(120);
+
+ALTER TABLE rider_rides
+    ADD COLUMN IF NOT EXISTS no_show_reported_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS no_show_by         UUID;
+
+ALTER TABLE rider_partners
+    ADD COLUMN IF NOT EXISTS reject_count_30d INTEGER NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS no_show_count_30d INTEGER NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS last_location_at  TIMESTAMPTZ;
+
 -- Live partner locations. The hot copy lives in Redis (keyed per city geohash);
 -- this table is the durable mirror used by the cold-path matcher fallback.
 CREATE TABLE IF NOT EXISTS rider_partner_locations (

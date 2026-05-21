@@ -47,7 +47,7 @@ func (s *Service) RejectOffer(ctx context.Context, partnerUserID, offerID uuid.U
 	if offer.PartnerID != partner.ID {
 		return fmt.Errorf("forbidden: offer not addressed to this partner")
 	}
-	if err := s.store.RejectOffer(ctx, offerID, partner.ID); err != nil {
+	if err := s.store.RejectOffer(ctx, offerID, partner.ID, reason); err != nil {
 		if errors.Is(err, store.ErrOfferAlreadyDecided) {
 			return fmt.Errorf("conflict: offer already decided")
 		}

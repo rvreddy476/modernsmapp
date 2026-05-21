@@ -190,20 +190,63 @@ func (s *Store) AcceptOfferTx(ctx context.Context, offerID, partnerID uuid.UUID)
 }
 
 // RejectOffer flips an offer to 'rejected'. Returns ErrOfferAlreadyDecided
-// when the row is not 'sent'.
-func (s *Store) RejectOffer(ctx context.Context, offerID, partnerID uuid.UUID) error {
-	const q = `
+// when the row is not 'sent'. reason is optional but recommended; the
+// admin dashboard uses it to flag patterns (too far, surge declined,
+// etc.). Also bumps the partner's reject_count_30d for the matcher's
+// quality signal.
+func (s *Store) RejectOffer(ctx context.Context, offerID, partnerID uuid.UUID, reason string) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `
         UPDATE rider_ride_offers
-        SET status = 'rejected', decided_at = NOW()
-        WHERE id = $1 AND partner_id = $2 AND status = 'sent'`
-	tag, err := s.db.Exec(ctx, q, offerID, partnerID)
+        SET status = 'rejected', decided_at = NOW(), reject_reason = NULLIF($3, '')
+        WHERE id = $1 AND partner_id = $2 AND status = 'sent'
+    `, offerID, partnerID, reason)
 	if err != nil {
 		return fmt.Errorf("reject offer: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrOfferAlreadyDecided
 	}
-	return nil
+	if _, err := tx.Exec(ctx, `
+        UPDATE rider_partners SET reject_count_30d = reject_count_30d + 1 WHERE id = $1
+    `, partnerID); err != nil {
+		return fmt.Errorf("bump reject count: %w", err)
+	}
+	return tx.Commit(ctx)
+}
+
+// MarkRideNoShow is called by the partner when the customer doesn't
+// appear at pickup after the configured grace window (typically 5 min).
+// It transitions the ride and bumps the matcher's no-show counters on
+// the customer side (in a future iteration this could also penalise
+// the customer's account).
+func (s *Store) MarkRideNoShow(ctx context.Context, rideID, partnerID uuid.UUID, reason string) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `
+		UPDATE rider_rides
+		SET status = 'cancelled',
+			no_show_reported_at = NOW(),
+			no_show_by = $2,
+			cancellation_reason = COALESCE(NULLIF($3, ''), 'customer_no_show')
+		WHERE id = $1
+		  AND partner_id = $2
+		  AND status IN ('partner_assigned','partner_arriving','partner_arrived')
+	`, rideID, partnerID, reason)
+	if err != nil {
+		return fmt.Errorf("mark no_show: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("ride not in a state allowing no_show")
+	}
+	return tx.Commit(ctx)
 }
 
 // ExpireStaleOffers flips every 'sent' offer past its expiry to 'expired'.
