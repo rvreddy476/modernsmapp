@@ -55,6 +55,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		rider.POST("/rides/:id/start", h.PostStartRide)
 		rider.POST("/rides/:id/complete", h.PostCompleteRide)
 		rider.POST("/rides/:id/no-show", h.PostMarkNoShow)
+		rider.POST("/safety/masked-call", h.PostInitiateMaskedCall)
 
 		// --- Partner ops (online/offline/location/dashboard) (S2) ---------
 		rider.POST("/partners/me/online", h.PostGoOnline)
@@ -131,6 +132,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 		admin.GET("/rides", h.AdminListRides)
 		admin.GET("/rides/live", h.AdminListLiveRides)
+		admin.GET("/safety/incidents/:id/alerts", h.AdminListSafetyContactAlerts)
 		admin.POST("/rides/:id/cancel", h.AdminCancelRide)
 
 		admin.GET("/complaints", h.AdminListComplaints)

@@ -617,6 +617,39 @@ ALTER TABLE rider_partners
     ADD COLUMN IF NOT EXISTS no_show_count_30d INTEGER NOT NULL DEFAULT 0,
     ADD COLUMN IF NOT EXISTS last_location_at  TIMESTAMPTZ;
 
+-- ─── C4: safety extensions ────────────────────────────────────────────
+--
+-- rider_masked_calls audits proxied calls so disputes can be replayed.
+-- The provider stub returns a fake DID; production wires Exotel /
+-- Knowlarity / Twilio Proxy via MASKED_CALL_PROVIDER env.
+CREATE TABLE IF NOT EXISTS rider_masked_calls (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    ride_id     UUID REFERENCES rider_rides(id) ON DELETE SET NULL,
+    caller_id   UUID NOT NULL,
+    callee_id   UUID NOT NULL,
+    proxy_did   TEXT NOT NULL,
+    started_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ended_at    TIMESTAMPTZ,
+    duration_s  INTEGER,
+    status      TEXT NOT NULL DEFAULT 'initiated'
+                CHECK (status IN ('initiated','connected','completed','failed'))
+);
+CREATE INDEX IF NOT EXISTS idx_rider_masked_calls_ride ON rider_masked_calls(ride_id, created_at DESC);
+
+-- rider_safety_contact_alerts records every trusted-contact dispatch
+-- (SMS / push / call) so an admin can audit who was notified for a SOS.
+CREATE TABLE IF NOT EXISTS rider_safety_contact_alerts (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    incident_id  UUID NOT NULL REFERENCES rider_safety_incidents(id) ON DELETE CASCADE,
+    contact_phone TEXT NOT NULL,
+    contact_name TEXT,
+    channel      TEXT NOT NULL CHECK (channel IN ('sms','push','call')),
+    result       TEXT NOT NULL CHECK (result IN ('sent','failed','queued')),
+    error        TEXT,
+    sent_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_safety_alerts_incident ON rider_safety_contact_alerts(incident_id);
+
 -- Live partner locations. The hot copy lives in Redis (keyed per city geohash);
 -- this table is the durable mirror used by the cold-path matcher fallback.
 CREATE TABLE IF NOT EXISTS rider_partner_locations (
