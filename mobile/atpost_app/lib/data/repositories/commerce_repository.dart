@@ -226,6 +226,14 @@ class CommerceRepository {
     required String paymentMethod,
     String? couponCode,
     String? idempotencyKey,
+    // Phase F4 mobile — optional B2B context. organizationId routes
+    // the order through the Phase 5 approval / credit-terms paths;
+    // PO / cost-center / invoice-email are stamped on the order for
+    // finance reconciliation downstream.
+    String? organizationId,
+    String? poNumber,
+    String? costCenter,
+    String? invoiceEmail,
   }) async {
     final res = await _api.post(
       '/v1/commerce/orders/checkout',
@@ -235,6 +243,13 @@ class CommerceRepository {
         if (couponCode != null && couponCode.isNotEmpty)
           'coupon_code': couponCode,
         if (idempotencyKey != null) 'idempotency_key': idempotencyKey,
+        if (organizationId != null && organizationId.isNotEmpty)
+          'organization_id': organizationId,
+        if (poNumber != null && poNumber.isNotEmpty) 'po_number': poNumber,
+        if (costCenter != null && costCenter.isNotEmpty)
+          'cost_center': costCenter,
+        if (invoiceEmail != null && invoiceEmail.isNotEmpty)
+          'invoice_email': invoiceEmail,
       },
     );
     return Order.fromJson(Map<String, dynamic>.from(res.data['data'] as Map));

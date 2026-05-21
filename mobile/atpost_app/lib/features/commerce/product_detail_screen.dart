@@ -15,6 +15,7 @@ import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/models/commerce.dart';
+import 'package:atpost_app/data/repositories/b2b_repository.dart';
 import 'package:atpost_app/features/commerce/widgets/wishlist_button.dart';
 import 'package:atpost_app/providers/commerce_providers.dart';
 import 'package:flutter/material.dart';
@@ -303,6 +304,30 @@ class _Body extends StatelessWidget {
             selected: selectedVariant,
             onSelect: onVariantSelect,
           ),
+        const SizedBox(height: AppSpacing.xxl),
+        // Phase F4 mobile — quantity discount ladder. Renders only
+        // when the selected variant carries tiers; B2C shoppers on a
+        // variant without tiers see nothing here.
+        if (selectedVariant != null)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: AppSpacing.l),
+            child: _PriceTierLadder(
+              variantId: selectedVariant!.id,
+              fallbackPrice: selectedVariant!.sellingPrice,
+            ),
+          ),
+        const SizedBox(height: AppSpacing.xxl),
+        // RFQ — B2B buyers can request a custom quote from this seller
+        // when their cart doesn't fit the published tiers. Visible to
+        // every authenticated buyer; the backend gates org-context
+        // permissions when the RFQ is accepted into an order.
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: AppSpacing.l),
+          child: _RFQRequestRow(
+            sellerId: product.sellerId,
+            variant: selectedVariant ?? product.defaultVariant,
+          ),
+        ),
         const SizedBox(height: AppSpacing.xxl),
         // Pincode.
         Padding(
@@ -825,6 +850,119 @@ class _StickyActionsState extends ConsumerState<_StickyActions> {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+// Phase F4 mobile — quantity discount ladder. Watches the variant
+// price-tier provider (auto-disposes when the PDP scrolls away) and
+// renders one row per tier. Renders nothing when the variant has no
+// ladder so B2C buyers see no extra UI for products without tiers.
+class _PriceTierLadder extends ConsumerWidget {
+  const _PriceTierLadder({
+    required this.variantId,
+    required this.fallbackPrice,
+  });
+
+  final String variantId;
+  final double fallbackPrice;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final tiersAsync = ref.watch(variantPriceTiersProvider(variantId));
+    return tiersAsync.when(
+      loading: () => const SizedBox.shrink(),
+      error: (_, _) => const SizedBox.shrink(),
+      data: (tiers) {
+        if (tiers.isEmpty) return const SizedBox.shrink();
+        return Container(
+          padding: const EdgeInsets.all(AppSpacing.l),
+          decoration: BoxDecoration(
+            color: AppColors.bgCard,
+            borderRadius: BorderRadius.circular(AppSpacing.radiusMedium),
+            border: Border.all(color: AppColors.borderSubtle),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Quantity discounts', style: AppTextStyles.h3),
+              const SizedBox(height: AppSpacing.xs),
+              Text(
+                'Save more when you buy more.',
+                style: AppTextStyles.bodySmall,
+              ),
+              const SizedBox(height: AppSpacing.s),
+              for (final t in tiers)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        t.maxQty == null
+                            ? '${t.minQty}+ units'
+                            : '${t.minQty}–${t.maxQty} units',
+                        style: AppTextStyles.body,
+                      ),
+                      Row(
+                        children: [
+                          if (t.price < fallbackPrice)
+                            Padding(
+                              padding: const EdgeInsets.only(
+                                right: AppSpacing.s,
+                              ),
+                              child: Text(
+                                '${(((fallbackPrice - t.price) / fallbackPrice) * 100).toStringAsFixed(0)}% off',
+                                style: AppTextStyles.bodySmall.copyWith(
+                                  color: AppColors.postbookPrimary,
+                                ),
+                              ),
+                            ),
+                          Text(
+                            '₹${t.price.toStringAsFixed(0)}',
+                            style: AppTextStyles.h3,
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+// Phase F4 mobile — RFQ "request a custom quote" entry point. Lives
+// on the PDP just under the discount ladder so B2B buyers see it the
+// moment volume pricing becomes interesting. Routes to the
+// /rfq/new screen pre-populated with this seller + variant.
+class _RFQRequestRow extends StatelessWidget {
+  const _RFQRequestRow({required this.sellerId, this.variant});
+
+  final String sellerId;
+  final ProductVariant? variant;
+
+  @override
+  Widget build(BuildContext context) {
+    return OutlinedButton.icon(
+      onPressed: variant == null
+          ? null
+          : () {
+              GoRouter.of(context).push(
+                '/rfq/new?seller_id=$sellerId&variant_id=${variant!.id}',
+              );
+            },
+      icon: const Icon(Icons.request_quote_outlined, size: 18),
+      label: const Text('Request a custom quote'),
+      style: OutlinedButton.styleFrom(
+        foregroundColor: AppColors.postbookPrimary,
+        side: const BorderSide(color: AppColors.borderSubtle),
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        minimumSize: const Size.fromHeight(44),
       ),
     );
   }

@@ -10,7 +10,9 @@
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_app/data/models/b2b.dart';
 import 'package:atpost_app/data/models/commerce.dart';
+import 'package:atpost_app/data/repositories/b2b_repository.dart';
 import 'package:atpost_app/data/repositories/commerce_repository.dart';
 import 'package:atpost_app/providers/commerce_providers.dart';
 import 'package:atpost_app/services/commerce_telemetry.dart';
@@ -32,6 +34,23 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
   Address? _address;
   String _paymentMethod = 'upi';
   bool _placing = false;
+
+  // Phase F4 mobile — B2B context. Null _selectedOrg means a retail
+  // checkout; selecting an org unlocks PO / cost-center / invoice-
+  // email fields + the "Pay on invoice (Net N)" payment method when
+  // the org has credit_terms_days > 0.
+  Organization? _selectedOrg;
+  final _poController = TextEditingController();
+  final _costCenterController = TextEditingController();
+  final _invoiceEmailController = TextEditingController();
+
+  @override
+  void dispose() {
+    _poController.dispose();
+    _costCenterController.dispose();
+    _invoiceEmailController.dispose();
+    super.dispose();
+  }
 
   static const _methods = <_PaymentOption>[
     _PaymentOption(
@@ -131,6 +150,28 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
                   }
                 },
               ),
+              // Phase F4 mobile — B2B context. Only renders when the
+              // buyer belongs to at least one organization; pure retail
+              // buyers see the same checkout they always have.
+              const SizedBox(height: AppSpacing.xxl),
+              _B2BContextCard(
+                selected: _selectedOrg,
+                poController: _poController,
+                costCenterController: _costCenterController,
+                invoiceEmailController: _invoiceEmailController,
+                onOrgChanged: (org) {
+                  setState(() {
+                    _selectedOrg = org;
+                    // If the buyer switches away from a credit-eligible
+                    // org, fall the payment method back to UPI.
+                    if (_paymentMethod == 'credit' &&
+                        (org == null || !org.hasCreditTerms)) {
+                      _paymentMethod = 'upi';
+                    }
+                  });
+                },
+                cartGrandTotal: cart.grandTotal,
+              ),
               const SizedBox(height: AppSpacing.xxl),
               Text('Items', style: AppTextStyles.h3),
               const SizedBox(height: AppSpacing.s),
@@ -163,6 +204,22 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
                     'Cash on delivery is unavailable for orders over ₹5,000.',
                     style: AppTextStyles.bodySmall,
                   ),
+                ),
+              // Phase F4 mobile — Net-N invoice payment surfaces only
+              // when the buyer has picked an org with credit terms
+              // configured. Backend confirms the order immediately
+              // and stamps payment_due_date.
+              if (_selectedOrg?.hasCreditTerms ?? false)
+                _MethodTile(
+                  option: _PaymentOption(
+                    id: 'credit',
+                    label: 'Pay on invoice',
+                    subtitle:
+                        'Net ${_selectedOrg!.creditTermsDays} days — billed to ${_selectedOrg!.name}',
+                    icon: Icons.receipt_long_outlined,
+                  ),
+                  selected: _paymentMethod == 'credit',
+                  onSelect: () => setState(() => _paymentMethod = 'credit'),
                 ),
               const SizedBox(height: AppSpacing.xxl),
               _SummaryBlock(cart: cart),
@@ -220,7 +277,45 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
         paymentMethod: _paymentMethod,
         idempotencyKey:
             'mobile_${DateTime.now().millisecondsSinceEpoch}_${addr.id}',
+        // Phase F4 — B2B context is optional. The org selector only
+        // renders when the buyer belongs to ≥1 org, so retail
+        // checkouts pass nulls and the backend treats the order as
+        // pure B2C.
+        organizationId: _selectedOrg?.id,
+        poNumber: _poController.text.trim().isEmpty
+            ? null
+            : _poController.text.trim(),
+        costCenter: _costCenterController.text.trim().isEmpty
+            ? null
+            : _costCenterController.text.trim(),
+        invoiceEmail: _invoiceEmailController.text.trim().isEmpty
+            ? null
+            : _invoiceEmailController.text.trim(),
       );
+
+      // Phase F4 — B2B-aware short-circuits:
+      //   * awaiting_approval: order is parked until an org approver
+      //     signs off. No gateway call; the seller's approver is
+      //     notified server-side. Send the buyer to the order page
+      //     where they can see the status pill.
+      //   * credit: backend already confirmed the order with a
+      //     payment_due_date; invoice will be paid Net-N. No gateway.
+      if (order.awaitingApproval) {
+        ref.invalidate(cartProvider);
+        if (!mounted) return;
+        GoRouter.of(context).pushReplacement(
+          '/commerce/orders/${order.id}?placed=1',
+        );
+        return;
+      }
+      if (_paymentMethod == 'credit') {
+        ref.invalidate(cartProvider);
+        if (!mounted) return;
+        GoRouter.of(context).pushReplacement(
+          '/commerce/orders/${order.id}?placed=1',
+        );
+        return;
+      }
 
       // Prepaid → real Razorpay (or the stub if dev + opted in). COD
       // skips the gateway. Phase 1.4: replaces the stub-only flow with
@@ -559,6 +654,174 @@ class _SummaryBlock extends StatelessWidget {
           Text(label, style: style),
           Text('Rs. ${value.toStringAsFixed(0)}', style: style),
         ],
+      ),
+    );
+  }
+}
+
+// Phase F4 mobile — Buying-for-org context. Hides itself entirely when
+// the user belongs to no organizations (the most common case — pure
+// B2C buyers should never see this card).
+class _B2BContextCard extends ConsumerWidget {
+  const _B2BContextCard({
+    required this.selected,
+    required this.poController,
+    required this.costCenterController,
+    required this.invoiceEmailController,
+    required this.onOrgChanged,
+    required this.cartGrandTotal,
+  });
+
+  final Organization? selected;
+  final TextEditingController poController;
+  final TextEditingController costCenterController;
+  final TextEditingController invoiceEmailController;
+  final ValueChanged<Organization?> onOrgChanged;
+  final double cartGrandTotal;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final orgsAsync = ref.watch(myOrganizationsProvider);
+    return orgsAsync.when(
+      // Network blip = render nothing rather than block checkout.
+      // Buyer can still complete a retail checkout while we retry in
+      // the background.
+      loading: () => const SizedBox.shrink(),
+      error: (_, _) => const SizedBox.shrink(),
+      data: (orgs) {
+        if (orgs.isEmpty) return const SizedBox.shrink();
+        // Approval threshold warning is computed against the live cart
+        // total — switching orgs while editing the cart re-evaluates.
+        final needsApproval = selected != null &&
+            selected!.approvalThreshold != null &&
+            cartGrandTotal >= selected!.approvalThreshold!;
+        return Container(
+          padding: const EdgeInsets.all(AppSpacing.l),
+          decoration: BoxDecoration(
+            color: AppColors.bgCard,
+            borderRadius: BorderRadius.circular(AppSpacing.radiusMedium),
+            border: Border.all(color: AppColors.borderSubtle),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Buying for', style: AppTextStyles.h3),
+              const SizedBox(height: AppSpacing.xs),
+              Text(
+                'Bill the company, attach a PO / cost center, or pay on invoice.',
+                style: AppTextStyles.bodySmall,
+              ),
+              const SizedBox(height: AppSpacing.s),
+              DropdownButtonFormField<String>(
+                initialValue: selected?.id ?? '',
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+                items: [
+                  const DropdownMenuItem(
+                    value: '',
+                    child: Text('Personal (no organization)'),
+                  ),
+                  for (final o in orgs)
+                    DropdownMenuItem(
+                      value: o.id,
+                      child: Text(
+                        o.gstin != null && o.gstin!.isNotEmpty
+                            ? '${o.name} · GSTIN ${o.gstin}'
+                            : o.name,
+                      ),
+                    ),
+                ],
+                onChanged: (id) {
+                  if (id == null || id.isEmpty) {
+                    onOrgChanged(null);
+                    return;
+                  }
+                  for (final o in orgs) {
+                    if (o.id == id) {
+                      onOrgChanged(o);
+                      return;
+                    }
+                  }
+                },
+              ),
+              if (selected != null) ...[
+                const SizedBox(height: AppSpacing.l),
+                _B2BField(
+                  controller: poController,
+                  label: 'PO Number',
+                  hint: 'Purchase order ref',
+                ),
+                const SizedBox(height: AppSpacing.s),
+                _B2BField(
+                  controller: costCenterController,
+                  label: 'Cost Center',
+                  hint: 'Department or project',
+                ),
+                const SizedBox(height: AppSpacing.s),
+                _B2BField(
+                  controller: invoiceEmailController,
+                  label: 'Invoice Email',
+                  hint: selected!.billingEmail ?? 'finance@company.com',
+                  keyboardType: TextInputType.emailAddress,
+                ),
+                if (needsApproval) ...[
+                  const SizedBox(height: AppSpacing.s),
+                  Container(
+                    padding: const EdgeInsets.all(AppSpacing.s),
+                    decoration: BoxDecoration(
+                      color: Colors.amber.withValues(alpha: 0.15),
+                      borderRadius:
+                          BorderRadius.circular(AppSpacing.radiusSmall),
+                    ),
+                    child: Text(
+                      '⚠ Orders ≥ ₹${selected!.approvalThreshold!.toStringAsFixed(0)} require an approver sign-off before payment.',
+                      style: AppTextStyles.bodySmall,
+                    ),
+                  ),
+                ],
+                if (selected!.hasCreditTerms) ...[
+                  const SizedBox(height: AppSpacing.s),
+                  Text(
+                    'Credit terms: Net ${selected!.creditTermsDays} days available.',
+                    style: AppTextStyles.bodySmall.copyWith(
+                      color: AppColors.postbookPrimary,
+                    ),
+                  ),
+                ],
+              ],
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _B2BField extends StatelessWidget {
+  const _B2BField({
+    required this.controller,
+    required this.label,
+    this.hint,
+    this.keyboardType,
+  });
+
+  final TextEditingController controller;
+  final String label;
+  final String? hint;
+  final TextInputType? keyboardType;
+
+  @override
+  Widget build(BuildContext context) {
+    return TextField(
+      controller: controller,
+      keyboardType: keyboardType,
+      decoration: InputDecoration(
+        labelText: label,
+        hintText: hint,
+        border: const OutlineInputBorder(),
+        isDense: true,
       ),
     );
   }

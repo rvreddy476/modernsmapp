@@ -871,6 +871,13 @@ class Order {
     this.shippedAt,
     this.deliveredAt,
     this.shipments,
+    // Phase F4 mobile — Phase 5 / F2 B2B fields. Null on retail orders.
+    this.organizationId,
+    this.poNumber,
+    this.costCenter,
+    this.approvalStatus,
+    this.creditTermsDays,
+    this.paymentDueDate,
   });
 
   final String id;
@@ -883,7 +890,7 @@ class Order {
   final double amountDiscount;
   final double amountGrand;
   final String currency;
-  final String? paymentMethod; // upi|card|wallet|cod|netbanking
+  final String? paymentMethod; // upi|card|wallet|cod|netbanking|credit
   final String paymentStatus; // pending|paid|failed|refunded
   final Address? shippingAddress;
   final DateTime placedAt;
@@ -891,6 +898,16 @@ class Order {
   final DateTime? shippedAt;
   final DateTime? deliveredAt;
   final List<Shipment>? shipments;
+  // ─── Phase F4 — B2B fields ───────────────────────────────────────
+  final String? organizationId;
+  final String? poNumber;
+  final String? costCenter;
+  final String? approvalStatus; // not_required | pending | approved | rejected
+  final int? creditTermsDays;
+  final DateTime? paymentDueDate;
+
+  bool get awaitingApproval => approvalStatus == 'pending';
+  bool get isCreditOrder => (creditTermsDays ?? 0) > 0;
 
   factory Order.fromJson(Map<String, dynamic> json) {
     // Backend wraps `GET /v1/commerce/orders/:id/items` as `{order, items}`.
@@ -939,6 +956,16 @@ class Order {
               .map((m) => Shipment.fromJson(Map<String, dynamic>.from(m)))
               .toList(growable: false)
           : null,
+      // Phase F4 — B2B fields. Nullable so retail responses without
+      // these columns still parse cleanly.
+      organizationId: _toStrOrNull(o['organization_id']),
+      poNumber: _toStrOrNull(o['po_number']),
+      costCenter: _toStrOrNull(o['cost_center']),
+      approvalStatus: _toStrOrNull(o['approval_status']),
+      creditTermsDays: (o['credit_terms_days'] is num)
+          ? (o['credit_terms_days'] as num).toInt()
+          : null,
+      paymentDueDate: _toDateOrNull(o['payment_due_date']),
     );
   }
 }

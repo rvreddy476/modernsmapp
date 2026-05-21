@@ -9,6 +9,9 @@ import 'package:atpost_app/features/commerce/address_form_screen.dart';
 import 'package:atpost_app/features/commerce/cart_screen.dart';
 import 'package:atpost_app/features/commerce/checkout_screen.dart';
 import 'package:atpost_app/features/commerce/commerce_home_screen.dart';
+import 'package:atpost_app/features/commerce/rfq/rfq_detail_screen.dart';
+import 'package:atpost_app/features/commerce/rfq/rfq_list_screen.dart';
+import 'package:atpost_app/features/commerce/rfq/rfq_new_screen.dart';
 import 'package:atpost_app/features/commerce/commerce_order_detail_screen.dart';
 import 'package:atpost_app/features/commerce/my_orders_screen.dart';
 import 'package:atpost_app/features/commerce/my_returns_screen.dart';
@@ -465,6 +468,28 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             path: '/commerce/search',
             builder: (context, state) => SearchScreen(
               initialQuery: state.uri.queryParameters['q'],
+            ),
+          ),
+          // Phase F4 mobile — RFQ buyer flow.
+          GoRoute(
+            path: '/rfq',
+            builder: (_, _) => const RFQListScreen(),
+          ),
+          GoRoute(
+            path: '/rfq/new',
+            builder: (context, state) {
+              final sellerId = state.uri.queryParameters['seller_id'] ?? '';
+              final variantId = state.uri.queryParameters['variant_id'] ?? '';
+              return RFQNewScreen(
+                sellerId: sellerId,
+                variantId: variantId,
+              );
+            },
+          ),
+          GoRoute(
+            path: '/rfq/:id',
+            builder: (context, state) => RFQDetailScreen(
+              rfqId: state.pathParameters['id']!,
             ),
           ),
           GoRoute(

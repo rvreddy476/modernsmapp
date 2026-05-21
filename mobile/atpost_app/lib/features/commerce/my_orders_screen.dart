@@ -303,7 +303,14 @@ class _StatusPill extends StatelessWidget {
         break;
       case 'shipped':
       case 'out_for_delivery':
+      case 'in_transit':
         color = AppColors.posttubePrimary;
+        break;
+      // Phase F4 — B2B-specific states. awaiting_approval is the
+      // parked-pending-approver state from Phase 5; tinted amber
+      // so buyers know it's expected, not stuck.
+      case 'awaiting_approval':
+        color = AppColors.statusWarning;
         break;
       default:
         color = AppColors.statusWarning;
