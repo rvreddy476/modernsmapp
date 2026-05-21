@@ -1284,3 +1284,32 @@ CREATE TABLE IF NOT EXISTS food.menu_item_reports (
 );
 CREATE INDEX IF NOT EXISTS ix_food_item_reports_item ON food.menu_item_reports(menu_item_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS ix_food_item_reports_pending ON food.menu_item_reports(created_at DESC) WHERE resolved_at IS NULL;
+
+-- ─── B4: delivery offer fan-out ───────────────────────────────────────
+--
+-- When an order goes DELIVERY_ASSIGNING the dispatch worker mints one
+-- food.delivery_offers row per nearby online partner. First to accept
+-- wins (a tx promotes the offer to the existing delivery_assignments
+-- row); the rest are auto-rejected. Offers expire after 25 seconds.
+DO $$ BEGIN
+    CREATE TYPE food.delivery_offer_status AS ENUM ('pending','accepted','rejected','expired','superseded');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+CREATE TABLE IF NOT EXISTS food.delivery_offers (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    order_id            UUID NOT NULL REFERENCES food.orders(id) ON DELETE CASCADE,
+    delivery_partner_id UUID NOT NULL REFERENCES food.delivery_partners(id) ON DELETE CASCADE,
+    status              food.delivery_offer_status NOT NULL DEFAULT 'pending',
+    distance_km         NUMERIC(8,2),
+    expires_at          TIMESTAMPTZ NOT NULL,
+    responded_at        TIMESTAMPTZ,
+    reject_reason       VARCHAR(120),
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(order_id, delivery_partner_id)
+);
+CREATE INDEX IF NOT EXISTS ix_food_offers_partner_pending
+    ON food.delivery_offers(delivery_partner_id, expires_at)
+    WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS ix_food_offers_order ON food.delivery_offers(order_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS ix_food_offers_expiry ON food.delivery_offers(expires_at) WHERE status = 'pending';

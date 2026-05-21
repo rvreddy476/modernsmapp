@@ -104,6 +104,10 @@ func main() {
 	// RESTAURANT_REJECTED so the customer is refunded promptly.
 	go svc.StartSLAAutoRejectWorker(outboxCtx)
 
+	// B4: delivery offer dispatch worker. Expires stale offers + fans
+	// out new offers to up to 5 nearby online partners per ready order.
+	go svc.StartDeliveryDispatchWorker(outboxCtx)
+
 	handler := foodhttp.New(svc).WithInternalKey(internalKey)
 
 	gin.SetMode(gin.ReleaseMode)

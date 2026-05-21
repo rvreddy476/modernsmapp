@@ -71,6 +71,13 @@ type Store interface {
 	ReportMenuItem(ctx context.Context, reporterID, itemID uuid.UUID, category, detail string) (*postgres.MenuItemReport, error)
 	ListPendingModeration(ctx context.Context, limit int) ([]postgres.PendingModerationItem, error)
 	ModerateMenuItem(ctx context.Context, adminID, itemID uuid.UUID, status, reason string) error
+	ListUnassignedReadyOrders(ctx context.Context, batch int) ([]uuid.UUID, error)
+	ListEligibleDeliveryPartners(ctx context.Context, restaurantCity string, limit int) ([]uuid.UUID, error)
+	CreateDeliveryOffer(ctx context.Context, orderID, partnerID uuid.UUID, expiresAt time.Time) (*postgres.DeliveryOffer, error)
+	ListMyPendingDeliveryOffers(ctx context.Context, userID uuid.UUID) ([]postgres.DeliveryOffer, error)
+	AcceptDeliveryOfferTx(ctx context.Context, userID, offerID uuid.UUID) (*postgres.DeliveryOffer, error)
+	RejectDeliveryOffer(ctx context.Context, userID, offerID uuid.UUID, reason string) error
+	ExpireDeliveryOffers(ctx context.Context) (int, error)
 	PartnerRestaurantSettlements(ctx context.Context, ownerID, restaurantID uuid.UUID) ([]map[string]any, error)
 	PartnerRestaurantSummary(ctx context.Context, ownerID, restaurantID uuid.UUID) (map[string]any, error)
 	UpsertDeliveryPartner(ctx context.Context, userID uuid.UUID, in postgres.DeliveryPartnerInput) (*postgres.DeliveryPartner, error)

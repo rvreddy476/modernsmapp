@@ -100,6 +100,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			partner.POST("/orders/:orderId/mark-ready", h.PartnerMarkReady)
 		}
 
+		deliveryOffers := v1.Group("/delivery/offers", h.requireAuthenticated())
+		{
+			deliveryOffers.GET("/me", h.ListMyDeliveryOffers)
+			deliveryOffers.POST("/:offerId/accept", h.AcceptDeliveryOffer)
+			deliveryOffers.POST("/:offerId/reject", h.RejectDeliveryOffer)
+		}
+
 		delivery := v1.Group("/delivery", h.requireAuthenticated())
 		{
 			delivery.POST("/profile", h.UpsertDeliveryPartner)
