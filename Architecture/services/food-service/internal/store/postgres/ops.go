@@ -858,6 +858,27 @@ func (s *Store) AdminSetRestaurantStatus(ctx context.Context, adminID, restauran
 		return err
 	}
 	defer tx.Rollback(ctx)
+	// P0.6 — FSSAI gate. A restaurant cannot be moved to ACTIVE unless
+	// it has an APPROVED FSSAI document that has not yet expired.
+	// Document types are matched case-insensitively against `fssai`
+	// because the upload UI lets sellers free-text the type.
+	if status == "ACTIVE" {
+		var ok bool
+		if err := tx.QueryRow(ctx, `
+			SELECT EXISTS(
+				SELECT 1 FROM food.restaurant_documents
+				WHERE restaurant_id = $1
+				  AND lower(document_type) LIKE '%fssai%'
+				  AND status = 'APPROVED'
+				  AND (expires_at IS NULL OR expires_at > NOW())
+			)
+		`, restaurantID).Scan(&ok); err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("fssai compliance: restaurant requires an approved, non-expired FSSAI document before going live")
+		}
+	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE food.restaurants
 		SET status = $2::food.restaurant_status,

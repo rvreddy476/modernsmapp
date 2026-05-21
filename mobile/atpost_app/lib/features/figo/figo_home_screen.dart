@@ -29,6 +29,7 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
 
   Future<_FigoSnapshot> _load() async {
     final api = ref.read(apiClientProvider);
+    // Customer-facing data — always loaded.
     final home = await _safeLoad<_FigoHome>(() async {
       final data = _responseData((await api.get('/v1/food/home')).data);
       return _FigoHome.fromJson(data);
@@ -45,13 +46,6 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
       final data = _responseData((await api.get('/v1/food/addresses')).data);
       return _items(data).map(_FigoAddress.fromJson).toList();
     }, fallback: const []);
-    // Phase 2 §D4: the food UI no longer fetches or displays a wallet
-    // balance. The previous code was reading the creator-earnings
-    // ledger (/v1/monetization/wallet, now /creator-ledger) and
-    // labelling it "Wallet balance" — a real product bug. The AtPost
-    // consumer wallet is shipping in wallet-service in the same
-    // Phase 2 sprint; until it lands, we just show "Wallet coming soon"
-    // in the UI and hardcode the local balance to 0.
     const double walletBalance = 0;
     final tracking = await _safeLoad<_OrderTracking?>(() async {
       if (orders.isEmpty) return null;
@@ -60,65 +54,83 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
       );
       return _OrderTracking.fromJson(data);
     }, fallback: null);
-    final partnerRestaurants = await _safeLoad<List<_PartnerRestaurant>>(
-      () async {
-        final data = _responseData(
-          (await api.get('/v1/food/partner/restaurants')).data,
-        );
-        return _items(data).map(_PartnerRestaurant.fromJson).toList();
-      },
-      fallback: const [],
-    );
-    final delivery = await _safeLoad<_DeliveryWorkspace>(() async {
-      final profileData = _responseData(
-        (await api.get('/v1/food/delivery/profile')).data,
-      );
-      final assignmentData = _responseData(
-        (await api.get('/v1/food/delivery/assignments/current')).data,
-      );
-      final earningsData = _responseData(
-        (await api.get('/v1/food/delivery/earnings')).data,
-      );
-      final assignment = _DeliveryAssignment.fromJson(assignmentData);
-      final trackingData = await _safeLoad<_AssignmentTracking?>(() async {
-        final data = _responseData(
-          (await api.get(
-            '/v1/food/delivery/assignments/${assignment.id}/tracking',
-          )).data,
-        );
-        return _AssignmentTracking.fromJson(data);
-      }, fallback: null);
-      return _DeliveryWorkspace(
-        profile: _DeliveryProfile.fromJson(profileData),
-        currentAssignment: assignment,
-        earnings: _DeliveryEarnings.fromJson(earningsData),
-        tracking: trackingData,
-      );
-    }, fallback: const _DeliveryWorkspace());
-    final admin = await _safeLoad<_AdminWorkspace>(() async {
-      final dashboardData = _responseData(
-        (await api.get('/v1/food/admin/dashboard')).data,
-      );
-      final ordersData = _responseData(
-        (await api.get('/v1/food/admin/orders')).data,
-      );
-      final settlementsData = _responseData(
-        (await api.get('/v1/food/admin/settlements/delivery-partners')).data,
-      );
-      final restaurantSettlementsData = _responseData(
-        (await api.get('/v1/food/admin/settlements/restaurants')).data,
-      );
-      final auditData = _responseData(
-        (await api.get('/v1/food/admin/audit-logs')).data,
-      );
-      return _AdminWorkspace(
-        dashboard: _AdminDashboard.fromJson(dashboardData),
-        orders: _items(ordersData).map(_FigoOrder.fromJson).toList(),
-        deliverySettlements: _items(settlementsData).length,
-        restaurantSettlements: _items(restaurantSettlementsData).length,
-        auditLogs: _items(auditData).length,
-      );
-    }, fallback: const _AdminWorkspace());
+
+    // Role-gated data — only fetched when the matching workspace is
+    // open. P0.5: a customer must never hit /v1/food/admin/* or
+    // /v1/food/partner/* or /v1/food/delivery/*. Those endpoints are
+    // internal-key-gated server-side and were producing 403s under a
+    // _safeLoad swallow; worse, they were leaking the customer's
+    // X-User-Id at endpoints they have no business calling.
+    final partnerRestaurants = _role != _FigoRole.restaurant
+        ? const <_PartnerRestaurant>[]
+        : await _safeLoad<List<_PartnerRestaurant>>(
+            () async {
+              final data = _responseData(
+                (await api.get('/v1/food/partner/restaurants')).data,
+              );
+              return _items(data).map(_PartnerRestaurant.fromJson).toList();
+            },
+            fallback: const [],
+          );
+    final delivery = _role != _FigoRole.delivery
+        ? const _DeliveryWorkspace()
+        : await _safeLoad<_DeliveryWorkspace>(() async {
+            final profileData = _responseData(
+              (await api.get('/v1/food/delivery/profile')).data,
+            );
+            final assignmentData = _responseData(
+              (await api.get('/v1/food/delivery/assignments/current')).data,
+            );
+            final earningsData = _responseData(
+              (await api.get('/v1/food/delivery/earnings')).data,
+            );
+            final assignment = _DeliveryAssignment.fromJson(assignmentData);
+            final trackingData = await _safeLoad<_AssignmentTracking?>(
+              () async {
+                final data = _responseData(
+                  (await api.get(
+                    '/v1/food/delivery/assignments/${assignment.id}/tracking',
+                  )).data,
+                );
+                return _AssignmentTracking.fromJson(data);
+              },
+              fallback: null,
+            );
+            return _DeliveryWorkspace(
+              profile: _DeliveryProfile.fromJson(profileData),
+              currentAssignment: assignment,
+              earnings: _DeliveryEarnings.fromJson(earningsData),
+              tracking: trackingData,
+            );
+          }, fallback: const _DeliveryWorkspace());
+    final admin = _role != _FigoRole.admin
+        ? const _AdminWorkspace()
+        : await _safeLoad<_AdminWorkspace>(() async {
+            final dashboardData = _responseData(
+              (await api.get('/v1/food/admin/dashboard')).data,
+            );
+            final ordersData = _responseData(
+              (await api.get('/v1/food/admin/orders')).data,
+            );
+            final settlementsData = _responseData(
+              (await api.get(
+                '/v1/food/admin/settlements/delivery-partners',
+              )).data,
+            );
+            final restaurantSettlementsData = _responseData(
+              (await api.get('/v1/food/admin/settlements/restaurants')).data,
+            );
+            final auditData = _responseData(
+              (await api.get('/v1/food/admin/audit-logs')).data,
+            );
+            return _AdminWorkspace(
+              dashboard: _AdminDashboard.fromJson(dashboardData),
+              orders: _items(ordersData).map(_FigoOrder.fromJson).toList(),
+              deliverySettlements: _items(settlementsData).length,
+              restaurantSettlements: _items(restaurantSettlementsData).length,
+              auditLogs: _items(auditData).length,
+            );
+          }, fallback: const _AdminWorkspace());
     return _FigoSnapshot(
       home: home,
       cart: cart,
@@ -362,7 +374,15 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
                 const SizedBox(height: 18),
                 _RoleSelector(
                   selected: _role,
-                  onSelected: (role) => setState(() => _role = role),
+                  onSelected: (role) {
+                    if (_role == role) return;
+                    setState(() {
+                      _role = role;
+                      // Reload so the role-gated fetches in `_load`
+                      // actually run for the newly selected workspace.
+                      _snapshotFuture = _load();
+                    });
+                  },
                 ),
                 const SizedBox(height: 18),
                 _buildRolePanel(data),

@@ -34,19 +34,39 @@ func (s *Service) GoOnline(ctx context.Context, partnerUserID uuid.UUID) error {
 	if partner.KYCStatus != "approved" {
 		return fmt.Errorf("forbidden: kyc not approved")
 	}
+	// P0.6 — block go-online when any APPROVED KYC document has lapsed.
+	// The partner must re-upload (or admin must re-verify) the expired
+	// item before they can resume taking rides.
+	expiredPartnerDocs, err := s.store.CountExpiredApprovedPartnerDocs(ctx, partner.ID)
+	if err != nil {
+		return fmt.Errorf("check expired partner docs: %w", err)
+	}
+	if expiredPartnerDocs > 0 {
+		return fmt.Errorf("forbidden: %d kyc document(s) expired — please re-upload", expiredPartnerDocs)
+	}
 	vehicles, err := s.store.ListVehiclesByPartner(ctx, partner.ID)
 	if err != nil {
 		return err
 	}
-	hasApprovedVehicle := false
-	for _, v := range vehicles {
+	var approvedVehicle *store.Vehicle
+	for i, v := range vehicles {
 		if v.Status == "approved" && v.IsActive {
-			hasApprovedVehicle = true
+			approvedVehicle = &vehicles[i]
 			break
 		}
 	}
-	if !hasApprovedVehicle {
+	if approvedVehicle == nil {
 		return fmt.Errorf("forbidden: no approved vehicle")
+	}
+	// Same expiry gate applies to vehicle paperwork (RC, insurance,
+	// permit, PUC). Without this, an unpermitted vehicle stays
+	// matchable until an admin notices.
+	expiredVehicleDocs, err := s.store.CountExpiredApprovedVehicleDocs(ctx, approvedVehicle.ID)
+	if err != nil {
+		return fmt.Errorf("check expired vehicle docs: %w", err)
+	}
+	if expiredVehicleDocs > 0 {
+		return fmt.Errorf("forbidden: %d vehicle document(s) expired — please re-upload", expiredVehicleDocs)
 	}
 	sub, err := s.store.GetActiveSubscription(ctx, partner.ID)
 	if err != nil {

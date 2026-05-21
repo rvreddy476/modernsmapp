@@ -1152,3 +1152,24 @@ ON CONFLICT (code) DO NOTHING;
 -- 8. Insert admin_audit_logs for approval, rejection, refund, settlement, and suspension actions.
 -- 9. Add PostGIS geometry columns later if location search needs high scale.
 -- 10. Add partitioning for orders/order_status_history/delivery_tracking_events when volume grows.
+
+
+-- ============================================================
+-- P0.3 — Outbox table for durable event publishing
+-- ============================================================
+-- Domain write + outbox row inside the same tx so an event cannot be
+-- silently dropped on a Kafka outage. shared/outbox.Publisher polls
+-- this table and writes to Kafka, marks rows published, and retries
+-- with backoff. The default table name `outbox_events` matches the
+-- shared publisher contract.
+CREATE TABLE IF NOT EXISTS outbox_events (
+    id              BIGSERIAL PRIMARY KEY,
+    event_type      TEXT NOT NULL,
+    partition_key   TEXT NOT NULL,
+    payload         JSONB NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    published_at    TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_outbox_unpublished
+    ON outbox_events (id)
+    WHERE published_at IS NULL;

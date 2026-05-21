@@ -823,3 +823,19 @@ ALTER TABLE rider_partner_subscriptions
     ADD COLUMN IF NOT EXISTS renewal_attempted_at TIMESTAMPTZ;
 ALTER TABLE rider_partner_subscriptions
     ADD COLUMN IF NOT EXISTS renewal_failure_count INT NOT NULL DEFAULT 0;
+
+
+-- ============================================================
+-- P0.3 — Outbox table for durable event publishing
+-- ============================================================
+CREATE TABLE IF NOT EXISTS outbox_events (
+    id              BIGSERIAL PRIMARY KEY,
+    event_type      TEXT NOT NULL,
+    partition_key   TEXT NOT NULL,
+    payload         JSONB NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    published_at    TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_outbox_unpublished
+    ON outbox_events (id)
+    WHERE published_at IS NULL;

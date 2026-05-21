@@ -605,6 +605,13 @@ func (h *Handler) CreatePaymentIntent(c *gin.Context) {
 	api.JSONWithContext(c.Request.Context(), c.Writer, http.StatusCreated, intent)
 }
 
+// ConfirmPayment finalises an online/wallet FiGo payment.
+//
+// P0.1 — every online (Razorpay) confirm MUST carry the Razorpay
+// signature triple so the backend can hand it to payments-service for
+// HMAC verification + amount check. Wallet confirms pass through the
+// existing internal-charge path. Idempotency-Key header makes a
+// duplicate confirm a no-op.
 func (h *Handler) ConfirmPayment(c *gin.Context) {
 	userID, ok := h.currentUserID(c)
 	if !ok {
@@ -615,11 +622,29 @@ func (h *Handler) ConfirmPayment(c *gin.Context) {
 		return
 	}
 	var body struct {
+		// Legacy fields — kept for wallet flow; the online path no
+		// longer trusts these to mark anything succeeded.
 		ProviderPaymentID string `json:"provider_payment_id"`
 		ProviderReference string `json:"provider_reference"`
+		// Razorpay signature triple — required for ONLINE method.
+		RazorpayOrderID   string `json:"razorpay_order_id"`
+		RazorpayPaymentID string `json:"razorpay_payment_id"`
+		RazorpaySignature string `json:"razorpay_signature"`
+		AmountMinor       int64  `json:"amount_minor"`
 	}
 	_ = c.ShouldBindJSON(&body)
-	order, err := h.svc.ConfirmPayment(c.Request.Context(), userID, orderID, body.ProviderPaymentID, body.ProviderReference)
+	idemKey := c.GetHeader("Idempotency-Key")
+	order, err := h.svc.ConfirmPayment(c.Request.Context(), service.ConfirmPaymentInput{
+		UserID:            userID,
+		OrderID:           orderID,
+		ProviderPaymentID: body.ProviderPaymentID,
+		ProviderReference: body.ProviderReference,
+		RazorpayOrderID:   body.RazorpayOrderID,
+		RazorpayPaymentID: body.RazorpayPaymentID,
+		RazorpaySignature: body.RazorpaySignature,
+		AmountMinor:       body.AmountMinor,
+		IdempotencyKey:    idemKey,
+	})
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "FOOD_PAYMENT_CONFIRM_FAILED", err.Error(), nil)
 		return

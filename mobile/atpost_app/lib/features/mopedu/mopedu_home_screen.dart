@@ -23,6 +23,7 @@ import 'package:atpost_app/features/mopedu/city_picker_sheet.dart';
 import 'package:atpost_app/providers/mopedu_providers.dart';
 import 'package:atpost_app/services/money_format.dart';
 import 'package:atpost_app/services/mopedu_crash_breadcrumbs.dart';
+import 'package:atpost_app/services/mopedu_location_service.dart';
 import 'package:atpost_app/services/mopedu_telemetry.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -282,25 +283,31 @@ class _PickupDropCard extends ConsumerWidget {
     );
   }
 
-  void _useCurrentLocation(
+  Future<void> _useCurrentLocation(
     BuildContext context,
     MopeduBookingNotifier notifier,
-  ) {
-    // Sprint 2: real device location. For v1 we seed with a Bengaluru
-    // landmark so a developer / first-time user can flow through.
-    notifier.setPickup(
-      const RidePoint(
-        lat: 12.9716,
-        lng: 77.5946,
-        address: 'Indiranagar, Bengaluru',
-        placeName: 'Current location',
+  ) async {
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(
+      const SnackBar(
+        content: Text('Locating you…'),
+        duration: Duration(seconds: 2),
       ),
     );
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text(
-          'Live location lookup ships in Sprint 2 — using a stub for now.',
-        ),
+    final result = await MopeduLocationService.getCurrentPosition();
+    if (!context.mounted) return;
+    if (!result.isOk) {
+      messenger.showSnackBar(
+        SnackBar(content: Text(MopeduLocationService.describe(result.failure!))),
+      );
+      return;
+    }
+    final pos = result.position!;
+    notifier.setPickup(
+      RidePoint(
+        lat: pos.latitude,
+        lng: pos.longitude,
+        placeName: 'Current location',
       ),
     );
   }

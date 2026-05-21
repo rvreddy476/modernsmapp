@@ -261,12 +261,56 @@ func (s *Service) CreatePaymentIntent(ctx context.Context, userID, orderID uuid.
 	return intent, nil
 }
 
-func (s *Service) ConfirmPayment(ctx context.Context, userID, orderID uuid.UUID, providerPaymentID, providerReference string) (*postgres.Order, error) {
-	details, err := s.store.WalletPaymentChargeDetails(ctx, userID, orderID)
+// ConfirmPaymentInput is the FiGo confirm-payment request body in
+// canonical Go form. Online payments require the Razorpay signature
+// triple — the backend forwards it to payments-service for HMAC
+// verification before any "paid" state is persisted. Wallet payments
+// pass through the existing internal monetization charge path; the
+// signature fields are ignored for that method.
+//
+// Idempotency: an already-CAPTURED order short-circuits to a clean
+// return (the order row is reloaded so the response is the canonical
+// post-confirm state). IdempotencyKey is reserved for cross-request
+// dedup on the same {user, order} tuple.
+type ConfirmPaymentInput struct {
+	UserID            uuid.UUID
+	OrderID           uuid.UUID
+	ProviderPaymentID string
+	ProviderReference string
+	RazorpayOrderID   string
+	RazorpayPaymentID string
+	RazorpaySignature string
+	AmountMinor       int64
+	IdempotencyKey    string
+}
+
+// ConfirmPayment is the FiGo customer-facing confirm path. P0.1 fix:
+//
+//  1. Reject ONLINE confirms missing the Razorpay signature triple.
+//  2. Call payments-service /v1/payments/intents/:id/verify (which
+//     re-checks HMAC + amount against the stored intent). The
+//     previous direct status-PATCH path is gone — the client can no
+//     longer forge a paid state by sending arbitrary provider ids.
+//  3. Idempotent: already-CAPTURED orders short-circuit cleanly.
+//  4. Cancelled / refunded orders cannot be revived because
+//     payments-service refuses to verify against an intent that
+//     isn't pending. Late webhook arrival is the canonical
+//     reconciliation path.
+func (s *Service) ConfirmPayment(ctx context.Context, in ConfirmPaymentInput) (*postgres.Order, error) {
+	details, err := s.store.WalletPaymentChargeDetails(ctx, in.UserID, in.OrderID)
 	if err != nil {
 		return nil, err
 	}
-	if details.PaymentMethod == "WALLET" && details.PaymentStatus != "CAPTURED" {
+	// Idempotent short-circuit: a duplicate confirm on an already-
+	// CAPTURED order is the most common race (mobile + webhook both
+	// fire). Re-running the wallet charge or signature verify here
+	// would double-charge or 400. Reload the order row so the
+	// response is canonical post-confirm state — no further work.
+	if details.PaymentStatus == "CAPTURED" {
+		return s.store.GetOrder(ctx, in.UserID, in.OrderID)
+	}
+	providerReference := in.ProviderReference
+	if details.PaymentMethod == "WALLET" {
 		if err := s.chargeWalletForFoodOrder(ctx, details); err != nil {
 			return nil, err
 		}
@@ -274,18 +318,22 @@ func (s *Service) ConfirmPayment(ctx context.Context, userID, orderID uuid.UUID,
 			providerReference = "monetization-wallet"
 		}
 	}
-	storeProviderPaymentID := providerPaymentID
-	if details.PaymentMethod == "ONLINE" && details.PaymentStatus != "CAPTURED" {
-		paymentDetails, err := s.store.PaymentIntegrationDetails(ctx, orderID)
+	storeProviderPaymentID := in.ProviderPaymentID
+	if details.PaymentMethod == "ONLINE" {
+		if in.RazorpayOrderID == "" || in.RazorpayPaymentID == "" || in.RazorpaySignature == "" {
+			return nil, fmt.Errorf("razorpay signature triple is required for online payments")
+		}
+		paymentDetails, err := s.store.PaymentIntegrationDetails(ctx, in.OrderID)
 		if err != nil {
 			return nil, err
 		}
-		if err := s.markPaymentsServiceIntentSucceeded(ctx, paymentDetails, userID, providerReference); err != nil {
+		if err := s.verifyPaymentsServiceIntent(ctx, paymentDetails, in); err != nil {
 			return nil, err
 		}
-		storeProviderPaymentID = paymentDetails.ProviderPaymentID
+		storeProviderPaymentID = in.RazorpayPaymentID
+		providerReference = in.RazorpayOrderID
 	}
-	return s.store.ConfirmPayment(ctx, userID, orderID, storeProviderPaymentID, providerReference)
+	return s.store.ConfirmPayment(ctx, in.UserID, in.OrderID, storeProviderPaymentID, providerReference)
 }
 
 func (s *Service) chargeWalletForFoodOrder(ctx context.Context, details *postgres.WalletPaymentChargeDetails) error {
@@ -321,20 +369,32 @@ func (s *Service) chargeWalletForFoodOrder(ctx context.Context, details *postgre
 	return nil
 }
 
-func (s *Service) markPaymentsServiceIntentSucceeded(ctx context.Context, details *postgres.PaymentIntegrationDetails, actorID uuid.UUID, providerRef string) error {
+// verifyPaymentsServiceIntent is the new (P0.1) verification path.
+// Calls payments-service `/v1/payments/intents/:id/verify` which
+// re-checks the Razorpay HMAC signature against the stored intent +
+// validates the amount (when provided). Returns nil only on a 200
+// with `verified: true` — anything else fails the confirm so the
+// order never moves to paid based on client-supplied data alone.
+//
+// The legacy direct status-PATCH path is intentionally removed —
+// the old code would call PATCH /status with the client's
+// provider_ref and trust the payments-service to mark succeeded
+// without verifying the signature.
+func (s *Service) verifyPaymentsServiceIntent(ctx context.Context, details *postgres.PaymentIntegrationDetails, in ConfirmPaymentInput) error {
 	if s.paymentsURL == "" {
 		return fmt.Errorf("PAYMENTS_SERVICE_URL is required for online payments")
 	}
 	if details.ProviderPaymentID == "" {
 		return fmt.Errorf("payments-service intent reference is missing")
 	}
-	body, _ := json.Marshal(map[string]string{
-		"old_status":   "pending",
-		"new_status":   "succeeded",
-		"provider_ref": providerRef,
+	body, _ := json.Marshal(map[string]any{
+		"razorpay_order_id":   in.RazorpayOrderID,
+		"razorpay_payment_id": in.RazorpayPaymentID,
+		"razorpay_signature":  in.RazorpaySignature,
+		"amount_minor":        in.AmountMinor,
 	})
-	url := strings.TrimRight(s.paymentsURL, "/") + "/v1/payments/intents/" + details.ProviderPaymentID + "/status"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, url, bytes.NewReader(body))
+	url := strings.TrimRight(s.paymentsURL, "/") + "/v1/payments/intents/" + details.ProviderPaymentID + "/verify"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -342,36 +402,29 @@ func (s *Service) markPaymentsServiceIntentSucceeded(ctx context.Context, detail
 	if s.internalKey != "" {
 		req.Header.Set("X-Internal-Service-Key", s.internalKey)
 	}
-	req.Header.Set("X-User-Id", actorID.String())
+	req.Header.Set("X-User-Id", in.UserID.String())
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode < 400 {
-		return nil
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("payments verify rejected confirm (status %d)", resp.StatusCode)
 	}
-
-	getReq, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(s.paymentsURL, "/")+"/v1/payments/intents/"+details.ProviderPaymentID, nil)
-	if err != nil {
-		return err
-	}
-	if s.internalKey != "" {
-		getReq.Header.Set("X-Internal-Service-Key", s.internalKey)
-	}
-	getReq.Header.Set("X-User-Id", actorID.String())
-	getResp, err := s.httpClient.Do(getReq)
-	if err != nil {
-		return err
-	}
-	defer getResp.Body.Close()
 	var envelope struct {
-		Data map[string]any `json:"data"`
+		Data struct {
+			Verified    bool   `json:"verified"`
+			Status      string `json:"status"`
+			AmountMinor int64  `json:"amount_minor"`
+		} `json:"data"`
 	}
-	if getResp.StatusCode < 400 && json.NewDecoder(getResp.Body).Decode(&envelope) == nil && strings.EqualFold(stringFromMap(envelope.Data, "status"), "succeeded") {
-		return nil
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		return fmt.Errorf("payments verify response decode: %w", err)
 	}
-	return fmt.Errorf("payments status update failed with status %d", resp.StatusCode)
+	if !envelope.Data.Verified {
+		return fmt.Errorf("payments verify returned not verified (status=%s)", envelope.Data.Status)
+	}
+	return nil
 }
 
 func (s *Service) createPaymentsServiceIntent(ctx context.Context, details *postgres.WalletPaymentChargeDetails, idempotencyKey string) (map[string]any, error) {
