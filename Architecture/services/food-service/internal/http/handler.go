@@ -77,6 +77,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			user.POST("/support/tickets/:ticketId/messages", h.AppendTicketMessage)
 			user.POST("/refunds", h.CreateRefundRequest)
 			user.POST("/menu-items/:itemId/reviews", h.CreateItemReview)
+			user.GET("/orders/:orderId/messages", h.ListOrderMessages)
+			user.POST("/orders/:orderId/messages", h.PostOrderMessage)
+			user.POST("/orders/:orderId/messages/:msgId/read", h.MarkOrderMessageRead)
 			user.POST("/orders/:orderId/ratings/restaurant", h.RateRestaurant)
 			user.POST("/orders/:orderId/ratings/delivery", h.RateDelivery)
 		}

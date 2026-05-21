@@ -1450,3 +1450,24 @@ CREATE TABLE IF NOT EXISTS food.settlement_files (
     generated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS ix_food_settlement_files_period ON food.settlement_files(period_start, period_end, kind);
+
+-- ─── Wave F: per-order conversations + read receipts ──────────────────
+--
+-- order_messages is the conversation between customer, restaurant, and
+-- delivery partner for a single order. Quick + lightweight (no media
+-- in v1, just text). Admin can read every message for moderation /
+-- escalation.
+--
+-- author_role is one of customer | restaurant | delivery | admin.
+-- read_by is an array of {role,user_id,at} triples; the recipient app
+-- POSTs to /read once the message is shown.
+CREATE TABLE IF NOT EXISTS food.order_messages (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    order_id    UUID NOT NULL REFERENCES food.orders(id) ON DELETE CASCADE,
+    author_id   UUID NOT NULL,
+    author_role VARCHAR(16) NOT NULL CHECK (author_role IN ('customer','restaurant','delivery','admin')),
+    body        TEXT NOT NULL,
+    read_by     JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_food_order_messages_order ON food.order_messages(order_id, created_at);
