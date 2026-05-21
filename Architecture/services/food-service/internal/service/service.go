@@ -92,6 +92,12 @@ type Store interface {
 	CreateItemReview(ctx context.Context, in postgres.CreateItemReviewInput) (*postgres.ItemReview, error)
 	ListItemReviews(ctx context.Context, menuItemID uuid.UUID, limit int) ([]postgres.ItemReview, error)
 	HideItemReview(ctx context.Context, reviewID uuid.UUID) error
+	ReportRestaurantSLA(ctx context.Context, w postgres.ReportWindow) ([]postgres.RestaurantSLAReport, error)
+	ReportDeliverySLA(ctx context.Context, w postgres.ReportWindow) ([]postgres.DeliverySLAReport, error)
+	ReportPaymentRecon(ctx context.Context, w postgres.ReportWindow) ([]postgres.PaymentReconRow, error)
+	ReportRefundsCancellations(ctx context.Context, w postgres.ReportWindow) ([]postgres.RefundCancelRow, error)
+	ReportCouponAbuse(ctx context.Context, w postgres.ReportWindow, threshold int) ([]postgres.CouponAbuseRow, error)
+	ReportCompliance(ctx context.Context) ([]postgres.ComplianceReportRow, error)
 	PartnerRestaurantSettlements(ctx context.Context, ownerID, restaurantID uuid.UUID) ([]map[string]any, error)
 	PartnerRestaurantSummary(ctx context.Context, ownerID, restaurantID uuid.UUID) (map[string]any, error)
 	UpsertDeliveryPartner(ctx context.Context, userID uuid.UUID, in postgres.DeliveryPartnerInput) (*postgres.DeliveryPartner, error)
