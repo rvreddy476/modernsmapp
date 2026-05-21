@@ -287,6 +287,20 @@ func main() {
 
 	checker.RegisterRoutes(r)
 	r.GET("/metrics", metrics.Handler())
+
+	// Realtime SSE gateway. Registered BEFORE notifHandler.RegisterRoutes
+	// because notifHandler.RegisterRoutes installs RequireInternalKey via
+	// r.Use(...) which would otherwise gate this end-user endpoint behind
+	// the service-to-service key.
+	rtSecret := env("REALTIME_TOKEN_SECRET", internalKey)
+	if rtSecret == "" {
+		slog.Warn("REALTIME_TOKEN_SECRET not set — realtime gateway disabled")
+	} else {
+		realtimeHandler := http.NewRealtimeHandler([]byte(rtSecret), rdb)
+		realtimeHandler.Register(r)
+		slog.Info("realtime SSE gateway registered", "path", "/v1/realtime/sse")
+	}
+
 	notifHandler.RegisterRoutes(r)
 
 	// 11. Graceful shutdown

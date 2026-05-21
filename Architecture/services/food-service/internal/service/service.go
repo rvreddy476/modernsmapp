@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/http"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/atpost/food-service/internal/store/postgres"
+	"github.com/atpost/shared/realtime"
 	"github.com/google/uuid"
 )
 
@@ -105,6 +107,8 @@ type Service struct {
 	paymentsURL     string
 	internalKey     string
 	httpClient      *http.Client
+	rtPublisher     *realtime.Publisher
+	rtSigner        *realtime.TokenSigner
 }
 
 func New(store Store) *Service {
@@ -115,6 +119,63 @@ func New(store Store) *Service {
 		internalKey:     os.Getenv("INTERNAL_SERVICE_KEY"),
 		httpClient:      &http.Client{Timeout: 8 * time.Second},
 	}
+}
+
+// WithRealtime wires the realtime publisher + topic-token signer.
+// Both are optional; nil-checked at every callsite so misconfiguration
+// degrades to "no live push, polling still works."
+func (s *Service) WithRealtime(p *realtime.Publisher, signer *realtime.TokenSigner) *Service {
+	s.rtPublisher = p
+	s.rtSigner = signer
+	return s
+}
+
+// publishRealtime is a best-effort fire-and-forget broadcast. Errors
+// are logged at WARN — the durable copy is the Kafka event.
+func (s *Service) publishRealtime(ctx context.Context, topic, eventType string, data any) {
+	if s.rtPublisher == nil {
+		return
+	}
+	if err := s.rtPublisher.Publish(ctx, topic, eventType, data); err != nil {
+		slog.Warn("food-service: realtime publish failed", "topic", topic, "event", eventType, "error", err)
+	}
+}
+
+// IssueRealtimeToken builds a topic-scoped token granting the user
+// access to the order/restaurant/partner topics they own. Caller is
+// responsible for X-User-Id auth.
+func (s *Service) IssueRealtimeToken(ctx context.Context, userID uuid.UUID) (string, []string, error) {
+	if s.rtSigner == nil {
+		return "", nil, errors.New("realtime: signer not configured")
+	}
+	// Topic set:
+	//   1. food.order.{order_id}       — for every order the user placed.
+	//   2. food.restaurant.{id}.orders — for every restaurant the user owns.
+	//   3. food.delivery_partner.{id}.assignments — if they're a partner.
+	topics := []string{}
+	if orders, err := s.store.ListOrders(ctx, userID); err == nil {
+		for _, o := range orders {
+			topics = append(topics, "food.order."+o.ID.String())
+		}
+	}
+	if rests, err := s.store.ListPartnerRestaurants(ctx, userID); err == nil {
+		for _, r := range rests {
+			topics = append(topics, "food.restaurant."+r.ID.String()+".orders")
+		}
+	}
+	// Always grant the delivery-partner self-assignment topic — the
+	// user is keyed by their own user_id, so the topic is self-scoped.
+	topics = append(topics, "food.delivery_partner."+userID.String()+".assignments")
+	if len(topics) == 0 {
+		// Token signer rejects empty topic list; give the caller a
+		// no-op self-topic so they at least get a connected event.
+		topics = []string{"food.user." + userID.String()}
+	}
+	tok, err := s.rtSigner.Sign(userID.String(), topics)
+	if err != nil {
+		return "", nil, err
+	}
+	return tok, topics, nil
 }
 
 type Home struct {
@@ -214,7 +275,14 @@ func (s *Service) DeleteAddress(ctx context.Context, userID, addressID uuid.UUID
 }
 
 func (s *Service) PlaceOrder(ctx context.Context, userID uuid.UUID, in postgres.PlaceOrderInput, idempotencyKey string) (*postgres.Order, error) {
-	return s.store.PlaceOrder(ctx, userID, in, idempotencyKey)
+	o, err := s.store.PlaceOrder(ctx, userID, in, idempotencyKey)
+	if err != nil {
+		return nil, err
+	}
+	s.publishRealtime(ctx, "food.order."+o.ID.String(), "food.order.placed", o)
+	s.publishRealtime(ctx, "food.restaurant."+o.RestaurantID.String()+".orders", "food.order.placed", o)
+	s.publishRealtime(ctx, "food.admin.live_orders", "food.order.placed", o)
+	return o, nil
 }
 
 func (s *Service) ListOrders(ctx context.Context, userID uuid.UUID) ([]postgres.Order, error) {
@@ -333,7 +401,14 @@ func (s *Service) ConfirmPayment(ctx context.Context, in ConfirmPaymentInput) (*
 		storeProviderPaymentID = in.RazorpayPaymentID
 		providerReference = in.RazorpayOrderID
 	}
-	return s.store.ConfirmPayment(ctx, in.UserID, in.OrderID, storeProviderPaymentID, providerReference)
+	o, err := s.store.ConfirmPayment(ctx, in.UserID, in.OrderID, storeProviderPaymentID, providerReference)
+	if err != nil {
+		return nil, err
+	}
+	s.publishRealtime(ctx, "food.order."+o.ID.String(), "food.order.payment_confirmed", o)
+	s.publishRealtime(ctx, "food.restaurant."+o.RestaurantID.String()+".orders", "food.order.payment_confirmed", o)
+	s.publishRealtime(ctx, "food.admin.live_orders", "food.order.payment_confirmed", o)
+	return o, nil
 }
 
 func (s *Service) chargeWalletForFoodOrder(ctx context.Context, details *postgres.WalletPaymentChargeDetails) error {
@@ -538,7 +613,14 @@ func stringFromMap(input map[string]any, key string) string {
 }
 
 func (s *Service) CancelOrder(ctx context.Context, userID, orderID uuid.UUID, reason string) (*postgres.Order, error) {
-	return s.store.CancelOrder(ctx, userID, orderID, reason)
+	o, err := s.store.CancelOrder(ctx, userID, orderID, reason)
+	if err != nil {
+		return nil, err
+	}
+	s.publishRealtime(ctx, "food.order."+o.ID.String(), "food.order.cancelled", o)
+	s.publishRealtime(ctx, "food.restaurant."+o.RestaurantID.String()+".orders", "food.order.cancelled", o)
+	s.publishRealtime(ctx, "food.admin.live_orders", "food.order.cancelled", o)
+	return o, nil
 }
 
 func (s *Service) RateRestaurant(ctx context.Context, userID, orderID uuid.UUID, rating int, review string) (map[string]any, error) {

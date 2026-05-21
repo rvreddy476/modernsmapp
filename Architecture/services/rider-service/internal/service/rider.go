@@ -9,12 +9,15 @@ package service
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/atpost/rider-service/internal/digilocker"
 	"github.com/atpost/rider-service/internal/events"
 	"github.com/atpost/rider-service/internal/store"
 	"github.com/atpost/rider-service/internal/wallet"
+	"github.com/atpost/shared/realtime"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
@@ -27,6 +30,8 @@ type Service struct {
 	rdb              *redis.Client
 	producer         EventPublisher
 	cfg              Config
+	rtPublisher      *realtime.Publisher
+	rtSigner         *realtime.TokenSigner
 }
 
 // Config tunes service-level constants.
@@ -235,6 +240,56 @@ func (s *Service) SetDigiLockerClient(c digilocker.Client) { s.digilockerClient 
 
 // SetRedis injects a Redis client used for the DigiLocker PKCE state cache.
 func (s *Service) SetRedis(c *redis.Client) { s.rdb = c }
+
+// WithRealtime wires the realtime publisher + topic-token signer. Both
+// are optional; nil-checked at every callsite so misconfiguration
+// degrades to "no live push, polling still works."
+func (s *Service) WithRealtime(p *realtime.Publisher, signer *realtime.TokenSigner) *Service {
+	s.rtPublisher = p
+	s.rtSigner = signer
+	return s
+}
+
+// publishRealtime is a best-effort fire-and-forget broadcast. Errors
+// are logged at WARN — the durable copy is the Kafka event.
+func (s *Service) publishRealtime(ctx context.Context, topic, eventType string, data any) {
+	if s.rtPublisher == nil {
+		return
+	}
+	if err := s.rtPublisher.Publish(ctx, topic, eventType, data); err != nil {
+		slog.Warn("rider-service: realtime publish failed", "topic", topic, "event", eventType, "error", err)
+	}
+}
+
+// IssueRealtimeToken builds a topic-scoped token granting the user
+// access to their ride + partner-offer topics. Caller is responsible
+// for X-User-Id auth.
+func (s *Service) IssueRealtimeToken(ctx context.Context, userID uuid.UUID) (string, []string, error) {
+	if s.rtSigner == nil {
+		return "", nil, errors.New("realtime: signer not configured")
+	}
+	topics := []string{}
+	// Customer side: every ride the user requested. We list recent
+	// rides only — a token live for 30 min covers the active ride
+	// window; longer scrollback isn't useful for realtime.
+	if rides, err := s.store.ListRidesByCustomer(ctx, userID, 20); err == nil {
+		for _, r := range rides {
+			topics = append(topics, "rider.ride."+r.ID.String())
+		}
+	}
+	// Partner side: if this user is a partner, grant their offer topic.
+	if p, err := s.store.GetPartnerByUserID(ctx, userID); err == nil && p != nil {
+		topics = append(topics, "rider.partner."+p.ID.String()+".offers")
+	}
+	if len(topics) == 0 {
+		topics = []string{"rider.user." + userID.String()}
+	}
+	tok, err := s.rtSigner.Sign(userID.String(), topics)
+	if err != nil {
+		return "", nil, err
+	}
+	return tok, topics, nil
+}
 
 // Cfg returns a copy of the active config — handy in tests.
 func (s *Service) Cfg() Config { return s.cfg }

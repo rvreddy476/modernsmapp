@@ -39,6 +39,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		rider.GET("/cities", h.GetCities)
 		rider.POST("/estimate", h.PostEstimate)
 
+		// --- Realtime token (issued for SSE subscription) ----------------
+		rider.POST("/realtime/token", h.IssueRealtimeToken)
+
 		// --- Customer rides ----------------------------------------------
 		rider.POST("/rides", h.PostRide)
 		rider.GET("/rides/me", h.GetMyRides)

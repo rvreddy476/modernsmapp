@@ -25,6 +25,7 @@ import (
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
 	"github.com/atpost/shared/outbox"
+	"github.com/atpost/shared/realtime"
 	"github.com/atpost/shared/server"
 	"github.com/atpost/shared/transport"
 	"github.com/gin-gonic/gin"
@@ -124,6 +125,16 @@ func main() {
 	riderSvc := service.New(riderStore, walletClient, service.Config{})
 	riderSvc.SetDigiLockerClient(dlClient)
 	riderSvc.SetRedis(rdb)
+
+	// Realtime: best-effort Pub/Sub publishes + topic-token signer.
+	// REALTIME_TOKEN_SECRET must match notification-service's verifier.
+	if rtSecret := env("REALTIME_TOKEN_SECRET", internalKey); rtSecret != "" {
+		riderSvc.WithRealtime(
+			realtime.NewPublisher(rdb),
+			realtime.NewTokenSigner([]byte(rtSecret)),
+		)
+		slog.Info("rider-service realtime wired")
+	}
 
 	producer := riderevents.NewProducerWithDialer(kafkaBrokers, kafkaTopic, kafkaDialer)
 	riderSvc.SetProducer(producer)

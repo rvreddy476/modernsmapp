@@ -45,6 +45,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 		user := v1.Group("", h.requireAuthenticated())
 		{
+			user.POST("/realtime/token", h.IssueRealtimeToken)
 			user.POST("/cart/items", h.AddCartItem)
 			user.GET("/cart", h.GetCart)
 			user.PATCH("/cart/items/:cartItemId", h.UpdateCartItem)

@@ -16,7 +16,9 @@ import (
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
 	"github.com/atpost/shared/outbox"
+	"github.com/atpost/shared/realtime"
 	"github.com/atpost/shared/server"
+	"github.com/atpost/shared/transport"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -67,6 +69,22 @@ func main() {
 
 	store := postgres.New(dbPool)
 	svc := service.New(store)
+
+	// Realtime: best-effort Pub/Sub publishes + topic-token signer.
+	// REALTIME_TOKEN_SECRET must match notification-service's verifier.
+	if rtSecret := env("REALTIME_TOKEN_SECRET", internalKey); rtSecret != "" {
+		redisAddr := os.Getenv("REDIS_ADDR")
+		if rdb, err := transport.NewRedisClientFromEnv(redisAddr); err == nil {
+			svc.WithRealtime(
+				realtime.NewPublisher(rdb),
+				realtime.NewTokenSigner([]byte(rtSecret)),
+			)
+			slog.Info("food-service realtime wired", "redis", redisAddr)
+		} else {
+			slog.Warn("food-service: redis unavailable, realtime disabled", "error", err)
+		}
+	}
+
 	handler := foodhttp.New(svc).WithInternalKey(internalKey)
 
 	// P0.3 — durable outbox publisher. New event-publish sites
