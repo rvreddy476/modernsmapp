@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/atpost/identity-shared/logging"
+	sharedmiddleware "github.com/atpost/identity-shared/middleware"
+	tracepkg "github.com/atpost/identity-shared/o11y/trace"
 	"github.com/atpost/identity-shared/transport"
 	"github.com/atpost/identity-user-service/internal/config"
 	"github.com/atpost/identity-user-service/internal/events"
@@ -23,6 +25,19 @@ func main() {
 	cfg := config.Load()
 	logger := logging.New("user-service")
 	slog.SetDefault(logger)
+
+	// Phase F3.7 — tracing init. Falls back to no-op on collector
+	// failure; see auth-service main.go for the full rationale.
+	tracerProvider, _ := tracepkg.InitTracer(
+		"user-service",
+		envOr("OTEL_EXPORTER_OTLP_ENDPOINT", "http://jaeger:4317"),
+	)
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = tracerProvider.Shutdown(shutdownCtx)
+	}()
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -97,6 +112,9 @@ func main() {
 
 	// 4. Server
 	r := gin.New()
+	// Phase F3.7 — tracing middleware first so spans wrap the rest
+	// of the chain and log enrichment picks up trace_id + span_id.
+	r.Use(sharedmiddleware.OtelTracing("user-service"))
 	r.Use(http.RequestIDMiddleware())
 	r.Use(http.LoggerMiddleware(logger))
 	r.Use(http.RecoveryMiddleware(logger))
@@ -115,4 +133,11 @@ func main() {
 		logger.Error("failed to run server", "err", err)
 		os.Exit(1)
 	}
+}
+
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }

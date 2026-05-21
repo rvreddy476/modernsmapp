@@ -16,6 +16,8 @@ import (
 	"github.com/atpost/identity-auth-service/internal/service"
 	"github.com/atpost/identity-auth-service/internal/store"
 	"github.com/atpost/identity-shared/logging"
+	sharedmiddleware "github.com/atpost/identity-shared/middleware"
+	tracepkg "github.com/atpost/identity-shared/o11y/trace"
 	"github.com/atpost/identity-shared/transport"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -25,6 +27,21 @@ func main() {
 	cfg := config.Load()
 	logger := logging.New("auth-service")
 	slog.SetDefault(logger)
+
+	// Phase F3.7 — wire OpenTelemetry. The gateway already injects
+	// `traceparent` headers, so spans created here link back to the
+	// originating browser/mobile request. Falls back to a no-op
+	// provider when the collector is unreachable so boot still
+	// succeeds in environments without observability infra.
+	tracerProvider, _ := tracepkg.InitTracer(
+		"auth-service",
+		envOr("OTEL_EXPORTER_OTLP_ENDPOINT", "http://jaeger:4317"),
+	)
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = tracerProvider.Shutdown(shutdownCtx)
+	}()
 
 	if cfg.PostgresDSN == "" {
 		slog.Error("DATABASE_URL is required")
@@ -115,6 +132,10 @@ func main() {
 
 	// 5. Server
 	r := gin.New()
+	// Phase F3.7 — tracing middleware runs first so the span context
+	// is available to RequestID + Logger downstream. Same ordering
+	// as the Architecture-side services.
+	r.Use(sharedmiddleware.OtelTracing("auth-service"))
 	r.Use(internalhttp.RequestIDMiddleware())
 	r.Use(internalhttp.LoggerMiddleware(logger))
 	r.Use(internalhttp.RecoveryMiddleware(logger))
@@ -155,4 +176,13 @@ func main() {
 		slog.Error("shutdown error", "error", err)
 	}
 	slog.Info("auth service stopped")
+}
+
+// envOr returns the env var or fallback. Local helper so we don't
+// pull in another shared package just for one read.
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
