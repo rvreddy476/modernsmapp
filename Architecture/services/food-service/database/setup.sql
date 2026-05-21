@@ -1325,3 +1325,75 @@ ALTER TABLE food.delivery_assignments
     ADD COLUMN IF NOT EXISTS delivery_verified_at TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS proof_of_pickup_url   TEXT,
     ADD COLUMN IF NOT EXISTS proof_of_delivery_url TEXT;
+
+-- ─── B6: support tickets + refund request ─────────────────────────────
+--
+-- Tickets are the customer's entry point for anything from
+-- "missing item" to "refund please" to "driver was rude". Each ticket
+-- can reference an order (most do) and is owned by one customer; the
+-- admin queue acts on tickets via SetStatus + optional approved refund.
+DO $$ BEGIN
+    CREATE TYPE food.ticket_status AS ENUM ('open','in_progress','resolved','closed','cancelled');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+DO $$ BEGIN
+    CREATE TYPE food.refund_status AS ENUM ('requested','approved','rejected','processed');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+CREATE TABLE IF NOT EXISTS food.support_tickets (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    customer_id   UUID NOT NULL,
+    order_id      UUID REFERENCES food.orders(id) ON DELETE SET NULL,
+    category      VARCHAR(60) NOT NULL,
+    subject       VARCHAR(200) NOT NULL,
+    detail        TEXT,
+    status        food.ticket_status NOT NULL DEFAULT 'open',
+    assigned_to   UUID,
+    resolved_at   TIMESTAMPTZ,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_food_tickets_customer ON food.support_tickets(customer_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS ix_food_tickets_status   ON food.support_tickets(status);
+CREATE INDEX IF NOT EXISTS ix_food_tickets_order    ON food.support_tickets(order_id) WHERE order_id IS NOT NULL;
+
+DROP TRIGGER IF EXISTS trg_food_tickets_updated_at ON food.support_tickets;
+CREATE TRIGGER trg_food_tickets_updated_at
+BEFORE UPDATE ON food.support_tickets
+FOR EACH ROW EXECUTE FUNCTION food.set_updated_at();
+
+CREATE TABLE IF NOT EXISTS food.ticket_messages (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    ticket_id   UUID NOT NULL REFERENCES food.support_tickets(id) ON DELETE CASCADE,
+    author_id   UUID NOT NULL,
+    is_admin    BOOLEAN NOT NULL DEFAULT FALSE,
+    body        TEXT NOT NULL,
+    attachments JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_food_ticket_messages_ticket ON food.ticket_messages(ticket_id, created_at);
+
+CREATE TABLE IF NOT EXISTS food.refund_requests (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    ticket_id     UUID REFERENCES food.support_tickets(id) ON DELETE CASCADE,
+    order_id      UUID NOT NULL REFERENCES food.orders(id) ON DELETE CASCADE,
+    customer_id   UUID NOT NULL,
+    amount        NUMERIC(10,2) NOT NULL CHECK (amount >= 0),
+    reason        TEXT,
+    status        food.refund_status NOT NULL DEFAULT 'requested',
+    decided_by    UUID,
+    decided_at    TIMESTAMPTZ,
+    refund_txn_id TEXT,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_food_refunds_order    ON food.refund_requests(order_id);
+CREATE INDEX IF NOT EXISTS ix_food_refunds_customer ON food.refund_requests(customer_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS ix_food_refunds_status   ON food.refund_requests(status);
+
+DROP TRIGGER IF EXISTS trg_food_refunds_updated_at ON food.refund_requests;
+CREATE TRIGGER trg_food_refunds_updated_at
+BEFORE UPDATE ON food.refund_requests
+FOR EACH ROW EXECUTE FUNCTION food.set_updated_at();

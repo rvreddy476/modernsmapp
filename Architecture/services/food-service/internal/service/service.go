@@ -82,6 +82,13 @@ type Store interface {
 	VerifyPickupCode(ctx context.Context, ownerID, orderID uuid.UUID, code string) error
 	VerifyDeliveryCode(ctx context.Context, customerID, orderID uuid.UUID, code string) error
 	AttachProofURL(ctx context.Context, userID, orderID uuid.UUID, which, url string) error
+	CreateTicket(ctx context.Context, in postgres.CreateTicketInput) (*postgres.Ticket, error)
+	ListMyTickets(ctx context.Context, customerID uuid.UUID) ([]postgres.Ticket, error)
+	AppendTicketMessage(ctx context.Context, ticketID, authorID uuid.UUID, isAdmin bool, body string) (*postgres.TicketMessage, error)
+	GetTicketWithMessages(ctx context.Context, ticketID uuid.UUID) (*postgres.Ticket, []postgres.TicketMessage, error)
+	SetTicketStatus(ctx context.Context, ticketID uuid.UUID, status string) error
+	CreateRefundRequest(ctx context.Context, customerID, orderID uuid.UUID, ticketID *uuid.UUID, amount float64, reason string) (*postgres.RefundRequest, error)
+	DecideRefund(ctx context.Context, adminID, refundID uuid.UUID, status, reason string) error
 	PartnerRestaurantSettlements(ctx context.Context, ownerID, restaurantID uuid.UUID) ([]map[string]any, error)
 	PartnerRestaurantSummary(ctx context.Context, ownerID, restaurantID uuid.UUID) (map[string]any, error)
 	UpsertDeliveryPartner(ctx context.Context, userID uuid.UUID, in postgres.DeliveryPartnerInput) (*postgres.DeliveryPartner, error)
