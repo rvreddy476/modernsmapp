@@ -154,6 +154,7 @@ func main() {
 		KafkaBrokers: strings.Join(kafkaBrokers, ","),
 		DefaultTopic: kafkaTopic,
 	})
+	riderSvc.WithOutbox(outbox.NewQueuer(""), dbPool)
 	go outboxPublisher.Run(dispatchCtx)
 	slog.Info("outbox publisher started", "topic", kafkaTopic)
 

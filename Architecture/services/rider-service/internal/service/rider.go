@@ -9,6 +9,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"time"
@@ -17,8 +18,10 @@ import (
 	"github.com/atpost/rider-service/internal/events"
 	"github.com/atpost/rider-service/internal/store"
 	"github.com/atpost/rider-service/internal/wallet"
+	"github.com/atpost/shared/outbox"
 	"github.com/atpost/shared/realtime"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -32,6 +35,8 @@ type Service struct {
 	cfg              Config
 	rtPublisher      *realtime.Publisher
 	rtSigner         *realtime.TokenSigner
+	outboxQ          *outbox.Queuer
+	dbPool           *pgxpool.Pool
 }
 
 // Config tunes service-level constants.
@@ -258,6 +263,32 @@ func (s *Service) publishRealtime(ctx context.Context, topic, eventType string, 
 	}
 	if err := s.rtPublisher.Publish(ctx, topic, eventType, data); err != nil {
 		slog.Warn("rider-service: realtime publish failed", "topic", topic, "event", eventType, "error", err)
+	}
+}
+
+// WithOutbox wires the durable outbox so domain events flow to Kafka
+// via the publisher running in main.go.
+func (s *Service) WithOutbox(q *outbox.Queuer, db *pgxpool.Pool) *Service {
+	s.outboxQ = q
+	s.dbPool = db
+	return s
+}
+
+// emit publishes a realtime frame AND queues a durable Kafka event via
+// the outbox in one call. Both are best-effort; failures are logged at
+// WARN so a Redis or Postgres hiccup does not break the user request.
+func (s *Service) emit(ctx context.Context, topic, eventType string, data any) {
+	s.publishRealtime(ctx, topic, eventType, data)
+	if s.outboxQ == nil || s.dbPool == nil {
+		return
+	}
+	body, err := json.Marshal(data)
+	if err != nil {
+		slog.Warn("rider-service: outbox marshal failed", "event", eventType, "error", err)
+		return
+	}
+	if err := s.outboxQ.EnqueuePool(ctx, s.dbPool, eventType, topic, body); err != nil {
+		slog.Warn("rider-service: outbox enqueue failed", "event", eventType, "error", err)
 	}
 }
 

@@ -224,7 +224,7 @@ func (s *Service) MatchRide(ctx context.Context, rideID uuid.UUID, opts MatchRid
 		if perr := s.producer.PublishRideOffered(ctx, rideID, offer.ID, pid, sc.Score, batch.ExpiresAt); perr != nil {
 			slog.Warn("rider: publish ride.offered failed", "ride_id", rideID, "offer_id", offer.ID, "error", perr)
 		}
-		s.publishRealtime(ctx, "rider.partner."+pid.String()+".offers", "rider.ride.offered", offer)
+		s.emit(ctx, "rider.partner."+pid.String()+".offers", "rider.ride.offered", offer)
 	}
 	return &MatchRideResult{OffersCreated: created, BatchExpires: batch.ExpiresAt}, nil
 }
@@ -414,7 +414,7 @@ func (s *Service) AcceptOffer(ctx context.Context, partnerUserID, offerID uuid.U
 	if perr := s.producer.PublishRideAssigned(ctx, ride.ID, partner.ID, vehicleID, offerID); perr != nil {
 		slog.Warn("rider: publish ride.assigned failed", "ride_id", ride.ID, "error", perr)
 	}
-	s.publishRealtime(ctx, "rider.ride."+ride.ID.String(), "rider.ride.assigned", ride)
+	s.emit(ctx, "rider.ride."+ride.ID.String(), "rider.ride.assigned", ride)
 	s.publishRealtime(ctx, "rider.admin.live_rides", "rider.ride.assigned", ride)
 	return &AcceptOfferResult{
 		RideID:    ride.ID,

@@ -113,7 +113,7 @@ func (s *Service) CreateRide(ctx context.Context, customerID uuid.UUID, req Crea
 	if perr := s.producer.PublishRideRequested(ctx, ride.ID, customerID, ride.VehicleType, cityID); perr != nil {
 		slog.Warn("rider: publish ride.requested failed", "ride_id", ride.ID, "error", perr)
 	}
-	s.publishRealtime(ctx, "rider.ride."+ride.ID.String(), "rider.ride.requested", ride)
+	s.emit(ctx, "rider.ride."+ride.ID.String(), "rider.ride.requested", ride)
 	s.publishRealtime(ctx, "rider.admin.live_rides", "rider.ride.requested", ride)
 	if body, merr := json.Marshal(ride); merr == nil {
 		_ = s.store.RecordIdempotency(ctx, req.IdempotencyKey, customerID, CreateRideOperation, &ride.ID, body)
