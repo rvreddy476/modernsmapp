@@ -66,6 +66,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			user.POST("/orders/:orderId/payments/intents", h.CreatePaymentIntent)
 			user.POST("/orders/:orderId/payments/confirm", h.ConfirmPayment)
 			user.POST("/orders/:orderId/cancel", h.CancelOrder)
+			user.GET("/orders/:orderId/substitutions", h.ListSubstitutions)
+			user.POST("/orders/:orderId/substitutions/:subId/respond", h.RespondSubstitution)
 			user.POST("/orders/:orderId/ratings/restaurant", h.RateRestaurant)
 			user.POST("/orders/:orderId/ratings/delivery", h.RateDelivery)
 		}
@@ -88,6 +90,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			partner.PATCH("/menu/items/:itemId/availability", h.SetMenuItemAvailability)
 			partner.GET("/restaurants/:restaurantId/orders", h.ListPartnerOrders)
 			partner.GET("/restaurants/:restaurantId/kitchen-queue", h.ListKitchenQueue)
+			partner.POST("/orders/:orderId/substitutions", h.PartnerProposeSubstitution)
 			partner.GET("/restaurants/:restaurantId/settlements", h.PartnerRestaurantSettlements)
 			partner.GET("/restaurants/:restaurantId/reports/summary", h.PartnerRestaurantSummary)
 			partner.POST("/orders/:orderId/accept", h.PartnerAcceptOrder)

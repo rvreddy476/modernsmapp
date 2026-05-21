@@ -65,6 +65,9 @@ type Store interface {
 	PartnerUpdateOrderStatus(ctx context.Context, ownerID, orderID uuid.UUID, toStatus, reason, idempotencyKey string) (*postgres.Order, error)
 	ListKitchenQueue(ctx context.Context, ownerID, restaurantID uuid.UUID) ([]postgres.KitchenOrder, error)
 	AutoRejectExpiredOrders(ctx context.Context, batch int) ([]uuid.UUID, error)
+	ProposeSubstitution(ctx context.Context, ownerID uuid.UUID, in postgres.ProposeSubstitutionInput) (*postgres.Substitution, error)
+	RespondToSubstitution(ctx context.Context, customerID, subID uuid.UUID, newStatus string) (*postgres.Substitution, error)
+	ListSubstitutions(ctx context.Context, userID, orderID uuid.UUID) ([]postgres.Substitution, error)
 	PartnerRestaurantSettlements(ctx context.Context, ownerID, restaurantID uuid.UUID) ([]map[string]any, error)
 	PartnerRestaurantSummary(ctx context.Context, ownerID, restaurantID uuid.UUID) (map[string]any, error)
 	UpsertDeliveryPartner(ctx context.Context, userID uuid.UUID, in postgres.DeliveryPartnerInput) (*postgres.DeliveryPartner, error)
@@ -733,6 +736,37 @@ func (s *Service) ListPartnerOrders(ctx context.Context, ownerID, restaurantID u
 // partner mobile/web kitchen dashboard.
 func (s *Service) ListKitchenQueue(ctx context.Context, ownerID, restaurantID uuid.UUID) ([]postgres.KitchenOrder, error) {
 	return s.store.ListKitchenQueue(ctx, ownerID, restaurantID)
+}
+
+// ProposeSubstitution lets a partner offer a swap when an item is out
+// of stock. Emits a realtime event on the order topic so the customer
+// app pops a "choose: accept / decline" sheet.
+func (s *Service) ProposeSubstitution(ctx context.Context, ownerID uuid.UUID, in postgres.ProposeSubstitutionInput) (*postgres.Substitution, error) {
+	sub, err := s.store.ProposeSubstitution(ctx, ownerID, in)
+	if err != nil {
+		return nil, err
+	}
+	s.emit(ctx, "food.order."+sub.OrderID.String(), "food.order.substitution_proposed", sub)
+	return sub, nil
+}
+
+// RespondToSubstitution is the customer-facing approve/decline. After
+// a response we emit a follow-up event so the partner kitchen UI
+// updates immediately.
+func (s *Service) RespondToSubstitution(ctx context.Context, customerID, subID uuid.UUID, response string) (*postgres.Substitution, error) {
+	sub, err := s.store.RespondToSubstitution(ctx, customerID, subID, response)
+	if err != nil {
+		return nil, err
+	}
+	eventType := "food.order.substitution_" + response // approved / declined / cancelled
+	s.emit(ctx, "food.order."+sub.OrderID.String(), eventType, sub)
+	return sub, nil
+}
+
+// ListSubstitutions returns every substitution for an order; visible
+// to either the customer or the owning partner.
+func (s *Service) ListSubstitutions(ctx context.Context, userID, orderID uuid.UUID) ([]postgres.Substitution, error) {
+	return s.store.ListSubstitutions(ctx, userID, orderID)
 }
 
 // AutoRejectSLAExpiredOrders is invoked by the background worker every

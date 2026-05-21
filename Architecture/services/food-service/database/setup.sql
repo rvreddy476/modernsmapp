@@ -1194,3 +1194,54 @@ ALTER TABLE food.orders
 CREATE INDEX IF NOT EXISTS ix_food_orders_accept_sla
     ON food.orders(accept_deadline_at)
     WHERE status = 'CONFIRMED' AND accept_deadline_at IS NOT NULL;
+
+-- ─── B2: stock-out log + substitution flow ────────────────────────────
+--
+-- menu_item_stockouts is an append-only audit log that records every
+-- time a partner toggles an item to unavailable (and back). The
+-- partner SLA dashboard reads it for "items unavailable longer than
+-- 24 h" detection.
+CREATE TABLE IF NOT EXISTS food.menu_item_stockouts (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    menu_item_id  UUID NOT NULL REFERENCES food.menu_items(id) ON DELETE CASCADE,
+    restaurant_id UUID NOT NULL REFERENCES food.restaurants(id) ON DELETE CASCADE,
+    is_available  BOOLEAN NOT NULL,
+    reason        VARCHAR(120),
+    changed_by    UUID,
+    changed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_food_stockouts_item ON food.menu_item_stockouts(menu_item_id, changed_at DESC);
+CREATE INDEX IF NOT EXISTS ix_food_stockouts_restaurant ON food.menu_item_stockouts(restaurant_id, changed_at DESC);
+
+-- order_substitutions captures the partner's "we don't have item X,
+-- here's Y instead" proposal + the customer's response. The status
+-- machine is `proposed → approved | declined | cancelled`. If declined
+-- the order line is removed via the cancellation flow.
+DO $$ BEGIN
+    CREATE TYPE food.substitution_status AS ENUM ('proposed','approved','declined','cancelled');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+CREATE TABLE IF NOT EXISTS food.order_substitutions (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    order_id            UUID NOT NULL REFERENCES food.orders(id) ON DELETE CASCADE,
+    original_item_id    UUID NOT NULL,
+    original_item_name  VARCHAR(200) NOT NULL,
+    suggested_item_id   UUID,
+    suggested_item_name VARCHAR(200),
+    price_diff          NUMERIC(10,2) NOT NULL DEFAULT 0,
+    note                TEXT,
+    status              food.substitution_status NOT NULL DEFAULT 'proposed',
+    proposed_by         UUID NOT NULL,
+    responded_by        UUID,
+    responded_at        TIMESTAMPTZ,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_food_substitutions_order ON food.order_substitutions(order_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS ix_food_substitutions_status ON food.order_substitutions(status);
+
+DROP TRIGGER IF EXISTS trg_food_substitutions_updated_at ON food.order_substitutions;
+CREATE TRIGGER trg_food_substitutions_updated_at
+BEFORE UPDATE ON food.order_substitutions
+FOR EACH ROW EXECUTE FUNCTION food.set_updated_at();
