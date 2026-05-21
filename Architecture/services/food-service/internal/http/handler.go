@@ -69,6 +69,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			user.GET("/orders/:orderId/substitutions", h.ListSubstitutions)
 			user.POST("/orders/:orderId/substitutions/:subId/respond", h.RespondSubstitution)
 			user.POST("/menu-items/:itemId/report", h.ReportMenuItem)
+			user.POST("/orders/:orderId/verify-delivery", h.CustomerVerifyDeliveryOTP)
 			user.POST("/orders/:orderId/ratings/restaurant", h.RateRestaurant)
 			user.POST("/orders/:orderId/ratings/delivery", h.RateDelivery)
 		}
@@ -92,6 +93,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			partner.GET("/restaurants/:restaurantId/orders", h.ListPartnerOrders)
 			partner.GET("/restaurants/:restaurantId/kitchen-queue", h.ListKitchenQueue)
 			partner.POST("/orders/:orderId/substitutions", h.PartnerProposeSubstitution)
+			partner.POST("/orders/:orderId/verify-pickup", h.PartnerVerifyPickupOTP)
 			partner.GET("/restaurants/:restaurantId/settlements", h.PartnerRestaurantSettlements)
 			partner.GET("/restaurants/:restaurantId/reports/summary", h.PartnerRestaurantSummary)
 			partner.POST("/orders/:orderId/accept", h.PartnerAcceptOrder)
@@ -105,6 +107,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			deliveryOffers.GET("/me", h.ListMyDeliveryOffers)
 			deliveryOffers.POST("/:offerId/accept", h.AcceptDeliveryOffer)
 			deliveryOffers.POST("/:offerId/reject", h.RejectDeliveryOffer)
+		}
+		deliveryProof := v1.Group("/delivery/orders", h.requireAuthenticated())
+		{
+			deliveryProof.POST("/:orderId/proof", h.PartnerAttachProof)
 		}
 
 		delivery := v1.Group("/delivery", h.requireAuthenticated())

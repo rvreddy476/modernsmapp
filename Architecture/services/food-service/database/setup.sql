@@ -1313,3 +1313,15 @@ CREATE INDEX IF NOT EXISTS ix_food_offers_partner_pending
     WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS ix_food_offers_order ON food.delivery_offers(order_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS ix_food_offers_expiry ON food.delivery_offers(expires_at) WHERE status = 'pending';
+
+-- ─── B5: pickup / delivery proof ──────────────────────────────────────
+--
+-- pickup_code + delivery_code already exist on food.delivery_assignments
+-- (4-6 digit OTPs). B5 adds the proof-of-pickup / proof-of-delivery
+-- image URLs (stored as MinIO object keys) and a verified flag set
+-- when the matching code is submitted.
+ALTER TABLE food.delivery_assignments
+    ADD COLUMN IF NOT EXISTS pickup_verified_at  TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS delivery_verified_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS proof_of_pickup_url   TEXT,
+    ADD COLUMN IF NOT EXISTS proof_of_delivery_url TEXT;

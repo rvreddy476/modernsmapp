@@ -100,14 +100,54 @@ func (s *Service) ListMyPendingDeliveryOffers(ctx context.Context, userID uuid.U
 }
 
 // AcceptDeliveryOffer is the partner-facing accept path. Atomic — the
-// store layer guarantees only one partner can win per order.
+// store layer guarantees only one partner can win per order. On accept
+// we also mint the pickup + delivery OTPs (idempotent) so both the
+// partner UI and the customer/restaurant UI can render them.
 func (s *Service) AcceptDeliveryOffer(ctx context.Context, userID, offerID uuid.UUID) error {
 	offer, err := s.store.AcceptDeliveryOfferTx(ctx, userID, offerID)
 	if err != nil {
 		return err
 	}
-	s.emit(ctx, "food.order."+offer.OrderID.String(), "food.delivery.assigned", offer)
+	pickup, delivery, cerr := s.store.EnsureDeliveryCodes(ctx, offer.OrderID)
+	if cerr != nil {
+		slog.Warn("food-service: ensure codes failed", "order_id", offer.OrderID, "error", cerr)
+	}
+	s.emit(ctx, "food.order."+offer.OrderID.String(), "food.delivery.assigned", map[string]any{
+		"offer":         offer,
+		"pickup_code":   pickup,
+		"delivery_code": delivery,
+	})
 	return nil
+}
+
+// VerifyPickupCode wraps the store call; emits the pickup-confirmed
+// event so the customer screen ticks over to "out for delivery".
+func (s *Service) VerifyPickupCode(ctx context.Context, ownerID, orderID uuid.UUID, code string) error {
+	if err := s.store.VerifyPickupCode(ctx, ownerID, orderID, code); err != nil {
+		return err
+	}
+	s.emit(ctx, "food.order."+orderID.String(), "food.delivery.picked_up", map[string]any{
+		"order_id": orderID.String(),
+	})
+	return nil
+}
+
+// VerifyDeliveryCode wraps the store call; emits the delivered event
+// so settlement + ratings flows kick in downstream.
+func (s *Service) VerifyDeliveryCode(ctx context.Context, customerID, orderID uuid.UUID, code string) error {
+	if err := s.store.VerifyDeliveryCode(ctx, customerID, orderID, code); err != nil {
+		return err
+	}
+	s.emit(ctx, "food.order."+orderID.String(), "food.delivery.delivered", map[string]any{
+		"order_id": orderID.String(),
+	})
+	return nil
+}
+
+// AttachProofURL stores a MinIO object key as proof at pickup or drop.
+// `which` must be "pickup" or "delivery".
+func (s *Service) AttachProofURL(ctx context.Context, userID, orderID uuid.UUID, which, url string) error {
+	return s.store.AttachProofURL(ctx, userID, orderID, which, url)
 }
 
 // RejectDeliveryOffer marks the offer rejected so the worker offers it

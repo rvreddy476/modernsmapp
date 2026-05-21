@@ -78,6 +78,10 @@ type Store interface {
 	AcceptDeliveryOfferTx(ctx context.Context, userID, offerID uuid.UUID) (*postgres.DeliveryOffer, error)
 	RejectDeliveryOffer(ctx context.Context, userID, offerID uuid.UUID, reason string) error
 	ExpireDeliveryOffers(ctx context.Context) (int, error)
+	EnsureDeliveryCodes(ctx context.Context, orderID uuid.UUID) (string, string, error)
+	VerifyPickupCode(ctx context.Context, ownerID, orderID uuid.UUID, code string) error
+	VerifyDeliveryCode(ctx context.Context, customerID, orderID uuid.UUID, code string) error
+	AttachProofURL(ctx context.Context, userID, orderID uuid.UUID, which, url string) error
 	PartnerRestaurantSettlements(ctx context.Context, ownerID, restaurantID uuid.UUID) ([]map[string]any, error)
 	PartnerRestaurantSummary(ctx context.Context, ownerID, restaurantID uuid.UUID) (map[string]any, error)
 	UpsertDeliveryPartner(ctx context.Context, userID uuid.UUID, in postgres.DeliveryPartnerInput) (*postgres.DeliveryPartner, error)
