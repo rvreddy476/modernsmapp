@@ -268,6 +268,19 @@ func main() {
 	go riderConsumer.Start(ctx)
 	slog.Info("kafka rider consumer started", "topic", riderTopic)
 
+	// Food (FiGo) events — same Consumer type, dedicated group so food
+	// lag (busy lunch rush) doesn't block other domains.
+	foodTopic := env("KAFKA_FOOD_TOPIC", "food-events")
+	foodConsumer := events.NewConsumerWithDialer(
+		strings.Split(kafkaBrokers, ","),
+		"notification-service-food-group",
+		foodTopic,
+		notifSvc,
+		kafkaDialer,
+	)
+	go foodConsumer.Start(ctx)
+	slog.Info("kafka food consumer started", "topic", foodTopic)
+
 	// 9b. Background workers
 	go workers.StartCleanupWorker(ctx, session)
 	go workers.StartReconciliationWorker(ctx, session, rdb)

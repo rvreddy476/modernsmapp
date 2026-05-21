@@ -381,6 +381,11 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		if handled, err := c.handleRiderEvent(ctx, envelope); handled {
 			return err
 		}
+		// Food (FiGo) events: order placed / payment / cancelled / refunded
+		// fan out as notifications + FCM to the customer + restaurant + admin.
+		if handled, err := c.handleFoodEvent(ctx, envelope); handled {
+			return err
+		}
 		return nil
 	}
 }

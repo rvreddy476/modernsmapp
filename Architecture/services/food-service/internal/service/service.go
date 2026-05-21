@@ -14,8 +14,10 @@ import (
 	"time"
 
 	"github.com/atpost/food-service/internal/store/postgres"
+	"github.com/atpost/shared/outbox"
 	"github.com/atpost/shared/realtime"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type Store interface {
@@ -109,6 +111,8 @@ type Service struct {
 	httpClient      *http.Client
 	rtPublisher     *realtime.Publisher
 	rtSigner        *realtime.TokenSigner
+	outboxQ         *outbox.Queuer
+	dbPool          *pgxpool.Pool
 }
 
 func New(store Store) *Service {
@@ -128,6 +132,37 @@ func (s *Service) WithRealtime(p *realtime.Publisher, signer *realtime.TokenSign
 	s.rtPublisher = p
 	s.rtSigner = signer
 	return s
+}
+
+// WithOutbox wires the durable outbox so domain events flow to Kafka
+// and downstream consumers (notification-service for FCM, analytics,
+// admin live boards). The pool is the same one the store uses; we
+// keep a separate handle so the service layer can enqueue without
+// going through every store method.
+func (s *Service) WithOutbox(q *outbox.Queuer, db *pgxpool.Pool) *Service {
+	s.outboxQ = q
+	s.dbPool = db
+	return s
+}
+
+// emit publishes a Kafka event via the outbox AND a Pub/Sub realtime
+// frame in one call. Both are best-effort; failures are logged at
+// WARN so a Redis or Postgres hiccup does not break the user request.
+func (s *Service) emit(ctx context.Context, topic, eventType string, data any) {
+	s.publishRealtime(ctx, topic, eventType, data)
+	if s.outboxQ == nil || s.dbPool == nil {
+		return
+	}
+	body, err := json.Marshal(data)
+	if err != nil {
+		slog.Warn("food-service: outbox marshal failed", "event", eventType, "error", err)
+		return
+	}
+	// Partition by topic so consumers can use it as the Kafka key for
+	// order-preserving fan-out (e.g. one partition per order_id).
+	if err := s.outboxQ.EnqueuePool(ctx, s.dbPool, eventType, topic, body); err != nil {
+		slog.Warn("food-service: outbox enqueue failed", "event", eventType, "error", err)
+	}
 }
 
 // publishRealtime is a best-effort fire-and-forget broadcast. Errors
@@ -279,7 +314,7 @@ func (s *Service) PlaceOrder(ctx context.Context, userID uuid.UUID, in postgres.
 	if err != nil {
 		return nil, err
 	}
-	s.publishRealtime(ctx, "food.order."+o.ID.String(), "food.order.placed", o)
+	s.emit(ctx, "food.order."+o.ID.String(), "food.order.placed", o)
 	s.publishRealtime(ctx, "food.restaurant."+o.RestaurantID.String()+".orders", "food.order.placed", o)
 	s.publishRealtime(ctx, "food.admin.live_orders", "food.order.placed", o)
 	return o, nil
@@ -405,9 +440,9 @@ func (s *Service) ConfirmPayment(ctx context.Context, in ConfirmPaymentInput) (*
 	if err != nil {
 		return nil, err
 	}
-	s.publishRealtime(ctx, "food.order."+o.ID.String(), "food.order.payment_confirmed", o)
-	s.publishRealtime(ctx, "food.restaurant."+o.RestaurantID.String()+".orders", "food.order.payment_confirmed", o)
-	s.publishRealtime(ctx, "food.admin.live_orders", "food.order.payment_confirmed", o)
+	s.emit(ctx, "food.order."+o.ID.String(), "food.order.payment_succeeded", o)
+	s.publishRealtime(ctx, "food.restaurant."+o.RestaurantID.String()+".orders", "food.order.payment_succeeded", o)
+	s.publishRealtime(ctx, "food.admin.live_orders", "food.order.payment_succeeded", o)
 	return o, nil
 }
 
@@ -617,7 +652,7 @@ func (s *Service) CancelOrder(ctx context.Context, userID, orderID uuid.UUID, re
 	if err != nil {
 		return nil, err
 	}
-	s.publishRealtime(ctx, "food.order."+o.ID.String(), "food.order.cancelled", o)
+	s.emit(ctx, "food.order."+o.ID.String(), "food.order.cancelled", o)
 	s.publishRealtime(ctx, "food.restaurant."+o.RestaurantID.String()+".orders", "food.order.cancelled", o)
 	s.publishRealtime(ctx, "food.admin.live_orders", "food.order.cancelled", o)
 	return o, nil

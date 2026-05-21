@@ -85,12 +85,9 @@ func main() {
 		}
 	}
 
-	handler := foodhttp.New(svc).WithInternalKey(internalKey)
-
-	// P0.3 — durable outbox publisher. New event-publish sites
-	// should `outbox.Queuer.Enqueue(ctx, tx, ...)` inside the same
-	// tx as the domain write; this publisher drains the table and
-	// retries on Kafka outage.
+	// P0.3 — durable outbox publisher. Domain events PlaceOrder /
+	// ConfirmPayment / CancelOrder enqueue here (via service.emit);
+	// this publisher drains the table and retries on Kafka outage.
 	outboxCtx, outboxCancel := context.WithCancel(ctx)
 	defer outboxCancel()
 	outboxPublisher := outbox.New(dbPool, outbox.Config{
@@ -99,6 +96,10 @@ func main() {
 	})
 	go outboxPublisher.Run(outboxCtx)
 	slog.Info("outbox publisher started", "topic", kafkaTopic)
+
+	svc.WithOutbox(outbox.NewQueuer(""), dbPool)
+
+	handler := foodhttp.New(svc).WithInternalKey(internalKey)
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
