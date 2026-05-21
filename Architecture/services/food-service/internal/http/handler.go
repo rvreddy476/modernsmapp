@@ -42,6 +42,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/restaurants/:restaurantId", h.GetRestaurant)
 		v1.GET("/restaurants/:restaurantId/menu", h.GetMenu)
 		v1.GET("/search", h.Search)
+		v1.GET("/menu-items/:itemId/reviews", h.ListItemReviews)
 
 		user := v1.Group("", h.requireAuthenticated())
 		{
@@ -75,6 +76,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			user.GET("/support/tickets/:ticketId", h.GetTicket)
 			user.POST("/support/tickets/:ticketId/messages", h.AppendTicketMessage)
 			user.POST("/refunds", h.CreateRefundRequest)
+			user.POST("/menu-items/:itemId/reviews", h.CreateItemReview)
 			user.POST("/orders/:orderId/ratings/restaurant", h.RateRestaurant)
 			user.POST("/orders/:orderId/ratings/delivery", h.RateDelivery)
 		}
@@ -146,6 +148,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			admin.POST("/moderation/menu-items/:itemId", h.AdminModerateMenuItem)
 			admin.POST("/support/tickets/:ticketId/status", h.AdminSetTicketStatus)
 			admin.POST("/refunds/:refundId/decide", h.AdminDecideRefund)
+			admin.DELETE("/item-reviews/:reviewId", h.AdminHideItemReview)
 			admin.GET("/restaurants/pending", h.AdminPendingRestaurants)
 			admin.POST("/restaurants/:restaurantId/approve", h.AdminApproveRestaurant)
 			admin.POST("/restaurants/:restaurantId/reject", h.AdminRejectRestaurant)

@@ -89,6 +89,9 @@ type Store interface {
 	SetTicketStatus(ctx context.Context, ticketID uuid.UUID, status string) error
 	CreateRefundRequest(ctx context.Context, customerID, orderID uuid.UUID, ticketID *uuid.UUID, amount float64, reason string) (*postgres.RefundRequest, error)
 	DecideRefund(ctx context.Context, adminID, refundID uuid.UUID, status, reason string) error
+	CreateItemReview(ctx context.Context, in postgres.CreateItemReviewInput) (*postgres.ItemReview, error)
+	ListItemReviews(ctx context.Context, menuItemID uuid.UUID, limit int) ([]postgres.ItemReview, error)
+	HideItemReview(ctx context.Context, reviewID uuid.UUID) error
 	PartnerRestaurantSettlements(ctx context.Context, ownerID, restaurantID uuid.UUID) ([]map[string]any, error)
 	PartnerRestaurantSummary(ctx context.Context, ownerID, restaurantID uuid.UUID) (map[string]any, error)
 	UpsertDeliveryPartner(ctx context.Context, userID uuid.UUID, in postgres.DeliveryPartnerInput) (*postgres.DeliveryPartner, error)
@@ -808,6 +811,22 @@ func (s *Service) ListPendingModeration(ctx context.Context, limit int) ([]postg
 // customer-facing listings.
 func (s *Service) ModerateMenuItem(ctx context.Context, adminID, itemID uuid.UUID, status, reason string) error {
 	return s.store.ModerateMenuItem(ctx, adminID, itemID, status, reason)
+}
+
+// CreateItemReview wraps the store call; only DELIVERED orders by the
+// customer are accepted (enforced in the store layer).
+func (s *Service) CreateItemReview(ctx context.Context, in postgres.CreateItemReviewInput) (*postgres.ItemReview, error) {
+	return s.store.CreateItemReview(ctx, in)
+}
+
+// ListItemReviews returns reviews for one menu item; public read.
+func (s *Service) ListItemReviews(ctx context.Context, menuItemID uuid.UUID, limit int) ([]postgres.ItemReview, error) {
+	return s.store.ListItemReviews(ctx, menuItemID, limit)
+}
+
+// HideItemReview is the admin moderation knob (hard-delete v1).
+func (s *Service) HideItemReview(ctx context.Context, reviewID uuid.UUID) error {
+	return s.store.HideItemReview(ctx, reviewID)
 }
 
 // AutoRejectSLAExpiredOrders is invoked by the background worker every

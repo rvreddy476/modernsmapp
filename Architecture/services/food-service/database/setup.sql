@@ -1397,3 +1397,27 @@ DROP TRIGGER IF EXISTS trg_food_refunds_updated_at ON food.refund_requests;
 CREATE TRIGGER trg_food_refunds_updated_at
 BEFORE UPDATE ON food.refund_requests
 FOR EACH ROW EXECUTE FUNCTION food.set_updated_at();
+
+-- ─── B7: item-level reviews ───────────────────────────────────────────
+--
+-- Existing restaurant_ratings + delivery_ratings cover the order-level
+-- 1-5 stars. Item-level reviews let a customer rate the specific
+-- dish; the aggregate feeds into menu_items.avg_rating + count.
+CREATE TABLE IF NOT EXISTS food.item_reviews (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    order_id      UUID NOT NULL REFERENCES food.orders(id) ON DELETE CASCADE,
+    menu_item_id  UUID NOT NULL REFERENCES food.menu_items(id) ON DELETE CASCADE,
+    customer_id   UUID NOT NULL,
+    rating        SMALLINT NOT NULL CHECK (rating BETWEEN 1 AND 5),
+    review        TEXT,
+    photo_urls    JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(order_id, menu_item_id, customer_id)
+);
+CREATE INDEX IF NOT EXISTS ix_food_item_reviews_item ON food.item_reviews(menu_item_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS ix_food_item_reviews_customer ON food.item_reviews(customer_id);
+
+-- Aggregate columns on menu_items so PDPs render the score cheaply.
+ALTER TABLE food.menu_items
+    ADD COLUMN IF NOT EXISTS avg_rating  NUMERIC(3,2),
+    ADD COLUMN IF NOT EXISTS rating_count INTEGER NOT NULL DEFAULT 0;
