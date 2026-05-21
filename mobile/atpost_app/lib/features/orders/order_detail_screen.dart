@@ -388,13 +388,13 @@ class _OrderItemCard extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(item.productName, style: AppTextStyles.label),
+                Text(item.productTitle, style: AppTextStyles.label),
                 Text('Qty ${item.quantity}', style: AppTextStyles.labelSmall),
               ],
             ),
           ),
           Text(
-            '$currencySymbol${item.price.toStringAsFixed(0)}',
+            '$currencySymbol${item.finalPrice.toStringAsFixed(0)}',
             style: AppTextStyles.label.copyWith(
               color: AppColors.postbookPrimary,
             ),

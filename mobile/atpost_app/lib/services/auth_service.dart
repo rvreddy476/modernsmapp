@@ -46,6 +46,14 @@ class AuthService {
   final Dio _dio;
   AuthState _state = const AuthState();
 
+  // Tracks the session-restore deadline Timer so dispose() can cancel
+  // it explicitly. The previous code used `.timeout()` which leaks a
+  // pending Timer in flutter_test when the secure-storage stub never
+  // resolves — failing widget tests with the "Timer is still pending
+  // after the widget tree was disposed" assertion. See
+  // memory/deferred_nonblocking_bugs.md for the original report.
+  Timer? _restoreDeadline;
+
   // Future to track session readiness for GoRouter redirects
   late final Future<void> sessionReady;
 
@@ -74,12 +82,45 @@ class AuthService {
   /// Restore session from secure storage with fault tolerance and timeout.
   Future<void> restoreSession() async {
     try {
-      // Add a timeout to prevent hanging on physical devices
-      final results = await Future.wait([
+      // Manual deadline + Completer instead of `.timeout()` so dispose()
+      // can cancel the underlying Timer cleanly. Production semantics
+      // unchanged: if secure storage stalls past 5s we throw a
+      // TimeoutException just like the old `.timeout()` did.
+      final deadlineCompleter = Completer<List<String?>>();
+      _restoreDeadline?.cancel();
+      _restoreDeadline = Timer(const Duration(seconds: 5), () {
+        if (!deadlineCompleter.isCompleted) {
+          deadlineCompleter.completeError(
+            TimeoutException(
+              'Session restore timed out',
+              const Duration(seconds: 5),
+            ),
+          );
+        }
+      });
+
+      // The storage reads race the deadline. Cancelling the Timer the
+      // moment the reads complete is the critical part — that's what
+      // unblocks flutter_test's "no pending Timers" assertion.
+      Future.wait([
         _storage.read(key: _keyUserId),
         _storage.read(key: _keyToken),
         _storage.read(key: _keyRefreshToken),
-      ]).timeout(const Duration(seconds: 5));
+      ]).then((r) {
+        _restoreDeadline?.cancel();
+        _restoreDeadline = null;
+        if (!deadlineCompleter.isCompleted) {
+          deadlineCompleter.complete(r);
+        }
+      }).catchError((Object e) {
+        _restoreDeadline?.cancel();
+        _restoreDeadline = null;
+        if (!deadlineCompleter.isCompleted) {
+          deadlineCompleter.completeError(e);
+        }
+      });
+
+      final results = await deadlineCompleter.future;
 
       final userId = _normalize(results[0]);
       final token = _normalize(results[1]);
@@ -260,7 +301,13 @@ class AuthService {
     return (t == null || t.isEmpty) ? null : t;
   }
 
-  void dispose() => _stateController.close();
+  void dispose() {
+    // Cancel any in-flight session-restore deadline so flutter_test
+    // (and any other early-dispose path) doesn't leave a Timer pending.
+    _restoreDeadline?.cancel();
+    _restoreDeadline = null;
+    _stateController.close();
+  }
 }
 
 final authServiceProvider = Provider<AuthService>((ref) {

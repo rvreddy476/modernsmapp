@@ -336,7 +336,7 @@ class _OrderList extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          firstItem?.productName ?? 'Order',
+                          firstItem?.productTitle ?? 'Order',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: AppTextStyles.h3,

@@ -194,8 +194,55 @@ class _AuthRouterRefresh extends ChangeNotifier {
 
   late final StreamSubscription<AuthState> _subscription;
 
+  // Phase W1 — tracks in-flight redirect deadlines so dispose() can
+  // cancel them. flutter_test's "no Timer pending" assertion fires
+  // when secure-storage reads stall past test teardown; explicit
+  // tracking gives us a clean cancel hook.
+  final Set<Timer> _redirectDeadlines = <Timer>{};
+
+  /// Awaits `future` with a hard cap of `timeout`. The underlying
+  /// Timer is registered with this refresh listener so dispose() can
+  /// cancel it even if the future never resolves. Returns when either
+  /// the future completes or the deadline fires.
+  Future<void> awaitWithDeadline(Future<void> future, Duration timeout) {
+    final completer = Completer<void>();
+    late final Timer timer;
+    void cleanup() {
+      _redirectDeadlines.remove(timer);
+      timer.cancel();
+    }
+
+    timer = Timer(timeout, () {
+      if (!completer.isCompleted) {
+        cleanup();
+        completer.completeError(
+          TimeoutException('redirect deadline', timeout),
+        );
+      }
+    });
+    _redirectDeadlines.add(timer);
+
+    future.then((_) {
+      if (!completer.isCompleted) {
+        cleanup();
+        completer.complete();
+      }
+    }).catchError((Object e) {
+      if (!completer.isCompleted) {
+        cleanup();
+        completer.completeError(e);
+      }
+    });
+
+    return completer.future;
+  }
+
   @override
   void dispose() {
+    for (final t in _redirectDeadlines) {
+      t.cancel();
+    }
+    _redirectDeadlines.clear();
     _subscription.cancel();
     super.dispose();
   }
@@ -239,7 +286,13 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       final path = state.uri.path;
 
       try {
-        await authService.sessionReady.timeout(const Duration(seconds: 3));
+        // Phase W1 — manual deadline via refresh listener so the Timer
+        // is cancellable when the test framework disposes us. The
+        // previous `.timeout(3s)` leaked a Timer past teardown.
+        await refresh.awaitWithDeadline(
+          authService.sessionReady,
+          const Duration(seconds: 3),
+        );
       } catch (_) {
         AppLogger.warn('Router: Session restoration timed out', tag: 'Router');
       }
