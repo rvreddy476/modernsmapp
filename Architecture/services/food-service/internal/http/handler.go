@@ -87,6 +87,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			partner.DELETE("/menu/items/:itemId", h.DeleteMenuItem)
 			partner.PATCH("/menu/items/:itemId/availability", h.SetMenuItemAvailability)
 			partner.GET("/restaurants/:restaurantId/orders", h.ListPartnerOrders)
+			partner.GET("/restaurants/:restaurantId/kitchen-queue", h.ListKitchenQueue)
 			partner.GET("/restaurants/:restaurantId/settlements", h.PartnerRestaurantSettlements)
 			partner.GET("/restaurants/:restaurantId/reports/summary", h.PartnerRestaurantSummary)
 			partner.POST("/orders/:orderId/accept", h.PartnerAcceptOrder)

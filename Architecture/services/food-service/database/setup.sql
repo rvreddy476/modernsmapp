@@ -1173,3 +1173,24 @@ CREATE TABLE IF NOT EXISTS outbox_events (
 CREATE INDEX IF NOT EXISTS idx_outbox_unpublished
     ON outbox_events (id)
     WHERE published_at IS NULL;
+
+-- ─── B1: kitchen queue + SLA accept deadline ──────────────────────────
+--
+-- `sla_accept_seconds` is the per-restaurant grace window for accepting
+-- a CONFIRMED order. The default (180s = 3 min) matches industry norms;
+-- partners can tune per-restaurant from the partner dashboard.
+--
+-- `accept_deadline_at` is set on the orders table when payment is
+-- captured (status moves to CONFIRMED). The auto-reject worker scans
+-- orders with `status='CONFIRMED' AND accept_deadline_at < NOW()` and
+-- transitions them to RESTAURANT_REJECTED with reason='sla_breach'.
+ALTER TABLE food.restaurants
+    ADD COLUMN IF NOT EXISTS sla_accept_seconds INTEGER NOT NULL DEFAULT 180
+    CHECK (sla_accept_seconds BETWEEN 30 AND 1800);
+
+ALTER TABLE food.orders
+    ADD COLUMN IF NOT EXISTS accept_deadline_at TIMESTAMPTZ;
+
+CREATE INDEX IF NOT EXISTS ix_food_orders_accept_sla
+    ON food.orders(accept_deadline_at)
+    WHERE status = 'CONFIRMED' AND accept_deadline_at IS NOT NULL;

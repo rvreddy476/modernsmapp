@@ -99,6 +99,11 @@ func main() {
 
 	svc.WithOutbox(outbox.NewQueuer(""), dbPool)
 
+	// B1: SLA auto-reject worker. Scans every 15s for CONFIRMED orders
+	// past their accept_deadline_at and transitions them to
+	// RESTAURANT_REJECTED so the customer is refunded promptly.
+	go svc.StartSLAAutoRejectWorker(outboxCtx)
+
 	handler := foodhttp.New(svc).WithInternalKey(internalKey)
 
 	gin.SetMode(gin.ReleaseMode)

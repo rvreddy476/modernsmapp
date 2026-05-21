@@ -63,6 +63,8 @@ type Store interface {
 	SetMenuItemAvailability(ctx context.Context, ownerID, itemID uuid.UUID, available bool) error
 	ListPartnerOrders(ctx context.Context, ownerID, restaurantID uuid.UUID) ([]postgres.Order, error)
 	PartnerUpdateOrderStatus(ctx context.Context, ownerID, orderID uuid.UUID, toStatus, reason, idempotencyKey string) (*postgres.Order, error)
+	ListKitchenQueue(ctx context.Context, ownerID, restaurantID uuid.UUID) ([]postgres.KitchenOrder, error)
+	AutoRejectExpiredOrders(ctx context.Context, batch int) ([]uuid.UUID, error)
 	PartnerRestaurantSettlements(ctx context.Context, ownerID, restaurantID uuid.UUID) ([]map[string]any, error)
 	PartnerRestaurantSummary(ctx context.Context, ownerID, restaurantID uuid.UUID) (map[string]any, error)
 	UpsertDeliveryPartner(ctx context.Context, userID uuid.UUID, in postgres.DeliveryPartnerInput) (*postgres.DeliveryPartner, error)
@@ -724,6 +726,33 @@ func (s *Service) SetMenuItemAvailability(ctx context.Context, ownerID, itemID u
 
 func (s *Service) ListPartnerOrders(ctx context.Context, ownerID, restaurantID uuid.UUID) ([]postgres.Order, error) {
 	return s.store.ListPartnerOrders(ctx, ownerID, restaurantID)
+}
+
+// ListKitchenQueue returns CONFIRMED orders awaiting partner accept,
+// sorted by SLA-breach deadline (most-urgent first). Used by the
+// partner mobile/web kitchen dashboard.
+func (s *Service) ListKitchenQueue(ctx context.Context, ownerID, restaurantID uuid.UUID) ([]postgres.KitchenOrder, error) {
+	return s.store.ListKitchenQueue(ctx, ownerID, restaurantID)
+}
+
+// AutoRejectSLAExpiredOrders is invoked by the background worker every
+// 15s. Transitions CONFIRMED orders past their accept_deadline_at to
+// RESTAURANT_REJECTED and fires events so notifications + refunds run
+// downstream.
+func (s *Service) AutoRejectSLAExpiredOrders(ctx context.Context) (int, error) {
+	ids, err := s.store.AutoRejectExpiredOrders(ctx, 50)
+	if err != nil {
+		return 0, err
+	}
+	for _, id := range ids {
+		// Push a minimal payload — downstream consumers re-fetch the
+		// order from food-service for the full state.
+		s.emit(ctx, "food.order."+id.String(), "food.order.restaurant_rejected", map[string]any{
+			"id":     id.String(),
+			"reason": "sla_breach",
+		})
+	}
+	return len(ids), nil
 }
 
 func (s *Service) PartnerUpdateOrderStatus(ctx context.Context, ownerID, orderID uuid.UUID, toStatus, reason, idempotencyKey string) (*postgres.Order, error) {
