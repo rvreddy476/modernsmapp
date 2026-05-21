@@ -127,3 +127,106 @@ func derefOrEmpty(s *string) string {
 	}
 	return *s
 }
+
+// ─── Helpers used by the execute worker ──────────────────────────
+
+// FindVariantBySKUForSeller returns the variant whose seller owns it.
+// The unique constraint on (sku, seller_id) isn't enforced by the
+// schema directly — we approximate by joining to products and matching
+// the seller_id, then returning the first hit. Used by the bulk-import
+// executor to decide insert-vs-update.
+func (s *Store) FindVariantBySKUForSeller(ctx context.Context, sellerID uuid.UUID, sku string) (*ProductVariant, error) {
+	v := &ProductVariant{}
+	err := s.db.QueryRow(ctx, `
+		SELECT v.id, v.product_id, v.sku, v.barcode, v.option_1_name, v.option_1_value,
+		       v.option_2_name, v.option_2_value, v.option_3_name, v.option_3_value,
+		       v.mrp, v.selling_price, v.cost_price, v.currency_code, v.status,
+		       v.image_media_id, v.weight_grams, v.created_at, v.updated_at
+		FROM product_variants v
+		JOIN products p ON p.id = v.product_id
+		WHERE p.seller_id = $1 AND v.sku = $2
+		LIMIT 1`, sellerID, sku).Scan(
+		&v.ID, &v.ProductID, &v.SKU, &v.Barcode, &v.Option1Name, &v.Option1Value,
+		&v.Option2Name, &v.Option2Value, &v.Option3Name, &v.Option3Value,
+		&v.MRP, &v.SellingPrice, &v.CostPrice, &v.CurrencyCode, &v.Status,
+		&v.ImageMediaID, &v.WeightGrams, &v.CreatedAt, &v.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return v, nil
+}
+
+// UpdateVariantPricing updates the price + stock fields a bulk import
+// row touches. Leaves option/barcode/image untouched (those are set
+// only at create time so a reupload doesn't lose them).
+func (s *Store) UpdateVariantPricing(ctx context.Context, variantID uuid.UUID, mrp, sellingPrice float64, costPrice *float64, weightGrams *int) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE product_variants
+		SET mrp = $2,
+		    selling_price = $3,
+		    cost_price = COALESCE($4, cost_price),
+		    weight_grams = COALESCE($5, weight_grams),
+		    updated_at = NOW()
+		WHERE id = $1`,
+		variantID, mrp, sellingPrice, costPrice, weightGrams)
+	return err
+}
+
+// UpdateProductMetadata updates the bulk-import-touchable product
+// fields. Existing fields the import doesn't supply (description,
+// images, etc.) are preserved.
+func (s *Store) UpdateProductMetadata(ctx context.Context, productID uuid.UUID, in ProductMetadataUpdate) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE products SET
+			title = COALESCE(NULLIF($2,''), title),
+			brand_name = COALESCE($3, brand_name),
+			manufacturer_name = COALESCE($4, manufacturer_name),
+			hsn_code = COALESCE($5, hsn_code),
+			country_of_origin = COALESCE($6, country_of_origin),
+			weight_grams = COALESCE($7, weight_grams),
+			length_cm = COALESCE($8, length_cm),
+			width_cm = COALESCE($9, width_cm),
+			height_cm = COALESCE($10, height_cm),
+			updated_at = NOW()
+		WHERE id = $1`,
+		productID, in.Title, in.BrandName, in.ManufacturerName, in.HSNCode,
+		in.CountryOfOrigin, in.WeightGrams, in.LengthCm, in.WidthCm, in.HeightCm)
+	return err
+}
+
+// ProductMetadataUpdate is the bulk-import-shaped product patch.
+// Pointers everywhere so the COALESCE-no-op pattern works cleanly.
+type ProductMetadataUpdate struct {
+	Title            string
+	BrandName        *string
+	ManufacturerName *string
+	HSNCode          *string
+	CountryOfOrigin  *string
+	WeightGrams      *int
+	LengthCm         *float64
+	WidthCm          *float64
+	HeightCm         *float64
+}
+
+// IncrImportJobImported atomically increments the imported_rows count.
+// Used by the execute worker between row-scoped transactions so the
+// seller's poll sees progress mid-import.
+func (s *Store) IncrImportJobImported(ctx context.Context, jobID uuid.UUID, delta int) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE product_import_jobs SET imported_rows = imported_rows + $2 WHERE id = $1`,
+		jobID, delta)
+	return err
+}
+
+// IncrImportJobErrors atomically increments error_rows so partial
+// failures during execute show up immediately.
+func (s *Store) IncrImportJobErrors(ctx context.Context, jobID uuid.UUID, delta int) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE product_import_jobs SET error_rows = error_rows + $2 WHERE id = $1`,
+		jobID, delta)
+	return err
+}

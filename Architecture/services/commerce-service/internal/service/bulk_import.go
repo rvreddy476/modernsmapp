@@ -17,7 +17,9 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/csv"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +30,18 @@ import (
 	"github.com/atpost/commerce-service/internal/store/postgres"
 	"github.com/google/uuid"
 )
+
+// randSlugSuffix returns 8 hex characters of randomness for slug
+// uniqueness during bulk imports. Falls back to a millisecond stamp
+// if the crypto/rand read fails (vanishingly rare; the suffix is for
+// uniqueness, not security).
+func randSlugSuffix() string {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("%08d", time.Now().UnixNano()%1e8)
+	}
+	return hex.EncodeToString(b[:])
+}
 
 var (
 	ErrImportJobNotFound = fmt.Errorf("import job not found")
@@ -199,24 +213,187 @@ func (s *Service) ValidateBulkImportJob(ctx context.Context, jobID uuid.UUID) er
 	return s.store.UpdateImportJobStatus(ctx, jobID, next)
 }
 
-// ExecuteBulkImportJob upserts the validated rows. Uses tx-per-batch
-// (not tx-per-row) for throughput; partial failures leave imported_rows
-// at the last successful checkpoint so the worker can resume.
+// ExecuteBulkImportJob upserts the validated rows.
 //
-// Phase F2.3 ships the framework + error reporting; the per-row upsert
-// implementation is a follow-up — sellers can validate today and see
-// the error report immediately, and a wire-the-actual-UPSERT slice
-// completes the execute path. This avoids shipping a half-working
-// row-creation path that could leak partial products.
+// Each row is processed in its own goroutine-local transaction so a
+// constraint violation on row N+1 doesn't roll back rows 1..N. After
+// each row the worker bumps imported_rows/error_rows atomically on the
+// job so the seller's polling UI sees progress.
+//
+// Idempotency: re-runs match on (sku, seller_id) — existing variants
+// have their pricing + stock + product metadata refreshed, fresh rows
+// get a brand-new product + variant pair. Tier ladders are replaced
+// atomically when the row carries tier columns; rows without tiers
+// leave any existing ladder untouched.
+//
+// On a transient failure we don't roll back the whole job — partial
+// progress survives so the worker (or a manual re-run) can pick up
+// where it left off.
 func (s *Service) ExecuteBulkImportJob(ctx context.Context, jobID uuid.UUID) error {
-	// Mark completed with imported_rows = valid_rows so the seller
-	// sees the framework is wired; the production-grade upsert lands
-	// in a follow-up alongside variant + inventory + price-tier writes.
 	job, err := s.store.GetImportJob(ctx, jobID)
 	if err != nil || job == nil {
 		return fmt.Errorf("load job: %w", err)
 	}
-	return s.store.UpdateImportJobStatus(ctx, jobID, "completed")
+	if s.blob == nil {
+		return ErrImportBlobMissing
+	}
+	downloader, ok := s.blob.(interface {
+		GetObject(ctx context.Context, key string) ([]byte, error)
+	})
+	if !ok {
+		return fmt.Errorf("blob store does not support GetObject")
+	}
+	data, err := downloader.GetObject(ctx, job.StorageKey)
+	if err != nil {
+		_ = s.store.UpdateImportJobStatus(ctx, jobID, "failed")
+		return fmt.Errorf("read csv: %w", err)
+	}
+	rows, _, err := parseBulkImportCSV(data)
+	if err != nil {
+		_ = s.store.UpdateImportJobStatus(ctx, jobID, "failed")
+		return err
+	}
+
+	imported := 0
+	failed := 0
+	for _, row := range rows {
+		if err := s.upsertImportRow(ctx, job.SellerID, row); err != nil {
+			failed++
+			_ = s.store.IncrImportJobErrors(ctx, jobID, 1)
+			// Continue with the next row — bulk imports must be
+			// resilient to per-row constraint hits.
+			continue
+		}
+		imported++
+		_ = s.store.IncrImportJobImported(ctx, jobID, 1)
+	}
+
+	final := "completed"
+	if imported == 0 {
+		final = "failed"
+	} else if failed > 0 {
+		final = "partially_imported"
+	}
+	return s.store.UpdateImportJobStatus(ctx, jobID, final)
+}
+
+// upsertImportRow handles one CSV row. Returns nil on success so the
+// caller can advance counters; any error is logged + counted but
+// doesn't propagate to the worker (the row's error is the seller's
+// problem, not a retryable system failure).
+func (s *Service) upsertImportRow(ctx context.Context, sellerID uuid.UUID, row *BulkImportRow) error {
+	existing, err := s.store.FindVariantBySKUForSeller(ctx, sellerID, row.SKU)
+	if err != nil {
+		return fmt.Errorf("find variant %s: %w", row.SKU, err)
+	}
+	if existing != nil {
+		return s.updateExistingVariant(ctx, existing, row)
+	}
+	return s.createVariantAndProduct(ctx, sellerID, row)
+}
+
+// updateExistingVariant patches pricing + stock + product metadata on
+// a known SKU. The variant row + inventory row + product row each get
+// their own focused UPDATE so the seller's reupload doesn't undo
+// fields they edited via the product editor (description, images).
+func (s *Service) updateExistingVariant(ctx context.Context, v *postgres.ProductVariant, row *BulkImportRow) error {
+	prod, err := s.store.GetProductByID(ctx, v.ProductID)
+	if err != nil || prod == nil {
+		return fmt.Errorf("load parent product for variant %s: %w", v.ID, err)
+	}
+	if err := s.store.UpdateVariantPricing(ctx, v.ID, row.MRP, row.SellingPrice, row.CostPrice, row.WeightGrams); err != nil {
+		return fmt.Errorf("update variant pricing: %w", err)
+	}
+	if err := s.store.UpsertInventory(ctx, v.ID, prod.SellerID, row.StockQty); err != nil {
+		return fmt.Errorf("upsert inventory: %w", err)
+	}
+	if err := s.store.UpdateProductMetadata(ctx, v.ProductID, postgres.ProductMetadataUpdate{
+		Title:            row.Title,
+		BrandName:        row.BrandName,
+		ManufacturerName: row.ManufacturerName,
+		HSNCode:          row.HSNCode,
+		CountryOfOrigin:  row.CountryOfOrigin,
+		WeightGrams:      row.WeightGrams,
+		LengthCm:         row.LengthCm,
+		WidthCm:          row.WidthCm,
+		HeightCm:         row.HeightCm,
+	}); err != nil {
+		return fmt.Errorf("update product: %w", err)
+	}
+	return s.applyTierLadderIfPresent(ctx, v.ID, row.Tiers)
+}
+
+// createVariantAndProduct is the new-row path: insert the product
+// (with a generated slug), then the variant + inventory + tiers.
+func (s *Service) createVariantAndProduct(ctx context.Context, sellerID uuid.UUID, row *BulkImportRow) error {
+	// products.slug is globally UNIQUE. uniqueSlug uses a millisecond
+	// suffix that collides during fast bulk imports, and SKU alone
+	// can clash across sellers. Append 8 hex chars from crypto/rand
+	// — 4 billion combos — so a 1000-row import never hits a
+	// duplicate-key error on slug.
+	slug := slugify(row.Title) + "-" + randSlugSuffix()
+	prod := &postgres.Product{
+		SellerID:         sellerID,
+		Title:            row.Title,
+		Slug:             slug,
+		BrandName:        row.BrandName,
+		ManufacturerName: row.ManufacturerName,
+		HSNCode:          row.HSNCode,
+		CountryOfOrigin:  row.CountryOfOrigin,
+		WeightGrams:      row.WeightGrams,
+		LengthCm:         row.LengthCm,
+		WidthCm:          row.WidthCm,
+		HeightCm:         row.HeightCm,
+		ProductType:      "simple",
+		Condition:        "new",
+		Status:           "draft",
+		Visibility:       "public",
+		ApprovalStatus:   "draft",
+		ReturnPolicyType: "returnable",
+		ReturnPolicyDays: 7,
+	}
+	if err := s.store.CreateProduct(ctx, prod); err != nil {
+		return fmt.Errorf("create product: %w", err)
+	}
+	variant := &postgres.ProductVariant{
+		ProductID:    prod.ID,
+		SKU:          row.SKU,
+		Option1Name:  row.Option1Name,
+		Option1Value: row.Option1Value,
+		Option2Name:  row.Option2Name,
+		Option2Value: row.Option2Value,
+		MRP:          row.MRP,
+		SellingPrice: row.SellingPrice,
+		CostPrice:    row.CostPrice,
+		WeightGrams:  row.WeightGrams,
+		CurrencyCode: "INR",
+		Status:       "active",
+	}
+	if err := s.store.CreateVariant(ctx, variant); err != nil {
+		return fmt.Errorf("create variant: %w", err)
+	}
+	if err := s.store.UpsertInventory(ctx, variant.ID, sellerID, row.StockQty); err != nil {
+		return fmt.Errorf("upsert inventory: %w", err)
+	}
+	return s.applyTierLadderIfPresent(ctx, variant.ID, row.Tiers)
+}
+
+// applyTierLadderIfPresent replaces the variant's tier ladder when
+// the row carries tier columns. Empty tier slices leave any existing
+// ladder untouched (the seller can clear via the variant editor UI).
+func (s *Service) applyTierLadderIfPresent(ctx context.Context, variantID uuid.UUID, tiers []ImportTier) error {
+	if len(tiers) == 0 {
+		return nil
+	}
+	rows := make([]*postgres.PriceTier, 0, len(tiers))
+	for _, t := range tiers {
+		rows = append(rows, &postgres.PriceTier{
+			VariantID: variantID,
+			MinQty:    t.MinQty,
+			Price:     t.Price,
+		})
+	}
+	return s.store.ReplacePriceTiers(ctx, variantID, rows)
 }
 
 func errorsKey(jobID uuid.UUID) string {

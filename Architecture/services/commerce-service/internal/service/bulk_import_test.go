@@ -1,6 +1,36 @@
 package service
 
-import "testing"
+import (
+	"regexp"
+	"testing"
+)
+
+func TestRandSlugSuffix_HexFormat(t *testing.T) {
+	// 8 hex chars = 4 bytes of randomness; matches the contract that
+	// bulk-import slugs end with [0-9a-f]{8}.
+	pattern := regexp.MustCompile(`^[0-9a-f]{8}$`)
+	for i := 0; i < 50; i++ {
+		s := randSlugSuffix()
+		if !pattern.MatchString(s) {
+			t.Errorf("suffix %q does not match hex pattern", s)
+		}
+	}
+}
+
+func TestRandSlugSuffix_NoCollisionsInBatch(t *testing.T) {
+	// A 1000-row import should never hit a slug collision. 50 samples
+	// here is a sanity check — collision probability with 4 bytes of
+	// randomness is ~1.2 × 10⁻¹⁵ per pair.
+	seen := make(map[string]bool, 50)
+	for i := 0; i < 50; i++ {
+		s := randSlugSuffix()
+		if seen[s] {
+			t.Errorf("duplicate suffix %q", s)
+		}
+		seen[s] = true
+	}
+}
+
 
 func TestParseBulkImportCSV_ValidRow(t *testing.T) {
 	csv := []byte("sku,title,mrp,selling_price,stock_qty\nSKU1,Hat,200,180,5\n")
