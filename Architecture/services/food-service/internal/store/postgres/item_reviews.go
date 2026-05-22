@@ -141,14 +141,41 @@ func (s *Store) ListItemReviews(ctx context.Context, menuItemID uuid.UUID, limit
 }
 
 // HideItemReview is an admin moderation knob — useful when a review
-// includes abuse. v1 just deletes; future versions can soft-hide.
+// includes abuse. v1 hard-deletes; future versions can soft-hide.
+//
+// The delete + the menu_items aggregate recompute run in one tx so
+// avg_rating / rating_count cannot drift after a hide (the bug this
+// replaces: the old version deleted the row but left the stale
+// aggregate on the PDP).
 func (s *Store) HideItemReview(ctx context.Context, reviewID uuid.UUID) error {
-	tag, err := s.db.Exec(ctx, `DELETE FROM food.item_reviews WHERE id = $1`, reviewID)
+	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
-		return pgx.ErrNoRows
+	defer tx.Rollback(ctx)
+	var menuItemID uuid.UUID
+	if err := tx.QueryRow(ctx, `
+		DELETE FROM food.item_reviews WHERE id = $1
+		RETURNING menu_item_id
+	`, reviewID).Scan(&menuItemID); err != nil {
+		if err == pgx.ErrNoRows {
+			return pgx.ErrNoRows
+		}
+		return err
 	}
-	return nil
+	// Recompute the aggregate from whatever rows remain. COALESCE keeps
+	// rating_count at 0 + avg_rating NULL when the last review is gone.
+	if _, err := tx.Exec(ctx, `
+		UPDATE food.menu_items
+		SET rating_count = sub.cnt,
+			avg_rating   = sub.avg
+		FROM (
+			SELECT COUNT(*)::int AS cnt, ROUND(AVG(rating)::numeric, 2) AS avg
+			FROM food.item_reviews WHERE menu_item_id = $1
+		) sub
+		WHERE id = $1
+	`, menuItemID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }

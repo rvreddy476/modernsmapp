@@ -101,6 +101,7 @@ type Store interface {
 	RecordFraudScore(ctx context.Context, userID uuid.UUID, signal string, score float64, detail map[string]any) error
 	TopFraudUsers(ctx context.Context, windowHours, limit int) ([]postgres.TopFraudUsersRow, error)
 	RecentRefundsByUser(ctx context.Context, windowHours int) ([]postgres.RecentRefundsByUserRow, error)
+	RecentCustomerCancellations(ctx context.Context, windowHours int) ([]postgres.CustomerCancellationsRow, error)
 	AppendOrderMessage(ctx context.Context, orderID, authorID uuid.UUID, authorRole, body string) (*postgres.OrderMessage, error)
 	ListOrderMessages(ctx context.Context, orderID uuid.UUID) ([]postgres.OrderMessage, error)
 	MarkMessageRead(ctx context.Context, messageID, userID uuid.UUID, role string) error

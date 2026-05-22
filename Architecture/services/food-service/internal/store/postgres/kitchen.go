@@ -56,7 +56,10 @@ func (s *Store) ListKitchenQueue(ctx context.Context, ownerID, restaurantID uuid
 		FROM food.orders o
 		WHERE o.restaurant_id = $1
 		  AND o.status = 'CONFIRMED'
-		ORDER BY COALESCE(o.accept_deadline_at, NOW()) ASC, o.placed_at ASC
+		-- NULLS LAST keeps deadline-less rows after timed ones; the
+		-- placed_at + id tie-breakers make the order fully
+		-- deterministic so pagination + UI diffing are stable.
+		ORDER BY o.accept_deadline_at ASC NULLS LAST, o.placed_at ASC, o.id ASC
 		LIMIT 200
 	`, restaurantID)
 	if err != nil {

@@ -79,6 +79,45 @@ type RecentRefundsByUserRow struct {
 	TotalRefunded  float64 `json:"total_refunded"`
 }
 
+// CustomerCancellationsRow backs the cancellation_pattern signal —
+// customers who cancelled a high count of orders recently.
+type CustomerCancellationsRow struct {
+	UserID            string `json:"user_id"`
+	CancellationCount int    `json:"cancellation_count"`
+}
+
+// RecentCustomerCancellations returns users with >= 2 customer-initiated
+// cancellations in the window. The >=2 floor keeps one-off legitimate
+// cancellations out of the fraud queue.
+func (s *Store) RecentCustomerCancellations(ctx context.Context, windowHours int) ([]CustomerCancellationsRow, error) {
+	if windowHours <= 0 {
+		windowHours = 336 // 14d
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT user_id::text, COUNT(*)::int
+		FROM food.orders
+		WHERE status = 'CANCELLED_BY_CUSTOMER'
+		  AND placed_at > NOW() - ($1::int * INTERVAL '1 hour')
+		GROUP BY user_id
+		HAVING COUNT(*) >= 2
+		ORDER BY 2 DESC
+		LIMIT 500
+	`, windowHours)
+	if err != nil {
+		return nil, fmt.Errorf("recent customer cancellations: %w", err)
+	}
+	defer rows.Close()
+	var out []CustomerCancellationsRow
+	for rows.Next() {
+		var r CustomerCancellationsRow
+		if err := rows.Scan(&r.UserID, &r.CancellationCount); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) RecentRefundsByUser(ctx context.Context, windowHours int) ([]RecentRefundsByUserRow, error) {
 	if windowHours <= 0 {
 		windowHours = 720 // 30d

@@ -68,10 +68,10 @@ type EventPublisher interface {
 	PublishRideOffered(ctx context.Context, rideID, offerID, partnerID uuid.UUID, score float64, expiresAt time.Time) error
 	PublishRideOfferRejected(ctx context.Context, rideID, offerID, partnerID uuid.UUID, reason string) error
 	PublishRideOfferExpired(ctx context.Context, rideID, offerID, partnerID uuid.UUID) error
-	PublishRideAssigned(ctx context.Context, rideID, partnerID, vehicleID, offerID uuid.UUID) error
-	PublishRideArriving(ctx context.Context, rideID, partnerID uuid.UUID) error
-	PublishRideArrived(ctx context.Context, rideID, partnerID uuid.UUID) error
-	PublishRideStarted(ctx context.Context, rideID, partnerID uuid.UUID) error
+	PublishRideAssigned(ctx context.Context, rideID, customerID, partnerID, vehicleID, offerID uuid.UUID) error
+	PublishRideArriving(ctx context.Context, rideID, customerID, partnerID uuid.UUID) error
+	PublishRideArrived(ctx context.Context, rideID, customerID, partnerID uuid.UUID) error
+	PublishRideStarted(ctx context.Context, rideID, customerID, partnerID uuid.UUID) error
 	PublishRideCompleted(ctx context.Context, payload events.RideCompletedPayload) error
 	PublishRideCancelled(ctx context.Context, payload events.RideCancelledPayload) error
 	PublishRideExpired(ctx context.Context, rideID uuid.UUID) error
@@ -134,16 +134,16 @@ func (noopPublisher) PublishRideOfferRejected(_ context.Context, _, _, _ uuid.UU
 func (noopPublisher) PublishRideOfferExpired(_ context.Context, _, _, _ uuid.UUID) error {
 	return nil
 }
-func (noopPublisher) PublishRideAssigned(_ context.Context, _, _, _, _ uuid.UUID) error {
+func (noopPublisher) PublishRideAssigned(_ context.Context, _, _, _, _, _ uuid.UUID) error {
 	return nil
 }
-func (noopPublisher) PublishRideArriving(_ context.Context, _, _ uuid.UUID) error {
+func (noopPublisher) PublishRideArriving(_ context.Context, _, _, _ uuid.UUID) error {
 	return nil
 }
-func (noopPublisher) PublishRideArrived(_ context.Context, _, _ uuid.UUID) error {
+func (noopPublisher) PublishRideArrived(_ context.Context, _, _, _ uuid.UUID) error {
 	return nil
 }
-func (noopPublisher) PublishRideStarted(_ context.Context, _, _ uuid.UUID) error {
+func (noopPublisher) PublishRideStarted(_ context.Context, _, _, _ uuid.UUID) error {
 	return nil
 }
 func (noopPublisher) PublishRideCompleted(_ context.Context, _ events.RideCompletedPayload) error {

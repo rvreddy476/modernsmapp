@@ -78,6 +78,23 @@ func (s *Service) runFraudPass(ctx context.Context) {
 			})
 		}
 	}
+	// Cancellation-pattern signal — customers cancelling repeatedly in
+	// the trailing 14 days. score = cancellations * 3.
+	cancellations, err := s.store.RecentCustomerCancellations(ctx, 24*14)
+	if err != nil {
+		slog.Warn("food-service: fraud cancellation scan failed", "error", err)
+	} else {
+		for _, c := range cancellations {
+			uid, err := uuid.Parse(c.UserID)
+			if err != nil {
+				continue
+			}
+			_ = s.store.RecordFraudScore(ctx, uid, "cancellation_pattern",
+				float64(c.CancellationCount)*3, map[string]any{
+					"cancellations": c.CancellationCount,
+				})
+		}
+	}
 }
 
 // TopFraudUsers is the admin-side view.

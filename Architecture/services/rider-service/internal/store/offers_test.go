@@ -149,7 +149,7 @@ func TestRejectOffer_FlipsStatus(t *testing.T) {
 		RideID: rid, PartnerID: pid, Score: 50,
 		ExpiresAt: time.Now().Add(30 * time.Second),
 	})
-	if err := s.RejectOffer(context.Background(), o.ID, pid); err != nil {
+	if err := s.RejectOffer(context.Background(), o.ID, pid, "too_far"); err != nil {
 		t.Fatalf("reject: %v", err)
 	}
 	got, _ := s.GetOffer(context.Background(), o.ID)
@@ -157,7 +157,7 @@ func TestRejectOffer_FlipsStatus(t *testing.T) {
 		t.Fatalf("status: %s", got.Status)
 	}
 	// Replay: should report already-decided.
-	if err := s.RejectOffer(context.Background(), o.ID, pid); !errors.Is(err, ErrOfferAlreadyDecided) {
+	if err := s.RejectOffer(context.Background(), o.ID, pid, "too_far"); !errors.Is(err, ErrOfferAlreadyDecided) {
 		t.Fatalf("expected already-decided on replay; got %v", err)
 	}
 }

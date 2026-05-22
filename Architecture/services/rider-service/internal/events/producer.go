@@ -246,55 +246,70 @@ func (p *Producer) PublishRideOfferRejected(ctx context.Context, rideID, offerID
 }
 
 // RideAssignedPayload mirrors EventRiderRideAssigned. Sent when a partner
-// accepts an offer and the ride is bound to them.
+// accepts an offer and the ride is bound to them. CustomerUserID lets
+// notification-service dispatch the "driver assigned" FCM push without
+// a round-trip back to rider-service.
 type RideAssignedPayload struct {
-	RideID     string    `json:"ride_id"`
-	PartnerID  string    `json:"partner_id"`
-	VehicleID  string    `json:"vehicle_id,omitempty"`
-	OfferID    string    `json:"offer_id"`
-	AssignedAt time.Time `json:"assigned_at"`
+	RideID         string    `json:"ride_id"`
+	CustomerUserID string    `json:"customer_user_id"`
+	PartnerID      string    `json:"partner_id"`
+	VehicleID      string    `json:"vehicle_id,omitempty"`
+	OfferID        string    `json:"offer_id"`
+	AssignedAt     time.Time `json:"assigned_at"`
 }
 
-func (p *Producer) PublishRideAssigned(ctx context.Context, rideID, partnerID, vehicleID, offerID uuid.UUID) error {
+func (p *Producer) PublishRideAssigned(ctx context.Context, rideID, customerID, partnerID, vehicleID, offerID uuid.UUID) error {
 	id := partnerID
 	vehStr := ""
 	if vehicleID != uuid.Nil {
 		vehStr = vehicleID.String()
 	}
 	return p.publish(ctx, events.EventRiderRideAssigned, &id, RideAssignedPayload{
-		RideID:     rideID.String(),
-		PartnerID:  partnerID.String(),
-		VehicleID:  vehStr,
-		OfferID:    offerID.String(),
-		AssignedAt: time.Now(),
+		RideID:         rideID.String(),
+		CustomerUserID: customerID.String(),
+		PartnerID:      partnerID.String(),
+		VehicleID:      vehStr,
+		OfferID:        offerID.String(),
+		AssignedAt:     time.Now(),
 	})
 }
 
 // RideStatusPayload is the shared shape for arriving / arrived / started.
+// CustomerUserID is the FCM recipient for the customer-facing push.
 type RideStatusPayload struct {
-	RideID     string    `json:"ride_id"`
-	PartnerID  string    `json:"partner_id"`
-	OccurredAt time.Time `json:"occurred_at"`
+	RideID         string    `json:"ride_id"`
+	CustomerUserID string    `json:"customer_user_id"`
+	PartnerID      string    `json:"partner_id"`
+	OccurredAt     time.Time `json:"occurred_at"`
 }
 
-func (p *Producer) PublishRideArriving(ctx context.Context, rideID, partnerID uuid.UUID) error {
+func (p *Producer) PublishRideArriving(ctx context.Context, rideID, customerID, partnerID uuid.UUID) error {
 	id := partnerID
 	return p.publish(ctx, events.EventRiderRideArriving, &id, RideStatusPayload{
-		RideID: rideID.String(), PartnerID: partnerID.String(), OccurredAt: time.Now(),
+		RideID:         rideID.String(),
+		CustomerUserID: customerID.String(),
+		PartnerID:      partnerID.String(),
+		OccurredAt:     time.Now(),
 	})
 }
 
-func (p *Producer) PublishRideArrived(ctx context.Context, rideID, partnerID uuid.UUID) error {
+func (p *Producer) PublishRideArrived(ctx context.Context, rideID, customerID, partnerID uuid.UUID) error {
 	id := partnerID
 	return p.publish(ctx, events.EventRiderRideArrived, &id, RideStatusPayload{
-		RideID: rideID.String(), PartnerID: partnerID.String(), OccurredAt: time.Now(),
+		RideID:         rideID.String(),
+		CustomerUserID: customerID.String(),
+		PartnerID:      partnerID.String(),
+		OccurredAt:     time.Now(),
 	})
 }
 
-func (p *Producer) PublishRideStarted(ctx context.Context, rideID, partnerID uuid.UUID) error {
+func (p *Producer) PublishRideStarted(ctx context.Context, rideID, customerID, partnerID uuid.UUID) error {
 	id := partnerID
 	return p.publish(ctx, events.EventRiderRideStarted, &id, RideStatusPayload{
-		RideID: rideID.String(), PartnerID: partnerID.String(), OccurredAt: time.Now(),
+		RideID:         rideID.String(),
+		CustomerUserID: customerID.String(),
+		PartnerID:      partnerID.String(),
+		OccurredAt:     time.Now(),
 	})
 }
 
