@@ -72,8 +72,9 @@ func internalKey() string { return os.Getenv("ATPOST_INTERNAL_KEY") }
 // JSON envelope `{data, error, meta}` plus the raw HTTP status code.
 type HTTPClient struct {
 	BaseURL string
-	UserID  uuid.UUID
-	c       *http.Client
+	UserID    uuid.UUID
+	AdminRole string
+	c         *http.Client
 }
 
 // NewHTTPClient constructs a client whose every request carries
@@ -84,6 +85,18 @@ func NewHTTPClient(baseURL string, userID uuid.UUID) *HTTPClient {
 		UserID:  userID,
 		c:       &http.Client{Timeout: 10 * time.Second},
 	}
+}
+
+// WithAdminRole returns a copy of the client that sends X-Admin-Role
+// on every request, used by admin-gated endpoints (creator-fund
+// settlement, settlement queue, etc.). The downstream services
+// honor X-Admin-Role only when the request also carries the
+// X-Internal-Service-Key, so dev stacks need INTERNAL_SERVICE_KEY
+// set + ATPOST_INTERNAL_KEY exported for this to work.
+func (h *HTTPClient) WithAdminRole() *HTTPClient {
+	clone := *h
+	clone.AdminRole = "admin"
+	return &clone
 }
 
 // Envelope mirrors the shared/api.Response shape so tests can read
@@ -119,6 +132,9 @@ func (h *HTTPClient) Do(ctx context.Context, method, path string, body interface
 	}
 	if h.UserID != uuid.Nil {
 		req.Header.Set("X-User-Id", h.UserID.String())
+	}
+	if h.AdminRole != "" {
+		req.Header.Set("X-Admin-Role", h.AdminRole)
 	}
 	if k := internalKey(); k != "" {
 		req.Header.Set("X-Internal-Service-Key", k)
