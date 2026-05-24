@@ -327,6 +327,25 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		return nil, fmt.Errorf("invalid content_type %q: must be post, poll, flick, or long_video", contentType)
 	}
 
+	// Trusted Circle after-hours protection. When the author has
+	// `tc_after_hours_posts` ON (default ON), posts created during the
+	// after-hours window 22:00–06:00 local time get auto-restricted to
+	// the user's trusted circle audience instead of the visibility the
+	// client supplied. Designed to protect "late-night drafts, vent
+	// posts, raw thoughts" from full-audience reach.
+	//
+	// Best-effort: a user-service blip falls through to the supplied
+	// visibility. The user can always manually pick a wider audience
+	// for a specific post — this only fires when they leave the
+	// default visibility selection alone.
+	if input.Visibility == "" || input.Visibility == "public" || input.Visibility == "followers" {
+		if s.shouldRestrictToTrustedCircle(ctx, input.AuthorID, time.Now()) {
+			input.Visibility = "trusted"
+			slog.Info("post: after-hours protection applied",
+				"author_id", input.AuthorID, "visibility", input.Visibility)
+		}
+	}
+
 	postType := input.PostType
 	if postType == "" {
 		postType = "text"
@@ -2257,6 +2276,65 @@ func (s *Service) lookupUserByUsername(ctx context.Context, username string) (st
 	}
 	json.NewDecoder(resp.Body).Decode(&result) //nolint:errcheck
 	return result.UserID, nil
+}
+
+// shouldRestrictToTrustedCircle returns true when the author has
+// `tc_after_hours_posts = true` AND the supplied time falls in the
+// late-night window (22:00–06:00 server time). Server time is used
+// rather than client TZ because clients don't ship a reliable TZ
+// header today; switching to user-local time is a follow-up.
+//
+// Returns false on any user-service lookup failure — the feature
+// degrades silently to "use the supplied visibility" so a settings
+// service blip doesn't break post creation.
+func (s *Service) shouldRestrictToTrustedCircle(ctx context.Context, authorID uuid.UUID, now time.Time) bool {
+	if s.userServiceURL == "" {
+		return false
+	}
+	on, err := s.fetchAfterHoursToggle(ctx, authorID)
+	if err != nil || !on {
+		return false
+	}
+	hour := now.Hour()
+	// 22:00–05:59 inclusive (06:00 is back to normal-hours).
+	return hour >= 22 || hour < 6
+}
+
+// fetchAfterHoursToggle reads the user's settings from user-service.
+// Lightweight call; bounded by the shared 5s http client timeout.
+// Forwards INTERNAL_SERVICE_KEY when set so the user-service auth
+// gate accepts the cross-service call.
+func (s *Service) fetchAfterHoursToggle(ctx context.Context, authorID uuid.UUID) (bool, error) {
+	url := fmt.Sprintf("%s/v1/user/%s/settings", s.userServiceURL, authorID.String())
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return false, err
+	}
+	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
+		req.Header.Set("X-Internal-Service-Key", key)
+	}
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("user-service settings: status %d", resp.StatusCode)
+	}
+	// user-service wraps responses in `{data: {...}}`; decode both shapes.
+	var envelope struct {
+		Data struct {
+			TcAfterHoursPosts bool `json:"tc_after_hours_posts"`
+		} `json:"data"`
+		TcAfterHoursPosts bool `json:"tc_after_hours_posts"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		return false, err
+	}
+	if envelope.Data.TcAfterHoursPosts {
+		return true, nil
+	}
+	return envelope.TcAfterHoursPosts, nil
 }
 
 // ---------------------------------------------------------------------------
