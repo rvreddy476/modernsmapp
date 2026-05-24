@@ -9,6 +9,9 @@ CREATE TABLE IF NOT EXISTS follows (
 );
 
 CREATE INDEX IF NOT EXISTS idx_follows_followee_desc ON follows(followee_id, created_at DESC);
+-- HG2: GetFollowing cursor pagination requires the symmetric index so a
+-- (follower_id, created_at, followee_id) keyset query is O(log n).
+CREATE INDEX IF NOT EXISTS idx_follows_follower_desc ON follows(follower_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS blocks (
     blocker_id UUID NOT NULL,

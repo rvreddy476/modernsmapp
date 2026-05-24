@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -186,6 +188,8 @@ func (s *Store) GetCounts(ctx context.Context, userID uuid.UUID) (*Counts, error
 }
 
 // GetFollowers returns paginated list of user IDs that follow the given user.
+// Legacy offset-based path. Prefer GetFollowersCursor at scale —
+// OFFSET 1M on a celebrity's followers scans a million rows.
 func (s *Store) GetFollowers(ctx context.Context, userID uuid.UUID, limit, offset int) ([]uuid.UUID, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 20
@@ -210,6 +214,128 @@ func (s *Store) GetFollowers(ctx context.Context, userID uuid.UUID, limit, offse
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+// GetFollowersCursor returns one page of followers using keyset
+// pagination on (created_at DESC, follower_id DESC). Cursor format is
+// "<unix_micros>:<uuid>". Empty cursor = start of list. Returns the
+// followers + nextCursor (empty on last page).
+//
+// HG2 — full cursor migration. At billions-of-users scale the offset
+// path becomes O(N) for celebrities; this stays O(log n) regardless of
+// page depth via idx_follows_followee_desc.
+func (s *Store) GetFollowersCursor(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]FollowEdge, string, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	args := []any{userID}
+	cursorClause := ""
+	if cursor != "" {
+		ts, id, ok := parseFollowCursor(cursor)
+		if ok {
+			cursorClause = " AND (created_at, follower_id) < ($2, $3)"
+			args = append(args, ts, id)
+		}
+	}
+	args = append(args, limit+1)
+	q := `
+		SELECT follower_id, created_at FROM follows
+		WHERE followee_id = $1` + cursorClause + `
+		ORDER BY created_at DESC, follower_id DESC
+		LIMIT $` + strconv.Itoa(len(args))
+	rows, err := s.db.Query(ctx, q, args...)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+	var edges []FollowEdge
+	for rows.Next() {
+		var e FollowEdge
+		if err := rows.Scan(&e.UserID, &e.CreatedAt); err != nil {
+			return nil, "", err
+		}
+		edges = append(edges, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	var next string
+	if len(edges) > limit {
+		last := edges[limit-1]
+		next = fmt.Sprintf("%d:%s", last.CreatedAt.UnixMicro(), last.UserID.String())
+		edges = edges[:limit]
+	}
+	return edges, next, nil
+}
+
+// FollowEdge is one (follower or followee, created_at) tuple. The
+// created_at is exposed for cursor derivation; the handler only ships
+// the user id to clients.
+type FollowEdge struct {
+	UserID    uuid.UUID
+	CreatedAt time.Time
+}
+
+func parseFollowCursor(cursor string) (time.Time, uuid.UUID, bool) {
+	parts := strings.SplitN(cursor, ":", 2)
+	if len(parts) != 2 {
+		return time.Time{}, uuid.Nil, false
+	}
+	micros, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		return time.Time{}, uuid.Nil, false
+	}
+	id, err := uuid.Parse(parts[1])
+	if err != nil {
+		return time.Time{}, uuid.Nil, false
+	}
+	return time.UnixMicro(micros).UTC(), id, true
+}
+
+// GetFollowingCursor is the keyset-paginated variant of GetFollowing.
+// Symmetric to GetFollowersCursor — backed by idx_follows_follower_desc.
+func (s *Store) GetFollowingCursor(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]FollowEdge, string, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	args := []any{userID}
+	cursorClause := ""
+	if cursor != "" {
+		ts, id, ok := parseFollowCursor(cursor)
+		if ok {
+			cursorClause = " AND (created_at, followee_id) < ($2, $3)"
+			args = append(args, ts, id)
+		}
+	}
+	args = append(args, limit+1)
+	q := `
+		SELECT followee_id, created_at FROM follows
+		WHERE follower_id = $1` + cursorClause + `
+		ORDER BY created_at DESC, followee_id DESC
+		LIMIT $` + strconv.Itoa(len(args))
+	rows, err := s.db.Query(ctx, q, args...)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+	var edges []FollowEdge
+	for rows.Next() {
+		var e FollowEdge
+		if err := rows.Scan(&e.UserID, &e.CreatedAt); err != nil {
+			return nil, "", err
+		}
+		edges = append(edges, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	var next string
+	if len(edges) > limit {
+		last := edges[limit-1]
+		next = fmt.Sprintf("%d:%s", last.CreatedAt.UnixMicro(), last.UserID.String())
+		edges = edges[:limit]
+	}
+	return edges, next, nil
 }
 
 // GetFollowing returns paginated list of user IDs that the given user follows.

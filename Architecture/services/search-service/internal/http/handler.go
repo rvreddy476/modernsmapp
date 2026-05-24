@@ -266,7 +266,19 @@ func (h *Handler) GetTrending(c *gin.Context) {
 // Autocomplete handles GET /v1/search/autocomplete
 // Query params: q (required), limit (default: 10, max: 20)
 // Returns username/display_name suggestions for the given prefix.
+//
+// HS3 — per-caller rate limit. Autocomplete is the cheapest user-
+// enumeration vector on the platform: each request returns ≤20 user
+// matches for a prefix, so a worker can iterate aa..zz and enumerate
+// the userbase without any other auth gate. We cap at 60 req/min per
+// caller (X-User-Id when authenticated, IP otherwise) — that's three
+// per second, generous for legitimate typeahead use.
 func (h *Handler) Autocomplete(c *gin.Context) {
+	if !h.allowAutocomplete(c) {
+		c.Header("Retry-After", "60")
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "too many autocomplete requests", nil)
+		return
+	}
 	query := c.Query("q")
 	if query == "" {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "q is required", nil)
@@ -290,6 +302,33 @@ func (h *Handler) Autocomplete(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"results": results}, nil)
+}
+
+// allowAutocomplete enforces 60 requests/minute per (user OR IP). Uses
+// the standard Redis sliding-window INCR + EXPIRE pattern. Fails
+// CLOSED on Redis error — autocomplete is non-critical; better to
+// drop a few requests than open the enumeration door if Redis blips.
+func (h *Handler) allowAutocomplete(c *gin.Context) bool {
+	if h.rdb == nil {
+		return true
+	}
+	subject := c.GetHeader("X-User-Id")
+	if subject == "" {
+		subject = c.ClientIP()
+	}
+	if subject == "" {
+		return true // can't key the limit; let it through
+	}
+	key := "ac_rl:" + subject
+	ctx := c.Request.Context()
+	pipe := h.rdb.Pipeline()
+	incr := pipe.Incr(ctx, key)
+	pipe.Expire(ctx, key, 60*time.Second)
+	if _, err := pipe.Exec(ctx); err != nil {
+		slog.Warn("autocomplete: rate-limit Redis error — failing closed", "key", key, "err", err)
+		return false
+	}
+	return incr.Val() <= 60
 }
 
 // GetSuggested handles GET /v1/discover/suggested

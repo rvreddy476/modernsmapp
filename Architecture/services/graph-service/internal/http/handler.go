@@ -338,6 +338,22 @@ func (h *Handler) GetFollowers(c *gin.Context) {
 		api.JSON(c.Writer, http.StatusOK, []uuid.UUID{}, nil)
 		return
 	}
+	// HG2: prefer cursor pagination when supplied. Cursor is O(log n)
+	// even on celebrities with millions of followers; offset is kept
+	// for admin tools that need a stable index.
+	if cursor := c.Query("cursor"); cursor != "" || c.Query("paginate") == "cursor" {
+		edges, next, err := h.svc.GetFollowersCursor(c.Request.Context(), userID, limit, cursor)
+		if err != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+			return
+		}
+		ids := make([]uuid.UUID, 0, len(edges))
+		for _, e := range edges {
+			ids = append(ids, e.UserID)
+		}
+		api.JSON(c.Writer, http.StatusOK, gin.H{"items": ids, "next_cursor": next}, nil)
+		return
+	}
 	ids, err := h.svc.GetFollowers(c.Request.Context(), userID, limit, offset)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
@@ -356,6 +372,19 @@ func (h *Handler) GetFollowing(c *gin.Context) {
 	}
 	if !h.callerAllowedToReadConnections(c, userID) {
 		api.JSON(c.Writer, http.StatusOK, []uuid.UUID{}, nil)
+		return
+	}
+	if cursor := c.Query("cursor"); cursor != "" || c.Query("paginate") == "cursor" {
+		edges, next, err := h.svc.GetFollowingCursor(c.Request.Context(), userID, limit, cursor)
+		if err != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+			return
+		}
+		ids := make([]uuid.UUID, 0, len(edges))
+		for _, e := range edges {
+			ids = append(ids, e.UserID)
+		}
+		api.JSON(c.Writer, http.StatusOK, gin.H{"items": ids, "next_cursor": next}, nil)
 		return
 	}
 	ids, err := h.svc.GetFollowing(c.Request.Context(), userID, limit, offset)

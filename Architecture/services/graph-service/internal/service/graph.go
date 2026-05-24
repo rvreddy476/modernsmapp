@@ -304,6 +304,17 @@ func (s *Service) GetFollowing(ctx context.Context, userID uuid.UUID, limit, off
 	return s.store.GetFollowing(ctx, userID, limit, offset)
 }
 
+// GetFollowersCursor / GetFollowingCursor are the scale-friendly
+// variants (HG2). Keyset pagination on (created_at, user_id) stays
+// O(log n) even on celebrities with millions of edges.
+func (s *Service) GetFollowersCursor(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]store.FollowEdge, string, error) {
+	return s.store.GetFollowersCursor(ctx, userID, limit, cursor)
+}
+
+func (s *Service) GetFollowingCursor(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]store.FollowEdge, string, error) {
+	return s.store.GetFollowingCursor(ctx, userID, limit, cursor)
+}
+
 func (s *Service) GetMutualFollowers(ctx context.Context, userA, userB uuid.UUID, limit int) ([]uuid.UUID, error) {
 	return s.store.GetMutualFollowers(ctx, userA, userB, limit)
 }
