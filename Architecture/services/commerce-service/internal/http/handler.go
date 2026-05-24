@@ -44,6 +44,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	v1.POST("/products/:productId/media", h.AddProductMedia)
 	v1.GET("/products/:productId/attributes", h.GetProductAttributes)
 	v1.PUT("/products/:productId/attributes", h.SetProductAttributes)
+	// Variant CRUD for existing products (commerce TODO H#5). The
+	// initial variant set is created with the product; this lets a
+	// seller add/edit/archive variants after launch.
+	v1.GET("/products/:productId/variants", h.ListProductVariants)
+	v1.POST("/products/:productId/variants", h.AddProductVariant)
+	v1.PATCH("/variants/:variantId", h.UpdateProductVariant)
+	v1.DELETE("/variants/:variantId", h.ArchiveProductVariant)
 	// Phase F2.1 — variant tier pricing.
 	v1.GET("/variants/:variantId/price-tiers", h.GetPriceTiers)
 	v1.PUT("/variants/:variantId/price-tiers", h.SetPriceTiers)
@@ -60,6 +67,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 	// ── Cart ─────────────────────────────────────────────────
 	v1.GET("/cart", h.GetCart)
+	v1.GET("/cart/coupon-preview", h.PreviewCouponDiscount)
 	v1.POST("/cart/items", h.AddToCart)
 	v1.PATCH("/cart/items/by-variant/:variantId", h.UpdateCartItem)
 	v1.DELETE("/cart/items/:variantId", h.RemoveFromCart)
@@ -383,6 +391,132 @@ func (h *Handler) GetProductAttributes(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"attributes": out}, nil)
+}
+
+// ─── Variant CRUD handlers (commerce TODO H#5) ───────────────
+
+// ListProductVariants — GET /v1/commerce/products/:productId/variants
+// Public read; returns every variant (including archived) ordered by
+// created_at. Sellers use this to manage their variants; customers see
+// only active ones via the product detail endpoint.
+func (h *Handler) ListProductVariants(c *gin.Context) {
+	productID, err := uuid.Parse(c.Param("productId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PRODUCT_ID", err.Error(), nil)
+		return
+	}
+	variants, err := h.svc.ListProductVariants(c.Request.Context(), productID)
+	if err != nil {
+		handleErr(c, err)
+		return
+	}
+	if variants == nil {
+		variants = []*postgres.ProductVariant{}
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"items": variants}, nil)
+}
+
+type addVariantReq struct {
+	SKU          string   `json:"sku" binding:"required"`
+	Barcode      *string  `json:"barcode"`
+	Option1Name  *string  `json:"option_1_name"`
+	Option1Value *string  `json:"option_1_value"`
+	Option2Name  *string  `json:"option_2_name"`
+	Option2Value *string  `json:"option_2_value"`
+	Option3Name  *string  `json:"option_3_name"`
+	Option3Value *string  `json:"option_3_value"`
+	MRP          float64  `json:"mrp" binding:"required"`
+	SellingPrice float64  `json:"selling_price" binding:"required"`
+	CostPrice    *float64 `json:"cost_price"`
+	CurrencyCode string   `json:"currency_code"`
+	WeightGrams  *int     `json:"weight_grams"`
+}
+
+// AddProductVariant — POST /v1/commerce/products/:productId/variants
+// Seller adds a new variant to an existing product. Idempotent on
+// (sku, seller_id) via DB UNIQUE; a re-post returns the existing row.
+func (h *Handler) AddProductVariant(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	productID, err := uuid.Parse(c.Param("productId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PRODUCT_ID", err.Error(), nil)
+		return
+	}
+	var req addVariantReq
+	if err := c.BindJSON(&req); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	v := &postgres.ProductVariant{
+		SKU:          req.SKU,
+		Barcode:      req.Barcode,
+		Option1Name:  req.Option1Name,
+		Option1Value: req.Option1Value,
+		Option2Name:  req.Option2Name,
+		Option2Value: req.Option2Value,
+		Option3Name:  req.Option3Name,
+		Option3Value: req.Option3Value,
+		MRP:          req.MRP,
+		SellingPrice: req.SellingPrice,
+		CostPrice:    req.CostPrice,
+		CurrencyCode: req.CurrencyCode,
+		WeightGrams:  req.WeightGrams,
+	}
+	out, err := h.svc.AddProductVariant(c.Request.Context(), userID, productID, v)
+	if err != nil {
+		handleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusCreated, out, nil)
+}
+
+// UpdateProductVariant — PATCH /v1/commerce/variants/:variantId
+// Sparse update — only fields in the JSON body are written. Seller
+// ownership is verified against the parent product.
+func (h *Handler) UpdateProductVariant(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	variantID, err := uuid.Parse(c.Param("variantId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_VARIANT_ID", err.Error(), nil)
+		return
+	}
+	var raw map[string]any
+	if err := c.BindJSON(&raw); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	out, err := h.svc.UpdateProductVariant(c.Request.Context(), userID, variantID, raw)
+	if err != nil {
+		handleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, out, nil)
+}
+
+// ArchiveProductVariant — DELETE /v1/commerce/variants/:variantId
+// Soft delete (status='archived'). Existing orders + carts referencing
+// the variant keep resolving; the customer just can't add new ones.
+func (h *Handler) ArchiveProductVariant(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	variantID, err := uuid.Parse(c.Param("variantId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_VARIANT_ID", err.Error(), nil)
+		return
+	}
+	if err := h.svc.ArchiveProductVariant(c.Request.Context(), userID, variantID); err != nil {
+		handleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"variant_id": variantID, "status": "archived"}, nil)
 }
 
 // ─── Phase F2.1 — variant tier pricing handlers ──────────────
@@ -740,18 +874,29 @@ func (h *Handler) ListSellerProducts(c *gin.Context) {
 }
 
 // ListProducts is the customer-facing global product browse endpoint.
-//   GET /v1/commerce/products?category={uuid}&q={text}&limit=20&offset=0
+//   GET /v1/commerce/products
+//     ?category={uuid}     optional
+//     &q={text}            optional title search
+//     &min_price={num}     optional inclusive lower bound
+//     &max_price={num}     optional inclusive upper bound
+//     &min_rating={1..5}   optional
+//     &seller={uuid}       optional storefront filter
+//     &in_stock=true       optional, restrict to variants with stock
+//     &limit={1..100}      default 20
+//     &cursor={opaque}     keyset cursor (preferred); omit on first page
+//     &offset={int}        legacy offset; ignored when cursor is set
 //
-// Returns published + approved products only. category and q are optional.
-// Response: { items: [...], total: int, limit: int, offset: int }
+// Cursor-paged response: { items: [...], next_cursor: "..." }.
+// next_cursor is empty when there are no more pages. Cursor pagination
+// stays O(1) at any catalog depth — required for billions-of-users scale.
+//
+// When neither cursor nor offset is supplied, returns the first page
+// cursor-paginated. Legacy offset is kept for admin grids that need a
+// total count.
 func (h *Handler) ListProducts(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
-	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 	if limit <= 0 || limit > 100 {
 		limit = 20
-	}
-	if offset < 0 {
-		offset = 0
 	}
 
 	var categoryID *uuid.UUID
@@ -763,21 +908,65 @@ func (h *Handler) ListProducts(c *gin.Context) {
 		}
 		categoryID = &id
 	}
-	query := c.Query("q")
+	var sellerID *uuid.UUID
+	if sel := c.Query("seller"); sel != "" {
+		id, err := uuid.Parse(sel)
+		if err != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_SELLER", "seller must be a UUID", nil)
+			return
+		}
+		sellerID = &id
+	}
+	minPrice, _ := strconv.ParseFloat(c.Query("min_price"), 64)
+	maxPrice, _ := strconv.ParseFloat(c.Query("max_price"), 64)
+	minRating, _ := strconv.ParseFloat(c.Query("min_rating"), 64)
+	inStock := strings.EqualFold(c.Query("in_stock"), "true")
+	cursor := c.Query("cursor")
 
-	products, total, err := h.svc.ListProducts(c.Request.Context(), categoryID, query, limit, offset)
+	// Legacy offset path — still supported for admin grids that need
+	// a total count. New clients should drop the offset param and
+	// follow next_cursor.
+	if cursor == "" && c.Query("offset") != "" {
+		offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+		if offset < 0 {
+			offset = 0
+		}
+		products, total, err := h.svc.ListProducts(c.Request.Context(), categoryID, c.Query("q"), limit, offset)
+		if err != nil {
+			handleErr(c, err)
+			return
+		}
+		if products == nil {
+			products = []*postgres.Product{}
+		}
+		api.JSON(c.Writer, http.StatusOK, gin.H{
+			"items":  products,
+			"total":  total,
+			"limit":  limit,
+			"offset": offset,
+		}, nil)
+		return
+	}
+
+	result, err := h.svc.ListProductsFiltered(c.Request.Context(), postgres.ProductFilter{
+		CategoryID:  categoryID,
+		Query:       c.Query("q"),
+		MinPrice:    minPrice,
+		MaxPrice:    maxPrice,
+		MinRating:   minRating,
+		SellerID:    sellerID,
+		InStockOnly: inStock,
+		Limit:       limit,
+		Cursor:      cursor,
+	})
 	if err != nil {
 		handleErr(c, err)
 		return
 	}
-	if products == nil {
-		products = []*postgres.Product{}
-	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{
-		"items":  products,
-		"total":  total,
-		"limit":  limit,
-		"offset": offset,
+		"items":       result.Items,
+		"next_cursor": result.NextCursor,
+		"limit":       limit,
 	}, nil)
 }
 
@@ -940,6 +1129,37 @@ func (h *Handler) CheckServiceability(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, res, nil)
+}
+
+// PreviewCouponDiscount GET /v1/commerce/cart/coupon-preview?code=XYZ
+// Lightweight endpoint the cart screen calls when the user types a
+// coupon code. Returns the priced cart preview with the coupon
+// applied so the UI can show "−₹X" without forcing the user through
+// the full checkout-quote flow (which also needs address + payment
+// method). Pure preview: no DB writes.
+//
+// commerce TODO M#1 — Coupon preview in cart.
+func (h *Handler) PreviewCouponDiscount(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	code := strings.TrimSpace(c.Query("code"))
+	q, err := h.svc.Quote(c.Request.Context(), service.QuoteInput{
+		UserID:     userID,
+		CouponCode: code,
+	})
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "PREVIEW_FAILED", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{
+		"coupon_code":     code,
+		"coupon_discount": q.CouponDiscount,
+		"subtotal":        q.Subtotal,
+		"grand_total":     q.GrandTotal,
+		"applied":         q.CouponDiscount > 0,
+	}, nil)
 }
 
 // CheckoutQuote POST /v1/commerce/checkout/quote — Phase 1.1.

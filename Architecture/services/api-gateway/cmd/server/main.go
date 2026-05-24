@@ -199,7 +199,7 @@ func main() {
 	// is opened on every request. The span name is just the method;
 	// downstream services produce the more specific route names.
 	tracedCore := otelhttp.NewHandler(
-		requestIDMiddleware(jwtExtractMiddleware(jwtSecret, rateLimitMiddleware(injectInternalKeyMiddleware(internalKey, coreHandler)))),
+		requestIDMiddleware(jwtExtractMiddleware(jwtSecret, rateLimitMiddleware(requireAdminForInternalPaths(injectInternalKeyMiddleware(internalKey, coreHandler))))),
 		"api-gateway",
 		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
 			return r.Method + " " + r.URL.Path
@@ -447,6 +447,52 @@ func injectInternalKeyMiddleware(secret string, next http.Handler) http.Handler 
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// requireAdminForInternalPaths is the gate the gateway sits in front of
+// any `/v1/<domain>/internal/*` route. These paths exist for admin /
+// moderator surfaces (admin queues, payout settlement, etc.) and are
+// authenticated by the downstream service on the X-Internal-Service-Key
+// header that the gateway injects. Without an explicit scope check
+// here, the internal-key injection would effectively turn every
+// internal endpoint into a public one — any logged-in user could hit it
+// and the downstream would accept because the gateway vouched.
+//
+// Policy: scopes claim on the JWT must contain "admin" or "moderator".
+// Tokens minted by the regular login flow don't include these scopes;
+// admin-service issues them only after a verified role lookup. Missing
+// or absent scope → 403.
+//
+// commerce TODO Blocker #3.
+func requireAdminForInternalPaths(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/internal/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		scopes := r.Header.Get("X-Scopes")
+		if !scopeAllows(scopes, "admin") && !scopeAllows(scopes, "moderator") && !scopeAllows(scopes, "superadmin") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":{"code":"FORBIDDEN","message":"admin scope required for internal endpoints"}}`))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// scopeAllows checks whether a space-separated scopes list contains
+// the named scope. Empty list → never allowed.
+func scopeAllows(scopes, want string) bool {
+	if scopes == "" {
+		return false
+	}
+	for _, s := range strings.Split(scopes, " ") {
+		if s == want {
+			return true
+		}
+	}
+	return false
 }
 
 // requestIDMiddleware ensures every request has an X-Request-Id header for

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -269,6 +270,165 @@ func (s *Store) ListSellerProducts(ctx context.Context, sellerID uuid.UUID, stat
 	return products, total, nil
 }
 
+// ProductFilter is the rich filter set the customer-facing browse
+// surface uses. All fields are optional. Cursor takes precedence over
+// Offset: pass `cursor` for keyset pagination (recommended at scale —
+// O(1) regardless of page depth) or `offset` for the legacy
+// admin-style offset pagination. Cursor format is `<unix_micros>:<id>`
+// matching the (created_at DESC, id DESC) sort order.
+type ProductFilter struct {
+	CategoryID *uuid.UUID
+	Query      string
+	// Price filter (selling_price range, inclusive). Either or both may
+	// be zero to skip that side.
+	MinPrice float64
+	MaxPrice float64
+	// Minimum average rating, 1-5; 0 = no filter.
+	MinRating float64
+	// Restrict to one seller (used by /seller/:id storefronts).
+	SellerID *uuid.UUID
+	// In-stock filter: when true we require total_stock > 0 across
+	// the product's active variants.
+	InStockOnly bool
+	Limit       int
+	// Either Cursor (recommended) or Offset is used; never both.
+	Cursor string
+	Offset int
+}
+
+// ListProductsFiltered is the scale-friendly variant. Cursor pagination
+// is the default; offset is supported only as a fallback for legacy
+// callers (admin grid). Returns the products + a `nextCursor` the
+// client should pass to keep paging; empty nextCursor means end of
+// list.
+func (s *Store) ListProductsFiltered(ctx context.Context, f ProductFilter) ([]*Product, string, error) {
+	limit := f.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	conds := []string{"p.status = 'active'", "p.approval_status = 'approved'"}
+	args := []any{}
+	idx := 1
+	if f.CategoryID != nil {
+		conds = append(conds, fmt.Sprintf("p.category_id = $%d", idx))
+		args = append(args, *f.CategoryID)
+		idx++
+	}
+	if f.SellerID != nil {
+		conds = append(conds, fmt.Sprintf("p.seller_id = $%d", idx))
+		args = append(args, *f.SellerID)
+		idx++
+	}
+	if q := strings.TrimSpace(f.Query); q != "" {
+		conds = append(conds, fmt.Sprintf("p.title ILIKE $%d", idx))
+		args = append(args, "%"+q+"%")
+		idx++
+	}
+	if f.MinRating > 0 {
+		conds = append(conds, fmt.Sprintf("p.avg_rating >= $%d", idx))
+		args = append(args, f.MinRating)
+		idx++
+	}
+	// Keyset cursor: rows are sorted (created_at DESC, id DESC) so a
+	// cursor of `(t,c)` means "give me rows older than (t, c)".
+	// Format: "<unix_micros>:<id>". Falls back to offset when not
+	// supplied.
+	if f.Cursor != "" {
+		cParts := strings.SplitN(f.Cursor, ":", 2)
+		if len(cParts) == 2 {
+			tsMicros, err := strconv.ParseInt(cParts[0], 10, 64)
+			if err == nil {
+				cursorID, err2 := uuid.Parse(cParts[1])
+				if err2 == nil {
+					ts := time.UnixMicro(tsMicros).UTC()
+					conds = append(conds, fmt.Sprintf("(p.created_at, p.id) < ($%d, $%d)", idx, idx+1))
+					args = append(args, ts, cursorID)
+					idx += 2
+				}
+			}
+		}
+	}
+	where := "WHERE " + strings.Join(conds, " AND ")
+
+	// Price + in-stock filters apply on the LATERAL-derived columns,
+	// so they go into the outer WHERE via HAVING-equivalent (we use a
+	// SELECT-from-subquery to keep the SQL portable). To stay simple,
+	// embed them in the outer WHERE using the LATERAL output cols.
+	priceFilter := ""
+	if f.MinPrice > 0 || f.MaxPrice > 0 || f.InStockOnly {
+		var clauses []string
+		if f.MinPrice > 0 {
+			clauses = append(clauses, fmt.Sprintf("v.min_selling_price >= $%d", idx))
+			args = append(args, f.MinPrice)
+			idx++
+		}
+		if f.MaxPrice > 0 {
+			clauses = append(clauses, fmt.Sprintf("v.min_selling_price <= $%d", idx))
+			args = append(args, f.MaxPrice)
+			idx++
+		}
+		if f.InStockOnly {
+			clauses = append(clauses, "COALESCE(s.total_stock, 0) > 0")
+		}
+		priceFilter = " AND " + strings.Join(clauses, " AND ")
+	}
+
+	args = append(args, limit+1) // +1 to peek whether there is a next page
+	query := `
+		SELECT p.id, p.seller_id, p.category_id, p.title, p.slug, p.status, p.approval_status,
+		       p.avg_rating, p.review_count, p.order_count, p.view_count, p.created_at, p.updated_at,
+		       p.primary_image_media_id,
+		       v.id  AS default_variant_id,
+		       v.min_selling_price,
+		       v.min_mrp,
+		       COALESCE(s.total_stock, 0) AS total_stock
+		FROM products p
+		LEFT JOIN LATERAL (
+			SELECT id, selling_price AS min_selling_price, mrp AS min_mrp
+			FROM product_variants
+			WHERE product_id = p.id AND status = 'active'
+			ORDER BY selling_price ASC
+			LIMIT 1
+		) v ON true
+		LEFT JOIN LATERAL (
+			SELECT SUM(GREATEST(i.total_qty - i.reserved_qty, 0))::int AS total_stock
+			FROM product_variants pv
+			JOIN inventory_items i ON i.variant_id = pv.id
+			WHERE pv.product_id = p.id AND pv.status = 'active'
+		) s ON true
+		` + where + priceFilter + fmt.Sprintf(`
+		ORDER BY p.created_at DESC, p.id DESC
+		LIMIT $%d`, idx)
+	rows, err := s.db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+	var products []*Product
+	for rows.Next() {
+		var p Product
+		if err := rows.Scan(&p.ID, &p.SellerID, &p.CategoryID, &p.Title, &p.Slug,
+			&p.Status, &p.ApprovalStatus, &p.AvgRating, &p.ReviewCount, &p.OrderCount,
+			&p.ViewCount, &p.CreatedAt, &p.UpdatedAt,
+			&p.PrimaryImageMediaID,
+			&p.DefaultVariantID, &p.MinSellingPrice, &p.MinMRP, &p.TotalStock); err != nil {
+			return nil, "", err
+		}
+		products = append(products, &p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	// Use the +1 peek to derive nextCursor.
+	var nextCursor string
+	if len(products) > limit {
+		last := products[limit-1]
+		nextCursor = fmt.Sprintf("%d:%s", last.CreatedAt.UnixMicro(), last.ID.String())
+		products = products[:limit]
+	}
+	return products, nextCursor, nil
+}
+
 // ListProducts returns paginated products for the customer-facing browse
 // surface: active + approved only, optionally filtered by category and a
 // title search. Newest first. Returns total count for pagination.
@@ -422,6 +582,68 @@ func (s *Store) GetVariantsByProduct(ctx context.Context, productID uuid.UUID) (
 		variants = append(variants, &v)
 	}
 	return variants, nil
+}
+
+// UpdateVariant patches the mutable fields of an existing variant.
+// Returns ErrProductNotFound when the variant doesn't exist. The
+// product_id + sku are intentionally NOT updatable (sku is used as the
+// merge key for bulk import; product_id is a foreign key that defines
+// what the variant belongs to — moving it would break orders + carts).
+func (s *Store) UpdateVariant(ctx context.Context, id uuid.UUID, updates map[string]any) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	allowed := map[string]bool{
+		"option_1_name": true, "option_1_value": true,
+		"option_2_name": true, "option_2_value": true,
+		"option_3_name": true, "option_3_value": true,
+		"mrp": true, "selling_price": true, "cost_price": true,
+		"currency_code": true, "status": true, "image_media_id": true,
+		"weight_grams": true, "barcode": true,
+	}
+	setClauses := []string{}
+	args := []any{}
+	idx := 1
+	for k, v := range updates {
+		if !allowed[k] {
+			continue
+		}
+		setClauses = append(setClauses, fmt.Sprintf("%s = $%d", k, idx))
+		args = append(args, v)
+		idx++
+	}
+	if len(setClauses) == 0 {
+		return nil
+	}
+	setClauses = append(setClauses, "updated_at = NOW()")
+	args = append(args, id)
+	q := "UPDATE product_variants SET " + strings.Join(setClauses, ", ") +
+		" WHERE id = $" + strconv.Itoa(idx)
+	cmd, err := s.db.Exec(ctx, q, args...)
+	if err != nil {
+		return err
+	}
+	if cmd.RowsAffected() == 0 {
+		return ErrProductNotFound
+	}
+	return nil
+}
+
+// ArchiveVariant flips a variant to status='archived' so it's hidden
+// from browse + cart but kept on existing orders for history.
+// Deleting variants is intentionally not supported — referential
+// integrity from orders/cart_items would break.
+func (s *Store) ArchiveVariant(ctx context.Context, id uuid.UUID) error {
+	cmd, err := s.db.Exec(ctx, `
+		UPDATE product_variants SET status='archived', updated_at=NOW()
+		WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	if cmd.RowsAffected() == 0 {
+		return ErrProductNotFound
+	}
+	return nil
 }
 
 // ─── Inventory ───────────────────────────────────────────────

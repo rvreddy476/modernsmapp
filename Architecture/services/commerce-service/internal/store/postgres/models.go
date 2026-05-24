@@ -9,9 +9,10 @@ import (
 
 // Sentinel errors
 var (
-	ErrAlreadySubmitted = errors.New("seller application already submitted")
+	ErrAlreadySubmitted  = errors.New("seller application already submitted")
 	ErrSellerNotApproved = errors.New("seller account not yet approved")
 	ErrProductNotDraft   = errors.New("product is not in draft status")
+	ErrProductNotFound   = errors.New("product not found")
 )
 
 // ─── Seller ──────────────────────────────────────────────────

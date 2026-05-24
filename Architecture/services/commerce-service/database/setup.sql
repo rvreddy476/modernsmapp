@@ -1008,3 +1008,15 @@ CREATE INDEX IF NOT EXISTS idx_orders_approval ON orders(approval_status)
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS refund_intent_id TEXT;
 CREATE INDEX IF NOT EXISTS idx_orders_refund_intent ON orders(refund_intent_id)
     WHERE refund_intent_id IS NOT NULL;
+
+-- ─── Catalog scale: cursor pagination + filters ──────────────────────
+--
+-- The cursor sort is (created_at DESC, id DESC). idx_products_created
+-- already covers created_at DESC; we add a composite (created_at, id)
+-- so the tie-breaker on id doesn't require a separate sort step. The
+-- avg_rating index supports the MinRating filter (skipped when 0 — a
+-- partial index keeps it small).
+CREATE INDEX IF NOT EXISTS idx_products_created_id
+    ON products(created_at DESC, id DESC) WHERE status = 'active' AND approval_status = 'approved';
+CREATE INDEX IF NOT EXISTS idx_products_rating
+    ON products(avg_rating DESC) WHERE status = 'active' AND avg_rating > 0;

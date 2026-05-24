@@ -40,6 +40,7 @@ var (
 	ErrReturnNotFound         = fmt.Errorf("return not found")
 	ErrNotReturnParty         = fmt.Errorf("actor is not the customer or seller for this return")
 	ErrReviewNotFound         = fmt.Errorf("review not found")
+	ErrNotProductOwner        = fmt.Errorf("actor is not the seller for this product")
 	ErrNotReviewSeller        = fmt.Errorf("actor is not the seller for this review")
 )
 
@@ -317,9 +318,128 @@ func (s *Service) ListSellerProducts(ctx context.Context, sellerID uuid.UUID, li
 
 // ListProducts returns the customer-facing product catalog: published +
 // approved only. Optional category filter and title query. Returns total so
-// the UI can paginate.
+// the UI can paginate. Legacy offset/limit shape — prefer ListProductsFiltered
+// at scale.
 func (s *Service) ListProducts(ctx context.Context, categoryID *uuid.UUID, query string, limit, offset int) ([]*postgres.Product, int, error) {
 	return s.store.ListProducts(ctx, categoryID, query, limit, offset)
+}
+
+// ListProductsFilteredResult is the cursor-paged catalog response. NextCursor
+// is empty on the last page.
+type ListProductsFilteredResult struct {
+	Items      []*postgres.Product
+	NextCursor string
+}
+
+// ListProductsFiltered is the scale-friendly variant: keyset pagination
+// (O(1) regardless of page depth) plus a rich filter set — price range,
+// minimum rating, seller, in-stock. Wraps the store call with input
+// hardening (limit clamp, query trim).
+func (s *Service) ListProductsFiltered(ctx context.Context, f postgres.ProductFilter) (*ListProductsFilteredResult, error) {
+	if f.Limit <= 0 || f.Limit > 100 {
+		f.Limit = 20
+	}
+	items, next, err := s.store.ListProductsFiltered(ctx, f)
+	if err != nil {
+		return nil, err
+	}
+	if items == nil {
+		items = []*postgres.Product{}
+	}
+	return &ListProductsFilteredResult{Items: items, NextCursor: next}, nil
+}
+
+// ─── Variant CRUD (commerce TODO H#5) ─────────────────────────────────
+
+// ListProductVariants returns every variant for a product including
+// archived ones — public endpoint, no ownership check needed for read.
+func (s *Service) ListProductVariants(ctx context.Context, productID uuid.UUID) ([]*postgres.ProductVariant, error) {
+	return s.store.GetVariantsByProduct(ctx, productID)
+}
+
+// AddProductVariant creates a new variant on an existing product.
+// Authorization: actor must be the owning seller of the product. The
+// SKU must be unique per seller (the import path enforces this; here
+// the DB UNIQUE constraint on (sku, seller_id) is the final guard).
+func (s *Service) AddProductVariant(ctx context.Context, actorID, productID uuid.UUID, v *postgres.ProductVariant) (*postgres.ProductVariant, error) {
+	product, err := s.store.GetProductByID(ctx, productID)
+	if err != nil {
+		return nil, err
+	}
+	if product == nil {
+		return nil, postgres.ErrProductNotFound
+	}
+	// Verify the actor owns this product's seller account.
+	seller, err := s.GetSellerProfile(ctx, actorID)
+	if err != nil {
+		return nil, err
+	}
+	if seller == nil || seller.ID != product.SellerID {
+		return nil, ErrNotProductOwner
+	}
+	v.ProductID = productID
+	if v.Status == "" {
+		v.Status = "active"
+	}
+	if v.CurrencyCode == "" {
+		v.CurrencyCode = "INR"
+	}
+	if err := s.store.CreateVariant(ctx, v); err != nil {
+		return nil, err
+	}
+	return v, nil
+}
+
+// UpdateProductVariant patches an existing variant. Authorization same
+// as AddProductVariant — actor must own the parent product's seller.
+func (s *Service) UpdateProductVariant(ctx context.Context, actorID, variantID uuid.UUID, updates map[string]any) (*postgres.ProductVariant, error) {
+	variant, err := s.store.GetVariantByID(ctx, variantID)
+	if err != nil {
+		return nil, err
+	}
+	if variant == nil {
+		return nil, postgres.ErrProductNotFound
+	}
+	product, err := s.store.GetProductByID(ctx, variant.ProductID)
+	if err != nil {
+		return nil, err
+	}
+	seller, err := s.GetSellerProfile(ctx, actorID)
+	if err != nil {
+		return nil, err
+	}
+	if seller == nil || seller.ID != product.SellerID {
+		return nil, ErrNotProductOwner
+	}
+	if err := s.store.UpdateVariant(ctx, variantID, updates); err != nil {
+		return nil, err
+	}
+	return s.store.GetVariantByID(ctx, variantID)
+}
+
+// ArchiveProductVariant soft-deletes (status=archived) a variant.
+// Deleting variants is intentionally not supported — orders + cart
+// items reference variants by ID and need to keep resolving.
+func (s *Service) ArchiveProductVariant(ctx context.Context, actorID, variantID uuid.UUID) error {
+	variant, err := s.store.GetVariantByID(ctx, variantID)
+	if err != nil {
+		return err
+	}
+	if variant == nil {
+		return postgres.ErrProductNotFound
+	}
+	product, err := s.store.GetProductByID(ctx, variant.ProductID)
+	if err != nil {
+		return err
+	}
+	seller, err := s.GetSellerProfile(ctx, actorID)
+	if err != nil {
+		return err
+	}
+	if seller == nil || seller.ID != product.SellerID {
+		return ErrNotProductOwner
+	}
+	return s.store.ArchiveVariant(ctx, variantID)
 }
 
 func (s *Service) ListOrders(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*postgres.Order, error) {
