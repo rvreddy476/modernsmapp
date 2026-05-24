@@ -73,8 +73,13 @@ type Store interface {
 	ListPendingModeration(ctx context.Context, limit int) ([]postgres.PendingModerationItem, error)
 	ModerateMenuItem(ctx context.Context, adminID, itemID uuid.UUID, status, reason string) error
 	ListUnassignedReadyOrders(ctx context.Context, batch int) ([]uuid.UUID, error)
+	ListUnbatchedReadyOrders(ctx context.Context, batch int) ([]postgres.ReadyOrderForBatching, error)
 	ListEligibleDeliveryPartners(ctx context.Context, restaurantCity string, limit int) ([]uuid.UUID, error)
 	CreateDeliveryOffer(ctx context.Context, orderID, partnerID uuid.UUID, expiresAt time.Time) (*postgres.DeliveryOffer, error)
+	CreateBatch(ctx context.Context, restaurantID uuid.UUID, orderIDs []uuid.UUID) (*postgres.DeliveryBatch, error)
+	CreateDeliveryOfferForBatch(ctx context.Context, batchID, anchorOrderID, partnerID uuid.UUID, expiresAt time.Time) (*postgres.DeliveryOffer, error)
+	AcceptBatchOfferTx(ctx context.Context, userID, offerID uuid.UUID) (*postgres.DeliveryBatch, uuid.UUID, error)
+	GetBatchForOrder(ctx context.Context, orderID uuid.UUID) (*postgres.DeliveryBatch, error)
 	ListMyPendingDeliveryOffers(ctx context.Context, userID uuid.UUID) ([]postgres.DeliveryOffer, error)
 	AcceptDeliveryOfferTx(ctx context.Context, userID, offerID uuid.UUID) (*postgres.DeliveryOffer, error)
 	RejectDeliveryOffer(ctx context.Context, userID, offerID uuid.UUID, reason string) error

@@ -45,6 +45,30 @@ type RejectDeliveryOfferRequest struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+// GetBatchForOrder — GET /v1/food/delivery/orders/:orderId/batch
+//
+// Returns the batch payload (members + sequence + status) for an order
+// that's part of a multi-pickup batch, or 404 when the order is
+// dispatched solo. Used by partner UI to render "Stop 1 of 2" and by
+// customer UI to render the "delivered alongside another order"
+// banner.
+func (h *Handler) GetBatchForOrder(c *gin.Context) {
+	if _, ok := h.requireUser(c); !ok {
+		return
+	}
+	orderID, err := uuid.Parse(c.Param("orderId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ORDER_ID", err.Error(), nil)
+		return
+	}
+	batch, err := h.svc.GetBatchForOrder(c.Request.Context(), orderID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "BATCH_NOT_FOUND", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, batch, nil)
+}
+
 // RejectDeliveryOffer — POST /v1/food/delivery/offers/:offerId/reject
 func (h *Handler) RejectDeliveryOffer(c *gin.Context) {
 	uid, ok := h.requireUser(c)

@@ -127,6 +127,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		deliveryProof := v1.Group("/delivery/orders", h.requireAuthenticated())
 		{
 			deliveryProof.POST("/:orderId/proof", h.PartnerAttachProof)
+			deliveryProof.GET("/:orderId/batch", h.GetBatchForOrder)
 		}
 
 		delivery := v1.Group("/delivery", h.requireAuthenticated())

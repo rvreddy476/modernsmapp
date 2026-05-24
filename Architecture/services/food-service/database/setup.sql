@@ -1543,3 +1543,34 @@ CREATE TABLE IF NOT EXISTS food.referrals (
 );
 CREATE INDEX IF NOT EXISTS ix_food_referrals_referrer
     ON food.referrals(referrer_id, created_at DESC);
+
+-- ─── P2: delivery batching ────────────────────────────────────────────
+--
+-- A batch lets one partner pick up 2-3 orders at the same restaurant
+-- within a short time window (default 5 min) and deliver them in
+-- sequence. Each member order keeps its own delivery_assignment row
+-- (so OTPs, ratings, payouts stay per-order); batch_id links them so
+-- the worker offers + accepts the whole group atomically.
+--
+-- Sequence is the partner's pickup/drop order; lower = earlier. The
+-- dispatch worker assigns it by created_at within the batch.
+CREATE TABLE IF NOT EXISTS food.delivery_batches (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    restaurant_id UUID NOT NULL REFERENCES food.restaurants(id) ON DELETE CASCADE,
+    status        TEXT NOT NULL DEFAULT 'pending'
+                  CHECK (status IN ('pending','assigned','cancelled','completed')),
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    assigned_at   TIMESTAMPTZ,
+    completed_at  TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS ix_food_batches_status ON food.delivery_batches(status, created_at);
+CREATE INDEX IF NOT EXISTS ix_food_batches_restaurant ON food.delivery_batches(restaurant_id, created_at DESC);
+
+ALTER TABLE food.delivery_assignments
+    ADD COLUMN IF NOT EXISTS batch_id UUID REFERENCES food.delivery_batches(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS batch_sequence SMALLINT;
+CREATE INDEX IF NOT EXISTS ix_food_assignments_batch ON food.delivery_assignments(batch_id) WHERE batch_id IS NOT NULL;
+
+ALTER TABLE food.delivery_offers
+    ADD COLUMN IF NOT EXISTS batch_id UUID REFERENCES food.delivery_batches(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS ix_food_offers_batch ON food.delivery_offers(batch_id) WHERE batch_id IS NOT NULL;
