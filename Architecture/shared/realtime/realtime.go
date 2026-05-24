@@ -68,10 +68,16 @@ type Event struct {
 	EmittedAt time.Time       `json:"emitted_at"`
 }
 
-// Publish marshals and pushes the event onto the topic's Pub/Sub
-// channel. Best-effort: a Redis outage returns an error but callers
-// typically log-and-continue because the durable copy is the Kafka
-// event from the same source.
+// Publish marshals and pushes the event onto the topic's stream
+// (Redis Streams via XADD with MAXLEN trim) AND fan-outs to the
+// matching Pub/Sub channel for any legacy subscriber still listening.
+//
+// CR3-rt migration: Streams is now the durable primary so SSE clients
+// can replay missed messages via Last-Event-ID. The Pub/Sub double-write
+// stays during the rollout so any non-migrated subscriber keeps working;
+// once every subscriber is verified on Streams we'll drop it.
+//
+// Best-effort on Redis outage — Kafka remains the durable copy.
 func (p *Publisher) Publish(ctx context.Context, topic, eventType string, data any) error {
 	if p == nil || p.rdb == nil {
 		return nil
@@ -93,9 +99,22 @@ func (p *Publisher) Publish(ctx context.Context, topic, eventType string, data a
 	if err != nil {
 		return fmt.Errorf("realtime: marshal envelope: %w", err)
 	}
-	if err := p.rdb.Publish(ctx, channelPrefix+topic, body).Err(); err != nil {
-		return fmt.Errorf("realtime: publish %s: %w", topic, err)
+	// Streams write — durable, replayable.
+	if _, err := p.rdb.XAdd(ctx, &redis.XAddArgs{
+		Stream: StreamKey(topic),
+		MaxLen: maxStreamLen,
+		Approx: true,
+		Values: map[string]any{
+			"event_type": eventType,
+			"payload":    body,
+		},
+	}).Result(); err != nil {
+		return fmt.Errorf("realtime: XADD %s: %w", topic, err)
 	}
+	// Pub/Sub write — back-compat for any non-migrated subscriber.
+	// Failures are logged at debug only (best-effort once Streams
+	// succeeded).
+	_ = p.rdb.Publish(ctx, channelPrefix+topic, body).Err()
 	return nil
 }
 

@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -118,42 +119,62 @@ func (h *RealtimeHandler) stream(c *gin.Context) {
 		return
 	}
 
-	channels := make([]string, len(resolved))
-	for i, t := range resolved {
-		channels[i] = realtime.Channel(t)
-	}
-
 	ctx, cancel := context.WithCancel(c.Request.Context())
 	defer cancel()
-	sub := h.rdb.Subscribe(ctx, channels...)
-	defer sub.Close()
+
+	// CR3-rt: prefer Streams (durable + replay). The client supplies a
+	// `Last-Event-ID` header (W3C SSE-spec) or `since` query param to
+	// resume from where it disconnected. Empty / absent = live-tail
+	// from now.
+	since := c.GetHeader("Last-Event-ID")
+	if since == "" {
+		since = c.Query("since")
+	}
+	subscriber := realtime.NewStreamSubscriber(h.rdb, resolved, since, 25*time.Second)
 
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
 	c.Writer.Header().Set("Cache-Control", "no-cache")
 	c.Writer.Header().Set("Connection", "keep-alive")
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
 	c.Writer.WriteHeaderNow()
-	fmt.Fprintf(c.Writer, "event: connected\ndata: {\"subject\":%q,\"topics\":%q}\n\n", subject, strings.Join(resolved, ","))
+	fmt.Fprintf(c.Writer, "event: connected\ndata: {\"subject\":%q,\"topics\":%q,\"since\":%q}\n\n",
+		subject, strings.Join(resolved, ","), since)
 	c.Writer.Flush()
 
-	heartbeat := time.NewTicker(25 * time.Second)
-	defer heartbeat.Stop()
-	ch := sub.Channel()
+	// Loop: XREAD BLOCK is the heartbeat — it returns nil after 25s of
+	// no events, which is also when we want to emit an SSE keepalive.
+	// Cancel + writer-write errors break the loop and close cleanly.
 	for {
-		select {
-		case <-ctx.Done():
+		if ctx.Err() != nil {
 			return
-		case <-heartbeat.C:
-			fmt.Fprint(c.Writer, ": keepalive\n\n")
-			c.Writer.Flush()
-		case msg, ok := <-ch:
-			if !ok {
+		}
+		events, err := subscriber.Read(ctx)
+		if err != nil {
+			slog.Warn("realtime: XREAD failed", "subject", subject, "error", err)
+			// Brief backoff then continue — a transient Redis blip
+			// shouldn't kill the stream.
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(1 * time.Second):
+			}
+			continue
+		}
+		if len(events) == 0 {
+			if _, werr := fmt.Fprint(c.Writer, ": keepalive\n\n"); werr != nil {
 				return
 			}
-			topic := realtime.TopicFromChannel(msg.Channel)
-			fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", topic, msg.Payload)
 			c.Writer.Flush()
+			continue
 		}
+		for _, e := range events {
+			body, _ := json.Marshal(e.Event)
+			if _, werr := fmt.Fprintf(c.Writer, "id: %s\nevent: %s\ndata: %s\n\n",
+				e.StreamID, e.Topic, string(body)); werr != nil {
+				return
+			}
+		}
+		c.Writer.Flush()
 	}
 }
 
