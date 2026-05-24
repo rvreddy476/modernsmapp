@@ -55,6 +55,18 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
       );
       return _OrderTracking.fromJson(data);
     }, fallback: null);
+    // P2 batching: when the tracked order is part of a multi-pickup
+    // batch, the customer banner says "delivered alongside N orders".
+    // 404 → null; we render nothing for solo orders.
+    final batch = await _safeLoad<_OrderBatch?>(() async {
+      if (orders.isEmpty) return null;
+      final data = _responseData(
+        (await api.get(
+          '/v1/food/delivery/orders/${orders.first.id}/batch',
+        )).data,
+      );
+      return _OrderBatch.fromJson(data, orders.first.id);
+    }, fallback: null);
 
     // Role-gated data — only fetched when the matching workspace is
     // open. P0.5: a customer must never hit /v1/food/admin/* or
@@ -139,6 +151,7 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
       addresses: addresses,
       walletBalance: walletBalance,
       tracking: tracking,
+      batch: batch,
       partnerRestaurants: partnerRestaurants,
       delivery: delivery,
       admin: admin,
@@ -413,6 +426,7 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
         walletBalance: data.walletBalance,
         paymentMethod: _paymentMethod,
         tracking: data.tracking,
+        batch: data.batch,
         onPaymentMethodChanged: (method) =>
             setState(() => _paymentMethod = method),
         onAddQuickItem: (restaurant) =>
@@ -522,6 +536,7 @@ class _CustomerPanel extends StatelessWidget {
     required this.walletBalance,
     required this.paymentMethod,
     required this.tracking,
+    required this.batch,
     required this.onPaymentMethodChanged,
     required this.onAddQuickItem,
     required this.onPlaceOrder,
@@ -535,6 +550,7 @@ class _CustomerPanel extends StatelessWidget {
   final double walletBalance;
   final String paymentMethod;
   final _OrderTracking? tracking;
+  final _OrderBatch? batch;
   final ValueChanged<String> onPaymentMethodChanged;
   final ValueChanged<_Restaurant> onAddQuickItem;
   final void Function(_FigoAddress address, String paymentMethod) onPlaceOrder;
@@ -577,6 +593,10 @@ class _CustomerPanel extends StatelessWidget {
         ),
         if (tracking != null) ...[
           const SizedBox(height: 18),
+          if (batch != null && batch!.total > 1) ...[
+            _BatchBanner(batch: batch!),
+            const SizedBox(height: 12),
+          ],
           _TrackingCard(tracking: tracking!),
         ],
         const SizedBox(height: 18),
@@ -952,6 +972,50 @@ class _CartCard extends StatelessWidget {
               ),
             ],
           ],
+        ],
+      ),
+    );
+  }
+}
+
+// _BatchBanner explains to the customer that their order is part of a
+// multi-pickup batch (P2 — same restaurant, same rider, sequential
+// drops). Renders nothing for solo orders — guard at the call site.
+class _BatchBanner extends StatelessWidget {
+  const _BatchBanner({required this.batch});
+
+  final _OrderBatch batch;
+
+  @override
+  Widget build(BuildContext context) {
+    final siblings = batch.total - 1;
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF7ED),
+        border: Border.all(color: const Color(0xFFFCD34D)),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Your order is being delivered alongside $siblings other order'
+            '${siblings == 1 ? '' : 's'} nearby',
+            style: AppTextStyles.bodySmall.copyWith(
+              fontWeight: FontWeight.w800,
+              color: const Color(0xFF92400E),
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Your stop: ${batch.stop} of ${batch.total}. The rider is '
+            'making the trip in a single bundle from the same restaurant '
+            '— your ETA reflects the sequence.',
+            style: AppTextStyles.labelTiny.copyWith(
+              color: const Color(0xFF92400E),
+            ),
+          ),
         ],
       ),
     );
@@ -1516,6 +1580,7 @@ class _FigoSnapshot {
     required this.addresses,
     required this.walletBalance,
     required this.tracking,
+    required this.batch,
     required this.partnerRestaurants,
     required this.delivery,
     required this.admin,
@@ -1527,6 +1592,7 @@ class _FigoSnapshot {
   final List<_FigoAddress> addresses;
   final double walletBalance;
   final _OrderTracking? tracking;
+  final _OrderBatch? batch;
   final List<_PartnerRestaurant> partnerRestaurants;
   final _DeliveryWorkspace delivery;
   final _AdminWorkspace admin;
@@ -1539,9 +1605,42 @@ class _FigoSnapshot {
       addresses: [],
       walletBalance: 0,
       tracking: null,
+      batch: null,
       partnerRestaurants: [],
       delivery: _DeliveryWorkspace(),
       admin: _AdminWorkspace(),
+    );
+  }
+}
+
+// _OrderBatch is rendered as the "delivered alongside N other orders"
+// banner on the tracked order. members[].sequence is the stop number
+// (1-based); the customer's own stop is captured separately so the UI
+// can render "Stop X of Y" without re-scanning.
+class _OrderBatch {
+  const _OrderBatch({
+    required this.id,
+    required this.stop,
+    required this.total,
+  });
+
+  final String id;
+  final int stop;
+  final int total;
+
+  factory _OrderBatch.fromJson(Map<String, dynamic> json, String orderId) {
+    final members = (json['members'] as List?) ?? const [];
+    int stop = 0;
+    for (final raw in members) {
+      if (raw is Map && raw['order_id']?.toString() == orderId) {
+        stop = (raw['sequence'] as num?)?.toInt() ?? 0;
+        break;
+      }
+    }
+    return _OrderBatch(
+      id: json['id']?.toString() ?? '',
+      stop: stop,
+      total: members.length,
     );
   }
 }
