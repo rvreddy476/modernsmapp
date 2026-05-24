@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/food-service/internal/store/blob"
 	"github.com/atpost/food-service/internal/store/postgres"
 	"github.com/atpost/shared/outbox"
 	"github.com/atpost/shared/realtime"
@@ -112,6 +113,8 @@ type Store interface {
 	GenerateDeliverySettlementFile(ctx context.Context, adminID uuid.UUID, from, to time.Time) (*postgres.SettlementFile, error)
 	ListSettlementFiles(ctx context.Context, limit int) ([]postgres.SettlementFile, error)
 	GetSettlementFileBody(ctx context.Context, fileID uuid.UUID) ([]byte, string, error)
+	GetSettlementBody(ctx context.Context, fileID uuid.UUID) (*postgres.SettlementBody, error)
+	UpdateSettlementFileURL(ctx context.Context, fileID uuid.UUID, fileURL string) error
 	GetInvoiceData(ctx context.Context, userID, orderID uuid.UUID) (*postgres.InvoiceData, error)
 	AllocateInvoiceNumber(ctx context.Context, orderID uuid.UUID, financialYear string) (string, error)
 	PredictPrepTime(ctx context.Context, restaurantID uuid.UUID) (*postgres.PrepTimePrediction, error)
@@ -172,6 +175,7 @@ type Service struct {
 	rtSigner        *realtime.TokenSigner
 	outboxQ         *outbox.Queuer
 	dbPool          *pgxpool.Pool
+	blob            *blob.Store
 }
 
 func New(store Store) *Service {

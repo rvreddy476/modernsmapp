@@ -21,6 +21,16 @@ type SettlementFile struct {
 	TotalAmount float64   `json:"total_amount"`
 	GeneratedBy *string   `json:"generated_by,omitempty"`
 	GeneratedAt time.Time `json:"generated_at"`
+	FileURL     string    `json:"file_url,omitempty"`
+}
+
+// SettlementBody holds whatever's needed to deliver the CSV to the
+// caller. If FileURL is set, the row is in MinIO and a presigned GET
+// is the right path; otherwise InlineBody holds the bytes.
+type SettlementBody struct {
+	FileURL    string
+	Kind       string
+	InlineBody []byte
 }
 
 // GenerateRestaurantSettlementFile pulls every restaurant_settlements
@@ -159,9 +169,11 @@ func (s *Store) insertSettlementFile(ctx context.Context, adminID uuid.UUID, kin
 		INSERT INTO food.settlement_files
 			(period_start, period_end, kind, file_url, body, row_count, total_amount, generated_by)
 		VALUES ($1::date, $2::date, $3, '', $4, $5, $6, $7)
-		RETURNING id, period_start::text, period_end::text, kind, row_count, total_amount::float8, generated_by, generated_at
+		RETURNING id, period_start::text, period_end::text, kind, row_count,
+			total_amount::float8, generated_by, generated_at, COALESCE(file_url, '')
 	`, from, to, kind, body, rowCount, totalAmount, adminID).Scan(
-		&f.ID, &f.PeriodStart, &f.PeriodEnd, &f.Kind, &f.RowCount, &f.TotalAmount, &f.GeneratedBy, &f.GeneratedAt,
+		&f.ID, &f.PeriodStart, &f.PeriodEnd, &f.Kind, &f.RowCount,
+		&f.TotalAmount, &f.GeneratedBy, &f.GeneratedAt, &f.FileURL,
 	); err != nil {
 		return nil, fmt.Errorf("insert settlement file: %w", err)
 	}
@@ -176,7 +188,8 @@ func (s *Store) ListSettlementFiles(ctx context.Context, limit int) ([]Settlemen
 	}
 	rows, err := s.db.Query(ctx, `
 		SELECT id, period_start::text, period_end::text, kind,
-			row_count, total_amount::float8, generated_by, generated_at
+			row_count, total_amount::float8, generated_by, generated_at,
+			COALESCE(file_url, '')
 		FROM food.settlement_files
 		ORDER BY generated_at DESC
 		LIMIT $1
@@ -189,7 +202,8 @@ func (s *Store) ListSettlementFiles(ctx context.Context, limit int) ([]Settlemen
 	for rows.Next() {
 		var f SettlementFile
 		if err := rows.Scan(&f.ID, &f.PeriodStart, &f.PeriodEnd, &f.Kind,
-			&f.RowCount, &f.TotalAmount, &f.GeneratedBy, &f.GeneratedAt); err != nil {
+			&f.RowCount, &f.TotalAmount, &f.GeneratedBy, &f.GeneratedAt,
+			&f.FileURL); err != nil {
 			return nil, err
 		}
 		out = append(out, f)
@@ -198,7 +212,8 @@ func (s *Store) ListSettlementFiles(ctx context.Context, limit int) ([]Settlemen
 }
 
 // GetSettlementFileBody streams the CSV body back to the admin
-// download endpoint.
+// download endpoint. Kept for backwards-compatibility with the inline
+// path; the MinIO-first path uses GetSettlementBody.
 func (s *Store) GetSettlementFileBody(ctx context.Context, fileID uuid.UUID) ([]byte, string, error) {
 	var body []byte
 	var kind string
@@ -209,4 +224,35 @@ func (s *Store) GetSettlementFileBody(ctx context.Context, fileID uuid.UUID) ([]
 		return nil, "", err
 	}
 	return body, kind, nil
+}
+
+// GetSettlementBody returns whichever of {file_url, inline body} the
+// row carries. The handler uses file_url (presigned GET) when set,
+// inline bytes otherwise. Decoupled from MinIO so the store layer
+// stays free of blob-package imports.
+func (s *Store) GetSettlementBody(ctx context.Context, fileID uuid.UUID) (*SettlementBody, error) {
+	out := &SettlementBody{}
+	if err := s.db.QueryRow(ctx, `
+		SELECT COALESCE(file_url, ''), COALESCE(body, ''::bytea), kind
+		FROM food.settlement_files WHERE id = $1
+	`, fileID).Scan(&out.FileURL, &out.InlineBody, &out.Kind); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// UpdateSettlementFileURL records that the CSV is in MinIO at the
+// given key. Once set, the inline body becomes the cold-path fallback;
+// new callers should hit the presigned URL. Clears the inline body
+// when fileURL is non-empty to free Postgres BYTEA pressure.
+func (s *Store) UpdateSettlementFileURL(ctx context.Context, fileID uuid.UUID, fileURL string) error {
+	if fileURL == "" {
+		return fmt.Errorf("invalid: empty fileURL")
+	}
+	_, err := s.db.Exec(ctx, `
+		UPDATE food.settlement_files
+		SET file_url = $2, body = NULL
+		WHERE id = $1
+	`, fileID, fileURL)
+	return err
 }

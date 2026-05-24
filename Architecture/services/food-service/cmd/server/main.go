@@ -10,6 +10,7 @@ import (
 	"github.com/atpost/food-service/database"
 	foodhttp "github.com/atpost/food-service/internal/http"
 	"github.com/atpost/food-service/internal/service"
+	"github.com/atpost/food-service/internal/store/blob"
 	"github.com/atpost/food-service/internal/store/postgres"
 	"github.com/atpost/shared/health"
 	"github.com/atpost/shared/middleware"
@@ -98,6 +99,30 @@ func main() {
 	slog.Info("outbox publisher started", "topic", kafkaTopic)
 
 	svc.WithOutbox(outbox.NewQueuer(""), dbPool)
+
+	// MinIO for settlement-file offload. Optional — when the env is
+	// absent or the client fails to connect, settlement files keep
+	// living inline in food.settlement_files.body and the download
+	// handler streams from there. See internal/store/blob/store.go.
+	if minioEndpoint := os.Getenv("MINIO_ENDPOINT"); minioEndpoint != "" {
+		bucket := env("FOOD_BLOB_BUCKET", "food")
+		useSSL := strings.EqualFold(env("MINIO_USE_SSL", "false"), "true")
+		blobStore, err := blob.New(
+			minioEndpoint,
+			os.Getenv("MINIO_ACCESS_KEY"),
+			os.Getenv("MINIO_SECRET_KEY"),
+			bucket,
+			useSSL,
+			os.Getenv("MINIO_PUBLIC_ENDPOINT"),
+		)
+		if err != nil {
+			slog.Warn("food-service: MinIO unavailable, settlement files stay inline",
+				"endpoint", minioEndpoint, "error", err)
+		} else {
+			svc.WithBlobStore(blobStore)
+			slog.Info("food-service: MinIO wired", "bucket", bucket)
+		}
+	}
 
 	// B1: SLA auto-reject worker. Scans every 15s for CONFIRMED orders
 	// past their accept_deadline_at and transitions them to

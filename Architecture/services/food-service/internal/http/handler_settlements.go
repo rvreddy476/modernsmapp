@@ -63,20 +63,32 @@ func (h *Handler) AdminListSettlementFiles(c *gin.Context) {
 }
 
 // AdminDownloadSettlementFile — GET /v1/food/admin/settlements/files/:id/download
-// Streams the CSV body back with text/csv content type.
+//
+// MinIO-first: when the row has a file_url, redirects to a short-lived
+// presigned GET so the browser fetches direct from MinIO without
+// proxying through this service. Falls back to streaming the inline
+// body when MinIO isn't wired or the row predates the offload.
 func (h *Handler) AdminDownloadSettlementFile(c *gin.Context) {
 	fileID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_FILE_ID", err.Error(), nil)
 		return
 	}
-	body, kind, err := h.svc.GetSettlementFileBody(c.Request.Context(), fileID)
+	dl, err := h.svc.GetSettlementDownload(c.Request.Context(), fileID)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "FILE_NOT_FOUND", err.Error(), nil)
 		return
 	}
+	if dl.PresignedURL != "" {
+		c.Redirect(http.StatusFound, dl.PresignedURL)
+		return
+	}
+	if len(dl.InlineBody) == 0 {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "FILE_NOT_FOUND", "file has no body", nil)
+		return
+	}
 	c.Writer.Header().Set("Content-Type", "text/csv")
 	c.Writer.Header().Set("Content-Disposition",
-		"attachment; filename=\"figo-"+kind+"-settlement-"+fileID.String()+".csv\"")
-	_, _ = c.Writer.Write(body)
+		"attachment; filename=\"figo-"+dl.Kind+"-settlement-"+fileID.String()+".csv\"")
+	_, _ = c.Writer.Write(dl.InlineBody)
 }
