@@ -45,6 +45,11 @@ func (h *Handler) RegisterOnboardingRoutes(r *gin.Engine) {
 	adm.POST("/products/:productId/approve", h.AdminApproveProduct)
 	adm.POST("/products/:productId/reject", h.AdminRejectProduct)
 	adm.POST("/products/:productId/request-changes", h.AdminRequestProductChanges)
+	// COD remittance settlement — Ops marks a remittance row as paid
+	// once the seller has been credited via the actual payout cycle.
+	// Store-level MarkCODRemittanceSettled has existed since the COD
+	// schema landed; the HTTP route was the missing piece.
+	adm.POST("/cod-remittances/:remittanceId/settle", h.AdminSettleCODRemittance)
 }
 
 // ─── Onboarding handlers ────────────────────────────────────────

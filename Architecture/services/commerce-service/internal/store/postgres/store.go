@@ -1435,14 +1435,20 @@ func (s *Store) ListDeliveredItemsForSeller(ctx context.Context, sellerID uuid.U
 
 // MarkCODRemittanceSettled flips a pending remittance to settled and stamps
 // the payout batch. Used by the Ops-side payout job when cash actually
-// transfers to the seller's bank/UPI.
+// transfers to the seller's bank/UPI. payoutBatchID may be uuid.Nil for a
+// standalone settlement (Ops marked it paid outside any batch); we store
+// NULL in that case so the row isn't tied to a non-existent batch.
 func (s *Store) MarkCODRemittanceSettled(ctx context.Context, remittanceID, payoutBatchID uuid.UUID) error {
+	var batchArg interface{}
+	if payoutBatchID != uuid.Nil {
+		batchArg = payoutBatchID
+	}
 	_, err := s.db.Exec(ctx, `
 		UPDATE cod_remittances
 		SET status = 'settled',
 		    settled_at = NOW(),
 		    payout_batch_id = $2
-		WHERE id = $1 AND status = 'pending'`, remittanceID, payoutBatchID)
+		WHERE id = $1 AND status = 'pending'`, remittanceID, batchArg)
 	return err
 }
 
@@ -1455,6 +1461,56 @@ func (s *Store) SetReturnRefund(ctx context.Context, returnID uuid.UUID, refundI
 		SET refund_intent_id=$2, refund_status=$3, refund_amount=$4
 		WHERE id=$1`, returnID, refundIntentID, status, amount)
 	return err
+}
+
+// MarkReturnRefundSucceededByIntent flips a return's refund_status to
+// 'succeeded' once payments-service confirms the refund via Kafka. Keyed
+// on refund_intent_id (set by SetReturnRefund at approve time) so the
+// consumer doesn't need to know the return ID. Returns the affected row
+// count so the caller can log a no-op gracefully (event for a refund
+// that was never tied to a return).
+func (s *Store) MarkReturnRefundSucceededByIntent(ctx context.Context, intentID string) (int64, error) {
+	cmd, err := s.db.Exec(ctx, `
+		UPDATE return_requests
+		SET refund_status='succeeded'
+		WHERE refund_intent_id=$1 AND refund_status IN ('pending','processing')`,
+		intentID)
+	if err != nil {
+		return 0, err
+	}
+	return cmd.RowsAffected(), nil
+}
+
+// StampOrderRefundIntent records the refund intent ID + flips the
+// order's payment_status to 'refund_pending'. Used by CancelOrder when
+// it kicks off the refund on payments-service so the later
+// payment.refunded event can find the order via intent_id.
+func (s *Store) StampOrderRefundIntent(ctx context.Context, orderID uuid.UUID, intentID string) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE orders
+		SET refund_intent_id = $2,
+		    payment_status = 'refund_pending',
+		    updated_at = NOW()
+		WHERE id = $1 AND payment_status = 'paid'`,
+		orderID, intentID)
+	return err
+}
+
+// MarkOrderRefundedByPayment is used by the consumer when a refund
+// event arrives for an order-level intent (i.e. a CancelOrder refund
+// rather than a per-line return). Flips orders.payment_status to
+// 'refunded' if currently 'paid'. Keyed on the intent id stamped onto
+// the order at refund-initiation time. Returns affected row count.
+func (s *Store) MarkOrderRefundedByPayment(ctx context.Context, intentID string) (int64, error) {
+	cmd, err := s.db.Exec(ctx, `
+		UPDATE orders
+		SET payment_status='refunded', updated_at=NOW()
+		WHERE refund_intent_id=$1 AND payment_status IN ('paid','refund_pending')`,
+		intentID)
+	if err != nil {
+		return 0, err
+	}
+	return cmd.RowsAffected(), nil
 }
 
 // ─── Payout Batches ──────────────────────────────────────────

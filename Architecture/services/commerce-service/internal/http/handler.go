@@ -578,6 +578,36 @@ func (h *Handler) GetMySellerProfile(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, seller, nil)
 }
 
+// AdminSettleCODRemittance marks a pending COD remittance as settled.
+// Used by Ops after the seller has been paid out for cash the courier
+// collected on their behalf. Optional `payout_batch_id` lets the row
+// be associated with the payout batch that actually carried the funds.
+//
+//   POST /v1/commerce/internal/cod-remittances/:remittanceId/settle
+//     body: { "payout_batch_id": "<uuid?>" }
+func (h *Handler) AdminSettleCODRemittance(c *gin.Context) {
+	remittanceID, err := uuid.Parse(c.Param("remittanceId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REMITTANCE_ID", err.Error(), nil)
+		return
+	}
+	var body struct {
+		PayoutBatchID string `json:"payout_batch_id"`
+	}
+	_ = c.BindJSON(&body)
+	var payoutBatchID uuid.UUID
+	if body.PayoutBatchID != "" {
+		if id, err := uuid.Parse(body.PayoutBatchID); err == nil {
+			payoutBatchID = id
+		}
+	}
+	if err := h.svc.SettleCODRemittance(c.Request.Context(), remittanceID, payoutBatchID); err != nil {
+		handleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"remittance_id": remittanceID, "status": "settled"}, nil)
+}
+
 // ListMyCODRemittances returns the seller's COD remittance ledger. Each row
 // is one COD shipment whose cash has either been collected by the courier
 // (status=pending) or transferred to the seller (status=settled).

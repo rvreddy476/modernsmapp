@@ -188,10 +188,12 @@ func (s *Service) InitiateRefund(ctx context.Context, id, actorID uuid.UUID, rea
 		return nil, err
 	}
 	intent.Status = "refunded"
-	s.publishEvent(ctx, "payment.refunded", actorID.String(), map[string]any{
-		"intent_id": id,
-		"reason":    reason,
-	})
+	// Audit follow-up: publish the full intent on refund so downstream
+	// consumers (commerce-service refund consumer) can locate the order
+	// via reference_type / reference_id and mark the return refund
+	// succeeded. Previously this carried only intent_id which forced a
+	// round-trip per refund.
+	s.publishEvent(ctx, "payment.refunded", actorID.String(), intent)
 	return intent, nil
 }
 
@@ -317,6 +319,14 @@ func (s *Service) UpdateStatusByProviderRef(ctx context.Context, providerRef, ne
 		eventType = "payment.failed"
 	case "refunded":
 		eventType = "payment.refunded"
+	}
+	// Look up the intent so the event payload carries reference_type +
+	// reference_id, matching the shape consumers expect. Falls back to
+	// the legacy bare-keys payload only on a lookup miss so a transient
+	// DB blip can't silently swallow the event.
+	if intent, lookupErr := s.store.GetIntentByProviderRef(ctx, providerRef); lookupErr == nil && intent != nil {
+		s.publishEvent(ctx, eventType, "", intent)
+		return
 	}
 	s.publishEvent(ctx, eventType, "", map[string]any{
 		"provider_ref": providerRef,

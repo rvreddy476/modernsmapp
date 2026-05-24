@@ -998,3 +998,13 @@ CREATE INDEX IF NOT EXISTS idx_orders_organization ON orders(organization_id)
     WHERE organization_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_orders_approval ON orders(approval_status)
     WHERE approval_status = 'pending';
+
+-- ─── Production-launch blocker #2: CancelOrder refund tracking ─────
+--
+-- CancelOrder used to only flip status; now it kicks off a refund via
+-- payments-service for prepaid orders. We stamp the refund intent ID
+-- onto the order row so the refund consumer can flip payment_status
+-- to 'refunded' when payments-service publishes payment.refunded.
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS refund_intent_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_orders_refund_intent ON orders(refund_intent_id)
+    WHERE refund_intent_id IS NOT NULL;

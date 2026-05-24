@@ -1393,7 +1393,13 @@ func (s *Service) fulfillPaidOrder(orderID uuid.UUID) {
 	}
 }
 
-// CancelOrder cancels an order that hasn't shipped yet.
+// CancelOrder cancels an order that hasn't shipped yet. For prepaid
+// orders we also kick off a refund via payments-service — without this,
+// money landed in escrow at confirmation and stayed there. Refund
+// happens best-effort: the cancel itself succeeds even when the refund
+// call fails (an admin can retry); but on success we stamp the intent
+// ID on the order so the refund consumer can flip payment_status when
+// the gateway settles.
 func (s *Service) CancelOrder(ctx context.Context, orderID, actorID uuid.UUID, actorType, reason string) error {
 	order, err := s.store.GetOrderByID(ctx, orderID)
 	if err != nil {
@@ -1406,7 +1412,67 @@ func (s *Service) CancelOrder(ctx context.Context, orderID, actorID uuid.UUID, a
 	if !cancellable[order.Status] {
 		return fmt.Errorf("order cannot be cancelled in status: %s", order.Status)
 	}
-	return s.store.UpdateOrderStatus(ctx, orderID, "cancelled", &actorID, actorType, reason)
+	if err := s.store.UpdateOrderStatus(ctx, orderID, "cancelled", &actorID, actorType, reason); err != nil {
+		return err
+	}
+	// Refund leg only applies to prepaid orders that captured money. COD
+	// orders + payment_pending orders have nothing to refund. Same gate
+	// the return-refund path uses (initiateReturnRefund).
+	isCOD := order.PaymentMethod != nil && strings.EqualFold(*order.PaymentMethod, "cod")
+	if isCOD || order.PaymentStatus != "paid" {
+		return nil
+	}
+	if s.payments == nil {
+		slog.Warn("cancel: payments client not configured; refund must be handled manually",
+			"order_id", orderID)
+		return nil
+	}
+	intent, err := s.payments.FindOrderIntent(ctx, orderID, actorID)
+	if err != nil || intent == nil {
+		slog.Warn("cancel: no succeeded intent for order; refund must be handled manually",
+			"order_id", orderID, "error", err)
+		return nil
+	}
+	refunded, err := s.payments.InitiateRefund(ctx, intent.ID, actorID, "cancel:"+reason)
+	if err != nil {
+		slog.Warn("cancel: refund initiate failed",
+			"order_id", orderID, "intent_id", intent.ID, "error", err)
+		return nil
+	}
+	_ = refunded
+	if err := s.store.StampOrderRefundIntent(ctx, orderID, intent.ID.String()); err != nil {
+		slog.Warn("cancel: stamp refund intent failed",
+			"order_id", orderID, "intent_id", intent.ID, "error", err)
+	}
+	return nil
+}
+
+// ApplyRefundEvent is the system entry point the Kafka payments consumer
+// uses when payments-service publishes payment.refunded. The refund may
+// be a per-line return refund (set up by ApproveReturn) or an order-
+// level cancel refund (set up by CancelOrder). We try both keyed lookups
+// and log a no-op if neither matches — payments-service can refund
+// intents that commerce-service didn't initiate, and that's fine.
+func (s *Service) ApplyRefundEvent(ctx context.Context, intentID string) error {
+	if intentID == "" {
+		return nil
+	}
+	if n, err := s.store.MarkReturnRefundSucceededByIntent(ctx, intentID); err != nil {
+		slog.Warn("refund consumer: return update failed", "intent_id", intentID, "error", err)
+	} else if n > 0 {
+		slog.Info("refund consumer: return marked succeeded", "intent_id", intentID, "rows", n)
+		return nil
+	}
+	if n, err := s.store.MarkOrderRefundedByPayment(ctx, intentID); err != nil {
+		slog.Warn("refund consumer: order update failed", "intent_id", intentID, "error", err)
+	} else if n > 0 {
+		slog.Info("refund consumer: order marked refunded", "intent_id", intentID, "rows", n)
+		return nil
+	}
+	// No match — this was a refund commerce-service didn't initiate
+	// (manual gateway action, etc.). Quiet info-level log.
+	slog.Info("refund consumer: no matching commerce row", "intent_id", intentID)
+	return nil
 }
 
 // ─── Returns ─────────────────────────────────────────────────

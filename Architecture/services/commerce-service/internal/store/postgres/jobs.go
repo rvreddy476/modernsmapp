@@ -8,6 +8,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -181,14 +182,70 @@ func (s *Store) ListDeadLetterJobs(ctx context.Context, limit int) ([]*Fulfillme
 // ─── Phase 6.2 — inventory reservation expiry ────────────────
 
 // ExpireInventoryReservations releases reservations whose expires_at has
-// passed. Returns the number of rows freed. Idempotent — safe to run on
-// a cron / periodic worker.
+// passed AND whose linked order is still payment_pending (or has no
+// order — defensive). For each freed row it also decrements the
+// inventory_items.reserved_qty so other customers can buy the unit.
+//
+// The old `order_id IS NULL` filter never matched because every
+// reservation is created with the placed-order's ID. The new version
+// joins through `orders` and bails if the order has moved past
+// payment_pending (e.g. has been confirmed concurrently).
+//
+// Idempotent — safe to run on a cron / periodic worker. Returns the
+// number of rows freed.
 func (s *Store) ExpireInventoryReservations(ctx context.Context) (int, error) {
-	tag, err := s.db.Exec(ctx, `
-		DELETE FROM inventory_reservations
-		WHERE expires_at <= NOW() AND order_id IS NULL`)
+	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return 0, err
 	}
-	return int(tag.RowsAffected()), nil
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	// CTE finds the rows that are actually safe to release: expired
+	// AND linked to an order that is still payment_pending OR cancelled
+	// (cancelled orders should have been cleaned up already, but
+	// belt-and-braces). Returning the variant_id + qty so we can roll
+	// back the reserved_qty in the same tx.
+	rows, err := tx.Query(ctx, `
+		WITH expired AS (
+			DELETE FROM inventory_reservations r
+			USING orders o
+			WHERE r.expires_at <= NOW()
+			  AND r.order_id IS NOT NULL
+			  AND o.id = r.order_id
+			  AND o.status IN ('payment_pending','cancelled')
+			  AND o.payment_status IN ('pending','processing','failed')
+			RETURNING r.variant_id, r.quantity
+		)
+		SELECT variant_id, quantity FROM expired`)
+	if err != nil {
+		return 0, err
+	}
+	type release struct {
+		variantID uuid.UUID
+		qty       int
+	}
+	var releases []release
+	for rows.Next() {
+		var rel release
+		if err := rows.Scan(&rel.variantID, &rel.qty); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		releases = append(releases, rel)
+	}
+	rows.Close()
+
+	for _, rel := range releases {
+		if _, err := tx.Exec(ctx, `
+			UPDATE inventory_items
+			SET reserved_qty = GREATEST(0, reserved_qty - $2),
+			    updated_at = NOW()
+			WHERE variant_id = $1`, rel.variantID, rel.qty); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return len(releases), nil
 }

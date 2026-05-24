@@ -378,6 +378,14 @@ func (s *Service) recordCODRemittance(ctx context.Context, sh *postgres.Shipment
 	})
 }
 
+// SettleCODRemittance marks a remittance row as settled — Ops calls
+// this after the seller is paid out for cash the courier collected on
+// their behalf. `payoutBatchID` is optional (uuid.Nil = standalone
+// settlement, no batch link).
+func (s *Service) SettleCODRemittance(ctx context.Context, remittanceID, payoutBatchID uuid.UUID) error {
+	return s.store.MarkCODRemittanceSettled(ctx, remittanceID, payoutBatchID)
+}
+
 // ListSellerCODRemittances returns the seller's COD remittances paginated.
 // status is optional ("pending" | "settled" | "on_hold" | ""=all).
 func (s *Service) ListSellerCODRemittances(ctx context.Context, sellerID uuid.UUID, status string, limit, offset int) ([]*postgres.CODRemittance, int, error) {
@@ -419,22 +427,51 @@ func (s *Service) HandleShipmentWebhook(ctx context.Context, courierName string,
 			slog.Warn("webhook: status update failed", "error", err)
 		}
 		if u.Status == "delivered" {
-			_ = s.store.UpdateOrderStatus(ctx, sh.OrderID, "delivered", nil, "system", "courier confirmed delivery")
-			order, _ := s.store.GetOrderByID(ctx, sh.OrderID)
-			buyerEmail := ""
-			if order != nil {
-				buyerEmail, _ = s.resolveBuyer(ctx, order.CustomerUserID)
+			// Multi-shipment delivery rollup: the order's `delivered`
+			// status must wait until every seller's shipment is
+			// delivered. Single-seller orders are the common case
+			// (one shipment per order) and this just confirms.
+			// Multi-seller orders trickle through partially-delivered
+			// states until the last shipment lands.
+			allDelivered := true
+			siblings, lerr := s.store.ListShipmentsByOrder(ctx, sh.OrderID)
+			if lerr != nil {
+				slog.Warn("webhook: list siblings failed; treating as single-shipment",
+					"order_id", sh.OrderID, "error", lerr)
+			} else {
+				for _, sibling := range siblings {
+					if sibling.ID == sh.ID {
+						continue // this one we just flipped above
+					}
+					if !strings.EqualFold(sibling.Status, "delivered") {
+						allDelivered = false
+						break
+					}
+				}
 			}
-			s.publish(ctx, events.EventCommerceOrderDelivered, map[string]any{
-				"order_id":     sh.OrderID,
-				"order_number": orderNumberOrEmpty(order),
-				"shipment_id":  sh.ID,
-				"occurred_at":  u.OccurredAt,
-				"buyer_email":  buyerEmail,
-			})
+			order, _ := s.store.GetOrderByID(ctx, sh.OrderID)
+			if allDelivered {
+				_ = s.store.UpdateOrderStatus(ctx, sh.OrderID, "delivered", nil, "system", "all shipments delivered")
+				buyerEmail := ""
+				if order != nil {
+					buyerEmail, _ = s.resolveBuyer(ctx, order.CustomerUserID)
+				}
+				s.publish(ctx, events.EventCommerceOrderDelivered, map[string]any{
+					"order_id":     sh.OrderID,
+					"order_number": orderNumberOrEmpty(order),
+					"shipment_id":  sh.ID,
+					"occurred_at":  u.OccurredAt,
+					"buyer_email":  buyerEmail,
+				})
+			} else {
+				slog.Info("webhook: shipment delivered but order has pending siblings",
+					"order_id", sh.OrderID, "shipment_id", sh.ID)
+			}
 
 			// Cash collected at delivery — open a remittance so the seller
-			// sees what they're owed and Ops can settle it.
+			// sees what they're owed and Ops can settle it. Per-shipment
+			// (and therefore per-seller) so each seller is paid out for
+			// their own COD collection regardless of the rollup state.
 			s.recordCODRemittance(ctx, sh, order, u.OccurredAt)
 		}
 	}

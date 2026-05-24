@@ -71,7 +71,7 @@ func (c *PaymentsConsumer) Close() error {
 func (c *PaymentsConsumer) handle(ctx context.Context, env *events.EventEnvelope) error {
 	// Only react to payment lifecycle events.
 	switch env.EventType {
-	case events.EventPaymentSucceeded, events.EventPaymentFailed:
+	case events.EventPaymentSucceeded, events.EventPaymentFailed, events.EventPaymentRefunded:
 	default:
 		return nil
 	}
@@ -81,6 +81,24 @@ func (c *PaymentsConsumer) handle(ctx context.Context, env *events.EventEnvelope
 		// Malformed payload — log + drop. Don't return error or the consumer
 		// will retry forever and eventually DLQ a message that won't parse.
 		slog.Warn("payments consumer: bad payload", "event_type", env.EventType, "error", err)
+		return nil
+	}
+
+	// Refunds are keyed off intent_id (set via SetReturnRefund at
+	// approve time + Order.refund_intent_id at CancelOrder time), not
+	// the order reference — payments-service may emit refund events
+	// for refunds initiated against arbitrary intents. Handle the
+	// refund branch up-front so we don't bail on the order-ref check.
+	if env.EventType == events.EventPaymentRefunded {
+		intentID := p.ID
+		if intentID == "" {
+			slog.Warn("payments consumer: refund event missing intent id")
+			return nil
+		}
+		if err := c.svc.ApplyRefundEvent(ctx, intentID); err != nil {
+			return fmt.Errorf("apply refund for intent %s: %w", intentID, err)
+		}
+		slog.Info("payments consumer: applied refund", "intent_id", intentID)
 		return nil
 	}
 

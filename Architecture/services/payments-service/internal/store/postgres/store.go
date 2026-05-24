@@ -118,6 +118,30 @@ func (s *Store) GetIntent(ctx context.Context, id uuid.UUID) (*PaymentIntent, er
 	return &p, err
 }
 
+// GetIntentByProviderRef is used by the webhook-publish path so events
+// can carry the full intent shape (reference_type / reference_id) that
+// commerce-service consumers need. Returns nil + ErrPaymentNotFound
+// when the provider hasn't been wired up against any intent yet.
+func (s *Store) GetIntentByProviderRef(ctx context.Context, providerRef string) (*PaymentIntent, error) {
+	if providerRef == "" {
+		return nil, ErrPaymentNotFound
+	}
+	var p PaymentIntent
+	err := s.db.QueryRow(ctx,
+		`SELECT id, payer_id, payee_id, reference_type, reference_id, amount, currency, method, status,
+		        COALESCE(provider_ref,''), COALESCE(upi_intent_url,''), idempotency_key, created_at, updated_at
+		 FROM payments.payment_intents WHERE provider_ref = $1
+		 ORDER BY updated_at DESC LIMIT 1`,
+		providerRef,
+	).Scan(&p.ID, &p.PayerID, &p.PayeeID, &p.ReferenceType, &p.ReferenceID,
+		&p.Amount, &p.Currency, &p.Method, &p.Status, &p.ProviderRef, &p.UPIIntentURL,
+		&p.IdempotencyKey, &p.CreatedAt, &p.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
 // UpdateStatus atomically updates status and writes an audit entry.
 func (s *Store) UpdateStatus(ctx context.Context, id uuid.UUID, oldStatus, newStatus, providerRef string, actorID uuid.UUID) error {
 	tx, err := s.db.Begin(ctx)
