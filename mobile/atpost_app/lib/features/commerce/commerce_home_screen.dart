@@ -75,7 +75,9 @@ class _CommerceHomeScreenState extends ConsumerState<CommerceHomeScreen> {
       if (!mounted) return;
       setState(() {
         _accumulated.addAll(page.items);
-        _lastCursor = page.nextOffset.toString();
+        // Prefer the keyset cursor when present; fall back to
+        // legacy offset for paths that still use it (seller-scoped).
+        _lastCursor = page.nextCursor ?? page.nextOffset.toString();
         _exhausted = !page.hasMore || page.items.isEmpty;
       });
     } catch (_) {
@@ -201,7 +203,7 @@ class _CommerceHomeScreenState extends ConsumerState<CommerceHomeScreen> {
                 // Seed the accumulated list on first load only.
                 if (_accumulated.isEmpty && _lastCursor == null) {
                   _accumulated.addAll(page.items);
-                  _lastCursor = page.nextOffset.toString();
+                  _lastCursor = page.nextCursor ?? page.nextOffset.toString();
                   _exhausted = !page.hasMore;
                 }
                 if (_accumulated.isEmpty) {

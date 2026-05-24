@@ -57,6 +57,8 @@ type ProfileService interface {
 	// Social lists
 	ListFollowers(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.FollowerEntry, int64, error)
 	ListFollowing(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.FollowerEntry, int64, error)
+	ListFollowersCursor(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]store.FollowerEntry, string, error)
+	ListFollowingCursor(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]store.FollowerEntry, string, error)
 	ListBlocks(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.Block, int64, error)
 	// Block
 	BlockUser(ctx context.Context, blockerID, blockedID uuid.UUID) error
@@ -892,6 +894,29 @@ func (h *Handler) ListFollowers(c *gin.Context) {
 		return
 	}
 
+	// HG2 follow-up: cursor pagination at celebrity scale. Triggered
+	// by `?cursor=...` (any value, including empty cursor on page 1)
+	// or `?paginate=cursor`. Legacy offset shape is preserved for
+	// callers that haven't migrated.
+	if c.Query("cursor") != "" || c.Query("paginate") == "cursor" {
+		limit, _ := parsePagination(c)
+		entries, next, err := h.svc.ListFollowersCursor(c.Request.Context(), userID, limit, c.Query("cursor"))
+		if err != nil {
+			h.log.Error("failed to list followers (cursor)", "err", err, "user_id", userID, "request_id", RequestIDFromContext(c))
+			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
+			return
+		}
+		if entries == nil {
+			entries = []store.FollowerEntry{}
+		}
+		api.JSON(c.Writer, http.StatusOK, gin.H{
+			"items":       entries,
+			"next_cursor": next,
+			"limit":       limit,
+		}, nil)
+		return
+	}
+
 	limit, offset := parsePagination(c)
 
 	entries, total, err := h.svc.ListFollowers(c.Request.Context(), userID, limit, offset)
@@ -920,6 +945,25 @@ func (h *Handler) ListFollowing(c *gin.Context) {
 	userID, err := uuid.Parse(c.Param("userId"))
 	if err != nil {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil, nil)
+		return
+	}
+
+	if c.Query("cursor") != "" || c.Query("paginate") == "cursor" {
+		limit, _ := parsePagination(c)
+		entries, next, err := h.svc.ListFollowingCursor(c.Request.Context(), userID, limit, c.Query("cursor"))
+		if err != nil {
+			h.log.Error("failed to list following (cursor)", "err", err, "user_id", userID, "request_id", RequestIDFromContext(c))
+			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
+			return
+		}
+		if entries == nil {
+			entries = []store.FollowerEntry{}
+		}
+		api.JSON(c.Writer, http.StatusOK, gin.H{
+			"items":       entries,
+			"next_cursor": next,
+			"limit":       limit,
+		}, nil)
 		return
 	}
 

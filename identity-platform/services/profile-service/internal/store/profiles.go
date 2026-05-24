@@ -3,6 +3,9 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -805,6 +808,137 @@ func (s *Store) ListFollowers(ctx context.Context, userID uuid.UUID, limit, offs
 		entries = append(entries, e)
 	}
 	return entries, total, rows.Err()
+}
+
+// ListFollowersCursor is the scale-friendly variant of ListFollowers.
+// Keyset pagination on (created_at DESC, follow_id DESC) stays O(log n)
+// even on a celebrity user with millions of followers — the OFFSET 1M
+// case that legacy ListFollowers can't survive.
+//
+// Cursor format: "<unix_micros>:<uuid>" where uuid is profile.follows.id.
+// Empty cursor = start of list. Returns the entries + nextCursor
+// (empty on the last page).
+func (s *Store) ListFollowersCursor(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]FollowerEntry, string, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	args := []any{userID}
+	cursorClause := ""
+	if cursor != "" {
+		ts, id, ok := parseFollowKeysetCursor(cursor)
+		if ok {
+			cursorClause = " AND (f.created_at, f.id) < ($2, $3)"
+			args = append(args, ts, id)
+		}
+	}
+	args = append(args, limit+1)
+	q := `
+		SELECT p.user_id, p.display_name, p.username, p.avatar_media_id, f.created_at, f.id
+		FROM profile.follows f
+		JOIN profile.profiles p ON p.user_id = f.follower_id
+		WHERE f.following_id = $1 AND f.status = 'active'` + cursorClause + `
+		ORDER BY f.created_at DESC, f.id DESC
+		LIMIT $` + strconv.Itoa(len(args))
+	rows, err := s.db.Query(ctx, q, args...)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+	var entries []FollowerEntry
+	type withID struct {
+		entry  FollowerEntry
+		rowID  uuid.UUID
+	}
+	var lastRows []withID
+	for rows.Next() {
+		var e FollowerEntry
+		var rowID uuid.UUID
+		if err := rows.Scan(&e.UserID, &e.DisplayName, &e.Username, &e.AvatarMediaID, &e.FollowedAt, &rowID); err != nil {
+			return nil, "", err
+		}
+		entries = append(entries, e)
+		lastRows = append(lastRows, withID{entry: e, rowID: rowID})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	var next string
+	if len(entries) > limit {
+		last := lastRows[limit-1]
+		next = fmt.Sprintf("%d:%s", last.entry.FollowedAt.UnixMicro(), last.rowID.String())
+		entries = entries[:limit]
+	}
+	return entries, next, nil
+}
+
+// ListFollowingCursor is the symmetric companion to ListFollowersCursor.
+func (s *Store) ListFollowingCursor(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]FollowerEntry, string, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	args := []any{userID}
+	cursorClause := ""
+	if cursor != "" {
+		ts, id, ok := parseFollowKeysetCursor(cursor)
+		if ok {
+			cursorClause = " AND (f.created_at, f.id) < ($2, $3)"
+			args = append(args, ts, id)
+		}
+	}
+	args = append(args, limit+1)
+	q := `
+		SELECT p.user_id, p.display_name, p.username, p.avatar_media_id, f.created_at, f.id
+		FROM profile.follows f
+		JOIN profile.profiles p ON p.user_id = f.following_id
+		WHERE f.follower_id = $1 AND f.status = 'active'` + cursorClause + `
+		ORDER BY f.created_at DESC, f.id DESC
+		LIMIT $` + strconv.Itoa(len(args))
+	rows, err := s.db.Query(ctx, q, args...)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+	var entries []FollowerEntry
+	type withID struct {
+		entry FollowerEntry
+		rowID uuid.UUID
+	}
+	var lastRows []withID
+	for rows.Next() {
+		var e FollowerEntry
+		var rowID uuid.UUID
+		if err := rows.Scan(&e.UserID, &e.DisplayName, &e.Username, &e.AvatarMediaID, &e.FollowedAt, &rowID); err != nil {
+			return nil, "", err
+		}
+		entries = append(entries, e)
+		lastRows = append(lastRows, withID{entry: e, rowID: rowID})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	var next string
+	if len(entries) > limit {
+		last := lastRows[limit-1]
+		next = fmt.Sprintf("%d:%s", last.entry.FollowedAt.UnixMicro(), last.rowID.String())
+		entries = entries[:limit]
+	}
+	return entries, next, nil
+}
+
+func parseFollowKeysetCursor(cursor string) (time.Time, uuid.UUID, bool) {
+	parts := strings.SplitN(cursor, ":", 2)
+	if len(parts) != 2 {
+		return time.Time{}, uuid.Nil, false
+	}
+	micros, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		return time.Time{}, uuid.Nil, false
+	}
+	id, err := uuid.Parse(parts[1])
+	if err != nil {
+		return time.Time{}, uuid.Nil, false
+	}
+	return time.UnixMicro(micros).UTC(), id, true
 }
 
 // ListFollowing returns users that the given userID follows, with basic profile info.

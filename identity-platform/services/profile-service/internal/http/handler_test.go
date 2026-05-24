@@ -83,6 +83,12 @@ func (s *stubProfileService) ListFollowers(ctx context.Context, userID uuid.UUID
 func (s *stubProfileService) ListFollowing(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.FollowerEntry, int64, error) {
 	return nil, 0, nil
 }
+func (s *stubProfileService) ListFollowersCursor(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]store.FollowerEntry, string, error) {
+	return nil, "", nil
+}
+func (s *stubProfileService) ListFollowingCursor(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]store.FollowerEntry, string, error) {
+	return nil, "", nil
+}
 func (s *stubProfileService) ListBlocks(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.Block, int64, error) {
 	return nil, 0, nil
 }

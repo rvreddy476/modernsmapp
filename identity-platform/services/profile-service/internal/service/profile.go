@@ -353,6 +353,18 @@ func (s *Service) ListFollowing(ctx context.Context, userID uuid.UUID, limit, of
 	return s.store.ListFollowing(ctx, userID, limit, offset)
 }
 
+// ListFollowersCursor / ListFollowingCursor — keyset pagination, used
+// when the caller passes ?cursor= or ?paginate=cursor. Stays O(log n)
+// at celebrity scale; the legacy offset path scans linearly past the
+// offset, which dies past ~OFFSET 10000.
+func (s *Service) ListFollowersCursor(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]store.FollowerEntry, string, error) {
+	return s.store.ListFollowersCursor(ctx, userID, limit, cursor)
+}
+
+func (s *Service) ListFollowingCursor(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]store.FollowerEntry, string, error) {
+	return s.store.ListFollowingCursor(ctx, userID, limit, cursor)
+}
+
 // Friend system retired — see graph-service connections; profile.friendships kept dormant for backfill
 
 // ListBlocks returns users blocked by the given userID.

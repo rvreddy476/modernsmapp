@@ -445,18 +445,28 @@ class ProductPage {
     required this.total,
     required this.limit,
     required this.offset,
+    this.nextCursor,
   });
 
   final List<Product> items;
   final int total;
   final int limit;
   final int offset;
+  // nextCursor is non-null when the backend returned a cursor-paginated
+  // response. When set, the legacy `total` is unreliable (cursor mode
+  // doesn't compute it); callers should use `hasMore` instead.
+  final String? nextCursor;
 
-  bool get hasMore => offset + items.length < total;
+  bool get hasMore {
+    if (nextCursor != null) return nextCursor!.isNotEmpty;
+    return offset + items.length < total;
+  }
+
   int get nextOffset => offset + items.length;
 
   factory ProductPage.fromJson(Map<String, dynamic> json) {
     final raw = (json['items'] as List?) ?? const [];
+    final next = json['next_cursor'];
     return ProductPage(
       items: raw
           .whereType<Map>()
@@ -465,6 +475,7 @@ class ProductPage {
       total: _toInt(json['total']),
       limit: _toInt(json['limit']),
       offset: _toInt(json['offset']),
+      nextCursor: next is String && next.isNotEmpty ? next : null,
     );
   }
 }

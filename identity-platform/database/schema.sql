@@ -232,6 +232,15 @@ CREATE TABLE IF NOT EXISTS profile.follows (
 );
 CREATE INDEX IF NOT EXISTS idx_follows_follower  ON profile.follows(follower_id);
 CREATE INDEX IF NOT EXISTS idx_follows_following ON profile.follows(following_id);
+-- HG2 follow-up: covering indexes for keyset pagination on
+-- (created_at DESC, id DESC). At celebrity scale the OFFSET path scans
+-- millions of rows; cursor pagination stays O(log n).
+CREATE INDEX IF NOT EXISTS idx_follows_following_keyset
+    ON profile.follows(following_id, created_at DESC, id DESC)
+    WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_follows_follower_keyset
+    ON profile.follows(follower_id, created_at DESC, id DESC)
+    WHERE status = 'active';
 
 -- Friendships
 CREATE TABLE IF NOT EXISTS profile.friendships (

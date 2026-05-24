@@ -32,10 +32,17 @@ class CommerceRepository {
         .toList(growable: false);
   }
 
-  /// Lists products with optional category / search / seller filters. The
-  /// backend uses offset pagination today (`limit`, `offset`); we accept a
-  /// `cursor` (= stringified offset) so callers can keep a forward-only
-  /// pagination idiom that's stable when the backend swaps to keyset.
+  /// Lists products with optional category / search / seller filters.
+  /// Cursor pagination — the backend keyset query stays O(log n)
+  /// regardless of page depth, so an infinite-scroll session is
+  /// cheap even at celebrity catalog sizes. Pass `cursor: null` for
+  /// page one; pass the previous response's `nextCursor` for each
+  /// subsequent page.
+  ///
+  /// Seller-scoped browse still uses the legacy offset endpoint
+  /// (`/sellers/:id/products`) for now — there's no cursor surface
+  /// on that path. We stringify offset into the cursor so callers
+  /// don't need a separate idiom.
   Future<ProductPage> listProducts({
     String? categoryId,
     String? q,
@@ -43,10 +50,9 @@ class CommerceRepository {
     int limit = 20,
     String? cursor,
   }) async {
-    final offset = int.tryParse(cursor ?? '') ?? 0;
-
     // Seller-scoped browse uses a different endpoint.
     if (sellerId != null && sellerId.isNotEmpty) {
+      final offset = int.tryParse(cursor ?? '') ?? 0;
       final res = await _api.get(
         '/v1/commerce/sellers/$sellerId/products',
         queryParameters: {'limit': limit, 'offset': offset},
@@ -64,11 +70,18 @@ class CommerceRepository {
       );
     }
 
-    final params = <String, dynamic>{'limit': limit, 'offset': offset};
+    final params = <String, dynamic>{'limit': limit};
     if (categoryId != null && categoryId.isNotEmpty) {
       params['category'] = categoryId;
     }
     if (q != null && q.isNotEmpty) params['q'] = q;
+    // Cursor mode: empty/null cursor on first page hints
+    // paginate=cursor to the backend so it returns a next_cursor.
+    if (cursor != null && cursor.isNotEmpty) {
+      params['cursor'] = cursor;
+    } else {
+      params['paginate'] = 'cursor';
+    }
 
     final res = await _api.get('/v1/commerce/products', queryParameters: params);
     final data = res.data['data'];
@@ -81,7 +94,7 @@ class CommerceRepository {
         items: items,
         total: items.length,
         limit: limit,
-        offset: offset,
+        offset: 0,
       );
     }
     return ProductPage.fromJson(Map<String, dynamic>.from(data as Map));
