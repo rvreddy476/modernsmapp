@@ -1451,6 +1451,14 @@ CREATE TABLE IF NOT EXISTS food.settlement_files (
 );
 CREATE INDEX IF NOT EXISTS ix_food_settlement_files_period ON food.settlement_files(period_start, period_end, kind);
 
+-- G4.1: settlement_files inline body. file_url stays for future MinIO
+-- offload; until then the worker stores the generated CSV inline so the
+-- download endpoint can stream it back without external storage.
+ALTER TABLE food.settlement_files
+    ADD COLUMN IF NOT EXISTS body BYTEA,
+    ALTER COLUMN file_url DROP NOT NULL,
+    ALTER COLUMN file_url SET DEFAULT '';
+
 -- ─── Wave F: per-order conversations + read receipts ──────────────────
 --
 -- order_messages is the conversation between customer, restaurant, and
@@ -1471,3 +1479,67 @@ CREATE TABLE IF NOT EXISTS food.order_messages (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS ix_food_order_messages_order ON food.order_messages(order_id, created_at);
+
+-- ─── G4.2: GST invoice fields ─────────────────────────────────────────
+-- invoice_number stable on regenerate so a re-pull of
+-- /v1/food/orders/:id/invoice returns the same document.
+ALTER TABLE food.restaurants
+    ADD COLUMN IF NOT EXISTS gstin VARCHAR(20);
+ALTER TABLE food.menu_items
+    ADD COLUMN IF NOT EXISTS hsn_code VARCHAR(20);
+ALTER TABLE food.orders
+    ADD COLUMN IF NOT EXISTS invoice_number VARCHAR(40);
+
+-- One row per fiscal year, allocated lazily at first invoice. Storing
+-- last allocated number keeps numbering deterministic across replicas
+-- without a global Postgres SEQUENCE that's hard to reset annually.
+CREATE TABLE IF NOT EXISTS food.invoice_sequences (
+    financial_year VARCHAR(10) PRIMARY KEY,
+    last_number    BIGINT NOT NULL DEFAULT 0,
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ─── G4.4: loyalty (points + tier) ────────────────────────────────────
+-- Per-user balance + append-only ledger. Earn = +N on DELIVERED order,
+-- redeem = -N on apply-at-checkout. Tier is a computed view over
+-- lifetime_earned.
+CREATE TABLE IF NOT EXISTS food.loyalty_balances (
+    user_id          UUID PRIMARY KEY,
+    points_balance   INTEGER NOT NULL DEFAULT 0,
+    lifetime_earned  INTEGER NOT NULL DEFAULT 0,
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS food.loyalty_ledger (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id     UUID NOT NULL,
+    order_id    UUID REFERENCES food.orders(id) ON DELETE SET NULL,
+    delta       INTEGER NOT NULL,   -- +earn, -redeem
+    reason      VARCHAR(60) NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_food_loyalty_ledger_user
+    ON food.loyalty_ledger(user_id, created_at DESC);
+
+-- ─── G4.6: referral tracking ──────────────────────────────────────────
+-- code is per-user, alphanumeric, unique. credits + bonus paid once
+-- the referee places their first DELIVERED order (worker decides).
+CREATE TABLE IF NOT EXISTS food.referral_codes (
+    user_id     UUID PRIMARY KEY,
+    code        VARCHAR(20) NOT NULL UNIQUE,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS food.referrals (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    referrer_id  UUID NOT NULL,
+    referee_id   UUID NOT NULL,
+    code_used    VARCHAR(20) NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'pending'
+                 CHECK (status IN ('pending','rewarded','rejected')),
+    rewarded_at  TIMESTAMPTZ,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(referee_id) -- one referrer per referee
+);
+CREATE INDEX IF NOT EXISTS ix_food_referrals_referrer
+    ON food.referrals(referrer_id, created_at DESC);

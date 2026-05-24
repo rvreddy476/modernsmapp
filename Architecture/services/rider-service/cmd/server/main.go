@@ -172,6 +172,11 @@ func main() {
 	// offlines partners whose last GPS update is older than 90s.
 	go riderSvc.StartStaleGPSWorker(dispatchCtx)
 
+	// G4.5: scheduled-ride activation worker. Promotes scheduled
+	// rides to `requested` ≈ T-15 min so the dispatch consumer
+	// picks them up like any other ride.
+	go riderSvc.StartScheduledRideActivationWorker(dispatchCtx)
+
 	handler := riderhttp.New(riderSvc, internalKey)
 
 	gin.SetMode(gin.ReleaseMode)

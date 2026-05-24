@@ -909,3 +909,22 @@ CREATE TABLE IF NOT EXISTS outbox_events (
 CREATE INDEX IF NOT EXISTS idx_outbox_unpublished
     ON outbox_events (id)
     WHERE published_at IS NULL;
+
+-- ─── G4.5: scheduled rides ────────────────────────────────────────────
+-- scheduled_for, if set, parks the ride in `scheduled` status until a
+-- worker activates it (≈ T-15 min). On activation the worker calls
+-- MatchRide so dispatch behaves like any just-booked ride.
+--
+-- The status enum is extended via ALTER TYPE ADD VALUE — Postgres 12+
+-- runs this in a single transaction; IF NOT EXISTS keeps re-runs idempotent.
+DO $$ BEGIN
+    ALTER TYPE rider_ride_status ADD VALUE IF NOT EXISTS 'scheduled';
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+ALTER TABLE rider_rides
+    ADD COLUMN IF NOT EXISTS scheduled_for      TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS scheduled_lead_min INTEGER NOT NULL DEFAULT 15,
+    ADD COLUMN IF NOT EXISTS activated_at       TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_rider_rides_scheduled
+    ON rider_rides(scheduled_for)
+    WHERE scheduled_for IS NOT NULL AND activated_at IS NULL;
