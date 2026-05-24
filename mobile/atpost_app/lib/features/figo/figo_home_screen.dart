@@ -1,6 +1,7 @@
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_app/providers/figo_realtime_provider.dart';
 import 'package:atpost_app/services/api_client.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
@@ -348,6 +349,14 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // G2: SSE push — refresh the snapshot whenever a food.order.*
+    // event lands on the realtime gateway. The REST snapshot still
+    // owns the UI's data; this listener just stops the 0-5s polling
+    // lag on status changes / substitutions / refund updates.
+    ref.listen(foodOrderPushProvider, (prev, next) {
+      next.whenData((_) => _retry());
+    });
+
     return Scaffold(
       backgroundColor: AppColors.bgPrimary,
       appBar: AppBar(
