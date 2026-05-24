@@ -75,6 +75,7 @@ class MopeduRepository {
     required String cityId,
     required String paymentMethod,
     required String idempotencyKey,
+    DateTime? scheduledFor,
   }) async {
     final res = await _api.post(
       '/v1/rider/rides',
@@ -85,6 +86,8 @@ class MopeduRepository {
         'city_id': cityId,
         'payment_method': paymentMethod,
         'idempotency_key': idempotencyKey,
+        if (scheduledFor != null)
+          'scheduled_for': scheduledFor.toUtc().toIso8601String(),
       },
     );
     final raw = res.data['data'];

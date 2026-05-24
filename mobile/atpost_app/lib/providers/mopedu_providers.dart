@@ -239,6 +239,7 @@ class MopeduBookingState {
     this.estimate,
     this.rideId,
     this.error,
+    this.scheduledFor,
   });
 
   final MopeduBookingPhase phase;
@@ -250,6 +251,10 @@ class MopeduBookingState {
   final FareEstimate? estimate;
   final String? rideId;
   final Object? error;
+  /// When set + in the future, the booking is parked at status='scheduled'
+  /// until the rider-service activation worker promotes it ≈ T-15 min.
+  /// Wave G4.5 backend.
+  final DateTime? scheduledFor;
 
   bool get canEstimate =>
       pickup != null &&
@@ -271,9 +276,11 @@ class MopeduBookingState {
     FareEstimate? estimate,
     String? rideId,
     Object? error,
+    DateTime? scheduledFor,
     bool clearEstimate = false,
     bool clearRideId = false,
     bool clearError = false,
+    bool clearScheduledFor = false,
   }) {
     return MopeduBookingState(
       phase: phase ?? this.phase,
@@ -285,6 +292,8 @@ class MopeduBookingState {
       estimate: clearEstimate ? null : (estimate ?? this.estimate),
       rideId: clearRideId ? null : (rideId ?? this.rideId),
       error: clearError ? null : (error ?? this.error),
+      scheduledFor:
+          clearScheduledFor ? null : (scheduledFor ?? this.scheduledFor),
     );
   }
 }
@@ -318,6 +327,17 @@ class MopeduBookingNotifier extends StateNotifier<MopeduBookingState> {
     state = state.copyWith(estimate: e, phase: MopeduBookingPhase.confirming);
   }
 
+  /// G4.5 — schedule the booking. `at` must be in the future for the
+  /// activation worker to pick it up; passing a past time defaults to
+  /// immediate booking (clears the schedule).
+  void setScheduledFor(DateTime? at) {
+    if (at != null && at.isAfter(DateTime.now())) {
+      state = state.copyWith(scheduledFor: at);
+    } else {
+      state = state.copyWith(clearScheduledFor: true);
+    }
+  }
+
   void reset() {
     state = const MopeduBookingState();
   }
@@ -340,6 +360,7 @@ class MopeduBookingNotifier extends StateNotifier<MopeduBookingState> {
             cityId: st.cityId!,
             paymentMethod: st.paymentMethod,
             idempotencyKey: key,
+            scheduledFor: st.scheduledFor,
           );
 
       // Record drop as a recent saved place — best-effort, never blocks.

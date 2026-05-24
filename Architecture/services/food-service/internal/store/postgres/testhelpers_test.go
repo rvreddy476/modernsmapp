@@ -113,3 +113,36 @@ func seedOrderWithItem(t *testing.T, s *Store, orderStatus string) (orderID, men
 
 	return orderID, menuItemID, customerID
 }
+
+// seedDeliveryPartner inserts an ACTIVE + is_online=TRUE delivery
+// partner so the offer + OTP tests can target an eligible candidate.
+// Returns the partner row's user_id (X-User-Id source) and the
+// food.delivery_partners.id.
+func seedDeliveryPartner(t *testing.T, s *Store) (userID, partnerID uuid.UUID) {
+	t.Helper()
+	ctx := context.Background()
+	userID = uuid.New()
+	if err := s.db.QueryRow(ctx, `
+		INSERT INTO food.delivery_partners
+			(user_id, full_name, phone, status, vehicle_type, vehicle_number,
+			 city, is_online)
+		VALUES ($1, $2, $3, 'ACTIVE', 'bike', 'KA-01-0000', 'Bengaluru', TRUE)
+		RETURNING id
+	`, userID, "Test Rider", "+91900000"+uuid.NewString()[:4]).Scan(&partnerID); err != nil {
+		t.Fatalf("seed delivery partner: %v", err)
+	}
+	return userID, partnerID
+}
+
+// seedDeliveryAssignment binds an order to a delivery partner so the
+// OTP-verify tests have something to operate on.
+func seedDeliveryAssignment(t *testing.T, s *Store, orderID, partnerID uuid.UUID) {
+	t.Helper()
+	if _, err := s.db.Exec(context.Background(), `
+		INSERT INTO food.delivery_assignments
+			(order_id, delivery_partner_id, status, assigned_at, accepted_at)
+		VALUES ($1, $2, 'ASSIGNED', NOW(), NOW())
+	`, orderID, partnerID); err != nil {
+		t.Fatalf("seed delivery assignment: %v", err)
+	}
+}

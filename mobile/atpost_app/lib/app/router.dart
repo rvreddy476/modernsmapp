@@ -52,6 +52,7 @@ import 'package:atpost_app/features/create/reels_caption_screen.dart';
 import 'package:atpost_app/features/create/reels_editor_screen.dart';
 import 'package:atpost_app/features/discover/discover_screen.dart';
 import 'package:atpost_app/features/figo/figo_home_screen.dart';
+import 'package:atpost_app/features/figo/figo_rewards_screen.dart';
 import 'package:atpost_app/features/groups/group_admin_screen.dart';
 import 'package:atpost_app/features/hashtag/hashtag_screen.dart';
 import 'package:atpost_app/features/groups/group_detail_screen.dart';
@@ -548,6 +549,10 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: '/figo',
             builder: (context, state) => const FigoHomeScreen(),
+          ),
+          GoRoute(
+            path: '/figo/rewards',
+            builder: (context, state) => const FigoRewardsScreen(),
           ),
           // Phase 2 Sprint 1 — consumer wallet (BC of partner-bank PPI).
           GoRoute(

@@ -736,6 +736,7 @@ class _BookCta extends ConsumerWidget {
     final booking = ref.watch(mopeduBookingNotifier);
     final canBook =
         booking.canBook && booking.phase != MopeduBookingPhase.booking;
+    final scheduled = booking.scheduledFor;
 
     return SafeArea(
       child: Container(
@@ -746,34 +747,50 @@ class _BookCta extends ConsumerWidget {
             top: BorderSide(color: AppColors.borderSubtle, width: 0.5),
           ),
         ),
-        child: SizedBox(
-          width: double.infinity,
-          height: 50,
-          child: ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: canBook
-                  ? AppColors.postbookPrimary
-                  : AppColors.bgTertiary,
-              foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // G4.5 — schedule control. Inline so the Book CTA below
+            // visibly flips to "Schedule ride" when a future time
+            // is set.
+            _ScheduleControl(scheduled: scheduled),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              height: 50,
+              child: ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: canBook
+                      ? AppColors.postbookPrimary
+                      : AppColors.bgTertiary,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                    borderRadius:
+                        BorderRadius.circular(AppSpacing.radiusLarge),
+                  ),
+                ),
+                onPressed: canBook ? () => _book(context, ref) : null,
+                child: booking.phase == MopeduBookingPhase.booking
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          color: Colors.white,
+                          strokeWidth: 2,
+                        ),
+                      )
+                    : Text(
+                        !canBook
+                            ? 'Set pickup, drop & vehicle'
+                            : (scheduled != null
+                                ? 'Schedule ride'
+                                : 'Book ride'),
+                        style:
+                            AppTextStyles.h3.copyWith(color: Colors.white),
+                      ),
               ),
             ),
-            onPressed: canBook ? () => _book(context, ref) : null,
-            child: booking.phase == MopeduBookingPhase.booking
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(
-                      color: Colors.white,
-                      strokeWidth: 2,
-                    ),
-                  )
-                : Text(
-                    canBook ? 'Book ride' : 'Set pickup, drop & vehicle',
-                    style: AppTextStyles.h3.copyWith(color: Colors.white),
-                  ),
-          ),
+          ],
         ),
       ),
     );
@@ -788,6 +805,8 @@ class _BookCta extends ConsumerWidget {
     );
     final id = await notifier.book();
     if (id != null && context.mounted) {
+      // Scheduled rides route to the same booking screen — it can
+      // render the "waiting for activation" state from the ride row.
       context.push('/mopedu/booking/$id');
     } else if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -795,4 +814,103 @@ class _BookCta extends ConsumerWidget {
       );
     }
   }
+}
+
+class _ScheduleControl extends ConsumerWidget {
+  const _ScheduleControl({required this.scheduled});
+
+  final DateTime? scheduled;
+
+  Future<void> _pick(BuildContext context, WidgetRef ref) async {
+    final now = DateTime.now();
+    final date = await showDatePicker(
+      context: context,
+      initialDate: scheduled ?? now.add(const Duration(hours: 1)),
+      firstDate: now,
+      lastDate: now.add(const Duration(days: 7)),
+    );
+    if (!context.mounted || date == null) return;
+    final time = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(
+        scheduled ?? now.add(const Duration(hours: 1)),
+      ),
+    );
+    if (!context.mounted || time == null) return;
+    final picked = DateTime(
+      date.year,
+      date.month,
+      date.day,
+      time.hour,
+      time.minute,
+    );
+    if (!picked.isAfter(now.add(const Duration(minutes: 15)))) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Schedule at least 15 minutes from now')),
+      );
+      return;
+    }
+    ref.read(mopeduBookingNotifier.notifier).setScheduledFor(picked);
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return InkWell(
+      onTap: () => _pick(context, ref),
+      borderRadius: BorderRadius.circular(AppSpacing.radiusMedium),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: scheduled != null
+              ? AppColors.postbookPrimary.withValues(alpha: 0.12)
+              : AppColors.bgSecondary,
+          borderRadius: BorderRadius.circular(AppSpacing.radiusMedium),
+          border: Border.all(
+            color: scheduled != null
+                ? AppColors.postbookPrimary
+                : AppColors.borderSubtle,
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(
+              Icons.schedule,
+              size: 16,
+              color: scheduled != null
+                  ? AppColors.postbookPrimary
+                  : AppColors.textTertiary,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                scheduled != null
+                    ? 'Scheduled for ${_fmt(scheduled!)}'
+                    : 'Book now or schedule for later',
+                style: AppTextStyles.labelSmall,
+              ),
+            ),
+            if (scheduled != null)
+              GestureDetector(
+                onTap: () => ref
+                    .read(mopeduBookingNotifier.notifier)
+                    .setScheduledFor(null),
+                child: const Icon(
+                  Icons.close,
+                  size: 14,
+                  color: AppColors.textTertiary,
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+String _fmt(DateTime t) {
+  final local = t.toLocal();
+  final h = local.hour > 12 ? local.hour - 12 : (local.hour == 0 ? 12 : local.hour);
+  final m = local.minute.toString().padLeft(2, '0');
+  final ap = local.hour >= 12 ? 'PM' : 'AM';
+  return '${local.day}/${local.month} $h:$m $ap';
 }
