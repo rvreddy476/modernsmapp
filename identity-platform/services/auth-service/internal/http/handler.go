@@ -65,6 +65,9 @@ type AuthService interface {
 	ListTrustedDevices(ctx context.Context, userID uuid.UUID) ([]store.TrustedDevice, error)
 	TrustDevice(ctx context.Context, userID uuid.UUID, fingerprint string, deviceName *string) error
 	RemoveTrustedDevice(ctx context.Context, userID, deviceID uuid.UUID) error
+	// A13 — login anomaly inbox
+	ListMyAnomalies(ctx context.Context, userID uuid.UUID, limit int) ([]store.LoginAnomaly, error)
+	AcknowledgeMyAnomaly(ctx context.Context, userID, anomalyID uuid.UUID) error
 	// GDPR
 	ExportUserData(ctx context.Context, userID string) (*service.DataExport, error)
 	// Internal lookup
@@ -134,6 +137,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 			protected.GET("/trusted-devices", h.ListTrustedDevices)
 			protected.DELETE("/trusted-devices/:id", h.RemoveTrustedDevice)
 			protected.POST("/trust-device", h.TrustDevice)
+
+			// A13 — login anomaly security inbox
+			protected.GET("/security/anomalies", h.ListMyAnomalies)
+			protected.POST("/security/anomalies/:id/ack", h.AcknowledgeMyAnomaly)
 
 			// GDPR data portability
 			protected.GET("/data-export", h.ExportUserData)
@@ -509,6 +516,50 @@ func (h *Handler) RevokeSessionByID(c *gin.Context) {
 		return
 	}
 
+	api.JSON(c.Writer, http.StatusOK, gin.H{"status": "ok"}, nil)
+}
+
+// ListMyAnomalies renders the user-facing security inbox — every
+// detection (new IP, new device, refresh-fingerprint mismatch) that
+// fired against this user's account. Read-only; the inbox shows the
+// last 20 by default.
+func (h *Handler) ListMyAnomalies(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid user ID", nil, nil)
+		return
+	}
+	anomalies, err := h.svc.ListMyAnomalies(c.Request.Context(), userID, 20)
+	if err != nil {
+		h.log.Error("list anomalies failed", "err", err, "user_id", userID, "request_id", RequestIDFromContext(c))
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
+		return
+	}
+	if anomalies == nil {
+		anomalies = []store.LoginAnomaly{}
+	}
+	api.JSON(c.Writer, http.StatusOK, anomalies, nil)
+}
+
+// AcknowledgeMyAnomaly clears an inbox entry. Used by the security UI
+// after the user has reviewed an alert and confirmed it was them.
+// Idempotent: already-acknowledged rows no-op.
+func (h *Handler) AcknowledgeMyAnomaly(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid user ID", nil, nil)
+		return
+	}
+	anomalyID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "Invalid anomaly ID", nil, nil)
+		return
+	}
+	if err := h.svc.AcknowledgeMyAnomaly(c.Request.Context(), userID, anomalyID); err != nil {
+		h.log.Warn("ack anomaly failed", "err", err, "user_id", userID, "anomaly_id", anomalyID, "request_id", RequestIDFromContext(c))
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
+		return
+	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"status": "ok"}, nil)
 }
 

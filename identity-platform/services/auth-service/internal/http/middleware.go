@@ -13,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 )
 
 type AccessClaims struct {
@@ -110,6 +111,21 @@ func isSafeMethod(method string) bool {
 }
 
 func AuthMiddleware(jwtSecret string) gin.HandlerFunc {
+	return AuthMiddlewareWithRevoke(jwtSecret, nil)
+}
+
+// AuthMiddlewareWithRevoke is the cache-backed variant. When `rdb` is
+// non-nil, every request looks up `sess_revoked:<sid>` to short-circuit
+// access tokens whose session has been revoked since the token was
+// minted. Fail-open on Redis errors — the access-token TTL is the
+// upper bound on revocation lag anyway, so a Redis blip doesn't
+// degrade security beyond that.
+//
+// A10: at billions-of-users scale the session table itself is too hot
+// to consult on every authenticated request. Redis is the right tier.
+// Revocation entries are TTL'd to the access-token life so the cache
+// drains naturally without a cleaner job.
+func AuthMiddlewareWithRevoke(jwtSecret string, rdb *redis.Client) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var tokenStr string
 
@@ -149,6 +165,19 @@ func AuthMiddleware(jwtSecret string) gin.HandlerFunc {
 			api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid access token", nil, nil)
 			c.Abort()
 			return
+		}
+
+		// A10 — session revocation check. Cache-only; the session
+		// table itself is not hit. Empty `sid` (legacy tokens predating
+		// this change) bypass — the next refresh will mint one.
+		if rdb != nil && claims.SessionID != "" {
+			val, err := rdb.Get(c.Request.Context(), "sess_revoked:"+claims.SessionID).Result()
+			if err == nil && val != "" {
+				api.Error(c.Writer, http.StatusUnauthorized, "SESSION_REVOKED", "Session has been revoked", nil, nil)
+				c.Abort()
+				return
+			}
+			// redis.Nil (key absent) + any transient errors → fail open.
 		}
 
 		c.Request.Header.Set("X-User-Id", claims.Subject)

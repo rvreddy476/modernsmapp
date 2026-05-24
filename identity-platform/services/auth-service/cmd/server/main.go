@@ -164,7 +164,10 @@ func main() {
 		logger.Error("failed to set trusted proxies", "err", err)
 		os.Exit(1)
 	}
-	authMW := internalhttp.AuthMiddleware(cfg.JWTSecret)
+	// A10 — pass Redis so the JWT middleware can consult the session
+	// revocation cache. Fail-open on miss; the access-token TTL caps
+	// the worst-case revocation lag.
+	authMW := internalhttp.AuthMiddlewareWithRevoke(cfg.JWTSecret, rdb)
 	csrfMW := internalhttp.RequireCSRFMiddleware()
 	authHandler.RegisterRoutes(r, authMW, csrfMW)
 	authHandler.RegisterDocsRoutes(r)

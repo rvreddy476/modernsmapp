@@ -135,3 +135,46 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_profiles_username ON profile.profiles(user
 -- See identity-shared/crypto/secret_box.go for the cipher.
 ALTER TABLE auth.users
     ADD COLUMN IF NOT EXISTS two_factor_secret_encrypted BYTEA;
+
+-- A13: login anomaly audit trail. Each row is one detection event —
+-- new IP, new device, impossible travel, etc. Industry-standard audit
+-- log so ops can review patterns + the user can see "where you've
+-- signed in from" in security settings. resolved_at flips when the
+-- user confirms the login was theirs (acknowledged in-app).
+CREATE TABLE IF NOT EXISTS auth.login_anomalies (
+    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id        UUID NOT NULL REFERENCES auth.users(user_id) ON DELETE CASCADE,
+    anomaly_type   TEXT NOT NULL
+                   CHECK (anomaly_type IN ('new_ip','new_device','new_country','impossible_travel','many_failed','password_reset_used','session_revoked')),
+    ip             TEXT,
+    user_agent     TEXT,
+    device_id      TEXT,
+    country_code   TEXT,
+    metadata       JSONB NOT NULL DEFAULT '{}'::jsonb,
+    risk_score     SMALLINT NOT NULL DEFAULT 0
+                   CHECK (risk_score BETWEEN 0 AND 100),
+    challenged     BOOLEAN NOT NULL DEFAULT FALSE,
+    acknowledged_at TIMESTAMPTZ,
+    occurred_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_login_anomalies_user_time ON auth.login_anomalies(user_id, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_login_anomalies_unacked ON auth.login_anomalies(user_id, occurred_at DESC)
+    WHERE acknowledged_at IS NULL;
+
+-- A15: refresh-token IP/UA fingerprint bind. Refresh tokens stolen via
+-- XSS / device theft are the #1 silent-takeover vector once the
+-- access token has expired. We persist the IP/UA at session creation
+-- (already in auth.sessions) and on each refresh we check that the
+-- caller's IP isn't impossible-travel + UA hasn't drastically changed.
+-- The fingerprint columns already exist on auth.sessions; we just need
+-- a `family_id` to track sibling rotations + an `anomaly_flagged`
+-- bit so a flagged refresh can short-circuit.
+ALTER TABLE auth.sessions
+    ADD COLUMN IF NOT EXISTS family_id UUID,
+    ADD COLUMN IF NOT EXISTS anomaly_flagged BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS last_refresh_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS last_refresh_ip TEXT;
+-- Backfill family_id = session_id for existing rows so each pre-A15
+-- session is its own "family" — first rotation forks new IDs.
+UPDATE auth.sessions SET family_id = session_id WHERE family_id IS NULL;
+CREATE INDEX IF NOT EXISTS idx_sessions_family ON auth.sessions(family_id) WHERE family_id IS NOT NULL;

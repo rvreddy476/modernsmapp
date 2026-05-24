@@ -117,6 +117,10 @@ func (s *stubAuthService) TrustDevice(_ context.Context, _ uuid.UUID, _ string, 
 	return nil
 }
 func (s *stubAuthService) RemoveTrustedDevice(_ context.Context, _, _ uuid.UUID) error { return nil }
+func (s *stubAuthService) ListMyAnomalies(_ context.Context, _ uuid.UUID, _ int) ([]store.LoginAnomaly, error) {
+	return nil, nil
+}
+func (s *stubAuthService) AcknowledgeMyAnomaly(_ context.Context, _, _ uuid.UUID) error { return nil }
 
 // GDPR stub
 func (s *stubAuthService) ExportUserData(_ context.Context, _ string) (*service.DataExport, error) {

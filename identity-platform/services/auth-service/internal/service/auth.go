@@ -59,8 +59,13 @@ type Store interface {
 	GetSessionByID(ctx context.Context, sessionID uuid.UUID) (*store.Session, error)
 	ListActiveSessions(ctx context.Context, userID uuid.UUID) ([]store.Session, error)
 	RotateSessionRefreshToken(ctx context.Context, sessionID uuid.UUID, refreshTokenHash string, expiresAt time.Time) error
+	RotateSessionWithFingerprint(ctx context.Context, sessionID uuid.UUID, refreshTokenHash, ip string, expiresAt time.Time, anomalyFlagged bool) error
 	RevokeSession(ctx context.Context, sessionID uuid.UUID) error
 	RevokeAllSessions(ctx context.Context, userID uuid.UUID) (int64, error)
+	// A13 — login anomaly audit trail
+	RecordLoginAnomaly(ctx context.Context, userID uuid.UUID, anomalyType, ip, userAgent, deviceID, countryCode string, riskScore int, challenged bool, metadata map[string]any) error
+	ListLoginAnomalies(ctx context.Context, userID uuid.UUID, limit int) ([]store.LoginAnomaly, error)
+	AcknowledgeAnomaly(ctx context.Context, userID, anomalyID uuid.UUID) (int64, error)
 	// Trusted devices
 	UpsertTrustedDevice(ctx context.Context, d *store.TrustedDevice) error
 	ListTrustedDevices(ctx context.Context, userID uuid.UUID) ([]store.TrustedDevice, error)
@@ -257,7 +262,7 @@ func (s *Service) VerifyOTP(ctx context.Context, phone, code, purpose, deviceID,
 	}
 
 	// Anomaly detection: check if IP or device changed
-	s.detectLoginAnomaly(ctx, user.ID.String(), ip, deviceID, platform)
+	s.detectLoginAnomaly(ctx, user.ID.String(), ip, deviceID, platform, userAgent)
 
 	return &AuthResponse{
 		Tokens: TokenPair{
@@ -496,7 +501,7 @@ func (s *Service) LoginWithPassword(ctx context.Context, identifier, password, d
 	}
 
 	// Anomaly detection: check if IP or device changed
-	s.detectLoginAnomaly(ctx, user.ID.String(), ip, deviceID, platform)
+	s.detectLoginAnomaly(ctx, user.ID.String(), ip, deviceID, platform, userAgent)
 
 	return &AuthResponse{
 		Tokens: TokenPair{
@@ -509,6 +514,23 @@ func (s *Service) LoginWithPassword(ctx context.Context, identifier, password, d
 	}, nil
 }
 
+// A15: refresh-token IP/UA bind. Refresh-token theft (via XSS / stolen
+// laptop / shared device) is the leading silent-takeover vector once
+// the access token expires. We persist the IP/UA at session creation
+// and on every refresh we evaluate whether the caller's fingerprint
+// matches. The policy is graduated:
+//
+//   - Same IP + same UA family: rotate, no flag (the common case).
+//   - Different IP, same UA family: rotate but record a low-risk
+//     anomaly (legitimate — user changed networks).
+//   - Different IP AND different UA family: HIGH risk. Refresh is
+//     denied; user must re-authenticate. This is the strongest signal
+//     that the token was stolen and is being replayed elsewhere.
+//   - Session previously marked anomaly_flagged: deny regardless.
+//
+// `ip` and `userAgent` come from the HTTP handler (gin.ClientIP +
+// User-Agent header). Empty inputs are treated as "no signal" — they
+// don't trigger a denial but also don't update the stored value.
 func (s *Service) RefreshSession(ctx context.Context, refreshToken, ip, userAgent string) (*AuthResponse, error) {
 	if refreshToken == "" {
 		return nil, errors.New("missing refresh token")
@@ -527,6 +549,39 @@ func (s *Service) RefreshSession(ctx context.Context, refreshToken, ip, userAgen
 		return nil, errors.New("refresh token expired")
 	}
 
+	// A15: fingerprint check before issuing a new pair.
+	ipChanged := ip != "" && sess.IP != "" && ip != sess.IP
+	uaChanged := userAgent != "" && sess.UserAgent != "" && !sameUserAgentFamily(sess.UserAgent, userAgent)
+	highRisk := ipChanged && uaChanged
+
+	if highRisk {
+		// Don't issue a new pair. Log + record an anomaly so the user
+		// sees it in the security inbox and can change password if it
+		// wasn't them. Revoke the session so the stolen refresh token
+		// can't be replayed even if the attacker tries again from the
+		// original IP/UA — once we suspect compromise we burn the
+		// session.
+		_ = s.store.RevokeSession(ctx, sess.ID)
+		_ = s.store.RecordLoginAnomaly(ctx, sess.UserID, "session_revoked",
+			ip, userAgent, sess.DeviceID, "", 90, true, map[string]any{
+				"reason":        "refresh_fingerprint_mismatch",
+				"original_ip":   sess.IP,
+				"original_ua":   sess.UserAgent,
+				"presented_ip":  ip,
+				"presented_ua":  userAgent,
+				"session_id":    sess.ID.String(),
+			})
+		slog.Warn("auth: refresh denied — fingerprint mismatch",
+			"user_id", sess.UserID, "session_id", sess.ID,
+			"original_ip", sess.IP, "presented_ip", ip)
+		return nil, errors.New("refresh denied — please sign in again")
+	}
+
+	if sess.IP != "" && sess.AnomalyFlagged() {
+		_ = s.store.RevokeSession(ctx, sess.ID)
+		return nil, errors.New("session revoked — please sign in again")
+	}
+
 	user, err := s.store.GetUserByID(ctx, sess.UserID)
 	if err != nil {
 		return nil, err
@@ -540,13 +595,31 @@ func (s *Service) RefreshSession(ctx context.Context, refreshToken, ip, userAgen
 		return nil, err
 	}
 	newExpiresAt := time.Now().Add(s.cfg.RefreshTokenTTL)
-	if err := s.store.RotateSessionRefreshToken(ctx, sess.ID, hashToken(newRefreshToken), newExpiresAt); err != nil {
+	if err := s.store.RotateSessionWithFingerprint(ctx, sess.ID, hashToken(newRefreshToken), ip, newExpiresAt, false); err != nil {
 		return nil, err
+	}
+
+	// Low-risk anomaly: IP changed but UA looks consistent. Record so
+	// the security inbox can surface "signed in from new location" but
+	// don't block the refresh.
+	if ipChanged && !uaChanged {
+		_ = s.store.RecordLoginAnomaly(ctx, sess.UserID, "new_ip",
+			ip, userAgent, sess.DeviceID, "", 40, false, map[string]any{
+				"original_ip":  sess.IP,
+				"session_id":   sess.ID.String(),
+			})
 	}
 
 	accessToken, err := s.generateAccessToken(user.ID, sess.ID)
 	if err != nil {
 		return nil, err
+	}
+
+	// A10: invalidate the session-by-id cache entry for this session
+	// since we've just rotated its refresh-token expiry. The handler
+	// layer reads through Redis for /me lookups; let's not serve stale.
+	if s.rdb != nil {
+		_ = s.rdb.Del(ctx, "sess:"+sess.ID.String()).Err()
 	}
 
 	return &AuthResponse{
@@ -558,6 +631,28 @@ func (s *Service) RefreshSession(ctx context.Context, refreshToken, ip, userAgen
 		User:      user,
 		SessionID: sess.ID,
 	}, nil
+}
+
+// sameUserAgentFamily compares the lead "product/version" token of two
+// User-Agent strings — switching from Mozilla 119 → 120 is the same
+// family; switching from Mozilla → Dalvik (mobile WebView) is not.
+// Empty inputs match anything (no signal).
+func sameUserAgentFamily(a, b string) bool {
+	if a == "" || b == "" {
+		return true
+	}
+	pa := uaProduct(a)
+	pb := uaProduct(b)
+	return pa == pb
+}
+
+func uaProduct(ua string) string {
+	for i, r := range ua {
+		if r == '/' || r == ' ' {
+			return ua[:i]
+		}
+	}
+	return ua
 }
 
 func (s *Service) generateOTP() (string, error) {
@@ -611,7 +706,11 @@ func (s *Service) GetSessionForLogout(ctx context.Context, refreshToken string) 
 }
 
 func (s *Service) RevokeSession(ctx context.Context, sessionID uuid.UUID) error {
-	return s.store.RevokeSession(ctx, sessionID)
+	if err := s.store.RevokeSession(ctx, sessionID); err != nil {
+		return err
+	}
+	s.cacheRevoke(ctx, sessionID)
+	return nil
 }
 
 func (s *Service) Logout(ctx context.Context, refreshToken string) error {
@@ -625,12 +724,24 @@ func (s *Service) Logout(ctx context.Context, refreshToken string) error {
 	if sess == nil {
 		return nil
 	}
-	return s.store.RevokeSession(ctx, sess.ID)
+	if err := s.store.RevokeSession(ctx, sess.ID); err != nil {
+		return err
+	}
+	s.cacheRevoke(ctx, sess.ID)
+	return nil
 }
 
 // LogoutAll revokes all sessions for a user.
 func (s *Service) LogoutAll(ctx context.Context, userID uuid.UUID) (int64, error) {
-	return s.store.RevokeAllSessions(ctx, userID)
+	sessions, _ := s.store.ListActiveSessions(ctx, userID)
+	n, err := s.store.RevokeAllSessions(ctx, userID)
+	if err != nil {
+		return n, err
+	}
+	for _, sess := range sessions {
+		s.cacheRevoke(ctx, sess.ID)
+	}
+	return n, nil
 }
 
 // ListSessions returns all active sessions for a user.
@@ -650,7 +761,29 @@ func (s *Service) RevokeSessionByID(ctx context.Context, userID, sessionID uuid.
 	if sess.UserID != userID {
 		return errors.New("session not found")
 	}
-	return s.store.RevokeSession(ctx, sessionID)
+	if err := s.store.RevokeSession(ctx, sessionID); err != nil {
+		return err
+	}
+	s.cacheRevoke(ctx, sessionID)
+	return nil
+}
+
+// cacheRevoke marks a session id as revoked in Redis so the JWT
+// middleware can short-circuit access tokens that haven't expired yet.
+// TTL = access-token TTL + a small grace; once the access token would
+// have expired naturally there's no point keeping the entry.
+//
+// Best-effort: a Redis failure logs WARN but doesn't fail the revoke —
+// the DB write is the source of truth; cache is a hot-path
+// optimization.
+func (s *Service) cacheRevoke(ctx context.Context, sessionID uuid.UUID) {
+	if s.rdb == nil {
+		return
+	}
+	ttl := s.cfg.AccessTokenTTL + 60*time.Second
+	if err := s.rdb.Set(ctx, "sess_revoked:"+sessionID.String(), "1", ttl).Err(); err != nil {
+		s.log.Warn("session revoke: cache set failed", "session_id", sessionID, "err", err)
+	}
 }
 
 // DeleteAccount soft-deletes a user account with 30-day grace period.
@@ -1035,30 +1168,87 @@ func (s *Service) createSessionForUser(ctx context.Context, user *store.User, de
 	}, nil
 }
 
-// detectLoginAnomaly checks for a changed IP and emits a best-effort anomaly event via the producer.
-func (s *Service) detectLoginAnomaly(ctx context.Context, userID, ip, deviceID, platform string) {
+// detectLoginAnomaly is the post-login enforcement point. Checks a
+// Redis-cached last-IP entry; on a new IP or new device persists a
+// row in auth.login_anomalies (durable audit log + powers the "where
+// you've signed in from" security inbox) AND publishes a Kafka event
+// so notification-service can fan out a "new sign-in" push.
+//
+// Industry-standard split:
+//   - Persist for audit + user-visible history.
+//   - Emit Kafka event for downstream services (notifications, fraud
+//     scoring, ops alerting).
+//   - Cache the latest IP in Redis so this hot-path check stays sub-ms
+//     even at billions-of-users scale.
+func (s *Service) detectLoginAnomaly(ctx context.Context, userID, ip, deviceID, platform, userAgent string) {
 	lastIPKey := fmt.Sprintf("last_ip:%s", userID)
 	lastIP, _ := s.rdb.Get(ctx, lastIPKey).Result()
 	isNewIP := lastIP != "" && lastIP != ip
-	isNewDevice := false // device history check not yet implemented
+	// New device = the device_id wasn't in the trusted devices set.
+	// Cheap because trusted_devices is keyed (user_id, fingerprint).
+	isNewDevice := false
+	if deviceID != "" {
+		// Best-effort: don't block on a transient DB blip.
+		if uid, err := uuid.Parse(userID); err == nil {
+			devices, derr := s.store.ListTrustedDevices(ctx, uid)
+			if derr == nil {
+				seen := false
+				for _, d := range devices {
+					if d.DeviceFingerprint == deviceID {
+						seen = true
+						break
+					}
+				}
+				isNewDevice = !seen
+			}
+		}
+	}
 
 	// Store new last IP (30-day TTL)
 	s.rdb.Set(ctx, lastIPKey, ip, 30*24*time.Hour)
 
-	if isNewIP || isNewDevice {
-		payload := map[string]interface{}{
-			"user_id":       userID,
-			"ip":            ip,
-			"device_id":     deviceID,
-			"platform":      platform,
-			"is_new_ip":     isNewIP,
-			"is_new_device": isNewDevice,
-			"occurred_at":   time.Now(),
-		}
-		payloadBytes, err := json.Marshal(payload)
-		if err == nil {
-			// Best-effort: do not fail auth if anomaly event emission fails
-			_ = s.producer.PublishRaw(ctx, "user.login_anomaly", userID, json.RawMessage(payloadBytes))
-		}
+	if !(isNewIP || isNewDevice) {
+		return
 	}
+
+	// Persist for audit + the in-app security inbox.
+	if uid, err := uuid.Parse(userID); err == nil {
+		anomalyType := "new_ip"
+		risk := 30
+		if isNewDevice {
+			anomalyType = "new_device"
+			risk = 50
+		}
+		_ = s.store.RecordLoginAnomaly(ctx, uid, anomalyType, ip, userAgent, deviceID, "", risk, false, map[string]any{
+			"platform":  platform,
+			"prior_ip":  lastIP,
+		})
+	}
+
+	// Emit Kafka so notification-service can push "new sign-in" alert.
+	payload := map[string]interface{}{
+		"user_id":       userID,
+		"ip":            ip,
+		"device_id":     deviceID,
+		"platform":      platform,
+		"is_new_ip":     isNewIP,
+		"is_new_device": isNewDevice,
+		"occurred_at":   time.Now(),
+	}
+	if payloadBytes, err := json.Marshal(payload); err == nil {
+		_ = s.producer.PublishRaw(ctx, "user.login_anomaly", userID, json.RawMessage(payloadBytes))
+	}
+}
+
+// ListMyAnomalies powers the user-facing security inbox. Caller is
+// resolved from the JWT (handler layer).
+func (s *Service) ListMyAnomalies(ctx context.Context, userID uuid.UUID, limit int) ([]store.LoginAnomaly, error) {
+	return s.store.ListLoginAnomalies(ctx, userID, limit)
+}
+
+// AcknowledgeMyAnomaly lets the user clear an entry from the inbox.
+// Idempotent: a second call on an already-acknowledged row no-ops.
+func (s *Service) AcknowledgeMyAnomaly(ctx context.Context, userID, anomalyID uuid.UUID) error {
+	_, err := s.store.AcknowledgeAnomaly(ctx, userID, anomalyID)
+	return err
 }

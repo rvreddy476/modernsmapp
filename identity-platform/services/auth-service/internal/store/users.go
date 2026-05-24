@@ -40,18 +40,27 @@ type User struct {
 }
 
 type Session struct {
-	ID           uuid.UUID  `json:"id"`
-	UserID       uuid.UUID  `json:"user_id"`
-	RefreshToken string     `json:"refresh_token"`
-	DeviceID     string     `json:"device_id"`
-	Platform     string     `json:"platform"`
-	IP           string     `json:"ip"`
-	UserAgent    string     `json:"user_agent"`
-	IsActive     bool       `json:"is_active"`
-	CreatedAt    time.Time  `json:"created_at"`
-	ExpiresAt    time.Time  `json:"expires_at"`
-	RevokedAt    *time.Time `json:"revoked_at,omitempty"`
+	ID                uuid.UUID  `json:"id"`
+	UserID            uuid.UUID  `json:"user_id"`
+	RefreshToken      string     `json:"refresh_token"`
+	DeviceID          string     `json:"device_id"`
+	Platform          string     `json:"platform"`
+	IP                string     `json:"ip"`
+	UserAgent         string     `json:"user_agent"`
+	IsActive          bool       `json:"is_active"`
+	CreatedAt         time.Time  `json:"created_at"`
+	ExpiresAt         time.Time  `json:"expires_at"`
+	RevokedAt         *time.Time `json:"revoked_at,omitempty"`
+	FamilyID          *uuid.UUID `json:"family_id,omitempty"`
+	anomalyFlagged    bool
+	LastRefreshAt     *time.Time `json:"last_refresh_at,omitempty"`
+	LastRefreshIP     string     `json:"last_refresh_ip,omitempty"`
 }
+
+// AnomalyFlagged returns the persisted anomaly flag. Lowercase field
+// keeps the JSON shape stable (we don't want to leak the flag to API
+// consumers).
+func (s *Session) AnomalyFlagged() bool { return s.anomalyFlagged }
 
 type TrustedDevice struct {
 	ID                uuid.UUID `json:"id"`
@@ -60,6 +69,23 @@ type TrustedDevice struct {
 	DeviceName        *string   `json:"device_name,omitempty"`
 	LastUsedAt        time.Time `json:"last_used_at"`
 	TrustedAt         time.Time `json:"trusted_at"`
+}
+
+// LoginAnomaly is one row of auth.login_anomalies. Industry-standard
+// audit trail backing the in-app security inbox + ops review queue.
+type LoginAnomaly struct {
+	ID             uuid.UUID              `json:"id"`
+	UserID         uuid.UUID              `json:"user_id"`
+	AnomalyType    string                 `json:"anomaly_type"`
+	IP             string                 `json:"ip,omitempty"`
+	UserAgent      string                 `json:"user_agent,omitempty"`
+	DeviceID       string                 `json:"device_id,omitempty"`
+	CountryCode    string                 `json:"country_code,omitempty"`
+	Metadata       map[string]any         `json:"metadata,omitempty"`
+	RiskScore      int                    `json:"risk_score"`
+	Challenged     bool                   `json:"challenged"`
+	AcknowledgedAt *time.Time             `json:"acknowledged_at,omitempty"`
+	OccurredAt     time.Time              `json:"occurred_at"`
 }
 
 type OTP struct {
@@ -367,10 +393,13 @@ func (s *Store) CreateSession(ctx context.Context, sess *Session) error {
 
 func scanSession(row pgx.Row) (*Session, error) {
 	var sess Session
+	var familyID *uuid.UUID
+	var lastRefreshIP *string
 	err := row.Scan(
 		&sess.ID, &sess.UserID, &sess.RefreshToken,
 		&sess.DeviceID, &sess.Platform, &sess.IP, &sess.UserAgent,
 		&sess.IsActive, &sess.CreatedAt, &sess.ExpiresAt, &sess.RevokedAt,
+		&familyID, &sess.anomalyFlagged, &sess.LastRefreshAt, &lastRefreshIP,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -378,10 +407,14 @@ func scanSession(row pgx.Row) (*Session, error) {
 		}
 		return nil, err
 	}
+	sess.FamilyID = familyID
+	if lastRefreshIP != nil {
+		sess.LastRefreshIP = *lastRefreshIP
+	}
 	return &sess, nil
 }
 
-const allSessionCols = `session_id, user_id, refresh_token_hash, device_id, platform, ip, user_agent, is_active, created_at, expires_at, revoked_at`
+const allSessionCols = `session_id, user_id, refresh_token_hash, device_id, platform, ip, user_agent, is_active, created_at, expires_at, revoked_at, family_id, anomaly_flagged, last_refresh_at, last_refresh_ip`
 
 func (s *Store) GetSessionByRefreshTokenHash(ctx context.Context, refreshTokenHash string) (*Session, error) {
 	row := s.db.QueryRow(ctx, `SELECT `+allSessionCols+` FROM auth.sessions WHERE refresh_token_hash = $1`, refreshTokenHash)
@@ -408,12 +441,19 @@ func (s *Store) ListActiveSessions(ctx context.Context, userID uuid.UUID) ([]Ses
 	var sessions []Session
 	for rows.Next() {
 		var sess Session
+		var familyID *uuid.UUID
+		var lastRefreshIP *string
 		if err := rows.Scan(
 			&sess.ID, &sess.UserID, &sess.RefreshToken,
 			&sess.DeviceID, &sess.Platform, &sess.IP, &sess.UserAgent,
 			&sess.IsActive, &sess.CreatedAt, &sess.ExpiresAt, &sess.RevokedAt,
+			&familyID, &sess.anomalyFlagged, &sess.LastRefreshAt, &lastRefreshIP,
 		); err != nil {
 			return nil, err
+		}
+		sess.FamilyID = familyID
+		if lastRefreshIP != nil {
+			sess.LastRefreshIP = *lastRefreshIP
 		}
 		sessions = append(sessions, sess)
 	}
@@ -423,10 +463,94 @@ func (s *Store) ListActiveSessions(ctx context.Context, userID uuid.UUID) ([]Ses
 func (s *Store) RotateSessionRefreshToken(ctx context.Context, sessionID uuid.UUID, refreshTokenHash string, expiresAt time.Time) error {
 	_, err := s.db.Exec(ctx, `
 		UPDATE auth.sessions
-		SET refresh_token_hash = $1, expires_at = $2
+		SET refresh_token_hash = $1, expires_at = $2,
+		    last_refresh_at = NOW()
 		WHERE session_id = $3 AND is_active = TRUE AND revoked_at IS NULL
 	`, refreshTokenHash, expiresAt, sessionID)
 	return err
+}
+
+// RotateSessionWithFingerprint is the A15 variant of
+// RotateSessionRefreshToken — it also updates last_refresh_ip and
+// optionally flips anomaly_flagged so a subsequent refresh from a
+// suspicious caller can be denied without a full re-auth. Reuses the
+// same WHERE guard so revoked / inactive sessions don't accept rotation.
+func (s *Store) RotateSessionWithFingerprint(ctx context.Context, sessionID uuid.UUID, refreshTokenHash, ip string, expiresAt time.Time, anomalyFlagged bool) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE auth.sessions
+		SET refresh_token_hash = $1,
+		    expires_at = $2,
+		    last_refresh_at = NOW(),
+		    last_refresh_ip = NULLIF($4, ''),
+		    anomaly_flagged = $5
+		WHERE session_id = $3 AND is_active = TRUE AND revoked_at IS NULL
+	`, refreshTokenHash, expiresAt, sessionID, ip, anomalyFlagged)
+	return err
+}
+
+// RecordLoginAnomaly persists one anomaly detection. anomalyType must
+// match the auth.login_anomalies CHECK constraint; metadata is opaque
+// JSON used by the security UI to render context.
+func (s *Store) RecordLoginAnomaly(ctx context.Context, userID uuid.UUID, anomalyType, ip, userAgent, deviceID, countryCode string, riskScore int, challenged bool, metadata map[string]any) error {
+	metaBytes, _ := json.Marshal(metadata)
+	if len(metaBytes) == 0 {
+		metaBytes = []byte("{}")
+	}
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO auth.login_anomalies
+			(user_id, anomaly_type, ip, user_agent, device_id, country_code, metadata, risk_score, challenged)
+		VALUES ($1, $2, NULLIF($3,''), NULLIF($4,''), NULLIF($5,''), NULLIF($6,''), $7, $8, $9)
+	`, userID, anomalyType, ip, userAgent, deviceID, countryCode, metaBytes, riskScore, challenged)
+	return err
+}
+
+// ListLoginAnomalies returns the most recent anomaly events for a user
+// so the in-app security screen can render "where you've signed in
+// from". Limit caps at 50 to bound the response.
+func (s *Store) ListLoginAnomalies(ctx context.Context, userID uuid.UUID, limit int) ([]LoginAnomaly, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT id, user_id, anomaly_type, COALESCE(ip,''), COALESCE(user_agent,''),
+		       COALESCE(device_id,''), COALESCE(country_code,''), metadata, risk_score,
+		       challenged, acknowledged_at, occurred_at
+		FROM auth.login_anomalies
+		WHERE user_id = $1
+		ORDER BY occurred_at DESC
+		LIMIT $2
+	`, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []LoginAnomaly
+	for rows.Next() {
+		var a LoginAnomaly
+		var metaBytes []byte
+		if err := rows.Scan(&a.ID, &a.UserID, &a.AnomalyType, &a.IP, &a.UserAgent,
+			&a.DeviceID, &a.CountryCode, &metaBytes, &a.RiskScore,
+			&a.Challenged, &a.AcknowledgedAt, &a.OccurredAt); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(metaBytes, &a.Metadata)
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// AcknowledgeAnomaly flips acknowledged_at on a user's own anomaly so
+// the security inbox can be cleared. Returns the affected row count.
+func (s *Store) AcknowledgeAnomaly(ctx context.Context, userID, anomalyID uuid.UUID) (int64, error) {
+	cmd, err := s.db.Exec(ctx, `
+		UPDATE auth.login_anomalies
+		SET acknowledged_at = NOW()
+		WHERE id = $1 AND user_id = $2 AND acknowledged_at IS NULL
+	`, anomalyID, userID)
+	if err != nil {
+		return 0, err
+	}
+	return cmd.RowsAffected(), nil
 }
 
 func (s *Store) RevokeSession(ctx context.Context, sessionID uuid.UUID) error {
