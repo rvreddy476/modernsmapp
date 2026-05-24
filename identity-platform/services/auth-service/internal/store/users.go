@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/atpost/identity-shared/crypto"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -84,10 +85,20 @@ type RecoveryCode struct {
 }
 
 type Store struct {
-	db *pgxpool.Pool
+	db        *pgxpool.Pool
+	totpCrypt *crypto.SecretBox
 }
 
 var ErrUserExists = errors.New("user already exists")
+
+// WithTOTPEncryption wires the AES-256-GCM box used to seal/open
+// TOTP secrets. Optional — when nil, Enable2FA still writes the
+// legacy plaintext column (logged as a warning by main.go) and
+// Get2FASecret reads it back.
+func (s *Store) WithTOTPEncryption(box *crypto.SecretBox) *Store {
+	s.totpCrypt = box
+	return s
+}
 
 // allUserCols is the list of columns returned when scanning a User row.
 const allUserCols = `user_id, COALESCE(phone, ''), email, password_hash,
@@ -483,39 +494,81 @@ func (s *Store) DeleteTrustedDevice(ctx context.Context, userID, deviceID uuid.U
 
 // --- 2FA ---
 
-// Enable2FA sets two_factor_enabled=true and stores the encrypted TOTP secret.
+// Enable2FA sets two_factor_enabled=true and stores the TOTP secret.
+// When the AES-256-GCM box is wired (WithTOTPEncryption), the secret
+// is sealed into two_factor_secret_encrypted and the plaintext column
+// is cleared. Without the box, falls back to plaintext storage and
+// returns no error — main.go emits a startup warning when the env is
+// missing so this isn't silent in operation.
 func (s *Store) Enable2FA(ctx context.Context, userID uuid.UUID, secret string) error {
+	if s.totpCrypt != nil {
+		ct, err := s.totpCrypt.Seal([]byte(secret))
+		if err != nil {
+			return fmt.Errorf("seal totp: %w", err)
+		}
+		_, err = s.db.Exec(ctx, `
+			UPDATE auth.users
+			SET two_factor_enabled = TRUE,
+				two_factor_secret_encrypted = $1,
+				two_factor_secret = NULL,
+				updated_at = NOW()
+			WHERE user_id = $2
+		`, ct, userID)
+		return err
+	}
 	_, err := s.db.Exec(ctx, `
 		UPDATE auth.users
-		SET two_factor_enabled = TRUE, two_factor_secret = $1, updated_at = NOW()
+		SET two_factor_enabled = TRUE,
+			two_factor_secret = $1,
+			two_factor_secret_encrypted = NULL,
+			updated_at = NOW()
 		WHERE user_id = $2
 	`, secret, userID)
 	return err
 }
 
-// Disable2FA clears the TOTP secret and disables 2FA.
+// Disable2FA clears both the encrypted and plaintext TOTP columns.
 func (s *Store) Disable2FA(ctx context.Context, userID uuid.UUID) error {
 	_, err := s.db.Exec(ctx, `
 		UPDATE auth.users
-		SET two_factor_enabled = FALSE, two_factor_secret = NULL, updated_at = NOW()
+		SET two_factor_enabled = FALSE,
+			two_factor_secret = NULL,
+			two_factor_secret_encrypted = NULL,
+			updated_at = NOW()
 		WHERE user_id = $1
 	`, userID)
 	return err
 }
 
-// Get2FASecret returns the TOTP secret for a user.
+// Get2FASecret returns the TOTP secret for a user. Prefers the
+// encrypted column when populated; falls back to the plaintext
+// column for rows that predate the cutover. Returns "" + nil when
+// neither column is set so callers can check "no 2FA configured"
+// without an error.
 func (s *Store) Get2FASecret(ctx context.Context, userID uuid.UUID) (string, error) {
-	var secret *string
+	var enc []byte
+	var plain *string
 	err := s.db.QueryRow(ctx, `
-		SELECT two_factor_secret FROM auth.users WHERE user_id = $1
-	`, userID).Scan(&secret)
+		SELECT two_factor_secret_encrypted, two_factor_secret
+		FROM auth.users WHERE user_id = $1
+	`, userID).Scan(&enc, &plain)
 	if err != nil {
 		return "", err
 	}
-	if secret == nil {
+	if len(enc) > 0 {
+		if s.totpCrypt == nil {
+			return "", fmt.Errorf("totp: encryption key not configured but encrypted secret present")
+		}
+		pt, derr := s.totpCrypt.Open(enc)
+		if derr != nil {
+			return "", fmt.Errorf("open totp: %w", derr)
+		}
+		return string(pt), nil
+	}
+	if plain == nil {
 		return "", nil
 	}
-	return *secret, nil
+	return *plain, nil
 }
 
 // --- OAuth ---

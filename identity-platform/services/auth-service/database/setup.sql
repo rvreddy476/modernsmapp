@@ -127,3 +127,11 @@ CREATE TABLE IF NOT EXISTS profile.profiles (
 );
 CREATE INDEX IF NOT EXISTS idx_profiles_display_name ON profile.profiles(display_name);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_profiles_username ON profile.profiles(username) WHERE username IS NOT NULL;
+
+-- TOTP secret encryption at rest. New writes go to
+-- two_factor_secret_encrypted (AES-256-GCM, nonce-prefixed); legacy
+-- plaintext two_factor_secret stays during the cutover so old rows
+-- still verify. The reader prefers the encrypted column when set.
+-- See identity-shared/crypto/secret_box.go for the cipher.
+ALTER TABLE auth.users
+    ADD COLUMN IF NOT EXISTS two_factor_secret_encrypted BYTEA;

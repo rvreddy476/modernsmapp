@@ -15,6 +15,7 @@ import (
 	internalhttp "github.com/atpost/identity-auth-service/internal/http"
 	"github.com/atpost/identity-auth-service/internal/service"
 	"github.com/atpost/identity-auth-service/internal/store"
+	authcrypto "github.com/atpost/identity-shared/crypto"
 	"github.com/atpost/identity-shared/logging"
 	sharedmiddleware "github.com/atpost/identity-shared/middleware"
 	tracepkg "github.com/atpost/identity-shared/o11y/trace"
@@ -110,6 +111,21 @@ func main() {
 
 	// 3. Dependencies
 	authStore := store.New(dbPool)
+	// TOTP secret encryption at rest. Without TOTP_ENCRYPTION_KEY the
+	// store falls back to plaintext column — a startup warning here
+	// makes the misconfig visible in logs + ops dashboards. Key must
+	// be 64 hex chars (AES-256 key).
+	if hexKey := os.Getenv("TOTP_ENCRYPTION_KEY"); hexKey != "" {
+		box, err := authcrypto.NewSecretBox(hexKey)
+		if err != nil {
+			logger.Error("totp encryption disabled — bad key", "err", err)
+		} else {
+			authStore.WithTOTPEncryption(box)
+			logger.Info("totp secret encryption enabled")
+		}
+	} else {
+		logger.Warn("TOTP_ENCRYPTION_KEY not set — 2FA secrets stored in plaintext (DO NOT run this in production)")
+	}
 	authProducer := events.NewProducerWithDialer(cfg.KafkaBrokers, cfg.KafkaTopic, kafkaDialer)
 	defer func() {
 		if err := authProducer.Close(); err != nil {
