@@ -146,6 +146,67 @@ func (s *Store) GetTicketWithMessages(ctx context.Context, ticketID uuid.UUID) (
 	return &t, msgs, rows.Err()
 }
 
+// ListTicketsForAdmin returns every ticket in `status` (or all if
+// empty), newest first. Admin / moderator only — service layer
+// enforces the scope.
+func (s *Store) ListTicketsForAdmin(ctx context.Context, status string, limit int) ([]Ticket, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT id, customer_id, order_id, category, subject, detail, status::text,
+			assigned_to, resolved_at::text, created_at::text
+		FROM food.support_tickets
+		WHERE $1 = '' OR status::text = $1
+		ORDER BY created_at DESC
+		LIMIT $2
+	`, status, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Ticket
+	for rows.Next() {
+		var t Ticket
+		if err := rows.Scan(&t.ID, &t.CustomerID, &t.OrderID, &t.Category, &t.Subject,
+			&t.Detail, &t.Status, &t.AssignedTo, &t.ResolvedAt, &t.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// ListRefundsForAdmin returns refund requests filtered by status.
+// Most-recent first.
+func (s *Store) ListRefundsForAdmin(ctx context.Context, status string, limit int) ([]RefundRequest, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT id, ticket_id, order_id, customer_id, amount::float8, reason,
+			status::text, decided_by, decided_at::text, refund_txn_id, created_at::text
+		FROM food.refund_requests
+		WHERE $1 = '' OR status::text = $1
+		ORDER BY created_at DESC
+		LIMIT $2
+	`, status, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RefundRequest
+	for rows.Next() {
+		var r RefundRequest
+		if err := rows.Scan(&r.ID, &r.TicketID, &r.OrderID, &r.CustomerID, &r.Amount,
+			&r.Reason, &r.Status, &r.DecidedBy, &r.DecidedAt, &r.RefundTxnID, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // SetTicketStatus is the admin/moderator transition. resolved_at is
 // stamped when status moves to 'resolved' or 'closed'.
 func (s *Store) SetTicketStatus(ctx context.Context, ticketID uuid.UUID, status string) error {

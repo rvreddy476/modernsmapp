@@ -56,6 +56,16 @@ func (s *Service) GetTicket(ctx context.Context, viewerID uuid.UUID, ticketID uu
 	return t, msgs, nil
 }
 
+// AdminListTickets returns the support queue filtered by status.
+func (s *Service) AdminListTickets(ctx context.Context, status string, limit int) ([]postgres.Ticket, error) {
+	return s.store.ListTicketsForAdmin(ctx, status, limit)
+}
+
+// AdminListRefunds returns the refunds queue filtered by status.
+func (s *Service) AdminListRefunds(ctx context.Context, status string, limit int) ([]postgres.RefundRequest, error) {
+	return s.store.ListRefundsForAdmin(ctx, status, limit)
+}
+
 // SetTicketStatus is the admin transition.
 func (s *Service) SetTicketStatus(ctx context.Context, ticketID uuid.UUID, status string) error {
 	if err := s.store.SetTicketStatus(ctx, ticketID, status); err != nil {

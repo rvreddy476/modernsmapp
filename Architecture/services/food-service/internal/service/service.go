@@ -87,6 +87,8 @@ type Store interface {
 	AppendTicketMessage(ctx context.Context, ticketID, authorID uuid.UUID, isAdmin bool, body string) (*postgres.TicketMessage, error)
 	GetTicketWithMessages(ctx context.Context, ticketID uuid.UUID) (*postgres.Ticket, []postgres.TicketMessage, error)
 	SetTicketStatus(ctx context.Context, ticketID uuid.UUID, status string) error
+	ListTicketsForAdmin(ctx context.Context, status string, limit int) ([]postgres.Ticket, error)
+	ListRefundsForAdmin(ctx context.Context, status string, limit int) ([]postgres.RefundRequest, error)
 	CreateRefundRequest(ctx context.Context, customerID, orderID uuid.UUID, ticketID *uuid.UUID, amount float64, reason string) (*postgres.RefundRequest, error)
 	DecideRefund(ctx context.Context, adminID, refundID uuid.UUID, status, reason string) error
 	CreateItemReview(ctx context.Context, in postgres.CreateItemReviewInput) (*postgres.ItemReview, error)

@@ -133,7 +133,11 @@ func (s *Service) VerifyPickupCode(ctx context.Context, ownerID, orderID uuid.UU
 }
 
 // VerifyDeliveryCode wraps the store call; emits the delivered event
-// so settlement + ratings flows kick in downstream.
+// so settlement + ratings flows kick in downstream. Also fires the
+// loyalty + referral hooks — both are idempotent on (user, order)
+// so a re-run of the verify (e.g. retry on flaky network) won't
+// double-credit. Best-effort: a failure on either hook is logged
+// but doesn't fail the verify.
 func (s *Service) VerifyDeliveryCode(ctx context.Context, customerID, orderID uuid.UUID, code string) error {
 	if err := s.store.VerifyDeliveryCode(ctx, customerID, orderID, code); err != nil {
 		return err
@@ -141,6 +145,21 @@ func (s *Service) VerifyDeliveryCode(ctx context.Context, customerID, orderID uu
 	s.emit(ctx, "food.order."+orderID.String(), "food.delivery.delivered", map[string]any{
 		"order_id": orderID.String(),
 	})
+	// G4.4 — award loyalty. Need the order's final_amount; pull it
+	// via GetOrder. Cheap because we just touched the row.
+	if order, err := s.store.GetOrder(ctx, customerID, orderID); err == nil {
+		if _, err := s.EarnPointsFromDelivery(ctx, customerID, orderID, order.Totals.FinalAmount); err != nil {
+			slog.Warn("food-service: loyalty earn failed",
+				"customer_id", customerID, "order_id", orderID, "error", err)
+		}
+	}
+	// G4.6 — first-delivery referral reward. Idempotent at store layer
+	// (only pending referrals get marked rewarded; subsequent calls
+	// no-op). Cheap to call on every delivery.
+	if err := s.RewardReferralOnFirstDelivery(ctx, customerID); err != nil {
+		slog.Warn("food-service: referral reward failed",
+			"customer_id", customerID, "order_id", orderID, "error", err)
+	}
 	return nil
 }
 

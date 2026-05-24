@@ -2,6 +2,7 @@ package http
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/atpost/food-service/internal/store/postgres"
@@ -109,6 +110,36 @@ func (h *Handler) AppendTicketMessage(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, m, nil)
+}
+
+// AdminListTickets — GET /v1/food/admin/support/tickets?status=&limit=
+func (h *Handler) AdminListTickets(c *gin.Context) {
+	status := c.Query("status")
+	limit := 50
+	if v, _ := strconv.Atoi(c.Query("limit")); v > 0 {
+		limit = v
+	}
+	rows, err := h.svc.AdminListTickets(c.Request.Context(), status, limit)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "TICKET_LIST_FAILED", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"tickets": rows}, nil)
+}
+
+// AdminListRefunds — GET /v1/food/admin/refunds?status=&limit=
+func (h *Handler) AdminListRefunds(c *gin.Context) {
+	status := c.Query("status")
+	limit := 50
+	if v, _ := strconv.Atoi(c.Query("limit")); v > 0 {
+		limit = v
+	}
+	rows, err := h.svc.AdminListRefunds(c.Request.Context(), status, limit)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "REFUND_LIST_FAILED", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"refunds": rows}, nil)
 }
 
 // AdminSetTicketStatusRequest is the admin status transition.
