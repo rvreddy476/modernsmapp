@@ -150,12 +150,21 @@ func (c *Client) VerifyIntent(ctx context.Context, intentID uuid.UUID, rzpOrderI
 
 // InitiateRefund kicks payments-service's refund pipeline for the intent.
 // Idempotent at the gateway: a second call returns the existing refund.
-func (c *Client) InitiateRefund(ctx context.Context, intentID, actorID uuid.UUID, reason string) (*PaymentIntent, error) {
+//
+// amountMinor is paise-minor int64. Pass 0 for a full refund of the
+// remaining refundable balance (matches the historical no-amount
+// semantics); pass >0 for a partial refund (commerce-service's return
+// flow uses this with the per-line item value).
+func (c *Client) InitiateRefund(ctx context.Context, intentID, actorID uuid.UUID, amountMinor int64, reason string) (*PaymentIntent, error) {
 	if c == nil || c.baseURL == "" {
 		return nil, fmt.Errorf("payments client not configured")
 	}
 	url := fmt.Sprintf("%s/v1/payments/intents/%s/refund", c.baseURL, intentID)
-	body, _ := json.Marshal(map[string]string{"reason": reason})
+	payload := map[string]interface{}{"reason": reason}
+	if amountMinor > 0 {
+		payload["amount_minor"] = amountMinor
+	}
+	body, _ := json.Marshal(payload)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err

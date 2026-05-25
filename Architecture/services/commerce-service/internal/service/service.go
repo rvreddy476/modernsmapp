@@ -119,11 +119,31 @@ func (s *Service) Close() {
 
 // publish emits a Kafka event. Failures are logged but not fatal (best-effort).
 //
-// Phase F3.3 — injects W3C trace context into the Kafka headers so the
-// downstream consumer's child span links back to the request that
-// produced the event. The event_type header is also lifted up so
-// consumers can route without re-parsing the payload envelope.
+// HP1 — request goroutine no longer blocks on kafka.Writer.WriteMessages.
+// Events land in outbox_events inside an existing pool connection; the
+// shared/outbox.Publisher polls and fans out to Kafka with retries +
+// at-least-once semantics. The legacy synchronous path (s.writer) is
+// kept as a fallback only when the Postgres-backed outbox is unavailable
+// (e.g. unit tests that wire a *Service without a Store-with-outbox).
+//
+// Phase F3.3 — W3C trace context is no longer injected on the request
+// goroutine; the publisher injects fresh headers at fan-out time (one
+// trace per event publish rather than per request, but every consumer
+// already roots its own span). Keeping the event_type header is
+// redundant with what the publisher writes; we now stamp it server-side
+// in the outbox row via the partition_key so consumers continue to
+// route without re-parsing the envelope.
 func (s *Service) publish(ctx context.Context, eventType string, payload any) {
+	s.publishWithIdempotency(ctx, eventType, "", payload)
+}
+
+// publishWithIdempotency is the dedup-aware variant. When idempotencyKey
+// is non-empty a UNIQUE partial index in outbox_events blocks a second
+// insert with the same key (HP5). Use this on retry-prone code paths
+// where the natural key (order id, payment id, …) makes "fired twice"
+// observable. Pass an empty key for emits that are already idempotent
+// upstream (e.g. webhooks that ack the same shipment_id).
+func (s *Service) publishWithIdempotency(ctx context.Context, eventType, idempotencyKey string, payload any) {
 	data, _ := json.Marshal(payload)
 	env := events.EventEnvelope{
 		EventID:    uuid.New().String(),
@@ -132,6 +152,24 @@ func (s *Service) publish(ctx context.Context, eventType string, payload any) {
 		OccurredAt: time.Now(),
 	}
 	b, _ := json.Marshal(env)
+	// Partition key — empty-by-default keeps the existing balancer
+	// (LeastBytes) behaviour. Topic is implicit (publisher's
+	// DefaultTopic).
+	if s.store != nil {
+		if err := s.store.EnqueueOutboxEventPool(ctx, eventType, eventType, idempotencyKey, b); err == nil {
+			return
+		} else {
+			slog.Warn("outbox enqueue failed; falling back to direct kafka write",
+				"event", eventType, "error", err)
+		}
+	}
+	// Fallback — used in unit tests that construct Service without a
+	// migrated Postgres or when the outbox insert itself failed. Stays
+	// in place so a Postgres blip can't drop events; the trace-context
+	// injection moves here so the legacy path keeps its observability.
+	if s.writer == nil {
+		return
+	}
 	headers := []kafka.Header{
 		{Key: "event_type", Value: []byte(eventType)},
 	}
@@ -338,6 +376,8 @@ func (s *Service) ListCategories(ctx context.Context) ([]*postgres.ProductCatego
 }
 
 func (s *Service) ListSellerProducts(ctx context.Context, sellerID uuid.UUID, limit, offset int) ([]*postgres.Product, error) {
+	// HP3: pagination clamped (default 20, max 200).
+	limit, offset = clampListPagination(limit, offset)
 	products, _, err := s.store.ListSellerProducts(ctx, sellerID, "", limit, offset)
 	return products, err
 }
@@ -469,6 +509,8 @@ func (s *Service) ArchiveProductVariant(ctx context.Context, actorID, variantID 
 }
 
 func (s *Service) ListOrders(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*postgres.Order, error) {
+	// HP3: pagination clamped (default 20, max 200).
+	limit, offset = clampListPagination(limit, offset)
 	orders, _, err := s.store.GetOrdersByCustomer(ctx, userID, limit, offset)
 	return orders, err
 }
@@ -558,7 +600,9 @@ func (s *Service) GetOrderWithItems(ctx context.Context, orderID, userID uuid.UU
 
 // ListSellerOrders returns orders for a seller — used by the seller fulfillment dashboard.
 // Authorization: caller must own the seller account (verified in handler).
+// HP3: pagination clamped (default 20, max 200).
 func (s *Service) ListSellerOrders(ctx context.Context, sellerID uuid.UUID, limit, offset int) ([]*postgres.Order, error) {
+	limit, offset = clampListPagination(limit, offset)
 	orders, _, err := s.store.GetOrdersBySeller(ctx, sellerID, limit, offset)
 	return orders, err
 }
@@ -588,13 +632,36 @@ type SellerOrderCard struct {
 // Phase 4.2 — replaces the bare ListSellerOrders surface so the dashboard
 // can render item-level state in one round trip.
 func (s *Service) ListSellerFulfillment(ctx context.Context, sellerID uuid.UUID, stage string, limit, offset int) ([]*SellerOrderCard, error) {
+	// HP3: clamp pagination so a malicious / sloppy client can't ask for
+	// 100k rows. Same defaults as other seller surfaces (20/200).
+	limit, offset = clampListPagination(limit, offset)
 	orders, _, err := s.store.GetOrdersBySeller(ctx, sellerID, limit, offset)
 	if err != nil {
 		return nil, err
 	}
+	if len(orders) == 0 {
+		return []*SellerOrderCard{}, nil
+	}
+
+	// HP2: was 2 queries per order (items + shipment); now 2 queries
+	// total for the whole page. 20-order page drops from 41 to 3 round
+	// trips (orders + items batch + shipments batch).
+	orderIDs := make([]uuid.UUID, 0, len(orders))
+	for _, o := range orders {
+		orderIDs = append(orderIDs, o.ID)
+	}
+	itemsByOrder, err := s.store.GetOrderItemsByOrderIDs(ctx, orderIDs)
+	if err != nil {
+		return nil, fmt.Errorf("batch order items: %w", err)
+	}
+	shipmentsByOrder, err := s.store.GetShipmentsByOrderAndSeller(ctx, orderIDs, sellerID)
+	if err != nil {
+		return nil, fmt.Errorf("batch shipments: %w", err)
+	}
+
 	out := make([]*SellerOrderCard, 0, len(orders))
 	for _, o := range orders {
-		items, _ := s.store.GetOrderItems(ctx, o.ID)
+		items := itemsByOrder[o.ID]
 		mine := make([]*postgres.OrderItem, 0, len(items))
 		var subtotal float64
 		for _, it := range items {
@@ -606,11 +673,10 @@ func (s *Service) ListSellerFulfillment(ctx context.Context, sellerID uuid.UUID,
 		if len(mine) == 0 {
 			continue
 		}
-		shipment, _ := s.store.GetShipmentByOrderAndSeller(ctx, o.ID, sellerID)
 		card := &SellerOrderCard{
 			Order:           o,
 			Items:           mine,
-			Shipment:        shipment,
+			Shipment:        shipmentsByOrder[o.ID],
 			SellerSubtotal:  round2(subtotal),
 			DeliveryAddress: o.DeliveryAddressSnapshot,
 		}
@@ -620,6 +686,23 @@ func (s *Service) ListSellerFulfillment(ctx context.Context, sellerID uuid.UUID,
 		out = append(out, card)
 	}
 	return out, nil
+}
+
+// clampListPagination applies the standard commerce list-endpoint
+// defaults: limit 20, max 200, non-negative offset. Centralised so the
+// HP3 pagination caps are consistent across service-layer entry points
+// regardless of which HTTP handler parsed the query string.
+func clampListPagination(limit, offset int) (int, int) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	return limit, offset
 }
 
 // GetSellerOrderDetail returns a single order from the seller's perspective —
@@ -762,12 +845,30 @@ func (s *Service) GetCart(ctx context.Context, userID uuid.UUID) (*CartSummary, 
 		return nil, err
 	}
 
+	// HP2: was 2N queries (one product + one variant per cart row); now
+	// 2 queries total regardless of cart size. Typical 10-item cart drops
+	// from ~21 to 3 round trips (cart-items + products + variants).
+	productIDs := make([]uuid.UUID, 0, len(items))
+	variantIDs := make([]uuid.UUID, 0, len(items))
+	for _, ci := range items {
+		productIDs = append(productIDs, ci.ProductID)
+		variantIDs = append(variantIDs, ci.VariantID)
+	}
+	products, err := s.store.GetProductsByIDs(ctx, productIDs)
+	if err != nil {
+		return nil, fmt.Errorf("batch products: %w", err)
+	}
+	variants, err := s.store.GetVariantsByIDs(ctx, variantIDs)
+	if err != nil {
+		return nil, fmt.Errorf("batch variants: %w", err)
+	}
+
 	summary := &CartSummary{CartID: cart.ID}
 	for _, ci := range items {
-		product, _ := s.store.GetProductByID(ctx, ci.ProductID)
-		variant, _ := s.store.GetVariantByID(ctx, ci.VariantID)
 		summary.Items = append(summary.Items, &CartItemDetail{
-			Item: ci, Product: product, Variant: variant,
+			Item:    ci,
+			Product: products[ci.ProductID],
+			Variant: variants[ci.VariantID],
 		})
 		summary.Subtotal += ci.PriceSnapshot * float64(ci.Quantity)
 		summary.ItemCount += ci.Quantity
@@ -938,22 +1039,42 @@ func (s *Service) priceCart(ctx context.Context, userID uuid.UUID, paymentMethod
 		tiersByVariant = map[uuid.UUID][]*postgres.PriceTier{}
 	}
 
+	// HP2: batch variant/product/inventory fetches for the whole cart.
+	// Was 3N round trips (per cart row); now 3 fixed regardless of cart
+	// size. A 10-item cart drops from ~31 to 4 round trips at checkout.
+	productIDs := make([]uuid.UUID, 0, len(cartItems))
+	for _, ci := range cartItems {
+		productIDs = append(productIDs, ci.ProductID)
+	}
+	variantsByID, err := s.store.GetVariantsByIDs(ctx, variantIDs)
+	if err != nil {
+		return nil, fmt.Errorf("batch variants: %w", err)
+	}
+	productsByID, err := s.store.GetProductsByIDs(ctx, productIDs)
+	if err != nil {
+		return nil, fmt.Errorf("batch products: %w", err)
+	}
+	inventoryByVariant, err := s.store.GetInventoryByVariantIDs(ctx, variantIDs)
+	if err != nil {
+		return nil, fmt.Errorf("batch inventory: %w", err)
+	}
+
 	var orderItems []*postgres.OrderItem
 	var unavailable []UnavailableQuoteItem
 	var subtotal float64
 	totalTax := 0.0 // Phase 3+ will compute per-HSN GST; today the schema stores 0.
 
 	for _, ci := range cartItems {
-		variant, err := s.store.GetVariantByID(ctx, ci.VariantID)
-		if err != nil {
+		variant, ok := variantsByID[ci.VariantID]
+		if !ok {
 			return nil, fmt.Errorf("variant %s not found", ci.VariantID)
 		}
-		product, err := s.store.GetProductByID(ctx, ci.ProductID)
-		if err != nil {
+		product, ok := productsByID[ci.ProductID]
+		if !ok {
 			return nil, fmt.Errorf("product %s not found", ci.ProductID)
 		}
-		inv, err := s.store.GetInventory(ctx, ci.VariantID)
-		if err != nil {
+		inv, ok := inventoryByVariant[ci.VariantID]
+		if !ok {
 			return nil, fmt.Errorf("inventory for %s not found", ci.VariantID)
 		}
 		if inv.AvailableQty() < ci.Quantity {
@@ -1579,7 +1700,10 @@ func (s *Service) CancelOrder(ctx context.Context, orderID, actorID uuid.UUID, a
 			"order_id", orderID, "error", err)
 		return nil
 	}
-	refunded, err := s.payments.InitiateRefund(ctx, intent.ID, actorID, "cancel:"+reason)
+	// CancelOrder is order-level: refund the full intent. Pass amountMinor=0
+	// so payments-service refunds the entire remaining balance — preserves
+	// the historical full-refund semantics this path expects.
+	refunded, err := s.payments.InitiateRefund(ctx, intent.ID, actorID, 0, "cancel:"+reason)
 	if err != nil {
 		slog.Warn("cancel: refund initiate failed",
 			"order_id", orderID, "intent_id", intent.ID, "error", err)
@@ -1871,14 +1995,26 @@ func (s *Service) initiateReturnRefund(ctx context.Context, r *postgres.ReturnRe
 		_ = s.store.SetReturnRefund(ctx, r.ID, "", "pending", amount)
 		return
 	}
-	refunded, err := s.payments.InitiateRefund(ctx, intent.ID, actorID, "return:"+r.ReasonCode)
+	// Audit P6 + P7: pass the per-line refund value in paise-minor int64
+	// to payments-service so the refund actually caps at the returned
+	// item's value (previously the no-amount call refunded the entire
+	// order — a single-item return on a multi-item order refunded
+	// everything). math.Round, not int64() truncation: ₹10.99 must
+	// round to 1099 paise, not 1098 (IEEE-754 stores 10.99 as
+	// 10.989999...).
+	amountMinor := int64(math.Round(amount * 100))
+	refunded, err := s.payments.InitiateRefund(ctx, intent.ID, actorID, amountMinor, "return:"+r.ReasonCode)
 	if err != nil {
 		slog.Warn("refund: initiate failed", "intent_id", intent.ID, "error", err)
 		_ = s.store.SetReturnRefund(ctx, r.ID, intent.ID.String(), "pending", amount)
 		return
 	}
 	status := "pending"
-	if refunded != nil && refunded.Status == "refunded" {
+	// `refunded` (full) flips immediately; `partially_refunded` is also
+	// a successful per-line refund (the order still has remaining
+	// refundable balance for other line items), so treat it as
+	// succeeded for this return row.
+	if refunded != nil && (refunded.Status == "refunded" || refunded.Status == "partially_refunded") {
 		status = "succeeded"
 	}
 	_ = s.store.SetReturnRefund(ctx, r.ID, intent.ID.String(), status, amount)
@@ -2126,7 +2262,9 @@ func (s *Service) SetDefaultAddress(ctx context.Context, id, userID uuid.UUID) e
 }
 
 // ListMyReturns returns the calling customer's return history.
+// HP3: pagination clamped (default 20, max 200).
 func (s *Service) ListMyReturns(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*postgres.ReturnRequest, error) {
+	limit, offset = clampListPagination(limit, offset)
 	return s.store.ListReturnsByCustomer(ctx, userID, limit, offset)
 }
 
@@ -2142,20 +2280,44 @@ type SellerReturnCard struct {
 // ListSellerReturns returns the seller's returns inbox, optionally filtered
 // by status (requested / approved / rejected / refunded / closed). Phase 4.3.
 func (s *Service) ListSellerReturns(ctx context.Context, sellerID uuid.UUID, status string, limit, offset int) ([]*SellerReturnCard, error) {
+	// HP3: clamp pagination.
+	limit, offset = clampListPagination(limit, offset)
 	returns, err := s.store.ListReturnsBySeller(ctx, sellerID, status, limit, offset)
 	if err != nil {
 		return nil, err
 	}
+	if len(returns) == 0 {
+		return []*SellerReturnCard{}, nil
+	}
+
+	// HP2: was 2 queries per return (item + order); now 2 queries total
+	// per page. 20-return page drops from 41 to 3 round trips.
+	itemIDs := make([]uuid.UUID, 0, len(returns))
+	orderIDs := make([]uuid.UUID, 0, len(returns))
+	seenOrder := map[uuid.UUID]struct{}{}
+	for _, r := range returns {
+		itemIDs = append(itemIDs, r.OrderItemID)
+		if _, ok := seenOrder[r.OrderID]; !ok {
+			seenOrder[r.OrderID] = struct{}{}
+			orderIDs = append(orderIDs, r.OrderID)
+		}
+	}
+	itemsByID, err := s.store.GetOrderItemsByIDs(ctx, itemIDs)
+	if err != nil {
+		return nil, fmt.Errorf("batch return items: %w", err)
+	}
+	ordersByID, err := s.store.GetOrdersByIDs(ctx, orderIDs)
+	if err != nil {
+		return nil, fmt.Errorf("batch return orders: %w", err)
+	}
+
 	out := make([]*SellerReturnCard, 0, len(returns))
 	for _, r := range returns {
-		card := &SellerReturnCard{Return: r}
-		if item, err := s.store.GetOrderItemByID(ctx, r.OrderItemID); err == nil {
-			card.OrderItem = item
-		}
-		if o, err := s.store.GetOrderByID(ctx, r.OrderID); err == nil {
-			card.Order = o
-		}
-		out = append(out, card)
+		out = append(out, &SellerReturnCard{
+			Return:    r,
+			OrderItem: itemsByID[r.OrderItemID],
+			Order:     ordersByID[r.OrderID],
+		})
 	}
 	return out, nil
 }
@@ -2185,7 +2347,9 @@ type SellerEarning struct {
 // ListSellerEarnings returns delivered prepaid (non-COD) order items for a
 // seller. COD earnings live in their own remittance ledger so they're not
 // duplicated here. Phase 4.4.
+// HP3: pagination clamped (default 20, max 200).
 func (s *Service) ListSellerEarnings(ctx context.Context, sellerID uuid.UUID, limit, offset int) ([]*SellerEarning, error) {
+	limit, offset = clampListPagination(limit, offset)
 	items, err := s.store.ListDeliveredItemsForSeller(ctx, sellerID, limit, offset)
 	if err != nil {
 		return nil, err

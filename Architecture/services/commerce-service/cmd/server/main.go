@@ -25,6 +25,7 @@ import (
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
 	tracepkg "github.com/atpost/shared/o11y/trace"
+	"github.com/atpost/shared/outbox"
 	"github.com/atpost/shared/server"
 	"github.com/atpost/shared/transport"
 	"github.com/gin-gonic/gin"
@@ -190,6 +191,18 @@ func main() {
 	fulfillmentWorker := workers.NewFulfillmentWorker(store, svc)
 	go fulfillmentWorker.Run(consumerCtx)
 	slog.Info("fulfillment worker started")
+
+	// HP1 — outbox publisher. Replaces synchronous kafka.Writer.WriteMessages
+	// on the request path. service.publish() now inserts into
+	// outbox_events; this worker drains that table to Kafka with retries
+	// + at-least-once delivery. Polling cadence is intentionally tight
+	// (500 ms default) so user-facing latency on emits stays sub-second.
+	outboxPublisher := outbox.New(dbPool, outbox.Config{
+		KafkaBrokers: strings.Join(kafkaBrokers, ","),
+		DefaultTopic: "social.events.v1",
+	})
+	go outboxPublisher.Run(consumerCtx)
+	slog.Info("commerce outbox publisher started", "topic", "social.events.v1")
 
 	// Phase 6.2 — inventory reservation expiry sweeper. Runs every minute
 	// and frees cart reservations whose 30-minute hold has elapsed so
