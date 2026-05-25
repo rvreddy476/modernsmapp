@@ -395,6 +395,31 @@ func (s *Store) ClaimMeetsMissedCheckIn(ctx context.Context, gracePeriod time.Du
 	return out, rows.Err()
 }
 
+// GetReportByID returns a single dating_reports row by id. Used by
+// the report-status notification fanout so the publisher can scope
+// the event to the reporter. Returns (nil, ErrReportNotFound) on miss.
+func (s *Store) GetReportByID(ctx context.Context, reportID uuid.UUID) (*Report, error) {
+	if reportID == uuid.Nil {
+		return nil, fmt.Errorf("invalid: report_id required")
+	}
+	row := s.db.QueryRow(ctx, `
+        SELECT id, reporter_id, target_id, category, details, status, created_at
+        FROM dating_reports
+        WHERE id = $1`, reportID)
+	r := &Report{}
+	var details sql.NullString
+	var st sql.NullString
+	if err := row.Scan(&r.ID, &r.ReporterID, &r.TargetID, &r.Category, &details, &st, &r.CreatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrReportNotFound
+		}
+		return nil, fmt.Errorf("scan report: %w", err)
+	}
+	r.Details = details.String
+	r.Status = st.String
+	return r, nil
+}
+
 // SetReportStatus moves a report through the §P0-8 state machine.
 // Returns ErrReportNotFound when the row is missing.
 func (s *Store) SetReportStatus(ctx context.Context, reportID uuid.UUID, status string) error {
@@ -419,6 +444,72 @@ func (s *Store) SetReportStatus(ctx context.Context, reportID uuid.UUID, status 
 // ErrReportNotFound is returned when SetReportStatus targets a row
 // that does not exist.
 var ErrReportNotFound = errors.New("not_found: report not found")
+
+// ErrPanicAlreadyAcked is returned by AcknowledgePanic when the row
+// already has acknowledged_at stamped. Idempotency at the store layer
+// — the admin handler reads it as a soft success.
+var ErrPanicAlreadyAcked = errors.New("invalid: panic event already acknowledged")
+
+// AcknowledgePanic stamps acknowledged_at + acknowledged_by on a
+// safety_events row whose kind='panic'. Returns the affected row
+// (with the user_id needed for the notification fanout) and a flag
+// indicating whether this call actually performed the ack (true) vs
+// hit an already-acked row (false). Missing row → ErrPanicNotFound.
+func (s *Store) AcknowledgePanic(ctx context.Context, panicID, adminID uuid.UUID) (*SafetyEvent, bool, error) {
+	if panicID == uuid.Nil {
+		return nil, false, fmt.Errorf("invalid: panic_id required")
+	}
+	// CTE update returns the row when this call performed the ack.
+	// The COALESCE plus the WHERE clause ensures we don't overwrite an
+	// existing acknowledged_at. We follow up with a SELECT so we can
+	// distinguish "row missing" (ErrPanicNotFound) from "row exists,
+	// already acked" (return existing row + acked=false).
+	var actor any
+	if adminID != uuid.Nil {
+		actor = adminID
+	}
+	row := s.db.QueryRow(ctx, `
+        UPDATE dating_safety_events
+        SET acknowledged_at = NOW(),
+            acknowledged_by = $2
+        WHERE id = $1
+          AND kind = 'panic'
+          AND acknowledged_at IS NULL
+        RETURNING id, user_id, kind, details, created_at`, panicID, actor)
+	e := &SafetyEvent{}
+	var raw []byte
+	if err := row.Scan(&e.ID, &e.UserID, &e.Kind, &raw, &e.CreatedAt); err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return nil, false, fmt.Errorf("ack panic: %w", err)
+		}
+		// No row updated — either the id doesn't exist, isn't a panic,
+		// or was already acked. Look up the row to differentiate.
+		existing := s.db.QueryRow(ctx, `
+            SELECT id, user_id, kind, details, created_at
+            FROM dating_safety_events
+            WHERE id = $1 AND kind = 'panic'`, panicID)
+		ex := &SafetyEvent{}
+		var exRaw []byte
+		if err2 := existing.Scan(&ex.ID, &ex.UserID, &ex.Kind, &exRaw, &ex.CreatedAt); err2 != nil {
+			if errors.Is(err2, pgx.ErrNoRows) {
+				return nil, false, ErrPanicNotFound
+			}
+			return nil, false, fmt.Errorf("scan existing panic: %w", err2)
+		}
+		if len(exRaw) > 0 {
+			_ = json.Unmarshal(exRaw, &ex.Details)
+		}
+		return ex, false, ErrPanicAlreadyAcked
+	}
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &e.Details)
+	}
+	return e, true, nil
+}
+
+// ErrPanicNotFound is returned when AcknowledgePanic is called against
+// an id that is not a panic safety_event.
+var ErrPanicNotFound = errors.New("not_found: panic event not found")
 
 // ListPanicEvents returns recent dating_safety_events of kind 'panic'
 // newest-first across all users. Used by /admin/dating/panic for the

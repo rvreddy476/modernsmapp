@@ -152,6 +152,46 @@ func TestProfileCompleteness(t *testing.T) {
 	}
 }
 
+func TestDeviceReuseContrib(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		users int
+		want  float64
+	}{
+		{0, 0},
+		{1, 0},
+		{2, 1.0 / 3},
+		{3, 2.0 / 3},
+		{4, 1.0}, // > 3 saturates per spec
+		{10, 1.0},
+	}
+	for _, tc := range cases {
+		if got := deviceReuseContrib(tc.users); !nearly(got, tc.want) {
+			t.Errorf("deviceReuseContrib(%d) got %f want %f", tc.users, got, tc.want)
+		}
+	}
+}
+
+func TestIPVelocityContrib(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		users int
+		want  float64
+	}{
+		{0, 0},
+		{1, 0},
+		{2, 1.0 / 5},
+		{5, 4.0 / 5},
+		{6, 1.0}, // > 5 saturates per spec
+		{100, 1.0},
+	}
+	for _, tc := range cases {
+		if got := ipVelocityContrib(tc.users); !nearly(got, tc.want) {
+			t.Errorf("ipVelocityContrib(%d) got %f want %f", tc.users, got, tc.want)
+		}
+	}
+}
+
 // nearly is a small float epsilon comparator for the normalisers.
 func nearly(a, b float64) bool {
 	d := a - b

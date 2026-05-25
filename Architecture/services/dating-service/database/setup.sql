@@ -663,3 +663,57 @@ ALTER TABLE dating_photos
 ALTER TABLE dating_photos
     ADD COLUMN IF NOT EXISTS moderation_reason TEXT;
 
+-- ---------------------------------------------------------------------------
+-- Phase 1 notification follow-ups — idempotency markers for the four
+-- previously-uncalled publishers (PublishMatchQuietNotify,
+-- PublishSafetyPanicAcknowledged, PublishReportStatusUpdated,
+-- PublishPremiumPaymentFailure).
+--
+-- quiet_notified_at gates dating.match.quiet_notify so the sweeper
+-- emits at most once per match.
+--
+-- acknowledged_at + acknowledged_by gate
+-- dating.safety.panic.acknowledged so each panic row can be ack'd at
+-- most once.
+-- ---------------------------------------------------------------------------
+ALTER TABLE dating_matches
+    ADD COLUMN IF NOT EXISTS quiet_notified_at TIMESTAMPTZ;
+
+CREATE INDEX IF NOT EXISTS idx_dating_matches_quiet_unnotified
+    ON dating_matches(status)
+    WHERE quiet_notified_at IS NULL AND status = 'quiet';
+
+ALTER TABLE dating_safety_events
+    ADD COLUMN IF NOT EXISTS acknowledged_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS acknowledged_by UUID;
+
+CREATE INDEX IF NOT EXISTS idx_dating_safety_panic_open
+    ON dating_safety_events(created_at DESC)
+    WHERE kind = 'panic' AND acknowledged_at IS NULL;
+
+-- ---------------------------------------------------------------------------
+-- §P0-7 Phase B — device-fingerprint + IP/ASN velocity signals.
+--
+-- A row is upserted on every pulse/spark request that carries an
+-- X-Device-Fingerprint header. CountUsersByFingerprint feeds the
+-- device-reuse signal (>3 distinct users on a fingerprint = 1.0);
+-- COUNT(DISTINCT user_id) WHERE ip = $1 AND last_seen_at > NOW() -
+-- INTERVAL '1 hour' feeds IP/ASN velocity (>5 distinct users / hour =
+-- 1.0). The two signals were 0-weighted scaffolds in Phase A.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS dating_device_fingerprints (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id         UUID NOT NULL,
+    fingerprint     TEXT NOT NULL,
+    first_seen_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ip              TEXT,
+    UNIQUE(user_id, fingerprint)
+);
+CREATE INDEX IF NOT EXISTS idx_dating_device_fp_fp
+    ON dating_device_fingerprints(fingerprint);
+CREATE INDEX IF NOT EXISTS idx_dating_device_fp_ip_recent
+    ON dating_device_fingerprints(ip, last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_dating_device_fp_user
+    ON dating_device_fingerprints(user_id, last_seen_at DESC);
+

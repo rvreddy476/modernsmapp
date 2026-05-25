@@ -92,16 +92,21 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		dating.PUT("/prompts/:promptId", h.UpsertPrompt)
 		dating.DELETE("/prompts/:promptId", h.DeletePrompt)
 
-		dating.GET("/pulse/today", h.GetPulseToday)
-		dating.GET("/pulse/nebula", h.GetPulseNebula)
+		// §P0-7 Phase B — capture (X-Device-Fingerprint, client IP)
+		// on every pulse + spark request so the risk job can compute
+		// the device-reuse + IP/ASN-velocity signals. Middleware is
+		// best-effort: a missing header skips the write.
+		fpMW := DeviceFingerprintMiddleware(h.svc)
+		dating.GET("/pulse/today", fpMW, h.GetPulseToday)
+		dating.GET("/pulse/nebula", fpMW, h.GetPulseNebula)
 		// §P1-2 transparency — "Why am I seeing this profile?"
 		// Returns structured reasons (age band, distance, gender
 		// pref, shared community, shared interest, promoted).
-		dating.GET("/pulse/:targetUserId/explain", h.ExplainPulseCandidate)
+		dating.GET("/pulse/:targetUserId/explain", fpMW, h.ExplainPulseCandidate)
 
 		// Sprint 3 — Sparks
-		dating.POST("/sparks", h.CreateSpark)
-		dating.GET("/sparks/incoming", h.ListIncomingSparks)
+		dating.POST("/sparks", fpMW, h.CreateSpark)
+		dating.GET("/sparks/incoming", fpMW, h.ListIncomingSparks)
 		dating.DELETE("/sparks/:id", h.RevokeSpark)
 
 		// Sprint 3 — Stash
@@ -164,6 +169,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		dating.GET("/admin/reports", h.ListReports)
 		dating.POST("/admin/reports/:id/action", h.ActOnReport)
 		dating.GET("/admin/safety/panic", h.ListPanicEvents)
+		// Phase 1 follow-up — admin acknowledgement flips
+		// acknowledged_at on the panic safety_event row and emits
+		// dating.safety.panic.acknowledged so the user sees support
+		// has triaged their alert.
+		dating.POST("/admin/safety/panic/:id/ack", h.AcknowledgePanic)
 		dating.GET("/admin/photos/pending", h.ListPendingPhotos)
 		// §P0-8 — append-only audit log surface for the console.
 		dating.GET("/admin/audit", h.ListAdminAudit)

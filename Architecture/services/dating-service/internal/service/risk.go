@@ -135,25 +135,31 @@ func (s *Service) ComputeRisk(ctx context.Context, userID uuid.UUID) (*store.Acc
 		"rejected_normalised": photoRejectedContrib,
 	}
 
-	// --- 4. Device reuse — 15w, ADDS risk. DEFERRED to Phase B. ----------
-	// No device-fingerprint table exists yet; the request-log aggregator
-	// will surface (count_of_distinct_users_per_device, distinct_uas).
-	// For Phase A we contribute 0 and surface the gap in the signals
-	// JSON so the admin queue UI can render "device-reuse: not yet
-	// instrumented".
+	// --- 4. Device reuse — 15w, ADDS risk. ------------------------------
+	// Inspect every fingerprint this user has been observed on; if any
+	// of them maps to > 3 distinct users we treat the device as
+	// recycled across accounts (multi-account abuse pattern). We take
+	// the MAX across the user's fingerprints so an alt account that
+	// keeps a fresh fingerprint alongside a recycled one still
+	// surfaces.
+	deviceReuseContrib, maxFPUserCount, fpCount := s.computeDeviceReuseSignal(ctx, userID)
 	signals["device_reuse"] = map[string]any{
-		"weight":     weightDeviceReuse,
-		"normalised": nil,
-		"todo":       "Phase B — wire device-fingerprint table + request-log aggregator",
+		"weight":               weightDeviceReuse,
+		"normalised":           deviceReuseContrib,
+		"fingerprints_seen":    fpCount,
+		"max_users_per_device": maxFPUserCount,
 	}
 
-	// --- 5. IP / ASN velocity — 10w, ADDS risk. PLACEHOLDER for Phase B. -
-	// Same reasoning as #4. Currently contributes 0.
-	ipASNContrib := 0.0
+	// --- 5. IP / ASN velocity — 10w, ADDS risk. -------------------------
+	// COUNT(DISTINCT user_id) on the most-recent IP within the last
+	// hour. >5 distinct users on a single IP is an emulator farm /
+	// shared NAT / Tor exit pattern.
+	ipASNContrib, ipUserCount, observedIP := s.computeIPVelocitySignal(ctx, userID)
 	signals["ip_asn_velocity"] = map[string]any{
-		"weight":     weightIPASNVelocity,
-		"normalised": ipASNContrib,
-		"todo":       "Phase B — wire request-log aggregator",
+		"weight":                   weightIPASNVelocity,
+		"normalised":               ipASNContrib,
+		"users_on_ip_last_hour":    ipUserCount,
+		"ip_evaluated":             observedIP != "",
 	}
 
 	// --- 6. Report count + quality — 15w, ADDS risk. ---------------------
@@ -206,6 +212,7 @@ func (s *Service) ComputeRisk(ctx context.Context, userID uuid.UUID) (*store.Acc
 		(completeness * float64(weightProfileCompleteness)) -
 		(photoApprovedContrib * (float64(weightPhotoApproval) / 2)) +
 		(photoRejectedContrib * float64(weightPhotoApproval)) +
+		(deviceReuseContrib * float64(weightDeviceReuse)) +
 		(ipASNContrib * float64(weightIPASNVelocity)) +
 		(reportContrib * float64(weightReports)) +
 		(blockContrib * float64(weightBlockRate)) +
@@ -378,6 +385,107 @@ func riskLevelForScore(score int) string {
 	default:
 		return store.RiskLevelSuspend
 	}
+}
+
+// computeDeviceReuseSignal walks the user's recent fingerprints and
+// returns the saturating 0..1 contribution along with diagnostic
+// values for the signals JSON. A fingerprint that has carried more
+// than 3 distinct users contributes 1.0; below 3 the value scales
+// linearly. We pick the MAX across the user's fingerprints so an alt
+// account that keeps a fresh fingerprint alongside a recycled one
+// still surfaces.
+//
+// Errors are best-effort: a Postgres blip during risk recompute must
+// not turn the score into NaN. We log and treat the signal as 0.
+func (s *Service) computeDeviceReuseSignal(ctx context.Context, userID uuid.UUID) (normalised float64, maxUsersPerDevice int, fingerprintsSeen int) {
+	fps, err := s.store.ListFingerprintsForUser(ctx, userID)
+	if err != nil {
+		slog.Warn("device reuse: list fingerprints failed", "user_id", userID, "error", err)
+		return 0, 0, 0
+	}
+	if len(fps) == 0 {
+		return 0, 0, 0
+	}
+	for _, fp := range fps {
+		count, cerr := s.store.CountUsersByFingerprint(ctx, fp.Fingerprint)
+		if cerr != nil {
+			slog.Warn("device reuse: count users by fingerprint failed",
+				"user_id", userID, "error", cerr)
+			continue
+		}
+		if count > maxUsersPerDevice {
+			maxUsersPerDevice = count
+		}
+	}
+	return deviceReuseContrib(maxUsersPerDevice), maxUsersPerDevice, len(fps)
+}
+
+// computeIPVelocitySignal looks at the user's most-recently-seen
+// fingerprint row, pulls the IP, and counts distinct users on that IP
+// in the last hour. >5 → 1.0. <=5 scales linearly.
+//
+// We use the latest IP (rather than every IP the user has ever been
+// on) because the abuse signature we're looking for is *now*: an
+// emulator farm spinning up alt accounts on one bridge in the last
+// few minutes. Older IPs aren't relevant.
+func (s *Service) computeIPVelocitySignal(ctx context.Context, userID uuid.UUID) (normalised float64, usersOnIP int, observedIP string) {
+	fps, err := s.store.ListFingerprintsForUser(ctx, userID)
+	if err != nil {
+		slog.Warn("ip velocity: list fingerprints failed", "user_id", userID, "error", err)
+		return 0, 0, ""
+	}
+	// ListFingerprintsForUser orders by last_seen_at DESC, so fps[0]
+	// is the most recent. Walk the list to find the first row with a
+	// non-empty IP (some upserts may have landed before the client
+	// started sending forwarded-for).
+	for _, fp := range fps {
+		if fp.IP == "" {
+			continue
+		}
+		observedIP = fp.IP
+		break
+	}
+	if observedIP == "" {
+		return 0, 0, ""
+	}
+	count, cerr := s.store.CountDistinctUsersOnIPLastHour(ctx, observedIP)
+	if cerr != nil {
+		slog.Warn("ip velocity: count distinct users failed",
+			"user_id", userID, "error", cerr)
+		return 0, 0, observedIP
+	}
+	return ipVelocityContrib(count), count, observedIP
+}
+
+// deviceReuseContrib normalises users-per-device into the 0..1 risk
+// contribution. The spec threshold is > 3 distinct users → 1.0; at
+// exactly 3 we treat the device as borderline (just under 1.0). The
+// linear scaling below 3 keeps the signal continuous so a 2-user
+// device still contributes a meaningful nudge instead of zero.
+func deviceReuseContrib(usersOnDevice int) float64 {
+	if usersOnDevice <= 1 {
+		return 0
+	}
+	// > 3 saturates per spec; the divisor 3.0 gives 3 → 1.0 exactly.
+	c := float64(usersOnDevice-1) / 3.0
+	if c > 1 {
+		c = 1
+	}
+	return c
+}
+
+// ipVelocityContrib normalises distinct-users-on-IP-last-hour into
+// the 0..1 contribution. Spec threshold: > 5 distinct users → 1.0.
+// 5 is the saturating denominator so 5 users → 1.0 exactly.
+func ipVelocityContrib(usersOnIP int) float64 {
+	if usersOnIP <= 1 {
+		return 0
+	}
+	c := float64(usersOnIP-1) / 5.0
+	if c > 1 {
+		c = 1
+	}
+	return c
 }
 
 // RecomputeStaleRisks is the sweeper hook — runs ComputeRisk on every

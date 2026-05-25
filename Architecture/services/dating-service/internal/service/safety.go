@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -236,6 +237,50 @@ func (s *Service) Block(ctx context.Context, userID, targetID uuid.UUID) error {
 		// pair. Persist already succeeded; failure here is logged.
 		if perr := s.producer.PublishUserBlocked(ctx, userID, targetID); perr != nil {
 			slog.Error("publish user.blocked failed; row persisted", "user_id", userID, "error", perr)
+		}
+	}
+	return nil
+}
+
+// AcknowledgePanic stamps acknowledged_at + acknowledged_by on a
+// safety_events row of kind='panic' and emits
+// dating.safety.panic.acknowledged so the affected user's notification
+// arm fires "support has reviewed your alert". Idempotent at the
+// store layer — a second ack returns the row with acked=false and the
+// service does not re-emit.
+//
+// adminID is the gateway-injected actor (may be uuid.Nil). The audit
+// row in dating_admin_audit is left to the caller / handler.
+func (s *Service) AcknowledgePanic(ctx context.Context, panicID, adminID uuid.UUID) error {
+	if panicID == uuid.Nil {
+		return fmt.Errorf("invalid: panic_id required")
+	}
+	event, acked, err := s.store.AcknowledgePanic(ctx, panicID, adminID)
+	if err != nil {
+		// Already-acked is a soft success: the row exists, the
+		// event has already been emitted (or will be replayed by
+		// the original caller's path), and we don't bounce the
+		// admin click. Re-surface other errors.
+		if errors.Is(err, store.ErrPanicAlreadyAcked) {
+			return nil
+		}
+		return err
+	}
+	if !acked {
+		// Defensive: store contract returns (row, false, ErrPanicAlreadyAcked)
+		// on replay. If we ever see (row, false, nil) treat the same.
+		return nil
+	}
+	if s.producer != nil {
+		ackBy := ""
+		if adminID != uuid.Nil {
+			ackBy = adminID.String()
+		}
+		if perr := s.producer.PublishSafetyPanicAcknowledged(ctx, event.UserID, ackBy); perr != nil {
+			// Persist already succeeded; surface to slog but don't
+			// fail the admin click. Convention follows the rest of the
+			// safety code path.
+			slog.Error("publish safety.panic.acknowledged failed; row persisted", "panic_id", panicID, "user_id", event.UserID, "error", perr)
 		}
 	}
 	return nil

@@ -98,6 +98,31 @@ func (h *Handler) ActOnReport(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, gin.H{"status": newStatus}, nil)
 }
 
+// AcknowledgePanic — POST /v1/dating/admin/safety/panic/:id/ack
+//
+// Stamps acknowledged_at + acknowledged_by on the named panic
+// safety_event row and emits dating.safety.panic.acknowledged so the
+// user who triggered the alert sees "support has reviewed your panic
+// request" in-app. Idempotent: second ack hits the already-acked
+// branch in the store and short-circuits without re-emitting.
+//
+// admin-scope (gateway-enforced) + internal-key gated. X-Admin-Id
+// flows through as the acknowledged_by actor; missing header is
+// logged + falls through with uuid.Nil (mirrors ActOnReport's
+// fallback so a missing header never bounces an on-call response).
+func (h *Handler) AcknowledgePanic(c *gin.Context) {
+	panicID, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+	adminID := getAdminID(c)
+	if err := h.svc.AcknowledgePanic(c.Request.Context(), panicID, adminID); err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "ACK_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"acknowledged": true}, nil)
+}
+
 // ListAdminAudit — GET /v1/dating/admin/audit?actor=&target_user_id=&action=&limit=&offset=
 //
 // Surfaces the dating_admin_audit append-only log for the console

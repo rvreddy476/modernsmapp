@@ -346,3 +346,28 @@ func (s *Service) MarkQuietMatches(ctx context.Context) (int, error) {
 	}
 	return len(quieted), nil
 }
+
+// EmitQuietMatchNotifications fans out dating.match.quiet_notify for
+// quiet matches that haven't been notified yet. ClaimMatchesForQuietNotify
+// atomically stamps quiet_notified_at so a replica re-running on the
+// next tick sees the row as already-emitted, and FOR UPDATE SKIP
+// LOCKED keeps the cluster safe. One event per participant per match
+// (notification-service routes by user_a/user_b).
+func (s *Service) EmitQuietMatchNotifications(ctx context.Context, limit int) (int, error) {
+	if s.producer == nil {
+		return 0, nil
+	}
+	matches, err := s.store.ClaimMatchesForQuietNotify(ctx, limit)
+	if err != nil {
+		return 0, err
+	}
+	for _, m := range matches {
+		// Don't block the sweeper on a Kafka miss — the row is already
+		// stamped; a downstream nightly job (or operator replay) can
+		// catch up. We log on error per producer.go's convention.
+		if perr := s.producer.PublishMatchQuietNotify(ctx, m.ID, m.UserA, m.UserB); perr != nil {
+			slog.Warn("publish match.quiet_notify failed", "match_id", m.ID, "error", perr)
+		}
+	}
+	return len(matches), nil
+}

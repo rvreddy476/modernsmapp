@@ -374,6 +374,45 @@ func (s *Store) MarkQuietMatches(ctx context.Context) ([]*Match, error) {
 	return out, rows.Err()
 }
 
+// ClaimMatchesForQuietNotify atomically claims up to `limit` matches
+// that have transitioned to 'quiet' but have not yet had a
+// dating.match.quiet_notify event emitted (quiet_notified_at IS NULL).
+// Stamps quiet_notified_at = NOW() on the claimed rows so a replica
+// re-running on the next tick sees them as already-notified.
+//
+// FOR UPDATE SKIP LOCKED keeps the sweeper safe across replicas — each
+// quiet match is emitted exactly once per cluster. §Phase 1 follow-up.
+func (s *Store) ClaimMatchesForQuietNotify(ctx context.Context, limit int) ([]*Match, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	rows, err := s.db.Query(ctx, `
+        UPDATE dating_matches
+        SET quiet_notified_at = NOW()
+        WHERE id IN (
+            SELECT id FROM dating_matches
+            WHERE status = 'quiet'
+              AND quiet_notified_at IS NULL
+            ORDER BY last_message_at ASC NULLS LAST
+            LIMIT $1
+            FOR UPDATE SKIP LOCKED
+        )
+        RETURNING `+matchSelectCols, limit)
+	if err != nil {
+		return nil, fmt.Errorf("claim matches for quiet notify: %w", err)
+	}
+	defer rows.Close()
+	out := make([]*Match, 0, limit)
+	for rows.Next() {
+		m, err := scanMatch(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 // RecordFirstMessage stamps first_message_at + last_message_at on the match
 // row. Idempotent: re-running keeps the original first_message_at.
 func (s *Store) RecordFirstMessage(ctx context.Context, matchID uuid.UUID, at time.Time) error {

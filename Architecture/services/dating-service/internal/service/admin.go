@@ -105,6 +105,23 @@ func (s *Service) ActOnReport(ctx context.Context, adminID, reportID, targetUser
 		return "", err
 	}
 
+	// Phase 1 notification fanout — let the reporter know their report
+	// has been resolved/actioned/dismissed (dating.report.status_updated).
+	// We need the reporter_id to scope the user-facing notification, so
+	// re-read the row. The store layer enforces SetReportStatus has
+	// landed; a missing row at this point is a race we log + skip.
+	if s.producer != nil {
+		if report, rerr := s.store.GetReportByID(ctx, reportID); rerr != nil {
+			slog.Warn("publish report.status_updated: lookup reporter failed",
+				"report_id", reportID, "error", rerr)
+		} else if report != nil {
+			if perr := s.producer.PublishReportStatusUpdated(ctx, reportID, report.ReporterID, newStatus); perr != nil {
+				slog.Warn("publish report.status_updated failed",
+					"report_id", reportID, "status", newStatus, "error", perr)
+			}
+		}
+	}
+
 	if adminID == uuid.Nil {
 		slog.Warn("admin audit: actor id missing on ActOnReport",
 			"report_id", reportID, "action", action, "target_user_id", targetUserID)

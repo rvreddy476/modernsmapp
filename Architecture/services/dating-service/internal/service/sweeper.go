@@ -95,6 +95,17 @@ func (s *Service) runSweeperOnce(ctx context.Context, cfg SweeperConfig) {
 		slog.Info("sweeper: matches quieted", "count", n)
 	}
 
+	// 2b. Notify both participants on each newly-quiet match
+	// (dating.match.quiet_notify). The ClaimMatchesForQuietNotify
+	// store call atomically claims rows where quiet_notified_at IS
+	// NULL via FOR UPDATE SKIP LOCKED, so each match emits at most
+	// one notify event across the cluster.
+	if n, err := s.EmitQuietMatchNotifications(ctx, cfg.BatchLimit); err != nil {
+		slog.Warn("sweeper: EmitQuietMatchNotifications failed", "error", err)
+	} else if n > 0 {
+		slog.Info("sweeper: quiet-notify events fired", "count", n)
+	}
+
 	// 3. Safe-meet reminders 12h ahead.
 	if s.producer != nil {
 		meets, err := s.store.ClaimMeetsDueForReminder(
