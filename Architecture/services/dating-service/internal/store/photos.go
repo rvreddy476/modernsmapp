@@ -143,6 +143,50 @@ func (s *Store) UpdatePhoto(ctx context.Context, userID, photoID uuid.UUID, p Up
 	return out, nil
 }
 
+// SetPhotoModerationStatus flips moderation_status on a photo.
+// Admin / scanner / consumer driven — never called from the
+// user-facing UpdatePhoto path. Returns the updated row (with the
+// owning user_id) so the caller can fan-out invalidations + profile-
+// state transitions without a second lookup. P0-6 + Phase 1 §P0-10
+// in dating/PRODUCTION_GAP_ANALYSIS.md.
+func (s *Store) SetPhotoModerationStatus(ctx context.Context, photoID uuid.UUID, status string) (*Photo, error) {
+	switch status {
+	case "approved", "rejected", "pending":
+	default:
+		return nil, fmt.Errorf("invalid moderation status %q", status)
+	}
+	row := s.db.QueryRow(ctx, `
+        UPDATE dating_photos
+        SET moderation_status = $2
+        WHERE id = $1
+        RETURNING id, user_id, media_id, sort_order, is_primary, visibility, moderation_status, created_at
+    `, photoID, status)
+	out, err := scanPhoto(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrPhotoNotFound
+		}
+		return nil, err
+	}
+	return out, nil
+}
+
+// CountApprovedPrimaryPhotos returns how many approved + public photos
+// the user has. The profile-state machine uses this to decide whether
+// to graduate pending_photo → pending_selfie after a moderation event.
+func (s *Store) CountApprovedPrimaryPhotos(ctx context.Context, userID uuid.UUID) (int, error) {
+	var n int
+	err := s.db.QueryRow(ctx, `
+        SELECT COUNT(*)
+        FROM dating_photos
+        WHERE user_id = $1
+          AND is_primary = true
+          AND moderation_status = 'approved'
+          AND visibility = 'public'
+    `, userID).Scan(&n)
+	return n, err
+}
+
 // DeletePhoto removes the photo if it belongs to the user. Returns
 // ErrPhotoNotFound if nothing was deleted.
 func (s *Store) DeletePhoto(ctx context.Context, userID, photoID uuid.UUID) error {

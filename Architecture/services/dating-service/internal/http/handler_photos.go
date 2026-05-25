@@ -69,6 +69,38 @@ func (h *Handler) UpdatePhoto(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, photo, nil)
 }
 
+// SetPhotoModerationStatus — POST /v1/dating/photos/:id/moderation
+// Internal-only: gated by the same internal-service-key as the rest
+// of dating-service. Body: {status: "approved"|"rejected"|"pending",
+// reason?: string}. Triggers deck-cache invalidation + profile-state
+// transition + (on rejection) photo.moderation_rejected event.
+type setPhotoModerationRequest struct {
+	Status string `json:"status" binding:"required"`
+	Reason string `json:"reason"`
+}
+
+func (h *Handler) SetPhotoModerationStatus(c *gin.Context) {
+	photoID, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+	var body setPhotoModerationRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	photo, err := h.svc.SetPhotoModerationStatus(c.Request.Context(), photoID, body.Status, body.Reason)
+	if err != nil {
+		if errors.Is(err, store.ErrPhotoNotFound) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "photo not found", nil)
+			return
+		}
+		respondServiceError(c, err, http.StatusInternalServerError, "UPDATE_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, photo, nil)
+}
+
 // DeletePhoto removes a caller-owned photo.
 func (h *Handler) DeletePhoto(c *gin.Context) {
 	userID, ok := getUserID(c)

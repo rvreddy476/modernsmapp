@@ -71,6 +71,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		dating.POST("/photos", h.CreatePhoto)
 		dating.PATCH("/photos/:id", h.UpdatePhoto)
 		dating.DELETE("/photos/:id", h.DeletePhoto)
+		// Internal-only: admin / content-scanner moderation flip.
+		// Drives deck-cache invalidation + profile-state transition
+		// + photo.moderation_rejected event. Same internal-key gate
+		// as the rest of /v1/dating/*.
+		dating.POST("/photos/:id/moderation", h.SetPhotoModerationStatus)
 
 		dating.GET("/prompts/catalog", h.GetPromptCatalog)
 		dating.GET("/prompts", h.ListPrompts)
