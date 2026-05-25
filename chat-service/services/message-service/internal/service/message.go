@@ -18,6 +18,7 @@ import (
 	"github.com/atpost/chat-message-service/internal/store/postgres"
 	"github.com/atpost/chat-message-service/internal/store/scylla"
 	sharedEvents "github.com/atpost/chat-shared/events"
+	"github.com/atpost/chat-shared/presence"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
@@ -150,6 +151,7 @@ type Service struct {
 	convStore          ConversationStore
 	msgStore           MessageStore
 	rdb                *redis.Client
+	pres               presence.Store
 	rateLimiter        *ratelimit.Limiter
 	producer           EventProducer
 	log                *slog.Logger
@@ -188,12 +190,65 @@ func New(convStore ConversationStore, msgStore MessageStore, rdb *redis.Client, 
 		convStore:    convStore,
 		msgStore:     msgStore,
 		rdb:          rdb,
+		pres:         presence.NewRedisStore(rdb, presence.Options{}),
 		rateLimiter:  ratelimit.New(rdb),
 		producer:     producer,
 		log:          log,
 		pollInterval: pollInterval,
 		httpClient:   &http.Client{Timeout: 5 * time.Second},
 	}
+}
+
+// ConversationPresence describes who's currently viewing or typing in
+// a conversation. activeCount is always present; activeUsers is only
+// populated for small conversations (≤100 members) per the production
+// realtime architecture rules — large groups get count-only to avoid
+// leaking a viewer list.
+type ConversationPresence struct {
+	ActiveCount  int64    `json:"active_count"`
+	ActiveUsers  []string `json:"active_users,omitempty"`
+	TypingUsers  []string `json:"typing_users,omitempty"`
+	IsBigGroup   bool     `json:"is_big_group"`
+}
+
+// GetConversationPresence returns who's actively viewing convID right
+// now. Caller must already be a member. The user-list-vs-count decision
+// is made server-side based on the group size cap so a client can't
+// scrape big channels.
+func (s *Service) GetConversationPresence(ctx context.Context, userID, convID uuid.UUID) (*ConversationPresence, error) {
+	ok, err := s.convStore.CheckMembership(ctx, convID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, errors.New("not a member of this conversation")
+	}
+
+	const smallGroupCap = 100
+	members, err := s.convStore.GetMembers(ctx, convID)
+	if err != nil {
+		return nil, err
+	}
+	isBig := len(members) > smallGroupCap
+
+	count, err := s.pres.ActiveCount(ctx, convID.String())
+	if err != nil {
+		return nil, err
+	}
+	out := &ConversationPresence{ActiveCount: count, IsBigGroup: isBig}
+	if !isBig {
+		users, err := s.pres.ActiveUsers(ctx, convID.String(), smallGroupCap)
+		if err != nil {
+			return nil, err
+		}
+		out.ActiveUsers = users
+		typing, err := s.pres.TypingUsers(ctx, convID.String(), smallGroupCap)
+		if err != nil {
+			return nil, err
+		}
+		out.TypingUsers = typing
+	}
+	return out, nil
 }
 
 func (s *Service) SetUserDirectory(userServiceURL, internalServiceKey string) {

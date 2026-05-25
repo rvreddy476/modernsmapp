@@ -33,6 +33,7 @@ type ChatService interface {
 	SetTyping(ctx context.Context, userID, conversationID uuid.UUID) error
 	MarkRead(ctx context.Context, userID, conversationID uuid.UUID, messageID string) error
 	GetPresence(ctx context.Context, userIDs []uuid.UUID) (map[string]bool, error)
+	GetConversationPresence(ctx context.Context, userID, convID uuid.UUID) (*service.ConversationPresence, error)
 
 	// Conversation settings
 	GetSettings(ctx context.Context, userID, convID uuid.UUID) (*store.ConversationSettings, error)
@@ -103,6 +104,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.POST("/conversations/:id/read", h.MarkRead)
 		// Presence
 		v1.POST("/presence", h.GetPresence)
+		// Per-conversation presence (M1): who's currently viewing this
+		// chat right now, plus typing users. ws-gateway writes via
+		// conversation.enter/heartbeat/leave + typing.start; this is
+		// the read side.
+		v1.GET("/conversations/:id/presence", h.GetConversationPresence)
 
 		// Conversation settings
 		v1.GET("/conversations/:id/settings", h.GetConversationSettings)
@@ -555,6 +561,28 @@ func (h *Handler) ToggleReaction(c *gin.Context) {
 }
 
 // --- Typing & Read Receipts ---
+
+func (h *Handler) GetConversationPresence(c *gin.Context) {
+	userID, ok := getUserID(c, h.log)
+	if !ok {
+		return
+	}
+	convID, ok := parseConvID(c)
+	if !ok {
+		return
+	}
+	resp, err := h.svc.GetConversationPresence(c.Request.Context(), userID, convID)
+	if err != nil {
+		if err.Error() == "not a member of this conversation" {
+			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil, nil)
+			return
+		}
+		h.log.Warn("failed to read presence", "err", err, "request_id", RequestIDFromContext(c))
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to read presence", nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, resp, nil)
+}
 
 func (h *Handler) SetTyping(c *gin.Context) {
 	userID, ok := getUserID(c, h.log)

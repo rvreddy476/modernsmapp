@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/atpost/chat-shared/callauth"
+	"github.com/atpost/chat-shared/presence"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
@@ -49,6 +50,7 @@ type Server struct {
 	log      *slog.Logger
 	opts     ServerOptions
 	upgrader websocket.Upgrader
+	pres     presence.Store
 }
 
 func NewServer(rdb *redis.Client, log *slog.Logger, opts ServerOptions) *Server {
@@ -77,6 +79,7 @@ func NewServer(rdb *redis.Client, log *slog.Logger, opts ServerOptions) *Server 
 		rdb:  rdb,
 		log:  log,
 		opts: opts,
+		pres: presence.NewRedisStore(rdb, presence.Options{}),
 	}
 	s.upgrader = websocket.Upgrader{
 		ReadBufferSize:  1024,
@@ -162,8 +165,12 @@ func (s *Server) handleWS(w nethttp.ResponseWriter, r *nethttp.Request) {
 		go s.watchTokenExpiry(ctx, cancel, userID, tokenExp)
 	}
 
-	// Mark user as online (presence TTL 90s; client heartbeat keeps it alive).
-	if err := s.rdb.Set(ctx, "presence:"+userID.String(), "1", 90*time.Second).Err(); err != nil {
+	// Mark user as online via the presence store (TTL 90s; client
+	// heartbeat keeps it alive). Key is now presence:user:{userID};
+	// the old presence:{userID} key is no longer written. Any
+	// consumer still reading the legacy key must migrate — there
+	// are no remaining references in this workspace.
+	if err := s.pres.SetUserOnline(ctx, userID.String()); err != nil {
 		s.log.Warn("failed to set presence on connect", "err", err, "user_id", userID)
 	}
 	// Broadcast online status to the presence channel so other connected users can react.
@@ -172,7 +179,7 @@ func (s *Server) handleWS(w nethttp.ResponseWriter, r *nethttp.Request) {
 	// Clear presence when the connection closes.
 	defer func() {
 		delCtx := context.Background()
-		if err := s.rdb.Del(delCtx, "presence:"+userID.String()).Err(); err != nil {
+		if err := s.pres.ClearUserOnline(delCtx, userID.String()); err != nil {
 			s.log.Warn("failed to clear presence on disconnect", "err", err, "user_id", userID)
 		}
 		s.rdb.Publish(delCtx, "presence:updates", fmt.Sprintf(`{"user_id":"%s","online":false}`, userID.String()))
@@ -259,13 +266,12 @@ func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *
 	conn.SetReadLimit(s.opts.MaxMessageSize)
 	_ = conn.SetReadDeadline(time.Now().Add(s.opts.PongWait))
 	conn.SetPongHandler(func(string) error {
-		// M4: refresh presence TTL with EXPIRE instead of SET. Same
-		// effect (key kept alive for 90s) but EXPIRE is cheaper —
-		// no value transfer, no dictentry replacement. At 1M
-		// concurrent connections × pong every ~54s that's ~18.5k
-		// presence writes per second; EXPIRE shaves both Redis CPU
-		// and network bytes vs SET.
-		_ = s.rdb.Expire(ctx, "presence:"+userID.String(), 90*time.Second)
+		// Refresh the global presence:user:{userID} TTL on every pong
+		// so a missed disconnect is bounded by GlobalUserTTL (90s).
+		// SetUserOnline rewrites the key value too, which is fractionally
+		// more expensive than a bare EXPIRE — acceptable given how cold
+		// the codepath is per connection (~once every 54s).
+		_ = s.pres.SetUserOnline(ctx, userID.String())
 		return conn.SetReadDeadline(time.Now().Add(s.opts.PongWait))
 	})
 
@@ -289,6 +295,62 @@ func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *
 
 		// Handle room subscriptions (dynamic per-post and per-call channels)
 		switch msgType {
+		case "conversation.enter":
+			// M1 — track "user is currently viewing this conversation".
+			// Pure presence write; nothing is broadcast here. Clients
+			// listening for a presence_update can call the read-side
+			// presence API (or we can fan out via PUBLISH if there's
+			// demand).
+			convID, _ := envelope["conversation_id"].(string)
+			if convID == "" {
+				convID, _ = envelope["conv_id"].(string)
+			}
+			if convID == "" {
+				continue
+			}
+			if err := s.pres.EnterConversation(ctx, convID, userID.String()); err != nil {
+				s.log.Warn("presence enter failed", "err", err, "user_id", userID, "conv_id", convID)
+			}
+			continue
+		case "conversation.heartbeat":
+			// Refresh active timestamp; eviction of stale members
+			// happens inside the store. Called by clients every ~15s
+			// while the chat screen is open.
+			convID, _ := envelope["conversation_id"].(string)
+			if convID == "" {
+				convID, _ = envelope["conv_id"].(string)
+			}
+			if convID == "" {
+				continue
+			}
+			if err := s.pres.HeartbeatConversation(ctx, convID, userID.String()); err != nil {
+				s.log.Warn("presence heartbeat failed", "err", err, "user_id", userID, "conv_id", convID)
+			}
+			continue
+		case "conversation.leave":
+			convID, _ := envelope["conversation_id"].(string)
+			if convID == "" {
+				convID, _ = envelope["conv_id"].(string)
+			}
+			if convID == "" {
+				continue
+			}
+			if err := s.pres.LeaveConversation(ctx, convID, userID.String()); err != nil {
+				s.log.Warn("presence leave failed", "err", err, "user_id", userID, "conv_id", convID)
+			}
+			continue
+		case "typing.start", "typing.started":
+			convID, _ := envelope["conversation_id"].(string)
+			if convID == "" {
+				convID, _ = envelope["conv_id"].(string)
+			}
+			if convID == "" {
+				continue
+			}
+			if err := s.pres.SetTyping(ctx, convID, userID.String()); err != nil {
+				s.log.Warn("typing set failed", "err", err, "user_id", userID, "conv_id", convID)
+			}
+			continue
 		case "subscribe_post":
 			postID, _ := envelope["post_id"].(string)
 			if postID != "" {
