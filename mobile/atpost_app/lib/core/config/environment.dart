@@ -139,4 +139,7 @@ class Environment {
   static const String foodPath = '/v1/food';
   static const String memoriesPath = '/v1/memories';
   static const String livePath = '/v1/live';
+  // Live streaming v2 (LiveKit / live-service-v2). Separate prefix
+  // from the legacy v1 service to avoid route collisions at the gateway.
+  static const String liveV2Path = '/v1/livestream';
 }

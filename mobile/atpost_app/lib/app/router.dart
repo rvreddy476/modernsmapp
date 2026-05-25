@@ -83,6 +83,12 @@ import 'package:atpost_app/features/chat/message_requests_screen.dart';
 import 'package:atpost_app/features/calls/call_screen.dart';
 import 'package:atpost_app/features/live/live_screen.dart';
 import 'package:atpost_app/features/live/broadcast_screen.dart';
+// Live streaming v2 (LiveKit / live-service-v2). Routed under /live/v2/*
+// so the legacy v1 screens stay reachable during the gateway cutover.
+import 'package:atpost_app/features/live/live_list_screen.dart';
+import 'package:atpost_app/features/live/live_viewer_screen.dart';
+import 'package:atpost_app/features/live/go_live_screen.dart';
+import 'package:atpost_app/features/live/live_broadcaster_screen.dart';
 import 'package:atpost_app/features/memories/memories_screen.dart';
 import 'package:atpost_app/features/memories/slambook_detail_screen.dart';
 import 'package:atpost_app/features/memories/slambook_share_screen.dart';
@@ -864,6 +870,27 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             builder: (context, state) => BroadcastScreen(
               streamId: state.pathParameters['streamId']!,
               title: state.uri.queryParameters['title'] ?? 'Live Stream',
+            ),
+          ),
+          // Live streaming v2 (LiveKit / live-service-v2).
+          GoRoute(
+            path: '/live/v2',
+            builder: (_, _) => const LiveListScreen(),
+          ),
+          GoRoute(
+            path: '/live/v2/new',
+            builder: (_, _) => const GoLiveScreen(),
+          ),
+          GoRoute(
+            path: '/live/v2/:streamId',
+            builder: (context, state) => LiveViewerScreen(
+              streamId: state.pathParameters['streamId']!,
+            ),
+          ),
+          GoRoute(
+            path: '/live/v2/:streamId/broadcast',
+            builder: (context, state) => LiveBroadcasterScreen(
+              streamId: state.pathParameters['streamId']!,
             ),
           ),
           GoRoute(
