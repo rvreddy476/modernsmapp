@@ -12,6 +12,11 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// ErrCannotVoteOwn is returned when a user attempts to vote on a
+// question or answer they authored themselves. Schema can't enforce
+// (no JOIN in CHECK constraints); service-layer guard.
+var ErrCannotVoteOwn = fmt.Errorf("cannot vote on your own content")
+
 type Service struct {
 	store    *store.Store
 	rdb      *redis.Client
@@ -394,10 +399,18 @@ func (s *Service) VoteQuestion(ctx context.Context, userID, questionID uuid.UUID
 	if voteType != "up" && voteType != "down" {
 		return fmt.Errorf("vote_type must be 'up' or 'down'")
 	}
+	// Self-vote check up-front so we don't write a useless row +
+	// short-circuit the reputation award (which already skipped
+	// self-votes). The DB CHECK constraint can't enforce this
+	// directly (needs a JOIN to questions.author_user_id), so the
+	// service layer is the right place.
+	q, _ := s.store.GetQuestion(ctx, questionID)
+	if q != nil && q.AuthorID == userID {
+		return ErrCannotVoteOwn
+	}
 	if err := s.store.VoteQuestion(ctx, userID, questionID, voteType); err != nil {
 		return err
 	}
-	q, _ := s.store.GetQuestion(ctx, questionID)
 	if q != nil && q.AuthorID != userID {
 		if voteType == "up" {
 			s.awardReputation(ctx, q.AuthorID, "question_upvoted", ReputationQuestionUpvoted, "question", &questionID)
@@ -419,10 +432,13 @@ func (s *Service) VoteAnswer(ctx context.Context, userID, answerID uuid.UUID, vo
 	if voteType != "up" && voteType != "down" {
 		return fmt.Errorf("vote_type must be 'up' or 'down'")
 	}
+	a, _ := s.store.GetAnswer(ctx, answerID)
+	if a != nil && a.AuthorID == userID {
+		return ErrCannotVoteOwn
+	}
 	if err := s.store.VoteAnswer(ctx, userID, answerID, voteType); err != nil {
 		return err
 	}
-	a, _ := s.store.GetAnswer(ctx, answerID)
 	if a != nil && a.AuthorID != userID {
 		if voteType == "up" {
 			s.awardReputation(ctx, a.AuthorID, "answer_upvoted", ReputationAnswerUpvoted, "answer", &answerID)
