@@ -21,6 +21,7 @@ import (
 	"time"
 
 	tracepkg "github.com/atpost/shared/o11y/trace"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
@@ -177,11 +178,22 @@ func main() {
 		log.Printf("  %s -> %s", rd.prefix, rd.target)
 	}
 
+	// Prometheus metrics endpoint. promhttp serves the default registry
+	// which all shared/o11y/metrics constructors register against, so
+	// scraping /metrics on the gateway also exposes its own HTTP-side
+	// counters once we wrap upstream calls.
+	promHandler := promhttp.Handler()
+
 	coreHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Health check
 		if r.URL.Path == "/health" || r.URL.Path == "/v1/health" {
 			w.Header().Set("Content-Type", "application/json")
 			w.Write([]byte(`{"status":"ok"}`))
+			return
+		}
+		// Prometheus scrape endpoint.
+		if r.URL.Path == "/metrics" {
+			promHandler.ServeHTTP(w, r)
 			return
 		}
 
