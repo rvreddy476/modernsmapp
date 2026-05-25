@@ -178,13 +178,60 @@ func notifTitleBody(notifType string) (string, string) {
 	}
 }
 
-// isQuietHours returns true if the current time is within the quiet hours range.
+// isQuietHours returns true if `now` is within the user's quiet hours
+// window. Start + end are "HH:MM" 24-hour strings in the user's local
+// time. A wrap-around window (e.g. 22:00–07:00) is supported by checking
+// `now >= start OR now < end` when start > end; non-wrap windows use
+// the obvious inclusive-of-start / exclusive-of-end check.
+//
+// Quiet hours suppress PUSH only; in-app notifications still write
+// to the user's inbox so they see them when they next open the app.
+//
+// MS2: implementation landed; previously `return false` so quiet
+// hours were silently ignored.
 func isQuietHours(start, end string) bool {
+	return isQuietHoursAt(start, end, time.Now())
+}
+
+// isQuietHoursAt is the testable form — pass an explicit time.
+func isQuietHoursAt(start, end string, now time.Time) bool {
 	if start == "" || end == "" {
 		return false
 	}
-	// TODO: implement proper quiet hours check using HH:MM format
-	return false
+	startMin, ok := parseHHMM(start)
+	if !ok {
+		return false
+	}
+	endMin, ok := parseHHMM(end)
+	if !ok {
+		return false
+	}
+	if startMin == endMin {
+		return false
+	}
+	nowMin := now.Hour()*60 + now.Minute()
+	if startMin < endMin {
+		// Non-wrap: e.g. 13:00 → 15:00.
+		return nowMin >= startMin && nowMin < endMin
+	}
+	// Wrap-around: e.g. 22:00 → 07:00 means "any time after 22:00
+	// OR before 07:00". This is the more common configuration.
+	return nowMin >= startMin || nowMin < endMin
+}
+
+func parseHHMM(s string) (int, bool) {
+	if len(s) != 5 || s[2] != ':' {
+		return 0, false
+	}
+	h, err1 := strconv.Atoi(s[:2])
+	m, err2 := strconv.Atoi(s[3:])
+	if err1 != nil || err2 != nil {
+		return 0, false
+	}
+	if h < 0 || h > 23 || m < 0 || m > 59 {
+		return 0, false
+	}
+	return h*60 + m, true
 }
 
 // NotificationsPage holds a page of notifications with a cursor for the next page.

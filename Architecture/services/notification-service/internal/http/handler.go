@@ -317,13 +317,17 @@ func (h *Handler) UnregisterDevice(c *gin.Context) {
 	}
 
 	if err := h.svc.UnregisterDevice(c.Request.Context(), deviceID, userID); err != nil {
+		// MS9: collapse "not found" and "found-and-removed" into the
+		// same response so a caller can't probe device-id existence
+		// by watching status codes. We still log the not-found case
+		// internally for forensics.
 		if err.Error() == "DEVICE_NOT_FOUND" {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Device not found", nil)
+			log.Printf("[unregister-device] caller %s attempted to remove non-existent device %s", userID, deviceID)
+		} else {
+			log.Printf("Failed to unregister device: %v", err)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to unregister device", nil)
 			return
 		}
-		log.Printf("Failed to unregister device: %v", err)
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to unregister device", nil)
-		return
 	}
 
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "removed"}, nil)

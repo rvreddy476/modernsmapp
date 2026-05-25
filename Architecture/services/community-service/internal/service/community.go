@@ -141,6 +141,64 @@ func New(s *store.Store, rdb *redis.Client) *Service {
 	return &Service{store: s, rdb: rdb}
 }
 
+// memberCacheTTL is short on purpose — role/ban changes need to
+// propagate fast (admin demoting a moderator can't wait 5 min). 60s
+// absorbs burst load on hot communities (post create, comment, list
+// posts all call GetMember) without making membership writes feel
+// stale.
+const memberCacheTTL = 60 * time.Second
+
+// getMemberCached is the read-through wrapper for hot-path GetMember
+// calls. Cache miss → store fetch → cache write (best-effort).
+// Cache hit → unmarshal. Returns the same shape as store.GetMember
+// (including not-found returning nil membership + nil error).
+//
+// Mediums note: addresses HC2-pattern (per-request DB call on hot
+// path). Promotions / bans / unbans invalidate via invalidateMemberCache.
+func (s *Service) getMemberCached(ctx context.Context, communityID, userID uuid.UUID) (*store.CommunityMember, error) {
+	if s.rdb == nil {
+		return s.store.GetMember(ctx, communityID, userID)
+	}
+	key := fmt.Sprintf("cm:%s:%s", communityID, userID)
+	if raw, err := s.rdb.Get(ctx, key).Bytes(); err == nil && len(raw) > 0 {
+		// Sentinel value for negative cache (user is not a member).
+		if string(raw) == "_nil" {
+			return nil, nil
+		}
+		var m store.CommunityMember
+		if err := json.Unmarshal(raw, &m); err == nil {
+			return &m, nil
+		}
+		// Fall through on bad cached payload.
+	}
+	m, err := s.store.GetMember(ctx, communityID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if m == nil {
+		// Cache the not-a-member result too — common for public
+		// browse, where a non-member viewer hits GetMember on every
+		// post fetch.
+		_ = s.rdb.Set(ctx, key, "_nil", memberCacheTTL).Err()
+		return nil, nil
+	}
+	if raw, mErr := json.Marshal(m); mErr == nil {
+		_ = s.rdb.Set(ctx, key, raw, memberCacheTTL).Err()
+	}
+	return m, nil
+}
+
+// invalidateMemberCache is called after any membership mutation
+// (join, leave, role change, ban) so the cached row doesn't survive
+// the change.
+func (s *Service) invalidateMemberCache(ctx context.Context, communityID, userID uuid.UUID) {
+	if s.rdb == nil {
+		return
+	}
+	key := fmt.Sprintf("cm:%s:%s", communityID, userID)
+	_ = s.rdb.Del(ctx, key).Err()
+}
+
 func (s *Service) SetProducer(p *communityevents.Producer) {
 	s.producer = p
 }
