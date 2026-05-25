@@ -143,8 +143,18 @@ func (p *Producer) publish(ctx context.Context, eventType string, actorID *uuid.
 		return fmt.Errorf("failed to marshal envelope: %w", err)
 	}
 
+	// Partition key: prefer actorID so all events for the same user
+	// land on the same partition and stay ordered (PostCreated →
+	// PostUpdated → PostDeleted are processed in order by feed-service).
+	// Falls back to EventID for actorless events. Previously every
+	// event used a fresh EventID, randomising partitions and breaking
+	// per-user ordering guarantees consumers relied on.
+	key := []byte(envelope.EventID)
+	if actorStr != nil {
+		key = []byte(*actorStr)
+	}
 	return p.writer.WriteMessages(ctx, kafka.Message{
-		Key:   []byte(envelope.EventID),
+		Key:   key,
 		Value: envelopeBytes,
 	})
 }

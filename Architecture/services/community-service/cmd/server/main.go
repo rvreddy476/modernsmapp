@@ -10,6 +10,7 @@ import (
 	"github.com/atpost/community-service/database"
 	communityevents "github.com/atpost/community-service/internal/events"
 	"github.com/atpost/community-service/internal/http"
+	"github.com/atpost/community-service/internal/reconcile"
 	"github.com/atpost/community-service/internal/service"
 	"github.com/atpost/community-service/internal/store"
 	pgstore "github.com/atpost/community-service/internal/store/postgres"
@@ -110,6 +111,11 @@ func main() {
 	consumerCtx, cancelConsumer := context.WithCancel(ctx)
 	go consumer.Start(consumerCtx)
 	slog.Info("kafka consumer started")
+
+	// Reconcile drift in communities.member_count every hour. Without
+	// this, any IncrementMemberCount event lost to a deploy bounce
+	// leaves the cached count off-by-N forever.
+	go reconcile.NewMemberCountReconciler(dbPool).Start(consumerCtx)
 
 	communityHandler := http.New(communitySvc)
 

@@ -13,6 +13,7 @@ import (
 	"github.com/atpost/post-service/internal/engagement/consumers"
 	postEvents "github.com/atpost/post-service/internal/events"
 	"github.com/atpost/post-service/internal/http"
+	"github.com/atpost/post-service/internal/reconcile"
 	"github.com/atpost/post-service/internal/service"
 	"github.com/atpost/post-service/internal/store/postgres"
 	"github.com/atpost/post-service/internal/store/scylla"
@@ -268,6 +269,11 @@ func main() {
 	postHandler.RegisterMyUploadsRoutes(r)
 	postHandler.RegisterAudioRoutes(r)
 	postHandler.RegisterRepostRoutes(r)
+
+	// 12a. Engagement counter reconciler (every hour). Existed unused;
+	// without it any missed PG-counter consumer event silently leaves
+	// post comment counts off-by-N forever.
+	go reconcile.NewEngagementReconciler(dbPool).Start(consumerCtx)
 
 	// 12b. Scheduled draft publish worker (every 60 seconds)
 	go func() {

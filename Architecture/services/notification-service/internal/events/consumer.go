@@ -354,6 +354,31 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		deepLink := fmt.Sprintf("/post/%s", e.OriginalPostID)
 		return c.service.CreateNotification(ctx, originalAuthorID, reposterID, "post_reposted", "post", originalPostID, deepLink, e.CreatedAt)
 
+	case events.PostContentTypeChanged:
+		// M11: tell the author when post-service reclassifies their
+		// upload after transcode (e.g. they meant a flick/reel but
+		// the video came out >180s or landscape, so it landed in
+		// long_video instead). Only notify on flick→long_video — the
+		// reverse (long_video→flick) is silent good news, and other
+		// transitions aren't user-facing.
+		var e events.PostContentTypeChangedPayload
+		if err := unmarshalPayload(envelope.Payload, &e); err != nil {
+			return err
+		}
+		if e.OldType != "flick" || e.NewType != "long_video" {
+			return nil
+		}
+		authorID, err := uuid.Parse(e.AuthorID)
+		if err != nil {
+			return nil
+		}
+		postID, err := uuid.Parse(e.PostID)
+		if err != nil {
+			return nil
+		}
+		deepLink := fmt.Sprintf("/post/%s", e.PostID)
+		return c.service.CreateNotification(ctx, authorID, authorID, "post_reclassified", "post", postID, deepLink, e.ChangedAt)
+
 	case "commerce.order.created",
 		"commerce.order.paid",
 		"commerce.order.shipped",

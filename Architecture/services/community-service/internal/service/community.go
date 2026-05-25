@@ -541,6 +541,10 @@ func (s *Service) JoinCommunity(ctx context.Context, communityID, userID uuid.UU
 				slog.Warn("failed to increment member count", "error", err)
 			}
 		}
+		// Bust the negative cache entry written by any prior viewer-side
+		// GetMember call, so the new member's next request sees their
+		// real role instead of the cached "_nil".
+		s.invalidateMemberCache(ctx, communityID, userID)
 		// Auto-follow default spaces (announcements, welcome, is_default)
 		if err := s.store.AutoFollowDefaultSpaces(ctx, communityID, userID); err != nil {
 			slog.Warn("failed to auto-follow default spaces", "community_id", communityID, "user_id", userID, "error", err)
@@ -589,6 +593,7 @@ func (s *Service) LeaveCommunity(ctx context.Context, communityID, userID uuid.U
 	if err := s.store.IncrementMemberCount(ctx, communityID, -1); err != nil {
 		slog.Warn("failed to decrement member count", "error", err)
 	}
+	s.invalidateMemberCache(ctx, communityID, userID)
 
 	if s.producer != nil {
 		if err := s.producer.PublishMemberLeft(ctx, communityID, userID); err != nil {
@@ -638,6 +643,7 @@ func (s *Service) UpdateMemberRole(ctx context.Context, communityID, targetUserI
 	if err := s.store.UpdateMemberRole(ctx, communityID, targetUserID, newRole); err != nil {
 		return err
 	}
+	s.invalidateMemberCache(ctx, communityID, targetUserID)
 
 	if s.producer != nil {
 		if err := s.producer.PublishMemberRoleChanged(ctx, communityID, targetUserID, actorID, newRole); err != nil {
@@ -671,6 +677,7 @@ func (s *Service) BanMember(ctx context.Context, communityID, targetUserID, acto
 	if err := s.store.BanMember(ctx, communityID, targetUserID, actorID, reason); err != nil {
 		return fmt.Errorf("failed to ban member: %w", err)
 	}
+	s.invalidateMemberCache(ctx, communityID, targetUserID)
 
 	if err := s.store.IncrementMemberCount(ctx, communityID, -1); err != nil {
 		slog.Warn("failed to decrement member count", "error", err)
@@ -715,6 +722,7 @@ func (s *Service) UnbanMember(ctx context.Context, communityID, targetUserID, ac
 	if err := s.store.UnbanMember(ctx, communityID, targetUserID); err != nil {
 		return err
 	}
+	s.invalidateMemberCache(ctx, communityID, targetUserID)
 
 	// Log modlog entry
 	entry := &store.CommunityModlogEntry{
@@ -1006,6 +1014,7 @@ func (s *Service) ApproveRequest(ctx context.Context, communityID, requestID, ac
 			slog.Warn("failed to increment member count", "error", err)
 		}
 	}
+	s.invalidateMemberCache(ctx, communityID, jr.UserID)
 
 	// Auto-follow default spaces for approved member
 	if err := s.store.AutoFollowDefaultSpaces(ctx, communityID, jr.UserID); err != nil {

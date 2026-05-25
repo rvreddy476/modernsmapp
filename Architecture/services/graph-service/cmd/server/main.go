@@ -108,6 +108,12 @@ func main() {
 	// Expire stale connection requests hourly (spec §8.3).
 	go reconcile.NewConnectionRequestSweeper(graphStore).Start(ctx)
 
+	// Reconcile drift in denormalized follower/following counts every
+	// hour. The CountReconciler was previously defined but never
+	// started — without it, any missed counter event silently leaves
+	// users' follower_count off-by-N forever.
+	go reconcile.NewCountReconciler(dbPool).Start(ctx)
+
 	// Audit CG2: gate every /v1/graph route behind the shared internal
 	// service key. The handler already supports the middleware, but
 	// previously main.go never wired the env var so the gate was a
