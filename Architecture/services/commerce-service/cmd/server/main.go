@@ -60,8 +60,11 @@ func main() {
 		slog.Error("parse db config", "error", err)
 		os.Exit(1)
 	}
-	poolCfg.MaxConns = 25
-	poolCfg.MinConns = 5
+	// HS1: pool sizing is env-tunable so prod can scale beyond the
+	// 25/5 dev defaults without a code change. Tracks the same pattern
+	// notification-service uses; both services contend on app_db.
+	poolCfg.MaxConns = int32(envInt("POSTGRES_MAX_CONNS", 25))
+	poolCfg.MinConns = int32(envInt("POSTGRES_MIN_CONNS", 5))
 	poolCfg.MaxConnLifetime = 15 * time.Minute
 	poolCfg.MaxConnIdleTime = 5 * time.Minute
 	dbPool, err := pgxpool.NewWithConfig(ctx, poolCfg)
@@ -281,6 +284,19 @@ func envFloat(key string, fallback float64) float64 {
 	v, err := strconv.ParseFloat(raw, 64)
 	if err != nil {
 		slog.Warn("invalid float env, using fallback", "key", key, "value", raw, "fallback", fallback)
+		return fallback
+	}
+	return v
+}
+
+func envInt(key string, fallback int) int {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		slog.Warn("invalid int env, using fallback", "key", key, "value", raw, "fallback", fallback)
 		return fallback
 	}
 	return v
