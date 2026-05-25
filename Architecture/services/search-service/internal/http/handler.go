@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/search-service/internal/graphclient"
 	"github.com/atpost/search-service/internal/store/postgres"
 	"github.com/atpost/search-service/internal/store/search"
 	"github.com/atpost/shared/api"
@@ -21,6 +22,8 @@ type Handler struct {
 	rdb               *redis.Client
 	internalKey       string
 	extrasStore       *postgres.SearchExtrasStore
+	analyticsStore    *postgres.AnalyticsStore
+	graphClient       *graphclient.Client
 	profileServiceURL string
 	httpClient        *http.Client
 }
@@ -36,6 +39,19 @@ func New(store *search.Store, rdb *redis.Client) *Handler {
 // WithExtrasStore sets the Postgres extras store (saved searches, history).
 func (h *Handler) WithExtrasStore(s *postgres.SearchExtrasStore) *Handler {
 	h.extrasStore = s
+	return h
+}
+
+// WithAnalyticsStore sets the search_queries / search_clicks store.
+func (h *Handler) WithAnalyticsStore(s *postgres.AnalyticsStore) *Handler {
+	h.analyticsStore = s
+	return h
+}
+
+// WithGraphClient injects the graph-service client used to fetch the
+// viewer's follow graph for author-affinity boosts.
+func (h *Handler) WithGraphClient(gc *graphclient.Client) *Handler {
+	h.graphClient = gc
 	return h
 }
 
@@ -80,6 +96,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.POST("/users/bulk-sync", h.BulkSyncUsers)
 		v1.GET("/hashtags", h.SearchHashtags)
 		v1.GET("/autocomplete", h.Autocomplete)
+		v1.POST("/click", h.RecordClick)
 		v1.POST("/saved", h.SaveSearch)
 		v1.GET("/saved", h.GetSavedSearches)
 		v1.DELETE("/saved/:id", h.DeleteSavedSearch)
@@ -170,8 +187,19 @@ func (h *Handler) SearchPosts(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": results}, nil)
 }
 
-// UniversalSearch handles GET /v1/search
-// Query params: q (required), type (all|profiles|posts, default: all), limit (default: 20)
+// UniversalSearch handles GET /v1/search.
+//
+// Two API shapes coexist for back-compat:
+//
+//  1. Legacy: ?type=all|profiles|posts|videos|flicks — returns
+//     {users:[...], posts:[...]} via the old multi_match query.
+//     Kept so existing mobile/web builds keep working through the rollout.
+//
+//  2. New multi-entity ranked: ?types=posts,users,hashtags,products,communities,channels
+//     — function_score query per type, results grouped by entity, per-entity
+//     cursor pagination, search_queries analytics row written best-effort.
+//
+// The new shape is selected the moment ?types= is present.
 func (h *Handler) UniversalSearch(c *gin.Context) {
 	query := c.Query("q")
 	if errMsg := validateSearchQuery(query); errMsg != "" {
@@ -179,6 +207,12 @@ func (h *Handler) UniversalSearch(c *gin.Context) {
 		return
 	}
 
+	if c.Query("types") != "" {
+		h.universalSearchMultiEntity(c, query)
+		return
+	}
+
+	// --- Legacy path ---
 	searchType := c.DefaultQuery("type", "all")
 	switch searchType {
 	case "all", "profiles", "posts", "videos", "flicks":
@@ -204,6 +238,158 @@ func (h *Handler) UniversalSearch(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, results, nil)
+}
+
+// universalSearchMultiEntity implements the new ranked + grouped shape.
+// Each requested type runs an independent function_score query with the
+// viewer's follow graph layered in as author-affinity boost. Cursors
+// are per-entity (each entity's pagination is independent).
+//
+// Response shape:
+//
+//	{
+//	  "data": {
+//	    "query_id": "...",                   // for /v1/search/click joins
+//	    "results": {
+//	      "posts":       {"items": [...], "next_cursor": "..."},
+//	      "users":       {"items": [...], "next_cursor": "..."},
+//	      ...
+//	    }
+//	  }
+//	}
+func (h *Handler) universalSearchMultiEntity(c *gin.Context, query string) {
+	limit := 20
+	if l := c.Query("limit"); l != "" {
+		if v, err := strconv.Atoi(l); err == nil && v > 0 && v <= 100 {
+			limit = v
+		}
+	}
+
+	types := parseTypes(c.Query("types"))
+	if len(types) == 0 {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST",
+			"types must be a comma-separated subset of: posts,users,hashtags,products,communities,channels", nil)
+		return
+	}
+
+	// Per-entity cursors arrive as ?cursor.posts=... &cursor.users=...
+	cursorFor := func(t string) string { return c.Query("cursor." + t) }
+
+	// Viewer (optional) — used for follow-graph affinity boost.
+	var viewerID uuid.UUID
+	if raw := c.GetHeader("X-User-Id"); raw != "" {
+		if id, err := uuid.Parse(raw); err == nil {
+			viewerID = id
+		}
+	}
+	var followedIDs []string
+	if h.graphClient != nil && viewerID != uuid.Nil {
+		followedIDs = h.graphClient.FollowingIDs(c.Request.Context(), viewerID, 500)
+	}
+
+	results := make(map[string]*search.RankedSearchResult, len(types))
+	counts := make(map[string]int, len(types))
+	for _, t := range types {
+		opts := search.RankedSearchOptions{
+			Limit:             limit,
+			Cursor:            cursorFor(t),
+			FollowedAuthorIDs: followedIDs,
+		}
+		r, err := h.store.RankedSearch(c.Request.Context(), t, query, opts)
+		if err != nil {
+			// Per-entity failure is non-fatal — log and continue so a
+			// missing index doesn't 500 the whole search.
+			slog.Warn("multi-entity search: per-entity failed", "type", t, "err", err)
+			results[t] = &search.RankedSearchResult{Items: []map[string]any{}}
+			counts[t] = 0
+			continue
+		}
+		if r.Items == nil {
+			r.Items = []map[string]any{}
+		}
+		results[t] = r
+		counts[t] = len(r.Items)
+	}
+
+	// Best-effort analytics. Failure here must not break the search.
+	var queryID uuid.UUID
+	if h.analyticsStore != nil {
+		id, err := h.analyticsStore.LogQuery(c.Request.Context(), viewerID, query, types, counts)
+		if err != nil {
+			slog.Warn("search analytics: LogQuery failed", "err", err)
+		} else {
+			queryID = id
+		}
+	}
+
+	resp := gin.H{"results": results}
+	if queryID != uuid.Nil {
+		resp["query_id"] = queryID
+	}
+	api.JSON(c.Writer, http.StatusOK, resp, nil)
+}
+
+// parseTypes splits a comma-list and filters down to known entities.
+// Empty / all-unknown inputs return nil so the handler can error out.
+func parseTypes(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	known := map[string]bool{
+		search.EntityPosts:       true,
+		search.EntityUsers:       true,
+		search.EntityHashtags:    true,
+		search.EntityProducts:    true,
+		search.EntityCommunities: true,
+		search.EntityChannels:    true,
+	}
+	out := make([]string, 0, len(parts))
+	seen := make(map[string]bool, len(parts))
+	for _, p := range parts {
+		t := strings.TrimSpace(p)
+		if known[t] && !seen[t] {
+			seen[t] = true
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// RecordClick handles POST /v1/search/click.
+// Body: {"query_id":"...", "entity_type":"posts", "entity_id":"...", "position":0}
+// Best-effort write to search_clicks. Returns 204 always (even on
+// validation failure) so the SDK can fire-and-forget without retry storms.
+func (h *Handler) RecordClick(c *gin.Context) {
+	if h.analyticsStore == nil {
+		c.Writer.WriteHeader(http.StatusNoContent)
+		return
+	}
+	var req struct {
+		QueryID    string `json:"query_id"`
+		EntityType string `json:"entity_type"`
+		EntityID   string `json:"entity_id"`
+		Position   int    `json:"position"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.Writer.WriteHeader(http.StatusNoContent)
+		return
+	}
+	qid, err := uuid.Parse(req.QueryID)
+	if err != nil || req.EntityType == "" || req.EntityID == "" {
+		c.Writer.WriteHeader(http.StatusNoContent)
+		return
+	}
+	var viewer uuid.UUID
+	if raw := c.GetHeader("X-User-Id"); raw != "" {
+		if id, err := uuid.Parse(raw); err == nil {
+			viewer = id
+		}
+	}
+	if err := h.analyticsStore.LogClick(c.Request.Context(), qid, viewer, req.EntityType, req.EntityID, req.Position); err != nil {
+		slog.Warn("search analytics: LogClick failed", "err", err)
+	}
+	c.Writer.WriteHeader(http.StatusNoContent)
 }
 
 // SearchHashtags handles GET /v1/search/hashtags
@@ -295,7 +481,18 @@ func (h *Handler) Autocomplete(c *gin.Context) {
 		}
 	}
 
-	results, err := h.store.Autocomplete(c.Request.Context(), query, limit)
+	// `?kinds=users` keeps the original users-only behavior for callers
+	// (e.g. the @mention picker) that don't want hashtag/community
+	// suggestions mixed in. Default is multi-entity.
+	kinds := c.DefaultQuery("kinds", "all")
+
+	var results []search.AutocompleteResult
+	var err error
+	if kinds == "users" {
+		results, err = h.store.Autocomplete(c.Request.Context(), query, limit)
+	} else {
+		results, err = h.store.AutocompleteMulti(c.Request.Context(), query, limit)
+	}
 	if err != nil {
 		slog.Error("autocomplete: search failed", "error", err)
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "SEARCH_ERROR", "search failed", nil)

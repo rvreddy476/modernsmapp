@@ -48,6 +48,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/counts/:userId", h.GetCounts)
 		v1.GET("/followers/:userId", h.GetFollowers)
 		v1.GET("/following/:userId", h.GetFollowing)
+		// GetFollowingIDs is a slim variant used by search-service to
+		// drive author-affinity in function_score ranking. Returns up
+		// to 500 IDs in one shot, no pagination overhead, no privacy
+		// gate (it's internal-key gated at the engine level).
+		v1.GET("/:userId/following-ids", h.GetFollowingIDs)
 		v1.GET("/mutuals", h.GetMutualFollowers)
 
 		// Mute
@@ -396,6 +401,34 @@ func (h *Handler) GetFollowing(c *gin.Context) {
 		ids = []uuid.UUID{}
 	}
 	api.JSON(c.Writer, http.StatusOK, ids, nil)
+}
+
+// GetFollowingIDs handles GET /v1/graph/:userId/following-ids?limit=500.
+// Internal endpoint used by search-service (and any future personalization
+// layer) to fetch the follow graph slice that drives author-affinity
+// boosts. Cap is 500 so the resulting OpenSearch `terms` array stays
+// bounded.
+func (h *Handler) GetFollowingIDs(c *gin.Context) {
+	userID, err := uuid.Parse(c.Param("userId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid userId", nil)
+		return
+	}
+	limit := 500
+	if l := c.Query("limit"); l != "" {
+		if v, err := strconv.Atoi(l); err == nil && v > 0 && v <= 500 {
+			limit = v
+		}
+	}
+	ids, err := h.svc.GetFollowingIDs(c.Request.Context(), userID, limit)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	if ids == nil {
+		ids = []uuid.UUID{}
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"items": ids, "count": len(ids)}, nil)
 }
 
 // callerAllowedToReadConnections returns false when the X-User-Id

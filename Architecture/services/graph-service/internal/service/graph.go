@@ -368,6 +368,12 @@ func (s *Service) GetFollowing(ctx context.Context, userID uuid.UUID, limit, off
 	return s.store.GetFollowing(ctx, userID, limit, offset)
 }
 
+// GetFollowingIDs returns the top-`limit` user IDs that `userID` follows,
+// most-recent first. Capped at 500 (see Store.GetFollowingIDs).
+func (s *Service) GetFollowingIDs(ctx context.Context, userID uuid.UUID, limit int) ([]uuid.UUID, error) {
+	return s.store.GetFollowingIDs(ctx, userID, limit)
+}
+
 // GetFollowersCursor / GetFollowingCursor are the scale-friendly
 // variants (HG2). Keyset pagination on (created_at, user_id) stays
 // O(log n) even on celebrities with millions of edges.

@@ -365,6 +365,38 @@ func (s *Store) GetFollowing(ctx context.Context, userID uuid.UUID, limit, offse
 	return ids, rows.Err()
 }
 
+// GetFollowingIDs returns up to `limit` user IDs that `userID` follows,
+// most-recently-followed first. Used by search-service to drive the
+// author-affinity boost in function_score ranking — we trade strict
+// "interaction recency" for "follow recency" because the follows row's
+// created_at column already exists and the index on it is hot. limit is
+// capped at 500 to keep the OpenSearch `terms` array bounded.
+func (s *Store) GetFollowingIDs(ctx context.Context, userID uuid.UUID, limit int) ([]uuid.UUID, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 500
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT followee_id FROM follows
+		WHERE follower_id = $1
+		ORDER BY created_at DESC
+		LIMIT $2
+	`, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	ids := make([]uuid.UUID, 0, limit)
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // GetMutualFollowers returns user IDs that follow both userA and userB.
 func (s *Store) GetMutualFollowers(ctx context.Context, userA, userB uuid.UUID, limit int) ([]uuid.UUID, error) {
 	if limit <= 0 || limit > 100 {

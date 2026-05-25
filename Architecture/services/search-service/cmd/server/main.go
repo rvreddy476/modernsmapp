@@ -8,9 +8,12 @@ import (
 	"time"
 
 	"github.com/atpost/search-service/internal/events"
+	"github.com/atpost/search-service/internal/graphclient"
 	"github.com/atpost/search-service/internal/http"
 	"github.com/atpost/search-service/internal/reindex"
+	"github.com/atpost/search-service/internal/store/postgres"
 	"github.com/atpost/search-service/internal/store/search"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/atpost/shared/health"
 	"github.com/atpost/shared/middleware"
 	"github.com/atpost/shared/o11y/logging"
@@ -96,6 +99,7 @@ func main() {
 
 	// 8. HTTP Handlers
 	profileServiceURL := env("PROFILE_SERVICE_URL", "http://identity-profile:8098")
+	graphServiceURL := env("GRAPH_SERVICE_URL", "http://graph-service:8083")
 	internalKey := os.Getenv("INTERNAL_SERVICE_KEY")
 	handler := http.New(searchStore, rdb).WithReindexSource(profileServiceURL)
 	if internalKey != "" {
@@ -103,6 +107,29 @@ func main() {
 		slog.Info("search-service: internal-service-key gate enabled")
 	} else {
 		slog.Warn("search-service: INTERNAL_SERVICE_KEY not set — endpoints, including the admin reindex, are unauthenticated. Do not run this in production.")
+	}
+
+	// Graph-service client — drives author-affinity in function_score
+	// ranking. Optional; if GRAPH_SERVICE_URL is empty or graph-service
+	// is unreachable, search degrades to engagement × recency.
+	gc := graphclient.New(graphServiceURL, internalKey, rdb)
+	handler.WithGraphClient(gc)
+	slog.Info("search-service: graph client wired", "url", graphServiceURL)
+
+	// Postgres analytics store (search_queries + search_clicks) +
+	// extras store (saved searches + history). Both optional.
+	if dsn := os.Getenv("POSTGRES_DSN"); dsn != "" {
+		pgPool, err := pgxpool.New(ctx, dsn)
+		if err != nil {
+			slog.Warn("search-service: postgres pool init failed; analytics + extras disabled", "err", err)
+		} else if err := pgPool.Ping(ctx); err != nil {
+			slog.Warn("search-service: postgres ping failed; analytics + extras disabled", "err", err)
+			pgPool.Close()
+		} else {
+			handler.WithAnalyticsStore(postgres.NewAnalyticsStore(pgPool))
+			handler.WithExtrasStore(postgres.NewExtrasStore(pgPool))
+			slog.Info("search-service: analytics + extras stores wired")
+		}
 	}
 
 	// Startup auto-heal: if users_v1 is empty (wiped index / fresh

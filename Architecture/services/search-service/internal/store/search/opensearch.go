@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,6 +33,10 @@ func New(url string) (*Store, error) {
 	s.initIndices()
 	return s, nil
 }
+
+// newBgCtx is a small helper so mappings.go can share the same
+// background ctx pattern without re-importing context.
+func newBgCtx() context.Context { return context.Background() }
 
 func (s *Store) initIndices() {
 	ctx := context.Background()
@@ -122,6 +127,32 @@ func (s *Store) initIndices() {
 			}
 		}
 	}`)
+
+	// Six-entity relevance system: hashtags / communities / channels
+	// indices + engagement_score mappings layered onto users/posts/
+	// products. See mappings.go.
+	s.initEntityIndices()
+}
+
+// putEngagementMapping idempotently adds `engagement_score` (double)
+// to an existing index. OpenSearch put-mapping is additive — it cannot
+// change a field's type but can introduce new fields. Safe to call on
+// every boot.
+func (s *Store) putEngagementMapping(ctx context.Context, index string) {
+	body := `{"properties":{"engagement_score":{"type":"double"}}}`
+	req := opensearchapi.IndicesPutMappingRequest{
+		Index: []string{index},
+		Body:  strings.NewReader(body),
+	}
+	res, err := req.Do(ctx, s.client)
+	if err != nil {
+		slog.Warn("opensearch: put engagement_score mapping failed", "index", index, "err", err)
+		return
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		slog.Warn("opensearch: put engagement_score mapping rejected", "index", index, "status", res.StatusCode)
+	}
 }
 
 // opensearchSettingsJSON returns the per-index settings block. Reads
@@ -186,26 +217,92 @@ func (s *Store) createIndexIfNotExists(ctx context.Context, index, body string) 
 
 // Structs for Documents
 type UserDoc struct {
-	UserID        string `json:"user_id"`
-	Username      string `json:"username"`
-	DisplayName   string `json:"display_name"`
-	Bio           string `json:"bio"`
-	AvatarMediaID string `json:"avatar_media_id,omitempty"`
-	IsVerified    bool   `json:"is_verified"`
+	UserID          string  `json:"user_id"`
+	Username        string  `json:"username"`
+	DisplayName     string  `json:"display_name"`
+	Bio             string  `json:"bio"`
+	AvatarMediaID   string  `json:"avatar_media_id,omitempty"`
+	IsVerified      bool    `json:"is_verified"`
+	FollowerCount   int     `json:"follower_count,omitempty"`
+	PostCount       int     `json:"post_count,omitempty"`
+	EngagementScore float64 `json:"engagement_score"`
 }
 
 type PostDoc struct {
-	PostID         string    `json:"post_id"`
-	AuthorID       string    `json:"author_id"`
-	AuthorUsername string    `json:"author_username,omitempty"`
-	Text           string    `json:"text"`
-	Hashtags       []string  `json:"hashtags,omitempty"`
-	Visibility     string    `json:"visibility,omitempty"`
-	LikeCount      int       `json:"like_count"`
-	CommentCount   int       `json:"comment_count"`
-	PostType       string    `json:"post_type,omitempty"`
-	AppOrigin      string    `json:"app_origin,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
+	PostID          string    `json:"post_id"`
+	AuthorID        string    `json:"author_id"`
+	AuthorUsername  string    `json:"author_username,omitempty"`
+	Text            string    `json:"text"`
+	Hashtags        []string  `json:"hashtags,omitempty"`
+	Visibility      string    `json:"visibility,omitempty"`
+	LikeCount       int       `json:"like_count"`
+	CommentCount    int       `json:"comment_count"`
+	ShareCount      int       `json:"share_count,omitempty"`
+	BookmarkCount   int       `json:"bookmark_count,omitempty"`
+	PostType        string    `json:"post_type,omitempty"`
+	AppOrigin       string    `json:"app_origin,omitempty"`
+	EngagementScore float64   `json:"engagement_score"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
+// HashtagDoc represents one hashtag in the hashtags_v1 index. Keyed
+// by the lowercase hashtag string.
+type HashtagDoc struct {
+	Hashtag         string    `json:"hashtag"`
+	HashtagSearch   string    `json:"hashtag_search"`
+	UseCount        int       `json:"use_count"`
+	EngagementScore float64   `json:"engagement_score"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
+// CommunityDoc represents one community in the communities_v1 index.
+type CommunityDoc struct {
+	CommunityID     string    `json:"community_id"`
+	OwnerID         string    `json:"owner_id"`
+	Handle          string    `json:"handle"`
+	Name            string    `json:"name"`
+	Description     string    `json:"description,omitempty"`
+	CommunityType   string    `json:"community_type"`
+	Category        string    `json:"category,omitempty"`
+	TopicTags       []string  `json:"topic_tags,omitempty"`
+	MemberCount     int       `json:"member_count"`
+	IsVerified      bool      `json:"is_verified"`
+	EngagementScore float64   `json:"engagement_score"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
+// ChannelDoc represents one broadcast channel in channels_v1.
+type ChannelDoc struct {
+	ChannelID       string    `json:"channel_id"`
+	OwnerID         string    `json:"owner_id"`
+	Handle          string    `json:"handle"`
+	Name            string    `json:"name"`
+	Description     string    `json:"description,omitempty"`
+	ChannelType     string    `json:"channel_type"`
+	Category        string    `json:"category,omitempty"`
+	SubscriberCount int       `json:"subscriber_count"`
+	IsVerified      bool      `json:"is_verified"`
+	EngagementScore float64   `json:"engagement_score"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
+// ProductDoc represents one product in products_v1. The original
+// products mapping was created with a small set of fields and we
+// continue to index via a flexible map[string]any, but ProductDoc is
+// the canonical shape used by the backfill + ranked-search response.
+type ProductDoc struct {
+	ProductID       string    `json:"product_id"`
+	SellerID        string    `json:"seller_id"`
+	Title           string    `json:"title"`
+	Description     string    `json:"description,omitempty"`
+	Category        string    `json:"category,omitempty"`
+	Price           float64   `json:"price,omitempty"`
+	City            string    `json:"city,omitempty"`
+	Status          string    `json:"status,omitempty"`
+	ViewCount       int       `json:"view_count,omitempty"`
+	OrderCount      int       `json:"order_count,omitempty"`
+	EngagementScore float64   `json:"engagement_score"`
+	CreatedAt       time.Time `json:"created_at,omitempty"`
 }
 
 // UniversalSearchResult holds combined results from users and posts.
@@ -786,11 +883,18 @@ func (s *Store) UpdateUserUsername(ctx context.Context, userID, newUsername stri
 	return nil
 }
 
-// AutocompleteResult represents a single autocomplete suggestion.
+// AutocompleteResult represents a single autocomplete suggestion. The
+// Kind field discriminates between user/hashtag/community matches in
+// the merged AutocompleteMulti response.
 type AutocompleteResult struct {
-	UserID      string `json:"user_id"`
-	Username    string `json:"username"`
-	DisplayName string `json:"display_name"`
+	Kind        string `json:"kind,omitempty"` // "user" | "hashtag" | "community"
+	UserID      string `json:"user_id,omitempty"`
+	Username    string `json:"username,omitempty"`
+	DisplayName string `json:"display_name,omitempty"`
+	Hashtag     string `json:"hashtag,omitempty"`
+	CommunityID string `json:"community_id,omitempty"`
+	Handle      string `json:"handle,omitempty"`
+	Name        string `json:"name,omitempty"`
 }
 
 // Autocomplete returns username suggestions for the given prefix.
@@ -867,9 +971,130 @@ func (s *Store) Autocomplete(ctx context.Context, prefix string, limit int) ([]A
 
 	results := make([]AutocompleteResult, 0, len(searchResp.Hits.Hits))
 	for _, h := range searchResp.Hits.Hits {
-		results = append(results, h.Source)
+		r := h.Source
+		r.Kind = "user"
+		results = append(results, r)
 	}
 	return results, nil
+}
+
+// AutocompleteMulti returns merged suggestions across users, hashtags,
+// and communities. Per-bucket cap is roughly limit/3 so the total
+// response stays small. Each result carries Kind = "user" | "hashtag"
+// | "community". An empty bucket on a partial index failure is logged
+// but doesn't fail the whole call.
+func (s *Store) AutocompleteMulti(ctx context.Context, prefix string, limit int) ([]AutocompleteResult, error) {
+	if limit <= 0 || limit > 20 {
+		limit = 10
+	}
+	per := limit / 3
+	if per < 2 {
+		per = 2
+	}
+
+	out := make([]AutocompleteResult, 0, limit)
+
+	// Users — reuse the existing call.
+	users, err := s.Autocomplete(ctx, prefix, per)
+	if err != nil {
+		slog.Warn("autocomplete-multi: users failed", "err", err)
+	}
+	out = append(out, users...)
+
+	// Hashtags — prefix match on hashtag keyword, sized cap.
+	if tags, err := s.autocompleteHashtags(ctx, prefix, per); err != nil {
+		slog.Warn("autocomplete-multi: hashtags failed", "err", err)
+	} else {
+		out = append(out, tags...)
+	}
+
+	// Communities — prefix on handle + name.
+	if comms, err := s.autocompleteCommunities(ctx, prefix, per); err != nil {
+		slog.Warn("autocomplete-multi: communities failed", "err", err)
+	} else {
+		out = append(out, comms...)
+	}
+
+	if len(out) > limit*2 {
+		out = out[:limit*2]
+	}
+	return out, nil
+}
+
+func (s *Store) autocompleteHashtags(ctx context.Context, prefix string, limit int) ([]AutocompleteResult, error) {
+	p := strings.ToLower(strings.TrimSpace(prefix))
+	if len(p) < 1 {
+		return nil, nil
+	}
+	q := map[string]any{
+		"size":    limit,
+		"timeout": "2s",
+		"query": map[string]any{
+			"prefix": map[string]any{"hashtag": map[string]any{"value": p}},
+		},
+		"sort":    []any{map[string]any{"engagement_score": map[string]any{"order": "desc"}}},
+		"_source": []string{"hashtag", "use_count"},
+	}
+	tCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	docs, err := s.execGenericSearch(tCtx, IndexHashtags, q)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]AutocompleteResult, 0, len(docs))
+	for _, d := range docs {
+		h, _ := d["hashtag"].(string)
+		if h == "" {
+			continue
+		}
+		out = append(out, AutocompleteResult{Kind: "hashtag", Hashtag: h})
+	}
+	return out, nil
+}
+
+func (s *Store) autocompleteCommunities(ctx context.Context, prefix string, limit int) ([]AutocompleteResult, error) {
+	if strings.TrimSpace(prefix) == "" {
+		return nil, nil
+	}
+	q := map[string]any{
+		"size":    limit,
+		"timeout": "2s",
+		"query": map[string]any{
+			"bool": map[string]any{
+				"should": []any{
+					map[string]any{"prefix": map[string]any{"handle": strings.ToLower(prefix)}},
+					map[string]any{"match_phrase_prefix": map[string]any{"name": prefix}},
+				},
+				"minimum_should_match": 1,
+			},
+		},
+		"sort":    []any{map[string]any{"engagement_score": map[string]any{"order": "desc"}}},
+		"_source": []string{"community_id", "handle", "name"},
+	}
+	tCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	docs, err := s.execGenericSearch(tCtx, IndexCommunities, q)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]AutocompleteResult, 0, len(docs))
+	for _, d := range docs {
+		id, _ := d["community_id"].(string)
+		out = append(out, AutocompleteResult{
+			Kind:        "community",
+			CommunityID: id,
+			Handle:      toString(d["handle"]),
+			Name:        toString(d["name"]),
+		})
+	}
+	return out, nil
+}
+
+func toString(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
 }
 
 // GetPopularPosts returns posts sorted by like_count descending (for discovery).
@@ -1040,6 +1265,352 @@ func (s *Store) SearchEvents(ctx context.Context, query string, limit int) ([]ma
 		},
 	}
 	return s.execGenericSearch(ctx, "events_v1", q)
+}
+
+// --- New-entity index/delete methods --------------------------------------
+
+// IndexHashtag upserts a hashtag document keyed by the lowercase tag.
+func (s *Store) IndexHashtag(ctx context.Context, doc HashtagDoc) error {
+	if doc.HashtagSearch == "" {
+		doc.HashtagSearch = doc.Hashtag
+	}
+	if doc.EngagementScore == 0 {
+		doc.EngagementScore = computeEngagementScore(EntityHashtags, engagementCounters{UseCount: doc.UseCount})
+	}
+	return s.indexDoc(ctx, IndexHashtags, doc.Hashtag, doc)
+}
+
+// IndexCommunity upserts a community document keyed by community_id.
+func (s *Store) IndexCommunity(ctx context.Context, doc CommunityDoc) error {
+	if doc.EngagementScore == 0 {
+		doc.EngagementScore = computeEngagementScore(EntityCommunities, engagementCounters{Members: doc.MemberCount})
+	}
+	return s.indexDoc(ctx, IndexCommunities, doc.CommunityID, doc)
+}
+
+// IndexChannel upserts a channel document keyed by channel_id.
+func (s *Store) IndexChannel(ctx context.Context, doc ChannelDoc) error {
+	if doc.EngagementScore == 0 {
+		doc.EngagementScore = computeEngagementScore(EntityChannels, engagementCounters{Subscribers: doc.SubscriberCount})
+	}
+	return s.indexDoc(ctx, IndexChannels, doc.ChannelID, doc)
+}
+
+// IndexProductDoc upserts a typed ProductDoc (the original IndexProduct
+// stays for legacy map[string]any callers).
+func (s *Store) IndexProductDoc(ctx context.Context, doc ProductDoc) error {
+	if doc.EngagementScore == 0 {
+		doc.EngagementScore = computeEngagementScore(EntityProducts, engagementCounters{Views: doc.ViewCount, Purchases: doc.OrderCount})
+	}
+	return s.indexDoc(ctx, IndexProducts, doc.ProductID, doc)
+}
+
+// DeleteCommunity / DeleteChannel / DeleteProduct / DeleteHashtag —
+// idempotent removals (404 is not an error).
+func (s *Store) DeleteCommunity(ctx context.Context, id string) error { return s.deleteDoc(ctx, IndexCommunities, id) }
+func (s *Store) DeleteChannel(ctx context.Context, id string) error   { return s.deleteDoc(ctx, IndexChannels, id) }
+func (s *Store) DeleteProduct(ctx context.Context, id string) error   { return s.deleteDoc(ctx, IndexProducts, id) }
+func (s *Store) DeleteHashtag(ctx context.Context, id string) error   { return s.deleteDoc(ctx, IndexHashtags, id) }
+
+// indexDoc is the shared single-doc index helper.
+func (s *Store) indexDoc(ctx context.Context, index, id string, doc any) error {
+	if id == "" {
+		return fmt.Errorf("indexDoc: empty document id for index %s", index)
+	}
+	data, err := json.Marshal(doc)
+	if err != nil {
+		return err
+	}
+	req := opensearchapi.IndexRequest{
+		Index:      index,
+		DocumentID: id,
+		Body:       bytes.NewReader(data),
+	}
+	res, err := req.Do(ctx, s.client)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return fmt.Errorf("index %s error: %s", index, res.String())
+	}
+	return nil
+}
+
+// deleteDoc is the shared single-doc delete helper. 404 is treated as
+// success (the indexer is at-least-once; double-deletes are fine).
+func (s *Store) deleteDoc(ctx context.Context, index, id string) error {
+	if id == "" {
+		return nil
+	}
+	req := opensearchapi.DeleteRequest{Index: index, DocumentID: id}
+	res, err := req.Do(ctx, s.client)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.IsError() && res.StatusCode != 404 {
+		return fmt.Errorf("delete %s error: %s", index, res.String())
+	}
+	return nil
+}
+
+// AddToEngagementScore performs a scripted partial update that adds
+// `delta` to engagement_score on the named index. Used by the Kafka
+// consumer to apply real-time +1 / -1 / +N adjustments as
+// likes/comments/shares/etc fan in.
+//
+// `delta` may be negative (e.g. reaction removed). If the document
+// doesn't exist yet, the upsert path seeds it with engagement_score=delta;
+// this keeps the indexer eventually-consistent even if the lifecycle
+// event arrives before the *Created event.
+func (s *Store) AddToEngagementScore(ctx context.Context, index, docID string, delta float64) error {
+	if docID == "" {
+		return nil
+	}
+	body := map[string]any{
+		"script": map[string]any{
+			"source": "ctx._source.engagement_score = (ctx._source.engagement_score == null ? 0 : ctx._source.engagement_score) + params.delta",
+			"params": map[string]any{"delta": delta},
+		},
+		"upsert": map[string]any{"engagement_score": delta},
+	}
+	data, _ := json.Marshal(body)
+	req := opensearchapi.UpdateRequest{
+		Index:      index,
+		DocumentID: docID,
+		Body:       bytes.NewReader(data),
+	}
+	res, err := req.Do(ctx, s.client)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.IsError() && res.StatusCode != 404 {
+		return fmt.Errorf("update engagement_score on %s/%s: %s", index, docID, res.String())
+	}
+	return nil
+}
+
+// IncrementHashtagUse increments a hashtag's use_count by 1 and its
+// engagement_score by 1 (same formula). Upserts a baseline doc if the
+// tag isn't yet known.
+func (s *Store) IncrementHashtagUse(ctx context.Context, hashtag string) error {
+	hashtag = strings.ToLower(strings.TrimSpace(hashtag))
+	if hashtag == "" {
+		return nil
+	}
+	body := map[string]any{
+		"script": map[string]any{
+			"source": "ctx._source.use_count = (ctx._source.use_count == null ? 0 : ctx._source.use_count) + 1; ctx._source.engagement_score = (ctx._source.engagement_score == null ? 0 : ctx._source.engagement_score) + 1; if (ctx._source.hashtag == null) { ctx._source.hashtag = params.h; ctx._source.hashtag_search = params.h; }",
+			"params": map[string]any{"h": hashtag},
+		},
+		"upsert": map[string]any{
+			"hashtag":          hashtag,
+			"hashtag_search":   hashtag,
+			"use_count":        1,
+			"engagement_score": 1,
+		},
+	}
+	data, _ := json.Marshal(body)
+	req := opensearchapi.UpdateRequest{
+		Index:      IndexHashtags,
+		DocumentID: hashtag,
+		Body:       bytes.NewReader(data),
+	}
+	res, err := req.Do(ctx, s.client)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return fmt.Errorf("hashtag increment %s: %s", hashtag, res.String())
+	}
+	return nil
+}
+
+// --- Ranked / personalized search -----------------------------------------
+
+// RankedSearchOptions configures a function_score search.
+type RankedSearchOptions struct {
+	// Limit caps the number of hits returned (default 20, max 100).
+	Limit int
+	// Cursor: opaque from-offset string. Empty = first page.
+	Cursor string
+	// FollowedAuthorIDs is the viewer's follow graph slice (up to 500).
+	// When non-empty, posts/users authored by these IDs get a 1.5x
+	// affinity boost. Empty = anonymous viewer; no boost layered.
+	FollowedAuthorIDs []string
+}
+
+// buildFunctionScoreQuery returns the OpenSearch query body for a
+// ranked search against the given entity index. The shape is:
+//
+//	function_score {
+//	  query:     multi_match across entity-specific fields
+//	  functions: [ field_value_factor(engagement_score),
+//	               gauss(created_at, 7d),
+//	               (optional) filter+weight on follow graph ]
+//	  score_mode: multiply
+//	  boost_mode: multiply
+//	}
+//
+// Anonymous viewers omit the author-affinity function.
+func buildFunctionScoreQuery(entity, q string, opts RankedSearchOptions) map[string]any {
+	limit := opts.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	from := 0
+	if opts.Cursor != "" {
+		if n, err := strconv.Atoi(opts.Cursor); err == nil && n >= 0 && n <= 10000 {
+			from = n
+		}
+	}
+
+	// Per-entity text query — different fields per index.
+	var inner map[string]any
+	var affinityField string
+	filter := []map[string]any{}
+
+	switch entity {
+	case EntityPosts:
+		inner = map[string]any{
+			"multi_match": map[string]any{
+				"query":  q,
+				"fields": []string{"text^3", "hashtags^2", "author_username"},
+			},
+		}
+		// Always exclude non-public posts (matches SearchPostsFiltered).
+		filter = append(filter, map[string]any{"term": map[string]any{"visibility": "public"}})
+		affinityField = "author_id"
+	case EntityUsers:
+		inner = map[string]any{
+			"multi_match": map[string]any{
+				"query":     q,
+				"fields":    []string{"username^4", "display_name^3", "bio"},
+				"fuzziness": "AUTO",
+			},
+		}
+		affinityField = "user_id"
+	case EntityHashtags:
+		inner = map[string]any{
+			"multi_match": map[string]any{
+				"query":  q,
+				"fields": []string{"hashtag^4", "hashtag_search^2"},
+			},
+		}
+	case EntityProducts:
+		inner = map[string]any{
+			"multi_match": map[string]any{
+				"query":  q,
+				"fields": []string{"title^3", "description", "category^2"},
+			},
+		}
+		affinityField = "seller_id"
+	case EntityCommunities:
+		inner = map[string]any{
+			"multi_match": map[string]any{
+				"query":  q,
+				"fields": []string{"name^3", "handle^2", "description", "topic_tags^2", "category"},
+			},
+		}
+		affinityField = "owner_id"
+	case EntityChannels:
+		inner = map[string]any{
+			"multi_match": map[string]any{
+				"query":  q,
+				"fields": []string{"name^3", "handle^2", "description", "category^2"},
+			},
+		}
+		affinityField = "owner_id"
+	default:
+		inner = map[string]any{"match_all": map[string]any{}}
+	}
+
+	// Wrap inner + filters in a bool so visibility / future filters apply.
+	boolQuery := map[string]any{"must": []any{inner}}
+	if len(filter) > 0 {
+		boolQuery["filter"] = filter
+	}
+
+	functions := []map[string]any{
+		{
+			"field_value_factor": map[string]any{
+				"field":    "engagement_score",
+				"modifier": "log1p",
+				"missing":  0,
+			},
+		},
+		{
+			"gauss": map[string]any{
+				"created_at": map[string]any{
+					"origin": "now",
+					"scale":  "7d",
+					"decay":  0.5,
+				},
+			},
+		},
+	}
+	if affinityField != "" && len(opts.FollowedAuthorIDs) > 0 {
+		functions = append(functions, map[string]any{
+			"filter": map[string]any{
+				"terms": map[string]any{affinityField: opts.FollowedAuthorIDs},
+			},
+			"weight": 1.5,
+		})
+	}
+
+	return map[string]any{
+		"from": from,
+		"size": limit,
+		"query": map[string]any{
+			"function_score": map[string]any{
+				"query":      map[string]any{"bool": boolQuery},
+				"functions":  functions,
+				"score_mode": "multiply",
+				"boost_mode": "multiply",
+			},
+		},
+	}
+}
+
+// RankedSearchResult is one entity's slice of a multi-entity search.
+type RankedSearchResult struct {
+	Items      []map[string]any `json:"items"`
+	NextCursor string           `json:"next_cursor,omitempty"`
+}
+
+// RankedSearch runs a function_score search against the given entity
+// index and returns the raw _source maps + an offset-style cursor.
+// Cursor format is an integer string; empty when no more results exist.
+func (s *Store) RankedSearch(ctx context.Context, entity, q string, opts RankedSearchOptions) (*RankedSearchResult, error) {
+	index := EntityToIndex(entity)
+	if index == "" {
+		return nil, fmt.Errorf("unknown entity type %q", entity)
+	}
+	query := buildFunctionScoreQuery(entity, q, opts)
+
+	docs, err := s.execGenericSearch(ctx, index, query)
+	if err != nil {
+		return nil, err
+	}
+	res := &RankedSearchResult{Items: docs}
+	// Cursor: signal "more available" when we filled the page.
+	limit := opts.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	if len(docs) == limit {
+		from := 0
+		if opts.Cursor != "" {
+			if n, err := strconv.Atoi(opts.Cursor); err == nil {
+				from = n
+			}
+		}
+		res.NextCursor = strconv.Itoa(from + limit)
+	}
+	return res, nil
 }
 
 // SearchMessages searches messages within an optional conversation for the given user.
