@@ -246,29 +246,49 @@ metro. For multi-million per-metro, the §P0-10 plan calls for:
 - Redis sorted-set candidate inbox per viewer
 Three-phase plan documented in `dating/PHASE_0_TEST_PLANS.md`.
 
-### 5.3 Live-v2 chat overlay
+### 5.3 Live-v2 chat overlay ✅ SHIPPED
 
-`live-service-v2` doesn't yet have a per-room chat overlay (v1 does).
-Reusing chat-service per-stream conversations is the planned path; not
-shipped yet.
+Backend + web overlay + mobile panel + Phase B moderation (creator
+mute, word filters, single-slot pin with pub/sub fanout) all wired.
+Pre-persist mute / word-filter checks short-circuit SendChat ahead of
+the rate-limit + insert path. Routes live under
+`/v1/livestream/streams/:id/chat*`.
 
-### 5.4 Dating admin console (§P0-8)
+### 5.4 Dating admin console (§P0-8) ✅ SHIPPED
 
-`/admin/dating` console not built; reports/panic/photo-moderation
-queues exist in the data layer but lack a UI. Test plan in
-`PHASE_0_TEST_PLANS.md`. Phase 2 deliverable.
+`/admin/dating` console shipped end-to-end: reports / panic / photos /
+audit-log queues, action surfaces (dismiss/warn/restrict/suspend),
+append-only `dating_admin_audit` table with immutability trigger, and
+a web log viewer at `/admin/dating/audit` with filters.
 
-### 5.5 Fake-account risk scoring (§P0-7)
+### 5.5 Fake-account risk scoring (§P0-7) ✅ SHIPPED (Phase A)
 
-Risk-score table not yet built. Trust-tier model exists (phone /
-selfie / Aadhaar verification ladder); per-account aggregate risk
-scoring is Phase 2. Test plan in `PHASE_0_TEST_PLANS.md`.
+`dating_account_risk` table + 0–100 score across 7 signals (verification
+tier, profile completeness, photo approval ratio, report quality,
+block rate, spark velocity; IP/ASN velocity surfaced but contributes 0
+until aggregator lands; device-reuse deferred to Phase B). Seven
+enforcement levels gate discovery (FetchCandidates NOT-EXISTS),
+GetPulseToday (cohort-gate short-circuit), and CreateSpark
+(ErrRiskBlocked / ErrRiskRecheck). Hourly recompute sweeper keeps
+scores fresh.
 
-### 5.6 Web Postmatch session redesign (§P1-5)
+### 5.6 Web Postmatch session redesign (§P1-5) ✅ SHIPPED
 
-Postmatch web stores tokens in `localStorage`. The redesign moves
-to httpOnly Secure SameSite cookies + CSRF + BFF. Not blocking for
-public test launch but should land before scale rollout.
+httpOnly Secure SameSite=Strict refresh cookie via BFF
+(`/api/postmatch/auth/*`), access token in module memory, automatic
+refresh on 401, cold-start bootstrap. Sessions tied to the postmatch
+domain path.
+
+### 5.7 §P1-2 transparency + §P1-3 privacy ✅ SHIPPED
+
+- "Why am I seeing this profile?" modal on the discover deck
+  (`GET /v1/dating/pulse/:id/explain`).
+- "Why was my photo rejected?" banner on the photos tab
+  (`GET /v1/dating/photos/me?status=rejected`).
+- Five privacy levers (incognito, hide_last_active, approximate_location,
+  verified_only_filter, blur_photos_until_match) at
+  `GET/PATCH /v1/dating/profile/privacy`, with FetchCandidates +
+  buildCard honoring each.
 
 ---
 
