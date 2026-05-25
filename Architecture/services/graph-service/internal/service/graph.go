@@ -497,13 +497,27 @@ func (s *Service) GetRelationshipBatch(ctx context.Context, viewerID uuid.UUID, 
 
 // --- Cache Invalidation ---
 
+// MG1: invalidator goroutines used to drop Redis errors silently,
+// so a transient Redis outage during a follow/unfollow / block flow
+// would leave stale relationship-cache entries that survived for the
+// full TTL (60s) — long enough that a freshly-blocked user could
+// still see the blocker's posts. Now logged at WARN so the issue
+// surfaces in metrics + ops dashboards. Per-key DEL to keep the
+// log line useful when one key fails.
 func (s *Service) invalidateRel(ctx context.Context, a, b uuid.UUID) {
-	s.rdb.Del(ctx, fmt.Sprintf("rel:%s:%s", a, b))
+	key := fmt.Sprintf("rel:%s:%s", a, b)
+	if err := s.rdb.Del(ctx, key).Err(); err != nil {
+		log.Printf("[graph] cache invalidate failed: key=%s err=%v", key, err)
+	}
 }
 
 func (s *Service) invalidateCounts(ctx context.Context, a, b uuid.UUID) {
-	s.rdb.Del(ctx, fmt.Sprintf("graph:counts:%s", a))
-	s.rdb.Del(ctx, fmt.Sprintf("graph:counts:%s", b))
+	for _, id := range [2]uuid.UUID{a, b} {
+		key := fmt.Sprintf("graph:counts:%s", id)
+		if err := s.rdb.Del(ctx, key).Err(); err != nil {
+			log.Printf("[graph] cache invalidate failed: key=%s err=%v", key, err)
+		}
+	}
 }
 
 // ═══════════════════════════════════════════════════════════

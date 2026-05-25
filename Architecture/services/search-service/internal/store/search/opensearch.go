@@ -257,10 +257,37 @@ func (s *Store) IndexPost(ctx context.Context, doc PostDoc) error {
 	return nil
 }
 
-// BulkIndexUsers indexes multiple users in one batch.
+// bulkChunkSize caps the number of docs we hand to OpenSearch in one
+// HTTP request. 500 keeps the request body well under the default 100
+// MB body-size limit and lets the client recover (next chunk) if a
+// single chunk fails. MS7: prior to this, a caller passing a 100k-doc
+// slice would blow the heap building the buffer + risk OpenSearch
+// rejecting the body for size.
+const bulkChunkSize = 500
+
+// BulkIndexUsers indexes multiple users. Chunks at bulkChunkSize so a
+// large slice doesn't pin a multi-MB buffer in memory or risk OpenSearch
+// payload-size rejections. Returns the total successfully-indexed count
+// across all chunks; a chunk failure aborts the remaining chunks (the
+// returned count covers what landed before the failure).
 func (s *Store) BulkIndexUsers(ctx context.Context, docs []UserDoc) (int, error) {
 	if len(docs) == 0 {
 		return 0, nil
+	}
+	if len(docs) > bulkChunkSize {
+		total := 0
+		for i := 0; i < len(docs); i += bulkChunkSize {
+			end := i + bulkChunkSize
+			if end > len(docs) {
+				end = len(docs)
+			}
+			n, err := s.BulkIndexUsers(ctx, docs[i:end])
+			total += n
+			if err != nil {
+				return total, err
+			}
+		}
+		return total, nil
 	}
 
 	var buf bytes.Buffer
@@ -529,7 +556,8 @@ func (s *Store) SearchHashtags(ctx context.Context, prefix string, limit int) ([
 	escaped := regexEscape(prefix)
 
 	q := map[string]interface{}{
-		"size": 0, // No document hits needed, only aggregation results
+		"size":    0, // No document hits needed, only aggregation results
+		"timeout": "2s", // MS1: bound cluster-side time
 		"query": map[string]interface{}{
 			"prefix": map[string]interface{}{
 				"hashtags": prefix,
@@ -551,8 +579,13 @@ func (s *Store) SearchHashtags(ctx context.Context, prefix string, limit int) ([
 		return nil, err
 	}
 
+	// MS1: hard caller-side deadline so a misbehaving cluster can't
+	// pin the goroutine past the 2s OpenSearch timeout.
+	tCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
 	res, err := s.client.Search(
-		s.client.Search.WithContext(ctx),
+		s.client.Search.WithContext(tCtx),
 		s.client.Search.WithIndex("posts_v1"),
 		s.client.Search.WithBody(&buf),
 	)
@@ -766,8 +799,13 @@ func (s *Store) Autocomplete(ctx context.Context, prefix string, limit int) ([]A
 		limit = 10
 	}
 
+	// MS1: bound the per-request cluster time so a slow prefix scan
+	// can't pin a worker indefinitely. OpenSearch returns partial
+	// results + timed_out=true on hit; the handler treats that as
+	// success rather than 500ing.
 	query := map[string]interface{}{
-		"size": limit,
+		"size":    limit,
+		"timeout": "2s",
 		"query": map[string]interface{}{
 			"bool": map[string]interface{}{
 				"should": []interface{}{
@@ -796,8 +834,14 @@ func (s *Store) Autocomplete(ctx context.Context, prefix string, limit int) ([]A
 		return nil, err
 	}
 
+	// Defense-in-depth: also wrap the caller ctx with a hard deadline
+	// so a misbehaving OpenSearch that ignores `timeout` can't hold
+	// the goroutine. 3s leaves headroom over the 2s cluster timeout.
+	tCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
 	res, err := s.client.Search(
-		s.client.Search.WithContext(ctx),
+		s.client.Search.WithContext(tCtx),
 		s.client.Search.WithIndex("users_v1"),
 		s.client.Search.WithBody(&buf),
 	)

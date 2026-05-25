@@ -143,7 +143,7 @@ func main() {
 	go velocityTracker.Start(ctx)
 	slog.Info("velocity tracker started")
 
-	feedHandler := http.New(feedSvc)
+	feedHandler := http.New(feedSvc).WithRedis(rdb)
 
 	// Audit CF2: gate every /v1/feed route behind the shared internal
 	// service key. The handler supports the middleware but main.go
