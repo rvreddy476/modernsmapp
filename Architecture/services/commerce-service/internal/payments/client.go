@@ -17,10 +17,21 @@ import (
 )
 
 // PaymentIntent mirrors the subset payments-service returns.
+//
+// Audit P7-deep: AmountMinor (paise-minor int64) is the source of
+// truth; Amount (rupees-major float64) is kept as a deprecated mirror
+// for one release cycle. New consumers that arithmetic on the value
+// should use AmountMinor and divide by 100 only at the display
+// boundary. The two fields are always written together by payments-
+// service.
 type PaymentIntent struct {
-	ID            uuid.UUID `json:"id"`
-	Status        string    `json:"status"`
+	ID     uuid.UUID `json:"id"`
+	Status string    `json:"status"`
+	// Deprecated: use AmountMinor. Kept for one release cycle to
+	// support analytics-style readers; arithmetic / comparisons must
+	// switch to AmountMinor.
 	Amount        float64   `json:"amount"`
+	AmountMinor   int64     `json:"amount_minor"`
 	Currency      string    `json:"currency"`
 	ReferenceType string    `json:"reference_type"`
 	ReferenceID   uuid.UUID `json:"reference_id"`

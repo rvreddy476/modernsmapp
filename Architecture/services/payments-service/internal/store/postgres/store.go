@@ -27,17 +27,29 @@ func New(db *pgxpool.Pool) *Store {
 }
 
 type PaymentIntent struct {
-	ID             uuid.UUID `json:"id"`
-	PayerID        uuid.UUID `json:"payer_id"`
-	PayeeID        uuid.UUID `json:"payee_id"`
-	ReferenceType  string    `json:"reference_type"`
-	ReferenceID    uuid.UUID `json:"reference_id"`
-	// Amount is the original payment amount in rupees-major. NOTE:
-	// audit P7 followup — this is still float64 at the row + JSON
-	// boundary. Refund correctness now uses AmountMinor() + the int64
-	// RefundedAmountMinor column below; a follow-up migration should
-	// convert this column to int64 paise and rename to amount_minor.
-	Amount              float64   `json:"amount"`
+	ID            uuid.UUID `json:"id"`
+	PayerID       uuid.UUID `json:"payer_id"`
+	PayeeID       uuid.UUID `json:"payee_id"`
+	ReferenceType string    `json:"reference_type"`
+	ReferenceID   uuid.UUID `json:"reference_id"`
+	// Amount is the legacy rupees-major float column. Audit P7-deep
+	// migration: AmountMinorRaw (the new BIGINT paise column) is the
+	// source of truth; this field is kept as a deprecated mirror for one
+	// release cycle so analytics readers + external consumers keep
+	// working. New write paths set both. Read paths SELECT both — the
+	// AmountMinor() getter prefers the new column and falls back to
+	// math.Round(Amount*100) only when the new column is zero (legacy
+	// pre-migration rows).
+	//
+	// Deprecated: prefer AmountMinorRaw / AmountMinor(). Drops in the
+	// follow-up migration once readers cut over.
+	Amount float64 `json:"amount"`
+	// AmountMinorRaw is the paise-minor int64 source of truth (audit
+	// P7-deep). Marshalled as "amount_minor" on the wire so commerce-
+	// service / external HTTP callers can read the int64 form directly.
+	// Reads scan both columns; writes carry both for the one-release
+	// dual-write window.
+	AmountMinorRaw      int64     `json:"amount_minor"`
 	Currency            string    `json:"currency"`
 	Method              string    `json:"method"`
 	Status              string    `json:"status"`
@@ -49,11 +61,22 @@ type PaymentIntent struct {
 	UpdatedAt           time.Time `json:"updated_at"`
 }
 
-// AmountMinor returns the intent amount converted to paise-minor int64.
-// The math.Round is intentional — `int64(amount*100)` truncates ₹100.50
-// to 10049 paise (IEEE-754 representation of 100.5 → 100.499999...).
-// Pin behavior with the rupeesToPaise pin in the service test.
+// AmountMinor returns the intent amount in paise-minor int64.
+//
+// Audit P7-deep: the BIGINT amount_minor column is now the source of
+// truth. When it's set (post-migration / freshly inserted rows) we
+// return it verbatim — no float math involved, so the legacy float64
+// precision-loss path is closed at the read boundary. Legacy rows that
+// pre-date the migration (AmountMinorRaw == 0 but Amount > 0) fall
+// back to math.Round(Amount*100); this is the same conversion the
+// backfill SQL runs, so the two paths agree.
+//
+// Pin behaviour with the rupeesToPaise pin in the service test plus the
+// new TestGetIntent_LegacyFloatFallback test.
 func (p *PaymentIntent) AmountMinor() int64 {
+	if p.AmountMinorRaw > 0 {
+		return p.AmountMinorRaw
+	}
 	return int64(math.Round(p.Amount * 100))
 }
 
@@ -83,18 +106,24 @@ func (s *Store) CreateIntent(ctx context.Context, in PaymentIntent) (*CreateInte
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
+	// Audit P7-deep: dual-write the paise-minor + rupees-major columns.
+	// The caller's preferred source-of-truth is AmountMinorRaw; if only
+	// the legacy Amount float was set the service layer fills
+	// AmountMinorRaw in via rupeesToPaise before we get here. Both
+	// columns land in the same row so analytics readers that still scan
+	// `amount` keep working through the deprecation window.
 	err = tx.QueryRow(ctx,
 		`INSERT INTO payments.payment_intents
-		    (payer_id, payee_id, reference_type, reference_id, amount, currency, method, status, provider_ref, idempotency_key, metadata)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8, $9, $10)
+		    (payer_id, payee_id, reference_type, reference_id, amount, amount_minor, currency, method, status, provider_ref, idempotency_key, metadata)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', $9, $10, $11)
 		 ON CONFLICT (idempotency_key)
 		 DO UPDATE SET updated_at = payments.payment_intents.updated_at
-		 RETURNING id, payer_id, payee_id, reference_type, reference_id, amount, currency, method, status,
-		           idempotency_key, COALESCE(provider_ref,''), created_at, updated_at`,
+		 RETURNING id, payer_id, payee_id, reference_type, reference_id, amount, COALESCE(amount_minor, 0),
+		           currency, method, status, idempotency_key, COALESCE(provider_ref,''), created_at, updated_at`,
 		in.PayerID, in.PayeeID, in.ReferenceType, in.ReferenceID,
-		in.Amount, in.Currency, in.Method, in.ProviderRef, in.IdempotencyKey, "{}",
+		in.Amount, in.AmountMinorRaw, in.Currency, in.Method, in.ProviderRef, in.IdempotencyKey, "{}",
 	).Scan(&in.ID, &in.PayerID, &in.PayeeID, &in.ReferenceType, &in.ReferenceID,
-		&in.Amount, &in.Currency, &in.Method, &in.Status, &in.IdempotencyKey,
+		&in.Amount, &in.AmountMinorRaw, &in.Currency, &in.Method, &in.Status, &in.IdempotencyKey,
 		&in.ProviderRef, &in.CreatedAt, &in.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -120,16 +149,24 @@ func (s *Store) CreateIntent(ctx context.Context, in PaymentIntent) (*CreateInte
 }
 
 // GetIntent fetches a payment intent by ID.
+//
+// Audit P7-deep: SELECTs the new amount_minor BIGINT alongside the
+// deprecated `amount` NUMERIC so AmountMinor() can prefer the source-
+// of-truth column. COALESCE on amount_minor handles legacy rows that
+// pre-date the migration (the backfill UPDATE in setup.sql + 006
+// covers most, but a transactional insert mid-deploy could still slip
+// a NULL through before the NOT NULL constraint lands).
 func (s *Store) GetIntent(ctx context.Context, id uuid.UUID) (*PaymentIntent, error) {
 	var p PaymentIntent
 	err := s.db.QueryRow(ctx,
-		`SELECT id, payer_id, payee_id, reference_type, reference_id, amount, currency, method, status,
+		`SELECT id, payer_id, payee_id, reference_type, reference_id, amount, COALESCE(amount_minor, 0),
+		        currency, method, status,
 		        COALESCE(provider_ref,''), COALESCE(upi_intent_url,''), idempotency_key,
 		        COALESCE(refunded_amount_minor, 0), created_at, updated_at
 		 FROM payments.payment_intents WHERE id = $1`,
 		id,
 	).Scan(&p.ID, &p.PayerID, &p.PayeeID, &p.ReferenceType, &p.ReferenceID,
-		&p.Amount, &p.Currency, &p.Method, &p.Status, &p.ProviderRef, &p.UPIIntentURL,
+		&p.Amount, &p.AmountMinorRaw, &p.Currency, &p.Method, &p.Status, &p.ProviderRef, &p.UPIIntentURL,
 		&p.IdempotencyKey, &p.RefundedAmountMinor, &p.CreatedAt, &p.UpdatedAt)
 	return &p, err
 }
@@ -144,14 +181,15 @@ func (s *Store) GetIntentByProviderRef(ctx context.Context, providerRef string) 
 	}
 	var p PaymentIntent
 	err := s.db.QueryRow(ctx,
-		`SELECT id, payer_id, payee_id, reference_type, reference_id, amount, currency, method, status,
+		`SELECT id, payer_id, payee_id, reference_type, reference_id, amount, COALESCE(amount_minor, 0),
+		        currency, method, status,
 		        COALESCE(provider_ref,''), COALESCE(upi_intent_url,''), idempotency_key,
 		        COALESCE(refunded_amount_minor, 0), created_at, updated_at
 		 FROM payments.payment_intents WHERE provider_ref = $1
 		 ORDER BY updated_at DESC LIMIT 1`,
 		providerRef,
 	).Scan(&p.ID, &p.PayerID, &p.PayeeID, &p.ReferenceType, &p.ReferenceID,
-		&p.Amount, &p.Currency, &p.Method, &p.Status, &p.ProviderRef, &p.UPIIntentURL,
+		&p.Amount, &p.AmountMinorRaw, &p.Currency, &p.Method, &p.Status, &p.ProviderRef, &p.UPIIntentURL,
 		&p.IdempotencyKey, &p.RefundedAmountMinor, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -318,7 +356,8 @@ func (s *Store) RecordRefundIfFresh(ctx context.Context, refundProviderRef strin
 // well past any real-world tail.
 func (s *Store) ListByReference(ctx context.Context, refType string, refID uuid.UUID) ([]PaymentIntent, error) {
 	rows, err := s.db.Query(ctx,
-		`SELECT id, payer_id, payee_id, reference_type, reference_id, amount, currency, method, status,
+		`SELECT id, payer_id, payee_id, reference_type, reference_id, amount, COALESCE(amount_minor, 0),
+		        currency, method, status,
 		        COALESCE(provider_ref,''), COALESCE(upi_intent_url,''), idempotency_key,
 		        COALESCE(refunded_amount_minor, 0), created_at, updated_at
 		 FROM payments.payment_intents
@@ -335,7 +374,7 @@ func (s *Store) ListByReference(ctx context.Context, refType string, refID uuid.
 	for rows.Next() {
 		var p PaymentIntent
 		if err := rows.Scan(&p.ID, &p.PayerID, &p.PayeeID, &p.ReferenceType, &p.ReferenceID,
-			&p.Amount, &p.Currency, &p.Method, &p.Status, &p.ProviderRef, &p.UPIIntentURL,
+			&p.Amount, &p.AmountMinorRaw, &p.Currency, &p.Method, &p.Status, &p.ProviderRef, &p.UPIIntentURL,
 			&p.IdempotencyKey, &p.RefundedAmountMinor, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			return nil, err
 		}

@@ -32,6 +32,32 @@ ALTER TABLE payments.payment_intents
 ALTER TABLE payments.payment_intents
     ADD COLUMN IF NOT EXISTS refunded_amount_minor BIGINT NOT NULL DEFAULT 0;
 
+-- Audit P7-deep: paise-minor source-of-truth for the intent amount.
+-- Backfills from the deprecated NUMERIC(12,2) `amount` column on first
+-- run. `amount` is kept as a deprecated mirror for one release cycle
+-- (analytics + dashboards still read it); the Go writer dual-writes.
+ALTER TABLE payments.payment_intents
+    ADD COLUMN IF NOT EXISTS amount_minor BIGINT;
+UPDATE payments.payment_intents
+   SET amount_minor = ROUND(amount * 100)
+ WHERE amount_minor IS NULL OR amount_minor = 0;
+ALTER TABLE payments.payment_intents
+    ALTER COLUMN amount_minor SET DEFAULT 0;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'payments'
+          AND table_name = 'payment_intents'
+          AND column_name = 'amount_minor'
+          AND is_nullable = 'NO'
+    ) THEN
+        ALTER TABLE payments.payment_intents
+            ALTER COLUMN amount_minor SET NOT NULL;
+    END IF;
+END$$;
+
 DO $$
 DECLARE
     r RECORD;

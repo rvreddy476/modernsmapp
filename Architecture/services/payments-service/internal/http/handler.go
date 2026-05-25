@@ -85,17 +85,27 @@ func (h *Handler) InitiatePayment(c *gin.Context) {
 	if !ok {
 		return
 	}
+	// Audit P7-deep: `amount` (rupees-major float) is the legacy entry
+	// point; new callers should send `amount_minor` (paise-minor int64).
+	// When both are set, amount_minor wins. The `binding:"required"` is
+	// gone — at least one must be > 0; the service layer enforces the
+	// non-negative check after resolution.
 	var body struct {
 		PayeeID        string  `json:"payee_id" binding:"required"`
 		ReferenceType  string  `json:"reference_type" binding:"required"`
 		ReferenceID    string  `json:"reference_id" binding:"required"`
-		Amount         float64 `json:"amount" binding:"required"`
+		Amount         float64 `json:"amount,omitempty"`
+		AmountMinor    int64   `json:"amount_minor,omitempty"`
 		Currency       string  `json:"currency"`
 		Method         string  `json:"method" binding:"required"`
 		IdempotencyKey string  `json:"idempotency_key"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	if body.Amount <= 0 && body.AmountMinor <= 0 {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", "amount or amount_minor must be positive", nil)
 		return
 	}
 	if body.IdempotencyKey == "" {
@@ -110,6 +120,7 @@ func (h *Handler) InitiatePayment(c *gin.Context) {
 		ReferenceType:  body.ReferenceType,
 		ReferenceID:    refID,
 		Amount:         body.Amount,
+		AmountMinor:    body.AmountMinor,
 		Currency:       body.Currency,
 		Method:         body.Method,
 		IdempotencyKey: body.IdempotencyKey,

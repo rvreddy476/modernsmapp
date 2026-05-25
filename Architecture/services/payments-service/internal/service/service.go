@@ -51,20 +51,49 @@ func NewWithDialer(store *postgres.Store, kafkaBrokers string, gw gateway.Paymen
 }
 
 type InitiateInput struct {
-	PayerID        uuid.UUID
-	PayeeID        uuid.UUID
-	ReferenceType  string
-	ReferenceID    uuid.UUID
+	PayerID       uuid.UUID
+	PayeeID       uuid.UUID
+	ReferenceType string
+	ReferenceID   uuid.UUID
+	// Amount is the legacy rupees-major float entry point. Audit
+	// P7-deep: new callers should populate AmountMinor (paise-minor
+	// int64) directly. When only Amount is set, the service computes
+	// AmountMinor via rupeesToPaise. When both are set, AmountMinor
+	// wins (the float copy is kept on the row for the deprecated
+	// `amount` column).
 	Amount         float64
+	AmountMinor    int64
 	Currency       string
 	Method         string
 	IdempotencyKey string
 }
 
 func (s *Service) InitiatePayment(ctx context.Context, in InitiateInput) (*postgres.PaymentIntent, error) {
-	if in.Amount <= 0 {
+	// Audit P7-deep: AmountMinor (paise-minor int64) is the new source
+	// of truth. Resolve it once at the entry point — every downstream
+	// reference (gateway CreateOrder, CreateHold, the row's
+	// AmountMinorRaw column) uses the resolved int64. The legacy
+	// rupees-major float copy is preserved on the row only because the
+	// deprecated `amount` NUMERIC column still has analytics readers;
+	// it is NEVER used for arithmetic downstream of this resolution.
+	amountMinor := in.AmountMinor
+	if amountMinor == 0 {
+		if in.Amount <= 0 {
+			return nil, fmt.Errorf("amount must be positive")
+		}
+		amountMinor = rupeesToPaise(in.Amount)
+	}
+	if amountMinor <= 0 {
 		return nil, fmt.Errorf("amount must be positive")
 	}
+	// Keep the float mirror in sync with whichever side the caller
+	// supplied so the deprecated `amount` column is never inconsistent
+	// with `amount_minor`.
+	amountRupees := in.Amount
+	if amountRupees <= 0 {
+		amountRupees = float64(amountMinor) / 100.0
+	}
+
 	validMethods := map[string]bool{"upi": true, "card": true, "wallet": true, "cod": true, "escrow": true}
 	if !validMethods[in.Method] {
 		return nil, fmt.Errorf("invalid payment method: %s", in.Method)
@@ -75,13 +104,10 @@ func (s *Service) InitiatePayment(ctx context.Context, in InitiateInput) (*postg
 
 	var providerRef string
 	if in.Method != "cod" && in.Method != "wallet" && s.gateway != nil {
-		// in.Amount is rupees-major at the API boundary; Razorpay's
-		// CreateOrder expects paise-minor. The previous code passed
-		// `int64(in.Amount)` directly, which made the provider order
-		// 1/100th of the displayed amount — reconciliation impossible
-		// and a customer-visible bug when ₹X opens as ₹X/100 on the
-		// gateway page.
-		order, err := s.gateway.CreateOrder(ctx, rupeesToPaise(in.Amount), "INR", in.IdempotencyKey)
+		// Razorpay's CreateOrder expects paise-minor. amountMinor is
+		// already the resolved paise value — no float math at this
+		// boundary (audit P7-deep).
+		order, err := s.gateway.CreateOrder(ctx, amountMinor, "INR", in.IdempotencyKey)
 		if err != nil {
 			slog.Error("payment: gateway CreateOrder failed", "error", err)
 		} else {
@@ -94,7 +120,8 @@ func (s *Service) InitiatePayment(ctx context.Context, in InitiateInput) (*postg
 		PayeeID:        in.PayeeID,
 		ReferenceType:  in.ReferenceType,
 		ReferenceID:    in.ReferenceID,
-		Amount:         in.Amount,
+		Amount:         amountRupees,
+		AmountMinorRaw: amountMinor,
 		Currency:       orDefault(in.Currency, "INR"),
 		Method:         in.Method,
 		ProviderRef:    providerRef,
@@ -110,10 +137,8 @@ func (s *Service) InitiatePayment(ctx context.Context, in InitiateInput) (*postg
 
 	if in.Method == "escrow" {
 		// Holds are recorded in paise-minor so they line up with the
-		// provider's amount; the prior `int64(in.Amount)` truncated
-		// fractional rupees (₹100.50 → 100) AND used a different unit
-		// than the gateway, making escrow accounting non-reconcilable.
-		if holdErr := s.store.CreateHold(ctx, res.Intent.ID, rupeesToPaise(in.Amount), orDefault(in.Currency, "INR"), "order_delivered"); holdErr != nil {
+		// provider's amount; amountMinor is the resolved paise value.
+		if holdErr := s.store.CreateHold(ctx, res.Intent.ID, amountMinor, orDefault(in.Currency, "INR"), "order_delivered"); holdErr != nil {
 			slog.Error("payment: CreateHold failed", "intent_id", res.Intent.ID, "error", holdErr)
 		}
 	}
@@ -330,7 +355,9 @@ func (s *Service) VerifyIntent(ctx context.Context, id uuid.UUID, rzpOrderID, rz
 		return nil, ErrGatewayNotConfigured
 	}
 
-	intentAmountMinor := rupeesToPaise(intent.Amount)
+	// Audit P7-deep: AmountMinor() reads the new int64 column; the
+	// float fallback only fires for legacy pre-migration rows.
+	intentAmountMinor := intent.AmountMinor()
 
 	if intent.ProviderRef == "" || intent.ProviderRef != rzpOrderID {
 		return nil, ErrProviderRefMismatch
