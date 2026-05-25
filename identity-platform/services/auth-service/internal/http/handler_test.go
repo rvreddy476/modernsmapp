@@ -127,6 +127,12 @@ func (s *stubAuthService) ListMyAnomalies(_ context.Context, _ uuid.UUID, _ int)
 	return nil, nil
 }
 func (s *stubAuthService) AcknowledgeMyAnomaly(_ context.Context, _, _ uuid.UUID) error { return nil }
+func (s *stubAuthService) ResolveAnomalyStepUpEmail(_ context.Context, _, _ string) (*service.AuthResponse, error) {
+	return nil, nil
+}
+func (s *stubAuthService) ResolveAnomalyStepUp2FA(_ context.Context, _, _ string) (*service.AuthResponse, error) {
+	return nil, nil
+}
 
 // GDPR stub
 func (s *stubAuthService) ExportUserData(_ context.Context, _ string) (*service.DataExport, error) {

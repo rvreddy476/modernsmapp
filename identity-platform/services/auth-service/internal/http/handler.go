@@ -71,6 +71,12 @@ type AuthService interface {
 	// A13 — login anomaly inbox
 	ListMyAnomalies(ctx context.Context, userID uuid.UUID, limit int) ([]store.LoginAnomaly, error)
 	AcknowledgeMyAnomaly(ctx context.Context, userID, anomalyID uuid.UUID) error
+	// A13 — anomaly step-up (graduated enforcement at login). Both
+	// resolve methods consume a pending_token issued during login and
+	// either mint the session (on success) or return one of the
+	// service.ErrAnomaly* sentinels.
+	ResolveAnomalyStepUpEmail(ctx context.Context, pendingToken, code string) (*service.AuthResponse, error)
+	ResolveAnomalyStepUp2FA(ctx context.Context, pendingToken, code string) (*service.AuthResponse, error)
 	// GDPR
 	ExportUserData(ctx context.Context, userID string) (*service.DataExport, error)
 	// Internal lookup
@@ -101,6 +107,16 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 
 		// 2FA public route (called after login returns requires_2fa)
 		v1.POST("/2fa/verify", h.Verify2FA)
+
+		// A13 — anomaly step-up. Public (the user is mid-login and
+		// doesn't have a session yet). Both endpoints consume a
+		// pending_token issued by Login/VerifyOTP when the risk band
+		// is high AND LOGIN_ANOMALY_ENFORCE=enforce. The /verify-email
+		// path is gated by the password-reset rate limiter (same
+		// abuse surface — email-OTP burn). The /verify-2fa path
+		// piggy-backs on the login limiter.
+		v1.POST("/anomaly/verify-email", middleware.PasswordResetRateLimit(h.rdb), h.AnomalyVerifyEmail)
+		v1.POST("/anomaly/verify-2fa", middleware.LoginRateLimit(h.rdb), h.AnomalyVerify2FA)
 
 		// OAuth routes (public)
 		v1.GET("/oauth/:provider", h.OAuthRedirect)
@@ -308,8 +324,26 @@ func (h *Handler) VerifyOTP(c *gin.Context) {
 
 	resp, err := h.svc.VerifyOTP(c.Request.Context(), req.Phone, req.OTP, req.Purpose, req.DeviceID, req.Platform, c.ClientIP(), c.Request.UserAgent())
 	if err != nil {
+		// A13 — anomaly step-up envelope on a successful OTP that
+		// landed in a novel device/network. Same shape as the Login
+		// handler above.
+		if errors.Is(err, service.ErrAnomalyStepUpRequired) && resp != nil {
+			api.JSON(c.Writer, http.StatusOK, resp, nil)
+			return
+		}
+		if errors.Is(err, service.ErrAnomalyStepUpUnavailable) {
+			api.Error(c.Writer, http.StatusUnauthorized, "STEP_UP_UNAVAILABLE",
+				"This sign-in looks unusual and your account has no recovery channel set up. Please contact support.", nil, nil)
+			return
+		}
 		h.log.Warn("otp verification failed", "err", err, "phone", maskPhone(req.Phone), "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusUnauthorized, "AUTH_FAILED", "Authentication failed", nil, nil)
+		return
+	}
+
+	// If 2FA or step-up is required, return pending envelope without cookies.
+	if resp.Requires2FA || resp.RequiresStepUp {
+		api.JSON(c.Writer, http.StatusOK, resp, nil)
 		return
 	}
 
@@ -395,6 +429,25 @@ func (h *Handler) Login(c *gin.Context) {
 
 	resp, err := h.svc.LoginWithPassword(c.Request.Context(), identifier, req.Password, req.DeviceID, req.Platform, c.ClientIP(), c.Request.UserAgent())
 	if err != nil {
+		// A13 — anomaly step-up required. The service has already
+		// stashed the pending session + dispatched the email-OTP if
+		// applicable. Render a 200 with the step-up envelope so the
+		// UI can pivot without falling into the generic "auth failed"
+		// banner. We deliberately don't use 401 here because the
+		// password DID match — the request is now in a "halt for
+		// second channel" state, semantically closer to 2FA than a
+		// rejection.
+		if errors.Is(err, service.ErrAnomalyStepUpRequired) && resp != nil {
+			api.JSON(c.Writer, http.StatusOK, resp, nil)
+			return
+		}
+		if errors.Is(err, service.ErrAnomalyStepUpUnavailable) {
+			h.log.Warn("login refused: no anomaly step-up channel",
+				"identifier", maskIdentifier(identifier), "request_id", RequestIDFromContext(c))
+			api.Error(c.Writer, http.StatusUnauthorized, "STEP_UP_UNAVAILABLE",
+				"This sign-in looks unusual and your account has no recovery channel set up. Please contact support.", nil, nil)
+			return
+		}
 		h.log.Warn("login failed", "err", err, "identifier", maskIdentifier(identifier), "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusUnauthorized, "AUTH_FAILED", "Authentication failed", nil, nil)
 		return
