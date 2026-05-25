@@ -344,12 +344,16 @@ func (s *Service) createVariantAndProduct(ctx context.Context, sellerID uuid.UUI
 		LengthCm:         row.LengthCm,
 		WidthCm:          row.WidthCm,
 		HeightCm:         row.HeightCm,
-		ProductType:      "simple",
+		// Schema constraints: product_type ∈ digital|physical|service,
+		// return_policy_type ∈ 15_days|30_days|7_days|custom|no_return.
+		// Bulk import default to physical + 7_days; sellers can edit
+		// after import if they're shipping digital / custom-policy SKUs.
+		ProductType:      "physical",
 		Condition:        "new",
 		Status:           "draft",
 		Visibility:       "public",
 		ApprovalStatus:   "draft",
-		ReturnPolicyType: "returnable",
+		ReturnPolicyType: "7_days",
 		ReturnPolicyDays: 7,
 	}
 	if err := s.store.CreateProduct(ctx, prod); err != nil {
