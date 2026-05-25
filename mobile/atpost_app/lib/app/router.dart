@@ -181,12 +181,33 @@ const _publicPaths = {'/login', '/register', '/forgot-password', '/verify-otp'};
 /// Public path prefixes — the share token is dynamic so we can't match
 /// the exact path. Every recipient of a Mopedu share-ride link is
 /// expected to land here with no AtPost session at all.
-const _publicPathPrefixes = <String>['/mopedu/share/'];
+///
+/// `/live/v2/` covers the anonymous viewer surface for live-streaming v2
+/// (`/live/v2/:streamId`) so a recipient of a stream link can land on
+/// the viewer without being bounced to /login. The form route
+/// `/live/v2/new` is also under this prefix but the backend still
+/// rejects anonymous create-stream calls, so the broadcaster flow
+/// stays gated. The "subscribe to watch" panel handles the
+/// paid-stream case for unauthenticated viewers.
+const _publicPathPrefixes = <String>['/mopedu/share/', '/live/v2/'];
 
 bool _isPublicPath(String path) {
   if (_publicPaths.contains(path)) return true;
   for (final prefix in _publicPathPrefixes) {
-    if (path.startsWith(prefix)) return true;
+    if (path.startsWith(prefix)) {
+      // `/live/v2/` covers anonymous viewing of any live stream but
+      // the broadcaster surface (`/live/v2/new`, `/live/v2/:id/broadcast`)
+      // must stay behind auth — broadcasting requires a session and the
+      // create-stream endpoint rejects anonymous callers anyway. Excluding
+      // these here ensures an anonymous user typing /live/v2/new gets the
+      // /login redirect instead of an unhelpful 401 from the backend.
+      if (prefix == '/live/v2/') {
+        if (path == '/live/v2/new' || path.endsWith('/broadcast')) {
+          continue;
+        }
+      }
+      return true;
+    }
   }
   return false;
 }

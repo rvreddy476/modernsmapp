@@ -57,6 +57,7 @@ class LiveBroadcasterController {
     String description = '',
     String visibility = 'public',
     String? coverMediaId,
+    DateTime? scheduledAt,
   }) async {
     final repo = _ref.read(liveStreamsRepositoryProvider);
     return repo.createStream(
@@ -64,6 +65,7 @@ class LiveBroadcasterController {
       description: description,
       visibility: visibility,
       coverMediaId: coverMediaId,
+      scheduledAt: scheduledAt,
     );
   }
 }

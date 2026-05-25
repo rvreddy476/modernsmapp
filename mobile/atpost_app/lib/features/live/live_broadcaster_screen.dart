@@ -23,7 +23,18 @@ class LiveBroadcasterScreen extends ConsumerStatefulWidget {
       _LiveBroadcasterScreenState();
 }
 
-enum _BroadcastPhase { idle, starting, publishing, ending, ended, error }
+enum _BroadcastPhase {
+  idle,
+  starting,
+  publishing,
+  ending,
+  ended,
+  error,
+  // Scheduled streams created via the Go Live form land here instead
+  // of auto-starting the LiveKit publisher. Surfaces a "scheduled at"
+  // panel + a manual "Go live now" override.
+  scheduled,
+}
 
 class _LiveBroadcasterScreenState
     extends ConsumerState<LiveBroadcasterScreen> {
@@ -34,17 +45,39 @@ class _LiveBroadcasterScreenState
   String? _errorMessage;
   int _participantCount = 0;
   bool _started = false;
+  DateTime? _scheduledAt;
 
   @override
   void initState() {
     super.initState();
     // StrictMode-equivalent guard: ensure we don't double-start when the
     // widget rebuilds while we're already in the connect handshake.
+    // Fetch the stream first — if it's scheduled for a future time, we
+    // render the schedule panel instead of auto-starting the publisher.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_started) return;
       _started = true;
-      unawaited(_start());
+      unawaited(_initialize());
     });
+  }
+
+  Future<void> _initialize() async {
+    try {
+      final repo = ref.read(liveStreamsRepositoryProvider);
+      final stream = await repo.getStream(widget.streamId);
+      if (!mounted) return;
+      _scheduledAt = stream.scheduledAt;
+      if (stream.scheduledAt != null &&
+          stream.scheduledAt!.isAfter(DateTime.now())) {
+        setState(() => _phase = _BroadcastPhase.scheduled);
+        return;
+      }
+    } catch (_) {
+      // Detail fetch is advisory — on failure we fall back to the
+      // legacy auto-start behaviour. The start() call below has its own
+      // error handling.
+    }
+    await _start();
   }
 
   @override
@@ -271,6 +304,47 @@ class _LiveBroadcasterScreenState
   }
 
   Widget _buildPreview() {
+    if (_phase == _BroadcastPhase.scheduled) {
+      final t = _scheduledAt;
+      String two(int n) => n.toString().padLeft(2, '0');
+      final formatted = t == null
+          ? ''
+          : '${t.year}-${two(t.month)}-${two(t.day)} ${two(t.hour)}:${two(t.minute)}';
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.schedule, color: Colors.white70, size: 36),
+              const SizedBox(height: 10),
+              const Text(
+                'This stream is scheduled.',
+                style: TextStyle(color: Colors.white, fontSize: 16),
+              ),
+              if (formatted.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text(
+                  'Goes live at $formatted',
+                  style: const TextStyle(color: Colors.white70),
+                ),
+              ],
+              const SizedBox(height: 16),
+              FilledButton.icon(
+                onPressed: () {
+                  setState(() => _scheduledAt = null);
+                  unawaited(_start());
+                },
+                icon: const Icon(Icons.podcasts),
+                label: const Text('Go live now'),
+                style: FilledButton.styleFrom(
+                    backgroundColor: AppColors.liveRed),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
     if (_phase == _BroadcastPhase.starting) {
       return const Center(
         child: Column(
@@ -335,6 +409,11 @@ class _LiveBroadcasterScreenState
         return 'Stream ended.';
       case _BroadcastPhase.error:
         return _errorMessage ?? 'Something went wrong.';
+      case _BroadcastPhase.scheduled:
+        final t = _scheduledAt;
+        if (t == null) return 'Stream is scheduled.';
+        String two(int n) => n.toString().padLeft(2, '0');
+        return 'Scheduled for ${t.year}-${two(t.month)}-${two(t.day)} ${two(t.hour)}:${two(t.minute)}';
     }
   }
 }
