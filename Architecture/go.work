@@ -16,6 +16,7 @@ use (
 	./services/graph-service
 	./services/group-service
 	./services/live-service
+	./services/live-service-v2
 	./services/media-service
 	./services/memories-service
 	./services/message-service

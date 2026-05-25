@@ -95,9 +95,14 @@ const (
 	OrderCreated       = "OrderCreated"       // payload: OrderCreatedPayload
 	OrderStatusUpdated = "OrderStatusUpdated" // payload: OrderStatusUpdatedPayload
 
-	// Live Streaming
+	// Live Streaming (v1 — RTMP/OBS; live-service)
 	LiveStarted = "LiveStarted" // payload: LiveStartedPayload
 	LiveEnded   = "LiveEnded"   // payload: LiveEndedPayload
+
+	// Live Streaming v2 (LiveKit SFU; live-service-v2)
+	LiveStreamStarted  = "live.stream.started"   // payload: LiveStreamStartedPayload
+	LiveStreamEnded    = "live.stream.ended"     // payload: LiveStreamEndedPayload
+	LiveStreamVODReady = "live.stream.vod_ready" // payload: LiveStreamVODReadyPayload
 )
 
 // v2.1 new event types
@@ -923,6 +928,35 @@ type LiveEndedPayload struct {
 	PeakViewers  int       `json:"peak_viewers"`
 	TotalViewers int       `json:"total_viewers"`
 	EndedAt      time.Time `json:"ended_at"`
+}
+
+// --- Live Streaming v2 (LiveKit) Payloads ---
+//
+// Emitted by live-service-v2 (LiveKit SFU + Egress recording). The
+// canonical key path is dot-namespaced ("live.stream.started") so the
+// notification/feed consumers can route via prefix without colliding
+// with the v1 RTMP "LiveStarted" message.
+
+type LiveStreamStartedPayload struct {
+	StreamID   string    `json:"stream_id"`
+	CreatorID  string    `json:"creator_id"`
+	Title      string    `json:"title"`
+	Visibility string    `json:"visibility"` // public | followers | paid
+	StartedAt  time.Time `json:"started_at"`
+}
+
+type LiveStreamEndedPayload struct {
+	StreamID    string    `json:"stream_id"`
+	CreatorID   string    `json:"creator_id"`
+	EndedAt     time.Time `json:"ended_at"`
+	ViewerPeak  int       `json:"viewer_peak"`
+}
+
+type LiveStreamVODReadyPayload struct {
+	StreamID     string `json:"stream_id"`
+	CreatorID    string `json:"creator_id"`
+	RecordingURL string `json:"recording_url"`
+	DurationSec  int    `json:"duration_sec"`
 }
 
 // --- Security Payloads ---
