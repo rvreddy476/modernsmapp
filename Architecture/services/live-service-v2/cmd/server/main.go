@@ -28,7 +28,7 @@ import (
 func main() {
 	logging.Init(logging.Config{ServiceName: "live-service-v2"})
 
-	port := env("HTTP_PORT", "8095")
+	port := env("HTTP_PORT", "8117")
 	pgDSN := os.Getenv("POSTGRES_DSN")
 	redisAddr := env("REDIS_ADDR", "redis:6379")
 	kafkaBrokers := strings.Split(env("KAFKA_BROKERS", "redpanda:9092"), ",")

@@ -379,6 +379,18 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		deepLink := fmt.Sprintf("/post/%s", e.PostID)
 		return c.service.CreateNotification(ctx, authorID, authorID, "post_reclassified", "post", postID, deepLink, e.ChangedAt)
 
+	case events.LiveStreamStarted:
+		// live-v2: fan out a "creator is live" push to every follower
+		// when a public/followers stream goes live. Mirrors the
+		// PostCreated CR2 pattern — async per-event sub-pool so a
+		// celeb going live doesn't pin the consumer.
+		var e events.LiveStreamStartedPayload
+		if err := unmarshalPayload(envelope.Payload, &e); err != nil {
+			return err
+		}
+		c.FanOutLiveStartedAsync(e)
+		return nil
+
 	case "commerce.order.created",
 		"commerce.order.paid",
 		"commerce.order.shipped",
@@ -685,6 +697,94 @@ func (c *Consumer) FanOutCreatorUploadAsync(e events.PostCreatedPayload) {
 		defer cancel()
 		if err := c.fanOutCreatorUpload(bg, e); err != nil {
 			slog.Warn("async creator upload fan-out failed", "post_id", e.PostID, "error", err)
+		}
+	}()
+}
+
+// fanOutLiveStarted pages through the creator's followers and pushes a
+// "creator is live" notification. Same CR2-style sub-pool as the
+// upload fanout. Paid streams are skipped — those go through commerce
+// purchase-side notifications later. Public + followers visibility
+// both notify the follower base.
+func (c *Consumer) fanOutLiveStarted(ctx context.Context, e events.LiveStreamStartedPayload) error {
+	if e.Visibility == "paid" {
+		return nil
+	}
+	if c.graph == nil {
+		return nil
+	}
+	creatorID, err := uuid.Parse(e.CreatorID)
+	if err != nil {
+		return nil
+	}
+	streamID, err := uuid.Parse(e.StreamID)
+	if err != nil {
+		return nil
+	}
+
+	const pageSize = 200
+	const maxFollowers = 5000
+	deepLink := fmt.Sprintf("/live/%s", e.StreamID)
+	const notifType = "creator_went_live"
+
+	const fanoutWorkers = 16
+	jobs := make(chan uuid.UUID, fanoutWorkers*2)
+	var wg sync.WaitGroup
+	var deliveredMu sync.Mutex
+	delivered := 0
+	for w := 0; w < fanoutWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for fid := range jobs {
+				if err := c.service.CreateNotification(
+					ctx, fid, creatorID, notifType, "live_stream", streamID, deepLink, e.StartedAt,
+				); err != nil {
+					slog.Warn("live started fan-out: notify failed",
+						"follower", fid, "stream_id", streamID, "error", err)
+					continue
+				}
+				deliveredMu.Lock()
+				delivered++
+				deliveredMu.Unlock()
+			}
+		}()
+	}
+
+	for offset := 0; offset < maxFollowers; offset += pageSize {
+		followers, err := c.graph.GetFollowers(ctx, creatorID, pageSize, offset)
+		if err != nil {
+			slog.Warn("live started fan-out: followers fetch failed",
+				"creator_id", creatorID, "offset", offset, "error", err)
+			break
+		}
+		if len(followers) == 0 {
+			break
+		}
+		for _, fid := range followers {
+			jobs <- fid
+		}
+		if len(followers) < pageSize {
+			break
+		}
+	}
+	close(jobs)
+	wg.Wait()
+	slog.Info("live started fan-out complete",
+		"creator_id", creatorID, "stream_id", streamID,
+		"visibility", e.Visibility, "delivered", delivered)
+	return nil
+}
+
+// FanOutLiveStartedAsync wraps fanOutLiveStarted in a goroutine so the
+// consumer loop continues immediately while delivery proceeds on its
+// own context. Same shape as FanOutCreatorUploadAsync.
+func (c *Consumer) FanOutLiveStartedAsync(e events.LiveStreamStartedPayload) {
+	go func() {
+		bg, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		if err := c.fanOutLiveStarted(bg, e); err != nil {
+			slog.Warn("async live started fan-out failed", "stream_id", e.StreamID, "error", err)
 		}
 	}()
 }

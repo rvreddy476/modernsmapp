@@ -122,6 +122,9 @@ func main() {
 		{"/v1/payments", env("PAYMENTS_SERVICE_URL", "http://payments-service:8102")},
 		// Live / Memories services
 		{"/v1/live", env("LIVE_SERVICE_URL", "http://live-service:8103")},
+		// Live-v2 (LiveKit browser-native broadcast) — separate prefix to
+		// avoid colliding with v1 RTMP/OBS routes that own /v1/live.
+		{"/v1/livestream", env("LIVE_V2_SERVICE_URL", "http://live-service-v2:8117")},
 		{"/v1/memories", env("MEMORIES_SERVICE_URL", "http://memories-service:8104")},
 		// Broadcast Channels / Communities (GCC Phase 4)
 		{"/v1/broadcast-channels", env("CHANNEL_SERVICE_URL", "http://channel-service:8106")},

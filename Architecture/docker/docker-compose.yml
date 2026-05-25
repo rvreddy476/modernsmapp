@@ -277,6 +277,7 @@ services:
       PROFILE_SERVICE_URL: http://identity-profile:8098
       PAYMENTS_SERVICE_URL: http://payments-service:8102
       LIVE_SERVICE_URL: http://live-service:8103
+      LIVE_V2_SERVICE_URL: http://live-service-v2:8117
       MEMORIES_SERVICE_URL: http://memories-service:8104
       CHANNEL_SERVICE_URL: http://channel-service:8106
       COMMUNITY_SERVICE_URL: http://community-service:8107
@@ -943,12 +944,12 @@ services:
       dockerfile: services/feature-flag-service/Dockerfile
     environment:
       <<: [*redis_client_env, *kafka_client_env]
-      HTTP_PORT: "8095"
+      HTTP_PORT: "8117"
       POSTGRES_DSN: *app_postgres_dsn
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
     ports:
-      - "8095:8095"
+      - "8117:8117"
     depends_on:
       postgres:
         condition: service_healthy
@@ -1259,6 +1260,47 @@ services:
         condition: service_completed_successfully
       mediamtx:
         condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+  live-service-v2:
+    build:
+      context: ..
+      dockerfile: services/live-service-v2/Dockerfile
+    environment:
+      <<: [*redis_client_env, *kafka_client_env]
+      HTTP_PORT: "8117"
+      POSTGRES_DSN: *app_postgres_dsn
+      REDIS_ADDR: redis:6379
+      KAFKA_BROKERS: redpanda:9092
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-}
+      GRAPH_SERVICE_URL: http://graph-service:8083
+      LIVEKIT_URL: ${LIVEKIT_URL:-}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-}
+      LIVEKIT_WEBHOOK_SECRET: ${LIVEKIT_WEBHOOK_SECRET:-}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-}
+      MINIO_BUCKET_LIVE_RECORDINGS: ${MINIO_BUCKET_LIVE_RECORDINGS:-live-recordings}
+      LIVE_RECORDING_PUBLIC_BASE_URL: ${LIVE_RECORDING_PUBLIC_BASE_URL:-http://localhost:9001}
+    ports:
+      - "8117:8117"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      redpanda:
+        condition: service_started
+      redpanda-init:
+        condition: service_completed_successfully
     deploy:
       resources:
         limits:

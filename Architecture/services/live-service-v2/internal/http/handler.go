@@ -1,7 +1,7 @@
 // Package http exposes the live-service-v2 REST surface. All v1
 // endpoints sit behind the shared X-Internal-Service-Key middleware —
 // every client goes through api-gateway. The single exception is
-// /v1/live/egress/webhook, which is invoked directly by the LiveKit
+// /v1/livestream/egress/webhook, which is invoked directly by the LiveKit
 // Egress service and authenticated by an HMAC-signed payload.
 package http
 
@@ -47,9 +47,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// Webhook is intentionally registered OUTSIDE the internal-key
 	// group: LiveKit signs with HMAC instead of carrying our internal
 	// service key. The handler verifies the signature in-line.
-	r.POST("/v1/live/egress/webhook", h.OnEgressWebhook)
+	r.POST("/v1/livestream/egress/webhook", h.OnEgressWebhook)
 
-	v1 := r.Group("/v1/live")
+	v1 := r.Group("/v1/livestream")
 	if h.internalKey != "" {
 		v1.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
 	}
