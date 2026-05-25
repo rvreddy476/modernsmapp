@@ -83,6 +83,25 @@ final productReviewsProvider = FutureProvider.autoDispose
   return repo.getProductReviews(productId);
 });
 
+// couponPreviewProvider — read-only preview of what `code` would do to
+// the current cart total. autoDispose + family so it requeries when
+// the user edits the code input, and clears when the cart screen
+// unmounts. The actual coupon application still happens at checkout.
+final couponPreviewProvider = FutureProvider.autoDispose
+    .family<CouponPreview, String>((ref, code) async {
+  if (code.trim().isEmpty) {
+    return const CouponPreview(
+      couponCode: '',
+      couponDiscount: 0,
+      subtotal: 0,
+      grandTotal: 0,
+      applied: false,
+    );
+  }
+  final repo = ref.watch(commerceRepositoryProvider);
+  return repo.previewCoupon(code.trim());
+});
+
 // ─── Cart ───────────────────────────────────────────────────────────────
 
 /// Cart state notifier. Holds an `AsyncValue<Cart>` so screens can render

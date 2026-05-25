@@ -136,6 +136,19 @@ class CommerceRepository {
     return Cart.fromJson(Map<String, dynamic>.from(data as Map));
   }
 
+  /// previewCoupon returns the discount + new totals if `code` were
+  /// applied to the current cart. Pure preview — no DB write. The
+  /// actual application happens at checkout. Backend endpoint:
+  /// GET /v1/commerce/cart/coupon-preview?code=XYZ.
+  Future<CouponPreview> previewCoupon(String code) async {
+    final res = await _api.get(
+      '/v1/commerce/cart/coupon-preview',
+      queryParameters: {'code': code},
+    );
+    final data = Map<String, dynamic>.from(res.data['data'] as Map);
+    return CouponPreview.fromJson(data);
+  }
+
   /// Adds a variant to the cart. `productId` is unused on the wire — backend
   /// derives it from the variant — but we keep it in the API so the call site
   /// reads naturally and we can switch to a product-id wire if needed.

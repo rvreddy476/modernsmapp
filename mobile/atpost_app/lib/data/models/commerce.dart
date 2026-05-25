@@ -580,6 +580,36 @@ class CartItemSnapshot {
   final String? variantLabel;
 }
 
+/// CouponPreview is the response shape of
+/// GET /v1/commerce/cart/coupon-preview?code=XYZ. Read-only — the
+/// actual coupon application happens at checkout, so the user can
+/// try several codes without committing state.
+class CouponPreview {
+  const CouponPreview({
+    required this.couponCode,
+    required this.couponDiscount,
+    required this.subtotal,
+    required this.grandTotal,
+    required this.applied,
+  });
+
+  final String couponCode;
+  final double couponDiscount;
+  final double subtotal;
+  final double grandTotal;
+  final bool applied;
+
+  factory CouponPreview.fromJson(Map<String, dynamic> json) {
+    return CouponPreview(
+      couponCode: json['coupon_code']?.toString() ?? '',
+      couponDiscount: _toDouble(json['coupon_discount']),
+      subtotal: _toDouble(json['subtotal']),
+      grandTotal: _toDouble(json['grand_total']),
+      applied: json['applied'] == true,
+    );
+  }
+}
+
 class Cart {
   const Cart({
     required this.id,
