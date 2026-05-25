@@ -151,6 +151,17 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		dating.POST("/admin/reports/:id/action", h.ActOnReport)
 		dating.GET("/admin/safety/panic", h.ListPanicEvents)
 		dating.GET("/admin/photos/pending", h.ListPendingPhotos)
+		// §P0-8 — append-only audit log surface for the console.
+		dating.GET("/admin/audit", h.ListAdminAudit)
+
+		// §P0-7 Phase A — fake-account risk scoring.
+		// Admin queue read-side; the future /admin/dating console
+		// will surface flagged users on these endpoints.
+		dating.GET("/admin/risk", h.ListAccountRisks)
+		// Internal cross-service lookup. Other services
+		// (api-gateway, commerce, message) call this before
+		// allowing a sensitive action. Same internal-key gate.
+		dating.GET("/risk/:userId", h.GetAccountRisk)
 	}
 }
 

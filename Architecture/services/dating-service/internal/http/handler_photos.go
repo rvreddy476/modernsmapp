@@ -74,6 +74,11 @@ func (h *Handler) UpdatePhoto(c *gin.Context) {
 // of dating-service. Body: {status: "approved"|"rejected"|"pending",
 // reason?: string}. Triggers deck-cache invalidation + profile-state
 // transition + (on rejection) photo.moderation_rejected event.
+//
+// The X-Admin-Id header (gateway-injected on admin-scope traffic) is
+// forwarded to the service layer so dating_admin_audit captures who
+// took the action. Missing header → uuid.Nil + slog.Warn (the action
+// still lands). PRODUCTION_GAP_ANALYSIS.md §P0-8.
 type setPhotoModerationRequest struct {
 	Status string `json:"status" binding:"required"`
 	Reason string `json:"reason"`
@@ -89,7 +94,8 @@ func (h *Handler) SetPhotoModerationStatus(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
-	photo, err := h.svc.SetPhotoModerationStatus(c.Request.Context(), photoID, body.Status, body.Reason)
+	adminID := getAdminID(c)
+	photo, err := h.svc.SetPhotoModerationStatus(c.Request.Context(), adminID, photoID, body.Status, body.Reason)
 	if err != nil {
 		if errors.Is(err, store.ErrPhotoNotFound) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "photo not found", nil)

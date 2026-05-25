@@ -60,10 +60,17 @@ func (s *Service) DeletePhoto(ctx context.Context, userID, photoID uuid.UUID) er
 // On rejection, publishes dating.photo.moderation_rejected so the
 // notification consumer can push a user-facing notice.
 //
+// adminID is the X-Admin-Id header value the gateway injects on
+// admin-scope traffic. uuid.Nil is accepted with a slog.Warn so the
+// action never bounces because of a missing header. Every call
+// writes one row to dating_admin_audit after the photo flip lands;
+// an audit insert failure is logged but does NOT roll back the
+// moderation action. PHASE_0_TEST_PLANS.md §P0-8 acceptance test D.
+//
 // P0-6 (approved-only discovery — wire the invalidation) + §P1-1
-// (profile lifecycle — wire pending_photo → pending_selfie) in
-// dating/PRODUCTION_GAP_ANALYSIS.md.
-func (s *Service) SetPhotoModerationStatus(ctx context.Context, photoID uuid.UUID, status, rejectReason string) (*store.Photo, error) {
+// (profile lifecycle — wire pending_photo → pending_selfie) +
+// §P0-8 (audit trail) in dating/PRODUCTION_GAP_ANALYSIS.md.
+func (s *Service) SetPhotoModerationStatus(ctx context.Context, adminID, photoID uuid.UUID, status, rejectReason string) (*store.Photo, error) {
 	photo, err := s.store.SetPhotoModerationStatus(ctx, photoID, status)
 	if err != nil {
 		return nil, err
@@ -95,6 +102,25 @@ func (s *Service) SetPhotoModerationStatus(ctx context.Context, photoID uuid.UUI
 					"user_id", photo.UserID, "photo_id", photoID, "error", err)
 			}
 		}
+	}
+
+	if adminID == uuid.Nil {
+		slog.Warn("admin audit: actor id missing on SetPhotoModerationStatus",
+			"photo_id", photoID, "status", status, "user_id", photo.UserID)
+	}
+	entry := &store.AdminAuditEntry{
+		ActorAdminID:   adminID,
+		Action:         "photo_" + status,
+		TargetUserID:   photo.UserID,
+		TargetResource: "photo:" + photoID.String(),
+		Reason:         rejectReason,
+	}
+	if err := s.store.InsertAdminAudit(ctx, entry); err != nil {
+		// Audit failure must not roll back the moderation flip — see godoc.
+		slog.Error("admin audit: insert failed for SetPhotoModerationStatus",
+			"photo_id", photoID, "status", status,
+			"user_id", photo.UserID, "actor_admin_id", adminID,
+			"error", err)
 	}
 
 	return photo, nil

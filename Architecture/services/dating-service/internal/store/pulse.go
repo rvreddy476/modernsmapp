@@ -181,6 +181,16 @@ func (s *Store) FetchCandidates(ctx context.Context, q CandidateQuery) ([]Candid
 		`NOT EXISTS (SELECT 1 FROM dating_blocks b
 		    WHERE (b.user_id = $1 AND b.blocked_id = p.user_id)
 		       OR (b.user_id = p.user_id AND b.blocked_id = $1))`,
+		// §P0-7 Phase A: drop candidates whose enforcement level
+		// removes them from discovery. Rows with no risk record (the
+		// vast majority before the sweeper has run) implicitly pass
+		// because LEFT JOIN'd rar.risk_level is NULL and `IS NOT
+		// DISTINCT FROM` would be over-engineering — we just check
+		// for the four restrictive levels.
+		`NOT EXISTS (SELECT 1 FROM dating_account_risk rar
+		    WHERE rar.user_id = p.user_id
+		      AND rar.risk_level IN
+		          ('hide_from_discovery','chat_hold','admin_review','suspend'))`,
 	}
 	if q.MinAge > 0 {
 		args = append(args, q.MinAge)

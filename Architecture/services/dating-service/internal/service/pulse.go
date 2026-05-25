@@ -101,6 +101,26 @@ func (s *Service) GetPulseToday(ctx context.Context, viewerID uuid.UUID) (*Pulse
 			CohortGated: true,
 		}, nil
 	}
+	// §P0-7 Phase A: viewers under restrictive enforcement get an
+	// empty deck (same shape as the cohort gate). The candidate-side
+	// FetchCandidates filter handles the reciprocal "don't surface
+	// this account to others" half. Best-effort on lookup errors —
+	// see the spark-side rationale for why we don't fail open here.
+	if level, rerr := s.GetUserRiskLevel(ctx, viewerID); rerr == nil {
+		switch level {
+		case store.RiskLevelHideFromDiscovery,
+			store.RiskLevelChatHold,
+			store.RiskLevelAdminReview,
+			store.RiskLevelSuspend:
+			return &PulseResponse{
+				Data:        []PulseCard{},
+				Meta:        PulseMeta{GeneratedAt: time.Now().UTC(), Size: 0},
+				CohortGated: true,
+			}, nil
+		}
+	} else {
+		slog.Warn("pulse risk lookup failed", "viewer_id", viewerID, "error", rerr)
+	}
 	if cached := s.readPulseCache(ctx, viewerID); cached != nil {
 		return cached, nil
 	}

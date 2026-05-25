@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/atpost/dating-service/internal/store"
 	"github.com/google/uuid"
@@ -30,11 +31,27 @@ func (s *Service) ListPendingPhotos(ctx context.Context, limit int) ([]*store.Ph
 	return s.store.ListPendingPhotos(ctx, limit)
 }
 
+// ListAdminAudit is the passthrough used by GET /v1/dating/admin/audit.
+// Filters narrow by actor / target / action; the store applies the
+// limit + offset clamps. Acceptance test D in PHASE_0_TEST_PLANS.md
+// §P0-8 expects this log to be append-only — the immutability trigger
+// lives in database/setup.sql.
+func (s *Service) ListAdminAudit(ctx context.Context, f store.AdminAuditFilter, limit, offset int) ([]*store.AdminAuditEntry, error) {
+	return s.store.ListAdminAudit(ctx, f, limit, offset)
+}
+
 // ActOnReport is the composite admin action: optionally flip the
 // reported user's profile_status (restrict / suspend), then record
 // the report transition. Both legs are best-effort independent —
 // failing one leg shouldn't strand the other. Returns the new
 // report status the caller renders back to the admin UI.
+//
+// adminID is the X-Admin-Id header value forwarded by the gateway;
+// uuid.Nil is accepted (we slog.Warn rather than failing the action)
+// so the admin click never bounces because of a missing header. The
+// audit row goes into dating_admin_audit append-only after the
+// action lands. A failed audit insert is logged but does NOT roll
+// back the admin action.
 //
 // Allowed `action` values:
 //
@@ -45,7 +62,7 @@ func (s *Service) ListPendingPhotos(ctx context.Context, limit int) ([]*store.Ph
 //	suspend   - mark actioned + suspend the reported user
 //
 // targetUserID is required for restrict + suspend.
-func (s *Service) ActOnReport(ctx context.Context, reportID, targetUserID uuid.UUID, action string) (string, error) {
+func (s *Service) ActOnReport(ctx context.Context, adminID, reportID, targetUserID uuid.UUID, action string) (string, error) {
 	var newStatus string
 	var profileStatus string
 	switch action {
@@ -78,6 +95,24 @@ func (s *Service) ActOnReport(ctx context.Context, reportID, targetUserID uuid.U
 
 	if err := s.store.SetReportStatus(ctx, reportID, newStatus); err != nil {
 		return "", err
+	}
+
+	if adminID == uuid.Nil {
+		slog.Warn("admin audit: actor id missing on ActOnReport",
+			"report_id", reportID, "action", action, "target_user_id", targetUserID)
+	}
+	entry := &store.AdminAuditEntry{
+		ActorAdminID:   adminID,
+		Action:         "report_" + action,
+		TargetUserID:   targetUserID,
+		TargetResource: "report:" + reportID.String(),
+	}
+	if err := s.store.InsertAdminAudit(ctx, entry); err != nil {
+		// Audit failure must not roll back the action — see godoc.
+		slog.Error("admin audit: insert failed for ActOnReport",
+			"report_id", reportID, "action", action,
+			"target_user_id", targetUserID, "actor_admin_id", adminID,
+			"error", err)
 	}
 	return newStatus, nil
 }

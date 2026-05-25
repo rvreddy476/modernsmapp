@@ -7,28 +7,33 @@ import (
 )
 
 // Dating periodic sweeper — PRODUCTION_GAP_ANALYSIS.md §P1-6 cron
-// equivalents. Runs every minute and processes four kinds of
+// equivalents. Runs every minute and processes five kinds of
 // time-driven side-effects in one pass:
 //
 //  1. Stale matches → match.expired (ExpireStaleMatches).
 //  2. Quiet matches → match.quiet (MarkQuietMatches).
 //  3. Safe-meet reminders 12h ahead → safe_meet.reminder.
 //  4. Safe-meet no-show after 30min grace → safe_meet.missed_check_in.
+//  5. Stale account-risk rows → ComputeRisk recompute (§P0-7 Phase A).
 //
-// All four operations are idempotent at the store layer — either a
-// status transition (match) or a FOR UPDATE SKIP LOCKED claim with a
-// fired_at timestamp (meets). Safe to run multiple replicas; SKIP
-// LOCKED ensures only one replica processes each row per minute.
+// All operations are idempotent at the store layer — either a status
+// transition (match), a FOR UPDATE SKIP LOCKED claim with a fired_at
+// timestamp (meets), or an UPSERT (risk). Safe to run on multiple
+// replicas; the risk recompute re-running on the same user just
+// refreshes the row.
 
 // SweeperConfig tunes the sweeper windows. Production defaults match
 // the gap-analysis spec: 12h reminder lead, 30min missed-check-in
-// grace, 1 min tick.
+// grace, 1 min tick. §P0-7 Phase A adds the risk recompute knobs:
+// recompute rows older than 1h, capped at 500 users per tick.
 type SweeperConfig struct {
 	Interval                 time.Duration
 	ReminderLeadMin          time.Duration
 	ReminderLeadMax          time.Duration
 	MissedCheckInGracePeriod time.Duration
 	BatchLimit               int
+	RiskStaleAfter           time.Duration
+	RiskRecomputeBatch       int
 }
 
 func defaultSweeperConfig() SweeperConfig {
@@ -38,6 +43,8 @@ func defaultSweeperConfig() SweeperConfig {
 		ReminderLeadMax:          12*time.Hour + 30*time.Minute,
 		MissedCheckInGracePeriod: 30 * time.Minute,
 		BatchLimit:               200,
+		RiskStaleAfter:           1 * time.Hour,
+		RiskRecomputeBatch:       500,
 	}
 }
 
@@ -131,5 +138,16 @@ func (s *Service) runSweeperOnce(ctx context.Context, cfg SweeperConfig) {
 		if len(meets) > 0 {
 			slog.Info("sweeper: missed-check-in events fired", "count", len(meets))
 		}
+	}
+
+	// 5. §P0-7 Phase A: recompute risk for users whose row is older
+	// than `RiskStaleAfter`. Idempotent — re-running on the same user
+	// just refreshes the row. Capped at `RiskRecomputeBatch` per tick
+	// so a 100k-user backlog drains over time rather than hammering
+	// Postgres in a single sweep.
+	if n, err := s.RecomputeStaleRisks(ctx, cfg.RiskStaleAfter, cfg.RiskRecomputeBatch); err != nil {
+		slog.Warn("sweeper: RecomputeStaleRisks failed", "error", err)
+	} else if n > 0 {
+		slog.Info("sweeper: account risks recomputed", "count", n)
 	}
 }

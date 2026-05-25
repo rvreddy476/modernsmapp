@@ -520,3 +520,70 @@ UPDATE dating_profiles SET profile_status = 'active'
       AND first_name IS NOT NULL AND birth_date IS NOT NULL;
 UPDATE dating_profiles SET profile_status = 'paused' WHERE paused = true AND deleted_at IS NULL;
 UPDATE dating_profiles SET profile_status = 'deleted' WHERE deleted_at IS NOT NULL;
+
+-- ---------------------------------------------------------------------------
+-- §P0-8 — dating_admin_audit (append-only log of every admin action).
+--
+-- Every report transition + photo moderation flip taken from the
+-- /admin/dating console writes one row here. The trigger below makes
+-- the table append-only so the trust-safety + compliance team has a
+-- tamper-proof trail of who-did-what. PHASE_0_TEST_PLANS.md §P0-8
+-- acceptance test D verifies UPDATE/DELETE are rejected.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS dating_admin_audit (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    actor_admin_id  UUID NOT NULL,
+    action          TEXT NOT NULL,
+    target_user_id  UUID,
+    target_resource TEXT,
+    reason          TEXT,
+    policy_code     TEXT,
+    internal_notes  TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_dating_admin_audit_actor
+    ON dating_admin_audit(actor_admin_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_dating_admin_audit_target_user
+    ON dating_admin_audit(target_user_id, created_at DESC)
+    WHERE target_user_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_dating_admin_audit_created
+    ON dating_admin_audit(created_at DESC);
+
+-- Immutability: refuse UPDATE/DELETE. Append-only by design.
+CREATE OR REPLACE FUNCTION dating_admin_audit_immutable() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'dating_admin_audit is append-only';
+END $$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS dating_admin_audit_no_update ON dating_admin_audit;
+CREATE TRIGGER dating_admin_audit_no_update
+    BEFORE UPDATE OR DELETE ON dating_admin_audit
+    FOR EACH ROW EXECUTE FUNCTION dating_admin_audit_immutable();
+
+-- ---------------------------------------------------------------------------
+-- §P0-7 Phase A — Fake-account risk scoring.
+--
+-- Aggregates seven signals (verification tier, profile completeness, photo
+-- approval, IP/ASN velocity, report count + quality, block rate, spark
+-- velocity) into a 0..100 score that maps to one of seven enforcement
+-- levels. Phase A defers device-reuse (15w) — the signal is surfaced as
+-- null in the signals JSON with a TODO marker so Phase B can wire it
+-- without a schema change. The IP/ASN velocity signal is currently a
+-- placeholder (no request-log aggregation hook yet) and contributes 0.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS dating_account_risk (
+    user_id           UUID PRIMARY KEY,
+    risk_score        INT  NOT NULL CHECK (risk_score BETWEEN 0 AND 100),
+    risk_level        TEXT NOT NULL DEFAULT 'allow'
+        CHECK (risk_level IN
+            ('allow','reduce_reach','require_recheck',
+             'hide_from_discovery','chat_hold','admin_review','suspend')),
+    signals           JSONB NOT NULL DEFAULT '{}'::jsonb,
+    last_evaluated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_dating_account_risk_level
+    ON dating_account_risk(risk_level) WHERE risk_level != 'allow';
+CREATE INDEX IF NOT EXISTS idx_dating_account_risk_evaluated_at
+    ON dating_account_risk(last_evaluated_at);
