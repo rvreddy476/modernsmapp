@@ -89,15 +89,22 @@ type Tune struct {
 }
 
 // Photo is one media reference attached to a dating profile.
+//
+// ModerationReason is the human-readable note the moderator/scanner
+// recorded when flipping the photo's moderation_status. Owner-only
+// surfaces (GET /v1/dating/photos/me) expose this to the photo's
+// owner so "Why was my photo rejected?" can render the actual reason
+// rather than a generic message. §P1-2 transparency control.
 type Photo struct {
-	ID               uuid.UUID `json:"id"`
-	UserID           uuid.UUID `json:"user_id"`
-	MediaID          uuid.UUID `json:"media_id"`
-	SortOrder        int       `json:"sort_order"`
-	IsPrimary        bool      `json:"is_primary"`
-	Visibility       string    `json:"visibility"`
-	ModerationStatus string    `json:"moderation_status"`
-	CreatedAt        time.Time `json:"created_at"`
+	ID                uuid.UUID `json:"id"`
+	UserID            uuid.UUID `json:"user_id"`
+	MediaID           uuid.UUID `json:"media_id"`
+	SortOrder         int       `json:"sort_order"`
+	IsPrimary         bool      `json:"is_primary"`
+	Visibility        string    `json:"visibility"`
+	ModerationStatus  string    `json:"moderation_status"`
+	ModerationReason  *string   `json:"moderation_reason,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
 }
 
 // Prompt is a user's answer to a static prompt-catalog item.

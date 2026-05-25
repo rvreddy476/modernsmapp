@@ -40,6 +40,14 @@ type CandidateProfile struct {
 	FamilyPlansAxis   *int
 	EducationAxis     *int
 	PrimaryPhotoMedia *uuid.UUID
+	// §P1-3 privacy flags. Carried on the candidate row so the
+	// response builder can decide whether to strip last_active_at,
+	// emit a bucketed distance, or swap in the blurred-photo URL
+	// without a second per-card round-trip.
+	HideLastActive       bool
+	ApproximateLocation  bool
+	BlurPhotosUntilMatch bool
+	Incognito            bool
 }
 
 // Age returns the candidate's age in whole years, or 0 if BirthDate is nil.
@@ -126,7 +134,8 @@ const candidateSelectCols = `
           -- other users.
           AND moderation_status = 'approved'
           AND visibility = 'public'
-        LIMIT 1) AS primary_photo_media`
+        LIMIT 1) AS primary_photo_media,
+    p.hide_last_active, p.approximate_location, p.blur_photos_until_match, p.incognito`
 
 // CandidateQuery encodes the hard-filter knobs from spec §9.1.
 type CandidateQuery struct {
@@ -140,6 +149,12 @@ type CandidateQuery struct {
 	ViewerLon      *float64
 	ExcludePassed  bool
 	Limit          int
+	// VerifiedOnly mirrors the viewer's §P1-3 verified_only_filter
+	// toggle. When true the WHERE clause restricts candidate
+	// trust_tier to selfie/aadhaar — phone-only trust accounts drop
+	// from the deck. Defaults to false so the existing deck shape
+	// is preserved.
+	VerifiedOnly bool
 }
 
 // FetchCandidates returns up to Limit profiles that pass the hard-filter
@@ -191,6 +206,21 @@ func (s *Store) FetchCandidates(ctx context.Context, q CandidateQuery) ([]Candid
 		    WHERE rar.user_id = p.user_id
 		      AND rar.risk_level IN
 		          ('hide_from_discovery','chat_hold','admin_review','suspend'))`,
+		// §P1-3: incognito candidates stay hidden UNLESS the viewer
+		// has already shown explicit prior interest by sparking
+		// them. The EXISTS check uses the same (from_user_id,
+		// to_user_id) ordering as dating_sparks so the UNIQUE
+		// index on that pair is the planner's hot path.
+		`(p.incognito = false OR EXISTS (
+		    SELECT 1 FROM dating_sparks s
+		    WHERE s.from_user_id = $1 AND s.to_user_id = p.user_id))`,
+	}
+	if q.VerifiedOnly {
+		// §P1-3 verified-only filter: viewer-side toggle. Phone-only
+		// trust is treated as "not verified" — must be selfie or
+		// aadhaar to surface. Schema doesn't declare a 'none' tier
+		// today but the IN-clause guards future drift.
+		where = append(where, `p.trust_tier IN ('selfie','aadhaar')`)
 	}
 	if q.MinAge > 0 {
 		args = append(args, q.MinAge)
@@ -295,6 +325,7 @@ func scanCandidate(row pgx.Row) (*CandidateProfile, error) {
 		&c.LifestyleRhythm, &c.ConversationStyle, &c.FaithWeight, &c.FamilyWeight,
 		&c.RegionWeight, &c.FamilyPlansAxis, &c.EducationAxis,
 		&c.PrimaryPhotoMedia,
+		&c.HideLastActive, &c.ApproximateLocation, &c.BlurPhotosUntilMatch, &c.Incognito,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("scan candidate: %w", err)

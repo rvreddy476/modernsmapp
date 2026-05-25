@@ -23,6 +23,27 @@ func (s *Service) ListPhotos(ctx context.Context, userID uuid.UUID) ([]store.Pho
 	return s.store.ListPhotos(ctx, userID)
 }
 
+// ListMyPhotos returns the caller's photos filtered by moderation_status.
+// Used by `GET /v1/dating/photos/me?status=rejected` so the owner can
+// see the moderation reason for each photo — the §P1-2 "Why was my
+// photo rejected?" transparency control.
+//
+// Empty status returns every photo (same as ListPhotos but ordered
+// newest-first so the most recent moderation actions surface first).
+// Other status values are passed through verbatim; an unknown value
+// yields an empty list rather than an error so the UI can call the
+// endpoint with any client-side filter without breaking.
+func (s *Service) ListMyPhotos(ctx context.Context, userID uuid.UUID, status string) ([]store.Photo, error) {
+	switch status {
+	case "", "pending", "approved", "rejected":
+	default:
+		// Unknown status → empty list (defensive — clients can
+		// evolve filter chips without coordinating).
+		return []store.Photo{}, nil
+	}
+	return s.store.ListPhotosByStatus(ctx, userID, status)
+}
+
 // CreatePhoto validates input and inserts the photo.
 func (s *Service) CreatePhoto(ctx context.Context, userID uuid.UUID, p store.CreatePhotoParams) (*store.Photo, error) {
 	if p.MediaID == uuid.Nil {
@@ -71,7 +92,7 @@ func (s *Service) DeletePhoto(ctx context.Context, userID, photoID uuid.UUID) er
 // (profile lifecycle — wire pending_photo → pending_selfie) +
 // §P0-8 (audit trail) in dating/PRODUCTION_GAP_ANALYSIS.md.
 func (s *Service) SetPhotoModerationStatus(ctx context.Context, adminID, photoID uuid.UUID, status, rejectReason string) (*store.Photo, error) {
-	photo, err := s.store.SetPhotoModerationStatus(ctx, photoID, status)
+	photo, err := s.store.SetPhotoModerationStatus(ctx, photoID, status, rejectReason)
 	if err != nil {
 		return nil, err
 	}

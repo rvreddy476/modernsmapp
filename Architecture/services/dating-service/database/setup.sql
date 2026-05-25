@@ -587,3 +587,54 @@ CREATE INDEX IF NOT EXISTS idx_dating_account_risk_level
     ON dating_account_risk(risk_level) WHERE risk_level != 'allow';
 CREATE INDEX IF NOT EXISTS idx_dating_account_risk_evaluated_at
     ON dating_account_risk(last_evaluated_at);
+
+-- ---------------------------------------------------------------------------
+-- §P1-3 — Privacy controls.
+--
+-- Five user-facing privacy levers, all stored on the profile row so a
+-- single read covers the discovery query's hard-filter needs AND the
+-- response builder's masking logic. Defaults are conservative-OFF so
+-- existing profiles keep their current visibility.
+--
+--   * incognito                — viewer doesn't appear in anyone else's
+--                                deck unless they've already sparked.
+--   * hide_last_active         — last_active_at omitted from pulse +
+--                                match-list responses.
+--   * approximate_location     — distance bucketed to coarse ranges
+--                                instead of an exact km value.
+--   * verified_only_filter     — viewer-side toggle; FetchCandidates
+--                                excludes trust_tier 'phone' (must be
+--                                'selfie' or 'aadhaar').
+--   * blur_photos_until_match  — owner's photos return a blurred URL
+--                                for non-matched viewers. Matched
+--                                viewers see the original.
+--
+-- The blurred URL is uploaded alongside the original by the media
+-- pipeline. Phase A leaves blurred_url NULL when not yet generated;
+-- the response builder falls back to "<url>?blurred=1" the client
+-- honours so blur still takes effect end-to-end.
+-- ---------------------------------------------------------------------------
+ALTER TABLE dating_profiles
+    ADD COLUMN IF NOT EXISTS incognito               BOOLEAN NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS hide_last_active        BOOLEAN NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS approximate_location    BOOLEAN NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS verified_only_filter    BOOLEAN NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS blur_photos_until_match BOOLEAN NOT NULL DEFAULT false;
+
+ALTER TABLE dating_photos
+    ADD COLUMN IF NOT EXISTS blurred_url TEXT;
+
+-- ---------------------------------------------------------------------------
+-- §P1-2 — Transparency controls.
+--
+-- Surface the moderation reason set by the scanner/admin so the photo
+-- owner can see "Why was my photo rejected?". The column is set by
+-- SetPhotoModerationStatus and read by the owner-only photo list
+-- endpoint (`GET /v1/dating/photos/me`). NULL means "no reason yet" —
+-- legacy rows + pending photos.
+--
+-- Idempotent — pre-existing deploys will pick this up on next bootstrap.
+-- ---------------------------------------------------------------------------
+ALTER TABLE dating_photos
+    ADD COLUMN IF NOT EXISTS moderation_reason TEXT;
+

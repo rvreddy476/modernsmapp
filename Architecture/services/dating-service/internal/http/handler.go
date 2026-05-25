@@ -61,6 +61,12 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// Sparked your photo" titles).
 		dating.GET("/profile/:userId/preview", h.GetProfilePreview)
 
+		// §P1-3 — Privacy controls (incognito, hide_last_active,
+		// approximate_location, verified_only_filter,
+		// blur_photos_until_match). Partial-update PATCH semantics.
+		dating.GET("/profile/privacy", h.GetPrivacy)
+		dating.PATCH("/profile/privacy", h.PatchPrivacy)
+
 		dating.GET("/tune", h.GetTune)
 		dating.PUT("/tune", h.PutTune)
 
@@ -68,6 +74,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		dating.PUT("/preferences", h.PutPreferences)
 
 		dating.GET("/photos", h.ListPhotos)
+		// §P1-2 transparency — owner-only view that includes the
+		// moderation_reason column so the "Why was my photo
+		// rejected?" UI can render the moderator note inline.
+		dating.GET("/photos/me", h.ListMyPhotos)
 		dating.POST("/photos", h.CreatePhoto)
 		dating.PATCH("/photos/:id", h.UpdatePhoto)
 		dating.DELETE("/photos/:id", h.DeletePhoto)
@@ -84,6 +94,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 		dating.GET("/pulse/today", h.GetPulseToday)
 		dating.GET("/pulse/nebula", h.GetPulseNebula)
+		// §P1-2 transparency — "Why am I seeing this profile?"
+		// Returns structured reasons (age band, distance, gender
+		// pref, shared community, shared interest, promoted).
+		dating.GET("/pulse/:targetUserId/explain", h.ExplainPulseCandidate)
 
 		// Sprint 3 — Sparks
 		dating.POST("/sparks", h.CreateSpark)

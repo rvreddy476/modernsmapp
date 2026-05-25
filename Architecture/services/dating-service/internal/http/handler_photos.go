@@ -23,6 +23,35 @@ func (h *Handler) ListPhotos(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, photos, nil)
 }
 
+// ListMyPhotos — GET /v1/dating/photos/me[?status=rejected]
+//
+// Owner-only view of the caller's photos including the
+// moderation_reason column. Backs the §P1-2 "Why was my photo
+// rejected?" UI: the postmatch profile-photo grid calls this with
+// status=rejected (or no filter) to render the moderator note inline
+// next to each photo.
+//
+// Internal-key gated (same as the rest of /v1/dating/*); the
+// X-User-Id header identifies the owner. The endpoint never exposes
+// another user's moderation state — the WHERE clause pins to the
+// caller's user_id.
+func (h *Handler) ListMyPhotos(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	status := c.Query("status")
+	photos, err := h.svc.ListMyPhotos(c.Request.Context(), userID, status)
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
+		return
+	}
+	if photos == nil {
+		photos = []store.Photo{}
+	}
+	api.JSON(c.Writer, http.StatusOK, photos, nil)
+}
+
 // CreatePhoto inserts a new photo for the caller.
 func (h *Handler) CreatePhoto(c *gin.Context) {
 	userID, ok := getUserID(c)
