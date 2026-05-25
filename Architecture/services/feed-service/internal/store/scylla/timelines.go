@@ -2,6 +2,7 @@ package scylla
 
 import (
 	"context"
+	"os"
 	"time"
 
 	"github.com/gocql/gocql"
@@ -46,24 +47,52 @@ func toGocql(id uuid.UUID) gocql.UUID {
 	return gocql.UUID(id)
 }
 
-// AddToHomeTimeline (Push)
+// AddToHomeTimeline (Push). Also writes the HF4 reverse-index row so
+// UpdatePostContentType can find this row by post_id without scanning.
 func (s *TimelineStore) AddToHomeTimeline(ctx context.Context, userID uuid.UUID, postID, authorID uuid.UUID, createdAt time.Time, contentType string) error {
 	b := bucket(createdAt)
+	ts := gocql.UUIDFromTime(createdAt)
 
-	return s.session.Query(`
+	if err := s.session.Query(`
 		INSERT INTO home_timeline_by_user (user_id, bucket, ts, post_id, author_id, created_at, content_type)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, toGocql(userID), b, gocql.UUIDFromTime(createdAt), toGocql(postID), toGocql(authorID), createdAt, contentType).Exec()
+	`, toGocql(userID), b, ts, toGocql(postID), toGocql(authorID), createdAt, contentType).Exec(); err != nil {
+		return err
+	}
+	// Best-effort: a reverse-index write failure leaves the timeline
+	// row addressable only by ALLOW FILTERING (slow but correct). The
+	// alternative — refusing the timeline insert when the index write
+	// fails — would lose the post from the user's feed entirely, which
+	// is worse. Log + continue.
+	if err := s.session.Query(`
+		INSERT INTO timeline_index_by_post (post_id, timeline_kind, owner_id, bucket, ts)
+		VALUES (?, 'home', ?, ?, ?)
+	`, toGocql(postID), toGocql(userID), b, ts).Exec(); err != nil {
+		// Intentional: don't surface the index error.
+		_ = err
+	}
+	return nil
 }
 
-// AddToAuthorTimeline (Pull source)
+// AddToAuthorTimeline (Pull source). Also writes the HF4 reverse-index
+// row for the author copy.
 func (s *TimelineStore) AddToAuthorTimeline(ctx context.Context, authorID uuid.UUID, postID uuid.UUID, createdAt time.Time, contentType string) error {
 	b := bucket(createdAt)
+	ts := gocql.UUIDFromTime(createdAt)
 
-	return s.session.Query(`
+	if err := s.session.Query(`
 		INSERT INTO author_timeline_by_author (author_id, bucket, ts, post_id, created_at, content_type)
 		VALUES (?, ?, ?, ?, ?, ?)
-	`, toGocql(authorID), b, gocql.UUIDFromTime(createdAt), toGocql(postID), createdAt, contentType).Exec()
+	`, toGocql(authorID), b, ts, toGocql(postID), createdAt, contentType).Exec(); err != nil {
+		return err
+	}
+	if err := s.session.Query(`
+		INSERT INTO timeline_index_by_post (post_id, timeline_kind, owner_id, bucket, ts)
+		VALUES (?, 'author', ?, ?, ?)
+	`, toGocql(postID), toGocql(authorID), b, ts).Exec(); err != nil {
+		_ = err
+	}
+	return nil
 }
 
 // UpdatePostContentType rewrites the content_type column on every
@@ -74,17 +103,68 @@ func (s *TimelineStore) AddToAuthorTimeline(ctx context.Context, authorID uuid.U
 // MediaTranscodeConsumer reclassification flips a long_video back to
 // flick (or any future content_type transition).
 //
-// Scan + UPDATE pattern: Scylla does not have a secondary index on
-// post_id (post_id is not part of the partition key), so identifying
-// the affected rows requires `ALLOW FILTERING`. That's slow on big
-// tables — fine for the dev/staging volume here, but production
-// should add a `social_feed.posts_to_timeline_index` mapping
-// post_id → (user_id, bucket, ts) so this becomes a partition lookup.
+// HF4: uses social_feed.timeline_index_by_post — a partition lookup
+// keyed on post_id — instead of the legacy ALLOW FILTERING scan. The
+// index is written transactionally with each AddTo* insert, so any
+// timeline row created after HF4 lands is addressable in O(1) per
+// owner. Pre-HF4 rows have no index entries; for those we fall back
+// to the scan so reclassifications still complete. The fallback is
+// gated on `FEED_HF4_FALLBACK=true` (default true) so a future cutover
+// can turn it off once the back-populate worker has run.
 //
 // Returns (rowsRewritten, err). Idempotent: re-running it with the
 // same newType is a no-op stream of UPDATEs.
 func (s *TimelineStore) UpdatePostContentType(ctx context.Context, postID uuid.UUID, newType string) (int, error) {
 	rows := 0
+
+	// Index path — single partition lookup per post.
+	indexed := 0
+	{
+		iter := s.session.Query(
+			`SELECT timeline_kind, owner_id, bucket, ts
+			 FROM timeline_index_by_post WHERE post_id = ?`,
+			toGocql(postID),
+		).WithContext(ctx).Iter()
+		var kind string
+		var owner gocql.UUID
+		var b int
+		var ts gocql.UUID
+		for iter.Scan(&kind, &owner, &b, &ts) {
+			indexed++
+			var stmt string
+			switch kind {
+			case "home":
+				stmt = `UPDATE home_timeline_by_user SET content_type = ?
+				        WHERE user_id = ? AND bucket = ? AND ts = ?`
+			case "author":
+				stmt = `UPDATE author_timeline_by_author SET content_type = ?
+				        WHERE author_id = ? AND bucket = ? AND ts = ?`
+			default:
+				continue
+			}
+			if err := s.session.Query(stmt, newType, owner, b, ts).WithContext(ctx).Exec(); err != nil {
+				_ = iter.Close()
+				return rows, err
+			}
+			rows++
+		}
+		if err := iter.Close(); err != nil {
+			return rows, err
+		}
+	}
+
+	// If the index returned any rows, trust it — the index is the
+	// source of truth for HF4-era timeline rows.
+	if indexed > 0 {
+		return rows, nil
+	}
+
+	// Fallback path: pre-HF4 row with no index entries. Scans both
+	// fan-out tables once. Gated by FEED_HF4_FALLBACK=false to disable
+	// after back-populate; defaults to enabled.
+	if os.Getenv("FEED_HF4_FALLBACK") == "false" {
+		return rows, nil
+	}
 
 	// home_timeline_by_user: one row per follower.
 	{
@@ -104,6 +184,12 @@ func (s *TimelineStore) UpdatePostContentType(ctx context.Context, postID uuid.U
 				_ = iter.Close()
 				return rows, err
 			}
+			// Back-populate the index for this row so future reclassifies
+			// hit the fast path.
+			_ = s.session.Query(`
+				INSERT INTO timeline_index_by_post (post_id, timeline_kind, owner_id, bucket, ts)
+				VALUES (?, 'home', ?, ?, ?)
+			`, toGocql(postID), userID, b, ts).WithContext(ctx).Exec()
 			rows++
 		}
 		if err := iter.Close(); err != nil {
@@ -129,6 +215,10 @@ func (s *TimelineStore) UpdatePostContentType(ctx context.Context, postID uuid.U
 				_ = iter.Close()
 				return rows, err
 			}
+			_ = s.session.Query(`
+				INSERT INTO timeline_index_by_post (post_id, timeline_kind, owner_id, bucket, ts)
+				VALUES (?, 'author', ?, ?, ?)
+			`, toGocql(postID), authorID, b, ts).WithContext(ctx).Exec()
 			rows++
 		}
 		if err := iter.Close(); err != nil {

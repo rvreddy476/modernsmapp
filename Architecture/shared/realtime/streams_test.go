@@ -110,9 +110,11 @@ func TestStreamSubscriber_Replay(t *testing.T) {
 	}
 }
 
-// TestPublisher_BackCompat confirms the legacy Publisher.Publish path
-// (which now double-writes) still puts data into the stream so
-// migrated subscribers see it without a producer code change.
+// TestPublisher_BackCompat confirms Publisher.Publish puts events
+// into the stream — the headline guarantee producers depend on. The
+// historical Pub/Sub double-write has been dropped (only subscriber
+// was the SSE gateway, migrated to Streams); this test now verifies
+// the post-cutover single-write path stays correct.
 func TestPublisher_BackCompat(t *testing.T) {
 	rdb := streamsTestClient(t)
 	defer rdb.Close()

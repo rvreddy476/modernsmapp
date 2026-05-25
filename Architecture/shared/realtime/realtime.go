@@ -68,14 +68,15 @@ type Event struct {
 	EmittedAt time.Time       `json:"emitted_at"`
 }
 
-// Publish marshals and pushes the event onto the topic's stream
-// (Redis Streams via XADD with MAXLEN trim) AND fan-outs to the
-// matching Pub/Sub channel for any legacy subscriber still listening.
+// Publish pushes the event onto the topic's Redis Stream via XADD with
+// a MAXLEN ring trim. SSE subscribers (the notification-service
+// gateway) read with XREAD BLOCK so they can replay missed messages
+// via Last-Event-ID on reconnect.
 //
-// CR3-rt migration: Streams is now the durable primary so SSE clients
-// can replay missed messages via Last-Event-ID. The Pub/Sub double-write
-// stays during the rollout so any non-migrated subscriber keeps working;
-// once every subscriber is verified on Streams we'll drop it.
+// CR3-rt: this used to double-write to the legacy Pub/Sub channel
+// during the cutover. The only subscriber on the `rt:` channels was
+// the notification SSE handler, which moved to Streams in commit
+// 8ae97c9; the Pub/Sub leg is now dead and has been dropped.
 //
 // Best-effort on Redis outage — Kafka remains the durable copy.
 func (p *Publisher) Publish(ctx context.Context, topic, eventType string, data any) error {
@@ -99,7 +100,6 @@ func (p *Publisher) Publish(ctx context.Context, topic, eventType string, data a
 	if err != nil {
 		return fmt.Errorf("realtime: marshal envelope: %w", err)
 	}
-	// Streams write — durable, replayable.
 	if _, err := p.rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: StreamKey(topic),
 		MaxLen: maxStreamLen,
@@ -111,10 +111,6 @@ func (p *Publisher) Publish(ctx context.Context, topic, eventType string, data a
 	}).Result(); err != nil {
 		return fmt.Errorf("realtime: XADD %s: %w", topic, err)
 	}
-	// Pub/Sub write — back-compat for any non-migrated subscriber.
-	// Failures are logged at debug only (best-effort once Streams
-	// succeeded).
-	_ = p.rdb.Publish(ctx, channelPrefix+topic, body).Err()
 	return nil
 }
 
