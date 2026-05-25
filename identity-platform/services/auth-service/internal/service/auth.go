@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
+	"net"
 	"regexp"
 	"strings"
 	"time"
@@ -514,18 +515,24 @@ func (s *Service) LoginWithPassword(ctx context.Context, identifier, password, d
 	}, nil
 }
 
-// A15: refresh-token IP/UA bind. Refresh-token theft (via XSS / stolen
+// A15 + A11: refresh-token IP/UA bind. Refresh-token theft (via XSS / stolen
 // laptop / shared device) is the leading silent-takeover vector once
 // the access token expires. We persist the IP/UA at session creation
 // and on every refresh we evaluate whether the caller's fingerprint
 // matches. The policy is graduated:
 //
-//   - Same IP + same UA family: rotate, no flag (the common case).
-//   - Different IP, same UA family: rotate but record a low-risk
-//     anomaly (legitimate — user changed networks).
-//   - Different IP AND different UA family: HIGH risk. Refresh is
-//     denied; user must re-authenticate. This is the strongest signal
-//     that the token was stolen and is being replayed elsewhere.
+//   - Same /24 (or /48 v6) + same UA family: rotate, no flag (the
+//     common case — DHCP rotation within the same NAT pool is normal).
+//   - Different specific IP but same /24 subnet, same UA family:
+//     rotate but record a low-risk anomaly (legitimate — minor LAN
+//     reassignment).
+//   - Different /24 OR different UA family: HIGH risk. Refresh is
+//     denied; user must re-authenticate. A11 tightened the policy
+//     here: previously we required BOTH subnet AND UA to differ
+//     (which left obvious carrier-IP-rotation + cookie-theft replay
+//     attacks undetected). Now either signal alone is enough — a
+//     stolen refresh token replayed from a different network OR a
+//     different browser family burns the session.
 //   - Session previously marked anomaly_flagged: deny regardless.
 //
 // `ip` and `userAgent` come from the HTTP handler (gin.ClientIP +
@@ -549,10 +556,14 @@ func (s *Service) RefreshSession(ctx context.Context, refreshToken, ip, userAgen
 		return nil, errors.New("refresh token expired")
 	}
 
-	// A15: fingerprint check before issuing a new pair.
+	// A15 + A11: graduated fingerprint check before issuing a new pair.
+	// `ipChanged` = different specific address (host-level diff).
+	// `subnetChanged` = different /24 (v4) or /48 (v6) — strong signal
+	// of a genuinely different network, not just DHCP rotation.
 	ipChanged := ip != "" && sess.IP != "" && ip != sess.IP
+	subnetChanged := ip != "" && sess.IP != "" && !sameSubnet(sess.IP, ip)
 	uaChanged := userAgent != "" && sess.UserAgent != "" && !sameUserAgentFamily(sess.UserAgent, userAgent)
-	highRisk := ipChanged && uaChanged
+	highRisk := subnetChanged || uaChanged
 
 	if highRisk {
 		// Don't issue a new pair. Log + record an anomaly so the user
@@ -599,10 +610,11 @@ func (s *Service) RefreshSession(ctx context.Context, refreshToken, ip, userAgen
 		return nil, err
 	}
 
-	// Low-risk anomaly: IP changed but UA looks consistent. Record so
+	// Low-risk anomaly: specific IP changed but stayed within the same
+	// /24, UA family unchanged. Common with DHCP rotation. Record so
 	// the security inbox can surface "signed in from new location" but
 	// don't block the refresh.
-	if ipChanged && !uaChanged {
+	if ipChanged && !subnetChanged && !uaChanged {
 		_ = s.store.RecordLoginAnomaly(ctx, sess.UserID, "new_ip",
 			ip, userAgent, sess.DeviceID, "", 40, false, map[string]any{
 				"original_ip":  sess.IP,
@@ -653,6 +665,37 @@ func uaProduct(ua string) string {
 		}
 	}
 	return ua
+}
+
+// sameSubnet returns true when a and b are within the same broad network
+// block: /24 for IPv4 and /48 for IPv6. The goal is to distinguish "DHCP
+// reassigned within the same NAT pool / ISP block" (benign) from "actually
+// hopped to a different network" (suspect). Returns true when either side
+// is empty or unparseable so we don't false-positive on missing telemetry.
+func sameSubnet(a, b string) bool {
+	if a == "" || b == "" || a == b {
+		return true
+	}
+	ipA := net.ParseIP(a)
+	ipB := net.ParseIP(b)
+	if ipA == nil || ipB == nil {
+		return true
+	}
+	if v4a, v4b := ipA.To4(), ipB.To4(); v4a != nil && v4b != nil {
+		// /24 — match first 3 octets.
+		return v4a[0] == v4b[0] && v4a[1] == v4b[1] && v4a[2] == v4b[2]
+	}
+	v6a, v6b := ipA.To16(), ipB.To16()
+	if v6a == nil || v6b == nil {
+		return true
+	}
+	// /48 — match first 6 bytes.
+	for i := 0; i < 6; i++ {
+		if v6a[i] != v6b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Service) generateOTP() (string, error) {
@@ -954,6 +997,14 @@ func (s *Service) ResetPassword(ctx context.Context, identifier, code, newPasswo
 	if err := s.store.UpdatePassword(ctx, user.ID, string(hash)); err != nil {
 		return err
 	}
+
+	// A16: wipe any in-flight pending-2FA sessions for this user. An
+	// attacker that already cleared step 1 (password) and is sitting on
+	// a pending_token in the 5-min Redis TTL must not be allowed to
+	// complete step 2 with credentials we just rotated. Best-effort —
+	// runs before session revoke so that even a Redis error here still
+	// gets the session-revoke attempt below.
+	s.InvalidatePending2FASessions(ctx, user.ID)
 
 	// Revoke all existing sessions for security. Audit A4: previously
 	// the error was silently dropped (`s.store.RevokeAllSessions(...)`

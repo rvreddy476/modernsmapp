@@ -23,10 +23,11 @@ var (
 )
 
 const (
-	pendingSessionPrefix = "2fa:pending:"
-	recoveryCodesPrefix  = "2fa:recovery:"
-	pendingSessionTTL    = 5 * time.Minute
-	recoveryCodeCount    = 8
+	pendingSessionPrefix     = "2fa:pending:"
+	pendingByUserSetPrefix   = "2fa:pending_by_user:"
+	recoveryCodesPrefix      = "2fa:recovery:"
+	pendingSessionTTL        = 5 * time.Minute
+	recoveryCodeCount        = 8
 )
 
 // TwoFASetupResponse is returned when a user initiates 2FA setup.
@@ -231,8 +232,11 @@ func (s *Service) Verify2FA(ctx context.Context, userID uuid.UUID, code, pending
 		}
 	}
 
-	// Delete the pending session
+	// Delete the pending session and drop it from the per-user index
+	// set so InvalidatePending2FASessions doesn't try to revoke a
+	// token that's already been consumed.
 	s.rdb.Del(ctx, key)
+	s.rdb.SRem(ctx, pendingByUserSetPrefix+parsedUserID.String(), pendingToken)
 
 	// Look up the user for session creation
 	user, err := s.store.GetUserByID(ctx, parsedUserID)
@@ -272,7 +276,47 @@ func (s *Service) StorePending2FASession(ctx context.Context, userID uuid.UUID, 
 		return "", fmt.Errorf("failed to store pending session: %w", err)
 	}
 
+	// A16: maintain a per-user index set of live pending tokens so that
+	// ResetPassword (and any future ChangePassword) can wipe every
+	// step-2-pending login for this user atomically. Without this set
+	// an attacker who completed step 1 (password) right before a
+	// password reset could still complete step 2 (TOTP) against the
+	// now-revoked credentials. The set entry's TTL is bumped on each
+	// store so it lives at least as long as any individual pending
+	// session.
+	idxKey := pendingByUserSetPrefix + userID.String()
+	_ = s.rdb.SAdd(ctx, idxKey, token).Err()
+	_ = s.rdb.Expire(ctx, idxKey, pendingSessionTTL).Err()
+
 	return token, nil
+}
+
+// InvalidatePending2FASessions wipes every live pending 2FA session for
+// a user. Called from password-change and account-deletion paths so a
+// step-1-passed-but-step-2-pending attacker can't complete the second
+// factor with stale credentials. Best-effort: errors are logged but
+// don't fail the caller, because the password update has already
+// succeeded and stranding the change behind a Redis blip would be
+// worse than the small replay window.
+func (s *Service) InvalidatePending2FASessions(ctx context.Context, userID uuid.UUID) {
+	if s.rdb == nil {
+		return
+	}
+	idxKey := pendingByUserSetPrefix + userID.String()
+	tokens, err := s.rdb.SMembers(ctx, idxKey).Result()
+	if err != nil {
+		s.log.Warn("2fa: failed to list pending tokens for invalidation",
+			"err", err, "user_id", userID)
+		return
+	}
+	for _, token := range tokens {
+		_ = s.rdb.Del(ctx, pendingSessionPrefix+token).Err()
+	}
+	_ = s.rdb.Del(ctx, idxKey).Err()
+	if len(tokens) > 0 {
+		s.log.Info("2fa: invalidated pending sessions on credential change",
+			"user_id", userID, "count", len(tokens))
+	}
 }
 
 
