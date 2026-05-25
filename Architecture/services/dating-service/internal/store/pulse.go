@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -200,6 +201,35 @@ func (s *Store) FetchCandidates(ctx context.Context, q CandidateQuery) ([]Candid
 	if q.ExcludePassed {
 		where = append(where, `NOT EXISTS (SELECT 1 FROM dating_passes dp
 		    WHERE dp.user_id = $1 AND dp.candidate_id = p.user_id)`)
+	}
+
+	// P0-10 Phase A: geohash prefix prefilter. When the viewer has a
+	// location + a distance cap, compute the viewer's geohash at the
+	// precision that bounds the radius and restrict candidates to that
+	// cell + its 8 neighbours. Indexed via
+	// idx_dating_profiles_geohash_prefix; turns the matcher's hot path
+	// from a full table scan into a bounded lookup.
+	//
+	// Without a viewer location or with an unbounded radius we skip the
+	// prefilter — the Go-side haversine then still does the final
+	// distance check on the over-fetched batch.
+	if q.ViewerLat != nil && q.ViewerLon != nil && q.DistanceKmMax > 0 {
+		precision := GeohashPrefixForRadiusKm(q.DistanceKmMax)
+		if precision > 0 {
+			viewerGH := EncodeGeohash(*q.ViewerLat, *q.ViewerLon, precision)
+			if viewerGH != "" {
+				cells := GeohashNeighbours(viewerGH)
+				// Build a (LIKE 'cell1%' OR LIKE 'cell2%' ...) clause.
+				// Each cell adds one parameter to keep the planner
+				// happy with prepared-statement caching.
+				ors := make([]string, 0, len(cells))
+				for _, c := range cells {
+					args = append(args, c+"%")
+					ors = append(ors, fmt.Sprintf("p.location_geohash LIKE $%d", len(args)))
+				}
+				where = append(where, "("+strings.Join(ors, " OR ")+")")
+			}
+		}
 	}
 
 	whereClause := ""

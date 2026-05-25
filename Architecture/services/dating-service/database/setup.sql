@@ -373,6 +373,14 @@ CREATE INDEX IF NOT EXISTS idx_dating_profiles_intent_geo
     ON dating_profiles(intent) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_dating_profiles_geohash
     ON dating_profiles(location_geohash) WHERE deleted_at IS NULL;
+-- P0-10 Phase A: prefix index using text_pattern_ops so the candidate
+-- query's LIKE 'cell%' filter is index-bounded. Without this opclass
+-- the planner falls back to a sequential scan even with the column
+-- indexed normally — LIKE with leading literal only uses an index
+-- when text_pattern_ops (or default collation = "C") is in play.
+CREATE INDEX IF NOT EXISTS idx_dating_profiles_geohash_prefix
+    ON dating_profiles(location_geohash text_pattern_ops)
+    WHERE deleted_at IS NULL AND location_geohash IS NOT NULL;
 
 -- ---------------------------------------------------------------------------
 -- Sprint 5 — Premium plans, Razorpay/UPI checkout
