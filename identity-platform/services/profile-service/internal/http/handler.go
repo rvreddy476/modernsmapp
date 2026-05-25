@@ -59,6 +59,7 @@ type ProfileService interface {
 	ListFollowing(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.FollowerEntry, int64, error)
 	ListFollowersCursor(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]store.FollowerEntry, string, error)
 	ListFollowingCursor(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]store.FollowerEntry, string, error)
+	ListBlocksCursor(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]store.Block, string, error)
 	ListBlocks(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.Block, int64, error)
 	// Block
 	BlockUser(ctx context.Context, blockerID, blockedID uuid.UUID) error
@@ -997,6 +998,26 @@ func (h *Handler) ListBlocks(c *gin.Context) {
 	userID, err := parseUserHeader(c)
 	if err != nil {
 		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+
+	// Cursor pagination mode — same trigger as the followers endpoints.
+	if c.Query("cursor") != "" || c.Query("paginate") == "cursor" {
+		limit, _ := parsePagination(c)
+		blocks, next, err := h.svc.ListBlocksCursor(c.Request.Context(), userID, limit, c.Query("cursor"))
+		if err != nil {
+			h.log.Error("failed to list blocks (cursor)", "err", err, "user_id", userID, "request_id", RequestIDFromContext(c))
+			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
+			return
+		}
+		if blocks == nil {
+			blocks = []store.Block{}
+		}
+		api.JSON(c.Writer, http.StatusOK, gin.H{
+			"items":       blocks,
+			"next_cursor": next,
+			"limit":       limit,
+		}, nil)
 		return
 	}
 

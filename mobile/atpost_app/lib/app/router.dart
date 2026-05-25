@@ -7,8 +7,12 @@ import 'package:atpost_app/features/channels/create_channel_screen.dart';
 import 'package:atpost_app/features/commerce/address_book_screen.dart';
 import 'package:atpost_app/features/commerce/address_form_screen.dart';
 import 'package:atpost_app/features/commerce/cart_screen.dart';
+import 'package:atpost_app/features/seller/seller_bulk_import_screen.dart';
 import 'package:atpost_app/features/seller/seller_dashboard_screen.dart';
+import 'package:atpost_app/features/seller/seller_earnings_screen.dart';
+import 'package:atpost_app/features/seller/seller_orders_screen.dart';
 import 'package:atpost_app/features/seller/seller_products_screen.dart';
+import 'package:atpost_app/features/seller/seller_returns_screen.dart';
 import 'package:atpost_app/features/seller/seller_variants_screen.dart';
 import 'package:atpost_app/features/commerce/checkout_screen.dart';
 import 'package:atpost_app/features/commerce/commerce_home_screen.dart';
@@ -545,6 +549,22 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             builder: (context, state) => SellerVariantsScreen(
               productId: state.pathParameters['id']!,
             ),
+          ),
+          GoRoute(
+            path: '/seller/orders',
+            builder: (_, _) => const SellerOrdersScreen(),
+          ),
+          GoRoute(
+            path: '/seller/returns',
+            builder: (_, _) => const SellerReturnsScreen(),
+          ),
+          GoRoute(
+            path: '/seller/earnings',
+            builder: (_, _) => const SellerEarningsScreen(),
+          ),
+          GoRoute(
+            path: '/seller/bulk-import',
+            builder: (_, _) => const SellerBulkImportScreen(),
           ),
           // Phase F4 mobile — RFQ buyer flow.
           GoRoute(

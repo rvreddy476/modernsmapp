@@ -739,6 +739,54 @@ func (s *Store) GetBlockBidirectional(ctx context.Context, userAID, userBID uuid
 	return exists, err
 }
 
+// ListBlocksCursor — keyset variant of ListBlocks. Stays O(log n) at
+// any list depth via idx_blocks_blocker_keyset. Cursor format mirrors
+// the followers path: "<unix_micros>:<uuid>" where uuid is the row's id.
+func (s *Store) ListBlocksCursor(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]Block, string, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	args := []any{userID}
+	cursorClause := ""
+	if cursor != "" {
+		ts, id, ok := parseFollowKeysetCursor(cursor)
+		if ok {
+			cursorClause = " AND (created_at, id) < ($2, $3)"
+			args = append(args, ts, id)
+		}
+	}
+	args = append(args, limit+1)
+	q := `
+		SELECT id, blocker_id, blocked_id, created_at
+		FROM profile.blocks
+		WHERE blocker_id = $1` + cursorClause + `
+		ORDER BY created_at DESC, id DESC
+		LIMIT $` + strconv.Itoa(len(args))
+	rows, err := s.db.Query(ctx, q, args...)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+	var blocks []Block
+	for rows.Next() {
+		var b Block
+		if err := rows.Scan(&b.ID, &b.BlockerID, &b.BlockedID, &b.CreatedAt); err != nil {
+			return nil, "", err
+		}
+		blocks = append(blocks, b)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	var next string
+	if len(blocks) > limit {
+		last := blocks[limit-1]
+		next = fmt.Sprintf("%d:%s", last.CreatedAt.UnixMicro(), last.ID.String())
+		blocks = blocks[:limit]
+	}
+	return blocks, next, nil
+}
+
 // ListBlocks returns users blocked by the given user with pagination.
 func (s *Store) ListBlocks(ctx context.Context, userID uuid.UUID, limit, offset int) ([]Block, int64, error) {
 	var total int64

@@ -372,6 +372,11 @@ func (s *Service) ListBlocks(ctx context.Context, userID uuid.UUID, limit, offse
 	return s.store.ListBlocks(ctx, userID, limit, offset)
 }
 
+// ListBlocksCursor — keyset pagination for the /me/blocks endpoint.
+func (s *Service) ListBlocksCursor(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]store.Block, string, error) {
+	return s.store.ListBlocksCursor(ctx, userID, limit, cursor)
+}
+
 // ---------------------------------------------------------------
 // Block / Unblock
 // ---------------------------------------------------------------

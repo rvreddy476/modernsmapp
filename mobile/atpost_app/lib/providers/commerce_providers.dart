@@ -119,6 +119,42 @@ final productVariantsProvider = FutureProvider.autoDispose
   return repo.listProductVariants(productId);
 });
 
+/// sellerOrdersProvider — seller fulfillment queue, family on the
+/// stage filter (all / unshipped / in_transit / delivered / cancelled).
+final sellerOrdersProvider = FutureProvider.autoDispose
+    .family<List<SellerOrderCard>, String>((ref, stage) async {
+  final repo = ref.watch(commerceRepositoryProvider);
+  return repo.listSellerOrders(stage: stage);
+});
+
+/// sellerReturnsProvider — seller returns inbox.
+final sellerReturnsProvider = FutureProvider.autoDispose<List<SellerReturnCard>>((ref) async {
+  final repo = ref.watch(commerceRepositoryProvider);
+  return repo.listSellerReturns();
+});
+
+/// sellerEarningsProvider — delivered prepaid items payout ledger.
+final sellerEarningsProvider = FutureProvider.autoDispose<List<SellerEarning>>((ref) async {
+  final repo = ref.watch(commerceRepositoryProvider);
+  return repo.listSellerEarnings();
+});
+
+/// sellerCODRemittancesProvider — COD payout ledger. Family on status
+/// filter (empty = all).
+final sellerCODRemittancesProvider = FutureProvider.autoDispose
+    .family<List<CODRemittance>, String>((ref, status) async {
+  final repo = ref.watch(commerceRepositoryProvider);
+  return repo.listCODRemittances(status: status.isEmpty ? null : status);
+});
+
+/// bulkImportJobsProvider — seller's bulk SKU import jobs. Mobile is
+/// monitor + execute only; uploads happen on web.
+final bulkImportJobsProvider =
+    FutureProvider.autoDispose<List<BulkImportJob>>((ref) async {
+  final repo = ref.watch(commerceRepositoryProvider);
+  return repo.listBulkImportJobs();
+});
+
 // couponPreviewProvider — read-only preview of what `code` would do to
 // the current cart total. autoDispose + family so it requeries when
 // the user edits the code input, and clears when the cart screen

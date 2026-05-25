@@ -841,6 +841,109 @@ class CommerceRepository {
   Future<void> archiveProductVariant(String variantId) async {
     await _api.delete('/v1/commerce/variants/$variantId');
   }
+
+  // ─── Seller orders / returns / earnings ────────────────────────────
+
+  /// Seller-facing order fulfillment list. Each card carries the
+  /// seller's items, their shipment (if booked), and the order's
+  /// status — enough to render a fulfillment queue without a second
+  /// detail fetch.
+  Future<List<SellerOrderCard>> listSellerOrders({
+    String stage = 'all',
+    int limit = 20,
+    int offset = 0,
+  }) async {
+    final res = await _api.get(
+      '/v1/commerce/seller/fulfillment',
+      queryParameters: {'stage': stage, 'limit': limit, 'offset': offset},
+    );
+    final raw = (res.data['data']?['orders'] as List?) ?? const [];
+    return raw
+        .whereType<Map>()
+        .map((m) => SellerOrderCard.fromJson(Map<String, dynamic>.from(m)))
+        .toList(growable: false);
+  }
+
+  /// Seller returns inbox.
+  Future<List<SellerReturnCard>> listSellerReturns({
+    int limit = 20,
+    int offset = 0,
+  }) async {
+    final res = await _api.get(
+      '/v1/commerce/seller/returns',
+      queryParameters: {'limit': limit, 'offset': offset},
+    );
+    final raw = (res.data['data'] as List?) ?? const [];
+    return raw
+        .whereType<Map>()
+        .map((m) => SellerReturnCard.fromJson(Map<String, dynamic>.from(m)))
+        .toList(growable: false);
+  }
+
+  /// Seller earnings ledger — prepaid (non-COD) delivered items with
+  /// gross / commission / fee / TDS / net broken out. COD lives in
+  /// /seller/cod-remittances.
+  Future<List<SellerEarning>> listSellerEarnings({
+    int limit = 50,
+    int offset = 0,
+  }) async {
+    final res = await _api.get(
+      '/v1/commerce/seller/earnings',
+      queryParameters: {'limit': limit, 'offset': offset},
+    );
+    final raw = (res.data['data']?['earnings'] as List?) ?? const [];
+    return raw
+        .whereType<Map>()
+        .map((m) => SellerEarning.fromJson(Map<String, dynamic>.from(m)))
+        .toList(growable: false);
+  }
+
+  // ─── Bulk import (read + execute; upload stays web-only) ─────────
+
+  /// Lists the seller's bulk import jobs newest-first. Mobile shows
+  /// jobs created via the web flow so a seller can monitor + finalize
+  /// from their phone; new uploads require the desktop file picker.
+  Future<List<BulkImportJob>> listBulkImportJobs() async {
+    final res = await _api.get('/v1/commerce/seller/bulk-import');
+    final raw = (res.data['data']?['items'] as List?) ?? const [];
+    return raw
+        .whereType<Map>()
+        .map((m) => BulkImportJob.fromJson(Map<String, dynamic>.from(m)))
+        .toList(growable: false);
+  }
+
+  Future<BulkImportJob> getBulkImportJob(String jobId) async {
+    final res = await _api.get('/v1/commerce/seller/bulk-import/$jobId');
+    final data = res.data['data'];
+    return BulkImportJob.fromJson(Map<String, dynamic>.from(data as Map));
+  }
+
+  /// Triggers the worker to upsert validated rows. Idempotent at the
+  /// backend; calling after the job is already executed returns the
+  /// existing row count rather than re-importing.
+  Future<void> executeBulkImport(String jobId) async {
+    await _api.post('/v1/commerce/seller/bulk-import/$jobId/execute');
+  }
+
+  /// COD remittance ledger — one row per COD shipment whose cash the
+  /// courier has collected. Status pending → settled when Ops pays out.
+  Future<List<CODRemittance>> listCODRemittances({
+    String? status,
+    int limit = 20,
+    int offset = 0,
+  }) async {
+    final params = <String, dynamic>{'limit': limit, 'offset': offset};
+    if (status != null && status.isNotEmpty) params['status'] = status;
+    final res = await _api.get(
+      '/v1/commerce/seller/cod-remittances',
+      queryParameters: params,
+    );
+    final raw = (res.data['data']?['items'] as List?) ?? const [];
+    return raw
+        .whereType<Map>()
+        .map((m) => CODRemittance.fromJson(Map<String, dynamic>.from(m)))
+        .toList(growable: false);
+  }
 }
 
 final commerceRepositoryProvider = Provider<CommerceRepository>((ref) {

@@ -267,6 +267,10 @@ CREATE TABLE IF NOT EXISTS profile.blocks (
 );
 CREATE INDEX IF NOT EXISTS idx_blocks_blocker ON profile.blocks(blocker_id);
 CREATE INDEX IF NOT EXISTS idx_blocks_blocked ON profile.blocks(blocked_id);
+-- Keyset cursor index — supports the cursor pagination path so
+-- /me/blocks?cursor=... stays O(log n) at any depth.
+CREATE INDEX IF NOT EXISTS idx_blocks_blocker_keyset
+    ON profile.blocks(blocker_id, created_at DESC, id DESC);
 
 -- ============================================================
 -- Inbox deduplication tables — consumer idempotency

@@ -149,6 +149,99 @@ class UserRepository {
     return getUsersBatch(ids);
   }
 
+  /// Cursor-paged follower IDs (graph-service keyset). Pass `cursor: null`
+  /// for page one; reuse the returned `nextCursor` for each subsequent
+  /// page. Stays O(log n) at celebrity scale; legacy getFollowerIds
+  /// stays for callers that don't need pagination.
+  Future<FollowerIdPage> getFollowerIdsCursor(
+    String userId, {
+    int limit = 50,
+    String? cursor,
+  }) async {
+    final params = <String, dynamic>{'limit': limit};
+    if (cursor != null && cursor.isNotEmpty) {
+      params['cursor'] = cursor;
+    } else {
+      params['paginate'] = 'cursor';
+    }
+    final response = await _api.get(
+      '/v1/graph/followers/$userId',
+      queryParameters: params,
+    );
+    final data = response.data['data'];
+    if (data is List) {
+      return FollowerIdPage(
+        ids: data.whereType<String>().toList(),
+        nextCursor: '',
+      );
+    }
+    final m = Map<String, dynamic>.from(data as Map);
+    final items = (m['items'] as List?) ?? const [];
+    return FollowerIdPage(
+      ids: items.whereType<String>().toList(),
+      nextCursor: m['next_cursor']?.toString() ?? '',
+    );
+  }
+
+  Future<FollowerIdPage> getFollowingIdsCursor(
+    String userId, {
+    int limit = 50,
+    String? cursor,
+  }) async {
+    final params = <String, dynamic>{'limit': limit};
+    if (cursor != null && cursor.isNotEmpty) {
+      params['cursor'] = cursor;
+    } else {
+      params['paginate'] = 'cursor';
+    }
+    final response = await _api.get(
+      '/v1/graph/following/$userId',
+      queryParameters: params,
+    );
+    final data = response.data['data'];
+    if (data is List) {
+      return FollowerIdPage(
+        ids: data.whereType<String>().toList(),
+        nextCursor: '',
+      );
+    }
+    final m = Map<String, dynamic>.from(data as Map);
+    final items = (m['items'] as List?) ?? const [];
+    return FollowerIdPage(
+      ids: items.whereType<String>().toList(),
+      nextCursor: m['next_cursor']?.toString() ?? '',
+    );
+  }
+
+  /// Hydrated follower page — keyset cursor + User objects in one call.
+  /// Convenience wrapper for screens that don't want to deal with the
+  /// raw ID page + batch hydration two-step.
+  Future<FollowerPage> getFollowersCursor(
+    String userId, {
+    int limit = 50,
+    String? cursor,
+  }) async {
+    final idPage = await getFollowerIdsCursor(userId, limit: limit, cursor: cursor);
+    if (idPage.ids.isEmpty) {
+      return FollowerPage(users: const [], nextCursor: idPage.nextCursor);
+    }
+    final users = await getUsersBatch(idPage.ids);
+    return FollowerPage(users: users, nextCursor: idPage.nextCursor);
+  }
+
+  Future<FollowerPage> getFollowingCursor(
+    String userId, {
+    int limit = 50,
+    String? cursor,
+  }) async {
+    final idPage = await getFollowingIdsCursor(userId, limit: limit, cursor: cursor);
+    if (idPage.ids.isEmpty) {
+      return FollowerPage(users: const [], nextCursor: idPage.nextCursor);
+    }
+    final users = await getUsersBatch(idPage.ids);
+    return FollowerPage(users: users, nextCursor: idPage.nextCursor);
+  }
+
   /// Fetch pending connection requests (both sent and received).
   /// Synchronized with GET /v1/graph/connection-requests
   Future<List<Map<String, dynamic>>> getPendingConnectionRequests() async {
@@ -321,3 +414,23 @@ class UserSearchResult {
 final userRepositoryProvider = Provider<UserRepository>((ref) {
   return UserRepository(ref.watch(apiClientProvider));
 });
+
+/// FollowerIdPage is one page of follower IDs from the graph-service
+/// keyset endpoint. `nextCursor` is empty on the last page.
+class FollowerIdPage {
+  const FollowerIdPage({required this.ids, required this.nextCursor});
+  final List<String> ids;
+  final String nextCursor;
+
+  bool get hasMore => nextCursor.isNotEmpty;
+}
+
+/// FollowerPage is the hydrated variant — same cursor semantics but
+/// the IDs have been batched-resolved to User objects.
+class FollowerPage {
+  const FollowerPage({required this.users, required this.nextCursor});
+  final List<User> users;
+  final String nextCursor;
+
+  bool get hasMore => nextCursor.isNotEmpty;
+}
