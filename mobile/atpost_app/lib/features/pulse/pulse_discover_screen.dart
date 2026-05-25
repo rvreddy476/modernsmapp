@@ -165,6 +165,12 @@ class _PulseDiscoverScreenState extends ConsumerState<PulseDiscoverScreen> {
       onSpark: () => _handleSpark(card),
       onStash: () => _handleStash(card),
       onPass: () => _handlePass(card),
+      onBlocked: () {
+        // The detail sheet already invalidated pulseTodayProvider; we
+        // additionally treat the block as an implicit pass so the deck
+        // advances past this card on the visible surface.
+        _handlePass(card);
+      },
     );
   }
 

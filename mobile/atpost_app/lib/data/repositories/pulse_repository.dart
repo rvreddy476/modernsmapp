@@ -724,6 +724,41 @@ class PulseRepository {
     );
   }
 
+  /// List of reports the viewer has filed plus their current status. Phase 1
+  /// addition — calls `GET /v1/dating/safety/reports/me`. If the backend
+  /// hasn't surfaced the endpoint yet, returns a sentinel that the UI
+  /// renders as "endpoint pending".
+  ///
+  /// Returns a `MyReportsResult` so the UI can distinguish:
+  ///   - empty list + endpoint pending (HTTP 404/501/unknown route)
+  ///   - empty list + endpoint working (user simply has no reports)
+  ///   - non-empty list
+  Future<MyReportsResult> getMyReports() async {
+    try {
+      final response = await _api.get('/v1/dating/safety/reports/me');
+      final data = _unwrapData(response.data);
+      if (data is! List) {
+        return const MyReportsResult(items: [], endpointAvailable: true);
+      }
+      final items = data
+          .whereType<Map>()
+          .map(
+            (item) => MyReportEntry.fromJson(Map<String, dynamic>.from(item)),
+          )
+          .toList();
+      return MyReportsResult(items: items, endpointAvailable: true);
+    } on DioException catch (e) {
+      // 404/501 = backend hasn't shipped the endpoint yet. Any other
+      // status is a real error and we rethrow so the UI can show its
+      // error state.
+      final code = e.response?.statusCode;
+      if (code == 404 || code == 501) {
+        return const MyReportsResult(items: [], endpointAvailable: false);
+      }
+      rethrow;
+    }
+  }
+
   // ---------------------------------------------------------------------
   // Sprint 5 — Premium tier + DPDP data export.
   //

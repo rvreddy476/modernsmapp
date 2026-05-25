@@ -4,7 +4,10 @@ import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/models/pulse.dart';
+import 'package:atpost_app/features/pulse/safety/report_block_sheet.dart';
+import 'package:atpost_app/providers/pulse_providers.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 /// Sprint 2 — Pulse profile detail bottom sheet.
 ///
@@ -28,6 +31,7 @@ Future<void> showPulseProfileDetailSheet({
   required VoidCallback onSpark,
   required VoidCallback onStash,
   required VoidCallback onPass,
+  VoidCallback? onBlocked,
 }) {
   return showModalBottomSheet<void>(
     context: context,
@@ -48,6 +52,12 @@ Future<void> showPulseProfileDetailSheet({
         Navigator.of(ctx).pop();
         onPass();
       },
+      onBlocked: () {
+        // Close sheet first, then bubble up to caller so deck/match list
+        // can refresh.
+        if (Navigator.of(ctx).canPop()) Navigator.of(ctx).pop();
+        onBlocked?.call();
+      },
     ),
   );
 }
@@ -58,12 +68,14 @@ class _ProfileDetailSheet extends StatelessWidget {
     required this.onSpark,
     required this.onStash,
     required this.onPass,
+    required this.onBlocked,
   });
 
   final PulseCard card;
   final VoidCallback onSpark;
   final VoidCallback onStash;
   final VoidCallback onPass;
+  final VoidCallback onBlocked;
 
   @override
   Widget build(BuildContext context) {
@@ -120,7 +132,11 @@ class _ProfileDetailSheet extends StatelessWidget {
                             child: _Todo('Vouches coming in S4'),
                           ),
                           const SizedBox(height: 12),
-                          _SafetyFooter(),
+                          _SafetyFooter(
+                            targetUserId: card.profile.userId,
+                            targetName: card.profile.firstName,
+                            onBlocked: onBlocked,
+                          ),
                         ],
                       ),
                     ),
@@ -683,12 +699,69 @@ class _Todo extends StatelessWidget {
   }
 }
 
-class _SafetyFooter extends StatelessWidget {
+/// Block / Report / Close action row at the bottom of the profile detail
+/// sheet. P1-4 wiring — every visible safety control calls the real
+/// dating-service endpoint and surfaces a result toast.
+class _SafetyFooter extends ConsumerWidget {
+  const _SafetyFooter({
+    required this.targetUserId,
+    required this.targetName,
+    required this.onBlocked,
+  });
+
+  final String targetUserId;
+  final String targetName;
+  final VoidCallback onBlocked;
+
   @override
-  Widget build(BuildContext context) {
-    void todo(String label) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('$label (S5 safety pass)')),
+  Widget build(BuildContext context, WidgetRef ref) {
+    Future<void> openReport() async {
+      // The sheet itself is already open; nest the report sheet on top.
+      await ReportSheet.show(
+        context,
+        targetUserId: targetUserId,
+        targetName: targetName,
+      );
+    }
+
+    Future<void> doBlock() async {
+      // showBlockDialog handles confirm + API + toast. We invalidate
+      // the deck/match/conversation providers so the blocked user
+      // disappears from every surface.
+      final blocked = await showBlockDialog(
+        context,
+        ref,
+        targetUserId: targetUserId,
+        targetName: targetName,
+      );
+      if (!blocked) return;
+      // Refetch surfaces that show this user.
+      try {
+        ref.invalidate(pulseTodayProvider);
+      } catch (_) {}
+      onBlocked();
+    }
+
+    if (targetUserId.isEmpty) {
+      // Safety: shouldn't happen, but if the candidate has no id we
+      // can't call the backend — render a passive Close-only footer
+      // instead of a non-functional block/report.
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Row(
+          children: [
+            Expanded(
+              child: TextButton.icon(
+                onPressed: () => Navigator.of(context).maybePop(),
+                icon: const Icon(Icons.close, size: 16),
+                label: const Text('Close'),
+                style: TextButton.styleFrom(
+                  foregroundColor: AppColors.textTertiary,
+                ),
+              ),
+            ),
+          ],
+        ),
       );
     }
 
@@ -698,7 +771,7 @@ class _SafetyFooter extends StatelessWidget {
         children: [
           Expanded(
             child: TextButton.icon(
-              onPressed: () => todo('Block'),
+              onPressed: doBlock,
               icon: const Icon(Icons.block, size: 16),
               label: const Text('Block'),
               style: TextButton.styleFrom(
@@ -708,7 +781,7 @@ class _SafetyFooter extends StatelessWidget {
           ),
           Expanded(
             child: TextButton.icon(
-              onPressed: () => todo('Report'),
+              onPressed: openReport,
               icon: const Icon(Icons.flag_outlined, size: 16),
               label: const Text('Report'),
               style: TextButton.styleFrom(

@@ -392,6 +392,16 @@ class _PulseProfileScreenState
                             ),
                           ]
                         : _photos.map((photo) {
+                            // P0-6 owner view: badge pending/rejected
+                            // photos. The discovery and detail surfaces
+                            // for OTHER viewers already filter to
+                            // approved (backend enforces) — here we
+                            // surface the moderation status to the owner
+                            // so they know what's live and what isn't.
+                            final status = photo.moderationStatus;
+                            final isApproved = status == 'approved';
+                            final isPending = status == 'pending';
+                            final isRejected = status == 'rejected';
                             return Stack(
                               children: [
                                 ClipRRect(
@@ -402,13 +412,56 @@ class _PulseProfileScreenState
                                           height: 124,
                                           color: AppColors.bgTertiary,
                                         )
-                                      : Image.network(
-                                          photo.mediaUrl!,
-                                          width: 92,
-                                          height: 124,
-                                          fit: BoxFit.cover,
+                                      : Stack(
+                                          children: [
+                                            Image.network(
+                                              photo.mediaUrl!,
+                                              width: 92,
+                                              height: 124,
+                                              fit: BoxFit.cover,
+                                            ),
+                                            if (!isApproved)
+                                              Positioned.fill(
+                                                child: Container(
+                                                  color: Colors.black54,
+                                                ),
+                                              ),
+                                          ],
                                         ),
                                 ),
+                                if (isPending || isRejected)
+                                  Positioned(
+                                    left: 0,
+                                    right: 0,
+                                    bottom: 0,
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 6,
+                                        vertical: 4,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: isRejected
+                                            ? AppColors.statusError
+                                                .withValues(alpha: 0.9)
+                                            : AppColors.statusWarning
+                                                .withValues(alpha: 0.9),
+                                        borderRadius: const BorderRadius
+                                            .vertical(
+                                          bottom: Radius.circular(16),
+                                        ),
+                                      ),
+                                      child: Text(
+                                        isRejected
+                                            ? 'Rejected'
+                                            : 'Pending review',
+                                        textAlign: TextAlign.center,
+                                        style: AppTextStyles.labelTiny.copyWith(
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
                                 Positioned(
                                   top: 4,
                                   right: 4,
