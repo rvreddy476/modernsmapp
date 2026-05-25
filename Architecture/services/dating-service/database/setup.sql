@@ -351,6 +351,19 @@ ALTER TABLE dating_reports
 CREATE INDEX IF NOT EXISTS idx_dating_reports_status_created
     ON dating_reports(status, created_at DESC);
 
+-- §P1-6 sweeper bookkeeping: idempotency markers so the safe-meet
+-- reminder + missed-check-in sweepers don't re-fire the same event
+-- every minute. NULL = not yet fired; NOW() = sent.
+ALTER TABLE dating_meets
+    ADD COLUMN IF NOT EXISTS reminder_fired_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS missed_check_in_fired_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_dating_meets_reminder_due
+    ON dating_meets(scheduled_at)
+    WHERE reminder_fired_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_dating_meets_missed_due
+    ON dating_meets(scheduled_at)
+    WHERE missed_check_in_fired_at IS NULL AND check_in_status IS NULL;
+
 -- ---------------------------------------------------------------------------
 -- Sprint 4 — AI moderation results (shadow + strict)
 --

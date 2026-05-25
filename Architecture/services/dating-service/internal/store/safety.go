@@ -304,6 +304,97 @@ func (s *Store) ListReports(ctx context.Context, status, category string, limit,
 	return out, rows.Err()
 }
 
+// ClaimMeetsDueForReminder finds dating_meets whose scheduled_at sits
+// inside the [now+leadMin, now+leadMax] window AND whose
+// reminder_fired_at is NULL. Atomically marks reminder_fired_at =
+// NOW() and returns the claimed rows so the sweeper can emit one
+// safe_meet.reminder event per row without risk of double-firing
+// across replicas. §P1-6.
+func (s *Store) ClaimMeetsDueForReminder(ctx context.Context, leadMin, leadMax time.Duration, limit int) ([]*Meet, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	now := time.Now()
+	rows, err := s.db.Query(ctx, `
+        UPDATE dating_meets
+        SET reminder_fired_at = NOW()
+        WHERE id IN (
+            SELECT id FROM dating_meets
+            WHERE reminder_fired_at IS NULL
+              AND scheduled_at BETWEEN $1 AND $2
+              AND check_in_status IS NULL
+            ORDER BY scheduled_at ASC
+            LIMIT $3
+            FOR UPDATE SKIP LOCKED
+        )
+        RETURNING id, user_id, with_user_id, scheduled_at, venue,
+                  latitude, longitude, check_in_status, checked_in_at,
+                  no_show_at, created_at
+    `, now.Add(leadMin), now.Add(leadMax), limit)
+	if err != nil {
+		return nil, fmt.Errorf("claim reminder meets: %w", err)
+	}
+	defer rows.Close()
+	out := make([]*Meet, 0, limit)
+	for rows.Next() {
+		m := &Meet{}
+		if err := rows.Scan(
+			&m.ID, &m.UserID, &m.WithUserID, &m.ScheduledAt, &m.Venue,
+			&m.Latitude, &m.Longitude, &m.CheckInStatus, &m.CheckedInAt,
+			&m.NoShowAt, &m.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan claimed meet: %w", err)
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// ClaimMeetsMissedCheckIn finds dating_meets where scheduled_at is at
+// least `gracePeriod` ago AND check_in_status is still NULL AND
+// missed_check_in_fired_at is NULL. Atomically claims them with the
+// same FOR UPDATE SKIP LOCKED pattern so replicas don't double-fire.
+// §P1-6.
+func (s *Store) ClaimMeetsMissedCheckIn(ctx context.Context, gracePeriod time.Duration, limit int) ([]*Meet, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	cutoff := time.Now().Add(-gracePeriod)
+	rows, err := s.db.Query(ctx, `
+        UPDATE dating_meets
+        SET missed_check_in_fired_at = NOW()
+        WHERE id IN (
+            SELECT id FROM dating_meets
+            WHERE missed_check_in_fired_at IS NULL
+              AND check_in_status IS NULL
+              AND scheduled_at < $1
+            ORDER BY scheduled_at ASC
+            LIMIT $2
+            FOR UPDATE SKIP LOCKED
+        )
+        RETURNING id, user_id, with_user_id, scheduled_at, venue,
+                  latitude, longitude, check_in_status, checked_in_at,
+                  no_show_at, created_at
+    `, cutoff, limit)
+	if err != nil {
+		return nil, fmt.Errorf("claim missed-checkin meets: %w", err)
+	}
+	defer rows.Close()
+	out := make([]*Meet, 0, limit)
+	for rows.Next() {
+		m := &Meet{}
+		if err := rows.Scan(
+			&m.ID, &m.UserID, &m.WithUserID, &m.ScheduledAt, &m.Venue,
+			&m.Latitude, &m.Longitude, &m.CheckInStatus, &m.CheckedInAt,
+			&m.NoShowAt, &m.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan claimed meet: %w", err)
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 // SetReportStatus moves a report through the §P0-8 state machine.
 // Returns ErrReportNotFound when the row is missing.
 func (s *Store) SetReportStatus(ctx context.Context, reportID uuid.UUID, status string) error {

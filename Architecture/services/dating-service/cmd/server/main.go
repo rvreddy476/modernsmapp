@@ -209,6 +209,13 @@ func main() {
 	go service.NewMatchSagaReconciler(datingSvc).Start(consumerCtx)
 	slog.Info("dating-service: match saga reconciler started")
 
+	// §P1-6 sweeper: every minute, ExpireStaleMatches +
+	// MarkQuietMatches + safe-meet reminder (12h ahead) +
+	// missed-check-in (30min grace). Idempotent at the store layer;
+	// safe to run on multiple replicas — FOR UPDATE SKIP LOCKED
+	// claims each meet exactly once per fire window.
+	datingSvc.StartSweeper(consumerCtx)
+
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
