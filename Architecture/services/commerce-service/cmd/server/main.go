@@ -19,6 +19,7 @@ import (
 	"github.com/atpost/commerce-service/internal/store/blob"
 	pgstore "github.com/atpost/commerce-service/internal/store/postgres"
 	"github.com/atpost/commerce-service/internal/workers"
+	"github.com/atpost/shared/counters"
 	"github.com/atpost/shared/health"
 	"github.com/atpost/shared/middleware"
 	"github.com/atpost/shared/o11y/logging"
@@ -27,6 +28,7 @@ import (
 	"github.com/atpost/shared/server"
 	"github.com/atpost/shared/transport"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -191,6 +193,22 @@ func main() {
 	// inventory doesn't stay locked behind abandoned checkouts.
 	go runInventoryExpiry(consumerCtx, store)
 	slog.Info("inventory expiry worker started")
+
+	// Sharded product-view counter flush. At trending-product scale
+	// (100k+ views/hour) every UPDATE products SET view_count=… on the
+	// same row was a contention point; the counter spreads across 32
+	// Redis shards and materialises back to PG every ~10s.
+	if pvc := svc.ProductViewCounter(); pvc != nil {
+		flush := func(ctx context.Context, productIDStr string, total int64) error {
+			id, err := uuid.Parse(productIDStr)
+			if err != nil {
+				return err
+			}
+			return store.SetProductViewCount(ctx, id, total)
+		}
+		go counters.NewWorker(pvc, flush, counters.WorkerOptions{}).Start(consumerCtx)
+		slog.Info("commerce product view-count sharded flush worker started")
+	}
 
 	// 11. HTTP handler
 	handler := commercehttp.New(svc).WithInternalKey(internalKey)

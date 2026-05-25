@@ -81,6 +81,11 @@ type Service struct {
 	// singleton aggregate row.
 	hashtagCounter *counters.Counter
 	audioCounter   *counters.Counter
+
+	// Story view counter. Stories are short-lived but a viral
+	// story can take 1M+ views in 24h, all UPDATE-ing the same row.
+	// Sharded counter pattern matches the other use-counts.
+	storyViewCounter *counters.Counter
 }
 
 func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client) *Service {
@@ -100,6 +105,7 @@ func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client)
 		svc.repostCounter = counters.New(rdb, counters.Config{EntityKind: "post_repost_count", Shards: 32})
 		svc.hashtagCounter = counters.New(rdb, counters.Config{EntityKind: "hashtag_use_count", Shards: 32})
 		svc.audioCounter = counters.New(rdb, counters.Config{EntityKind: "audio_use_count", Shards: 32})
+		svc.storyViewCounter = counters.New(rdb, counters.Config{EntityKind: "story_view_count", Shards: 32})
 	}
 	return svc
 }
@@ -108,13 +114,26 @@ func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client)
 // RepostCounter / HashtagCounter / AudioCounter expose the sharded
 // counters so cmd/server can attach flush workers. Returns nil when
 // Redis isn't configured.
-func (s *Service) LikeCounter() *counters.Counter     { return s.likeCounter }
-func (s *Service) CommentCounter() *counters.Counter  { return s.commentCounter }
-func (s *Service) ShareCounter() *counters.Counter    { return s.shareCounter }
-func (s *Service) BookmarkCounter() *counters.Counter { return s.bookmarkCounter }
-func (s *Service) RepostCounter() *counters.Counter   { return s.repostCounter }
-func (s *Service) HashtagCounter() *counters.Counter  { return s.hashtagCounter }
-func (s *Service) AudioCounter() *counters.Counter    { return s.audioCounter }
+func (s *Service) LikeCounter() *counters.Counter      { return s.likeCounter }
+func (s *Service) CommentCounter() *counters.Counter   { return s.commentCounter }
+func (s *Service) ShareCounter() *counters.Counter     { return s.shareCounter }
+func (s *Service) BookmarkCounter() *counters.Counter  { return s.bookmarkCounter }
+func (s *Service) RepostCounter() *counters.Counter    { return s.repostCounter }
+func (s *Service) HashtagCounter() *counters.Counter   { return s.hashtagCounter }
+func (s *Service) AudioCounter() *counters.Counter     { return s.audioCounter }
+func (s *Service) StoryViewCounter() *counters.Counter { return s.storyViewCounter }
+
+// adjustStoryViewCount routes a +1 view increment through the sharded
+// counter. Falls back to a direct PG UPDATE when Redis is nil so the
+// dev loop still works.
+func (s *Service) adjustStoryViewCount(ctx context.Context, storyID uuid.UUID) error {
+	if s.storyViewCounter != nil {
+		if err := s.storyViewCounter.Inc(ctx, storyID.String(), 1); err == nil {
+			return nil
+		}
+	}
+	return s.pgStore.IncrementStoryViewCount(ctx, storyID)
+}
 
 // adjustHashtagUseCount routes a +1 increment through the sharded
 // counter when available, otherwise falls back to the legacy per-event
@@ -1909,9 +1928,13 @@ func (s *Service) DeleteStory(ctx context.Context, storyID, authorID uuid.UUID) 
 	return s.pgStore.DeleteStory(ctx, storyID, authorID)
 }
 
-// ViewStory increments the view count of a story.
+// ViewStory increments the view count of a story via the sharded
+// Redis counter; PG snapshot is materialised every ~10s by the flush
+// worker in cmd/server/main.go. Hot at viral scale (1M+ views/24h on
+// one row) — without sharding every viewer write contended on the
+// same UPDATE.
 func (s *Service) ViewStory(ctx context.Context, storyID uuid.UUID) error {
-	return s.pgStore.IncrementStoryViewCount(ctx, storyID)
+	return s.adjustStoryViewCount(ctx, storyID)
 }
 
 // CleanupExpiredStories removes stories past their expiry. Called by cron.

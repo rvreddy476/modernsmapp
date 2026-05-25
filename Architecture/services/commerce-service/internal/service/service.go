@@ -17,6 +17,7 @@ import (
 	"github.com/atpost/commerce-service/internal/kyc"
 	"github.com/atpost/commerce-service/internal/payments"
 	"github.com/atpost/commerce-service/internal/store/postgres"
+	"github.com/atpost/shared/counters"
 	"github.com/atpost/shared/events"
 	tracepkg "github.com/atpost/shared/o11y/trace"
 	"github.com/google/uuid"
@@ -69,6 +70,12 @@ type Service struct {
 	payments  *payments.Client
 	kyc       kyc.Validator
 	payoutCfg PayoutConfig
+
+	// productViewCounter shards products.view_count across Redis so a
+	// trending product taking 100k+ views/hour doesn't bottleneck on a
+	// single PG UPDATE row. Nil-safe — falls back to the legacy
+	// IncrProductViewCount when Redis is absent (dev loop).
+	productViewCounter *counters.Counter
 }
 
 func New(store *postgres.Store, rdb *redis.Client, kafkaBrokers string) *Service {
@@ -82,7 +89,26 @@ func NewWithDialer(store *postgres.Store, rdb *redis.Client, kafkaBrokers string
 		Balancer: &kafka.LeastBytes{},
 		Dialer:   dialer,
 	})
-	return &Service{store: store, rdb: rdb, writer: w}
+	svc := &Service{store: store, rdb: rdb, writer: w}
+	if rdb != nil {
+		svc.productViewCounter = counters.New(rdb, counters.Config{EntityKind: "product_view_count", Shards: 32})
+	}
+	return svc
+}
+
+// ProductViewCounter exposes the sharded counter so cmd/server can
+// attach a flush worker.
+func (s *Service) ProductViewCounter() *counters.Counter { return s.productViewCounter }
+
+// adjustProductViewCount routes a +1 view increment through the
+// sharded counter. Falls back to a direct PG UPDATE when Redis is nil.
+func (s *Service) adjustProductViewCount(ctx context.Context, productID uuid.UUID) {
+	if s.productViewCounter != nil {
+		if err := s.productViewCounter.Inc(ctx, productID.String(), 1); err == nil {
+			return
+		}
+	}
+	s.store.IncrProductViewCount(ctx, productID)
 }
 
 func (s *Service) Close() {
@@ -303,7 +329,7 @@ func (s *Service) GetProduct(ctx context.Context, productID uuid.UUID) (*postgre
 	if err != nil {
 		return nil, nil, err
 	}
-	go s.store.IncrProductViewCount(context.Background(), productID)
+	go s.adjustProductViewCount(context.Background(), productID)
 	return p, variants, nil
 }
 

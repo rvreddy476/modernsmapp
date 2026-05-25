@@ -254,6 +254,19 @@ func main() {
 		go counters.NewWorker(ac, flush, counters.WorkerOptions{}).Start(consumerCtx)
 		slog.Info("post-service audio use-count sharded flush worker started")
 	}
+	// stories.view_count flush worker — at viral scale (1M+ views/24h
+	// on one story) every viewer was hitting the same UPDATE row.
+	if svc := postSvc.StoryViewCounter(); svc != nil {
+		flush := func(ctx context.Context, storyIDStr string, total int64) error {
+			id, err := uuid.Parse(storyIDStr)
+			if err != nil {
+				return err
+			}
+			return pgStore.SetStoryViewCount(ctx, id, total)
+		}
+		go counters.NewWorker(svc, flush, counters.WorkerOptions{}).Start(consumerCtx)
+		slog.Info("post-service story view-count sharded flush worker started")
+	}
 
 	wsBroadcaster := consumers.NewWSBroadcasterConsumer(rdb)
 	go wsBroadcaster.Start(consumerCtx, brokers, engTopic, kafkaDialer)

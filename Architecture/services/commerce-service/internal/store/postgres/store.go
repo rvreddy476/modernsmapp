@@ -526,8 +526,20 @@ func (s *Store) UpdateProduct(ctx context.Context, id uuid.UUID, updates map[str
 	return err
 }
 
+// IncrProductViewCount is the Redis-nil fallback for the sharded
+// product-view counter. Production traffic flows through
+// Service.adjustProductViewCount → counters.Counter → flush-worker
+// SetProductViewCount.
 func (s *Store) IncrProductViewCount(ctx context.Context, id uuid.UUID) {
 	_, _ = s.db.Exec(ctx, "UPDATE products SET view_count=view_count+1 WHERE id=$1", id)
+}
+
+// SetProductViewCount overwrites products.view_count to the absolute
+// sum from the sharded Redis counter. Called by the flush worker
+// every ~10s per dirty product.
+func (s *Store) SetProductViewCount(ctx context.Context, id uuid.UUID, total int64) error {
+	_, err := s.db.Exec(ctx, "UPDATE products SET view_count=$2 WHERE id=$1", id, total)
+	return err
 }
 
 // ─── Product Variants ────────────────────────────────────────
