@@ -47,3 +47,19 @@ CREATE TABLE IF NOT EXISTS live_viewer_events (
     occurred_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_live_viewer_events_stream ON live_viewer_events(stream_id, occurred_at);
+
+-- Phase 2: minimal chat overlay. Persistent buffer so a late viewer
+-- can replay the last N messages on page load; live fanout is via
+-- Redis pub/sub on channel `livestream:chat:{streamID}` consumed by
+-- the ws-gateway via its dynamic subscribe_* pattern. Mute /
+-- word-filter / pin features (v1 live-service equivalents) are out
+-- of scope for this Phase A.
+CREATE TABLE IF NOT EXISTS live_chat_messages (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    stream_id   UUID NOT NULL REFERENCES live_streams(id) ON DELETE CASCADE,
+    user_id     UUID NOT NULL,
+    text        TEXT NOT NULL CHECK (char_length(text) BETWEEN 1 AND 500),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_live_chat_messages_stream
+    ON live_chat_messages(stream_id, created_at DESC);

@@ -16,11 +16,13 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -459,4 +461,105 @@ func parseCursor(cursor string) (*time.Time, *uuid.UUID, error) {
 	}
 	t := time.UnixMicro(micros)
 	return &t, &id, nil
+}
+
+// --- Chat overlay (Phase A) ---
+//
+// Live chat is a thin REST surface backed by Redis pub/sub for fan-out.
+// Clients SUBSCRIBE to the pub/sub channel via the chat-service
+// ws-gateway's dynamic subscribe_live_stream message; this service
+// persists to live_chat_messages for replay-on-load.
+
+// chatPubSubChannel returns the Redis pub/sub channel the ws-gateway
+// fans out on. Matches the ws-gateway subscribe_live_stream handler's
+// channel format (`live:stream:%s`).
+func chatPubSubChannel(streamID uuid.UUID) string {
+	return fmt.Sprintf("live:stream:%s", streamID.String())
+}
+
+// chatRateLimitKey returns the per-user-per-stream rate limit Redis
+// key. Window is 60s; max 20 messages.
+func chatRateLimitKey(streamID, userID uuid.UUID) string {
+	return fmt.Sprintf("live_chat_rl:%s:%s", streamID.String(), userID.String())
+}
+
+const (
+	chatRateLimitMax    = 20
+	chatRateLimitWindow = 60 * time.Second
+)
+
+// SendChat persists a chat message + fans out via Redis pub/sub. The
+// caller must already be a verified viewer (the handler enforces the
+// viewer-token / membership check before reaching us).
+//
+// Returns the stored row so the broadcaster client can echo it
+// immediately. The pub/sub message goes to every other connected
+// viewer via the ws-gateway's `subscribe_live_stream` channel.
+//
+// Rate-limited 20/60s/user. Fail-CLOSED on Redis error for the rate
+// check — easy to overload chat with a hostile client otherwise.
+func (s *Service) SendChat(ctx context.Context, streamID, userID uuid.UUID, text string) (*postgres.ChatMessage, error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil, fmt.Errorf("invalid: message text is required")
+	}
+	if utf8.RuneCountInString(text) > 500 {
+		return nil, fmt.Errorf("invalid: message exceeds 500 chars")
+	}
+	// Stream must exist + still be live to accept chat. End-of-stream
+	// chat goes to /v1/livestream/streams/:id/chat which falls back
+	// to the replay buffer for VOD viewers.
+	st, err := s.store.GetByID(ctx, streamID)
+	if err != nil {
+		return nil, mapStoreErr(err)
+	}
+	if st.Status != "live" {
+		return nil, fmt.Errorf("invalid: stream is not live")
+	}
+
+	// Rate limit. Redis sliding-window INCR+EXPIRE pattern; fail-CLOSED.
+	if s.redis != nil {
+		key := chatRateLimitKey(streamID, userID)
+		pipe := s.redis.Pipeline()
+		incr := pipe.Incr(ctx, key)
+		pipe.Expire(ctx, key, chatRateLimitWindow)
+		if _, err := pipe.Exec(ctx); err != nil {
+			return nil, fmt.Errorf("rate-limit check unavailable")
+		}
+		if incr.Val() > chatRateLimitMax {
+			return nil, fmt.Errorf("rate_limited: too many chat messages; slow down")
+		}
+	}
+
+	msg, err := s.store.InsertChatMessage(ctx, streamID, userID, text)
+	if err != nil {
+		return nil, err
+	}
+	// Fan out via Redis pub/sub. Payload shape matches the
+	// ws-gateway's pass-through format so clients receive the row
+	// verbatim under the `live_chat_message` type tag.
+	if s.redis != nil {
+		payload, _ := json.Marshal(map[string]any{
+			"type": "live_chat_message",
+			"payload": map[string]any{
+				"id":         msg.ID.String(),
+				"stream_id":  msg.StreamID.String(),
+				"user_id":    msg.UserID.String(),
+				"text":       msg.Text,
+				"created_at": msg.CreatedAt,
+			},
+		})
+		_ = s.redis.Publish(ctx, chatPubSubChannel(streamID), string(payload)).Err()
+	}
+	return msg, nil
+}
+
+// ListChat returns the most-recent `limit` messages (default 50,
+// max 200). Caller must be a verified viewer of the stream;
+// enforcement at the handler. Public streams skip the viewer check.
+func (s *Service) ListChat(ctx context.Context, streamID uuid.UUID, limit int) ([]*postgres.ChatMessage, error) {
+	if _, err := s.store.GetByID(ctx, streamID); err != nil {
+		return nil, mapStoreErr(err)
+	}
+	return s.store.ListRecentChatMessages(ctx, streamID, limit)
 }

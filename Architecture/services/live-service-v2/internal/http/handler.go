@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -59,6 +60,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	v1.GET("/streams/:id", h.GetStream)
 	v1.GET("/streams/:id/viewer-token", h.IssueViewerToken)
 	v1.GET("/streams", h.ListLiveNow)
+	// Phase 2 chat overlay. POST appends + fans out via Redis pub/sub;
+	// GET returns the last N for replay-on-load. The ws-gateway
+	// subscribe_live_stream message handles the live-tail subscription.
+	v1.POST("/streams/:id/chat", h.SendChat)
+	v1.GET("/streams/:id/chat", h.ListChat)
 }
 
 // --- request / response bodies ---
@@ -349,4 +355,69 @@ func verifyHMAC(body []byte, sig, secret string) bool {
 	mac.Write(body)
 	expected := hex.EncodeToString(mac.Sum(nil))
 	return hmac.Equal([]byte(sig), []byte(expected))
+}
+
+// --- chat ---
+
+type sendChatRequest struct {
+	Text string `json:"text" binding:"required"`
+}
+
+// SendChat — POST /v1/livestream/streams/:id/chat
+// Caller must be a verified viewer (gateway-injected X-User-Id). Body
+// is text only; the service rate-limits + persists + fans out via
+// Redis pub/sub.
+func (h *Handler) SendChat(c *gin.Context) {
+	streamID, ok := requireUUID(c, "id")
+	if !ok {
+		return
+	}
+	userID, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	var body sendChatRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	msg, err := h.svc.SendChat(c.Request.Context(), streamID, userID, body.Text)
+	if err != nil {
+		emsg := err.Error()
+		switch {
+		case strings.HasPrefix(emsg, "rate_limited"):
+			c.Header("Retry-After", "60")
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", emsg, nil)
+			return
+		case strings.HasPrefix(emsg, "invalid"):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", emsg, nil)
+			return
+		}
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", emsg, nil)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": msg})
+}
+
+// ListChat — GET /v1/livestream/streams/:id/chat?limit=50
+// Returns the most-recent N messages, newest first. Used for
+// replay-on-load; live messages thereafter arrive via the ws-gateway
+// subscribe_live_stream channel.
+func (h *Handler) ListChat(c *gin.Context) {
+	streamID, ok := requireUUID(c, "id")
+	if !ok {
+		return
+	}
+	limit := 50
+	if l := c.Query("limit"); l != "" {
+		if v, err := strconv.Atoi(l); err == nil && v > 0 && v <= 200 {
+			limit = v
+		}
+	}
+	items, err := h.svc.ListChat(c.Request.Context(), streamID, limit)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": items, "meta": gin.H{"limit": limit, "count": len(items)}})
 }

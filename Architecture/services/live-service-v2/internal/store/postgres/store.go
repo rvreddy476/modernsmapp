@@ -221,3 +221,58 @@ func (s *Store) RecordViewerEvent(ctx context.Context, streamID, userID uuid.UUI
 	_, err := s.db.Exec(ctx, q, streamID, userID, eventType)
 	return err
 }
+
+// ChatMessage mirrors live_chat_messages. The text field is bounded
+// 1-500 chars by the schema CHECK so service-layer validation is
+// belt-and-braces.
+type ChatMessage struct {
+	ID        uuid.UUID `json:"id"`
+	StreamID  uuid.UUID `json:"stream_id"`
+	UserID    uuid.UUID `json:"user_id"`
+	Text      string    `json:"text"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// InsertChatMessage persists a message + returns the generated id +
+// timestamp the caller broadcasts via Redis pub/sub.
+func (s *Store) InsertChatMessage(ctx context.Context, streamID, userID uuid.UUID, text string) (*ChatMessage, error) {
+	out := &ChatMessage{StreamID: streamID, UserID: userID, Text: text}
+	const q = `
+        INSERT INTO live_chat_messages (stream_id, user_id, text)
+        VALUES ($1, $2, $3)
+        RETURNING id, created_at`
+	if err := s.db.QueryRow(ctx, q, streamID, userID, text).Scan(&out.ID, &out.CreatedAt); err != nil {
+		return nil, fmt.Errorf("insert chat: %w", err)
+	}
+	return out, nil
+}
+
+// ListRecentChatMessages returns the last `limit` messages for a
+// stream, newest first. Used by viewers landing mid-stream to replay
+// the conversation buffer; live messages thereafter arrive via the
+// Redis pub/sub channel.
+func (s *Store) ListRecentChatMessages(ctx context.Context, streamID uuid.UUID, limit int) ([]*ChatMessage, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	const q = `
+        SELECT id, stream_id, user_id, text, created_at
+        FROM live_chat_messages
+        WHERE stream_id = $1
+        ORDER BY created_at DESC
+        LIMIT $2`
+	rows, err := s.db.Query(ctx, q, streamID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]*ChatMessage, 0, limit)
+	for rows.Next() {
+		m := &ChatMessage{}
+		if err := rows.Scan(&m.ID, &m.StreamID, &m.UserID, &m.Text, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
