@@ -133,6 +133,18 @@ func (s *Service) loginOrRegisterOAuth(ctx context.Context, provider string, inf
 	}
 
 	if user != nil {
+		// A5: refuse to link OAuth onto an account whose email hasn't
+		// been verified yet. The pending row carries no proof that
+		// the registration actor actually owns the email — silently
+		// linking would hand the account to whoever the OAuth
+		// provider says owns the address, even if a different person
+		// began registration with the same email and never finished.
+		// The caller's expected next step is to either complete email
+		// verification on the existing account or use a different
+		// email at the OAuth provider.
+		if !user.EmailVerified {
+			return nil, errors.New("an account exists for this email but is not yet verified; complete email verification before linking OAuth")
+		}
 		// Link OAuth provider to existing account
 		if err := s.store.LinkOAuthProvider(ctx, user.ID, provider); err != nil {
 			return nil, fmt.Errorf("failed to link OAuth provider: %w", err)

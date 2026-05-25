@@ -345,6 +345,30 @@ func (s *Service) SendConnectionRequest(ctx context.Context, senderID, receiverI
 		return fmt.Errorf("already connected")
 	}
 
+	// UH5: if the receiver has already sent a pending request the other
+	// way, auto-accept it instead of creating a parallel one. Without
+	// this the bidirectional race (A→B and B→A racing on the same RTT)
+	// leaves two pending rows and neither side becomes connected until
+	// somebody clicks Accept — surprising UX and easy to overlook.
+	reverseStatus, err := s.store.GetConnectionRequestStatus(ctx, receiverID, senderID)
+	if err != nil {
+		return err
+	}
+	if reverseStatus == "pending_sent" {
+		if err := s.store.AcceptConnectionRequest(ctx, receiverID, senderID); err != nil {
+			return err
+		}
+		s.invalidateRel(ctx, senderID, receiverID)
+		s.invalidateRel(ctx, receiverID, senderID)
+		s.invalidateCounts(ctx, senderID, receiverID)
+		if s.producer != nil {
+			if err := s.producer.PublishConnectionAccepted(ctx, receiverID, senderID); err != nil {
+				log.Printf("[graph] Failed to publish ConnectionAccepted event: %v", err)
+			}
+		}
+		return nil
+	}
+
 	if err := s.store.SendConnectionRequest(ctx, senderID, receiverID, source, message); err != nil {
 		return err
 	}

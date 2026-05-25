@@ -45,7 +45,9 @@ CREATE INDEX IF NOT EXISTS idx_otp_phone_purpose ON auth.otp_codes(phone, purpos
 
 CREATE TABLE IF NOT EXISTS auth.sessions (
     session_id UUID PRIMARY KEY,
-    user_id UUID NOT NULL REFERENCES auth.users(user_id),
+    -- UH6: cascade so the GDPR grace-period hard purge of auth.users
+    -- doesn't strand session rows that block the DELETE.
+    user_id UUID NOT NULL REFERENCES auth.users(user_id) ON DELETE CASCADE,
     refresh_token_hash TEXT NOT NULL,
     device_id TEXT,
     platform TEXT,
@@ -90,7 +92,7 @@ CREATE TABLE IF NOT EXISTS auth.recovery_codes (
 CREATE INDEX IF NOT EXISTS idx_recovery_codes_user_id ON auth.recovery_codes(user_id);
 
 CREATE TABLE IF NOT EXISTS usr.users (
-    id UUID PRIMARY KEY REFERENCES auth.users(user_id),
+    id UUID PRIMARY KEY REFERENCES auth.users(user_id) ON DELETE CASCADE,
     status TEXT NOT NULL DEFAULT 'active',
     is_verified BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -98,7 +100,7 @@ CREATE TABLE IF NOT EXISTS usr.users (
 );
 
 CREATE TABLE IF NOT EXISTS usr.user_settings (
-    user_id UUID PRIMARY KEY REFERENCES usr.users(id),
+    user_id UUID PRIMARY KEY REFERENCES usr.users(id) ON DELETE CASCADE,
     account_visibility TEXT NOT NULL DEFAULT 'public',
     allow_messages_from TEXT NOT NULL DEFAULT 'everyone',
     allow_comments_from TEXT NOT NULL DEFAULT 'everyone',
@@ -107,7 +109,7 @@ CREATE TABLE IF NOT EXISTS usr.user_settings (
 );
 
 CREATE TABLE IF NOT EXISTS profile.profiles (
-    user_id UUID PRIMARY KEY REFERENCES auth.users(user_id),
+    user_id UUID PRIMARY KEY REFERENCES auth.users(user_id) ON DELETE CASCADE,
     username TEXT,
     display_name TEXT NOT NULL,
     first_name TEXT DEFAULT '',

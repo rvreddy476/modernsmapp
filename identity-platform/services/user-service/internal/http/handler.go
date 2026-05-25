@@ -79,7 +79,12 @@ func (h *Handler) ListUsers(c *gin.Context) {
 		}
 	}
 	if o := c.Query("offset"); o != "" {
-		if v, err := strconv.Atoi(o); err == nil && v >= 0 {
+		// UH1: cap offset to 10k. Without an upper bound a client can
+		// drive a sequential scan over the entire users table by
+		// requesting offset=50000000, costing PG seconds per request
+		// even when limit is bounded. Real pagination should migrate
+		// to keyset/cursor (tracked separately).
+		if v, err := strconv.Atoi(o); err == nil && v >= 0 && v <= 10000 {
 			offset = v
 		}
 	}
