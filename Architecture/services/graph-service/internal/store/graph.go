@@ -70,81 +70,81 @@ func (s *Store) CheckBlock(ctx context.Context, blockerID, blockedID uuid.UUID) 
 	return exists, err
 }
 
-// CreateFollow adds a follow relationship.
+// CreateFollow adds a follow relationship. Returns (inserted, err)
+// where inserted is true only when a new follows row landed — duplicate
+// calls return (false, nil) so the caller can skip its counter bump.
 //
 // Audit HG5: previously the count increments fired unconditionally
 // even when ON CONFLICT DO NOTHING skipped the insert, so concurrent
-// duplicate follows drifted the counters upward forever (reconciler
-// only ran hourly). Now the increments are gated on the insert's
-// RowsAffected — duplicate calls are no-ops on both sides.
-func (s *Store) CreateFollow(ctx context.Context, followerID, followeeID uuid.UUID) error {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-
-	cmdTag, err := tx.Exec(ctx, `
+// duplicate follows drifted the counters upward forever.
+//
+// counts.follower_count / counts.following_count are no longer touched
+// here — at celebrity scale that singleton row was the platform's #1
+// lock-contention point. The service layer bumps a sharded Redis
+// counter and a flush worker materialises the sum back to PG every
+// ~10s. See (*Service).Follow / Unfollow.
+func (s *Store) CreateFollow(ctx context.Context, followerID, followeeID uuid.UUID) (bool, error) {
+	cmdTag, err := s.db.Exec(ctx, `
 		INSERT INTO follows (follower_id, followee_id, created_at)
 		VALUES ($1, $2, NOW())
 		ON CONFLICT (follower_id, followee_id) DO NOTHING
 	`, followerID, followeeID)
 	if err != nil {
-		return err
+		return false, err
 	}
-	if cmdTag.RowsAffected() == 0 {
-		// Duplicate follow — return success without touching counts.
-		return tx.Commit(ctx)
-	}
-
-	_, err = tx.Exec(ctx, `
-		INSERT INTO counts (user_id, following_count, follower_count, friend_count, updated_at)
-		VALUES ($1, 1, 0, 0, NOW())
-		ON CONFLICT (user_id) DO UPDATE SET following_count = counts.following_count + 1, updated_at = NOW()
-	`, followerID)
-	if err != nil {
-		return err
-	}
-
-	_, err = tx.Exec(ctx, `
-		INSERT INTO counts (user_id, following_count, follower_count, friend_count, updated_at)
-		VALUES ($1, 0, 1, 0, NOW())
-		ON CONFLICT (user_id) DO UPDATE SET follower_count = counts.follower_count + 1, updated_at = NOW()
-	`, followeeID)
-	if err != nil {
-		return err
-	}
-
-	return tx.Commit(ctx)
+	return cmdTag.RowsAffected() > 0, nil
 }
 
-// DeleteFollow removes a follow relationship.
-func (s *Store) DeleteFollow(ctx context.Context, followerID, followeeID uuid.UUID) error {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-
-	cmdTag, err := tx.Exec(ctx, `
+// DeleteFollow removes a follow relationship. Returns (removed, err)
+// — false when the follow didn't exist to begin with (idempotent).
+// Like CreateFollow, the counts.* UPDATE is now handled at the service
+// layer via the sharded counter.
+func (s *Store) DeleteFollow(ctx context.Context, followerID, followeeID uuid.UUID) (bool, error) {
+	cmdTag, err := s.db.Exec(ctx, `
 		DELETE FROM follows WHERE follower_id = $1 AND followee_id = $2
 	`, followerID, followeeID)
 	if err != nil {
-		return err
+		return false, err
 	}
+	return cmdTag.RowsAffected() > 0, nil
+}
 
-	if cmdTag.RowsAffected() > 0 {
-		_, err = tx.Exec(ctx, `UPDATE counts SET following_count = following_count - 1 WHERE user_id = $1`, followerID)
-		if err != nil {
-			return err
-		}
-		_, err = tx.Exec(ctx, `UPDATE counts SET follower_count = follower_count - 1 WHERE user_id = $1`, followeeID)
-		if err != nil {
-			return err
-		}
+// IncrementCountColumn is the legacy per-event UPDATE path used as a
+// fallback when the sharded Redis counter is unavailable (Redis nil or
+// transient failure). column must be "follower_count" or
+// "following_count" — friend_count stays on the in-tx path inside
+// AcceptConnectionRequest / RemoveConnection because the volume is
+// lower and the transactional semantics matter for the bidirectional
+// row.
+func (s *Store) IncrementCountColumn(ctx context.Context, userID uuid.UUID, column string, delta int64) error {
+	if column != "follower_count" && column != "following_count" {
+		return fmt.Errorf("invalid count column: %s", column)
 	}
+	query := fmt.Sprintf(`
+		INSERT INTO counts (user_id, follower_count, following_count, friend_count, updated_at)
+		VALUES ($1, 0, 0, 0, NOW())
+		ON CONFLICT (user_id) DO UPDATE SET
+			%s = GREATEST(counts.%s + $2, 0),
+			updated_at = NOW()`, column, column)
+	_, err := s.db.Exec(ctx, query, userID, delta)
+	return err
+}
 
-	return tx.Commit(ctx)
+// SetCountColumn overwrites the column to the absolute value. Used by
+// the sharded-counter flush worker — Redis is the realtime buffer,
+// this UPDATE periodically materialises the shard sum back to PG.
+func (s *Store) SetCountColumn(ctx context.Context, userID uuid.UUID, column string, total int64) error {
+	if column != "follower_count" && column != "following_count" {
+		return fmt.Errorf("invalid count column: %s", column)
+	}
+	query := fmt.Sprintf(`
+		INSERT INTO counts (user_id, follower_count, following_count, friend_count, updated_at)
+		VALUES ($1, 0, 0, 0, NOW())
+		ON CONFLICT (user_id) DO UPDATE SET
+			%s = GREATEST($2, 0),
+			updated_at = NOW()`, column)
+	_, err := s.db.Exec(ctx, query, userID, total)
+	return err
 }
 
 // CreateBlock adds a block.

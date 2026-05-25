@@ -91,20 +91,16 @@ func (s *Store) CreateComment(ctx context.Context, postID, authorID uuid.UUID, b
 		return nil, fmt.Errorf("insert comment: %w", err)
 	}
 
-	// Increment post engagement comment count
-	_, err = tx.Exec(ctx, `
-		INSERT INTO post_engagement_counts (post_id, comment_count)
-		VALUES ($1, 1)
-		ON CONFLICT (post_id) DO UPDATE SET comment_count = post_engagement_counts.comment_count + 1, updated_at = now()`,
-		postID,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("update comment count: %w", err)
-	}
-
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
+
+	// post_engagement_counts.comment_count is bumped at the service
+	// layer via the sharded Redis counter (see
+	// (*Service).CreateCommentPG → adjustEngagementCount). The legacy
+	// in-tx INSERT … ON CONFLICT DO UPDATE was the original hot-row
+	// path — a celebrity comment thread pinned this single row and
+	// every comment serialized on it.
 
 	return comment, nil
 }
@@ -457,18 +453,12 @@ func (s *Store) SoftDeleteComment(ctx context.Context, commentID, userID uuid.UU
 		return uuid.Nil, err
 	}
 
-	_, err = tx.Exec(ctx, `
-		UPDATE post_engagement_counts
-		SET comment_count = GREATEST(comment_count - 1, 0), updated_at = now()
-		WHERE post_id = $1`, postID)
-	if err != nil {
-		return uuid.Nil, err
-	}
-
 	if err := tx.Commit(ctx); err != nil {
 		return uuid.Nil, err
 	}
 
+	// post_engagement_counts.comment_count decrement is handled at the
+	// service layer via the sharded counter, same as CreateComment.
 	return postID, nil
 }
 

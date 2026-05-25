@@ -14,6 +14,7 @@ import (
 	"github.com/atpost/graph-service/internal/ratelimit"
 	"github.com/atpost/graph-service/internal/store"
 	"github.com/atpost/graph-service/internal/userclient"
+	"github.com/atpost/shared/counters"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/redis/go-redis/v9"
@@ -57,17 +58,36 @@ type Service struct {
 	// userClient repairs the app.users projection on demand before a write
 	// whose FK references it (e.g. close_friends). Nil = no read-through.
 	userClient *userclient.Client
+
+	// followerCounter / followingCounter shard counts.follower_count
+	// and counts.following_count across Redis so a celebrity with 10M
+	// followers no longer contends on a single counts row per follow.
+	// Nil-safe: when Redis is nil we fall back to the legacy per-event
+	// PG UPDATE inside store.CreateFollow / DeleteFollow.
+	followerCounter  *counters.Counter
+	followingCounter *counters.Counter
 }
 
 func New(s *store.Store, rdb *redis.Client, producer *events.Producer) *Service {
-	return &Service{
+	svc := &Service{
 		store:      s,
 		rdb:        rdb,
 		producer:   producer,
 		rateLimit:  ratelimit.New(rdb),
 		httpClient: &http.Client{Timeout: 5 * time.Second},
 	}
+	if rdb != nil {
+		svc.followerCounter = counters.New(rdb, counters.Config{EntityKind: "graph_follower_count", Shards: 32})
+		svc.followingCounter = counters.New(rdb, counters.Config{EntityKind: "graph_following_count", Shards: 32})
+	}
+	return svc
 }
+
+// FollowerCounter / FollowingCounter expose the sharded counters so
+// cmd/server can attach flush workers. Returns nil when Redis isn't
+// configured.
+func (s *Service) FollowerCounter() *counters.Counter  { return s.followerCounter }
+func (s *Service) FollowingCounter() *counters.Counter { return s.followingCounter }
 
 // WithPermissionSource wires the user-service endpoint the permission
 // resolver reads privacy settings from. Without it the resolver falls back
@@ -110,8 +130,18 @@ func (s *Service) Follow(ctx context.Context, followerID, followeeID uuid.UUID) 
 		return fmt.Errorf("cannot follow: blocked")
 	}
 
-	if err := s.store.CreateFollow(ctx, followerID, followeeID); err != nil {
+	inserted, err := s.store.CreateFollow(ctx, followerID, followeeID)
+	if err != nil {
 		return err
+	}
+
+	// Only bump counters when a genuinely new follow row landed —
+	// duplicates (already-following) must not drift the counts. Gated
+	// at the service layer now because the store no longer writes to
+	// the counts row inside a tx.
+	if inserted {
+		s.adjustCount(ctx, s.followingCounter, followerID, "following_count", 1)
+		s.adjustCount(ctx, s.followerCounter, followeeID, "follower_count", 1)
 	}
 
 	s.invalidateRel(ctx, followerID, followeeID)
@@ -125,9 +155,15 @@ func (s *Service) Follow(ctx context.Context, followerID, followeeID uuid.UUID) 
 }
 
 func (s *Service) Unfollow(ctx context.Context, followerID, followeeID uuid.UUID) error {
-	if err := s.store.DeleteFollow(ctx, followerID, followeeID); err != nil {
+	removed, err := s.store.DeleteFollow(ctx, followerID, followeeID)
+	if err != nil {
 		return err
 	}
+	if removed {
+		s.adjustCount(ctx, s.followingCounter, followerID, "following_count", -1)
+		s.adjustCount(ctx, s.followerCounter, followeeID, "follower_count", -1)
+	}
+
 	s.invalidateRel(ctx, followerID, followeeID)
 	s.invalidateCounts(ctx, followerID, followeeID)
 
@@ -135,12 +171,40 @@ func (s *Service) Unfollow(ctx context.Context, followerID, followeeID uuid.UUID
 	return nil
 }
 
+// adjustCount fans an increment/decrement to the sharded Redis counter
+// when available, otherwise falls back to the legacy per-event PG
+// UPDATE. Failure inside the Redis path is logged but not fatal — the
+// hourly CountReconciler backfills any drift the next tick.
+func (s *Service) adjustCount(ctx context.Context, c *counters.Counter, userID uuid.UUID, column string, delta int64) {
+	if c != nil {
+		if err := c.Inc(ctx, userID.String(), delta); err == nil {
+			return
+		} else {
+			log.Printf("[graph] sharded %s counter inc failed (user=%s delta=%d): %v — falling back to PG UPDATE",
+				column, userID, delta, err)
+		}
+	}
+	if err := s.store.IncrementCountColumn(ctx, userID, column, delta); err != nil {
+		log.Printf("[graph] PG %s UPDATE failed (user=%s delta=%d): %v",
+			column, userID, delta, err)
+	}
+}
+
 func (s *Service) Block(ctx context.Context, blockerID, blockedID uuid.UUID) error {
 	if err := s.store.CreateBlock(ctx, blockerID, blockedID); err != nil {
 		return err
 	}
-	s.store.DeleteFollow(ctx, blockedID, blockerID)
-	s.store.DeleteFollow(ctx, blockerID, blockedID)
+	// Severing both follow directions on block must also decrement the
+	// corresponding follower/following counts. We mirror the Unfollow
+	// path so a block on a celebrity doesn't leave the count off-by-N.
+	if removed, err := s.store.DeleteFollow(ctx, blockedID, blockerID); err == nil && removed {
+		s.adjustCount(ctx, s.followingCounter, blockedID, "following_count", -1)
+		s.adjustCount(ctx, s.followerCounter, blockerID, "follower_count", -1)
+	}
+	if removed, err := s.store.DeleteFollow(ctx, blockerID, blockedID); err == nil && removed {
+		s.adjustCount(ctx, s.followingCounter, blockerID, "following_count", -1)
+		s.adjustCount(ctx, s.followerCounter, blockedID, "follower_count", -1)
+	}
 
 	// Also remove the connection if one exists.
 	s.store.RemoveConnection(ctx, blockerID, blockedID)

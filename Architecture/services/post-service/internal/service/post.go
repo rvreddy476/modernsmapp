@@ -18,6 +18,7 @@ import (
 	"github.com/atpost/post-service/internal/spam"
 	"github.com/atpost/post-service/internal/store/postgres"
 	"github.com/atpost/post-service/internal/store/scylla"
+	"github.com/atpost/shared/counters"
 	"github.com/atpost/shared/events"
 	"github.com/gocql/gocql"
 	"github.com/google/uuid"
@@ -63,10 +64,21 @@ type Service struct {
 	monetizationServiceURL  string
 	internalServiceKey      string
 	httpClient              *http.Client
+
+	// Sharded post_engagement_counts counters. Each replaces a hot-row
+	// UPDATE on post_engagement_counts.<col> = <col> + 1 — at celebrity-
+	// post scale a single row was bottlenecking every like/share/etc.
+	// Nil-safe: when Redis is nil the service falls back to the legacy
+	// per-event PG UPDATE so the dev loop still works.
+	likeCounter     *counters.Counter
+	commentCounter  *counters.Counter
+	shareCounter    *counters.Counter
+	bookmarkCounter *counters.Counter
+	repostCounter   *counters.Counter
 }
 
 func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client) *Service {
-	return &Service{
+	svc := &Service{
 		pgStore:     pg,
 		scyllaStore: scylla,
 		rdb:         rdb,
@@ -74,6 +86,40 @@ func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client)
 		spam:        spam.New(rdb),
 		httpClient:  &http.Client{Timeout: 5 * time.Second},
 	}
+	if rdb != nil {
+		svc.likeCounter = counters.New(rdb, counters.Config{EntityKind: "post_like_count", Shards: 32})
+		svc.commentCounter = counters.New(rdb, counters.Config{EntityKind: "post_comment_count", Shards: 32})
+		svc.shareCounter = counters.New(rdb, counters.Config{EntityKind: "post_share_count", Shards: 32})
+		svc.bookmarkCounter = counters.New(rdb, counters.Config{EntityKind: "post_bookmark_count", Shards: 32})
+		svc.repostCounter = counters.New(rdb, counters.Config{EntityKind: "post_repost_count", Shards: 32})
+	}
+	return svc
+}
+
+// LikeCounter / CommentCounter / ShareCounter / BookmarkCounter /
+// RepostCounter expose the sharded counters so cmd/server can attach
+// flush workers. Returns nil when Redis isn't configured.
+func (s *Service) LikeCounter() *counters.Counter     { return s.likeCounter }
+func (s *Service) CommentCounter() *counters.Counter  { return s.commentCounter }
+func (s *Service) ShareCounter() *counters.Counter    { return s.shareCounter }
+func (s *Service) BookmarkCounter() *counters.Counter { return s.bookmarkCounter }
+func (s *Service) RepostCounter() *counters.Counter   { return s.repostCounter }
+
+// adjustEngagementCount fans an increment/decrement to the sharded
+// counter when available, otherwise falls back to the legacy per-event
+// PG UPDATE. Failure inside the Redis path is logged but not fatal —
+// the hourly reconciler (internal/reconcile) backfills any drift the
+// next tick.
+func (s *Service) adjustEngagementCount(ctx context.Context, c *counters.Counter, postID uuid.UUID, column string, delta int64) error {
+	if c != nil {
+		if err := c.Inc(ctx, postID.String(), delta); err != nil {
+			slog.Warn("sharded engagement counter inc failed; falling back to PG",
+				"column", column, "post_id", postID, "delta", delta, "err", err)
+			return s.pgStore.IncrementEngagementCount(ctx, postID, column, delta)
+		}
+		return nil
+	}
+	return s.pgStore.IncrementEngagementCount(ctx, postID, column, delta)
 }
 
 // SetUserServiceURL configures the user-service base URL for mention resolution.
@@ -1582,6 +1628,14 @@ func (s *Service) CreateCommentPG(ctx context.Context, postID, authorID uuid.UUI
 		return nil, err
 	}
 
+	// Bump the sharded post_engagement_counts.comment_count via Redis
+	// (with PG fallback inside adjustEngagementCount). The matching
+	// flush worker in cmd/server/main.go materialises the shard sum
+	// back to PG every ~10s; the hourly reconciler is the safety net.
+	if err := s.adjustEngagementCount(ctx, s.commentCounter, postID, "comment_count", 1); err != nil {
+		slog.Warn("failed to increment comment_count", "post_id", postID, "error", err)
+	}
+
 	// Update Redis counter
 	engKey := fmt.Sprintf("post:eng:%s", postID)
 	s.rdb.HIncrBy(ctx, engKey, "comments", 1)
@@ -1669,6 +1723,11 @@ func (s *Service) SoftDeleteComment(ctx context.Context, commentID, userID uuid.
 	postID, err := s.pgStore.SoftDeleteComment(ctx, commentID, userID)
 	if err != nil {
 		return err
+	}
+
+	// Decrement the sharded post_engagement_counts.comment_count.
+	if err := s.adjustEngagementCount(ctx, s.commentCounter, postID, "comment_count", -1); err != nil {
+		slog.Warn("failed to decrement comment_count", "post_id", postID, "error", err)
 	}
 
 	// Update Redis counter
@@ -2432,9 +2491,11 @@ func (s *Service) CreateRepost(ctx context.Context, input CreateRepostInput) (*R
 			}
 			return nil, err
 		}
-		// Increment counters (PG + Redis)
-		if err := s.pgStore.IncrementRepostCount(ctx, input.PostID); err != nil {
-			slog.Warn("failed to increment PG repost count", "error", err, "post_id", input.PostID)
+		// Increment the sharded post_engagement_counts.repost_count
+		// (replaces the legacy per-event PG UPDATE that was the hot
+		// row on viral reposts).
+		if err := s.adjustEngagementCount(ctx, s.repostCounter, input.PostID, "repost_count", 1); err != nil {
+			slog.Warn("failed to increment repost count", "error", err, "post_id", input.PostID)
 		}
 		repostCountKey := fmt.Sprintf("post:%s:repost_count", input.PostID)
 		s.rdb.Incr(ctx, repostCountKey)
@@ -2492,9 +2553,9 @@ func (s *Service) UndoRepost(ctx context.Context, userID, postID uuid.UUID) erro
 		return err
 	}
 
-	// Decrement counters (PG + Redis)
-	if err := s.pgStore.DecrementRepostCount(ctx, postID); err != nil {
-		slog.Warn("failed to decrement PG repost count", "error", err, "post_id", postID)
+	// Decrement the sharded post_engagement_counts.repost_count.
+	if err := s.adjustEngagementCount(ctx, s.repostCounter, postID, "repost_count", -1); err != nil {
+		slog.Warn("failed to decrement repost count", "error", err, "post_id", postID)
 	}
 	repostCountKey := fmt.Sprintf("post:%s:repost_count", postID)
 	s.rdb.Decr(ctx, repostCountKey)

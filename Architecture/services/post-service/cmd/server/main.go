@@ -19,6 +19,7 @@ import (
 	"github.com/atpost/post-service/internal/store/scylla"
 	"github.com/atpost/post-service/internal/streamhub"
 	"github.com/atpost/post-service/internal/trending"
+	"github.com/atpost/shared/counters"
 	"github.com/atpost/shared/health"
 	"github.com/atpost/shared/middleware"
 	"github.com/atpost/shared/o11y/logging"
@@ -27,6 +28,7 @@ import (
 	"github.com/atpost/shared/transport"
 	"github.com/gin-gonic/gin"
 	"github.com/gocql/gocql"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -156,8 +158,76 @@ func main() {
 	scyllaConsumer := consumers.NewScyllaLikeConsumer(scyllaSession, rdb)
 	go scyllaConsumer.Start(consumerCtx, brokers, engTopic, kafkaDialer)
 
-	pgCounterConsumer := consumers.NewPGCounterConsumer(dbPool, rdb)
+	// PG counter consumer: increments post_engagement_counts via the
+	// sharded Redis counters (likes/comments/shares/bookmarks) instead
+	// of the legacy per-event UPDATE that pinned celebrity-post rows
+	// under lock contention. Pass nil for any counter handle to keep
+	// that column on the legacy UPDATE path (Redis-less dev loops).
+	pgCounterConsumer := consumers.NewPGCounterConsumer(
+		dbPool, pgStore, rdb,
+		postSvc.LikeCounter(),
+		postSvc.CommentCounter(),
+		postSvc.ShareCounter(),
+		postSvc.BookmarkCounter(),
+	)
 	go pgCounterConsumer.Start(consumerCtx, brokers, engTopic, kafkaDialer)
+
+	// Sharded-counter flush workers — one per engagement column. Each
+	// drains its Redis dirty-set every 10s and materializes the shard
+	// sum into post_engagement_counts.<col>. The hourly reconciler
+	// (NewEngagementReconciler below) is the safety net for any drift
+	// the worker misses.
+	if mc := postSvc.LikeCounter(); mc != nil {
+		flush := func(ctx context.Context, postIDStr string, total int64) error {
+			id, err := uuid.Parse(postIDStr)
+			if err != nil {
+				return err
+			}
+			return pgStore.SetEngagementCount(ctx, id, "like_count", total)
+		}
+		go counters.NewWorker(mc, flush, counters.WorkerOptions{}).Start(consumerCtx)
+	}
+	if mc := postSvc.CommentCounter(); mc != nil {
+		flush := func(ctx context.Context, postIDStr string, total int64) error {
+			id, err := uuid.Parse(postIDStr)
+			if err != nil {
+				return err
+			}
+			return pgStore.SetEngagementCount(ctx, id, "comment_count", total)
+		}
+		go counters.NewWorker(mc, flush, counters.WorkerOptions{}).Start(consumerCtx)
+	}
+	if mc := postSvc.ShareCounter(); mc != nil {
+		flush := func(ctx context.Context, postIDStr string, total int64) error {
+			id, err := uuid.Parse(postIDStr)
+			if err != nil {
+				return err
+			}
+			return pgStore.SetEngagementCount(ctx, id, "share_count", total)
+		}
+		go counters.NewWorker(mc, flush, counters.WorkerOptions{}).Start(consumerCtx)
+	}
+	if mc := postSvc.BookmarkCounter(); mc != nil {
+		flush := func(ctx context.Context, postIDStr string, total int64) error {
+			id, err := uuid.Parse(postIDStr)
+			if err != nil {
+				return err
+			}
+			return pgStore.SetEngagementCount(ctx, id, "bookmark_count", total)
+		}
+		go counters.NewWorker(mc, flush, counters.WorkerOptions{}).Start(consumerCtx)
+	}
+	if mc := postSvc.RepostCounter(); mc != nil {
+		flush := func(ctx context.Context, postIDStr string, total int64) error {
+			id, err := uuid.Parse(postIDStr)
+			if err != nil {
+				return err
+			}
+			return pgStore.SetEngagementCount(ctx, id, "repost_count", total)
+		}
+		go counters.NewWorker(mc, flush, counters.WorkerOptions{}).Start(consumerCtx)
+	}
+	slog.Info("post-service engagement-count sharded flush workers started")
 
 	wsBroadcaster := consumers.NewWSBroadcasterConsumer(rdb)
 	go wsBroadcaster.Start(consumerCtx, brokers, engTopic, kafkaDialer)

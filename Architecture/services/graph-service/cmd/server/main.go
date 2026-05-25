@@ -13,6 +13,7 @@ import (
 	"github.com/atpost/graph-service/internal/service"
 	"github.com/atpost/graph-service/internal/store"
 	"github.com/atpost/graph-service/internal/userclient"
+	"github.com/atpost/shared/counters"
 	"github.com/atpost/shared/health"
 	"github.com/atpost/shared/middleware"
 	"github.com/atpost/shared/o11y/logging"
@@ -20,6 +21,7 @@ import (
 	"github.com/atpost/shared/server"
 	"github.com/atpost/shared/transport"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -113,6 +115,35 @@ func main() {
 	// started — without it, any missed counter event silently leaves
 	// users' follower_count off-by-N forever.
 	go reconcile.NewCountReconciler(dbPool).Start(ctx)
+
+	// Sharded-counter flush workers: drain Redis follower/following
+	// deltas every 10s and materialise the sum into counts.<col>.
+	// Removes per-follow contention on the singleton counts row — a
+	// 10M-follower celebrity used to serialise every join on this one
+	// row. The hourly CountReconciler above stays as the drift safety
+	// net.
+	if mc := graphSvc.FollowerCounter(); mc != nil {
+		flush := func(ctx context.Context, userIDStr string, total int64) error {
+			id, err := uuid.Parse(userIDStr)
+			if err != nil {
+				return err
+			}
+			return graphStore.SetCountColumn(ctx, id, "follower_count", total)
+		}
+		go counters.NewWorker(mc, flush, counters.WorkerOptions{}).Start(ctx)
+		slog.Info("graph-service follower-count sharded flush worker started")
+	}
+	if mc := graphSvc.FollowingCounter(); mc != nil {
+		flush := func(ctx context.Context, userIDStr string, total int64) error {
+			id, err := uuid.Parse(userIDStr)
+			if err != nil {
+				return err
+			}
+			return graphStore.SetCountColumn(ctx, id, "following_count", total)
+		}
+		go counters.NewWorker(mc, flush, counters.WorkerOptions{}).Start(ctx)
+		slog.Info("graph-service following-count sharded flush worker started")
+	}
 
 	// Audit CG2: gate every /v1/graph route behind the shared internal
 	// service key. The handler already supports the middleware, but
