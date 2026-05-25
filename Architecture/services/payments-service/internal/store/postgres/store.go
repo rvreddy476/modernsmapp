@@ -281,6 +281,35 @@ func (s *Store) ApplyRefund(ctx context.Context, intentID uuid.UUID, amountMinor
 	return newStatus, newRefundedMinor, nil
 }
 
+// RecordRefundIfFresh inserts a row into payments.refunds_applied if
+// the refund_provider_ref hasn't been seen before. Returns true when
+// the insert actually happened (caller proceeds to ApplyRefund) and
+// false when ON CONFLICT short-circuited (caller skips — the refund
+// was already applied by an earlier webhook delivery).
+//
+// This is the refund-level idempotency layer. The webhook_events
+// dedup catches identical event_ids, but Razorpay can re-deliver the
+// same refund with a fresh event_id (manual replay, queue re-issue),
+// so we key on the refund id itself.
+func (s *Store) RecordRefundIfFresh(ctx context.Context, refundProviderRef string, intentID uuid.UUID, amountMinor int64) (bool, error) {
+	if refundProviderRef == "" {
+		return false, fmt.Errorf("refund_provider_ref must be non-empty")
+	}
+	if amountMinor <= 0 {
+		return false, fmt.Errorf("amount_minor must be positive")
+	}
+	tag, err := s.db.Exec(ctx,
+		`INSERT INTO payments.refunds_applied (refund_provider_ref, intent_id, amount_minor)
+		 VALUES ($1, $2, $3)
+		 ON CONFLICT (refund_provider_ref) DO NOTHING`,
+		refundProviderRef, intentID, amountMinor,
+	)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 // ListByReference returns payment intents for a given reference, capped
 // at 100 most-recent rows. HP4: prior version had no LIMIT — an order
 // with many retried/failed intent attempts could pull an unbounded set

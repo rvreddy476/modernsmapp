@@ -282,7 +282,11 @@ func (h *Handler) HandleWebhook(c *gin.Context) {
 		return
 	}
 
-	// Parse payment entity
+	// Parse payment + refund entities. Razorpay puts the refund under
+	// `payload.refund.entity` and the originating payment under
+	// `payload.payment.entity`. For refund.processed we need both — the
+	// refund's id + amount drive ApplyWebhookRefund, the payment's
+	// order_id locates the intent.
 	var payloadData struct {
 		Payment struct {
 			Entity struct {
@@ -290,6 +294,14 @@ func (h *Handler) HandleWebhook(c *gin.Context) {
 				OrderID string `json:"order_id"`
 			} `json:"entity"`
 		} `json:"payment"`
+		Refund struct {
+			Entity struct {
+				ID          string `json:"id"`
+				PaymentID   string `json:"payment_id"`
+				Amount      int64  `json:"amount"`
+				Status      string `json:"status"`
+			} `json:"entity"`
+		} `json:"refund"`
 	}
 	json.Unmarshal(event.Payload, &payloadData) //nolint:errcheck
 
@@ -315,8 +327,18 @@ func (h *Handler) HandleWebhook(c *gin.Context) {
 		h.svc.UpdateStatusByProviderRef(c.Request.Context(), orderID, "succeeded", paymentID)
 	case "payment.failed":
 		h.svc.UpdateStatusByProviderRef(c.Request.Context(), orderID, "failed", paymentID)
-	case "refund.processed":
-		h.svc.UpdateStatusByProviderRef(c.Request.Context(), orderID, "refunded", paymentID)
+	case "refund.processed", "refund.created":
+		// Partial-refund-aware settlement (P6/P7 follow-up).
+		// payment_intents.provider_ref stores the Razorpay order_id, so
+		// the lookup key is orderID (extracted from payload.payment.entity
+		// in the same envelope Razorpay always includes for refund
+		// events). amount is in paise per Razorpay's API.
+		h.svc.ApplyWebhookRefund(
+			c.Request.Context(),
+			orderID,
+			payloadData.Refund.Entity.ID,
+			payloadData.Refund.Entity.Amount,
+		)
 	}
 	c.Status(http.StatusOK)
 }

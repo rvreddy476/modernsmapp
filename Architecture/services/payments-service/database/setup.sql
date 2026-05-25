@@ -104,3 +104,16 @@ CREATE TABLE IF NOT EXISTS payments.webhook_events (
 );
 CREATE INDEX IF NOT EXISTS idx_webhook_events_received_at
     ON payments.webhook_events(received_at DESC);
+
+-- Refund-level idempotency (migration 005). Keyed by Razorpay refund
+-- id (not webhook event id) so a second webhook carrying the same
+-- refund id silently skips. The webhook handler INSERTs ... ON
+-- CONFLICT DO NOTHING and skips ApplyRefund when rows affected = 0.
+CREATE TABLE IF NOT EXISTS payments.refunds_applied (
+    refund_provider_ref TEXT PRIMARY KEY,
+    intent_id           UUID NOT NULL,
+    amount_minor        BIGINT NOT NULL CHECK (amount_minor > 0),
+    applied_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_refunds_applied_intent
+    ON payments.refunds_applied(intent_id, applied_at DESC);

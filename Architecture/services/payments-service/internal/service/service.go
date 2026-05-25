@@ -428,6 +428,83 @@ func (s *Service) UpdateStatusByProviderRef(ctx context.Context, providerRef, ne
 	})
 }
 
+// ApplyWebhookRefund settles a refund.processed webhook from Razorpay.
+//
+// Closes the follow-up the partial-refund commit flagged: the old
+// webhook arm did UpdateStatusByProviderRef(providerRef, "refunded"),
+// which (a) ignored the refund amount entirely so partials got booked
+// as fulls, and (b) tried partially_refunded → refunded
+// unconditionally — the post-P6 state machine correctly refuses that
+// when refunded_amount_minor hasn't caught up.
+//
+// Idempotency:
+//   - Refund-level: store.RecordRefundIfFresh INSERTs the
+//     refund_provider_ref ON CONFLICT DO NOTHING. A retry returns
+//     "not fresh" and we short-circuit without re-applying. The
+//     existing webhook_events dedup only catches identical event_ids;
+//     Razorpay can re-deliver the same refund with a new event_id.
+//   - DB-level: ApplyRefund's `refunded_amount_minor + $2 <= $3`
+//     WHERE clause is the second line of defense — if dedup somehow
+//     misses, the cap still refuses to oversubscribe.
+//
+// Best-effort logging on failures so the webhook handler can still
+// 200 — Razorpay's retry loop will redeliver on a 5xx, but a refund
+// that genuinely can't be booked (intent not found, amount overflows
+// cap) is a permanent failure that re-trying doesn't fix.
+func (s *Service) ApplyWebhookRefund(ctx context.Context, paymentProviderRef, refundProviderRef string, amountMinor int64) {
+	if amountMinor <= 0 {
+		slog.Warn("webhook refund: skipping zero/negative amount",
+			"refund_id", refundProviderRef, "amount_minor", amountMinor)
+		return
+	}
+	intent, err := s.store.GetIntentByProviderRef(ctx, paymentProviderRef)
+	if err != nil || intent == nil {
+		slog.Warn("webhook refund: intent not found for provider_ref",
+			"payment_id", paymentProviderRef, "refund_id", refundProviderRef, "error", err)
+		return
+	}
+
+	fresh, err := s.store.RecordRefundIfFresh(ctx, refundProviderRef, intent.ID, amountMinor)
+	if err != nil {
+		slog.Error("webhook refund: dedup record failed",
+			"intent_id", intent.ID, "refund_id", refundProviderRef, "error", err)
+		return
+	}
+	if !fresh {
+		slog.Info("webhook refund: replay skipped",
+			"intent_id", intent.ID, "refund_id", refundProviderRef)
+		return
+	}
+
+	intentAmountMinor := intent.AmountMinor()
+	if amountMinor > intentAmountMinor-intent.RefundedAmountMinor {
+		// Refund exceeds the remaining balance — the cap WHERE clause
+		// in ApplyRefund will refuse, but we log the impossible case
+		// loudly. A legitimate over-refund means provider/local state
+		// drifted; needs an ops investigation rather than a retry.
+		slog.Error("webhook refund: amount exceeds remaining intent balance",
+			"intent_id", intent.ID, "refund_id", refundProviderRef,
+			"requested_minor", amountMinor,
+			"remaining_minor", intentAmountMinor-intent.RefundedAmountMinor)
+		return
+	}
+
+	newStatus, newRefundedTotal, err := s.store.ApplyRefund(ctx, intent.ID, amountMinor, intentAmountMinor, uuid.Nil)
+	if err != nil {
+		slog.Error("webhook refund: ApplyRefund failed",
+			"intent_id", intent.ID, "refund_id", refundProviderRef, "error", err)
+		return
+	}
+
+	intent.Status = newStatus
+	intent.RefundedAmountMinor = newRefundedTotal
+	s.publishEvent(ctx, "payment.refunded", "", intent)
+	slog.Info("webhook refund: applied",
+		"intent_id", intent.ID, "refund_id", refundProviderRef,
+		"amount_minor", amountMinor, "new_status", newStatus,
+		"refunded_total_minor", newRefundedTotal)
+}
+
 func (s *Service) publishEvent(ctx context.Context, eventType, key string, payload any) {
 	data, err := json.Marshal(payload)
 	if err != nil {
