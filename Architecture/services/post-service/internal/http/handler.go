@@ -252,7 +252,10 @@ type CreatePostRequest struct {
 	ShareToPostbook bool               `json:"share_to_postbook"`
 	// Reel metadata
 	Title             string   `json:"title"`
-	Tags              []string `json:"tags"`
+	// M5: cap tags array to bound payload memory. 20 tags × 50 chars
+	// is the upper bound for legitimate use cases (most reels carry
+	// 3-5 tags); larger arrays are either spam or accidents.
+	Tags              []string `json:"tags" binding:"max=20,dive,max=50"`
 	Category          string   `json:"category"`
 	Language          string   `json:"language"`
 	SEOTitle          string   `json:"seo_title"`

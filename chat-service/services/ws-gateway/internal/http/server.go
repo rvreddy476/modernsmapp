@@ -65,7 +65,12 @@ func NewServer(rdb *redis.Client, log *slog.Logger, opts ServerOptions) *Server 
 		opts.PingPeriod = (opts.PongWait * 9) / 10
 	}
 	if opts.MaxMessageSize <= 0 {
-		opts.MaxMessageSize = 64 * 1024
+		// M12: prior default was 64 KiB, eight times the HTTP message-
+		// send body limit. A malformed (or hostile) client could push
+		// 64 KB chat messages over WS that the HTTP fallback would
+		// reject — asymmetric DoS surface. 10 KB matches the HTTP
+		// path (8 KB + envelope overhead).
+		opts.MaxMessageSize = 10 * 1024
 	}
 
 	s := &Server{
