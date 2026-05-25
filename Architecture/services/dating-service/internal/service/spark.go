@@ -31,6 +31,14 @@ func (s *Service) CreateSpark(ctx context.Context, fromUserID, toUserID uuid.UUI
 		return nil, nil, fmt.Errorf("invalid: cannot spark yourself")
 	}
 
+	// P0-5: the actor sending a spark must themselves be a verified
+	// adult. The candidate-side age gate lives in the discovery query,
+	// but a spark to a known userID bypasses discovery — so gate it
+	// here too. Returns ErrUnderage with a clean 4xx mapping.
+	if err := s.requireAdult(ctx, fromUserID); err != nil {
+		return nil, nil, err
+	}
+
 	// Lightweight existence check on the target. We don't crash if the
 	// target profile is missing in test setups; just return invalid so the
 	// caller (handler) maps to 400.

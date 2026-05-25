@@ -118,7 +118,13 @@ const candidateSelectCols = `
     t.lifestyle_rhythm, t.conversation_style, t.faith_weight, t.family_weight,
     t.region_weight, t.family_plans_axis, t.education_axis,
     (SELECT media_id FROM dating_photos
-        WHERE user_id = p.user_id AND is_primary = true
+        WHERE user_id = p.user_id
+          AND is_primary = true
+          -- P0-6: discovery must only surface approved photos. Without
+          -- this filter a pending/rejected primary photo could leak to
+          -- other users.
+          AND moderation_status = 'approved'
+          AND visibility = 'public'
         LIMIT 1) AS primary_photo_media`
 
 // CandidateQuery encodes the hard-filter knobs from spec §9.1.
@@ -150,6 +156,22 @@ func (s *Store) FetchCandidates(ctx context.Context, q CandidateQuery) ([]Candid
 		`p.deleted_at IS NULL`,
 		`p.paused = false`,
 		`p.visible_to_public = true`,
+		// P0-5: absolute age floor — no candidate without a verifiable
+		// birth_date AND a computed age of 18+ enters discovery,
+		// regardless of the viewer's preference window. Closes the
+		// "candidate age = 0" leak from the gap analysis.
+		`p.birth_date IS NOT NULL`,
+		`EXTRACT(YEAR FROM AGE(p.birth_date)) >= 18`,
+		// P0-6: candidate must have at least one approved photo. The
+		// SELECT in candidateSelectCols already filters the primary
+		// photo to approved-only; this EXISTS clause guarantees the
+		// candidate has one rather than relying on the LEFT-JOIN-style
+		// scalar subquery returning NULL.
+		`EXISTS (SELECT 1 FROM dating_photos ph
+		    WHERE ph.user_id = p.user_id
+		      AND ph.is_primary = true
+		      AND ph.moderation_status = 'approved'
+		      AND ph.visibility = 'public')`,
 		// Mutual block filter — neither side has blocked the other.
 		`NOT EXISTS (SELECT 1 FROM dating_blocks b
 		    WHERE (b.user_id = $1 AND b.blocked_id = p.user_id)
@@ -157,11 +179,11 @@ func (s *Store) FetchCandidates(ctx context.Context, q CandidateQuery) ([]Candid
 	}
 	if q.MinAge > 0 {
 		args = append(args, q.MinAge)
-		where = append(where, fmt.Sprintf(`(p.birth_date IS NULL OR EXTRACT(YEAR FROM AGE(p.birth_date)) >= $%d)`, len(args)))
+		where = append(where, fmt.Sprintf(`EXTRACT(YEAR FROM AGE(p.birth_date)) >= $%d`, len(args)))
 	}
 	if q.MaxAge > 0 {
 		args = append(args, q.MaxAge)
-		where = append(where, fmt.Sprintf(`(p.birth_date IS NULL OR EXTRACT(YEAR FROM AGE(p.birth_date)) <= $%d)`, len(args)))
+		where = append(where, fmt.Sprintf(`EXTRACT(YEAR FROM AGE(p.birth_date)) <= $%d`, len(args)))
 	}
 	if q.GenderFilter != "" {
 		args = append(args, q.GenderFilter)

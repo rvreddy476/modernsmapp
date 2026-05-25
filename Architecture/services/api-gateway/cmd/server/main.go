@@ -99,7 +99,11 @@ func main() {
 		{"/v1/grievances", env("TRUST_SAFETY_SERVICE_URL", "http://trust-safety-service:8091")},
 		{"/v1/ws", env("WS_GATEWAY_URL", "http://ws-gateway:8093")},
 		{"/v1/calls", env("CALL_SERVICE_URL", "http://call-service:8097")},
-		{"/v1/chat", env("MESSAGE_SERVICE_URL", "http://message-service:8092")},
+		// Canonical message-service is chat-service/services/message-service.
+		// The legacy Architecture/services/message-service was archived
+		// 2026-05-25 — docker-compose builds the chat-service variant as
+		// the chat-message-service container.
+		{"/v1/chat", env("MESSAGE_SERVICE_URL", "http://chat-message-service:8092")},
 		{"/v1/analytics", env("ANALYTICS_SERVICE_URL", "http://analytics-service:8094")},
 		{"/v1/ai", env("AI_SERVICE_URL", "http://ai-service:8117")},
 		{"/v1/flags", env("FLAGS_SERVICE_URL", "http://feature-flag-service:8095")},

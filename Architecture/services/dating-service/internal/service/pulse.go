@@ -83,6 +83,17 @@ func (s *Service) SetGraphProvider(p matcher.GraphProvider) {
 // not want a gated user to see a stale Pulse from the cache. Conversely,
 // users who are inside the rollout get the cache-backed fast path.
 func (s *Service) GetPulseToday(ctx context.Context, viewerID uuid.UUID) (*PulseResponse, error) {
+	// P0-5: viewer must be a verified adult to see the discovery deck.
+	// Surface as CohortGated so the client renders the same
+	// "complete your profile" empty state instead of a hard error —
+	// the underage guard mirrors the cohort gate UX.
+	if err := s.requireAdult(ctx, viewerID); err != nil {
+		return &PulseResponse{
+			Data:        []PulseCard{},
+			Meta:        PulseMeta{GeneratedAt: time.Now().UTC(), Size: 0},
+			CohortGated: true,
+		}, nil
+	}
 	if s.isUserGated(ctx, viewerID) {
 		return &PulseResponse{
 			Data:        []PulseCard{},

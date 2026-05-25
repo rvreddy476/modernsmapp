@@ -2,26 +2,54 @@
 package http
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/atpost/dating-service/internal/service"
 	"github.com/atpost/shared/api"
+	sharedmiddleware "github.com/atpost/shared/middleware"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
 type Handler struct {
-	svc *service.Service
+	svc         *service.Service
+	internalKey string
 }
 
 func New(svc *service.Service) *Handler {
 	return &Handler{svc: svc}
 }
 
+// WithInternalKey gates every /v1/dating/* route behind the shared
+// X-Internal-Service-Key header. The api-gateway sets this header
+// before forwarding traffic (and strips any inbound copy from the
+// public client). Without the gate, anyone reaching dating-service
+// directly could spoof X-User-Id and impersonate any user — the
+// P0-2 finding in PRODUCTION_GAP_ANALYSIS.md.
+//
+// Empty key disables the gate (dev-loop only); main.go emits a loud
+// warning at startup when the env var isn't set.
+func (h *Handler) WithInternalKey(key string) *Handler {
+	h.internalKey = key
+	return h
+}
+
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
-	dating := r.Group("/v1/dating")
+	// Razorpay webhook is signature-authenticated (X-Razorpay-Signature
+	// HMAC verified inside the handler), NOT internal-key gated. The
+	// gateway forwards it untouched, and Razorpay itself cannot carry
+	// the internal key. Register it outside the v1 group.
+	r.POST("/v1/dating/premium/webhook", h.PostWebhook)
+
+	// Everything else sits behind the internal-service-key gate.
+	v1 := r.Group("")
+	if h.internalKey != "" {
+		v1.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
+	}
+	dating := v1.Group("/v1/dating")
 	{
 		dating.GET("/profile", h.GetProfile)
 		dating.POST("/profile", h.UpsertProfile)
@@ -100,9 +128,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		dating.POST("/premium/checkout", h.PostCheckout)
 		dating.GET("/premium/me", h.GetMyPremium)
 		dating.POST("/premium/cancel", h.PostCancelPremium)
-		// Webhook is signature-authenticated, NOT user-authenticated.
-		// Razorpay calls /v1/dating/premium/webhook with X-Razorpay-Signature.
-		dating.POST("/premium/webhook", h.PostWebhook)
+		// (Razorpay webhook /v1/dating/premium/webhook is registered
+		// outside this group — it's HMAC-authenticated, not
+		// internal-key gated.)
 
 		// Sprint 5 — Pulse boost (premium daily OR one-shot token).
 		dating.POST("/pulse/boost", h.PostBoost)
@@ -156,6 +184,13 @@ func parseUUIDValue(raw string) (uuid.UUID, error) {
 
 func respondServiceError(c *gin.Context, err error, defaultCode int, defaultCodeName string) {
 	if err == nil {
+		return
+	}
+	// P0-5: surface the underage gate as 403 AGE_REQUIRED so mobile +
+	// web can render the "complete your birth date / 18+ required"
+	// flow rather than dumping the raw message.
+	if errors.Is(err, service.ErrUnderage) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "AGE_REQUIRED", err.Error(), nil)
 		return
 	}
 	msg := err.Error()

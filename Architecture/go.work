@@ -19,7 +19,6 @@ use (
 	./services/live-service-v2
 	./services/media-service
 	./services/memories-service
-	./services/message-service
 	./services/monetization-service
 	./services/notification-service
 	./services/payments-service
