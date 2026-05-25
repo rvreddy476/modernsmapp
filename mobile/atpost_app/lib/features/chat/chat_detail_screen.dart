@@ -2,7 +2,9 @@ import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/models/conversation.dart';
+import 'package:atpost_app/data/models/presence.dart';
 import 'package:atpost_app/providers/chat_provider.dart';
+import 'package:atpost_app/providers/presence_provider.dart';
 import 'package:atpost_app/services/auth_service.dart';
 import 'package:atpost_app/services/call_service.dart';
 import 'package:atpost_app/shared/widgets/glass_icon_button.dart';
@@ -32,7 +34,27 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
       ref
           .read(chatMessagesProvider(widget.conversationId).notifier)
           .onComposerChanged(_composerController.text);
+      // M1: also push `typing.start` over the persistent WS so other
+      // members see the indicator instantly. The controller throttles
+      // outbound pings to once per 3s.
+      if (_composerController.text.trim().isNotEmpty) {
+        ref
+            .read(
+              conversationPresenceControllerProvider(widget.conversationId),
+            )
+            .onTyping();
+      }
       setState(() {});
+    });
+    // Eagerly create the presence controller so `conversation.enter` +
+    // the 15s heartbeat fire on screen open rather than waiting for the
+    // first `build()` to read the provider.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        ref.read(
+          conversationPresenceControllerProvider(widget.conversationId),
+        );
+      }
     });
   }
 
@@ -85,11 +107,17 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
     final peerPresence = peerId == null
         ? null
         : ref.watch(peerPresenceProvider(peerId));
+    // M1 conversation-presence rollup (polled every 10s).
+    final convPresenceAsync = ref.watch(
+      conversationPresencePollProvider(widget.conversationId),
+    );
+    final convPresence = convPresenceAsync.valueOrNull;
     final subtitle = _subtitleFor(
       conversation: conversation,
       currentUserId: currentUserId,
       peerPresence: peerPresence,
       typingUserIds: chatState.typingUserIds,
+      convPresence: convPresence,
     );
 
     return Scaffold(
@@ -462,15 +490,38 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
     required String? currentUserId,
     required AsyncValue<bool>? peerPresence,
     required Set<String> typingUserIds,
+    required ConversationPresence? convPresence,
   }) {
-    final remoteTyping = typingUserIds
+    // Prefer the M1 polled typing list (authoritative across devices),
+    // falling back to the realtime ChatProvider set for snappier first
+    // keystroke feedback.
+    final pollTyping = (convPresence?.typingUsers ?? const <String>[])
         .where((id) => id != currentUserId)
-        .isNotEmpty;
+        .toList();
+    final realtimeTyping = typingUserIds.where((id) => id != currentUserId);
+    final remoteTyping =
+        pollTyping.isNotEmpty || realtimeTyping.isNotEmpty;
     if (remoteTyping) {
       return 'Typing...';
     }
     if (conversation == null) {
       return 'Loading conversation...';
+    }
+    // M1 in-conversation active count is a stronger signal than global
+    // online state once we have it. active_count includes the viewer,
+    // so >1 means a peer is actively in the conversation right now.
+    if (convPresence != null && convPresence.activeCount > 1) {
+      if (convPresence.isBigGroup) {
+        return '${convPresence.activeCount} active in chat';
+      }
+      final otherActive = (convPresence.activeUsers)
+          .where((id) => id != currentUserId)
+          .length;
+      if (otherActive > 0) {
+        return otherActive == 1
+            ? 'Active in chat'
+            : '$otherActive active in chat';
+      }
     }
     if (conversation.type == 'group') {
       final participantCount = conversation.participantCountFor(currentUserId);
