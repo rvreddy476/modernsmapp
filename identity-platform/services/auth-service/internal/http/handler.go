@@ -51,8 +51,11 @@ type AuthService interface {
 	Verify2FA(ctx context.Context, userID uuid.UUID, code, pendingToken string) (*service.AuthResponse, error)
 	// OAuth
 	GetOAuthRedirectURL(ctx context.Context, provider string) (string, error)
-	HandleOAuthCallback(ctx context.Context, provider, code, state string) (*service.AuthResponse, error)
-	HandleOAuthToken(ctx context.Context, provider, accessToken string) (*service.AuthResponse, error)
+	HandleOAuthCallback(ctx context.Context, provider, code, state string) (*service.OAuthCallbackResult, error)
+	HandleOAuthToken(ctx context.Context, provider, accessToken string) (*service.OAuthCallbackResult, error)
+	// A5: OAuth pre-creation OTP-signup flow.
+	CompleteOAuthSignup(ctx context.Context, pendingToken, phone string) error
+	VerifyOAuthSignup(ctx context.Context, pendingToken, otp, deviceID, platform, ip, userAgent string) (*service.AuthResponse, error)
 	// Password reset
 	ForgotPassword(ctx context.Context, identifier string) error
 	ResetPassword(ctx context.Context, identifier, code, newPassword string) error
@@ -103,6 +106,14 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 		v1.GET("/oauth/:provider", h.OAuthRedirect)
 		v1.GET("/oauth/:provider/callback", h.OAuthCallback)
 		v1.POST("/oauth/:provider/token", h.OAuthToken)
+		// A5: OAuth pre-creation OTP-signup flow — used when the
+		// provider didn't assert email_verified. complete-signup
+		// sends the OTP to the supplied phone; verify-signup
+		// finalises the account creation once the OTP matches.
+		// Reuse the OTP rate-limiter so this can't be abused for
+		// SMS-flood billing attacks.
+		v1.POST("/oauth/complete-signup", middleware.OTPRateLimit(h.rdb), h.OAuthCompleteSignup)
+		v1.POST("/oauth/verify-signup", middleware.LoginRateLimit(h.rdb), h.OAuthVerifySignup)
 		v1.GET("/.well-known/jwks.json", h.MiniAppJWKS)
 
 		// Password reset (public)

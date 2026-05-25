@@ -89,10 +89,16 @@ func (s *stubAuthService) Verify2FA(_ context.Context, _ uuid.UUID, _, _ string)
 func (s *stubAuthService) GetOAuthRedirectURL(_ context.Context, _ string) (string, error) {
 	return "", nil
 }
-func (s *stubAuthService) HandleOAuthCallback(_ context.Context, _, _, _ string) (*service.AuthResponse, error) {
+func (s *stubAuthService) HandleOAuthCallback(_ context.Context, _, _, _ string) (*service.OAuthCallbackResult, error) {
 	return nil, nil
 }
-func (s *stubAuthService) HandleOAuthToken(_ context.Context, _, _ string) (*service.AuthResponse, error) {
+func (s *stubAuthService) HandleOAuthToken(_ context.Context, _, _ string) (*service.OAuthCallbackResult, error) {
+	return nil, nil
+}
+func (s *stubAuthService) CompleteOAuthSignup(_ context.Context, _, _ string) error {
+	return nil
+}
+func (s *stubAuthService) VerifyOAuthSignup(_ context.Context, _, _, _, _, _, _ string) (*service.AuthResponse, error) {
 	return nil, nil
 }
 

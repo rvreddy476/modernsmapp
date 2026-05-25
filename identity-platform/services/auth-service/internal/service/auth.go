@@ -79,6 +79,11 @@ type Store interface {
 	GetUserByLoginProvider(ctx context.Context, provider, email string) (*store.User, error)
 	CreateUserWithOAuth(ctx context.Context, provider, email, name string) (*store.User, error)
 	CreateUserWithOAuthTx(ctx context.Context, tx pgx.Tx, provider, email, name string) (*store.User, error)
+	// A5: pre-creation flow variant — accepts explicit verification
+	// flags so OAuth callers can avoid stamping email_verified=true
+	// when the provider didn't actually assert it, and stamp
+	// phone_verified=true once the SMS-OTP step has passed.
+	CreateUserWithOAuthExtendedTx(ctx context.Context, tx pgx.Tx, provider, email, name, phone string, emailVerified, phoneVerified bool) (*store.User, error)
 	LinkOAuthProvider(ctx context.Context, userID uuid.UUID, provider string) error
 	// Cross-schema transactional inserts
 	CreateUserRecordTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error
