@@ -259,8 +259,13 @@ func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *
 	conn.SetReadLimit(s.opts.MaxMessageSize)
 	_ = conn.SetReadDeadline(time.Now().Add(s.opts.PongWait))
 	conn.SetPongHandler(func(string) error {
-		// Refresh presence TTL on each pong (keeps user "online" while WS is alive).
-		_ = s.rdb.Set(ctx, "presence:"+userID.String(), "1", 90*time.Second)
+		// M4: refresh presence TTL with EXPIRE instead of SET. Same
+		// effect (key kept alive for 90s) but EXPIRE is cheaper —
+		// no value transfer, no dictentry replacement. At 1M
+		// concurrent connections × pong every ~54s that's ~18.5k
+		// presence writes per second; EXPIRE shaves both Redis CPU
+		// and network bytes vs SET.
+		_ = s.rdb.Expire(ctx, "presence:"+userID.String(), 90*time.Second)
 		return conn.SetReadDeadline(time.Now().Add(s.opts.PongWait))
 	})
 

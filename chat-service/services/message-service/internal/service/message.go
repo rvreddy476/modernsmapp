@@ -741,13 +741,26 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 					"created_at":      now,
 				},
 			})
+			// M2: per-member fan-out collapsed into a single Redis
+			// pipeline. The previous loop issued one round-trip per
+			// member, which for a 100-member group added 100×RTT to
+			// the send (~100ms in the same DC, much worse cross-AZ).
+			// Pipeline batches the PUBLISH commands and waits for one
+			// flush. Pub/Sub fan-out semantics stay identical from
+			// the ws-gateway's point of view — it subscribes per
+			// chat:<user_id> channel as before.
+			pipe := s.rdb.Pipeline()
+			recipients := 0
 			for _, m := range members {
 				if m.UserID == userID {
 					continue // Don't notify sender
 				}
-				channel := fmt.Sprintf("chat:%s", m.UserID)
-				if err := s.rdb.Publish(pubCtx, channel, payload).Err(); err != nil {
-					l.Warn("failed to publish to redis pubsub", "err", err, "member_id", m.UserID)
+				pipe.Publish(pubCtx, fmt.Sprintf("chat:%s", m.UserID), payload)
+				recipients++
+			}
+			if recipients > 0 {
+				if _, err := pipe.Exec(pubCtx); err != nil {
+					l.Warn("failed to pipeline-publish to redis pubsub", "err", err, "recipients", recipients)
 				}
 			}
 		}()
@@ -958,13 +971,20 @@ func (s *Service) ToggleReaction(ctx context.Context, userID, conversationID, me
 				"added":           added,
 			},
 		})
+		// M2: pipeline the per-member PUBLISH commands (see message-
+		// send path above for the rationale).
+		pipe := s.rdb.Pipeline()
+		recipients := 0
 		for _, m := range members {
 			if m.UserID == userID {
 				continue
 			}
-			channel := fmt.Sprintf("chat:%s", m.UserID)
-			if err := s.rdb.Publish(pubCtx, channel, payload).Err(); err != nil {
-				s.log.Warn("failed to publish reaction to redis", "err", err, "member_id", m.UserID)
+			pipe.Publish(pubCtx, fmt.Sprintf("chat:%s", m.UserID), payload)
+			recipients++
+		}
+		if recipients > 0 {
+			if _, err := pipe.Exec(pubCtx); err != nil {
+				s.log.Warn("failed to pipeline-publish reaction to redis", "err", err, "recipients", recipients)
 			}
 		}
 	}()

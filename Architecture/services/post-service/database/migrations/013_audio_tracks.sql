@@ -18,3 +18,14 @@ CREATE INDEX IF NOT EXISTS idx_audio_trending ON audio_tracks(is_trending, use_c
 CREATE INDEX IF NOT EXISTS idx_audio_post ON audio_tracks(original_post_id);
 
 ALTER TABLE posts ADD COLUMN IF NOT EXISTS audio_track_id UUID REFERENCES audio_tracks(id);
+
+-- M10: audio-track ownership. is_public defaults TRUE so existing
+-- tracks behave as before — anyone can use any track in their own
+-- post (the TikTok/Reels reuse-by-default UX). When a seller-creator
+-- uploads an original track they want gated, they set is_public=FALSE
+-- and only the creator + grantees can attach it. creator_user_id is
+-- backfilled from original_post_id.author when set.
+ALTER TABLE audio_tracks
+    ADD COLUMN IF NOT EXISTS is_public BOOLEAN NOT NULL DEFAULT TRUE,
+    ADD COLUMN IF NOT EXISTS creator_user_id UUID;
+CREATE INDEX IF NOT EXISTS idx_audio_creator ON audio_tracks(creator_user_id) WHERE creator_user_id IS NOT NULL;

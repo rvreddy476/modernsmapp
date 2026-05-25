@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -401,7 +402,14 @@ func (h *Handler) CreatePost(c *gin.Context) {
 	// persisted and a missing audio reference is recoverable from the UI.
 	if req.AudioTrackID != nil && *req.AudioTrackID != "" {
 		if audioID, parseErr := uuid.Parse(*req.AudioTrackID); parseErr == nil {
-			_ = h.svc.AttachAudioToPost(c.Request.Context(), p.ID, audioID)
+			// M10: pass authorID so the service enforces the private-
+			// track ownership check. Failure is logged at slog.Warn
+			// (a private-track refusal shouldn't bring down the
+			// post; the post is already persisted).
+			if err := h.svc.AttachAudioToPost(c.Request.Context(), authorID, p.ID, audioID); err != nil {
+				slog.Warn("create-post: attach audio failed",
+					"post_id", p.ID, "audio_id", audioID, "err", err)
+			}
 		}
 	}
 

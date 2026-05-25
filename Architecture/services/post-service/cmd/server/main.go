@@ -780,6 +780,12 @@ func ensureSchema(ctx context.Context, db *pgxpool.Pool) {
 		`CREATE INDEX IF NOT EXISTS idx_audio_trending ON audio_tracks(is_trending, use_count DESC) WHERE is_trending = true`,
 		`CREATE INDEX IF NOT EXISTS idx_audio_post ON audio_tracks(original_post_id)`,
 		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS audio_track_id UUID REFERENCES audio_tracks(id)`,
+		// M10: ownership columns. is_public defaults TRUE so existing
+		// rows keep their permissive behavior; private tracks require
+		// is_public=false + creator_user_id to be set explicitly.
+		`ALTER TABLE audio_tracks ADD COLUMN IF NOT EXISTS is_public BOOLEAN NOT NULL DEFAULT TRUE`,
+		`ALTER TABLE audio_tracks ADD COLUMN IF NOT EXISTS creator_user_id UUID`,
+		`CREATE INDEX IF NOT EXISTS idx_audio_creator ON audio_tracks(creator_user_id) WHERE creator_user_id IS NOT NULL`,
 	}
 	for _, stmt := range audioTracksDDL {
 		if _, err := db.Exec(ctx, stmt); err != nil {
