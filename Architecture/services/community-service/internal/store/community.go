@@ -370,6 +370,17 @@ func (s *Store) IncrementMemberCount(ctx context.Context, communityID uuid.UUID,
 	return err
 }
 
+// SetMemberCount overwrites communities.member_count to the absolute
+// value. Used by the sharded-counter flush worker — Redis is the
+// realtime buffer, this UPDATE periodically materializes the sum back
+// to PG. Touches the same hot row as IncrementMemberCount but only
+// fires every ~10s per community instead of on every join.
+func (s *Store) SetMemberCount(ctx context.Context, communityID uuid.UUID, total int64) error {
+	query := `UPDATE communities SET member_count = $2, updated_at = NOW() WHERE id = $1`
+	_, err := s.db.Exec(ctx, query, communityID, total)
+	return err
+}
+
 func (s *Store) IncrementSpaceCount(ctx context.Context, communityID uuid.UUID, delta int) error {
 	query := `UPDATE communities SET space_count = space_count + $2, updated_at = NOW() WHERE id = $1`
 	_, err := s.db.Exec(ctx, query, communityID, delta)

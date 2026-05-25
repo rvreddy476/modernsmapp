@@ -14,8 +14,10 @@ import (
 	"github.com/atpost/community-service/internal/service"
 	"github.com/atpost/community-service/internal/store"
 	pgstore "github.com/atpost/community-service/internal/store/postgres"
+	"github.com/atpost/shared/counters"
 	"github.com/atpost/shared/health"
 	"github.com/atpost/shared/middleware"
+	"github.com/google/uuid"
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
 	"github.com/atpost/shared/server"
@@ -116,6 +118,24 @@ func main() {
 	// this, any IncrementMemberCount event lost to a deploy bounce
 	// leaves the cached count off-by-N forever.
 	go reconcile.NewMemberCountReconciler(dbPool).Start(consumerCtx)
+
+	// Sharded-counter flush worker: drains Redis member-count deltas
+	// every 10s and materializes the sum into communities.member_count.
+	// Removes per-join contention on the singleton communities row —
+	// the membership table writes are already distributed by primary
+	// key, and this collapses N joins/sec into 1 row UPDATE/10s per
+	// community.
+	if mc := communitySvc.MemberCounter(); mc != nil {
+		flush := func(ctx context.Context, communityID string, total int64) error {
+			id, err := uuid.Parse(communityID)
+			if err != nil {
+				return err
+			}
+			return communityStore.SetMemberCount(ctx, id, total)
+		}
+		go counters.NewWorker(mc, flush, counters.WorkerOptions{}).Start(consumerCtx)
+		slog.Info("community member-count sharded flush worker started")
+	}
 
 	communityHandler := http.New(communitySvc)
 

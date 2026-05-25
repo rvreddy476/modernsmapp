@@ -9,6 +9,7 @@ import (
 
 	communityevents "github.com/atpost/community-service/internal/events"
 	"github.com/atpost/community-service/internal/store"
+	"github.com/atpost/shared/counters"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
@@ -135,10 +136,46 @@ type Service struct {
 	store    *store.Store
 	rdb      *redis.Client
 	producer *communityevents.Producer
+	// memberCounter shards community member counts across Redis so a
+	// 10M-member community no longer contends on a single
+	// communities.member_count UPDATE row per join. Nil-safe — if no
+	// Redis is configured the service falls back to per-event PG
+	// UPDATE (the legacy hot-row path) so the dev loop still works.
+	memberCounter *counters.Counter
 }
 
 func New(s *store.Store, rdb *redis.Client) *Service {
-	return &Service{store: s, rdb: rdb}
+	svc := &Service{store: s, rdb: rdb}
+	if rdb != nil {
+		svc.memberCounter = counters.New(rdb, counters.Config{
+			EntityKind: "community_member_count",
+			Shards:     32,
+		})
+	}
+	return svc
+}
+
+// MemberCounter exposes the sharded counter so cmd/server can attach a
+// flush worker. Returns nil when Redis isn't configured.
+func (s *Service) MemberCounter() *counters.Counter {
+	return s.memberCounter
+}
+
+// adjustMemberCount fans an increment/decrement to the sharded Redis
+// counter when available, otherwise falls back to the legacy per-event
+// PG UPDATE. Failure inside the Redis path is logged but not fatal —
+// the hourly reconciler (internal/reconcile) backfills any drift from
+// community_members the next tick.
+func (s *Service) adjustMemberCount(ctx context.Context, communityID uuid.UUID, delta int64) error {
+	if s.memberCounter != nil {
+		if err := s.memberCounter.Inc(ctx, communityID.String(), delta); err != nil {
+			slog.Warn("sharded member counter inc failed; falling back to PG",
+				"community_id", communityID, "delta", delta, "err", err)
+			return s.store.IncrementMemberCount(ctx, communityID, int(delta))
+		}
+		return nil
+	}
+	return s.store.IncrementMemberCount(ctx, communityID, int(delta))
 }
 
 // memberCacheTTL is short on purpose — role/ban changes need to
@@ -537,7 +574,7 @@ func (s *Service) JoinCommunity(ctx context.Context, communityID, userID uuid.UU
 		// — concurrent duplicate joins previously each ran
 		// IncrementMemberCount and drifted the counter upward.
 		if inserted {
-			if err := s.store.IncrementMemberCount(ctx, communityID, 1); err != nil {
+			if err := s.adjustMemberCount(ctx, communityID, 1); err != nil {
 				slog.Warn("failed to increment member count", "error", err)
 			}
 		}
@@ -590,7 +627,7 @@ func (s *Service) LeaveCommunity(ctx context.Context, communityID, userID uuid.U
 		return fmt.Errorf("failed to leave: %w", err)
 	}
 
-	if err := s.store.IncrementMemberCount(ctx, communityID, -1); err != nil {
+	if err := s.adjustMemberCount(ctx, communityID, -1); err != nil {
 		slog.Warn("failed to decrement member count", "error", err)
 	}
 	s.invalidateMemberCache(ctx, communityID, userID)
@@ -679,7 +716,7 @@ func (s *Service) BanMember(ctx context.Context, communityID, targetUserID, acto
 	}
 	s.invalidateMemberCache(ctx, communityID, targetUserID)
 
-	if err := s.store.IncrementMemberCount(ctx, communityID, -1); err != nil {
+	if err := s.adjustMemberCount(ctx, communityID, -1); err != nil {
 		slog.Warn("failed to decrement member count", "error", err)
 	}
 
@@ -1010,7 +1047,7 @@ func (s *Service) ApproveRequest(ctx context.Context, communityID, requestID, ac
 		return fmt.Errorf("failed to add member after approval: %w", err)
 	}
 	if inserted {
-		if err := s.store.IncrementMemberCount(ctx, communityID, 1); err != nil {
+		if err := s.adjustMemberCount(ctx, communityID, 1); err != nil {
 			slog.Warn("failed to increment member count", "error", err)
 		}
 	}
