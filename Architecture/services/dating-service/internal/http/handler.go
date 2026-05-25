@@ -148,6 +148,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// adds an admin-scope check before forwarding these paths.
 		// Read-side scaffolds for the /admin/dating console.
 		dating.GET("/admin/reports", h.ListReports)
+		dating.POST("/admin/reports/:id/action", h.ActOnReport)
 		dating.GET("/admin/safety/panic", h.ListPanicEvents)
 		dating.GET("/admin/photos/pending", h.ListPendingPhotos)
 	}

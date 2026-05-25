@@ -304,6 +304,31 @@ func (s *Store) ListReports(ctx context.Context, status, category string, limit,
 	return out, rows.Err()
 }
 
+// SetReportStatus moves a report through the §P0-8 state machine.
+// Returns ErrReportNotFound when the row is missing.
+func (s *Store) SetReportStatus(ctx context.Context, reportID uuid.UUID, status string) error {
+	switch status {
+	case "submitted", "under_review", "investigating", "actioned",
+		"resolved", "dismissed", "closed_no_action":
+	default:
+		return fmt.Errorf("invalid: status %q", status)
+	}
+	tag, err := s.db.Exec(ctx,
+		`UPDATE dating_reports SET status = $2 WHERE id = $1`,
+		reportID, status)
+	if err != nil {
+		return fmt.Errorf("update report status: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrReportNotFound
+	}
+	return nil
+}
+
+// ErrReportNotFound is returned when SetReportStatus targets a row
+// that does not exist.
+var ErrReportNotFound = errors.New("not_found: report not found")
+
 // ListPanicEvents returns recent dating_safety_events of kind 'panic'
 // newest-first across all users. Used by /admin/dating/panic for the
 // on-call queue.

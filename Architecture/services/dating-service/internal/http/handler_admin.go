@@ -6,6 +6,7 @@ import (
 
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 // Admin read-side handlers for /admin/dating console (PRODUCTION_GAP_
@@ -48,6 +49,44 @@ func (h *Handler) ListPendingPhotos(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"items": items, "limit": limit}, nil)
+}
+
+// actOnReportRequest is the body of POST /v1/dating/admin/reports/:id/action.
+type actOnReportRequest struct {
+	Action       string `json:"action" binding:"required"`
+	TargetUserID string `json:"target_user_id"`
+}
+
+// ActOnReport — POST /v1/dating/admin/reports/:id/action
+// Body: {action, target_user_id?}. Allowed actions: dismiss /
+// resolved / warn / restrict / suspend. Restrict + suspend require
+// target_user_id and flip the reported user's profile_status, which
+// fires deck-cache invalidation downstream.
+func (h *Handler) ActOnReport(c *gin.Context) {
+	reportID, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+	var body actOnReportRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	var targetID uuid.UUID
+	if body.TargetUserID != "" {
+		parsed, perr := uuid.Parse(body.TargetUserID)
+		if perr != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "invalid target_user_id", nil)
+			return
+		}
+		targetID = parsed
+	}
+	newStatus, err := h.svc.ActOnReport(c.Request.Context(), reportID, targetID, body.Action)
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "ACTION_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"status": newStatus}, nil)
 }
 
 // parseIntQuery reads a positive int query param, clamped to [1, max]
