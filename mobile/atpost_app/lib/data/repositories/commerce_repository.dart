@@ -742,6 +742,105 @@ class CommerceRepository {
         .map((m) => Product.fromJson(Map<String, dynamic>.from(m)))
         .toList(growable: false);
   }
+
+  // ─── Seller surfaces ────────────────────────────────────────────────
+
+  /// Fetches the caller's seller profile. Returns null when the user
+  /// hasn't completed onboarding — the dashboard screen renders an
+  /// onboarding-required state in that case.
+  Future<SellerProfile?> getMySellerProfile() async {
+    try {
+      final res = await _api.get('/v1/commerce/sellers/me');
+      final data = res.data['data'];
+      if (data == null) return null;
+      return SellerProfile.fromJson(Map<String, dynamic>.from(data as Map));
+    } catch (_) {
+      // 404 from the server means "no seller account yet" — that's the
+      // expected path for an unboarded user; treat as null.
+      return null;
+    }
+  }
+
+  /// Seller dashboard stats. The backend computes these per request so
+  /// no caching is needed client-side; the auto-refresh on screen
+  /// re-enter is sufficient.
+  Future<SellerDashboardStats> getSellerDashboard() async {
+    final res = await _api.get('/v1/commerce/dashboard');
+    final data = res.data['data'];
+    return SellerDashboardStats.fromJson(Map<String, dynamic>.from(data as Map));
+  }
+
+  /// Lists the seller's own products. Backend: GET
+  /// /v1/commerce/sellers/:sellerId/products. We hydrate the seller's
+  /// own ID via getMySellerProfile rather than making the caller pass
+  /// it through every UI hop.
+  Future<List<SellerProductSummary>> listMyProducts({int limit = 50, int offset = 0}) async {
+    final profile = await getMySellerProfile();
+    if (profile == null) return const [];
+    final res = await _api.get(
+      '/v1/commerce/sellers/${profile.id}/products',
+      queryParameters: {'limit': limit, 'offset': offset},
+    );
+    final raw = (res.data['data'] as List?) ?? const [];
+    return raw
+        .whereType<Map>()
+        .map((m) => SellerProductSummary.fromJson(Map<String, dynamic>.from(m)))
+        .toList(growable: false);
+  }
+
+  /// Submits a draft product for review. Backend:
+  /// POST /v1/commerce/products/:id/submit.
+  Future<void> submitProductForReview(String productId) async {
+    await _api.post('/v1/commerce/products/$productId/submit');
+  }
+
+  // ─── Variant CRUD (seller) ─────────────────────────────────────────
+
+  Future<List<ProductVariantDetail>> listProductVariants(String productId) async {
+    final res = await _api.get('/v1/commerce/products/$productId/variants');
+    final raw = (res.data['data']?['items'] as List?) ?? const [];
+    return raw
+        .whereType<Map>()
+        .map((m) => ProductVariantDetail.fromJson(Map<String, dynamic>.from(m)))
+        .toList(growable: false);
+  }
+
+  Future<ProductVariantDetail> addProductVariant(
+    String productId,
+    CreateVariantInput input,
+  ) async {
+    final res = await _api.post(
+      '/v1/commerce/products/$productId/variants',
+      data: input.toJson(),
+    );
+    return ProductVariantDetail.fromJson(
+      Map<String, dynamic>.from(res.data['data'] as Map),
+    );
+  }
+
+  /// updateProductVariant sends a sparse PATCH — only the fields in
+  /// `patch` are written server-side. SKU is intentionally not
+  /// updatable (bulk-import merge key); attempting to set it is a
+  /// no-op at the store layer.
+  Future<ProductVariantDetail> updateProductVariant(
+    String variantId,
+    Map<String, dynamic> patch,
+  ) async {
+    final res = await _api.patch(
+      '/v1/commerce/variants/$variantId',
+      data: patch,
+    );
+    return ProductVariantDetail.fromJson(
+      Map<String, dynamic>.from(res.data['data'] as Map),
+    );
+  }
+
+  /// archiveProductVariant flips a variant to status='archived'. Soft
+  /// delete — existing orders + cart_items keep resolving the variant
+  /// by ID; customers just can't add new units.
+  Future<void> archiveProductVariant(String variantId) async {
+    await _api.delete('/v1/commerce/variants/$variantId');
+  }
 }
 
 final commerceRepositoryProvider = Provider<CommerceRepository>((ref) {

@@ -179,6 +179,12 @@ class SettingsScreen extends ConsumerWidget {
                   subtitle: 'Discover apps built on VChat',
                   onTap: () => context.push('/apps'),
                 ),
+                _SettingTile(
+                  icon: Icons.storefront_outlined,
+                  title: 'Seller dashboard',
+                  subtitle: 'Manage your store, products, and variants',
+                  onTap: () => context.push('/seller/dashboard'),
+                ),
               ],
             ),
             const SizedBox(height: 12),

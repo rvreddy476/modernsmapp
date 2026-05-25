@@ -1475,3 +1475,237 @@ class SearchFilters {
         hasCod,
       );
 }
+
+// ─── Seller surfaces ──────────────────────────────────────────────────
+
+/// SellerProfile mirrors commerce-service's sellers row. The mobile
+/// seller dashboard only needs a small subset (id, status, store name)
+/// to gate access — the full record is fetched only when the seller
+/// hits the settings edit screen.
+class SellerProfile {
+  const SellerProfile({
+    required this.id,
+    required this.userId,
+    required this.storeName,
+    required this.status,
+    this.email,
+  });
+
+  final String id;
+  final String userId;
+  final String storeName;
+  final String status; // pending|approved|suspended|rejected
+  final String? email;
+
+  factory SellerProfile.fromJson(Map<String, dynamic> json) {
+    return SellerProfile(
+      id: _toStr(json['id']),
+      userId: _toStr(json['user_id']),
+      storeName: _toStr(json['store_name']),
+      status: _toStr(json['status']),
+      email: json['email']?.toString(),
+    );
+  }
+}
+
+/// SellerDashboardStats — GET /v1/commerce/dashboard. Same shape as
+/// commerce-service postgres.DashboardStats; revenueTotal is a float
+/// because the backend returns float64 paise-as-rupees.
+class SellerDashboardStats {
+  const SellerDashboardStats({
+    required this.totalProducts,
+    required this.liveProducts,
+    required this.draftProducts,
+    required this.pendingProducts,
+    required this.lowStockItems,
+    required this.ordersToday,
+    required this.revenueTotal,
+    required this.sellerStatus,
+  });
+
+  final int totalProducts;
+  final int liveProducts;
+  final int draftProducts;
+  final int pendingProducts;
+  final int lowStockItems;
+  final int ordersToday;
+  final double revenueTotal;
+  final String sellerStatus;
+
+  factory SellerDashboardStats.fromJson(Map<String, dynamic> json) {
+    return SellerDashboardStats(
+      totalProducts: _toInt(json['total_products']),
+      liveProducts: _toInt(json['live_products']),
+      draftProducts: _toInt(json['draft_products']),
+      pendingProducts: _toInt(json['pending_products']),
+      lowStockItems: _toInt(json['low_stock_items']),
+      ordersToday: _toInt(json['orders_today']),
+      revenueTotal: _toDouble(json['revenue_total']),
+      sellerStatus: _toStr(json['seller_status']),
+    );
+  }
+}
+
+/// SellerProductSummary is the row shape from
+/// GET /v1/commerce/sellers/:id/products. Includes the approval_status
+/// and a short timestamp so the seller list can render a status chip +
+/// "created X ago" label.
+class SellerProductSummary {
+  const SellerProductSummary({
+    required this.id,
+    required this.title,
+    required this.slug,
+    required this.status,
+    required this.approvalStatus,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String title;
+  final String slug;
+  final String status;
+  final String approvalStatus;
+  final DateTime? createdAt;
+
+  factory SellerProductSummary.fromJson(Map<String, dynamic> json) {
+    return SellerProductSummary(
+      id: _toStr(json['id']),
+      title: _toStr(json['title']),
+      slug: _toStr(json['slug']),
+      status: _toStr(json['status']),
+      approvalStatus: _toStr(json['approval_status']),
+      createdAt: DateTime.tryParse(json['created_at']?.toString() ?? ''),
+    );
+  }
+}
+
+/// ProductVariantDetail is the full variant shape used by the seller's
+/// variants management screen. Public-facing browse uses the lighter
+/// ProductVariant — this includes the cost price + weight + status
+/// fields a seller needs to manage.
+class ProductVariantDetail {
+  const ProductVariantDetail({
+    required this.id,
+    required this.productId,
+    required this.sku,
+    required this.mrp,
+    required this.sellingPrice,
+    required this.status,
+    this.barcode,
+    this.option1Name,
+    this.option1Value,
+    this.option2Name,
+    this.option2Value,
+    this.option3Name,
+    this.option3Value,
+    this.costPrice,
+    this.weightGrams,
+    this.currencyCode = 'INR',
+  });
+
+  final String id;
+  final String productId;
+  final String sku;
+  final double mrp;
+  final double sellingPrice;
+  final String status; // active|paused|archived
+  final String? barcode;
+  final String? option1Name;
+  final String? option1Value;
+  final String? option2Name;
+  final String? option2Value;
+  final String? option3Name;
+  final String? option3Value;
+  final double? costPrice;
+  final int? weightGrams;
+  final String currencyCode;
+
+  String get optionsLabel {
+    final parts = <String>[];
+    if (option1Name != null && option1Value != null) {
+      parts.add('$option1Name: $option1Value');
+    }
+    if (option2Name != null && option2Value != null) {
+      parts.add('$option2Name: $option2Value');
+    }
+    if (option3Name != null && option3Value != null) {
+      parts.add('$option3Name: $option3Value');
+    }
+    return parts.isEmpty ? '—' : parts.join(' / ');
+  }
+
+  factory ProductVariantDetail.fromJson(Map<String, dynamic> json) {
+    return ProductVariantDetail(
+      id: _toStr(json['id']),
+      productId: _toStr(json['product_id']),
+      sku: _toStr(json['sku']),
+      mrp: _toDouble(json['mrp']),
+      sellingPrice: _toDouble(json['selling_price']),
+      status: _toStr(json['status']),
+      barcode: json['barcode']?.toString(),
+      option1Name: json['option_1_name']?.toString(),
+      option1Value: json['option_1_value']?.toString(),
+      option2Name: json['option_2_name']?.toString(),
+      option2Value: json['option_2_value']?.toString(),
+      option3Name: json['option_3_name']?.toString(),
+      option3Value: json['option_3_value']?.toString(),
+      costPrice: json['cost_price'] == null ? null : _toDouble(json['cost_price']),
+      weightGrams: json['weight_grams'] == null ? null : _toInt(json['weight_grams']),
+      currencyCode: json['currency_code']?.toString() ?? 'INR',
+    );
+  }
+}
+
+/// CreateVariantInput is the wire shape POSTed to
+/// /v1/commerce/products/:productId/variants. Optional fields are
+/// omitted (null) when the seller leaves them blank.
+class CreateVariantInput {
+  const CreateVariantInput({
+    required this.sku,
+    required this.mrp,
+    required this.sellingPrice,
+    this.barcode,
+    this.option1Name,
+    this.option1Value,
+    this.option2Name,
+    this.option2Value,
+    this.option3Name,
+    this.option3Value,
+    this.costPrice,
+    this.weightGrams,
+    this.currencyCode = 'INR',
+  });
+
+  final String sku;
+  final double mrp;
+  final double sellingPrice;
+  final String? barcode;
+  final String? option1Name;
+  final String? option1Value;
+  final String? option2Name;
+  final String? option2Value;
+  final String? option3Name;
+  final String? option3Value;
+  final double? costPrice;
+  final int? weightGrams;
+  final String currencyCode;
+
+  Map<String, dynamic> toJson() {
+    final out = <String, dynamic>{
+      'sku': sku,
+      'mrp': mrp,
+      'selling_price': sellingPrice,
+      'currency_code': currencyCode,
+    };
+    if (barcode != null && barcode!.isNotEmpty) out['barcode'] = barcode;
+    if (option1Name != null && option1Name!.isNotEmpty) out['option_1_name'] = option1Name;
+    if (option1Value != null && option1Value!.isNotEmpty) out['option_1_value'] = option1Value;
+    if (option2Name != null && option2Name!.isNotEmpty) out['option_2_name'] = option2Name;
+    if (option2Value != null && option2Value!.isNotEmpty) out['option_2_value'] = option2Value;
+    if (option3Name != null && option3Name!.isNotEmpty) out['option_3_name'] = option3Name;
+    if (option3Value != null && option3Value!.isNotEmpty) out['option_3_value'] = option3Value;
+    if (costPrice != null) out['cost_price'] = costPrice;
+    if (weightGrams != null) out['weight_grams'] = weightGrams;
+    return out;
+  }
+}

@@ -7,6 +7,9 @@ import 'package:atpost_app/features/channels/create_channel_screen.dart';
 import 'package:atpost_app/features/commerce/address_book_screen.dart';
 import 'package:atpost_app/features/commerce/address_form_screen.dart';
 import 'package:atpost_app/features/commerce/cart_screen.dart';
+import 'package:atpost_app/features/seller/seller_dashboard_screen.dart';
+import 'package:atpost_app/features/seller/seller_products_screen.dart';
+import 'package:atpost_app/features/seller/seller_variants_screen.dart';
 import 'package:atpost_app/features/commerce/checkout_screen.dart';
 import 'package:atpost_app/features/commerce/commerce_home_screen.dart';
 import 'package:atpost_app/features/commerce/rfq/rfq_detail_screen.dart';
@@ -522,6 +525,25 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             path: '/commerce/search',
             builder: (context, state) => SearchScreen(
               initialQuery: state.uri.queryParameters['q'],
+            ),
+          ),
+          // Seller surface — dashboard + product management. The "My
+          // orders" tile reuses the existing customer order list
+          // (sellers see their orders as a buyer would view them, with
+          // the upcoming fulfillment actions following in a later
+          // slice).
+          GoRoute(
+            path: '/seller/dashboard',
+            builder: (_, _) => const SellerDashboardScreen(),
+          ),
+          GoRoute(
+            path: '/seller/products',
+            builder: (_, _) => const SellerProductsScreen(),
+          ),
+          GoRoute(
+            path: '/seller/products/:id/variants',
+            builder: (context, state) => SellerVariantsScreen(
+              productId: state.pathParameters['id']!,
             ),
           ),
           // Phase F4 mobile — RFQ buyer flow.
