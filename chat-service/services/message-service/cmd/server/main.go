@@ -121,6 +121,12 @@ func main() {
 	socialConsumer := events.NewSocialConsumerWithDialer(cfg.KafkaBrokers, cfg.SocialKafkaTopic, cfg.SocialKafkaGroupID, kafkaDialer, convStore, logger)
 	go socialConsumer.Start(ctx)
 
+	// 6c. Dating Event Consumer (background) — close conversation on
+	// match.closed / match.expired so the send-path gate refuses new
+	// messages (P0-3/P0-9 in dating/PRODUCTION_GAP_ANALYSIS.md).
+	datingConsumer := events.NewDatingConsumerWithDialer(cfg.KafkaBrokers, cfg.DatingKafkaTopic, cfg.DatingKafkaGroupID, kafkaDialer, convStore, logger)
+	go datingConsumer.Start(ctx)
+
 	// 7. Outbox Relay (background)
 	go svc.StartOutboxRelay(ctx)
 

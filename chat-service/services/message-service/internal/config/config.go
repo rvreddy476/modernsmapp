@@ -25,6 +25,8 @@ type Config struct {
 	IdentityKafkaGroupID string
 	SocialKafkaTopic     string
 	SocialKafkaGroupID   string
+	DatingKafkaTopic     string
+	DatingKafkaGroupID   string
 }
 
 func Load() *Config {
@@ -47,6 +49,12 @@ func Load() *Config {
 		IdentityKafkaGroupID: getEnv("IDENTITY_KAFKA_GROUP_ID", "chat-service-identity"),
 		SocialKafkaTopic:     getEnv("SOCIAL_KAFKA_TOPIC", "social.events.v1"),
 		SocialKafkaGroupID:   getEnv("SOCIAL_KAFKA_GROUP_ID", "chat-service-social"),
+		// P0-3/9: dating-events consumer. The dating-service publishes
+		// match.closed + match.expired to dating-events; chat-service
+		// flips the matching conversation's closed_at so the send-path
+		// gate refuses subsequent messages.
+		DatingKafkaTopic:   getEnv("DATING_KAFKA_TOPIC", "dating-events"),
+		DatingKafkaGroupID: getEnv("DATING_KAFKA_GROUP_ID", "chat-service-dating"),
 	}
 }
 

@@ -186,15 +186,20 @@ func (s *Service) FormMatch(ctx context.Context, userA, userB uuid.UUID, sparkTa
 		ContextID:    matchID.String(),
 	})
 	if mErr != nil {
-		// Compensate: hard-delete the pending match so a future retry can
-		// re-form it without dragging the orphan along.
-		if dErr := s.store.DeleteMatch(ctx, matchID); dErr != nil {
-			slog.Error("saga: compensation delete failed", "match_id", matchID, "error", dErr)
-		}
+		// P0-9: don't hard-delete the pending match. Keep it in status
+		// 'matched' with NULL conversation_id so the SagaReconciler can
+		// retry the chat-side handshake on its next tick — the
+		// chat-service endpoint is idempotent on match_id. Hard-delete
+		// here lost matches whenever chat-service was briefly down.
+		slog.Warn("saga: create conversation failed; leaving pending for reconciler",
+			"match_id", matchID, "error", mErr)
 		return nil, fmt.Errorf("create conversation: %w", mErr)
 	}
 	conversationID, perr := uuid.Parse(convResp.ConversationID)
 	if perr != nil {
+		// Bad ID from chat-service is a protocol error, not transient —
+		// reconciler retry won't fix it. Hard-delete remains the right
+		// call here.
 		if dErr := s.store.DeleteMatch(ctx, matchID); dErr != nil {
 			slog.Error("saga: compensation delete failed (bad conv id)", "error", dErr)
 		}
@@ -203,12 +208,13 @@ func (s *Service) FormMatch(ctx context.Context, userA, userB uuid.UUID, sparkTa
 
 	// Step 3: terminal — flip to active.
 	if err := s.store.MarkMatchActive(ctx, matchID, conversationID); err != nil {
-		// Best-effort compensation: delete the row. We don't try to roll
-		// back the conversation in message-service for v1; we log so ops
-		// can clean it up. (Tracked as TODO in the saga design.)
-		if dErr := s.store.DeleteMatch(ctx, matchID); dErr != nil {
-			slog.Error("saga: compensation delete failed (mark active)", "error", dErr)
-		}
+		// P0-9: don't delete here either. The chat conversation already
+		// exists keyed on match_id (idempotent); the reconciler will
+		// pick this row up by status='matched' AND conversation_id IS
+		// NULL on its next tick. It re-calls CreateConversation (no-op
+		// — returns the same id) and re-runs MarkMatchActive.
+		slog.Warn("saga: mark active failed; leaving pending for reconciler",
+			"match_id", matchID, "conversation_id", conversationID, "error", err)
 		return nil, fmt.Errorf("mark match active: %w", err)
 	}
 

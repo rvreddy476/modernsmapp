@@ -200,6 +200,15 @@ func main() {
 		slog.Warn("dating-service: INTERNAL_SERVICE_KEY not set — every /v1/dating/* endpoint is unauthenticated. DO NOT run this configuration in production.")
 	}
 
+	// P0-9: match-saga reconciler. Sweeps every 60s for matches stuck
+	// in 'matched' status with NULL conversation_id (chat-service was
+	// down at form time, or MarkMatchActive raced a restart) and
+	// retries the idempotent CreateDatingMatchConversation handshake.
+	// Without this, a brief chat-service blip silently loses mutual
+	// matches forever.
+	go service.NewMatchSagaReconciler(datingSvc).Start(consumerCtx)
+	slog.Info("dating-service: match saga reconciler started")
+
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())

@@ -136,6 +136,44 @@ func (s *Store) DeleteMatch(ctx context.Context, matchID uuid.UUID) error {
 	return nil
 }
 
+// ListSagaPendingMatches returns up to `limit` matches that are still
+// stuck without a conversation_id — the chat-side handshake failed or
+// the dating-service crashed mid-saga. The SagaReconciler retries each
+// one on its next tick. Filters to rows older than `minAge` so the
+// reconciler doesn't race the live FormMatch path.
+//
+// P0-9 in dating/PRODUCTION_GAP_ANALYSIS.md.
+func (s *Store) ListSagaPendingMatches(ctx context.Context, minAge time.Duration, limit int) ([]*Match, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	cutoff := time.Now().Add(-minAge)
+	rows, err := s.db.Query(ctx, `
+		SELECT id, user_a, user_b, status, conversation_id, spark_target,
+		       matched_at, first_message_at, last_message_at, expires_at, closed_by
+		FROM dating_matches
+		WHERE conversation_id IS NULL
+		  AND status = 'matched'
+		  AND matched_at < $1
+		ORDER BY matched_at ASC
+		LIMIT $2
+	`, cutoff, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list saga pending matches: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]*Match, 0, limit)
+	for rows.Next() {
+		m, err := scanMatch(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 // GetMatch returns one match by id.
 func (s *Store) GetMatch(ctx context.Context, id uuid.UUID) (*Match, error) {
 	row := s.db.QueryRow(ctx, `SELECT `+matchSelectCols+` FROM dating_matches WHERE id = $1`, id)
