@@ -25,9 +25,12 @@ Items implemented in this session are tracked in commits:
 
 ## P0-4 — Real-time chat in web + mobile
 
-**Status:** test plan. Foundation (M1 conversation-presence ZSET +
-typing pipeline) shipped earlier this session; full WS rebase is the
-remaining work.
+**Status:** ✅ SHIPPED. Foundation (M1 conversation-presence ZSET +
+typing pipeline) + WS subscription on web (Postmatch chat) + mobile
+chat with idempotency-keyed retry queue all landed across the
+production-readiness program. The acceptance tests below remain as
+the regression suite — verified A + C live on the postmatch chat
+surface this sprint. Section retained as historical record.
 
 ### What's already in place
 
@@ -101,8 +104,14 @@ Pre-req: M1 presence is done. WS subscription wiring + offline queue
 
 ## P0-7 — Fake account / scam defense
 
-**Status:** test plan. Risk-scoring infrastructure does not exist;
-implementation is a Phase 2 build.
+**Status:** ✅ SHIPPED (Phase A, Phase B device-reuse + IP/ASN in
+progress this sprint). `dating_account_risk` table, 0–100 scoring
+across the 7 signals below, 7 enforcement levels with thresholds,
+hooks in FetchCandidates / GetPulseToday / CreateSpark / sweeper
+recompute. Section retained as the regression test spec. Phase A
+shipped with device-reuse + IP/ASN at weight 0; Phase B wires the
+two signals (separate dating_device_fingerprints table + COUNT
+DISTINCT user_id by IP within 1h).
 
 ### Required schema (Phase 2 deliverable)
 
@@ -190,8 +199,11 @@ service (would extend existing media-service scanner).
 
 ## P0-8 — `/admin/dating` console
 
-**Status:** test plan. Existing admin UI handles FiGo/Mopedu;
-no dating-specific console yet.
+**Status:** ✅ SHIPPED. `/admin/dating` dashboard + reports queue +
+panic queue + photos queue + audit-log viewer all live in postbook-ui.
+Backend surfaces: ListReports / ListPanicEvents / ListPendingPhotos /
+ActOnReport / ListAdminAudit. Append-only dating_admin_audit table
+with immutability trigger. Section retained as the regression spec.
 
 ### Required surfaces (Phase 2 deliverable)
 
@@ -297,8 +309,14 @@ SSE endpoint on dating-service for panic stream.
 
 ## P0-10 — Discovery scale
 
-**Status:** test plan. `ORDER BY random()` + Go-side haversine in
-current FetchCandidates won't survive a million users per city.
+**Status:** Phase A ✅ SHIPPED. Phase B + C deferred until concrete
+scale signal (single-city > ~few-hundred-thousand actives) — current
+geohash prefilter handles the projected load with margin.
+
+Phase A landed: location_geohash btree, 9-cell neighbour expansion
+(GeohashNeighbours), GeohashPrefixForRadiusKm (25km → precision 4),
+LIKE-prefix WHERE clause with one parameter per cell for prepared
+statement cache stability.
 
 ### Phased plan
 
