@@ -709,6 +709,12 @@ class PulseRepository {
 
   /// File a report. `category` is a free-form spec-defined enum
   /// (harassment | inappropriate_photo | impersonation | spam | other).
+  ///
+  /// P1-4: backend body shape is `{target_id, category, details}` — the
+  /// report row stores the offender as `target_id`, not `target_user_id`
+  /// (the block endpoint is the one that uses `target_user_id`). Posting
+  /// the wrong key silently produced an INVALID_REQUEST 400 because the
+  /// UUID parse against the zero-string failed.
   Future<void> reportUser({
     required String targetUserId,
     required String category,
@@ -717,7 +723,7 @@ class PulseRepository {
     await _api.post(
       '/v1/dating/safety/report',
       data: {
-        'target_user_id': targetUserId,
+        'target_id': targetUserId,
         'category': category,
         if (details != null && details.isNotEmpty) 'details': details,
       },

@@ -22,7 +22,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 ///   4. Photos          (placeholder — primary only)
 ///   5. Prompts         (TODO S3)
 ///   6. Vouches         (TODO S4)
-///   7. Safety footer   (Block / Report / Close — TODO snackbar)
+///   7. Safety footer   (Block / Report / Close — P1-4: real backend wired,
+///                       see `_SafetyFooter` + `report_block_sheet.dart`)
 ///
 /// Sticky bottom action bar: Stash • Spark • Pass.
 Future<void> showPulseProfileDetailSheet({
