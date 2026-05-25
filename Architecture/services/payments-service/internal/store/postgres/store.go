@@ -192,14 +192,20 @@ func (s *Store) InitiateRefund(ctx context.Context, intentID uuid.UUID) error {
 	return nil
 }
 
-// ListByReference returns payment intents for a given reference.
+// ListByReference returns payment intents for a given reference, capped
+// at 100 most-recent rows. HP4: prior version had no LIMIT — an order
+// with many retried/failed intent attempts could pull an unbounded set
+// into memory and back through the API envelope. Callers want the
+// latest attempts anyway (status-display + refund-locator); 100 is
+// well past any real-world tail.
 func (s *Store) ListByReference(ctx context.Context, refType string, refID uuid.UUID) ([]PaymentIntent, error) {
 	rows, err := s.db.Query(ctx,
 		`SELECT id, payer_id, payee_id, reference_type, reference_id, amount, currency, method, status,
 		        COALESCE(provider_ref,''), COALESCE(upi_intent_url,''), idempotency_key, created_at, updated_at
 		 FROM payments.payment_intents
 		 WHERE reference_type = $1 AND reference_id = $2
-		 ORDER BY created_at DESC`,
+		 ORDER BY created_at DESC
+		 LIMIT 100`,
 		refType, refID,
 	)
 	if err != nil {
