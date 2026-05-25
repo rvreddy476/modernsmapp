@@ -1,51 +1,26 @@
+// Multi-entity search results screen — consumes the search-service
+// ranked API via `multiEntitySearchControllerProvider`. Six tabs:
+// Posts, People, Hashtags, Products, Communities, Channels. Each tab
+// has its own "Show more" button driven by the per-bucket
+// `next_cursor`. Every result tap fires a fire-and-forget
+// /v1/search/click for analytics.
+//
+// The legacy `_searchPostsProvider` / `_searchUsersProvider` /
+// `_searchTagsProvider` hooks (and the per-tab Events / Messages
+// FutureBuilders) were retired in favor of the unified ranked
+// response; Events + Messages aren't part of the multi-entity API
+// (they're separate endpoints) so they're dropped from this screen
+// for now — the dedicated repository methods remain available on
+// `SearchExtrasRepository` for any caller that still needs them.
+
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
-import 'package:atpost_app/data/models/post.dart';
-import 'package:atpost_app/data/models/user.dart';
+import 'package:atpost_app/data/models/search_results.dart';
+import 'package:atpost_app/providers/search_providers.dart';
 import 'package:atpost_app/services/api_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-
-// ---------------------------------------------------------------------------
-// Existing providers
-// ---------------------------------------------------------------------------
-
-final _searchPostsProvider =
-    FutureProvider.autoDispose.family<List<Post>, String>((ref, query) async {
-  final api = ref.watch(apiClientProvider);
-  final response = await api.get(
-    '/v1/search',
-    queryParameters: {'q': query, 'type': 'posts', 'limit': 20},
-  );
-  final items = (response.data['data']?['items'] as List<dynamic>?) ?? [];
-  return items.map((e) => Post.fromJson(e as Map<String, dynamic>)).toList();
-});
-
-final _searchUsersProvider =
-    FutureProvider.autoDispose.family<List<User>, String>((ref, query) async {
-  final api = ref.watch(apiClientProvider);
-  final response = await api.get(
-    '/v1/search',
-    queryParameters: {'q': query, 'type': 'users', 'limit': 20},
-  );
-  final items = (response.data['data']?['items'] as List<dynamic>?) ?? [];
-  return items.map((e) => User.fromJson(e as Map<String, dynamic>)).toList();
-});
-
-final _searchTagsProvider =
-    FutureProvider.autoDispose.family<List<String>, String>((ref, query) async {
-  final api = ref.watch(apiClientProvider);
-  final response = await api.get(
-    '/v1/search',
-    queryParameters: {'q': query, 'type': 'hashtags', 'limit': 20},
-  );
-  final items = (response.data['data']?['items'] as List<dynamic>?) ?? [];
-  return items.map((e) {
-    final m = e as Map<String, dynamic>;
-    return m['tag']?.toString() ?? m['name']?.toString() ?? e.toString();
-  }).toList();
-});
 
 // ---------------------------------------------------------------------------
 // Main screen
@@ -66,14 +41,18 @@ class _SearchResultsScreenState extends ConsumerState<SearchResultsScreen>
   late final String _query = widget.query;
   late final TabController _tabController;
 
-  static const _tabs = [
-    Tab(icon: Icon(Icons.article_outlined), text: 'Posts'),
-    Tab(icon: Icon(Icons.people_outline), text: 'People'),
-    Tab(icon: Icon(Icons.tag), text: 'Tags'),
-    Tab(icon: Icon(Icons.shopping_bag_outlined), text: 'Products'),
-    Tab(icon: Icon(Icons.event_outlined), text: 'Events'),
-    Tab(icon: Icon(Icons.message_outlined), text: 'Messages'),
+  // Tab order matches SearchEntity.values; default tab is picked once
+  // the first response lands (whichever bucket has the most hits).
+  static const _tabs = <SearchEntity>[
+    SearchEntity.posts,
+    SearchEntity.users,
+    SearchEntity.hashtags,
+    SearchEntity.products,
+    SearchEntity.communities,
+    SearchEntity.channels,
   ];
+
+  bool _defaultTabPicked = false;
 
   @override
   void initState() {
@@ -87,9 +66,63 @@ class _SearchResultsScreenState extends ConsumerState<SearchResultsScreen>
     super.dispose();
   }
 
+  void _maybePickDefaultTab(MultiEntitySearchResults r) {
+    if (_defaultTabPicked) return;
+    _defaultTabPicked = true;
+    final counts = <SearchEntity, int>{
+      SearchEntity.posts: r.posts.items.length,
+      SearchEntity.users: r.users.items.length,
+      SearchEntity.hashtags: r.hashtags.items.length,
+      SearchEntity.products: r.products.items.length,
+      SearchEntity.communities: r.communities.items.length,
+      SearchEntity.channels: r.channels.items.length,
+    };
+    // Pick the bucket with the most hits; ties keep the default order.
+    SearchEntity best = SearchEntity.posts;
+    int bestN = -1;
+    for (final e in _tabs) {
+      final n = counts[e] ?? 0;
+      if (n > bestN) {
+        bestN = n;
+        best = e;
+      }
+    }
+    if (bestN > 0) {
+      final idx = _tabs.indexOf(best);
+      if (idx >= 0 && idx != _tabController.index) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _tabController.animateTo(idx);
+        });
+      }
+    }
+  }
+
+  EntityBucket bucketFor(MultiEntitySearchResults r, SearchEntity e) {
+    switch (e) {
+      case SearchEntity.posts:
+        return r.posts;
+      case SearchEntity.users:
+        return r.users;
+      case SearchEntity.hashtags:
+        return r.hashtags;
+      case SearchEntity.products:
+        return r.products;
+      case SearchEntity.communities:
+        return r.communities;
+      case SearchEntity.channels:
+        return r.channels;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    final asyncResults =
+        ref.watch(multiEntitySearchControllerProvider(_query));
+
+    if (asyncResults is AsyncData<MultiEntitySearchResults>) {
+      _maybePickDefaultTab(asyncResults.value);
+    }
+
     return Scaffold(
       backgroundColor: AppColors.bgPrimary,
       appBar: AppBar(
@@ -109,105 +142,40 @@ class _SearchResultsScreenState extends ConsumerState<SearchResultsScreen>
           labelStyle: AppTextStyles.label,
           isScrollable: true,
           tabAlignment: TabAlignment.start,
-          tabs: _tabs,
+          tabs: _tabs
+              .map((e) => Tab(icon: Icon(_iconFor(e)), text: e.label))
+              .toList(growable: false),
         ),
       ),
       body: Column(
         children: [
-          // History panel shown when query is very short
           if (_query.trim().length <= 2)
             _SearchHistoryPanel(
               onQuerySelected: (q) {
-                // Navigate to new search results
                 context.push('/search/results?q=${Uri.encodeComponent(q)}');
               },
             ),
           Expanded(
-            child: TabBarView(
-              controller: _tabController,
-              children: [
-                // Posts tab
-                _queryGuard(
-                  ref.watch(_searchPostsProvider(_query)).when(
-                        loading: () =>
-                            const Center(child: CircularProgressIndicator()),
-                        error: (_, _) => Center(
-                          child: Text(
-                            'Could not load posts',
-                            style: AppTextStyles.bodySmall,
-                          ),
-                        ),
-                        data: (posts) => posts.isEmpty
-                            ? Center(
-                                child: Text(
-                                  'No posts found',
-                                  style: AppTextStyles.bodySmall,
-                                ),
-                              )
-                            : ListView.builder(
-                                itemCount: posts.length,
-                                itemBuilder: (_, i) =>
-                                    _PostResult(post: posts[i]),
-                              ),
-                      ),
+            child: asyncResults.when(
+              loading: () =>
+                  const Center(child: CircularProgressIndicator()),
+              error: (_, _) => Center(
+                child: Text(
+                  'Could not load results',
+                  style: AppTextStyles.bodySmall,
                 ),
-                // People tab
-                _queryGuard(
-                  ref.watch(_searchUsersProvider(_query)).when(
-                        loading: () =>
-                            const Center(child: CircularProgressIndicator()),
-                        error: (_, _) => Center(
-                          child: Text(
-                            'Could not load people',
-                            style: AppTextStyles.bodySmall,
-                          ),
-                        ),
-                        data: (users) => users.isEmpty
-                            ? Center(
-                                child: Text(
-                                  'No people found',
-                                  style: AppTextStyles.bodySmall,
-                                ),
-                              )
-                            : ListView.builder(
-                                itemCount: users.length,
-                                itemBuilder: (_, i) =>
-                                    _UserResult(user: users[i]),
-                              ),
-                      ),
-                ),
-                // Tags tab
-                _queryGuard(
-                  ref.watch(_searchTagsProvider(_query)).when(
-                        loading: () =>
-                            const Center(child: CircularProgressIndicator()),
-                        error: (_, _) => Center(
-                          child: Text(
-                            'Could not load tags',
-                            style: AppTextStyles.bodySmall,
-                          ),
-                        ),
-                        data: (tags) => tags.isEmpty
-                            ? Center(
-                                child: Text(
-                                  'No tags found',
-                                  style: AppTextStyles.bodySmall,
-                                ),
-                              )
-                            : ListView.builder(
-                                itemCount: tags.length,
-                                itemBuilder: (_, i) =>
-                                    _TagResult(tag: tags[i]),
-                              ),
-                      ),
-                ),
-                // Products tab
-                _ProductsTab(query: _query),
-                // Events tab
-                _EventsTab(query: _query),
-                // Messages tab
-                _MessagesTab(query: _query),
-              ],
+              ),
+              data: (results) => TabBarView(
+                controller: _tabController,
+                children: _tabs.map((entity) {
+                  return _EntityTabContent(
+                    query: _query,
+                    entity: entity,
+                    bucket: bucketFor(results, entity),
+                    queryId: results.queryId,
+                  );
+                }).toList(growable: false),
+              ),
             ),
           ),
         ],
@@ -215,9 +183,55 @@ class _SearchResultsScreenState extends ConsumerState<SearchResultsScreen>
     );
   }
 
-  /// Wraps a widget: if query is too short, show a hint instead.
-  Widget _queryGuard(Widget child) {
-    if (_query.trim().length <= 2) {
+  static IconData _iconFor(SearchEntity e) {
+    switch (e) {
+      case SearchEntity.posts:
+        return Icons.article_outlined;
+      case SearchEntity.users:
+        return Icons.people_outline;
+      case SearchEntity.hashtags:
+        return Icons.tag;
+      case SearchEntity.products:
+        return Icons.shopping_bag_outlined;
+      case SearchEntity.communities:
+        return Icons.groups_outlined;
+      case SearchEntity.channels:
+        return Icons.podcasts_outlined;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Per-entity tab content
+// ---------------------------------------------------------------------------
+
+class _EntityTabContent extends ConsumerWidget {
+  const _EntityTabContent({
+    required this.query,
+    required this.entity,
+    required this.bucket,
+    required this.queryId,
+  });
+
+  final String query;
+  final SearchEntity entity;
+  final EntityBucket bucket;
+  final String? queryId;
+
+  void _onTap(WidgetRef ref, String entityId, int position) {
+    if (queryId == null || queryId!.isEmpty) return;
+    // Fire-and-forget click analytics; do not await.
+    ref.read(searchClickLoggerProvider).call(
+          queryId: queryId!,
+          entityType: entity,
+          entityId: entityId,
+          position: position,
+        );
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    if (query.trim().length <= 2) {
       return Center(
         child: Text(
           'Enter at least 3 characters to search',
@@ -225,12 +239,346 @@ class _SearchResultsScreenState extends ConsumerState<SearchResultsScreen>
         ),
       );
     }
-    return child;
+
+    final items = bucket.items;
+    if (items.isEmpty) {
+      return Center(
+        child: Text(
+          'No ${entity.label.toLowerCase()} found for "$query"',
+          style: AppTextStyles.bodySmall,
+        ),
+      );
+    }
+
+    final controller =
+        ref.read(multiEntitySearchControllerProvider(query).notifier);
+    final isLoadingMore = controller.isLoadingMore(entity);
+    final hasMore = (bucket.nextCursor ?? '').isNotEmpty;
+
+    return ListView.builder(
+      itemCount: items.length + (hasMore ? 1 : 0),
+      itemBuilder: (context, i) {
+        if (i == items.length) {
+          return Padding(
+            padding: const EdgeInsets.all(12),
+            child: Center(
+              child: isLoadingMore
+                  ? const CircularProgressIndicator()
+                  : OutlinedButton(
+                      style: OutlinedButton.styleFrom(
+                        side: const BorderSide(color: AppColors.borderSubtle),
+                        foregroundColor: AppColors.textPrimary,
+                      ),
+                      onPressed: () => controller.loadMore(entity),
+                      child: Text('Show more', style: AppTextStyles.label),
+                    ),
+            ),
+          );
+        }
+        final item = items[i];
+        return _buildRow(context, ref, item, i);
+      },
+    );
+  }
+
+  Widget _buildRow(
+    BuildContext context,
+    WidgetRef ref,
+    dynamic item,
+    int position,
+  ) {
+    switch (entity) {
+      case SearchEntity.posts:
+        return _PostRow(post: item as PostHit, onTap: () {
+          _onTap(ref, (item).postId, position);
+        });
+      case SearchEntity.users:
+        return _UserRow(
+          user: item as UserHit,
+          onTap: () {
+            _onTap(ref, (item).userId, position);
+            context.push('/profile/${(item).userId}');
+          },
+        );
+      case SearchEntity.hashtags:
+        return _HashtagRow(
+          hashtag: item as HashtagHit,
+          onTap: () {
+            _onTap(ref, (item).hashtag, position);
+            context.push(
+              '/hashtag/${Uri.encodeComponent((item).hashtag)}',
+            );
+          },
+        );
+      case SearchEntity.products:
+        return _ProductRow(
+          product: item as ProductHit,
+          onTap: () {
+            _onTap(ref, (item).productId, position);
+            context.push('/commerce/product/${(item).productId}');
+          },
+        );
+      case SearchEntity.communities:
+        return _CommunityRow(
+          community: item as CommunityHit,
+          onTap: () {
+            _onTap(ref, (item).communityId, position);
+          },
+        );
+      case SearchEntity.channels:
+        return _ChannelRow(
+          channel: item as ChannelHit,
+          onTap: () {
+            _onTap(ref, (item).channelId, position);
+          },
+        );
+    }
   }
 }
 
 // ---------------------------------------------------------------------------
-// Search History Panel
+// Row widgets
+// ---------------------------------------------------------------------------
+
+class _PostRow extends StatelessWidget {
+  const _PostRow({required this.post, required this.onTap});
+
+  final PostHit post;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      color: AppColors.bgCard,
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: const BorderSide(color: AppColors.borderSubtle),
+      ),
+      child: ListTile(
+        title: Text(
+          post.authorUsername != null ? '@${post.authorUsername}' : 'Post',
+          style: AppTextStyles.h3,
+        ),
+        subtitle: Text(
+          post.text,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: AppTextStyles.bodySmall,
+        ),
+        trailing: Text(
+          '${post.likeCount} likes',
+          style: AppTextStyles.labelSmall,
+        ),
+        onTap: onTap,
+      ),
+    );
+  }
+}
+
+class _UserRow extends StatelessWidget {
+  const _UserRow({required this.user, required this.onTap});
+
+  final UserHit user;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      leading: CircleAvatar(
+        backgroundColor:
+            AppColors.postbookPrimary.withValues(alpha: 0.25),
+        child: Text(
+          user.displayName.isNotEmpty
+              ? user.displayName[0].toUpperCase()
+              : 'U',
+          style:
+              AppTextStyles.label.copyWith(color: AppColors.postbookPrimary),
+        ),
+      ),
+      title: Row(
+        children: [
+          Flexible(
+            child: Text(
+              user.displayName,
+              style: AppTextStyles.h3,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          if (user.isVerified) ...[
+            const SizedBox(width: 4),
+            const Icon(Icons.verified, size: 14, color: Colors.blue),
+          ],
+        ],
+      ),
+      subtitle: Text('@${user.username}', style: AppTextStyles.bodySmall),
+      onTap: onTap,
+    );
+  }
+}
+
+class _HashtagRow extends StatelessWidget {
+  const _HashtagRow({required this.hashtag, required this.onTap});
+
+  final HashtagHit hashtag;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      leading: const Icon(Icons.tag, color: AppColors.postbookPrimary),
+      title: Text('#${hashtag.hashtag}', style: AppTextStyles.h3),
+      subtitle: Text(
+        '${hashtag.useCount} posts',
+        style: AppTextStyles.labelSmall,
+      ),
+      onTap: onTap,
+    );
+  }
+}
+
+class _ProductRow extends StatelessWidget {
+  const _ProductRow({required this.product, required this.onTap});
+
+  final ProductHit product;
+  final VoidCallback onTap;
+
+  String _formatPrice(double? p) {
+    if (p == null || p <= 0) return '';
+    return '\$${p.toStringAsFixed(2)}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      color: AppColors.bgCard,
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: const BorderSide(color: AppColors.borderSubtle),
+      ),
+      child: ListTile(
+        leading: const Icon(
+          Icons.shopping_bag_outlined,
+          color: AppColors.postbookPrimary,
+        ),
+        title: Text(
+          product.title,
+          style: AppTextStyles.h3,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        subtitle: Text(
+          product.description ?? '',
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: AppTextStyles.bodySmall,
+        ),
+        trailing: Text(
+          _formatPrice(product.price),
+          style: AppTextStyles.label
+              .copyWith(color: AppColors.postbookPrimary),
+        ),
+        onTap: onTap,
+      ),
+    );
+  }
+}
+
+class _CommunityRow extends StatelessWidget {
+  const _CommunityRow({required this.community, required this.onTap});
+
+  final CommunityHit community;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      color: AppColors.bgCard,
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: const BorderSide(color: AppColors.borderSubtle),
+      ),
+      child: ListTile(
+        leading: const Icon(
+          Icons.groups_outlined,
+          color: AppColors.postbookPrimary,
+        ),
+        title: Row(
+          children: [
+            Flexible(
+              child: Text(
+                community.name,
+                style: AppTextStyles.h3,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            if (community.isVerified) ...[
+              const SizedBox(width: 4),
+              const Icon(Icons.verified, size: 14, color: Colors.blue),
+            ],
+          ],
+        ),
+        subtitle: Text(
+          '@${community.handle} · ${community.memberCount} members',
+          style: AppTextStyles.bodySmall,
+        ),
+        onTap: onTap,
+      ),
+    );
+  }
+}
+
+class _ChannelRow extends StatelessWidget {
+  const _ChannelRow({required this.channel, required this.onTap});
+
+  final ChannelHit channel;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      color: AppColors.bgCard,
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: const BorderSide(color: AppColors.borderSubtle),
+      ),
+      child: ListTile(
+        leading: const Icon(
+          Icons.podcasts_outlined,
+          color: AppColors.postbookPrimary,
+        ),
+        title: Row(
+          children: [
+            Flexible(
+              child: Text(
+                channel.name,
+                style: AppTextStyles.h3,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            if (channel.isVerified) ...[
+              const SizedBox(width: 4),
+              const Icon(Icons.verified, size: 14, color: Colors.blue),
+            ],
+          ],
+        ),
+        subtitle: Text(
+          '@${channel.handle} · ${channel.subscriberCount} subscribers',
+          style: AppTextStyles.bodySmall,
+        ),
+        onTap: onTap,
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Search History Panel (kept from the previous implementation, unchanged
+// shape — wired to the same /v1/search/history + /v1/search/saved
+// endpoints via the raw api client).
 // ---------------------------------------------------------------------------
 
 class _SearchHistoryPanel extends ConsumerStatefulWidget {
@@ -264,16 +612,18 @@ class _SearchHistoryPanelState extends ConsumerState<_SearchHistoryPanel> {
       setState(() {
         final histItems =
             (histRes.data['data']?['items'] as List<dynamic>?) ?? [];
-        _history = histItems.map((e) {
-          final m = e as Map<String, dynamic>;
-          return m['query']?.toString() ?? '';
-        }).where((s) => s.isNotEmpty).toList();
+        _history = histItems
+            .map((e) {
+              final m = e as Map<String, dynamic>;
+              return m['query']?.toString() ?? '';
+            })
+            .where((s) => s.isNotEmpty)
+            .toList();
 
         final savedItems =
             (savedRes.data['data']?['items'] as List<dynamic>?) ?? [];
-        _saved = savedItems
-            .map((e) => e as Map<String, dynamic>)
-            .toList();
+        _saved =
+            savedItems.map((e) => e as Map<String, dynamic>).toList();
 
         _loading = false;
       });
@@ -293,7 +643,8 @@ class _SearchHistoryPanelState extends ConsumerState<_SearchHistoryPanel> {
     try {
       await ref.read(apiClientProvider).delete('/v1/search/saved/$savedId');
       if (mounted) {
-        setState(() => _saved.removeWhere((s) => s['id']?.toString() == savedId));
+        setState(() =>
+            _saved.removeWhere((s) => s['id']?.toString() == savedId));
       }
     } catch (_) {}
   }
@@ -339,9 +690,13 @@ class _SearchHistoryPanelState extends ConsumerState<_SearchHistoryPanel> {
                   label: Text(q, style: AppTextStyles.labelSmall),
                   backgroundColor: AppColors.bgTertiary,
                   side: const BorderSide(color: AppColors.borderSubtle),
-                  labelStyle: const TextStyle(color: AppColors.textSecondary),
-                  deleteIcon:
-                      const Icon(Icons.close, size: 14, color: AppColors.textMuted),
+                  labelStyle:
+                      const TextStyle(color: AppColors.textSecondary),
+                  deleteIcon: const Icon(
+                    Icons.close,
+                    size: 14,
+                    color: AppColors.textMuted,
+                  ),
                   onDeleted: () => setState(() => _history.remove(q)),
                   onPressed: () => widget.onQuerySelected(q),
                 );
@@ -362,9 +717,13 @@ class _SearchHistoryPanelState extends ConsumerState<_SearchHistoryPanel> {
                   label: Text(query, style: AppTextStyles.labelSmall),
                   backgroundColor: AppColors.bgTertiary,
                   side: const BorderSide(color: AppColors.borderSubtle),
-                  labelStyle: const TextStyle(color: AppColors.textSecondary),
-                  deleteIcon: const Icon(Icons.delete_outline,
-                      size: 14, color: AppColors.textMuted),
+                  labelStyle:
+                      const TextStyle(color: AppColors.textSecondary),
+                  deleteIcon: const Icon(
+                    Icons.delete_outline,
+                    size: 14,
+                    color: AppColors.textMuted,
+                  ),
                   onDeleted: id.isNotEmpty ? () => _deleteSaved(id) : null,
                   onPressed: () => widget.onQuerySelected(query),
                 );
@@ -372,387 +731,6 @@ class _SearchHistoryPanelState extends ConsumerState<_SearchHistoryPanel> {
             ),
           ],
         ],
-      ),
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Products tab
-// ---------------------------------------------------------------------------
-
-class _ProductsTab extends ConsumerWidget {
-  const _ProductsTab({required this.query});
-
-  final String query;
-
-  String _formatPrice(dynamic price) {
-    if (price == null) return '';
-    final d = double.tryParse(price.toString()) ?? 0.0;
-    return '\$${d.toStringAsFixed(2)}';
-  }
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    if (query.trim().length <= 2) {
-      return Center(
-        child: Text(
-          'Enter at least 3 characters to search',
-          style: AppTextStyles.bodySmall,
-        ),
-      );
-    }
-
-    return FutureBuilder<List<Map<String, dynamic>>>(
-      future: ref
-          .read(apiClientProvider)
-          .get('/v1/search/products', queryParameters: {'q': query})
-          .then((r) {
-        final items = (r.data['data']?['items'] as List<dynamic>?) ?? [];
-        return items.map((e) => e as Map<String, dynamic>).toList();
-      }),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Center(child: CircularProgressIndicator());
-        }
-        if (snapshot.hasError) {
-          return const Center(child: Text('Error loading results'));
-        }
-        final products = snapshot.data ?? [];
-        if (products.isEmpty) {
-          return Center(
-            child: Text(
-              'No products found for "$query"',
-              style: AppTextStyles.bodySmall,
-            ),
-          );
-        }
-        return ListView.builder(
-          itemCount: products.length,
-          itemBuilder: (context, i) {
-            final p = products[i];
-            return Card(
-              color: AppColors.bgCard,
-              margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-                side: const BorderSide(color: AppColors.borderSubtle),
-              ),
-              child: ListTile(
-                leading: const Icon(
-                  Icons.shopping_bag_outlined,
-                  color: AppColors.postbookPrimary,
-                ),
-                title: Text(
-                  p['name']?.toString() ?? 'Product',
-                  style: AppTextStyles.h3,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                subtitle: Text(
-                  p['description']?.toString() ?? '',
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: AppTextStyles.bodySmall,
-                ),
-                trailing: Text(
-                  _formatPrice(p['price']),
-                  style: AppTextStyles.label.copyWith(
-                    color: AppColors.postbookPrimary,
-                  ),
-                ),
-              ),
-            );
-          },
-        );
-      },
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Events tab
-// ---------------------------------------------------------------------------
-
-class _EventsTab extends ConsumerWidget {
-  const _EventsTab({required this.query});
-
-  final String query;
-
-  String _formatTime(dynamic raw) {
-    if (raw == null) return '';
-    try {
-      final dt = DateTime.parse(raw.toString()).toLocal();
-      return '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')} '
-          '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
-    } catch (_) {
-      return raw.toString();
-    }
-  }
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    if (query.trim().length <= 2) {
-      return Center(
-        child: Text(
-          'Enter at least 3 characters to search',
-          style: AppTextStyles.bodySmall,
-        ),
-      );
-    }
-
-    return FutureBuilder<List<Map<String, dynamic>>>(
-      future: ref
-          .read(apiClientProvider)
-          .get('/v1/search/events', queryParameters: {'q': query})
-          .then((r) {
-        final items = (r.data['data']?['items'] as List<dynamic>?) ?? [];
-        return items.map((e) => e as Map<String, dynamic>).toList();
-      }),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Center(child: CircularProgressIndicator());
-        }
-        if (snapshot.hasError) {
-          return const Center(child: Text('Error loading results'));
-        }
-        final events = snapshot.data ?? [];
-        if (events.isEmpty) {
-          return Center(
-            child: Text(
-              'No events found for "$query"',
-              style: AppTextStyles.bodySmall,
-            ),
-          );
-        }
-        return ListView.builder(
-          itemCount: events.length,
-          itemBuilder: (context, i) {
-            final e = events[i];
-            final location = e['location']?.toString();
-            final subtitle = [
-              if (e['description']?.toString().isNotEmpty == true)
-                e['description']!.toString(),
-              _formatTime(e['start_time']),
-              if (location != null && location.isNotEmpty) location,
-            ].join(' · ');
-            return Card(
-              color: AppColors.bgCard,
-              margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-                side: const BorderSide(color: AppColors.borderSubtle),
-              ),
-              child: ListTile(
-                leading: const Icon(
-                  Icons.event_outlined,
-                  color: AppColors.posttubePrimary,
-                ),
-                title: Text(
-                  e['title']?.toString() ?? 'Event',
-                  style: AppTextStyles.h3,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                subtitle: Text(
-                  subtitle,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: AppTextStyles.bodySmall,
-                ),
-              ),
-            );
-          },
-        );
-      },
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Messages tab
-// ---------------------------------------------------------------------------
-
-class _MessagesTab extends ConsumerWidget {
-  const _MessagesTab({required this.query});
-
-  final String query;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    if (query.trim().length <= 2) {
-      return Center(
-        child: Text(
-          'Enter at least 3 characters to search',
-          style: AppTextStyles.bodySmall,
-        ),
-      );
-    }
-
-    return FutureBuilder<List<Map<String, dynamic>>>(
-      future: ref
-          .read(apiClientProvider)
-          .get('/v1/search/messages', queryParameters: {'q': query})
-          .then((r) {
-        final items = (r.data['data']?['items'] as List<dynamic>?) ?? [];
-        return items.map((e) => e as Map<String, dynamic>).toList();
-      }),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Center(child: CircularProgressIndicator());
-        }
-        if (snapshot.hasError) {
-          return const Center(child: Text('Error loading results'));
-        }
-        final messages = snapshot.data ?? [];
-        if (messages.isEmpty) {
-          return Center(
-            child: Text(
-              'No messages found for "$query"',
-              style: AppTextStyles.bodySmall,
-            ),
-          );
-        }
-        return ListView.builder(
-          itemCount: messages.length,
-          itemBuilder: (context, i) {
-            final m = messages[i];
-            final conversationId = m['conversation_id']?.toString() ?? '';
-            return Card(
-              color: AppColors.bgCard,
-              margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-                side: const BorderSide(color: AppColors.borderSubtle),
-              ),
-              child: ListTile(
-                leading: const Icon(
-                  Icons.message_outlined,
-                  color: AppColors.accentPurple,
-                ),
-                title: Text(
-                  m['content']?.toString() ?? '',
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: AppTextStyles.bodySmall,
-                ),
-                trailing: conversationId.isNotEmpty
-                    ? TextButton(
-                        onPressed: () =>
-                            context.push('/chat/$conversationId'),
-                        child: Text(
-                          'View',
-                          style: AppTextStyles.labelSmall.copyWith(
-                            color: AppColors.postbookPrimary,
-                          ),
-                        ),
-                      )
-                    : null,
-              ),
-            );
-          },
-        );
-      },
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Existing result widgets (unchanged)
-// ---------------------------------------------------------------------------
-
-class _PostResult extends StatelessWidget {
-  const _PostResult({required this.post});
-
-  final Post post;
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      color: AppColors.bgCard,
-      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: const BorderSide(color: AppColors.borderSubtle),
-      ),
-      child: ListTile(
-        title: Text(post.authorName ?? 'User', style: AppTextStyles.h3),
-        subtitle: Text(
-          post.content,
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
-          style: AppTextStyles.bodySmall,
-        ),
-        trailing: Text(
-          '${post.likeCount} likes',
-          style: AppTextStyles.labelSmall,
-        ),
-      ),
-    );
-  }
-}
-
-class _UserResult extends StatefulWidget {
-  const _UserResult({required this.user});
-
-  final User user;
-
-  @override
-  State<_UserResult> createState() => _UserResultState();
-}
-
-class _UserResultState extends State<_UserResult> {
-  bool _following = false;
-
-  @override
-  Widget build(BuildContext context) {
-    return ListTile(
-      leading: CircleAvatar(
-        backgroundColor: AppColors.postbookPrimary.withValues(alpha: 0.25),
-        child: Text(
-          widget.user.displayName.isNotEmpty
-              ? widget.user.displayName[0].toUpperCase()
-              : 'U',
-          style: AppTextStyles.label.copyWith(color: AppColors.postbookPrimary),
-        ),
-      ),
-      title: Text(widget.user.displayName, style: AppTextStyles.h3),
-      subtitle: Text('@${widget.user.username}', style: AppTextStyles.bodySmall),
-      trailing: GestureDetector(
-        onTap: () => setState(() => _following = !_following),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-          decoration: BoxDecoration(
-            gradient: _following ? null : AppColors.postbookGradient,
-            color: _following ? AppColors.bgCard : null,
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: AppColors.borderSubtle),
-          ),
-          child: Text(
-            _following ? 'Following' : 'Follow',
-            style: AppTextStyles.labelSmall.copyWith(
-              color: _following ? AppColors.textSecondary : Colors.white,
-            ),
-          ),
-        ),
-      ),
-      onTap: () => context.push('/profile/${widget.user.id}'),
-    );
-  }
-}
-
-class _TagResult extends StatelessWidget {
-  const _TagResult({required this.tag});
-
-  final String tag;
-
-  @override
-  Widget build(BuildContext context) {
-    return ListTile(
-      leading: const Icon(Icons.tag, color: AppColors.postbookPrimary),
-      title: Text('#$tag', style: AppTextStyles.h3),
-      onTap: () => context.push(
-        '/search/results?q=${Uri.encodeComponent('#$tag')}',
       ),
     );
   }
