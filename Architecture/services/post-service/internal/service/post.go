@@ -75,6 +75,12 @@ type Service struct {
 	shareCounter    *counters.Counter
 	bookmarkCounter *counters.Counter
 	repostCounter   *counters.Counter
+
+	// Aggregate use-count counters. Same nil-safe pattern as the
+	// engagement counters — each replaces a hot-row UPDATE on a
+	// singleton aggregate row.
+	hashtagCounter *counters.Counter
+	audioCounter   *counters.Counter
 }
 
 func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client) *Service {
@@ -92,18 +98,52 @@ func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client)
 		svc.shareCounter = counters.New(rdb, counters.Config{EntityKind: "post_share_count", Shards: 32})
 		svc.bookmarkCounter = counters.New(rdb, counters.Config{EntityKind: "post_bookmark_count", Shards: 32})
 		svc.repostCounter = counters.New(rdb, counters.Config{EntityKind: "post_repost_count", Shards: 32})
+		svc.hashtagCounter = counters.New(rdb, counters.Config{EntityKind: "hashtag_use_count", Shards: 32})
+		svc.audioCounter = counters.New(rdb, counters.Config{EntityKind: "audio_use_count", Shards: 32})
 	}
 	return svc
 }
 
 // LikeCounter / CommentCounter / ShareCounter / BookmarkCounter /
-// RepostCounter expose the sharded counters so cmd/server can attach
-// flush workers. Returns nil when Redis isn't configured.
+// RepostCounter / HashtagCounter / AudioCounter expose the sharded
+// counters so cmd/server can attach flush workers. Returns nil when
+// Redis isn't configured.
 func (s *Service) LikeCounter() *counters.Counter     { return s.likeCounter }
 func (s *Service) CommentCounter() *counters.Counter  { return s.commentCounter }
 func (s *Service) ShareCounter() *counters.Counter    { return s.shareCounter }
 func (s *Service) BookmarkCounter() *counters.Counter { return s.bookmarkCounter }
 func (s *Service) RepostCounter() *counters.Counter   { return s.repostCounter }
+func (s *Service) HashtagCounter() *counters.Counter  { return s.hashtagCounter }
+func (s *Service) AudioCounter() *counters.Counter    { return s.audioCounter }
+
+// adjustHashtagUseCount routes a +1 increment through the sharded
+// counter when available, otherwise falls back to the legacy per-event
+// PG UPSERT (Redis-less dev loops + degraded-mode operation).
+func (s *Service) adjustHashtagUseCount(ctx context.Context, tag string) error {
+	if s.hashtagCounter != nil {
+		if err := s.hashtagCounter.Inc(ctx, tag, 1); err != nil {
+			slog.Warn("sharded hashtag counter inc failed; falling back to PG",
+				"tag", tag, "err", err)
+			return s.pgStore.IncrementHashtagUseCount(ctx, tag)
+		}
+		return nil
+	}
+	return s.pgStore.IncrementHashtagUseCount(ctx, tag)
+}
+
+// adjustAudioUseCount routes a +1 increment through the sharded counter
+// when available, otherwise falls back to the per-event PG UPDATE.
+func (s *Service) adjustAudioUseCount(ctx context.Context, audioTrackID uuid.UUID) error {
+	if s.audioCounter != nil {
+		if err := s.audioCounter.Inc(ctx, audioTrackID.String(), 1); err != nil {
+			slog.Warn("sharded audio counter inc failed; falling back to PG",
+				"audio_track_id", audioTrackID, "err", err)
+			return s.pgStore.IncrementAudioUseCount(ctx, audioTrackID)
+		}
+		return nil
+	}
+	return s.pgStore.IncrementAudioUseCount(ctx, audioTrackID)
+}
 
 // adjustEngagementCount fans an increment/decrement to the sharded
 // counter when available, otherwise falls back to the legacy per-event
@@ -719,6 +759,24 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 			pipe.Expire(bgCtx, key, 48*time.Hour)
 			if _, err := pipe.Exec(bgCtx); err != nil {
 				log.Printf("Warning: failed to update trending:hashtags: %v", err)
+			}
+
+			// Counter-sharding rollout: per-tag +1 into the aggregate
+			// `hashtags.use_count` counter (kind: "hashtag_use_count").
+			// The flush worker (cmd/server) materializes shard sums back
+			// into the PG row every 10s. This replaces what would have
+			// been a per-event `UPDATE hashtags SET use_count = use_count + 1`
+			// hot-row contention pattern at trending-tag scale. The PG
+			// fallback (Redis-less dev loops) is the UPSERT inside
+			// adjustHashtagUseCount.
+			for _, tag := range p.Hashtags {
+				cleaned := strings.ToLower(strings.TrimPrefix(tag, "#"))
+				if cleaned == "" {
+					continue
+				}
+				if err := s.adjustHashtagUseCount(bgCtx, cleaned); err != nil {
+					log.Printf("Warning: failed to bump hashtags.use_count for %s: %v", cleaned, err)
+				}
 			}
 		}
 

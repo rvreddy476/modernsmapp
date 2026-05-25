@@ -229,6 +229,32 @@ func main() {
 	}
 	slog.Info("post-service engagement-count sharded flush workers started")
 
+	// Counter-sharding rollout (aggregate use-counts): hashtags.use_count
+	// and audio_tracks.use_count. Each replaces a per-PostCreated /
+	// per-AttachAudioToPost UPDATE on a singleton aggregate row — at
+	// trending-tag / trending-audio scale this row was the bottleneck.
+	// The flush workers materialize the Redis shard sum into PG every
+	// 10s. Hashtag entity ID is the lowercased tag string (no `#`),
+	// audio entity ID is the audio_tracks UUID.
+	if hc := postSvc.HashtagCounter(); hc != nil {
+		flush := func(ctx context.Context, tag string, total int64) error {
+			return pgStore.SetHashtagUseCount(ctx, tag, total)
+		}
+		go counters.NewWorker(hc, flush, counters.WorkerOptions{}).Start(consumerCtx)
+		slog.Info("post-service hashtag use-count sharded flush worker started")
+	}
+	if ac := postSvc.AudioCounter(); ac != nil {
+		flush := func(ctx context.Context, audioIDStr string, total int64) error {
+			id, err := uuid.Parse(audioIDStr)
+			if err != nil {
+				return err
+			}
+			return pgStore.SetAudioUseCount(ctx, id, total)
+		}
+		go counters.NewWorker(ac, flush, counters.WorkerOptions{}).Start(consumerCtx)
+		slog.Info("post-service audio use-count sharded flush worker started")
+	}
+
 	wsBroadcaster := consumers.NewWSBroadcasterConsumer(rdb)
 	go wsBroadcaster.Start(consumerCtx, brokers, engTopic, kafkaDialer)
 
@@ -770,6 +796,26 @@ func ensureSchema(ctx context.Context, db *pgxpool.Pool) {
 	for _, stmt := range extraCountersDDL {
 		if _, err := db.Exec(ctx, stmt); err != nil {
 			slog.Warn("extra engagement counters schema", "error", err)
+		}
+	}
+
+	// Aggregate hashtags table (counter-sharding rollout). Distinct from
+	// reel_hashtags (per-reel membership) — this row is the canonical
+	// authoritative use_count materialized by the flush worker. Keyed by
+	// lowercased tag string. `IF NOT EXISTS` so re-runs after upgrade
+	// stay idempotent. The flush worker UPSERTs via SetHashtagUseCount.
+	hashtagsDDL := []string{
+		`CREATE TABLE IF NOT EXISTS hashtags (
+			tag        TEXT PRIMARY KEY,
+			use_count  BIGINT NOT NULL DEFAULT 0,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_hashtags_use_count ON hashtags(use_count DESC)`,
+	}
+	for _, stmt := range hashtagsDDL {
+		if _, err := db.Exec(ctx, stmt); err != nil {
+			slog.Warn("hashtags aggregate schema", "error", err)
 		}
 	}
 

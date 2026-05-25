@@ -61,7 +61,12 @@ func (s *Service) AttachAudioToPost(ctx context.Context, actorID, postID, audioT
 	if err := s.pgStore.AttachAudioToPost(ctx, postID, audioTrackID); err != nil {
 		return fmt.Errorf("attach audio to post: %w", err)
 	}
-	// Increment use count (best-effort)
-	_ = s.pgStore.IncrementAudioUseCount(ctx, audioTrackID)
+	// Increment use count (best-effort). Routes through the sharded
+	// counter when Redis is configured; falls back to the per-event PG
+	// UPDATE otherwise. Counter-sharding rollout — replaces the previous
+	// direct s.pgStore.IncrementAudioUseCount call so concurrent attach
+	// load on a trending audio row no longer pins audio_tracks under
+	// row-level lock contention.
+	_ = s.adjustAudioUseCount(ctx, audioTrackID)
 	return nil
 }

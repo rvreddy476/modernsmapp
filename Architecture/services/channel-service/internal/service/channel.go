@@ -9,6 +9,7 @@ import (
 
 	channelevents "github.com/atpost/channel-service/internal/events"
 	"github.com/atpost/channel-service/internal/store"
+	"github.com/atpost/shared/counters"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
@@ -124,10 +125,46 @@ type Service struct {
 	store    *store.Store
 	rdb      *redis.Client
 	producer *channelevents.Producer
+	// subscriberCounter shards broadcast_channels.subscriber_count across
+	// Redis so a celebrity channel with millions of subscribers doesn't
+	// pin the singleton row on every join/leave. Nil-safe — when Redis
+	// isn't configured the service falls back to the legacy per-event
+	// PG UPDATE (the hot-row path). Pattern mirrors community-service's
+	// memberCounter.
+	subscriberCounter *counters.Counter
 }
 
 func New(s *store.Store, rdb *redis.Client) *Service {
-	return &Service{store: s, rdb: rdb}
+	svc := &Service{store: s, rdb: rdb}
+	if rdb != nil {
+		svc.subscriberCounter = counters.New(rdb, counters.Config{
+			EntityKind: "channel_subscriber_count",
+			Shards:     32,
+		})
+	}
+	return svc
+}
+
+// SubscriberCounter exposes the sharded counter so cmd/server can
+// attach a flush worker. Returns nil when Redis isn't configured.
+func (s *Service) SubscriberCounter() *counters.Counter {
+	return s.subscriberCounter
+}
+
+// adjustSubscriberCount routes increments/decrements through the
+// sharded counter when available, otherwise falls back to the legacy
+// per-event PG UPDATE. Failure inside the Redis path falls back to the
+// PG path so a hiccup on the buffer layer doesn't drop the increment.
+func (s *Service) adjustSubscriberCount(ctx context.Context, channelID uuid.UUID, delta int64) error {
+	if s.subscriberCounter != nil {
+		if err := s.subscriberCounter.Inc(ctx, channelID.String(), delta); err != nil {
+			slog.Warn("sharded subscriber counter inc failed; falling back to PG",
+				"channel_id", channelID, "delta", delta, "err", err)
+			return s.store.IncrementSubscriberCount(ctx, channelID, int(delta))
+		}
+		return nil
+	}
+	return s.store.IncrementSubscriberCount(ctx, channelID, int(delta))
 }
 
 func (s *Service) SetProducer(p *channelevents.Producer) {
@@ -496,7 +533,7 @@ func (s *Service) Subscribe(ctx context.Context, channelID, userID uuid.UUID) er
 	// duplicate subscribes previously each ran the increment and drifted
 	// the counter forever.
 	if inserted {
-		if err := s.store.IncrementSubscriberCount(ctx, channelID, 1); err != nil {
+		if err := s.adjustSubscriberCount(ctx, channelID, 1); err != nil {
 			slog.Warn("failed to increment subscriber count", "error", err)
 		}
 	}
@@ -526,7 +563,7 @@ func (s *Service) Unsubscribe(ctx context.Context, channelID, userID uuid.UUID) 
 		return fmt.Errorf("failed to unsubscribe: %w", err)
 	}
 
-	if err := s.store.IncrementSubscriberCount(ctx, channelID, -1); err != nil {
+	if err := s.adjustSubscriberCount(ctx, channelID, -1); err != nil {
 		slog.Warn("failed to decrement subscriber count", "error", err)
 	}
 

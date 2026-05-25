@@ -14,6 +14,7 @@ import (
 	"github.com/atpost/channel-service/internal/store"
 	pgstore "github.com/atpost/channel-service/internal/store/postgres"
 	"github.com/atpost/channel-service/internal/workers"
+	"github.com/atpost/shared/counters"
 	"github.com/atpost/shared/health"
 	"github.com/atpost/shared/middleware"
 	"github.com/atpost/shared/o11y/logging"
@@ -21,6 +22,7 @@ import (
 	"github.com/atpost/shared/server"
 	"github.com/atpost/shared/transport"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -127,6 +129,22 @@ func main() {
 	go fanoutWorker.Start(fanoutCtx)
 	go fanoutWorker.StartScheduler(fanoutCtx)
 	slog.Info("fanout worker and scheduler started")
+
+	// Sharded-counter flush worker: drains Redis subscriber-count deltas
+	// every 10s and materializes the sum into broadcast_channels.subscriber_count.
+	// Removes per-subscribe contention on the singleton channel row at
+	// celebrity-channel scale. Matches the community member-count pattern.
+	if sc := channelSvc.SubscriberCounter(); sc != nil {
+		flush := func(ctx context.Context, channelID string, total int64) error {
+			id, err := uuid.Parse(channelID)
+			if err != nil {
+				return err
+			}
+			return channelStore.SetSubscriberCount(ctx, id, total)
+		}
+		go counters.NewWorker(sc, flush, counters.WorkerOptions{}).Start(consumerCtx)
+		slog.Info("channel subscriber-count sharded flush worker started")
+	}
 
 	channelHandler := http.New(channelSvc)
 

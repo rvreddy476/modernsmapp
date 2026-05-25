@@ -107,6 +107,18 @@ func (s *Store) IncrementAudioUseCount(ctx context.Context, id uuid.UUID) error 
 	return err
 }
 
+// SetAudioUseCount writes an absolute use_count. Used by the
+// sharded-counter flush worker: every flush interval it materializes
+// the sum across Redis shards back into audio_tracks.use_count. The
+// per-event IncrementAudioUseCount path stays for the Redis-less
+// fallback (dev loops + degraded-mode operation).
+func (s *Store) SetAudioUseCount(ctx context.Context, id uuid.UUID, total int64) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE audio_tracks SET use_count = $2 WHERE id = $1
+	`, id, total)
+	return err
+}
+
 // SearchAudio searches audio tracks by title or artist using ILIKE.
 func (s *Store) SearchAudio(ctx context.Context, query string, limit int) ([]AudioTrack, error) {
 	if limit <= 0 || limit > 100 {

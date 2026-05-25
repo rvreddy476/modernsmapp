@@ -291,6 +291,17 @@ func (s *Store) IncrementSubscriberCount(ctx context.Context, channelID uuid.UUI
 	return err
 }
 
+// SetSubscriberCount writes an absolute subscriber count. Used by the
+// sharded-counter flush worker: every flush interval it materializes
+// the sum across Redis shards back into broadcast_channels.subscriber_count.
+// The per-event IncrementSubscriberCount path stays for the Redis-less
+// fallback (dev loops + degraded-mode operation).
+func (s *Store) SetSubscriberCount(ctx context.Context, channelID uuid.UUID, total int64) error {
+	query := `UPDATE broadcast_channels SET subscriber_count = $2, updated_at = NOW() WHERE id = $1`
+	_, err := s.db.Exec(ctx, query, channelID, total)
+	return err
+}
+
 func (s *Store) IncrementUpdateCount(ctx context.Context, channelID uuid.UUID, delta int) error {
 	query := `UPDATE broadcast_channels SET update_count = update_count + $2, updated_at = NOW() WHERE id = $1`
 	_, err := s.db.Exec(ctx, query, channelID, delta)
