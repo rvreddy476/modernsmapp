@@ -52,10 +52,28 @@ type Profile struct {
 	Paused           bool       `json:"paused"`
 	LanguagePrefs    []string   `json:"language_prefs"`
 	TrustTier        string     `json:"trust_tier"`
+	// ProfileStatus is the §P1-1 lifecycle column. Values: draft,
+	// pending_photo, pending_selfie, pending_review, active, paused,
+	// restricted, suspended, deleted. Discovery filters on 'active'.
+	ProfileStatus    string     `json:"profile_status"`
 	CreatedAt        time.Time  `json:"created_at"`
 	UpdatedAt        time.Time  `json:"updated_at"`
 	DeletedAt        *time.Time `json:"deleted_at,omitempty"`
 }
+
+// Profile status constants (§P1-1). Centralised to avoid string drift
+// between transition logic and discovery query filters.
+const (
+	ProfileStatusDraft         = "draft"
+	ProfileStatusPendingPhoto  = "pending_photo"
+	ProfileStatusPendingSelfie = "pending_selfie"
+	ProfileStatusPendingReview = "pending_review"
+	ProfileStatusActive        = "active"
+	ProfileStatusPaused        = "paused"
+	ProfileStatusRestricted    = "restricted"
+	ProfileStatusSuspended     = "suspended"
+	ProfileStatusDeleted       = "deleted"
+)
 
 // Tune is the multi-axis personality / vibe profile (spec §6.1.6, §10).
 type Tune struct {

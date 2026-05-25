@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/atpost/dating-service/internal/store"
@@ -95,6 +96,19 @@ func (s *Service) UpsertProfile(ctx context.Context, userID uuid.UUID, p store.U
 	if p.Latitude != nil || p.Longitude != nil {
 		_ = s.store.SetProfileGeohash(ctx, userID)
 	}
+
+	// §P1-1 lifecycle: graduate draft -> pending_photo when the minimum
+	// onboarding fields are populated. Once past draft we never demote
+	// back here — the photo / selfie consumers and trust-safety drive
+	// the rest of the state machine.
+	if out.ProfileStatus == store.ProfileStatusDraft && hasMinimumOnboardingFields(out) {
+		if updated, err := s.store.SetProfileStatus(ctx, userID, store.ProfileStatusPendingPhoto); err == nil {
+			out = updated
+		} else {
+			slog.Warn("profile state: graduate to pending_photo failed", "user_id", userID, "error", err)
+		}
+	}
+
 	if s.producer != nil {
 		if !existed {
 			_ = s.producer.PublishProfileCreated(ctx, userID, out.Intent)
@@ -104,6 +118,31 @@ func (s *Service) UpsertProfile(ctx context.Context, userID uuid.UUID, p store.U
 	}
 	s.InvalidatePulseCache(ctx, userID)
 	return out, nil
+}
+
+// hasMinimumOnboardingFields returns true once a profile carries the
+// fields required to move out of 'draft'. Per §P1-1 the threshold is
+// first_name (best-effort — not user-writable through this service yet)
+// + birth_date + intent + gender + city. first_name is treated as
+// optional because the value is currently sourced from user-service via
+// LookupFirstName rather than the dating UpsertProfile contract.
+func hasMinimumOnboardingFields(p *store.Profile) bool {
+	if p == nil {
+		return false
+	}
+	if p.BirthDate == nil {
+		return false
+	}
+	if p.Intent == "" {
+		return false
+	}
+	if p.Gender == nil || *p.Gender == "" {
+		return false
+	}
+	if p.City == nil || *p.City == "" {
+		return false
+	}
+	return true
 }
 
 func (s *Service) SetIntent(ctx context.Context, userID uuid.UUID, intent string) (*store.Profile, error) {
@@ -130,6 +169,12 @@ func (s *Service) SetPaused(ctx context.Context, userID uuid.UUID, paused bool) 
 		_ = s.producer.PublishProfilePaused(ctx, userID, paused)
 	}
 	s.InvalidatePulseCache(ctx, userID)
+	// Phase 1 §3: paused profile must drop out of every viewer's cached
+	// deck. Restoring (paused=false) doesn't need fan-out — the viewer
+	// gets us on their next refresh anyway.
+	if paused {
+		s.InvalidateDecksForCandidate(ctx, userID)
+	}
 	return out, nil
 }
 
@@ -141,6 +186,7 @@ func (s *Service) DeleteProfile(ctx context.Context, userID uuid.UUID, reason st
 		_ = s.producer.PublishProfileDeleted(ctx, userID, reason)
 	}
 	s.InvalidatePulseCache(ctx, userID)
+	s.InvalidateDecksForCandidate(ctx, userID)
 	return nil
 }
 

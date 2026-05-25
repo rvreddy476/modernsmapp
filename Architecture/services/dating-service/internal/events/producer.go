@@ -573,6 +573,136 @@ func (p *Producer) PublishProfilePurged(ctx context.Context, userID uuid.UUID, r
 	})
 }
 
+// --- Phase 1 notification events (§P1-6) -----------------------------------
+//
+// Each event corresponds to a notification-surface contract in
+// dating/PRODUCTION_GAP_ANALYSIS.md §17. Payloads are deliberately narrow
+// — notification-service does the user-facing lookup via the profile
+// preview endpoint.
+
+type MatchQuietNotifyPayload struct {
+	MatchID    string    `json:"match_id"`
+	UserA      string    `json:"user_a"`
+	UserB      string    `json:"user_b"`
+	DetectedAt time.Time `json:"detected_at"`
+}
+
+type SafeMeetReminderPayload struct {
+	MeetID      string    `json:"meet_id"`
+	UserID      string    `json:"user_id"`
+	WithUserID  string    `json:"with_user_id"`
+	ScheduledAt time.Time `json:"scheduled_at"`
+	Venue       string    `json:"venue,omitempty"`
+	FiredAt     time.Time `json:"fired_at"`
+}
+
+type SafeMeetMissedCheckInPayload struct {
+	MeetID            string    `json:"meet_id"`
+	UserID            string    `json:"user_id"`
+	WithUserID        string    `json:"with_user_id"`
+	ScheduledAt       time.Time `json:"scheduled_at"`
+	ExpectedCheckInAt time.Time `json:"expected_check_in_at"`
+	DetectedAt        time.Time `json:"detected_at"`
+}
+
+type SafetyPanicAcknowledgedPayload struct {
+	UserID         string    `json:"user_id"`
+	AcknowledgedBy string    `json:"acknowledged_by,omitempty"`
+	AcknowledgedAt time.Time `json:"acknowledged_at"`
+}
+
+type ReportStatusUpdatedPayload struct {
+	ReportID   string    `json:"report_id"`
+	ReporterID string    `json:"reporter_id"`
+	Status     string    `json:"status"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+type VerificationRejectedPayload struct {
+	UserID     string    `json:"user_id"`
+	Kind       string    `json:"kind"`
+	Reason     string    `json:"reason,omitempty"`
+	RejectedAt time.Time `json:"rejected_at"`
+}
+
+type PhotoModerationRejectedPayload struct {
+	UserID     string    `json:"user_id"`
+	PhotoID    string    `json:"photo_id,omitempty"`
+	Reason     string    `json:"reason,omitempty"`
+	RejectedAt time.Time `json:"rejected_at"`
+}
+
+type PremiumPaymentFailurePayload struct {
+	UserID     string    `json:"user_id"`
+	PlanID     string    `json:"plan_id,omitempty"`
+	Reason     string    `json:"reason,omitempty"`
+	OccurredAt time.Time `json:"occurred_at"`
+}
+
+type UserBlockedPayload struct {
+	BlockerID string    `json:"blocker_id"`
+	BlockedID string    `json:"blocked_id"`
+	BlockedAt time.Time `json:"blocked_at"`
+}
+
+func (p *Producer) PublishMatchQuietNotify(ctx context.Context, matchID, userA, userB uuid.UUID) error {
+	return p.publish(ctx, events.EventDatingMatchQuietNotify, &userA, MatchQuietNotifyPayload{
+		MatchID: matchID.String(), UserA: userA.String(), UserB: userB.String(),
+		DetectedAt: time.Now(),
+	})
+}
+
+func (p *Producer) PublishSafeMeetReminder(ctx context.Context, meetID, userID, withUserID uuid.UUID, scheduledAt time.Time, venue string) error {
+	return p.publish(ctx, events.EventDatingSafeMeetReminder, &userID, SafeMeetReminderPayload{
+		MeetID: meetID.String(), UserID: userID.String(), WithUserID: withUserID.String(),
+		ScheduledAt: scheduledAt, Venue: venue, FiredAt: time.Now(),
+	})
+}
+
+func (p *Producer) PublishSafeMeetMissedCheckIn(ctx context.Context, meetID, userID, withUserID uuid.UUID, scheduledAt, expectedCheckInAt time.Time) error {
+	return p.publish(ctx, events.EventDatingSafeMeetMissedCheckIn, &userID, SafeMeetMissedCheckInPayload{
+		MeetID: meetID.String(), UserID: userID.String(), WithUserID: withUserID.String(),
+		ScheduledAt: scheduledAt, ExpectedCheckInAt: expectedCheckInAt, DetectedAt: time.Now(),
+	})
+}
+
+func (p *Producer) PublishSafetyPanicAcknowledged(ctx context.Context, userID uuid.UUID, ackBy string) error {
+	return p.publish(ctx, events.EventDatingSafetyPanicAcknowledged, &userID, SafetyPanicAcknowledgedPayload{
+		UserID: userID.String(), AcknowledgedBy: ackBy, AcknowledgedAt: time.Now(),
+	})
+}
+
+func (p *Producer) PublishReportStatusUpdated(ctx context.Context, reportID, reporterID uuid.UUID, status string) error {
+	return p.publish(ctx, events.EventDatingReportStatusUpdated, &reporterID, ReportStatusUpdatedPayload{
+		ReportID: reportID.String(), ReporterID: reporterID.String(), Status: status,
+		UpdatedAt: time.Now(),
+	})
+}
+
+func (p *Producer) PublishVerificationRejected(ctx context.Context, userID uuid.UUID, kind string) error {
+	return p.publish(ctx, events.EventDatingVerificationRejected, &userID, VerificationRejectedPayload{
+		UserID: userID.String(), Kind: kind, RejectedAt: time.Now(),
+	})
+}
+
+func (p *Producer) PublishPhotoModerationRejected(ctx context.Context, userID uuid.UUID, photoID, reason string) error {
+	return p.publish(ctx, events.EventDatingPhotoModerationRejected, &userID, PhotoModerationRejectedPayload{
+		UserID: userID.String(), PhotoID: photoID, Reason: reason, RejectedAt: time.Now(),
+	})
+}
+
+func (p *Producer) PublishPremiumPaymentFailure(ctx context.Context, userID uuid.UUID, planID, reason string) error {
+	return p.publish(ctx, events.EventDatingPremiumPaymentFailure, &userID, PremiumPaymentFailurePayload{
+		UserID: userID.String(), PlanID: planID, Reason: reason, OccurredAt: time.Now(),
+	})
+}
+
+func (p *Producer) PublishUserBlocked(ctx context.Context, blockerID, blockedID uuid.UUID) error {
+	return p.publish(ctx, events.EventDatingUserBlocked, &blockerID, UserBlockedPayload{
+		BlockerID: blockerID.String(), BlockedID: blockedID.String(), BlockedAt: time.Now(),
+	})
+}
+
 // --- Telemetry north-star (Sprint 5) ---------------------------------------
 //
 // Emitted nightly by cmd/north-star with the spec §17 KPIs.

@@ -312,6 +312,22 @@ const (
 	EventDatingProfilePurged       = "dating.profile.purged"
 	EventDatingTelemetryNorthStar  = "dating.telemetry.north_star"
 
+	// Phase 1 (§17, P1-6) — additional dating notification events. See
+	// dating/PRODUCTION_GAP_ANALYSIS.md.
+	EventDatingMatchQuietNotify          = "dating.match.quiet_notify"
+	EventDatingSafeMeetReminder          = "dating.safe_meet.reminder"
+	EventDatingSafeMeetMissedCheckIn     = "dating.safe_meet.missed_check_in"
+	EventDatingSafetyPanicAcknowledged   = "dating.safety.panic.acknowledged"
+	EventDatingReportStatusUpdated       = "dating.report.status_updated"
+	EventDatingVerificationRejected      = "dating.verification.rejected"
+	EventDatingPhotoModerationRejected   = "dating.photo.moderation_rejected"
+	EventDatingPremiumPaymentFailure     = "dating.premium.payment_failure"
+	EventDatingUserBlocked               = "dating.user.blocked"
+	// Phase 1 — chat-side. Emitted by chat-service when a dating_match
+	// conversation receives a message. Notification-service consumes it
+	// to drive push when recipient isn't WS-connected.
+	EventChatDatingMessageNew = "chat.dating.message.new"
+
 	// Wallet (consumer wallet — BC of PPI). See services/wallet-service.
 	EventWalletTopUpStarted    = "wallet.topup.started"
 	EventWalletTopUpSucceeded  = "wallet.topup.succeeded"

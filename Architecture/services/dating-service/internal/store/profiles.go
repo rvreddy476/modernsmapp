@@ -47,7 +47,7 @@ const profileSelectCols = `
     latitude, longitude, location_geohash, height_cm, religion, community,
     occupation, education, drinking, smoking, exercise, diet,
     wants_children, family_plans, blur_mode, visible_to_public, paused,
-    language_prefs, trust_tier, created_at, updated_at, deleted_at`
+    language_prefs, trust_tier, profile_status, created_at, updated_at, deleted_at`
 
 func scanProfile(row pgx.Row) (*Profile, error) {
 	p := &Profile{}
@@ -56,7 +56,7 @@ func scanProfile(row pgx.Row) (*Profile, error) {
 		&p.Latitude, &p.Longitude, &p.LocationGeohash, &p.HeightCm, &p.Religion, &p.Community,
 		&p.Occupation, &p.Education, &p.Drinking, &p.Smoking, &p.Exercise, &p.Diet,
 		&p.WantsChildren, &p.FamilyPlans, &p.BlurMode, &p.VisibleToPublic, &p.Paused,
-		&p.LanguagePrefs, &p.TrustTier, &p.CreatedAt, &p.UpdatedAt, &p.DeletedAt,
+		&p.LanguagePrefs, &p.TrustTier, &p.ProfileStatus, &p.CreatedAt, &p.UpdatedAt, &p.DeletedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -185,13 +185,50 @@ func (s *Store) SetIntent(ctx context.Context, userID uuid.UUID, intent string) 
 	return s.GetProfile(ctx, userID)
 }
 
-// SetPaused toggles the user's paused flag.
+// SetPaused toggles the user's paused flag and mirrors the change into
+// profile_status (§P1-1). When paused=true the row goes to 'paused';
+// when paused=false we restore the prior lifecycle by recomputing —
+// callers that want fine-grained control should use SetProfileStatus
+// directly.
 func (s *Store) SetPaused(ctx context.Context, userID uuid.UUID, paused bool) (*Profile, error) {
+	var status string
+	if paused {
+		status = ProfileStatusPaused
+	} else {
+		// Best-effort restore. If the prior state is unknown we fall
+		// back to 'active' — defensible because the service-level
+		// SetPaused gate only fires on a profile that has already
+		// progressed past draft/pending.
+		status = ProfileStatusActive
+	}
 	if _, err := s.db.Exec(ctx, `
         UPDATE dating_profiles
-        SET paused = $2, updated_at = now()
-        WHERE user_id = $1 AND deleted_at IS NULL`, userID, paused); err != nil {
+        SET paused = $2, profile_status = $3, updated_at = now()
+        WHERE user_id = $1 AND deleted_at IS NULL`, userID, paused, status); err != nil {
 		return nil, fmt.Errorf("set paused: %w", err)
+	}
+	return s.GetProfile(ctx, userID)
+}
+
+// SetProfileStatus flips the §P1-1 lifecycle column. Returns the
+// post-update profile or ErrProfileNotFound. Used by:
+//   - service.UpsertProfile to graduate draft -> pending_photo
+//   - photo-approval consumer to step pending_photo -> pending_selfie
+//   - verification flow to step pending_selfie -> active
+//   - trust-safety moderation to flip restricted / suspended
+func (s *Store) SetProfileStatus(ctx context.Context, userID uuid.UUID, status string) (*Profile, error) {
+	if userID == uuid.Nil {
+		return nil, fmt.Errorf("invalid: user_id required")
+	}
+	tag, err := s.db.Exec(ctx, `
+        UPDATE dating_profiles
+        SET profile_status = $2, updated_at = now()
+        WHERE user_id = $1`, userID, status)
+	if err != nil {
+		return nil, fmt.Errorf("set profile status: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, ErrProfileNotFound
 	}
 	return s.GetProfile(ctx, userID)
 }
@@ -264,7 +301,10 @@ func (s *Store) SoftDeleteProfile(ctx context.Context, userID uuid.UUID) error {
 	}
 	tag, err := s.db.Exec(ctx, `
         UPDATE dating_profiles
-        SET deleted_at = COALESCE(deleted_at, now()), paused = true, updated_at = now()
+        SET deleted_at = COALESCE(deleted_at, now()),
+            paused = true,
+            profile_status = 'deleted',
+            updated_at = now()
         WHERE user_id = $1`, userID)
 	if err != nil {
 		return fmt.Errorf("soft delete profile: %w", err)

@@ -813,6 +813,35 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 				"err", outboxErr)
 		}
 
+		// 4a. Dating-match send: emit a chat.dating.message.new outbox
+		// event per recipient so notification-service can drive push for
+		// recipients who aren't WS-connected. Phase 1 §1. The main
+		// MessageCreated outbox row already runs above; this is a
+		// dating-specific second event with the match_id + preview that
+		// the dating notification path needs.
+		if meta != nil && meta.SourceApp == "dating" && meta.MatchID != nil {
+			preview := text
+			if len(preview) > 140 {
+				// Conservative preview cap — push payloads are size
+				// constrained on iOS, and we don't want full PII in the
+				// Kafka log of a sensitive conversation.
+				preview = preview[:140]
+			}
+			for _, recipientID := range recipientIDs {
+				dpayload := sharedEvents.ChatDatingMessageNewPayload{
+					ConversationID: conversationID.String(),
+					MatchID:        meta.MatchID.String(),
+					SenderID:       userID.String(),
+					RecipientID:    recipientID,
+					MessagePreview: preview,
+					SentAt:         now,
+				}
+				if err := s.convStore.InsertOutboxEvent(ctx, sharedEvents.ChatDatingMessageNew, dpayload); err != nil {
+					l.Warn("dating outbox insert failed", "err", err, "recipient_id", recipientID)
+				}
+			}
+		}
+
 		// 4b. Message-request first message: store it as the request preview
 		// and emit MessageRequestCreated so notify routes it to the
 		// recipient's Requests folder (spec §3.3, §18.2).
@@ -839,20 +868,39 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 		// 5. Real-time delivery via Redis pub/sub to all members (best-effort).
 		// Runs after the durable outbox handoff so a successful publish
 		// always corresponds to a queued outbox event.
+		//
+		// Phase 1 §1: for dating_match conversations we tag the payload
+		// with source_app + match_id so ws-gateway / clients can route to
+		// the dating UI rather than the generic chat list.
+		var sourceAppMeta string
+		var matchIDMeta string
+		if meta != nil && meta.SourceApp == "dating" {
+			sourceAppMeta = meta.SourceApp
+			if meta.MatchID != nil {
+				matchIDMeta = meta.MatchID.String()
+			}
+		}
 		go func() {
 			pubCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
+			msgBody := map[string]interface{}{
+				"conversation_id": conversationID,
+				"message_id":      msgID,
+				"sender_id":       userID,
+				"type":            msgType,
+				"text":            text,
+				"media_id":        mediaID,
+				"created_at":      now,
+			}
+			if sourceAppMeta != "" {
+				msgBody["source_app"] = sourceAppMeta
+			}
+			if matchIDMeta != "" {
+				msgBody["match_id"] = matchIDMeta
+			}
 			payload, _ := json.Marshal(map[string]interface{}{
-				"type": "message",
-				"payload": map[string]interface{}{
-					"conversation_id": conversationID,
-					"message_id":      msgID,
-					"sender_id":       userID,
-					"type":            msgType,
-					"text":            text,
-					"media_id":        mediaID,
-					"created_at":      now,
-				},
+				"type":    "message",
+				"payload": msgBody,
 			})
 			// M2: per-member fan-out collapsed into a single Redis
 			// pipeline. The previous loop issued one round-trip per

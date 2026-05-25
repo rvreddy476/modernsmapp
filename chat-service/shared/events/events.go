@@ -18,7 +18,25 @@ const (
 	MessageRequestCreated  = "MessageRequestCreated"
 	MessageRequestAccepted = "MessageRequestAccepted"
 	MessageRequestIgnored  = "MessageRequestIgnored"
+
+	// Dating-specific outbox event — emitted on every send into a
+	// source_app='dating' conversation. notification-service consumes it
+	// to drive push for offline recipients. Phase 1 §1 in
+	// dating/PRODUCTION_GAP_ANALYSIS.md.
+	ChatDatingMessageNew = "chat.dating.message.new"
 )
+
+// ChatDatingMessageNewPayload carries the minimum context needed for
+// push: who's the recipient, what's the preview, where to deep-link.
+// Mirrors the shape published on the chat-events Kafka topic.
+type ChatDatingMessageNewPayload struct {
+	ConversationID string    `json:"conversation_id"`
+	MatchID        string    `json:"match_id"`
+	SenderID       string    `json:"sender_id"`
+	RecipientID    string    `json:"recipient_id"`
+	MessagePreview string    `json:"message_preview,omitempty"`
+	SentAt         time.Time `json:"sent_at"`
+}
 
 // Event type constants for call-service domain events.
 const (

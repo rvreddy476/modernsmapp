@@ -207,6 +207,32 @@ func (s *ConversationStore) MarkConversationClosedByMatch(ctx context.Context, m
 	return err
 }
 
+// MarkConversationsClosedByPair closes every source_app='dating'
+// conversation that has both userA and userB as (non-left) members.
+// Used by the dating block consumer (Phase 1 §4) to sever existing
+// match chats the moment either side blocks the other — the
+// dating-event consumer handles the dating_match conversations
+// because the user could have multiple distinct matches with the
+// same person over time (rare but real after an unmatch + rematch).
+// Idempotent — re-running preserves closed_at.
+func (s *ConversationStore) MarkConversationsClosedByPair(ctx context.Context, userA, userB uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE chat.conversations c
+		SET closed_at = COALESCE(closed_at, NOW())
+		WHERE c.source_app = 'dating'
+		  AND c.closed_at IS NULL
+		  AND EXISTS (
+		      SELECT 1 FROM chat.conversation_members ma
+		      WHERE ma.conversation_id = c.id AND ma.user_id = $1 AND ma.left_at IS NULL
+		  )
+		  AND EXISTS (
+		      SELECT 1 FROM chat.conversation_members mb
+		      WHERE mb.conversation_id = c.id AND mb.user_id = $2 AND mb.left_at IS NULL
+		  )
+	`, userA, userB)
+	return err
+}
+
 // ConversationMeta holds the fields the send-path gate inspects.
 type ConversationMeta struct {
 	SourceApp string

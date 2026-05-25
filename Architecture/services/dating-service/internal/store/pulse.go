@@ -153,6 +153,10 @@ func (s *Store) FetchCandidates(ctx context.Context, q CandidateQuery) ([]Candid
 	args := []any{q.ViewerID}
 	where := []string{
 		`p.user_id <> $1`,
+		// §P1-1 profile-status gate: only fully-activated profiles
+		// surface in discovery. The legacy boolean filters below stay
+		// as belt-and-braces during the rollout.
+		`p.profile_status = 'active'`,
 		`p.deleted_at IS NULL`,
 		`p.paused = false`,
 		`p.visible_to_public = true`,

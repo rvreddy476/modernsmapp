@@ -311,6 +311,43 @@ func (s *Store) ExpireStaleMatches(ctx context.Context) ([]*Match, error) {
 	return out, rows.Err()
 }
 
+// ListMatchesQuietSince24h returns matches in 'conversing' status whose
+// last (= only, by definition of quiet) message landed more than 24h
+// ago and that haven't already been flagged as quiet-notified. The
+// Phase 1 sweeper fires one dating.match.quiet_notify per row.
+//
+// We use a Redis dedup key (dating:match_quiet_notified:{match_id})
+// rather than persisting a column to keep this opportunistic — at
+// worst the user gets the same nudge twice across a Redis flush.
+func (s *Store) ListMatchesQuietSince24h(ctx context.Context, limit int) ([]*Match, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.Query(ctx, `
+        SELECT `+matchSelectCols+`
+        FROM dating_matches
+        WHERE status IN ('matched','conversing')
+          AND first_message_at IS NOT NULL
+          AND last_message_at IS NOT NULL
+          AND first_message_at = last_message_at
+          AND last_message_at < now() - INTERVAL '24 hours'
+        ORDER BY last_message_at ASC
+        LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list matches quiet since 24h: %w", err)
+	}
+	defer rows.Close()
+	out := make([]*Match, 0, limit)
+	for rows.Next() {
+		m, err := scanMatch(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 // MarkQuietMatches transitions matches that have been idle for 14 days into
 // status='quiet'. Returns the affected matches for event emission.
 func (s *Store) MarkQuietMatches(ctx context.Context) ([]*Match, error) {

@@ -191,6 +191,10 @@ func (s *Service) Block(ctx context.Context, userID, targetID uuid.UUID) error {
 	if err := s.store.BlockUser(ctx, userID, targetID); err != nil {
 		return err
 	}
+	// Phase 1 §3: viewer's own deck may already include the just-
+	// blocked candidate — drop it so the next pulse refresh re-runs
+	// the candidate query (which already filters mutual blocks).
+	s.InvalidatePulseCache(ctx, userID)
 	// Propagate to graph-service so the graph layer also stops surfacing
 	// the user. Best-effort: log on failure, do not fail the user request.
 	if base := os.Getenv("GRAPH_SERVICE_URL"); base != "" {
@@ -226,6 +230,12 @@ func (s *Service) Block(ctx context.Context, userID, targetID uuid.UUID) error {
 	if s.producer != nil {
 		if perr := s.producer.PublishBlockCreated(ctx, userID, targetID); perr != nil {
 			slog.Error("publish block.created failed; row persisted", "user_id", userID, "error", perr)
+		}
+		// Phase 1 — chat-service listens for dating.user.blocked to
+		// sever any existing dating_match conversation between the
+		// pair. Persist already succeeded; failure here is logged.
+		if perr := s.producer.PublishUserBlocked(ctx, userID, targetID); perr != nil {
+			slog.Error("publish user.blocked failed; row persisted", "user_id", userID, "error", perr)
 		}
 	}
 	return nil

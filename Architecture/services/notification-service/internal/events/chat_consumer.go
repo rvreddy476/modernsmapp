@@ -19,6 +19,9 @@ import (
 const (
 	chatEventMessageCreated        = "MessageCreated"
 	chatEventMessageRequestCreated = "MessageRequestCreated"
+	// chat.dating.message.new — emitted per-recipient by chat-service when
+	// a message lands in a source_app='dating' conversation. Phase 1 §1.
+	chatEventDatingMessageNew = "chat.dating.message.new"
 )
 
 // chatEnvelope mirrors the JSON envelope chat-service publishes to the
@@ -121,6 +124,13 @@ func (c *ChatConsumer) processMessage(ctx context.Context, m kafka.Message) erro
 		}
 		return c.handleMessageRequestCreated(ctx, e)
 
+	case chatEventDatingMessageNew:
+		var e chatDatingMessageNewPayload
+		if err := json.Unmarshal(envelope.Payload, &e); err != nil {
+			return err
+		}
+		return c.handleChatDatingMessageNew(ctx, e)
+
 	default:
 		// Other chat.events.v1 event types are claimed and ignored.
 		return nil
@@ -199,6 +209,34 @@ func (c *ChatConsumer) handleMessageRequestCreated(ctx context.Context, e messag
 
 	return c.service.CreateNotification(
 		ctx, receiverID, senderID, "message_request", "conversation", conversationID, deepLink, occurredAt,
+	)
+}
+
+// chatDatingMessageNewPayload is declared in dating_consumer.go (the
+// dating-events consumer also handles this shape on its own topic when
+// the chat outbox bridge writes there). Reuse it here.
+//
+// handleChatDatingMessageNew creates a dating-flavoured push for a
+// single recipient. Phase 1 §1 — the outbox emits one event per
+// recipient so we don't need to fan out here. The "conversation"
+// entity type means notification-service' existing collapse-key logic
+// will fold repeated dating messages into one device notification
+// (same behaviour as DMs in /messages/).
+func (c *ChatConsumer) handleChatDatingMessageNew(ctx context.Context, e chatDatingMessageNewPayload) error {
+	recipientID, err := uuid.Parse(e.RecipientID)
+	if err != nil {
+		return nil
+	}
+	senderID, _ := uuid.Parse(e.SenderID)
+	conversationID, _ := uuid.Parse(e.ConversationID)
+
+	sentAt := e.SentAt
+	if sentAt.IsZero() {
+		sentAt = time.Now().UTC()
+	}
+	deepLink := fmt.Sprintf("/dating/matches/%s", e.MatchID)
+	return c.service.CreateNotification(
+		ctx, recipientID, senderID, "dating.match.new_message", "conversation", conversationID, deepLink, sentAt,
 	)
 }
 

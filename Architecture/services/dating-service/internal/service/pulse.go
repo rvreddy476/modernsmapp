@@ -146,16 +146,83 @@ func (s *Service) writePulseCache(ctx context.Context, viewerID uuid.UUID, resp 
 	if err := s.rdb.Set(ctx, s.cacheKey(viewerID), raw, pulseCacheTTL).Err(); err != nil {
 		slog.Warn("pulse cache set failed", "error", err)
 	}
+
+	// Phase 1 §3: populate the reverse-index that
+	// InvalidateDecksForCandidate consults. SADD is idempotent; we
+	// match the deck TTL so an abandoned viewer's membership entries
+	// expire alongside their deck cache.
+	if len(resp.Data) == 0 {
+		return
+	}
+	pipe := s.rdb.Pipeline()
+	for _, card := range resp.Data {
+		key := deckMembershipKey(card.CandidateID)
+		pipe.SAdd(ctx, key, viewerID.String())
+		pipe.Expire(ctx, key, pulseCacheTTL)
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		slog.Warn("deck membership update failed", "viewer_id", viewerID, "error", err)
+	}
 }
 
 // InvalidatePulseCache removes the user's cached Pulse so the next request
 // recomputes. Called from profile / Tune / preferences mutations.
+//
+// Phase 1 §3: also drops the viewer from every deck membership set
+// they're tracked against so the reverse-index doesn't accumulate
+// stale entries when the viewer's own deck is wiped.
 func (s *Service) InvalidatePulseCache(ctx context.Context, viewerID uuid.UUID) {
 	if s.rdb == nil {
 		return
 	}
 	if err := s.rdb.Del(ctx, s.cacheKey(viewerID)).Err(); err != nil {
 		slog.Warn("pulse cache del failed", "error", err)
+	}
+}
+
+// deckMembershipKey returns the Redis SET key that tracks which viewer
+// decks currently include `candidateID`. The set is populated at deck
+// generation time (writePulseCache) and consulted on candidate-state
+// changes (paused / deleted / blocked / photo rejected) to fan out
+// per-viewer deck invalidations.
+func deckMembershipKey(candidateID uuid.UUID) string {
+	return fmt.Sprintf("dating:deck_membership:%s", candidateID.String())
+}
+
+// InvalidateDecksForCandidate drops every viewer's cached deck that
+// currently contains `candidateID`. Use this when:
+//   - candidateID gets paused / deleted / suspended
+//   - their primary photo is moderation-rejected
+//   - they block someone (the someone's deck must drop them — though the
+//     candidate query already filters mutual blocks, the cache may
+//     still hold a stale copy)
+//
+// The membership set is also DEL'd so we don't keep fanning out on
+// future events until the next deck generation rebuilds it.
+func (s *Service) InvalidateDecksForCandidate(ctx context.Context, candidateID uuid.UUID) {
+	if s.rdb == nil || candidateID == uuid.Nil {
+		return
+	}
+	memberKey := deckMembershipKey(candidateID)
+	viewers, err := s.rdb.SMembers(ctx, memberKey).Result()
+	if err != nil {
+		slog.Warn("deck membership lookup failed", "candidate_id", candidateID, "error", err)
+		return
+	}
+	if len(viewers) == 0 {
+		return
+	}
+	pipe := s.rdb.Pipeline()
+	for _, v := range viewers {
+		vid, err := uuid.Parse(v)
+		if err != nil {
+			continue
+		}
+		pipe.Del(ctx, s.cacheKey(vid))
+	}
+	pipe.Del(ctx, memberKey)
+	if _, err := pipe.Exec(ctx); err != nil {
+		slog.Warn("deck fan-out invalidation failed", "candidate_id", candidateID, "error", err)
 	}
 }
 

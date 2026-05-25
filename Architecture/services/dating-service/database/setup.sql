@@ -461,3 +461,32 @@ CREATE TABLE IF NOT EXISTS dating_consent_log (
 
 CREATE INDEX IF NOT EXISTS idx_dating_consent_log_user
     ON dating_consent_log(user_id, created_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- Phase 1 (§P1-1) — profile activation state machine.
+--
+-- New profiles begin at 'draft' and graduate through the following lifecycle:
+--    draft -> pending_photo -> pending_selfie -> active
+-- Existing pause / soft-delete actions also drive 'paused' / 'deleted'.
+-- 'restricted' + 'suspended' are reserved for trust-safety moderation.
+--
+-- The legacy boolean columns (paused, deleted_at) remain authoritative for
+-- back-compat with the current discovery query; profile_status is the
+-- single source of truth going forward and discovery now filters on it.
+-- ---------------------------------------------------------------------------
+ALTER TABLE dating_profiles
+    ADD COLUMN IF NOT EXISTS profile_status TEXT NOT NULL DEFAULT 'draft'
+    CHECK (profile_status IN
+      ('draft','pending_photo','pending_selfie','pending_review',
+       'active','paused','restricted','suspended','deleted'));
+CREATE INDEX IF NOT EXISTS idx_dating_profiles_status_active
+    ON dating_profiles(profile_status) WHERE profile_status = 'active';
+
+-- Backfill: pre-existing rows go to 'active' so they don't disappear from
+-- discovery on first deploy. The service layer will downshift any row
+-- that fails the new minimum-fields gate the next time it's edited.
+UPDATE dating_profiles SET profile_status = 'active'
+    WHERE profile_status = 'draft' AND deleted_at IS NULL AND paused = false
+      AND first_name IS NOT NULL AND birth_date IS NOT NULL;
+UPDATE dating_profiles SET profile_status = 'paused' WHERE paused = true AND deleted_at IS NULL;
+UPDATE dating_profiles SET profile_status = 'deleted' WHERE deleted_at IS NOT NULL;

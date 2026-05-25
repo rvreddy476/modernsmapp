@@ -314,6 +314,87 @@ func (s *Store) CountSafetyMeetCheckInsSafeWindow(ctx context.Context, since tim
 	return n, nil
 }
 
+// ListMeetsForReminder returns meets whose scheduled_at falls in the
+// window (now+11.5h, now+12.5h] and which haven't been checked-in or
+// no-show'd. The Phase 1 sweeper fires dating.safe_meet.reminder for
+// each row roughly 12h before the meet. Window width gives the
+// per-minute ticker enough overlap that a single missed tick doesn't
+// drop the reminder; the consumer dedups via Redis.
+func (s *Store) ListMeetsForReminder(ctx context.Context, now time.Time, limit int) ([]*Meet, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.Query(ctx, `
+        SELECT id, user_id, with_user_id, scheduled_at, venue, latitude, longitude,
+               check_in_status, checked_in_at, no_show_at, created_at
+        FROM dating_meets
+        WHERE scheduled_at > $1
+          AND scheduled_at <= $2
+          AND check_in_status IS NULL
+          AND no_show_at IS NULL
+        ORDER BY scheduled_at ASC
+        LIMIT $3`,
+		now.Add(11*time.Hour+30*time.Minute),
+		now.Add(12*time.Hour+30*time.Minute),
+		limit)
+	if err != nil {
+		return nil, fmt.Errorf("list meets for reminder: %w", err)
+	}
+	defer rows.Close()
+	out := make([]*Meet, 0, limit)
+	for rows.Next() {
+		m := &Meet{}
+		if err := rows.Scan(
+			&m.ID, &m.UserID, &m.WithUserID, &m.ScheduledAt, &m.Venue, &m.Latitude, &m.Longitude,
+			&m.CheckInStatus, &m.CheckedInAt, &m.NoShowAt, &m.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// ListMeetsForMissedCheckIn returns meets whose scheduled_at is more
+// than 30 minutes ago, that haven't been checked-in / no-show'd. The
+// Phase 1 sweeper fires dating.safe_meet.missed_check_in for each row.
+// We cap the look-back to 6h so a long-ago abandoned meet doesn't get
+// re-notified indefinitely after a Redis dedup flush.
+func (s *Store) ListMeetsForMissedCheckIn(ctx context.Context, now time.Time, limit int) ([]*Meet, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.Query(ctx, `
+        SELECT id, user_id, with_user_id, scheduled_at, venue, latitude, longitude,
+               check_in_status, checked_in_at, no_show_at, created_at
+        FROM dating_meets
+        WHERE scheduled_at < $1
+          AND scheduled_at > $2
+          AND check_in_status IS NULL
+          AND no_show_at IS NULL
+        ORDER BY scheduled_at ASC
+        LIMIT $3`,
+		now.Add(-30*time.Minute),
+		now.Add(-6*time.Hour),
+		limit)
+	if err != nil {
+		return nil, fmt.Errorf("list meets for missed check-in: %w", err)
+	}
+	defer rows.Close()
+	out := make([]*Meet, 0, limit)
+	for rows.Next() {
+		m := &Meet{}
+		if err := rows.Scan(
+			&m.ID, &m.UserID, &m.WithUserID, &m.ScheduledAt, &m.Venue, &m.Latitude, &m.Longitude,
+			&m.CheckInStatus, &m.CheckedInAt, &m.NoShowAt, &m.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 // PendingMeetsForCheckin returns meets whose scheduled_at is older than
 // `before` and which have not yet been checked-in or no-show'd. The S5
 // no-show worker iterates this list.

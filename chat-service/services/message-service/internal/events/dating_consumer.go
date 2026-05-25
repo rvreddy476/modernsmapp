@@ -17,6 +17,10 @@ import (
 const (
 	datingMatchClosed  = "dating.match.closed"
 	datingMatchExpired = "dating.match.expired"
+	// Phase 1 §4 — cross-surface block enforcement. The dating-service
+	// emits this on every successful block; chat-side severs any
+	// dating_match conversation between the pair.
+	datingUserBlocked = "dating.user.blocked"
 )
 
 // datingEnvelope mirrors the CloudEvents-style envelope dating-service
@@ -34,10 +38,17 @@ type matchClosedPayload struct {
 	MatchID string `json:"match_id"`
 }
 
+// datingUserBlockedPayload mirrors dating-service UserBlockedPayload.
+type datingUserBlockedPayload struct {
+	BlockerID string `json:"blocker_id"`
+	BlockedID string `json:"blocked_id"`
+}
+
 // DatingReconciler is the chat-side surface the dating consumer needs.
 // Implemented by *postgres.ConversationStore.
 type DatingReconciler interface {
 	MarkConversationClosedByMatch(ctx context.Context, matchID uuid.UUID) error
+	MarkConversationsClosedByPair(ctx context.Context, userA, userB uuid.UUID) error
 }
 
 // DatingConsumer consumes dating-service events from Kafka and reconciles
@@ -118,6 +129,27 @@ func (c *DatingConsumer) handle(ctx context.Context, m kafka.Message) error {
 			return err
 		}
 		c.log.Info("dating consumer: closed conversation for match", "match_id", matchID, "event_type", env.EventType)
+
+	case datingUserBlocked:
+		var p datingUserBlockedPayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return err
+		}
+		blocker, err := uuid.Parse(p.BlockerID)
+		if err != nil {
+			c.log.Warn("dating consumer: bad blocker_id", "raw", p.BlockerID)
+			return nil
+		}
+		blocked, err := uuid.Parse(p.BlockedID)
+		if err != nil {
+			c.log.Warn("dating consumer: bad blocked_id", "raw", p.BlockedID)
+			return nil
+		}
+		if err := c.store.MarkConversationsClosedByPair(ctx, blocker, blocked); err != nil {
+			return err
+		}
+		c.log.Info("dating consumer: closed conversations by pair",
+			"blocker_id", blocker, "blocked_id", blocked)
 	}
 	return nil
 }
