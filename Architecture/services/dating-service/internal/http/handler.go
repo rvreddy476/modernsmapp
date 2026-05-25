@@ -143,6 +143,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// Sprint 5 — DPDP data export (§15.8).
 		dating.POST("/data-export", h.PostDataExport)
 		dating.GET("/data-export/me", h.GetMyDataExports)
+
+		// §P0-8 admin queues. Same internal-key gate; the api-gateway
+		// adds an admin-scope check before forwarding these paths.
+		// Read-side scaffolds for the /admin/dating console.
+		dating.GET("/admin/reports", h.ListReports)
+		dating.GET("/admin/safety/panic", h.ListPanicEvents)
+		dating.GET("/admin/photos/pending", h.ListPendingPhotos)
 	}
 }
 

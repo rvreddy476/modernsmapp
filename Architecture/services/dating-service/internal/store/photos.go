@@ -171,6 +171,33 @@ func (s *Store) SetPhotoModerationStatus(ctx context.Context, photoID uuid.UUID,
 	return out, nil
 }
 
+// ListPendingPhotos returns photos awaiting moderation, oldest-first
+// so the /admin/dating/photos queue clears in arrival order. P0-8.
+func (s *Store) ListPendingPhotos(ctx context.Context, limit int) ([]*Photo, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := s.db.Query(ctx, `
+        SELECT id, user_id, media_id, sort_order, is_primary, visibility, moderation_status, created_at
+        FROM dating_photos
+        WHERE moderation_status = 'pending'
+        ORDER BY created_at ASC
+        LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list pending photos: %w", err)
+	}
+	defer rows.Close()
+	out := make([]*Photo, 0, limit)
+	for rows.Next() {
+		p, err := scanPhoto(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 // CountApprovedPrimaryPhotos returns how many approved + public photos
 // the user has. The profile-state machine uses this to decide whether
 // to graduate pending_photo → pending_selfie after a moderation event.

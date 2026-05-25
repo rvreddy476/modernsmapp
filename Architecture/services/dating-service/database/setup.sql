@@ -342,6 +342,15 @@ CREATE TABLE IF NOT EXISTS dating_reports (
 CREATE INDEX IF NOT EXISTS idx_dating_reports_target
     ON dating_reports(target_id, created_at DESC);
 
+-- P0-8 admin queue: status column for the /admin/dating/reports flow.
+-- Idempotent ALTER so existing rows default to 'submitted'.
+ALTER TABLE dating_reports
+    ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'submitted'
+        CHECK (status IN ('submitted','under_review','investigating',
+                          'actioned','resolved','dismissed','closed_no_action'));
+CREATE INDEX IF NOT EXISTS idx_dating_reports_status_created
+    ON dating_reports(status, created_at DESC);
+
 -- ---------------------------------------------------------------------------
 -- Sprint 4 — AI moderation results (shadow + strict)
 --

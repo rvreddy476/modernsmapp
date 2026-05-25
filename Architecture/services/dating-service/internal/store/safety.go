@@ -8,9 +8,11 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -59,6 +61,7 @@ type Report struct {
 	TargetID   uuid.UUID `json:"target_id"`
 	Category   string    `json:"category"`
 	Details    string    `json:"details"`
+	Status     string    `json:"status"`
 	CreatedAt  time.Time `json:"created_at"`
 }
 
@@ -253,6 +256,84 @@ func (s *Store) CreateReport(ctx context.Context, reporterID, targetID uuid.UUID
 		return nil, fmt.Errorf("create report: %w", err)
 	}
 	return r, nil
+}
+
+// ListReports returns dating_reports ordered newest-first with simple
+// filters. Used by /admin/dating/reports. Pagination via limit+offset
+// is fine here because the table grows slowly (one row per report)
+// compared to a high-volume timeline.
+func (s *Store) ListReports(ctx context.Context, status, category string, limit, offset int) ([]*Report, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	args := []any{}
+	where := []string{"1=1"}
+	if status != "" {
+		args = append(args, status)
+		where = append(where, fmt.Sprintf("status = $%d", len(args)))
+	}
+	if category != "" {
+		args = append(args, category)
+		where = append(where, fmt.Sprintf("category = $%d", len(args)))
+	}
+	args = append(args, limit, offset)
+	q := `
+        SELECT id, reporter_id, target_id, category, details, status, created_at
+        FROM dating_reports
+        WHERE ` + strings.Join(where, " AND ") + `
+        ORDER BY created_at DESC
+        LIMIT $` + fmt.Sprintf("%d", len(args)-1) +
+		` OFFSET $` + fmt.Sprintf("%d", len(args))
+	rows, err := s.db.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list reports: %w", err)
+	}
+	defer rows.Close()
+	out := make([]*Report, 0, limit)
+	for rows.Next() {
+		r := &Report{}
+		var details sql.NullString
+		var st sql.NullString
+		if err := rows.Scan(&r.ID, &r.ReporterID, &r.TargetID, &r.Category, &details, &st, &r.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan report: %w", err)
+		}
+		r.Details = details.String
+		r.Status = st.String
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ListPanicEvents returns recent dating_safety_events of kind 'panic'
+// newest-first across all users. Used by /admin/dating/panic for the
+// on-call queue.
+func (s *Store) ListPanicEvents(ctx context.Context, limit int) ([]*SafetyEvent, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 100
+	}
+	rows, err := s.db.Query(ctx, `
+        SELECT id, user_id, kind, details, created_at
+        FROM dating_safety_events
+        WHERE kind = 'panic'
+        ORDER BY created_at DESC
+        LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list panic events: %w", err)
+	}
+	defer rows.Close()
+	out := make([]*SafetyEvent, 0, limit)
+	for rows.Next() {
+		e := &SafetyEvent{}
+		var raw []byte
+		if err := rows.Scan(&e.ID, &e.UserID, &e.Kind, &raw, &e.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan panic event: %w", err)
+		}
+		if len(raw) > 0 {
+			_ = json.Unmarshal(raw, &e.Details)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
 
 // ListSafetyEventsForUser returns the user's full safety_events history
