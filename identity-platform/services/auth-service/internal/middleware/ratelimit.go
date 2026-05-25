@@ -14,9 +14,20 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// OTPRateLimit limits OTP requests to 5 per phone number per 10 minutes.
-// The phone number is read from the JSON request body field "phone".
-// If rdb is nil, rate limiting is skipped (useful in tests).
+// OTPRateLimit gates the /send-otp endpoint with three independent caps:
+//
+//   - 5 per phone per 10 min (burst protection)
+//   - 30 per phone per 24 h  (slow-drip protection — A3 hardening; the
+//     10-min cap alone allows 720/day per phone, plenty of headroom for
+//     an attacker to wear down a victim or bypass a SMS provider's
+//     reputation throttle)
+//   - 50 per IP per 1 h      (IP-rotation protection — same A3 fix; an
+//     attacker rotating phone numbers from a single host was previously
+//     unbounded since the only cap was per-phone)
+//
+// Phone is read from the JSON body field "phone". If rdb is nil, the
+// middleware is a no-op (test mode). Fails CLOSED on Redis errors via
+// the shared allow() helper.
 func OTPRateLimit(rdb *redis.Client) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if rdb == nil {
@@ -34,16 +45,34 @@ func OTPRateLimit(rdb *redis.Client) gin.HandlerFunc {
 		// Re-set body again for downstream handler
 		c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
+		ctx := c.Request.Context()
+
 		if req.Phone != "" {
-			key := fmt.Sprintf("otp_rl:%s", req.Phone)
-			if !allow(c.Request.Context(), rdb, key, 5, 600*time.Second) {
+			if !allow(ctx, rdb, fmt.Sprintf("otp_rl:%s", req.Phone), 5, 600*time.Second) {
 				c.Header("Retry-After", "600")
 				c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
 					"error": gin.H{"code": "RATE_LIMITED", "message": "Too many OTP requests. Try again later."},
 				})
 				return
 			}
+			if !allow(ctx, rdb, fmt.Sprintf("otp_rl_day:%s", req.Phone), 30, 24*time.Hour) {
+				c.Header("Retry-After", "3600")
+				c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
+					"error": gin.H{"code": "RATE_LIMITED", "message": "Daily OTP limit reached for this number. Try again tomorrow."},
+				})
+				return
+			}
 		}
+
+		ip := c.ClientIP()
+		if !allow(ctx, rdb, fmt.Sprintf("otp_rl_ip:%s", ip), 50, time.Hour) {
+			c.Header("Retry-After", "3600")
+			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
+				"error": gin.H{"code": "RATE_LIMITED", "message": "Too many OTP requests from this network. Try again later."},
+			})
+			return
+		}
+
 		c.Next()
 	}
 }
