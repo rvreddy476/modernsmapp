@@ -58,10 +58,15 @@ func (s *Service) ListAdminAudit(ctx context.Context, f store.AdminAuditFilter, 
 //	dismiss   - mark closed_no_action; no profile change
 //	resolved  - mark resolved; no profile change (action taken externally)
 //	warn      - mark actioned; no profile change (warning issued out-of-band)
+//	review    - mark actioned + flag the reported user for manual moderator
+//	            inspection (§P1-1 pending_review). Distinct from
+//	            pending_photo / pending_selfie which are onboarding gaps —
+//	            this state is the "risk score >= 86 / admin_review" bucket
+//	            and bars new sparks until a moderator clears it.
 //	restrict  - mark actioned + restrict the reported user
 //	suspend   - mark actioned + suspend the reported user
 //
-// targetUserID is required for restrict + suspend.
+// targetUserID is required for review + restrict + suspend.
 func (s *Service) ActOnReport(ctx context.Context, adminID, reportID, targetUserID uuid.UUID, action string) (string, error) {
 	var newStatus string
 	var profileStatus string
@@ -72,6 +77,9 @@ func (s *Service) ActOnReport(ctx context.Context, adminID, reportID, targetUser
 		newStatus = "resolved"
 	case "warn":
 		newStatus = "actioned"
+	case "review":
+		newStatus = "actioned"
+		profileStatus = store.ProfileStatusPendingReview
 	case "restrict":
 		newStatus = "actioned"
 		profileStatus = store.ProfileStatusRestricted
@@ -120,4 +128,4 @@ func (s *Service) ActOnReport(ctx context.Context, adminID, reportID, targetUser
 // errInvalidAdminAction is unexported; callers receive it as a
 // generic error and the HTTP handler maps the "invalid: " prefix to
 // 400 via respondServiceError.
-var errInvalidAdminAction = fmt.Errorf("invalid: unknown admin action; allowed values are dismiss|resolved|warn|restrict|suspend")
+var errInvalidAdminAction = fmt.Errorf("invalid: unknown admin action; allowed values are dismiss|resolved|warn|review|restrict|suspend")

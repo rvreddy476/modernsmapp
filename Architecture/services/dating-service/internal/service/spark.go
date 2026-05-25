@@ -59,6 +59,17 @@ func (s *Service) CreateSpark(ctx context.Context, fromUserID, toUserID uuid.UUI
 		return nil, nil, err
 	}
 
+	// §P1-1 profile-status gate. Restricted/suspended/pending-review
+	// profiles cannot create new sparks. The discovery query already
+	// hides them from inbound surfaces; this gate closes the
+	// known-target-id loophole. The risk gate above catches
+	// risk_level=admin_review for risk-scored accounts; this gate
+	// covers admin-driven restrict / suspend / pending_review even
+	// when no risk row exists yet.
+	if err := s.requireInteractiveProfile(ctx, fromUserID); err != nil {
+		return nil, nil, err
+	}
+
 	// Lightweight existence check on the target. We don't crash if the
 	// target profile is missing in test setups; just return invalid so the
 	// caller (handler) maps to 400.

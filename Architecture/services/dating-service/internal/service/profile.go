@@ -16,6 +16,20 @@ import (
 // PRODUCTION_GAP_ANALYSIS.md — adult-only platform.
 var ErrUnderage = errors.New("dating requires a verified birth date and age 18+")
 
+// ErrProfileRestricted is returned when a moderator-restricted profile
+// attempts to take an outbound action (new spark, new chat). The
+// "forbidden:" prefix maps to a 403 in the HTTP layer. §P1-1.
+var ErrProfileRestricted = errors.New("forbidden: your profile is restricted and cannot start new sparks or chats")
+
+// ErrProfileSuspended is returned when a suspended or deleted profile
+// attempts ANY interactive action. Maps to a 403. §P1-1.
+var ErrProfileSuspended = errors.New("forbidden: your profile is suspended and cannot interact")
+
+// ErrProfilePendingReview is returned when a profile flagged for manual
+// moderator inspection (risk score >= 86 / admin action="review")
+// attempts an outbound action. §P1-1. Maps to 403.
+var ErrProfilePendingReview = errors.New("forbidden: your profile is under review and cannot start new sparks or chats")
+
 // MinDatingAgeYears is the absolute floor for dating discovery /
 // sparks / chat. Server-enforced; never relax via preference.
 const MinDatingAgeYears = 18
@@ -47,6 +61,53 @@ func (s *Service) requireAdult(ctx context.Context, userID uuid.UUID) error {
 		return ErrUnderage
 	}
 	return nil
+}
+
+// requireInteractiveProfile gates the calling user's profile_status for
+// outbound actions (new spark, new chat / match formation). §P1-1.
+//
+// Mapping of profile_status → return value:
+//
+//	active                  -> nil (allowed)
+//	paused                  -> nil (paused users can still spark — pause only
+//	                            hides them from discovery; legacy boolean rules)
+//	draft / pending_photo /
+//	  pending_selfie         -> ErrUnderage-style 400; onboarding incomplete,
+//	                            handled by the existing onboarding flow
+//	pending_review           -> ErrProfilePendingReview
+//	restricted               -> ErrProfileRestricted
+//	suspended / deleted      -> ErrProfileSuspended
+//
+// Missing profile (ErrProfileNotFound) is treated as "no row to gate"
+// and returns nil — the caller's adult check + the store.CreateSpark
+// FK constraint will catch it. We don't synthesise a row here.
+func (s *Service) requireInteractiveProfile(ctx context.Context, userID uuid.UUID) error {
+	p, err := s.store.GetProfile(ctx, userID)
+	if err != nil {
+		if errors.Is(err, store.ErrProfileNotFound) {
+			return nil
+		}
+		return err
+	}
+	if p == nil {
+		return nil
+	}
+	switch p.ProfileStatus {
+	case store.ProfileStatusActive, store.ProfileStatusPaused:
+		return nil
+	case store.ProfileStatusPendingReview:
+		return ErrProfilePendingReview
+	case store.ProfileStatusRestricted:
+		return ErrProfileRestricted
+	case store.ProfileStatusSuspended, store.ProfileStatusDeleted:
+		return ErrProfileSuspended
+	default:
+		// draft / pending_photo / pending_selfie — onboarding still in
+		// progress. Returning ErrUnderage here would be wrong (the user
+		// may well be an adult), but they cannot spark before their
+		// profile is active. Surface as 400 via the "invalid:" prefix.
+		return fmt.Errorf("invalid: complete onboarding (profile_status=%s) before sparking", p.ProfileStatus)
+	}
 }
 
 func validIntent(i string) bool {

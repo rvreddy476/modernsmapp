@@ -61,8 +61,9 @@ type actOnReportRequest struct {
 
 // ActOnReport — POST /v1/dating/admin/reports/:id/action
 // Body: {action, target_user_id?}. Allowed actions: dismiss /
-// resolved / warn / restrict / suspend. Restrict + suspend require
-// target_user_id and flip the reported user's profile_status, which
+// resolved / warn / review / restrict / suspend. Review, restrict +
+// suspend require target_user_id and flip the reported user's
+// profile_status (pending_review / restricted / suspended), which
 // fires deck-cache invalidation downstream.
 //
 // The X-Admin-Id header (gateway-injected on admin-scope traffic) is

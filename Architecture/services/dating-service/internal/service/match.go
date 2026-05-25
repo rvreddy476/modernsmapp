@@ -151,6 +151,21 @@ func (s *Service) FormMatch(ctx context.Context, userA, userB uuid.UUID, sparkTa
 		return nil, fmt.Errorf("invalid: cannot match a user with themselves")
 	}
 
+	// §P1-1: do not form a match if either side is restricted /
+	// suspended / pending_review. The CreateSpark gate already blocks
+	// the spark itself, but FormMatch can also be invoked by the saga
+	// reconciler retrying an older mutual-spark — at which point one
+	// of the parties may have been moderated. Skip silently for the
+	// reconciler path; surface the sentinel for direct callers. Both
+	// halves checked because a restricted recipient still has stale
+	// sparks from when they were active.
+	if err := s.requireInteractiveProfile(ctx, userA); err != nil {
+		return nil, err
+	}
+	if err := s.requireInteractiveProfile(ctx, userB); err != nil {
+		return nil, err
+	}
+
 	// If a match already exists between these two users (any status), reuse
 	// it rather than create a duplicate. Idempotency for retried mutual-Spark.
 	if existing, err := s.store.GetMatchByUsers(ctx, userA, userB); err == nil && existing != nil {

@@ -512,6 +512,31 @@ ALTER TABLE dating_profiles
 CREATE INDEX IF NOT EXISTS idx_dating_profiles_status_active
     ON dating_profiles(profile_status) WHERE profile_status = 'active';
 
+-- §P1-1: re-assert the CHECK constraint on every boot. The
+-- ADD COLUMN IF NOT EXISTS above is a no-op once the column exists,
+-- which means deployed databases initialised before 'pending_review'
+-- was added to the IN-list still carry the older constraint. Drop +
+-- re-add (named explicitly) is idempotent and cheap.
+DO $$
+BEGIN
+    -- Postgres auto-generates the constraint name as
+    -- dating_profiles_profile_status_check when the CHECK is declared
+    -- inline. Drop it (IF EXISTS — safe on fresh installs and on
+    -- environments that already have the named constraint) and re-add
+    -- under a stable name so the next boot is a true no-op.
+    ALTER TABLE dating_profiles
+        DROP CONSTRAINT IF EXISTS dating_profiles_profile_status_check;
+    ALTER TABLE dating_profiles
+        DROP CONSTRAINT IF EXISTS dating_profiles_status_chk;
+    ALTER TABLE dating_profiles
+        ADD CONSTRAINT dating_profiles_status_chk
+        CHECK (profile_status IN
+          ('draft','pending_photo','pending_selfie','pending_review',
+           'active','paused','restricted','suspended','deleted'));
+EXCEPTION WHEN duplicate_object THEN
+    NULL;
+END $$;
+
 -- Backfill: pre-existing rows go to 'active' so they don't disappear from
 -- discovery on first deploy. The service layer will downshift any row
 -- that fails the new minimum-fields gate the next time it's edited.

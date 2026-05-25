@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/atpost/dating-service/internal/store"
 	"github.com/google/uuid"
@@ -142,6 +143,75 @@ func TestSparkService_MatchSagaCompensatesOnFailure(t *testing.T) {
 	// And no match record should remain (compensation).
 	if _, err := st.GetMatchByUsers(context.Background(), a, b); err == nil {
 		t.Fatalf("expected match to be compensated; found one")
+	}
+}
+
+// TestCreateSpark_BlockedWhenRestricted covers the §P1-1 profile-status
+// gate. A user whose profile_status is restricted / suspended / deleted
+// must not be able to create a new spark. pending_review is exercised
+// alongside because it shares the moderator-flagged code path.
+//
+// Table-driven so the four states share the seed harness.
+func TestCreateSpark_BlockedWhenRestricted(t *testing.T) {
+	cases := []struct {
+		name      string
+		status    string
+		wantErr   error
+	}{
+		{"restricted", store.ProfileStatusRestricted, ErrProfileRestricted},
+		{"suspended", store.ProfileStatusSuspended, ErrProfileSuspended},
+		{"deleted", store.ProfileStatusDeleted, ErrProfileSuspended},
+		{"pending_review", store.ProfileStatusPendingReview, ErrProfilePendingReview},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			svc, st, cleanup := newSvcForTest(t)
+			defer cleanup()
+
+			from, to := uuid.New(), uuid.New()
+			seedAdultProfile(t, st, from)
+			seedAdultProfile(t, st, to)
+
+			// Flip the actor's profile_status to the test case state.
+			if _, err := st.SetProfileStatus(context.Background(), from, tc.status); err != nil {
+				t.Fatalf("set status %s: %v", tc.status, err)
+			}
+
+			_, _, err := svc.CreateSpark(context.Background(), from, to, "photo", "0", "")
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("CreateSpark with %s: got err=%v want %v", tc.status, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// seedAdultProfile creates the bare profile row plus an 18+ birth_date
+// so the §P0-5 adult-only gate doesn't fire before we get to the
+// §P1-1 profile_status gate under test. Mirrors the store package's
+// seedDiscoverableProfile but without the photo/visibility scaffolding
+// (we're testing the status gate, not the discovery query).
+func seedAdultProfile(t *testing.T, st *store.Store, id uuid.UUID) {
+	t.Helper()
+	intent := "casual"
+	gender := "female"
+	city := "Hyderabad"
+	dob := time.Date(1995, 1, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := st.UpsertProfile(context.Background(), id, store.UpsertProfileParams{
+		Intent:    &intent,
+		Gender:    &gender,
+		BirthDate: &dob,
+		City:      &city,
+	}); err != nil {
+		t.Fatalf("seed adult profile: %v", err)
+	}
+	// SetProfileStatus → active so the §P1-1 gate is a no-op by default
+	// (the test then flips to restricted/suspended/etc to assert the
+	// gate fires). Without this the row is left at 'draft' /
+	// 'pending_photo' which would also block the spark for a different
+	// reason ("invalid: complete onboarding").
+	if _, err := st.SetProfileStatus(context.Background(), id, store.ProfileStatusActive); err != nil {
+		t.Fatalf("activate profile: %v", err)
 	}
 }
 
