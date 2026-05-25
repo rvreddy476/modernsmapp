@@ -32,7 +32,10 @@ type MessageServiceClient interface {
 	CreateConversation(ctx context.Context, req CreateConversationRequest) (*CreateConversationResponse, error)
 }
 
-// CreateConversationRequest is the body sent to message-service.
+// CreateConversationRequest is the body sent to chat-service's
+// /v1/chat/conversations/dating-match endpoint. The participants list
+// is the matched pair; ContextID carries the dating match_id so the
+// chat side can be idempotent on retries.
 type CreateConversationRequest struct {
 	Participants []string `json:"participants"`
 	Type         string   `json:"type"`
@@ -53,12 +56,14 @@ type httpMessageClient struct {
 }
 
 // NewHTTPMessageClient wires the message-service client from env vars.
-// MESSAGE_SERVICE_URL (default http://message-service:8094) and
+// MESSAGE_SERVICE_URL (default points at the canonical chat-service
+// container on port 8092 — the Architecture message-service was archived
+// 2026-05-25 per dating/PRODUCTION_GAP_ANALYSIS.md P0-3) and
 // INTERNAL_SERVICE_KEY are honored.
 func NewHTTPMessageClient() MessageServiceClient {
 	base := os.Getenv("MESSAGE_SERVICE_URL")
 	if base == "" {
-		base = "http://message-service:8094"
+		base = "http://chat-message-service:8092"
 	}
 	return &httpMessageClient{
 		baseURL:     base,
@@ -68,11 +73,24 @@ func NewHTTPMessageClient() MessageServiceClient {
 }
 
 func (c *httpMessageClient) CreateConversation(ctx context.Context, body CreateConversationRequest) (*CreateConversationResponse, error) {
-	buf, err := json.Marshal(body)
+	// Marshal into chat-service's dating-match shape:
+	//   {user_a, user_b, match_id}
+	// Participants[0] / Participants[1] map to user_a / user_b; the
+	// chat-side store normalises ordering so either ordering is safe.
+	// ContextID carries the dating match_id for idempotency.
+	if len(body.Participants) != 2 {
+		return nil, fmt.Errorf("dating match requires exactly 2 participants, got %d", len(body.Participants))
+	}
+	dm := struct {
+		UserA   string `json:"user_a"`
+		UserB   string `json:"user_b"`
+		MatchID string `json:"match_id"`
+	}{UserA: body.Participants[0], UserB: body.Participants[1], MatchID: body.ContextID}
+	buf, err := json.Marshal(dm)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
-	url := c.baseURL + "/v1/messages/conversations"
+	url := c.baseURL + "/v1/chat/conversations/dating-match"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(buf))
 	if err != nil {
 		return nil, err

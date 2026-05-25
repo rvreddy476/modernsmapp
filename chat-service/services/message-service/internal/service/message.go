@@ -75,6 +75,10 @@ type ConversationStore interface {
 	// User profile cache
 	UpsertUserProfile(ctx context.Context, userID uuid.UUID, displayName string, avatarMediaID *uuid.UUID) error
 	GetUserProfiles(ctx context.Context, userIDs []uuid.UUID) (map[uuid.UUID]postgres.UserProfile, error)
+	// P0-3 dating-match support.
+	CreateDatingMatchConversation(ctx context.Context, userA, userB, matchID uuid.UUID) (uuid.UUID, bool, error)
+	MarkConversationClosedByMatch(ctx context.Context, matchID uuid.UUID) error
+	GetConversationMeta(ctx context.Context, conversationID uuid.UUID) (*postgres.ConversationMeta, error)
 }
 
 type MessageStore interface {
@@ -180,6 +184,11 @@ var (
 	// ErrRateLimited is returned when a per-user chat rate limit is exceeded
 	// (spec §10.4). Mapped to HTTP 429.
 	ErrRateLimited = errors.New("rate limit exceeded")
+
+	// ErrMatchClosed is returned when SendMessage targets a dating-match
+	// conversation whose match has ended (unmatched, expired, or one side
+	// blocked / deleted / paused). P0-3 in dating/PRODUCTION_GAP_ANALYSIS.md.
+	ErrMatchClosed = errors.New("dating match is closed; no further messages allowed")
 )
 
 func New(convStore ConversationStore, msgStore MessageStore, rdb *redis.Client, producer EventProducer, log *slog.Logger, pollInterval time.Duration) *Service {
@@ -326,6 +335,40 @@ func (s *Service) CreateDirectConversation(ctx context.Context, userID, otherID 
 		}
 		return s.getConversationResponse(ctx, convID)
 	})
+}
+
+// CreateDatingMatchConversation provisions the 1:1 conversation that
+// backs a freshly formed dating match. Bypasses the usual
+// checkMessagePermission DM gate — the match itself is the consent
+// signal, so requiring mutual-circle membership would lock matched
+// pairs out of chat. Idempotent on matchID via a partial unique index;
+// safe to retry from the match-formation saga.
+//
+// Caller is dating-service (internal-key gated at the handler).
+// P0-3 in dating/PRODUCTION_GAP_ANALYSIS.md.
+func (s *Service) CreateDatingMatchConversation(ctx context.Context, userA, userB, matchID uuid.UUID) (*ConversationResponse, error) {
+	if userA == userB {
+		return nil, errors.New("dating-match conversation requires two distinct users")
+	}
+	if matchID == uuid.Nil {
+		return nil, errors.New("match_id is required")
+	}
+	convID, _, err := s.convStore.CreateDatingMatchConversation(ctx, userA, userB, matchID)
+	if err != nil {
+		return nil, err
+	}
+	return s.getConversationResponse(ctx, convID)
+}
+
+// CloseDatingMatchConversation flips closed_at on the conversation
+// keyed by matchID. Idempotent — a re-close preserves the original
+// closed_at. Called by the dating-event consumer when
+// match.closed / match.expired lands.
+func (s *Service) CloseDatingMatchConversation(ctx context.Context, matchID uuid.UUID) error {
+	if matchID == uuid.Nil {
+		return errors.New("match_id is required")
+	}
+	return s.convStore.MarkConversationClosedByMatch(ctx, matchID)
 }
 
 // checkMessagePermission asks graph-service whether actor may DM target.
@@ -620,6 +663,21 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 	}
 	if !ok {
 		return nil, errors.New("not a conversation member")
+	}
+
+	// P0-3 dating-match send gate: reject sends to a closed dating
+	// conversation (match unmatched / expired / one side blocked /
+	// paused / suspended). The closed_at flag is flipped by the
+	// dating-event consumer when match.closed / match.expired land.
+	// Membership already covers the block case via
+	// conversation_members.left_at; the closed_at check is the
+	// dating-side equivalent.
+	meta, err := s.convStore.GetConversationMeta(ctx, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	if meta != nil && meta.SourceApp == "dating" && meta.ClosedAt != nil {
+		return nil, ErrMatchClosed
 	}
 
 	req := struct {

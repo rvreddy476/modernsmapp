@@ -110,7 +110,7 @@ func main() {
 	svc := service.New(convStore, msgStore, rdb, producer, logger, cfg.OutboxPollInterval)
 	svc.SetUserDirectory(cfg.UserServiceURL, cfg.InternalServiceKey)
 	svc.SetGraphService(cfg.GraphServiceURL)
-	handler := http.New(svc, logger)
+	handler := http.New(svc, logger).WithInternalServiceKey(cfg.InternalServiceKey)
 
 	// 6. Identity Event Consumer (background)
 	identityConsumer := events.NewIdentityConsumerWithDialer(cfg.KafkaBrokers, cfg.IdentityKafkaTopic, cfg.IdentityKafkaGroupID, kafkaDialer, convStore, logger)

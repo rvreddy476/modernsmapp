@@ -34,6 +34,9 @@ type ChatService interface {
 	MarkRead(ctx context.Context, userID, conversationID uuid.UUID, messageID string) error
 	GetPresence(ctx context.Context, userIDs []uuid.UUID) (map[string]bool, error)
 	GetConversationPresence(ctx context.Context, userID, convID uuid.UUID) (*service.ConversationPresence, error)
+	// P0-3 dating-match internal entry points.
+	CreateDatingMatchConversation(ctx context.Context, userA, userB, matchID uuid.UUID) (*service.ConversationResponse, error)
+	CloseDatingMatchConversation(ctx context.Context, matchID uuid.UUID) error
 
 	// Conversation settings
 	GetSettings(ctx context.Context, userID, convID uuid.UUID) (*store.ConversationSettings, error)
@@ -73,6 +76,11 @@ type ChatService interface {
 type Handler struct {
 	svc ChatService
 	log *slog.Logger
+	// internalServiceKey gates internal-only endpoints (currently
+	// only the dating-match conversation creator). Wired via
+	// WithInternalServiceKey from cmd/server; empty means the gate
+	// rejects everything as misconfigured.
+	internalServiceKey string
 }
 
 func New(svc ChatService, log *slog.Logger) *Handler {
@@ -82,6 +90,14 @@ func New(svc ChatService, log *slog.Logger) *Handler {
 	return &Handler{svc: svc, log: log}
 }
 
+// WithInternalServiceKey wires the shared internal-service-key used by
+// chat-service's internal-only endpoints (currently P0-3
+// dating-match). Idempotent — call once from cmd/server.
+func (h *Handler) WithInternalServiceKey(key string) *Handler {
+	h.internalServiceKey = key
+	return h
+}
+
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	v1 := r.Group("/v1/chat")
 	{
@@ -89,6 +105,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// Conversations
 		v1.POST("/conversations/direct", h.CreateDirectConversation)
 		v1.POST("/conversations/group", h.CreateGroupConversation)
+		// P0-3 dating-match: internal-only entry called by dating-service
+		// once a mutual spark forms. Bypasses the DM gate. Auth lives at
+		// the gateway (internal-service-key required); no public client
+		// should hit this directly.
+		v1.POST("/conversations/dating-match", h.CreateDatingMatchConversation)
 		v1.GET("/conversations", h.ListConversations)
 		v1.GET("/conversations/:id", h.GetConversation)
 		v1.POST("/conversations/:id/members", h.AddMember)
@@ -579,6 +600,65 @@ func (h *Handler) GetConversationPresence(c *gin.Context) {
 		}
 		h.log.Warn("failed to read presence", "err", err, "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to read presence", nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, resp, nil)
+}
+
+// CreateDatingMatchConversation — POST /v1/chat/conversations/dating-match
+// Internal-only: gateway-injected X-Internal-Service-Key required.
+// Body: {user_a, user_b, match_id}. Idempotent on match_id.
+type createDatingMatchRequest struct {
+	UserA   string `json:"user_a" binding:"required"`
+	UserB   string `json:"user_b" binding:"required"`
+	MatchID string `json:"match_id" binding:"required"`
+}
+
+func (h *Handler) CreateDatingMatchConversation(c *gin.Context) {
+	// P0-3: this endpoint is internal-only. Reject any caller that
+	// doesn't present the shared internal-service-key. dating-service
+	// is the only legitimate caller; the gateway never accepts an
+	// inbound X-Internal-Service-Key from public clients, so a request
+	// reaching here without it cannot be from the public surface.
+	if h.internalServiceKey == "" {
+		// Misconfigured deployment — fail closed.
+		h.log.Warn("dating-match conversation: INTERNAL_SERVICE_KEY not configured; refusing request",
+			"request_id", RequestIDFromContext(c))
+		api.Error(c.Writer, http.StatusServiceUnavailable, "MISCONFIGURED", "internal-only endpoint not configured", nil, nil)
+		return
+	}
+	if c.GetHeader("X-Internal-Service-Key") != h.internalServiceKey {
+		h.log.Warn("dating-match conversation: bad or missing internal service key",
+			"request_id", RequestIDFromContext(c), "ip", c.ClientIP())
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "internal service key required", nil, nil)
+		return
+	}
+
+	var body createDatingMatchRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	userA, err := uuid.Parse(body.UserA)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "invalid user_a", nil, nil)
+		return
+	}
+	userB, err := uuid.Parse(body.UserB)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "invalid user_b", nil, nil)
+		return
+	}
+	matchID, err := uuid.Parse(body.MatchID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "invalid match_id", nil, nil)
+		return
+	}
+	resp, err := h.svc.CreateDatingMatchConversation(c.Request.Context(), userA, userB, matchID)
+	if err != nil {
+		h.log.Warn("dating-match conversation create failed", "err", err, "match_id", matchID,
+			"request_id", RequestIDFromContext(c))
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, resp, nil)

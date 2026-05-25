@@ -156,3 +156,12 @@ func (s *idempotencyConvStoreStub) UpsertUserProfile(ctx context.Context, userID
 func (s *idempotencyConvStoreStub) GetUserProfiles(ctx context.Context, userIDs []uuid.UUID) (map[uuid.UUID]postgres.UserProfile, error) {
 	return nil, errors.New("not implemented")
 }
+func (s *idempotencyConvStoreStub) CreateDatingMatchConversation(ctx context.Context, userA, userB, matchID uuid.UUID) (uuid.UUID, bool, error) {
+	return uuid.Nil, false, errors.New("not implemented")
+}
+func (s *idempotencyConvStoreStub) MarkConversationClosedByMatch(ctx context.Context, matchID uuid.UUID) error {
+	return errors.New("not implemented")
+}
+func (s *idempotencyConvStoreStub) GetConversationMeta(ctx context.Context, conversationID uuid.UUID) (*postgres.ConversationMeta, error) {
+	return nil, nil
+}

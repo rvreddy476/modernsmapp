@@ -9,6 +9,21 @@ CREATE TABLE IF NOT EXISTS chat.conversations (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- P0-3 (dating PRODUCTION_GAP_ANALYSIS.md): conversations spawned by
+-- dating-service carry source_app='dating' + the originating match_id.
+-- The send-path gate consults source_app + closed_at to enforce
+-- dating-match-specific rules: an active match must exist, neither side
+-- has blocked the other (covered by conversation_members.left_at), and
+-- the match hasn't closed/expired. Defaults keep all legacy + new
+-- conversations as source_app='chat' with no behavioural change.
+ALTER TABLE chat.conversations
+    ADD COLUMN IF NOT EXISTS source_app TEXT NOT NULL DEFAULT 'chat'
+        CHECK (source_app IN ('chat','dating')),
+    ADD COLUMN IF NOT EXISTS match_id UUID,
+    ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_conversations_dating_match
+    ON chat.conversations(match_id) WHERE source_app = 'dating' AND match_id IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS chat.conversation_members (
     conversation_id UUID NOT NULL REFERENCES chat.conversations(id),
     user_id UUID NOT NULL,

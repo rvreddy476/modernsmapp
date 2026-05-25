@@ -110,6 +110,130 @@ func (s *ConversationStore) MarkConversationAsRequest(ctx context.Context, conve
 	return err
 }
 
+// CreateDatingMatchConversation idempotently creates a 1:1 conversation
+// tagged source_app='dating' + match_id. The matched pair bypasses the
+// usual DM-gate (which requires mutual-circle / message-request flow)
+// because the match itself is the consent signal. Idempotency keyed on
+// match_id via the partial unique index — concurrent saga retries
+// receive the same conversation_id. P0-3 in
+// dating/PRODUCTION_GAP_ANALYSIS.md.
+func (s *ConversationStore) CreateDatingMatchConversation(ctx context.Context, userA, userB, matchID uuid.UUID) (uuid.UUID, bool, error) {
+	if userA == userB {
+		return uuid.Nil, false, errors.New("dating-match conversation requires two distinct users")
+	}
+	userA, userB = normalizePair(userA, userB)
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return uuid.Nil, false, err
+	}
+	defer tx.Rollback(ctx)
+
+	// Lock on the match_id so a concurrent retry can't insert twice.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "dating-match:"+matchID.String()); err != nil {
+		return uuid.Nil, false, err
+	}
+
+	// Existing row check (the partial unique index would also reject
+	// duplicates, but we return the prior id rather than 23505).
+	var conversationID uuid.UUID
+	err = tx.QueryRow(ctx, `
+		SELECT id FROM chat.conversations
+		WHERE source_app = 'dating' AND match_id = $1
+		LIMIT 1`, matchID).Scan(&conversationID)
+	if err == nil {
+		return conversationID, false, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, false, err
+	}
+
+	conversationID = uuid.New()
+	now := time.Now()
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO chat.conversations
+		    (id, type, created_by, created_at, updated_at, source_app, match_id)
+		VALUES ($1, 'direct', $2, $3, $3, 'dating', $4)
+	`, conversationID, userA, now, matchID); err != nil {
+		return uuid.Nil, false, err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO chat.conversation_members (conversation_id, user_id, role, joined_at)
+		VALUES ($1, $2, 'member', $3), ($1, $4, 'member', $3)
+	`, conversationID, userA, now, userB); err != nil {
+		return uuid.Nil, false, err
+	}
+	// Mirror into direct_conversation_keys so a future legacy DM
+	// lookup for the same pair returns the dating conversation
+	// rather than spawning a parallel one. ON CONFLICT preserves an
+	// existing chat-side direct conversation if the pair already had
+	// one — both rows then exist (legacy DM + dating-match) and the
+	// caller picks by source_app filter.
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO chat.direct_conversation_keys (user_a, user_b, conversation_id)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (user_a, user_b) DO NOTHING
+	`, userA, userB, conversationID); err != nil {
+		return uuid.Nil, false, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return uuid.Nil, false, err
+	}
+	return conversationID, true, nil
+}
+
+// MarkConversationClosed sets closed_at on a conversation. Dating-side
+// match.closed / match.expired events trigger this so the send-path
+// gate can refuse new messages after a match ends. Idempotent — a
+// re-close preserves the original closed_at.
+func (s *ConversationStore) MarkConversationClosed(ctx context.Context, conversationID uuid.UUID) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE chat.conversations SET closed_at = COALESCE(closed_at, NOW()) WHERE id = $1`,
+		conversationID)
+	return err
+}
+
+// MarkConversationClosedByMatch closes a conversation by its dating
+// match_id rather than conversation_id. Used by the dating-event
+// consumer so the lookup is one hop instead of two.
+func (s *ConversationStore) MarkConversationClosedByMatch(ctx context.Context, matchID uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE chat.conversations
+		SET closed_at = COALESCE(closed_at, NOW())
+		WHERE source_app = 'dating' AND match_id = $1
+	`, matchID)
+	return err
+}
+
+// ConversationMeta holds the fields the send-path gate inspects.
+type ConversationMeta struct {
+	SourceApp string
+	MatchID   *uuid.UUID
+	ClosedAt  *time.Time
+}
+
+// GetConversationMeta returns the source_app + match_id + closed_at for
+// the conversation. Used by SendMessage to enforce dating-specific
+// authz. Returns a zero-value ConversationMeta + nil error when the row
+// is missing so callers can branch cleanly.
+func (s *ConversationStore) GetConversationMeta(ctx context.Context, conversationID uuid.UUID) (*ConversationMeta, error) {
+	var m ConversationMeta
+	err := s.db.QueryRow(ctx, `
+		SELECT source_app, match_id, closed_at
+		FROM chat.conversations
+		WHERE id = $1
+	`, conversationID).Scan(&m.SourceApp, &m.MatchID, &m.ClosedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
 // normalizePair orders a user pair so the smaller (string compare) is first,
 // matching the chat.direct_conversation_keys (user_a < user_b) convention.
 func normalizePair(userA, userB uuid.UUID) (uuid.UUID, uuid.UUID) {
