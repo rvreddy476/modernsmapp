@@ -65,6 +65,21 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// subscribe_live_stream message handles the live-tail subscription.
 	v1.POST("/streams/:id/chat", h.SendChat)
 	v1.GET("/streams/:id/chat", h.ListChat)
+	// Phase B chat moderation. Creator-only endpoints enforce the
+	// host check in service.requireCreator; the two GETs that any
+	// viewer can call (list mutes for the host UI, pinned message
+	// banner) live under the same group but the pinned read does
+	// not call requireCreator. ListMutedUsers IS creator-only
+	// because the muted list is not meant for viewers.
+	v1.POST("/streams/:id/chat/mute", h.MuteUser)
+	v1.DELETE("/streams/:id/chat/mute/:userId", h.UnmuteUser)
+	v1.GET("/streams/:id/chat/mutes", h.ListMutedUsers)
+	v1.POST("/streams/:id/chat/word-filters", h.AddWordFilter)
+	v1.DELETE("/streams/:id/chat/word-filters/:word", h.RemoveWordFilter)
+	v1.GET("/streams/:id/chat/word-filters", h.ListWordFilters)
+	v1.POST("/streams/:id/chat/pin", h.PinMessage)
+	v1.DELETE("/streams/:id/chat/pin", h.UnpinMessage)
+	v1.GET("/streams/:id/chat/pinned", h.GetPinnedMessage)
 }
 
 // --- request / response bodies ---
@@ -383,6 +398,14 @@ func (h *Handler) SendChat(c *gin.Context) {
 	}
 	msg, err := h.svc.SendChat(c.Request.Context(), streamID, userID, body.Text)
 	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrChatMuted):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "CHAT_MUTED", err.Error(), nil)
+			return
+		case errors.Is(err, service.ErrChatBlockedWord):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "CHAT_BLOCKED_WORD", err.Error(), nil)
+			return
+		}
 		emsg := err.Error()
 		switch {
 		case strings.HasPrefix(emsg, "rate_limited"):
@@ -420,4 +443,244 @@ func (h *Handler) ListChat(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": items, "meta": gin.H{"limit": limit, "count": len(items)}})
+}
+
+// --- Chat moderation (Phase B) ---
+//
+// Every host-only endpoint passes the caller's X-User-Id straight
+// to the service; the service enforces the creator gate so we don't
+// have two layers of authz drifting apart. The two viewer-callable
+// reads (pinned message) skip the creator check inside the service.
+
+type muteUserRequest struct {
+	UserID uuid.UUID `json:"user_id" binding:"required"`
+}
+
+// MuteUser — POST /v1/livestream/streams/:id/chat/mute
+// Body: {user_id}. Only the stream creator may call this.
+func (h *Handler) MuteUser(c *gin.Context) {
+	hostID, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	streamID, ok := requireUUID(c, "id")
+	if !ok {
+		return
+	}
+	var body muteUserRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	if err := h.svc.Mute(c.Request.Context(), streamID, hostID, body.UserID); err != nil {
+		writeModerationErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]any{"status": "muted", "user_id": body.UserID}, nil)
+}
+
+// UnmuteUser — DELETE /v1/livestream/streams/:id/chat/mute/:userId
+func (h *Handler) UnmuteUser(c *gin.Context) {
+	hostID, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	streamID, ok := requireUUID(c, "id")
+	if !ok {
+		return
+	}
+	targetID, ok := requireUUID(c, "userId")
+	if !ok {
+		return
+	}
+	if err := h.svc.Unmute(c.Request.Context(), streamID, hostID, targetID); err != nil {
+		writeModerationErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]any{"status": "unmuted", "user_id": targetID}, nil)
+}
+
+// ListMutedUsers — GET /v1/livestream/streams/:id/chat/mutes
+// Creator-only (enforced in service).
+func (h *Handler) ListMutedUsers(c *gin.Context) {
+	hostID, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	streamID, ok := requireUUID(c, "id")
+	if !ok {
+		return
+	}
+	ids, err := h.svc.ListMutedUsers(c.Request.Context(), streamID, hostID)
+	if err != nil {
+		writeModerationErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]any{"muted_user_ids": ids}, nil)
+}
+
+type wordFilterRequest struct {
+	Word string `json:"word" binding:"required"`
+}
+
+// AddWordFilter — POST /v1/livestream/streams/:id/chat/word-filters
+// Body: {word}. Creator-only.
+func (h *Handler) AddWordFilter(c *gin.Context) {
+	hostID, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	streamID, ok := requireUUID(c, "id")
+	if !ok {
+		return
+	}
+	var body wordFilterRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	if err := h.svc.AddWordFilter(c.Request.Context(), streamID, hostID, body.Word); err != nil {
+		writeModerationErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]any{"status": "added", "word": strings.ToLower(strings.TrimSpace(body.Word))}, nil)
+}
+
+// RemoveWordFilter — DELETE /v1/livestream/streams/:id/chat/word-filters/:word
+// Creator-only.
+func (h *Handler) RemoveWordFilter(c *gin.Context) {
+	hostID, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	streamID, ok := requireUUID(c, "id")
+	if !ok {
+		return
+	}
+	word := c.Param("word")
+	if err := h.svc.RemoveWordFilter(c.Request.Context(), streamID, hostID, word); err != nil {
+		writeModerationErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]any{"status": "removed", "word": strings.ToLower(strings.TrimSpace(word))}, nil)
+}
+
+// ListWordFilters — GET /v1/livestream/streams/:id/chat/word-filters
+// Creator-only.
+func (h *Handler) ListWordFilters(c *gin.Context) {
+	hostID, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	streamID, ok := requireUUID(c, "id")
+	if !ok {
+		return
+	}
+	words, err := h.svc.ListWordFilters(c.Request.Context(), streamID, hostID)
+	if err != nil {
+		writeModerationErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]any{"words": words}, nil)
+}
+
+type pinMessageRequest struct {
+	MessageID uuid.UUID `json:"message_id" binding:"required"`
+}
+
+// PinMessage — POST /v1/livestream/streams/:id/chat/pin
+// Body: {message_id}. Creator-only.
+func (h *Handler) PinMessage(c *gin.Context) {
+	hostID, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	streamID, ok := requireUUID(c, "id")
+	if !ok {
+		return
+	}
+	var body pinMessageRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	if err := h.svc.PinMessage(c.Request.Context(), streamID, hostID, body.MessageID); err != nil {
+		writeModerationErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]any{"status": "pinned", "message_id": body.MessageID}, nil)
+}
+
+// UnpinMessage — DELETE /v1/livestream/streams/:id/chat/pin
+// Body or query param `message_id`. If absent we unpin whatever is
+// currently pinned for the stream.
+func (h *Handler) UnpinMessage(c *gin.Context) {
+	hostID, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	streamID, ok := requireUUID(c, "id")
+	if !ok {
+		return
+	}
+	// message_id is optional in the unpin path — if the caller does
+	// not provide one we look up the current pin and clear that.
+	var msgID uuid.UUID
+	if raw := c.Query("message_id"); raw != "" {
+		parsed, err := uuid.Parse(raw)
+		if err != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid message_id", nil)
+			return
+		}
+		msgID = parsed
+	} else {
+		pinned, err := h.svc.GetPinnedMessage(c.Request.Context(), streamID)
+		if err != nil {
+			writeModerationErr(c, err)
+			return
+		}
+		if pinned == nil {
+			api.JSON(c.Writer, http.StatusOK, map[string]any{"status": "no_pin"}, nil)
+			return
+		}
+		msgID = pinned.ID
+	}
+	if err := h.svc.UnpinMessage(c.Request.Context(), streamID, hostID, msgID); err != nil {
+		writeModerationErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]any{"status": "unpinned", "message_id": msgID}, nil)
+}
+
+// GetPinnedMessage — GET /v1/livestream/streams/:id/chat/pinned
+// Any viewer may call this. Returns null when no message is pinned.
+func (h *Handler) GetPinnedMessage(c *gin.Context) {
+	streamID, ok := requireUUID(c, "id")
+	if !ok {
+		return
+	}
+	pinned, err := h.svc.GetPinnedMessage(c.Request.Context(), streamID)
+	if err != nil {
+		writeModerationErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, pinned, nil)
+}
+
+// writeModerationErr maps the Phase B sentinels onto HTTP status
+// codes. Falls back to the existing writeServiceErr for shared
+// errors (NotCreator, StreamNotFound, etc.).
+func writeModerationErr(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, service.ErrChatMuted):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "CHAT_MUTED", err.Error(), nil)
+	case errors.Is(err, service.ErrChatBlockedWord):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "CHAT_BLOCKED_WORD", err.Error(), nil)
+	case errors.Is(err, service.ErrMessageNotFound):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
+	case errors.Is(err, service.ErrInvalidWord):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_WORD", err.Error(), nil)
+	default:
+		writeServiceErr(c, err)
+	}
 }

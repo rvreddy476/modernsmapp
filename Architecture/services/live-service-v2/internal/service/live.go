@@ -40,6 +40,12 @@ var (
 	ErrNotFollower       = errors.New("creator restricts this stream to followers")
 	ErrPaidNotSupported  = errors.New("paid streams not yet supported")
 	ErrStreamNotFound    = errors.New("live stream not found")
+
+	// Chat moderation (Phase B) sentinels.
+	ErrChatMuted       = errors.New("forbidden: you have been muted in this stream")
+	ErrChatBlockedWord = errors.New("invalid: message contains a blocked word")
+	ErrMessageNotFound = errors.New("chat message not found")
+	ErrInvalidWord     = errors.New("invalid: word is required (1-100 chars)")
 )
 
 const (
@@ -54,9 +60,38 @@ const (
 	recordingObjectKeyPrefix = "recordings/"
 )
 
+// Store is the storage surface live-service-v2 needs. The concrete
+// implementation is *postgres.Store; the interface exists so unit
+// tests can plug in a fake without spinning up Postgres.
+type Store interface {
+	CreateStream(ctx context.Context, p postgres.CreateStreamParams) (*postgres.LiveStream, error)
+	GetByID(ctx context.Context, id uuid.UUID) (*postgres.LiveStream, error)
+	MarkLive(ctx context.Context, id uuid.UUID, egressID string) (*postgres.LiveStream, error)
+	MarkEnded(ctx context.Context, id uuid.UUID, peakViewers int) (*postgres.LiveStream, error)
+	SetRecording(ctx context.Context, id uuid.UUID, url string, durationSec int) (*postgres.LiveStream, error)
+	ListLive(ctx context.Context, p postgres.ListLiveParams) ([]*postgres.LiveStream, error)
+	RecordViewerEvent(ctx context.Context, streamID, userID uuid.UUID, eventType string) error
+
+	InsertChatMessage(ctx context.Context, streamID, userID uuid.UUID, text string) (*postgres.ChatMessage, error)
+	ListRecentChatMessages(ctx context.Context, streamID uuid.UUID, limit int) ([]*postgres.ChatMessage, error)
+
+	// Phase B moderation.
+	MuteUser(ctx context.Context, streamID, userID, mutedBy uuid.UUID) error
+	UnmuteUser(ctx context.Context, streamID, userID uuid.UUID) error
+	IsUserMuted(ctx context.Context, streamID, userID uuid.UUID) (bool, error)
+	ListMutedUsers(ctx context.Context, streamID uuid.UUID) ([]uuid.UUID, error)
+	AddWordFilter(ctx context.Context, streamID uuid.UUID, word string, addedBy uuid.UUID) error
+	RemoveWordFilter(ctx context.Context, streamID uuid.UUID, word string) error
+	ListWordFilters(ctx context.Context, streamID uuid.UUID) ([]string, error)
+	MatchesWordFilter(ctx context.Context, streamID uuid.UUID, text string) (bool, error)
+	PinMessage(ctx context.Context, streamID, messageID uuid.UUID) error
+	UnpinMessage(ctx context.Context, streamID, messageID uuid.UUID) error
+	GetPinnedMessage(ctx context.Context, streamID uuid.UUID) (*postgres.ChatMessage, error)
+}
+
 // Service is the live-service-v2 business layer.
 type Service struct {
-	store    *postgres.Store
+	store    Store
 	livekit  livekit.Client
 	graph    GraphClient
 	producer *events.Producer
@@ -75,7 +110,7 @@ type Config struct {
 	S3Endpoint             string
 }
 
-func New(store *postgres.Store, lk livekit.Client, graph GraphClient, producer *events.Producer, rdb *redis.Client, cfg Config) *Service {
+func New(store Store, lk livekit.Client, graph GraphClient, producer *events.Producer, rdb *redis.Client, cfg Config) *Service {
 	return &Service{
 		store:                  store,
 		livekit:                lk,
@@ -517,6 +552,26 @@ func (s *Service) SendChat(ctx context.Context, streamID, userID uuid.UUID, text
 		return nil, fmt.Errorf("invalid: stream is not live")
 	}
 
+	// Moderation gates run BEFORE the rate-limit + persist so a muted
+	// user / blocked word does not eat into the per-user budget and we
+	// never write a row that will be hidden anyway.
+	if s.store != nil {
+		muted, err := s.store.IsUserMuted(ctx, streamID, userID)
+		if err != nil {
+			return nil, fmt.Errorf("check mute: %w", err)
+		}
+		if muted {
+			return nil, ErrChatMuted
+		}
+		blocked, err := s.store.MatchesWordFilter(ctx, streamID, text)
+		if err != nil {
+			return nil, fmt.Errorf("check word filter: %w", err)
+		}
+		if blocked {
+			return nil, ErrChatBlockedWord
+		}
+	}
+
 	// Rate limit. Redis sliding-window INCR+EXPIRE pattern; fail-CLOSED.
 	if s.redis != nil {
 		key := chatRateLimitKey(streamID, userID)
@@ -562,4 +617,192 @@ func (s *Service) ListChat(ctx context.Context, streamID uuid.UUID, limit int) (
 		return nil, mapStoreErr(err)
 	}
 	return s.store.ListRecentChatMessages(ctx, streamID, limit)
+}
+
+// --- Chat moderation (Phase B) ---
+//
+// All host-only operations (mute, unmute, word filter add/remove, pin,
+// unpin) share the same shape: load stream, verify hostID is the
+// creator, mutate via the store, and publish a Redis pub/sub event so
+// connected viewers can react in real time. The pub/sub channel is
+// the same `live:stream:{id}` the chat overlay already uses; clients
+// switch on the `type` tag.
+
+// publishModerationEvent best-effort publishes a typed event on the
+// chat pub/sub channel. Failure is logged at debug level by the
+// caller; moderation must still apply if Redis is down.
+func (s *Service) publishModerationEvent(ctx context.Context, streamID uuid.UUID, evtType string, payload map[string]any) {
+	if s.redis == nil {
+		return
+	}
+	body, err := json.Marshal(map[string]any{
+		"type":    evtType,
+		"payload": payload,
+	})
+	if err != nil {
+		return
+	}
+	_ = s.redis.Publish(ctx, chatPubSubChannel(streamID), string(body)).Err()
+}
+
+// requireCreator loads the stream and verifies hostID owns it.
+func (s *Service) requireCreator(ctx context.Context, streamID, hostID uuid.UUID) (*postgres.LiveStream, error) {
+	st, err := s.store.GetByID(ctx, streamID)
+	if err != nil {
+		return nil, mapStoreErr(err)
+	}
+	if st.CreatorUserID != hostID {
+		return nil, ErrNotCreator
+	}
+	return st, nil
+}
+
+// Mute records a per-stream mute for targetUserID. Emits
+// `live:chat:mute` so clients can grey-out the muted user's prior
+// messages immediately. Idempotent (UPSERT in the store).
+func (s *Service) Mute(ctx context.Context, streamID, hostID, targetUserID uuid.UUID) error {
+	if _, err := s.requireCreator(ctx, streamID, hostID); err != nil {
+		return err
+	}
+	if err := s.store.MuteUser(ctx, streamID, targetUserID, hostID); err != nil {
+		return err
+	}
+	s.publishModerationEvent(ctx, streamID, "live:chat:mute", map[string]any{
+		"stream_id": streamID.String(),
+		"user_id":   targetUserID.String(),
+		"muted_by":  hostID.String(),
+		"muted_at":  time.Now(),
+	})
+	return nil
+}
+
+// Unmute clears a mute. Emits `live:chat:unmute`.
+func (s *Service) Unmute(ctx context.Context, streamID, hostID, targetUserID uuid.UUID) error {
+	if _, err := s.requireCreator(ctx, streamID, hostID); err != nil {
+		return err
+	}
+	if err := s.store.UnmuteUser(ctx, streamID, targetUserID); err != nil {
+		return err
+	}
+	s.publishModerationEvent(ctx, streamID, "live:chat:unmute", map[string]any{
+		"stream_id":  streamID.String(),
+		"user_id":    targetUserID.String(),
+		"unmuted_by": hostID.String(),
+	})
+	return nil
+}
+
+// ListMutedUsers returns the user IDs currently muted on the stream.
+// Caller is expected to be the creator — we still enforce it here so
+// the moderation surface is uniformly creator-gated.
+func (s *Service) ListMutedUsers(ctx context.Context, streamID, hostID uuid.UUID) ([]uuid.UUID, error) {
+	if _, err := s.requireCreator(ctx, streamID, hostID); err != nil {
+		return nil, err
+	}
+	return s.store.ListMutedUsers(ctx, streamID)
+}
+
+// AddWordFilter registers a substring filter word (lowercased,
+// trim'd). Emits `live:chat:word_filter_added`.
+func (s *Service) AddWordFilter(ctx context.Context, streamID, hostID uuid.UUID, word string) error {
+	if _, err := s.requireCreator(ctx, streamID, hostID); err != nil {
+		return err
+	}
+	w := strings.ToLower(strings.TrimSpace(word))
+	if w == "" || len(w) > 100 {
+		return ErrInvalidWord
+	}
+	if err := s.store.AddWordFilter(ctx, streamID, w, hostID); err != nil {
+		return err
+	}
+	s.publishModerationEvent(ctx, streamID, "live:chat:word_filter_added", map[string]any{
+		"stream_id": streamID.String(),
+		"word":      w,
+		"added_by":  hostID.String(),
+	})
+	return nil
+}
+
+// RemoveWordFilter deletes a filter word. Emits
+// `live:chat:word_filter_removed`.
+func (s *Service) RemoveWordFilter(ctx context.Context, streamID, hostID uuid.UUID, word string) error {
+	if _, err := s.requireCreator(ctx, streamID, hostID); err != nil {
+		return err
+	}
+	w := strings.ToLower(strings.TrimSpace(word))
+	if w == "" {
+		return ErrInvalidWord
+	}
+	if err := s.store.RemoveWordFilter(ctx, streamID, w); err != nil {
+		return err
+	}
+	s.publishModerationEvent(ctx, streamID, "live:chat:word_filter_removed", map[string]any{
+		"stream_id": streamID.String(),
+		"word":      w,
+	})
+	return nil
+}
+
+// ListWordFilters returns the configured filter words for a stream.
+// Creator-only.
+func (s *Service) ListWordFilters(ctx context.Context, streamID, hostID uuid.UUID) ([]string, error) {
+	if _, err := s.requireCreator(ctx, streamID, hostID); err != nil {
+		return nil, err
+	}
+	return s.store.ListWordFilters(ctx, streamID)
+}
+
+// PinMessage replaces any prior pin for the stream with messageID and
+// emits `live:chat:pin` carrying the freshly-pinned message payload.
+func (s *Service) PinMessage(ctx context.Context, streamID, hostID, messageID uuid.UUID) error {
+	if _, err := s.requireCreator(ctx, streamID, hostID); err != nil {
+		return err
+	}
+	if err := s.store.PinMessage(ctx, streamID, messageID); err != nil {
+		if errors.Is(err, postgres.ErrNotFound) {
+			return ErrMessageNotFound
+		}
+		return err
+	}
+	// Re-fetch the pinned row so the broadcast payload is the full
+	// message (text + user) — clients show it as a banner without an
+	// extra round-trip.
+	pinned, _ := s.store.GetPinnedMessage(ctx, streamID)
+	if pinned != nil {
+		s.publishModerationEvent(ctx, streamID, "live:chat:pin", map[string]any{
+			"stream_id":  pinned.StreamID.String(),
+			"message_id": pinned.ID.String(),
+			"user_id":    pinned.UserID.String(),
+			"text":       pinned.Text,
+			"pinned_at":  pinned.PinnedAt,
+			"pinned_by":  hostID.String(),
+		})
+	}
+	return nil
+}
+
+// UnpinMessage clears the pin on a specific message. Emits
+// `live:chat:unpin`.
+func (s *Service) UnpinMessage(ctx context.Context, streamID, hostID, messageID uuid.UUID) error {
+	if _, err := s.requireCreator(ctx, streamID, hostID); err != nil {
+		return err
+	}
+	if err := s.store.UnpinMessage(ctx, streamID, messageID); err != nil {
+		return err
+	}
+	s.publishModerationEvent(ctx, streamID, "live:chat:unpin", map[string]any{
+		"stream_id":  streamID.String(),
+		"message_id": messageID.String(),
+		"unpinned_by": hostID.String(),
+	})
+	return nil
+}
+
+// GetPinnedMessage returns the current pin (or nil) without a
+// creator check — viewers need to see the pinned banner too.
+func (s *Service) GetPinnedMessage(ctx context.Context, streamID uuid.UUID) (*postgres.ChatMessage, error) {
+	if _, err := s.store.GetByID(ctx, streamID); err != nil {
+		return nil, mapStoreErr(err)
+	}
+	return s.store.GetPinnedMessage(ctx, streamID)
 }

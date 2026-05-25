@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -226,11 +227,13 @@ func (s *Store) RecordViewerEvent(ctx context.Context, streamID, userID uuid.UUI
 // 1-500 chars by the schema CHECK so service-layer validation is
 // belt-and-braces.
 type ChatMessage struct {
-	ID        uuid.UUID `json:"id"`
-	StreamID  uuid.UUID `json:"stream_id"`
-	UserID    uuid.UUID `json:"user_id"`
-	Text      string    `json:"text"`
-	CreatedAt time.Time `json:"created_at"`
+	ID        uuid.UUID  `json:"id"`
+	StreamID  uuid.UUID  `json:"stream_id"`
+	UserID    uuid.UUID  `json:"user_id"`
+	Text      string     `json:"text"`
+	IsPinned  bool       `json:"is_pinned"`
+	PinnedAt  *time.Time `json:"pinned_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
 }
 
 // InsertChatMessage persists a message + returns the generated id +
@@ -256,7 +259,7 @@ func (s *Store) ListRecentChatMessages(ctx context.Context, streamID uuid.UUID, 
 		limit = 50
 	}
 	const q = `
-        SELECT id, stream_id, user_id, text, created_at
+        SELECT id, stream_id, user_id, text, is_pinned, pinned_at, created_at
         FROM live_chat_messages
         WHERE stream_id = $1
         ORDER BY created_at DESC
@@ -269,10 +272,202 @@ func (s *Store) ListRecentChatMessages(ctx context.Context, streamID uuid.UUID, 
 	out := make([]*ChatMessage, 0, limit)
 	for rows.Next() {
 		m := &ChatMessage{}
-		if err := rows.Scan(&m.ID, &m.StreamID, &m.UserID, &m.Text, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.StreamID, &m.UserID, &m.Text, &m.IsPinned, &m.PinnedAt, &m.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// --- Chat moderation (Phase B) ---
+
+// MuteUser inserts (or no-ops if already present) a per-stream mute.
+// The PRIMARY KEY (stream_id, user_id) makes the UPSERT idempotent.
+func (s *Store) MuteUser(ctx context.Context, streamID, userID, mutedBy uuid.UUID) error {
+	const q = `
+        INSERT INTO live_chat_mutes (stream_id, user_id, muted_by)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (stream_id, user_id) DO NOTHING`
+	_, err := s.db.Exec(ctx, q, streamID, userID, mutedBy)
+	return err
+}
+
+// UnmuteUser removes a mute. No error if the row does not exist.
+func (s *Store) UnmuteUser(ctx context.Context, streamID, userID uuid.UUID) error {
+	const q = `DELETE FROM live_chat_mutes WHERE stream_id = $1 AND user_id = $2`
+	_, err := s.db.Exec(ctx, q, streamID, userID)
+	return err
+}
+
+// IsUserMuted is the per-message gate used by SendChat.
+func (s *Store) IsUserMuted(ctx context.Context, streamID, userID uuid.UUID) (bool, error) {
+	const q = `SELECT EXISTS(SELECT 1 FROM live_chat_mutes WHERE stream_id = $1 AND user_id = $2)`
+	var exists bool
+	if err := s.db.QueryRow(ctx, q, streamID, userID).Scan(&exists); err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
+// ListMutedUsers returns the user IDs currently muted on a stream.
+// Order is insertion-time DESC so the most-recent mutes show first
+// in the host UI.
+func (s *Store) ListMutedUsers(ctx context.Context, streamID uuid.UUID) ([]uuid.UUID, error) {
+	const q = `
+        SELECT user_id
+        FROM live_chat_mutes
+        WHERE stream_id = $1
+        ORDER BY muted_at DESC`
+	rows, err := s.db.Query(ctx, q, streamID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]uuid.UUID, 0)
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// AddWordFilter inserts a lowercased filter word for the stream.
+// Idempotent on (stream_id, word).
+func (s *Store) AddWordFilter(ctx context.Context, streamID uuid.UUID, word string, addedBy uuid.UUID) error {
+	w := strings.ToLower(strings.TrimSpace(word))
+	if w == "" {
+		return fmt.Errorf("word is required")
+	}
+	if len(w) > 100 {
+		return fmt.Errorf("word exceeds 100 chars")
+	}
+	const q = `
+        INSERT INTO live_chat_word_filters (stream_id, word, added_by)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (stream_id, word) DO NOTHING`
+	_, err := s.db.Exec(ctx, q, streamID, w, addedBy)
+	return err
+}
+
+// RemoveWordFilter deletes a filter word. No error if absent.
+func (s *Store) RemoveWordFilter(ctx context.Context, streamID uuid.UUID, word string) error {
+	w := strings.ToLower(strings.TrimSpace(word))
+	const q = `DELETE FROM live_chat_word_filters WHERE stream_id = $1 AND word = $2`
+	_, err := s.db.Exec(ctx, q, streamID, w)
+	return err
+}
+
+// ListWordFilters returns the lowercased words configured for the
+// stream, alphabetised for stable display in the host UI.
+func (s *Store) ListWordFilters(ctx context.Context, streamID uuid.UUID) ([]string, error) {
+	const q = `
+        SELECT word
+        FROM live_chat_word_filters
+        WHERE stream_id = $1
+        ORDER BY word ASC`
+	rows, err := s.db.Query(ctx, q, streamID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]string, 0)
+	for rows.Next() {
+		var w string
+		if err := rows.Scan(&w); err != nil {
+			return nil, err
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
+// MatchesWordFilter reports true if any configured filter word for the
+// stream is a substring of `text` (case-insensitive). Matches v1
+// behaviour: ILIKE '%word%'. The DB-side check keeps the substring
+// loop close to the filter rows and avoids shuttling the whole list
+// to Go for each chat message.
+func (s *Store) MatchesWordFilter(ctx context.Context, streamID uuid.UUID, text string) (bool, error) {
+	const q = `
+        SELECT EXISTS(
+            SELECT 1 FROM live_chat_word_filters
+            WHERE stream_id = $1
+              AND $2 ILIKE '%' || word || '%'
+        )`
+	var exists bool
+	if err := s.db.QueryRow(ctx, q, streamID, text).Scan(&exists); err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
+// PinMessage atomically clears any existing pin on the stream and
+// pins the target message. The two updates run inside a single
+// transaction so a concurrent pin can never leave two messages
+// flagged at once.
+//
+// Returns ErrNotFound if the message does not exist in the stream.
+func (s *Store) PinMessage(ctx context.Context, streamID, messageID uuid.UUID) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	// Unpin any existing pinned message for this stream.
+	if _, err := tx.Exec(ctx, `
+        UPDATE live_chat_messages
+        SET is_pinned = FALSE, pinned_at = NULL
+        WHERE stream_id = $1 AND is_pinned = TRUE`, streamID); err != nil {
+		return err
+	}
+	// Pin the target, scoped to the same stream so a wrong-stream id
+	// fails closed rather than pinning across streams.
+	tag, err := tx.Exec(ctx, `
+        UPDATE live_chat_messages
+        SET is_pinned = TRUE, pinned_at = NOW()
+        WHERE id = $1 AND stream_id = $2`, messageID, streamID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return tx.Commit(ctx)
+}
+
+// UnpinMessage clears the pin on a specific message. No error if the
+// message is not currently pinned.
+func (s *Store) UnpinMessage(ctx context.Context, streamID, messageID uuid.UUID) error {
+	const q = `
+        UPDATE live_chat_messages
+        SET is_pinned = FALSE, pinned_at = NULL
+        WHERE id = $1 AND stream_id = $2`
+	_, err := s.db.Exec(ctx, q, messageID, streamID)
+	return err
+}
+
+// GetPinnedMessage returns the current pinned message for the stream,
+// or (nil, nil) if no message is pinned. The partial index
+// idx_live_chat_pinned keeps this lookup O(1) per stream.
+func (s *Store) GetPinnedMessage(ctx context.Context, streamID uuid.UUID) (*ChatMessage, error) {
+	const q = `
+        SELECT id, stream_id, user_id, text, is_pinned, pinned_at, created_at
+        FROM live_chat_messages
+        WHERE stream_id = $1 AND is_pinned = TRUE
+        ORDER BY pinned_at DESC
+        LIMIT 1`
+	row := s.db.QueryRow(ctx, q, streamID)
+	m := &ChatMessage{}
+	err := row.Scan(&m.ID, &m.StreamID, &m.UserID, &m.Text, &m.IsPinned, &m.PinnedAt, &m.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return m, nil
 }

@@ -63,3 +63,37 @@ CREATE TABLE IF NOT EXISTS live_chat_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_live_chat_messages_stream
     ON live_chat_messages(stream_id, created_at DESC);
+
+-- Phase B chat moderation: per-stream mutes, word filters, and a single
+-- "is_pinned" pointer hung off live_chat_messages. Surfaced via the host
+-- moderation endpoints on /v1/livestream/streams/:id/chat/{mute,word-filters,pin}.
+
+-- Per-stream mutes. Creator can mute a viewer for the rest of the
+-- stream; auto-cleared on stream end via ON DELETE CASCADE if/when
+-- the stream row is dropped.
+CREATE TABLE IF NOT EXISTS live_chat_mutes (
+    stream_id   UUID NOT NULL REFERENCES live_streams(id) ON DELETE CASCADE,
+    user_id     UUID NOT NULL,
+    muted_by    UUID NOT NULL,
+    muted_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (stream_id, user_id)
+);
+
+-- Per-stream word filters. Free-text substring match; case-insensitive
+-- enforced in Go (lower(text) LIKE '%lower(word)%').
+CREATE TABLE IF NOT EXISTS live_chat_word_filters (
+    stream_id   UUID NOT NULL REFERENCES live_streams(id) ON DELETE CASCADE,
+    word        TEXT NOT NULL CHECK (char_length(word) BETWEEN 1 AND 100),
+    added_by    UUID NOT NULL,
+    added_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (stream_id, word)
+);
+
+-- Pinned messages. One pin per stream at a time — the latest pin
+-- replaces any prior. Stored as a column on live_chat_messages
+-- rather than a side table so the pin travels with the message row.
+ALTER TABLE live_chat_messages
+    ADD COLUMN IF NOT EXISTS is_pinned BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_live_chat_pinned
+    ON live_chat_messages(stream_id) WHERE is_pinned = TRUE;
