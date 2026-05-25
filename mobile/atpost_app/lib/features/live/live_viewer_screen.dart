@@ -11,6 +11,7 @@ import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/models/live_stream_v2.dart';
 import 'package:atpost_app/data/repositories/live_streams_repository.dart';
+import 'package:atpost_app/features/live/live_chat_panel.dart';
 import 'package:atpost_app/providers/live_streams_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -185,6 +186,7 @@ class _LiveViewerScreenState extends ConsumerState<LiveViewerScreen> {
             );
           }
           return _LivePlayer(
+            streamId: widget.streamId,
             videoTrack: _videoTrack,
             participantCount: _participantCount,
             viewerPeak: stream.viewerPeak,
@@ -199,7 +201,9 @@ class _LivePlayer extends StatelessWidget {
   final lk.VideoTrack? videoTrack;
   final int participantCount;
   final int viewerPeak;
+  final String streamId;
   const _LivePlayer({
+    required this.streamId,
     required this.videoTrack,
     required this.participantCount,
     required this.viewerPeak,
@@ -281,6 +285,13 @@ class _LivePlayer extends StatelessWidget {
                 ),
               ],
             ),
+          ),
+        ),
+        SizedBox(
+          height: 280,
+          child: Padding(
+            padding: const EdgeInsets.all(8),
+            child: LiveChatPanel(streamId: streamId),
           ),
         ),
         Container(

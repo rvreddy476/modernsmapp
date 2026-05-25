@@ -181,3 +181,35 @@ class LiveStreamPage {
 
   const LiveStreamPage({required this.items, required this.nextCursor});
 }
+
+/// One row from `GET /v1/livestream/streams/:id/chat`.
+///
+/// Live tail arrives over the ws-gateway `subscribe_live_stream` channel
+/// as `{type: "live_chat_message", payload: {…}}`.
+@immutable
+class LiveChatMessage {
+  final String id;
+  final String streamId;
+  final String userId;
+  final String text;
+  final DateTime createdAt;
+
+  const LiveChatMessage({
+    required this.id,
+    required this.streamId,
+    required this.userId,
+    required this.text,
+    required this.createdAt,
+  });
+
+  factory LiveChatMessage.fromJson(Map<String, dynamic> json) {
+    return LiveChatMessage(
+      id: json['id'] as String? ?? '',
+      streamId: json['stream_id'] as String? ?? '',
+      userId: json['user_id'] as String? ?? '',
+      text: json['text'] as String? ?? '',
+      createdAt: DateTime.tryParse(json['created_at'] as String? ?? '') ??
+          DateTime.now().toUtc(),
+    );
+  }
+}

@@ -8,6 +8,7 @@ import 'dart:async';
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/repositories/live_streams_repository.dart';
+import 'package:atpost_app/features/live/live_chat_panel.dart';
 import 'package:atpost_app/providers/live_streams_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -254,6 +255,15 @@ class _LiveBroadcasterScreenState
                 ],
               ),
             ),
+            // Live chat overlay — only while publishing.
+            if (_phase == _BroadcastPhase.publishing)
+              SizedBox(
+                height: 240,
+                child: Padding(
+                  padding: const EdgeInsets.all(8),
+                  child: LiveChatPanel(streamId: widget.streamId),
+                ),
+              ),
             Container(
               padding: const EdgeInsets.symmetric(
                   horizontal: 16, vertical: 12),

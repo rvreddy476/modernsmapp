@@ -110,6 +110,39 @@ class LiveStreamsRepository {
     final data = _unwrap(response.data);
     return ViewerTokenResult.fromJson(data);
   }
+
+  /// Chat overlay (Phase A). GET returns the replay buffer; POST
+  /// appends + fans out via the ws-gateway live:stream:{id} pub/sub.
+  /// Live tail is consumed in the provider via RealtimeService.
+  Future<List<LiveChatMessage>> listChat(String streamId, {int limit = 50}) async {
+    final response = await _api.get(
+      '${Environment.liveV2Path}/streams/$streamId/chat',
+      queryParameters: {'limit': limit},
+    );
+    // Handler responds `{data: [...], meta: {limit, count}}`. The
+    // shared _unwrap returns whatever's under `data`; that's the
+    // raw items list, which Map<String,dynamic> can't represent —
+    // we read the raw body instead.
+    final body = response.data;
+    final dataField = body is Map<String, dynamic> ? body['data'] : null;
+    final items = dataField is List
+        ? dataField
+        : (dataField is Map && dataField['items'] is List
+            ? dataField['items'] as List
+            : const <dynamic>[]);
+    return items
+        .whereType<Map<String, dynamic>>()
+        .map(LiveChatMessage.fromJson)
+        .toList();
+  }
+
+  Future<LiveChatMessage> sendChat(String streamId, String text) async {
+    final response = await _api.post(
+      '${Environment.liveV2Path}/streams/$streamId/chat',
+      data: {'text': text},
+    );
+    return LiveChatMessage.fromJson(_unwrap(response.data));
+  }
 }
 
 /// Generic visibility-error helper used by the broadcaster/viewer flows
