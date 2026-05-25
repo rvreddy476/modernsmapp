@@ -140,6 +140,11 @@ class _OrderDetailBody extends ConsumerWidget {
                 ),
                 const SizedBox(height: 14),
                 _SummaryCard(order: order, currencySymbol: symbol),
+                if (order.paymentStatus == 'partially_refunded' ||
+                    order.paymentStatus == 'refunded') ...[
+                  const SizedBox(height: 12),
+                  _RefundNoticeCard(paymentStatus: order.paymentStatus),
+                ],
                 const SizedBox(height: 12),
                 _TimelineCard(status: order.status),
                 if ((order.shippingAddress ?? '').trim().isNotEmpty) ...[
@@ -655,6 +660,57 @@ class _InlineStateCard extends StatelessWidget {
               style: AppTextStyles.label.copyWith(
                 color: AppColors.postbookPrimary,
               ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Surfaces the P6/P7 'partially_refunded' state distinctly from full
+/// 'refunded'. Backend introduces the new state when a per-line return
+/// refund is < the full intent amount.
+class _RefundNoticeCard extends StatelessWidget {
+  final String paymentStatus;
+  const _RefundNoticeCard({required this.paymentStatus});
+
+  @override
+  Widget build(BuildContext context) {
+    final isPartial = paymentStatus == 'partially_refunded';
+    final accent = isPartial ? Colors.amber : AppColors.textMuted;
+    final title = isPartial ? 'Partial refund issued' : 'Order refunded';
+    final body = isPartial
+        ? 'A partial refund has been issued for this order. Open the '
+            'returns view for line-item amounts.'
+        : 'The full amount for this order has been refunded.';
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: accent.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
+        border: Border.all(color: accent.withValues(alpha: 0.3)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            isPartial ? Icons.published_with_changes_outlined : Icons.history,
+            color: accent,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: AppTextStyles.label
+                      .copyWith(color: accent, fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 4),
+                Text(body, style: AppTextStyles.bodySmall),
+              ],
             ),
           ),
         ],

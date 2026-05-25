@@ -49,6 +49,7 @@ import 'package:atpost_app/features/posttube/posttube_upload_screen.dart';
 import 'package:atpost_app/features/posttube/subscriptions_screen.dart';
 import 'package:atpost_app/features/posttube/trending_screen.dart';
 import 'package:atpost_app/features/posttube/watch_history_screen.dart';
+import 'package:atpost_app/features/auth/anomaly_stepup_screen.dart';
 import 'package:atpost_app/features/auth/login_screen.dart';
 import 'package:atpost_app/features/auth/otp_verify_screen.dart';
 import 'package:atpost_app/features/auth/register_screen.dart';
@@ -176,7 +177,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 /// Auth routes that don't require login.
-const _publicPaths = {'/login', '/register', '/forgot-password', '/verify-otp'};
+const _publicPaths = {
+  '/login',
+  '/register',
+  '/forgot-password',
+  '/verify-otp',
+  '/auth/step-up', // A13 anomaly gate — user not yet authenticated.
+};
 
 /// Public path prefixes — the share token is dynamic so we can't match
 /// the exact path. Every recipient of a Mopedu share-ride link is
@@ -398,6 +405,19 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             builder: (context, state) => OtpVerifyScreen(
               identifier: state.uri.queryParameters['id'] ?? '',
               mode: state.uri.queryParameters['mode'] ?? 'login',
+            ),
+          ),
+          // A13 anomaly step-up. Reached when login returns
+          // requires_step_up; carries the one-shot pending_token plus
+          // the methods the server allows for this account.
+          GoRoute(
+            path: '/auth/step-up',
+            builder: (context, state) => AnomalyStepUpScreen(
+              pendingToken: state.uri.queryParameters['token'] ?? '',
+              methods: (state.uri.queryParameters['methods'] ?? '')
+                  .split(',')
+                  .where((s) => s.isNotEmpty)
+                  .toList(),
             ),
           ),
           GoRoute(
