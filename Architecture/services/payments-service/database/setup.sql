@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS payments.payment_intents (
     currency         TEXT NOT NULL DEFAULT 'INR',
     method           TEXT NOT NULL CHECK (method IN ('upi','card','wallet','cod','escrow')),
     status           TEXT NOT NULL DEFAULT 'pending'
-                       CHECK (status IN ('pending','processing','succeeded','failed','refunded','disputed')),
+                       CHECK (status IN ('pending','processing','succeeded','failed','refunded','partially_refunded','disputed')),
     provider_ref     TEXT,
     upi_intent_url   TEXT,
     metadata         JSONB DEFAULT '{}',
@@ -24,6 +24,39 @@ CREATE TABLE IF NOT EXISTS payments.payment_intents (
 
 ALTER TABLE payments.payment_intents
     ADD COLUMN IF NOT EXISTS upi_intent_url TEXT;
+
+-- Audit P6 + P7: partial-refund tracking. Counted in paise-minor so a
+-- float64 rupees boundary on the API doesn't bleed precision into the
+-- refunded total. Re-creates the status CHECK so older deploys that
+-- still have the 6-status constraint accept `partially_refunded`.
+ALTER TABLE payments.payment_intents
+    ADD COLUMN IF NOT EXISTS refunded_amount_minor BIGINT NOT NULL DEFAULT 0;
+
+DO $$
+DECLARE
+    r RECORD;
+BEGIN
+    FOR r IN
+        SELECT conname FROM pg_constraint
+        WHERE conrelid = 'payments.payment_intents'::regclass
+          AND contype = 'c'
+          AND pg_get_constraintdef(oid) LIKE '%status%'
+          AND pg_get_constraintdef(oid) NOT LIKE '%partially_refunded%'
+    LOOP
+        EXECUTE format('ALTER TABLE payments.payment_intents DROP CONSTRAINT %I', r.conname);
+    END LOOP;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'payments.payment_intents'::regclass
+          AND contype = 'c'
+          AND pg_get_constraintdef(oid) LIKE '%partially_refunded%'
+    ) THEN
+        ALTER TABLE payments.payment_intents
+            ADD CONSTRAINT payment_intents_status_check
+            CHECK (status IN ('pending','processing','succeeded','failed','refunded','partially_refunded','disputed'));
+    END IF;
+END$$;
 
 CREATE INDEX IF NOT EXISTS idx_payment_intents_reference
     ON payments.payment_intents (reference_type, reference_id);

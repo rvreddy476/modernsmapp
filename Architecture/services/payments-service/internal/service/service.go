@@ -160,39 +160,132 @@ var (
 
 var ErrRefundNotAuthorized = fmt.Errorf("not authorized to refund this payment")
 
+// ErrRefundAmountExceedsIntent is returned when the caller asks to
+// refund more than the intent's outstanding refundable balance. Audit
+// P6: previously the InitiateRefund signature took no amount and
+// blanket-flipped status to 'refunded', so commerce-service computing a
+// per-line return refund worth ₹X on an order paid as ₹Y > X would
+// refund the entire ₹Y. The amount cap is now enforced both at the
+// service layer (with this error) and atomically at the DB layer (the
+// store's WHERE clause).
+var ErrRefundAmountExceedsIntent = fmt.Errorf("refund amount exceeds intent")
+
 // ErrHoldReleaseNotAuthorized is the equivalent for escrow holds.
 // Audit P4: ReleaseHold previously took an arbitrary X-User-Id string
 // and skipped any ownership check, so a buyer could release the
 // seller's escrow before delivery.
 var ErrHoldReleaseNotAuthorized = fmt.Errorf("not authorized to release this hold")
 
+// resolveRefundAmount validates an InitiateRefund request against the
+// stored intent and returns the paise-minor refund amount the store
+// should apply, plus the intent's total amount in paise-minor (the
+// store uses the latter as the upper bound for its atomic UPDATE).
+//
+// Extracted as a pure function so the audit P6 + P7 validation —
+// status check, ownership check, amount cap, full-vs-partial selection —
+// is unit-testable without a real Postgres pool. Errors map 1:1 to the
+// surfaceable Err* constants InitiateRefund returns.
+func resolveRefundAmount(intent *postgres.PaymentIntent, actorID uuid.UUID, amountMinor int64) (refundMinor, intentAmountMinor int64, err error) {
+	// Allow refunds on succeeded (first refund) and partially_refunded
+	// (subsequent partial top-ups until fully refunded).
+	if intent.Status != "succeeded" && intent.Status != "partially_refunded" {
+		return 0, 0, fmt.Errorf("can only refund succeeded payments, current status: %s", intent.Status)
+	}
+	if actorID != intent.PayerID && actorID != intent.PayeeID {
+		return 0, 0, ErrRefundNotAuthorized
+	}
+
+	intentAmountMinor = intent.AmountMinor()
+	remaining := intentAmountMinor - intent.RefundedAmountMinor
+	if remaining <= 0 {
+		return 0, 0, fmt.Errorf("intent already fully refunded")
+	}
+
+	// amountMinor == 0 means "refund the whole remaining balance". This
+	// preserves the historical semantics of the no-amount signature.
+	refundMinor = amountMinor
+	if refundMinor == 0 {
+		refundMinor = remaining
+	}
+	if refundMinor < 0 {
+		return 0, 0, fmt.Errorf("refund amount must be non-negative")
+	}
+	if refundMinor > remaining {
+		return 0, 0, ErrRefundAmountExceedsIntent
+	}
+	return refundMinor, intentAmountMinor, nil
+}
+
+// computeRefundStatus mirrors the CASE inside store.ApplyRefund so the
+// state machine can be unit-tested without a DB. If applying `refundMinor`
+// brings the running total up to (or above) `intentAmountMinor`, the
+// status flips to 'refunded' (full); otherwise 'partially_refunded'.
+//
+// Kept as a sibling helper rather than a method on PaymentIntent to
+// emphasise it's the projection of the SQL CASE expression — change one,
+// change both.
+func computeRefundStatus(currentRefundedMinor, refundMinor, intentAmountMinor int64) string {
+	if currentRefundedMinor+refundMinor >= intentAmountMinor {
+		return "refunded"
+	}
+	return "partially_refunded"
+}
+
 // InitiateRefund refunds a succeeded payment.
 //
 // Authorization (audit P1): the actor must be either the payer (buyer
-// initiating a chargeback), the payee (seller-initiated refund), or
-// match the audit-explicit X-Admin-Refund flag from a trusted internal
-// caller. Cross-user refunds previously worked because the only check
-// was "status == succeeded".
-func (s *Service) InitiateRefund(ctx context.Context, id, actorID uuid.UUID, reason string) (*postgres.PaymentIntent, error) {
+// initiating a chargeback) or the payee (seller-initiated refund).
+// Cross-user refunds previously worked because the only check was
+// "status == succeeded".
+//
+// Amount (audit P6 + P7): amountMinor is paise-minor int64.
+//   - amountMinor == 0 → full refund of (intent_amount_minor - already_refunded).
+//   - amountMinor > remaining refundable → ErrRefundAmountExceedsIntent.
+//   - amountMinor == remaining → status flips to 'refunded'.
+//   - amountMinor <  remaining → status flips to 'partially_refunded';
+//     subsequent refunds accumulate in refunded_amount_minor.
+//
+// Razorpay is called with the same paise amount (its refund API supports
+// partial refunds — https://razorpay.com/docs/api/refunds/create-instant/).
+// The gateway call is best-effort with a slog.Error: a successful DB
+// transition without a successful provider call still publishes the
+// payment.refunded Kafka event because commerce-service's refund
+// consumer needs to flip its return row regardless of provider status
+// (the gateway leg can be reconciled separately). The webhook is the
+// canonical signal for provider settlement.
+func (s *Service) InitiateRefund(ctx context.Context, id, actorID uuid.UUID, amountMinor int64, reason string) (*postgres.PaymentIntent, error) {
 	intent, err := s.store.GetIntent(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	if intent.Status != "succeeded" {
-		return nil, fmt.Errorf("can only refund succeeded payments, current status: %s", intent.Status)
-	}
-	if actorID != intent.PayerID && actorID != intent.PayeeID {
-		return nil, ErrRefundNotAuthorized
-	}
-	if err := s.store.UpdateStatus(ctx, id, "succeeded", "refunded", "", actorID); err != nil {
+	refundMinor, intentAmountMinor, err := resolveRefundAmount(intent, actorID, amountMinor)
+	if err != nil {
 		return nil, err
 	}
-	intent.Status = "refunded"
-	// Audit follow-up: publish the full intent on refund so downstream
-	// consumers (commerce-service refund consumer) can locate the order
-	// via reference_type / reference_id and mark the return refund
-	// succeeded. Previously this carried only intent_id which forced a
-	// round-trip per refund.
+
+	newStatus, newRefundedTotal, err := s.store.ApplyRefund(ctx, id, refundMinor, intentAmountMinor, actorID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Best-effort gateway leg. Razorpay's refund API accepts an
+	// `amount` in paise; passing it tells the provider this is a partial
+	// refund. If the provider call fails we still return success on the
+	// DB transition because the commerce-side bookkeeping needs to move
+	// forward; provider settlement is reconciled via webhook.
+	if s.gateway != nil && intent.ProviderRef != "" && intent.Method != "cod" && intent.Method != "wallet" {
+		if _, gwErr := s.gateway.InitiateRefund(ctx, intent.ProviderRef, refundMinor); gwErr != nil {
+			slog.Error("payment: gateway InitiateRefund failed",
+				"intent_id", id, "amount_minor", refundMinor, "error", gwErr)
+		}
+	}
+
+	intent.Status = newStatus
+	intent.RefundedAmountMinor = newRefundedTotal
+	// Publish the full intent so commerce-service's refund consumer can
+	// locate the order via reference_type / reference_id and mark the
+	// return refund. The same event type is emitted for both partial
+	// and full refunds; consumers branch on status if needed.
 	s.publishEvent(ctx, "payment.refunded", actorID.String(), intent)
 	return intent, nil
 }

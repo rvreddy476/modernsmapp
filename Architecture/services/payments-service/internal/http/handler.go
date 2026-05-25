@@ -180,10 +180,14 @@ func (h *Handler) InitiateRefund(c *gin.Context) {
 		return
 	}
 	var body struct {
-		Reason string `json:"reason"`
+		Reason      string `json:"reason"`
+		AmountMinor int64  `json:"amount_minor"`
 	}
 	c.ShouldBindJSON(&body) //nolint:errcheck
-	intent, err := h.svc.InitiateRefund(c.Request.Context(), id, userID, body.Reason)
+	// Audit P6 + P7: amount_minor is paise-minor int64. 0 means "full
+	// refund of the remaining refundable balance"; >0 means partial.
+	// Validation (sign + cap) lives in the service.
+	intent, err := h.svc.InitiateRefund(c.Request.Context(), id, userID, body.AmountMinor, body.Reason)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "REFUND_FAILED", err.Error(), nil)
 		return
