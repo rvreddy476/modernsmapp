@@ -11,6 +11,7 @@ import (
 	"github.com/atpost/notification-service/internal/events"
 	"github.com/atpost/notification-service/internal/graph"
 	"github.com/atpost/notification-service/internal/http"
+	"github.com/atpost/notification-service/internal/push"
 	"github.com/atpost/notification-service/internal/service"
 	"github.com/atpost/notification-service/internal/store/postgres"
 	"github.com/atpost/notification-service/internal/store/scylla"
@@ -148,6 +149,59 @@ func main() {
 		notifSvc.SetMailer(mailer.NoopMailer{})
 		slog.Info("smtp not configured; using noop mailer")
 	}
+
+	// Push dispatcher (FCM + APNs). Either pusher may be nil — the
+	// dispatcher logs a warning and skips when the platform's provider
+	// is unconfigured. Without this wiring, every notification falls
+	// back to the in-app delivery path (DB row + WS push) only.
+	var fcmPusher *push.FCMPusher
+	if pid := os.Getenv("FCM_PROJECT_ID"); pid != "" {
+		serviceAccountJSON := os.Getenv("FCM_SERVICE_ACCOUNT_KEY")
+		// FCM_SERVICE_ACCOUNT_KEY can be either inline JSON or a file path
+		// (e.g., mounted secret). Detect by checking the leading byte.
+		if strings.HasPrefix(serviceAccountJSON, "/") || strings.HasPrefix(serviceAccountJSON, "./") {
+			if data, err := os.ReadFile(serviceAccountJSON); err == nil {
+				serviceAccountJSON = string(data)
+			} else {
+				slog.Error("fcm: failed to read service account key file", "path", serviceAccountJSON, "error", err)
+				serviceAccountJSON = ""
+			}
+		}
+		if serviceAccountJSON != "" {
+			fcmPusher = push.NewFCMPusher(pid, serviceAccountJSON)
+			slog.Info("fcm pusher configured", "project_id", pid)
+		} else {
+			slog.Warn("fcm: FCM_PROJECT_ID set but FCM_SERVICE_ACCOUNT_KEY missing — Android/Web push disabled")
+		}
+	} else {
+		slog.Info("fcm not configured; android + web push disabled")
+	}
+
+	var apnsPusher *push.APNSPusher
+	if teamID := os.Getenv("APNS_TEAM_ID"); teamID != "" {
+		keyID := os.Getenv("APNS_KEY_ID")
+		bundleID := env("APNS_BUNDLE_ID", "com.atpost.app")
+		keyPath := os.Getenv("APNS_PRIVATE_KEY_PATH")
+		production := env("APNS_PRODUCTION", "false") == "true"
+		if keyPath != "" {
+			if pemBytes, err := os.ReadFile(keyPath); err == nil {
+				if p, err := push.NewAPNSPusher(teamID, keyID, string(pemBytes), bundleID, production); err == nil {
+					apnsPusher = p
+					slog.Info("apns pusher configured", "bundle_id", bundleID, "production", production)
+				} else {
+					slog.Error("apns: NewAPNSPusher failed", "error", err)
+				}
+			} else {
+				slog.Error("apns: failed to read private key file", "path", keyPath, "error", err)
+			}
+		} else {
+			slog.Warn("apns: APNS_TEAM_ID set but APNS_PRIVATE_KEY_PATH missing — iOS push disabled")
+		}
+	} else {
+		slog.Info("apns not configured; ios push disabled")
+	}
+
+	notifSvc.SetPusher(push.NewDispatcher(fcmPusher, apnsPusher))
 
 	notifHandler := http.New(notifSvc, rdb)
 

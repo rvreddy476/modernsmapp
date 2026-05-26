@@ -670,6 +670,13 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
     ports:
       - "8088:8088"
+    volumes:
+      # Mount the Firebase service-account JSON as a read-only file.
+      # main.go's FCM wiring detects path-shaped FCM_SERVICE_ACCOUNT_KEY
+      # values and reads the file at startup. The host file is in
+      # .secrets/ which is gitignored. Missing on the host = container
+      # mount fails to start, which is the safe behavior.
+      - ../../.secrets/firebase-cleestudio-2b06d.json:/run/secrets/firebase-key.json:ro
     depends_on:
       scylla-init:
         condition: service_completed_successfully
