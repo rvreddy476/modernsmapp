@@ -1083,6 +1083,15 @@ services:
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      # Courier integration. COURIER_PROVIDER=stub auto-confirms shipments
+      # locally without booking; =shiprocket calls the real Shiprocket API
+      # (production endpoint apiv2.shiprocket.in — no sandbox available).
+      COURIER_PROVIDER: ${COURIER_PROVIDER:-stub}
+      SHIPROCKET_EMAIL: ${SHIPROCKET_EMAIL:-}
+      SHIPROCKET_PASSWORD: ${SHIPROCKET_PASSWORD:-}
+      SHIPROCKET_PICKUP_LOCATION_ID: ${SHIPROCKET_PICKUP_LOCATION_ID:-}
+      SHIPROCKET_WEBHOOK_TOKEN: ${SHIPROCKET_WEBHOOK_TOKEN:-}
+      SHIPROCKET_WEBHOOK_HMAC: ${SHIPROCKET_WEBHOOK_HMAC:-}
     ports:
       - "8109:8109"
     depends_on:
