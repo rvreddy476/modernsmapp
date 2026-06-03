@@ -112,7 +112,14 @@ hard to ship blindly — copy the diff, don't divergent-edit.
   fine-grained access control with IAM auth, VPC-only (no public
   endpoint). Slow-query + app logs to CloudWatch. Auto-Tune enabled
   with a nightly maintenance window.
-- **S3 buckets + CloudFront** — Phase 2.
+- **S3 media bucket + CloudFront** — landed (Phase 2, see
+  `modules/media/`). KMS-encrypted bucket with public access blocked,
+  versioning + lifecycle (cold-transcodes → IA after 60d, expire
+  noncurrent after 90d, abort orphan multipart). CloudFront fronts via
+  Origin Access Control (OAC) — direct s3:// access is blocked at the
+  bucket policy. Cloudflare stays as the public DNS edge per the
+  Phase-2 decision; CloudFront's *.cloudfront.net hostname goes
+  behind a Cloudflare CNAME at cutover.
 - **WAF + Shield** — Phase 5 (hardening).
 - **Helm umbrella chart + ArgoCD** — Phase 3.
 - **Secrets Manager + External Secrets Operator** — Phase 2, after EKS.

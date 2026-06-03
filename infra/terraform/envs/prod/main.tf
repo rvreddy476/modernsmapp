@@ -126,6 +126,17 @@ module "opensearch" {
   # m6g.large masters × 3, 100GB gp3).
 }
 
+module "media" {
+  source = "../../modules/media"
+
+  environment = "prod"
+  cors_allowed_origins = [
+    "https://cleestudio.com",
+    "https://app.cleestudio.com",
+  ]
+  cloudfront_price_class = "PriceClass_200" # incl. India + Asia POPs
+}
+
 output "eks_cluster_name" { value = module.eks.cluster_name }
 output "eks_cluster_endpoint" { value = module.eks.cluster_endpoint }
 output "eks_oidc_provider_arn" { value = module.eks.oidc_provider_arn }
@@ -139,3 +150,6 @@ output "elasticache_reader_endpoint" { value = module.elasticache.reader_endpoin
 output "elasticache_auth_secret_arn" { value = module.elasticache.auth_secret_arn }
 output "opensearch_endpoint" { value = module.opensearch.endpoint }
 output "opensearch_master_secret_arn" { value = module.opensearch.master_secret_arn }
+output "media_bucket_name" { value = module.media.bucket_name }
+output "media_cloudfront_domain" { value = module.media.cloudfront_domain_name }
+output "media_client_iam_policy_arn" { value = module.media.client_iam_policy_arn }

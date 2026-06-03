@@ -126,6 +126,17 @@ module "opensearch" {
   ebs_volume_size_gb       = 30
 }
 
+module "media" {
+  source = "../../modules/media"
+
+  environment = "staging"
+  cors_allowed_origins = [
+    "https://staging.cleestudio.com",
+    "http://localhost:3000", # dev composer
+  ]
+  cloudfront_price_class = "PriceClass_100" # cheap; staging traffic is dev-only
+}
+
 output "eks_cluster_name" { value = module.eks.cluster_name }
 output "eks_cluster_endpoint" { value = module.eks.cluster_endpoint }
 output "eks_oidc_provider_arn" { value = module.eks.oidc_provider_arn }
@@ -139,3 +150,6 @@ output "elasticache_reader_endpoint" { value = module.elasticache.reader_endpoin
 output "elasticache_auth_secret_arn" { value = module.elasticache.auth_secret_arn }
 output "opensearch_endpoint" { value = module.opensearch.endpoint }
 output "opensearch_master_secret_arn" { value = module.opensearch.master_secret_arn }
+output "media_bucket_name" { value = module.media.bucket_name }
+output "media_cloudfront_domain" { value = module.media.cloudfront_domain_name }
+output "media_client_iam_policy_arn" { value = module.media.client_iam_policy_arn }
