@@ -67,6 +67,9 @@ import 'package:atpost_app/features/groups/group_detail_screen.dart';
 import 'package:atpost_app/features/groups/group_post_composer_screen.dart';
 import 'package:atpost_app/features/groups/groups_list_screen.dart';
 import 'package:atpost_app/features/groups/create_group_screen.dart';
+import 'package:atpost_app/features/pages/pages_list_screen.dart';
+import 'package:atpost_app/features/pages/page_detail_screen.dart';
+import 'package:atpost_app/features/pages/create_page_screen.dart';
 import 'package:atpost_app/features/monetization/creator_analytics_screen.dart';
 import 'package:atpost_app/features/monetization/monetization_dashboard_screen.dart';
 import 'package:atpost_app/features/monetization/payouts_screen.dart';
@@ -438,6 +441,21 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: '/call',
             builder: (context, state) => const CallScreen(),
+          ),
+          // Follow-Only Public Pages
+          GoRoute(
+            path: '/pages',
+            builder: (context, state) => const PagesListScreen(),
+          ),
+          GoRoute(
+            path: '/pages/create',
+            builder: (context, state) => const CreatePageScreen(),
+          ),
+          GoRoute(
+            path: '/page/:handle',
+            builder: (context, state) => PageDetailScreen(
+              handle: state.pathParameters['handle'] ?? '',
+            ),
           ),
           GoRoute(
             path: '/posttube',

@@ -184,6 +184,13 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
         colors: [AppColors.posttubePrimary, AppColors.accentPurple],
       ),
       const _RouteFeature(
+        title: 'Pages',
+        subtitle: 'Follow brands & creators',
+        icon: Icons.flag_rounded,
+        route: '/pages',
+        colors: [AppColors.postbookPrimary, AppColors.accentPurple],
+      ),
+      const _RouteFeature(
         title: 'Shop',
         subtitle: 'Marketplace',
         icon: Icons.storefront_rounded,
