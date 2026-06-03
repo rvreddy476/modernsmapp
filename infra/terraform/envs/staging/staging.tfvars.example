@@ -11,3 +11,10 @@ github_repos = [
   "CHANGEME/atpost",
   "CHANGEME/postbook-ui",
 ]
+
+# Optional — IAM principals (roles / users) that get cluster-admin on EKS
+# in addition to the principal running `terraform apply`. Leave empty for
+# first apply; add break-glass / on-call ARNs in a follow-up.
+cluster_admin_arns = [
+  # "arn:aws:iam::CHANGEME:role/AdminBreakGlass",
+]

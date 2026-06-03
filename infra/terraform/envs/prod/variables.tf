@@ -65,3 +65,19 @@ variable "tfstate_bucket_arn" {
 variable "tfstate_lock_table_arn" {
   type = string
 }
+
+variable "cluster_endpoint_public_access_cidrs" {
+  description = <<EOT
+CIDRs allowed to reach the EKS public API endpoint. MUST be set in
+prod.tfvars — leaving default 0.0.0.0/0 lights up the API to the
+internet. Office IPs + VPN + ops on-call addresses; tighten further
+as the team's network shape solidifies.
+EOT
+  type        = list(string)
+}
+
+variable "cluster_admin_arns" {
+  description = "IAM principals to grant cluster-admin via EKS access entries. Break-glass + on-call only — the CI role doesn't need admin."
+  type        = list(string)
+  default     = []
+}

@@ -40,6 +40,31 @@ module "iam" {
   tfstate_lock_table_arn = var.tfstate_lock_table_arn
 }
 
+module "eks" {
+  source = "../../modules/eks"
+
+  environment        = "staging"
+  vpc_id             = module.vpc.vpc_id
+  private_subnet_ids = module.vpc.private_subnet_ids
+
+  # Staging API endpoint open — no real user data lives here. Prod
+  # narrows to office/VPN CIDRs.
+  cluster_endpoint_public_access_cidrs = ["0.0.0.0/0"]
+  cluster_admin_arns                   = var.cluster_admin_arns
+
+  # Smaller node groups for staging (cost). Memory tier stays at 3
+  # nodes so Scylla RF=3 still works; just smaller instance type.
+  general_node_min          = 2
+  general_node_max          = 6
+  general_node_desired      = 3
+  memory_node_instance_type = "r7g.large"
+  memory_node_min           = 3
+  memory_node_max           = 3
+  memory_node_desired       = 3
+
+  log_retention_days = 14
+}
+
 # Convenience outputs — surface the bits CI + ops need without
 # requiring them to peer into module internals.
 output "vpc_id" { value = module.vpc.vpc_id }
@@ -49,3 +74,6 @@ output "ecr_repository_urls" { value = module.ecr.repository_urls }
 output "ci_role_arn" { value = module.iam.ci_role_arn }
 output "dns_name_servers" { value = module.dns.name_servers }
 output "wildcard_cert_arn" { value = module.dns.wildcard_cert_arn }
+output "eks_cluster_name" { value = module.eks.cluster_name }
+output "eks_cluster_endpoint" { value = module.eks.cluster_endpoint }
+output "eks_oidc_provider_arn" { value = module.eks.oidc_provider_arn }

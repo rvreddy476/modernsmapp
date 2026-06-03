@@ -65,3 +65,9 @@ variable "tfstate_lock_table_arn" {
   description = "Output from `bootstrap/`. Fill in after `terraform apply` in bootstrap/."
   type        = string
 }
+
+variable "cluster_admin_arns" {
+  description = "IAM principals to grant cluster-admin via EKS access entries. Empty by default; populate in staging.tfvars for break-glass / on-call."
+  type        = list(string)
+  default     = []
+}

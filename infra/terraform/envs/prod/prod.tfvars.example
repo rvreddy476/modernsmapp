@@ -5,3 +5,18 @@ github_repos = [
   "CHANGEME/atpost",
   "CHANGEME/postbook-ui",
 ]
+
+# REQUIRED. CIDRs allowed to reach the prod EKS public API endpoint.
+# Default 0.0.0.0/0 lights up the API to the internet (still IAM-gated,
+# but exposed). Narrow to office IPs + VPN + on-call addresses.
+cluster_endpoint_public_access_cidrs = [
+  "203.0.113.0/24", # CHANGEME — example office CIDR
+  # "198.51.100.5/32",  # CHANGEME — on-call laptop
+]
+
+# REQUIRED at first prod apply. IAM principals that get cluster-admin on
+# EKS access entries — break-glass + on-call. The CI role does NOT need
+# admin; it gets a narrower role separately.
+cluster_admin_arns = [
+  "arn:aws:iam::CHANGEME:role/AdminBreakGlass",
+]

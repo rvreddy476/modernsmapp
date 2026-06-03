@@ -42,6 +42,33 @@ module "iam" {
   tfstate_lock_table_arn = var.tfstate_lock_table_arn
 }
 
+module "eks" {
+  source = "../../modules/eks"
+
+  environment        = "prod"
+  vpc_id             = module.vpc.vpc_id
+  private_subnet_ids = module.vpc.private_subnet_ids
+
+  # Prod API endpoint narrowed to operator CIDRs. cluster_endpoint_public_
+  # access_cidrs MUST be set in prod.tfvars before first apply — leaving
+  # it default 0.0.0.0/0 lights up the API to the internet, IAM-gated
+  # but still surface.
+  cluster_endpoint_public_access_cidrs = var.cluster_endpoint_public_access_cidrs
+  cluster_admin_arns                   = var.cluster_admin_arns
+
+  # Prod sizes — Graviton r7g.xlarge for Scylla, general pool sized for
+  # ~30 services + headroom.
+  general_node_min          = 6
+  general_node_max          = 24
+  general_node_desired      = 9
+  memory_node_instance_type = "r7g.xlarge"
+  memory_node_min           = 3
+  memory_node_max           = 6
+  memory_node_desired       = 3
+
+  log_retention_days = 90 # PCI / DPDP audit window
+}
+
 output "vpc_id" { value = module.vpc.vpc_id }
 output "private_subnet_ids" { value = module.vpc.private_subnet_ids }
 output "isolated_subnet_ids" { value = module.vpc.isolated_subnet_ids }
@@ -49,3 +76,6 @@ output "ecr_repository_urls" { value = module.ecr.repository_urls }
 output "ci_role_arn" { value = module.iam.ci_role_arn }
 output "dns_name_servers" { value = module.dns.name_servers }
 output "wildcard_cert_arn" { value = module.dns.wildcard_cert_arn }
+output "eks_cluster_name" { value = module.eks.cluster_name }
+output "eks_cluster_endpoint" { value = module.eks.cluster_endpoint }
+output "eks_oidc_provider_arn" { value = module.eks.oidc_provider_arn }
