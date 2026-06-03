@@ -91,3 +91,51 @@ func TestResolveConnectAndFollow(t *testing.T) {
 		t.Error("follow should be denied when blocked")
 	}
 }
+
+// H3 — view_profile is no longer unconditionally allowed; it follows the
+// who_can_see_profile_photo setting.
+func TestResolveViewProfile(t *testing.T) {
+	cases := []struct {
+		name    string
+		facts   Facts
+		privacy Privacy
+		want    bool
+	}{
+		{
+			name:    "everyone may view a public profile",
+			privacy: Privacy{WhoCanSeeProfilePhoto: "everyone"},
+			want:    true,
+		},
+		{
+			name:    "stranger denied when private",
+			privacy: Privacy{WhoCanSeeProfilePhoto: "connections_only"},
+			want:    false,
+		},
+		{
+			name:    "connection may view a private profile",
+			facts:   Facts{IsConnection: true},
+			privacy: Privacy{WhoCanSeeProfilePhoto: "connections_only"},
+			want:    true,
+		},
+		{
+			name:    "block denies even a connection",
+			facts:   Facts{IsConnection: true, Blocked: true},
+			privacy: Privacy{WhoCanSeeProfilePhoto: "everyone"},
+			want:    false,
+		},
+		{
+			name:    "no_one denies everyone",
+			facts:   Facts{IsConnection: true},
+			privacy: Privacy{WhoCanSeeProfilePhoto: "no_one"},
+			want:    false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Resolve(ActionViewProfile, tc.facts, tc.privacy)
+			if got.Allowed != tc.want {
+				t.Errorf("Allowed=%v want %v (reason=%q)", got.Allowed, tc.want, got.Reason)
+			}
+		})
+	}
+}

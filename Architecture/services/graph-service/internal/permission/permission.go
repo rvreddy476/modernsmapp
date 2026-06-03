@@ -77,7 +77,10 @@ func Resolve(action Action, f Facts, p Privacy) Decision {
 	case ActionSeeReadReceipts:
 		return resolveVisibility(f, p.WhoCanSeeReadReceipts)
 	case ActionViewProfile:
-		return Decision{Allowed: true}
+		// Gate on the profile-photo visibility setting — H3 fix. A private-
+		// account user (WhoCanSeeProfilePhoto != "everyone") should not have
+		// their full profile rendered to strangers.
+		return resolveVisibility(f, p.WhoCanSeeProfilePhoto)
 	default:
 		return Decision{Allowed: false, Reason: "unknown_action"}
 	}
