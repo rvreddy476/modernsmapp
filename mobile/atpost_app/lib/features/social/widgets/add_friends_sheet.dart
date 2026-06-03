@@ -491,16 +491,16 @@ class _AddFriendsSheetState extends ConsumerState<AddFriendsSheet> {
               onTap: () => _add(s),
               child: Container(
                 padding: const EdgeInsets.symmetric(
-                    horizontal: 14, vertical: 7),
+                    horizontal: 16, vertical: 8),
                 decoration: BoxDecoration(
-                  gradient: AppColors.postbookGradient,
+                  color: const Color(0xFFE11D48), // rose-600
                   borderRadius: BorderRadius.circular(100),
                 ),
                 child: const Text(
-                  '+ Add',
+                  'Add Friend',
                   style: TextStyle(
                     color: Colors.white,
-                    fontSize: 11,
+                    fontSize: 12,
                     fontWeight: FontWeight.w700,
                   ),
                 ),

@@ -571,22 +571,20 @@ class _RequestRowState extends State<_RequestRow> {
                   children: [
                     Expanded(
                       child: GestureDetector(
-                        onTap: () => _run(widget.onDecline),
+                        onTap: () => _run(widget.onAccept),
                         child: Container(
-                          height: 34,
+                          height: 36,
                           alignment: Alignment.center,
                           decoration: BoxDecoration(
-                            color: AppColors.bgTertiary,
+                            color: const Color(0xFFE11D48), // rose-600
                             borderRadius: BorderRadius.circular(10),
-                            border:
-                                Border.all(color: AppColors.borderSubtle),
                           ),
                           child: const Text(
-                            'Decline',
+                            'Confirm',
                             style: TextStyle(
-                              color: AppColors.textSecondary,
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
+                              color: Colors.white,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
                             ),
                           ),
                         ),
@@ -595,20 +593,22 @@ class _RequestRowState extends State<_RequestRow> {
                     const SizedBox(width: 8),
                     Expanded(
                       child: GestureDetector(
-                        onTap: () => _run(widget.onAccept),
+                        onTap: () => _run(widget.onDecline),
                         child: Container(
-                          height: 34,
+                          height: 36,
                           alignment: Alignment.center,
                           decoration: BoxDecoration(
-                            gradient: AppColors.postbookGradient,
+                            color: AppColors.bgTertiary,
                             borderRadius: BorderRadius.circular(10),
+                            border:
+                                Border.all(color: AppColors.borderSubtle),
                           ),
                           child: const Text(
-                            'Accept',
+                            'Delete',
                             style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 12,
-                              fontWeight: FontWeight.w700,
+                              color: AppColors.textSecondary,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
                             ),
                           ),
                         ),
