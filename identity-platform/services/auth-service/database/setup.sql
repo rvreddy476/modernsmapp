@@ -130,8 +130,44 @@ CREATE TABLE IF NOT EXISTS profile.profiles (
 CREATE INDEX IF NOT EXISTS idx_profiles_display_name ON profile.profiles(display_name);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_profiles_username ON profile.profiles(username) WHERE username IS NOT NULL;
 
+-- profile-service's profiles.go selects 30+ columns that weren't in the
+-- original CREATE TABLE. Adding them inline so the bootstrap doesn't
+-- rely on migrations running first.
+ALTER TABLE profile.profiles
+    ADD COLUMN IF NOT EXISTS preferred_name      TEXT,
+    ADD COLUMN IF NOT EXISTS pronouns            TEXT,
+    ADD COLUMN IF NOT EXISTS is_verified         BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS verification_level  TEXT    NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS status_text         TEXT    NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS status_emoji        TEXT    NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS status_expires_at   TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS profile_theme_color TEXT    NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS intro_media_url     TEXT    NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS intro_media_type    TEXT    NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS cta_label           TEXT    NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS cta_url             TEXT    NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS member_since_badge  BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS timezone            TEXT    NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS follower_count      INT     NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS following_count     INT     NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS friend_count        INT     NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS post_count          INT     NOT NULL DEFAULT 0;
+
+-- profile-service inbox dedup table — referenced by inbox_events
+-- consumer dedup check. Schema matches consumer.go's queries
+-- (composite key on consumer_name + event_id so multiple services
+-- could share the table later).
+CREATE TABLE IF NOT EXISTS profile.inbox_events (
+    consumer_name TEXT NOT NULL,
+    event_id      TEXT NOT NULL,
+    processed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (consumer_name, event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_profile_inbox_events_processed_at
+    ON profile.inbox_events(processed_at);
+
 -- TOTP secret encryption at rest. New writes go to
--- two_factor_secret_encrypted (AES-256-GCM, nonce-prefixed); legacy
+-- two_factor_secret_encrypted (AES-256-GCM, nonce-prefixed) — legacy
 -- plaintext two_factor_secret stays during the cutover so old rows
 -- still verify. The reader prefers the encrypted column when set.
 -- See identity-shared/crypto/secret_box.go for the cipher.
@@ -168,7 +204,7 @@ CREATE INDEX IF NOT EXISTS idx_login_anomalies_unacked ON auth.login_anomalies(u
 -- access token has expired. We persist the IP/UA at session creation
 -- (already in auth.sessions) and on each refresh we check that the
 -- caller's IP isn't impossible-travel + UA hasn't drastically changed.
--- The fingerprint columns already exist on auth.sessions; we just need
+-- The fingerprint columns already exist on auth.sessions — we just need
 -- a `family_id` to track sibling rotations + an `anomaly_flagged`
 -- bit so a flagged refresh can short-circuit.
 ALTER TABLE auth.sessions
