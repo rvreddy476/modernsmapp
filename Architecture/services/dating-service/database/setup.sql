@@ -57,7 +57,7 @@ ALTER TABLE dating_profiles ADD COLUMN IF NOT EXISTS echoes_consent    BOOLEAN  
 ALTER TABLE dating_profiles ADD COLUMN IF NOT EXISTS echo_refreshed_at TIMESTAMPTZ;
 ALTER TABLE dating_profiles ADD COLUMN IF NOT EXISTS last_active_at    TIMESTAMPTZ NOT NULL DEFAULT now();
 ALTER TABLE dating_profiles ADD COLUMN IF NOT EXISTS first_name        TEXT;
--- Sprint 6: per-user salt for the soft-launch cohort gate. Stable per-user;
+-- Sprint 6: per-user salt for the soft-launch cohort gate. Stable per-user —
 -- generated at profile creation, never rotated. See service/cohort.go.
 ALTER TABLE dating_profiles ADD COLUMN IF NOT EXISTS cohort_salt       TEXT;
 
@@ -353,7 +353,7 @@ CREATE INDEX IF NOT EXISTS idx_dating_reports_status_created
 
 -- §P1-6 sweeper bookkeeping: idempotency markers so the safe-meet
 -- reminder + missed-check-in sweepers don't re-fire the same event
--- every minute. NULL = not yet fired; NOW() = sent.
+-- every minute. NULL = not yet fired — NOW() = sent.
 ALTER TABLE dating_meets
     ADD COLUMN IF NOT EXISTS reminder_fired_at TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS missed_check_in_fired_at TIMESTAMPTZ;
@@ -408,7 +408,7 @@ CREATE INDEX IF NOT EXISTS idx_dating_profiles_geohash_prefix
 -- Sprint 5 — Premium plans, Razorpay/UPI checkout
 -- ---------------------------------------------------------------------------
 --
--- See PULSE_DATING_SPEC.md §14. Plans are seeded on bootstrap; entries with
+-- See PULSE_DATING_SPEC.md §14. Plans are seeded on bootstrap — entries with
 -- the well-known ids ('monthly_399', 'quarterly_999', 'yearly_2499',
 -- 'boost_49') are upserted by service.SeedPremiumPlans on every boot.
 
@@ -441,7 +441,7 @@ CREATE INDEX IF NOT EXISTS idx_dating_payment_intents_user
     ON dating_payment_intents(user_id, created_at DESC);
 
 -- payment_events: idempotency log for Razorpay webhook deliveries. The UNIQUE
--- on razorpay_event_id is the idempotency key; webhook re-deliveries hit the
+-- on razorpay_event_id is the idempotency key — webhook re-deliveries hit the
 -- conflict and become a no-op.
 CREATE TABLE IF NOT EXISTS dating_payment_events (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -463,7 +463,7 @@ ALTER TABLE dating_premium_subscriptions ADD COLUMN IF NOT EXISTS cancelled_at T
 -- ---------------------------------------------------------------------------
 --
 -- See PULSE_DATING_SPEC.md §15.8. Export job is produced by the data-exporter
--- consumer; the consent log is the audit trail required by the DPDP Act for
+-- consumer — the consent log is the audit trail required by the DPDP Act for
 -- every consent toggle (Echoes, Aadhaar, AI moderation, location share).
 
 CREATE TABLE IF NOT EXISTS dating_data_exports (
@@ -501,7 +501,7 @@ CREATE INDEX IF NOT EXISTS idx_dating_consent_log_user
 -- 'restricted' + 'suspended' are reserved for trust-safety moderation.
 --
 -- The legacy boolean columns (paused, deleted_at) remain authoritative for
--- back-compat with the current discovery query; profile_status is the
+-- back-compat with the current discovery query — profile_status is the
 -- single source of truth going forward and discovery now filters on it.
 -- ---------------------------------------------------------------------------
 ALTER TABLE dating_profiles
@@ -627,7 +627,7 @@ CREATE INDEX IF NOT EXISTS idx_dating_account_risk_evaluated_at
 --                                match-list responses.
 --   * approximate_location     — distance bucketed to coarse ranges
 --                                instead of an exact km value.
---   * verified_only_filter     — viewer-side toggle; FetchCandidates
+--   * verified_only_filter     — viewer-side toggle — FetchCandidates
 --                                excludes trust_tier 'phone' (must be
 --                                'selfie' or 'aadhaar').
 --   * blur_photos_until_match  — owner's photos return a blurred URL
@@ -635,7 +635,7 @@ CREATE INDEX IF NOT EXISTS idx_dating_account_risk_evaluated_at
 --                                viewers see the original.
 --
 -- The blurred URL is uploaded alongside the original by the media
--- pipeline. Phase A leaves blurred_url NULL when not yet generated;
+-- pipeline. Phase A leaves blurred_url NULL when not yet generated —
 -- the response builder falls back to "<url>?blurred=1" the client
 -- honours so blur still takes effect end-to-end.
 -- ---------------------------------------------------------------------------
@@ -696,7 +696,7 @@ CREATE INDEX IF NOT EXISTS idx_dating_safety_panic_open
 --
 -- A row is upserted on every pulse/spark request that carries an
 -- X-Device-Fingerprint header. CountUsersByFingerprint feeds the
--- device-reuse signal (>3 distinct users on a fingerprint = 1.0);
+-- device-reuse signal (>3 distinct users on a fingerprint = 1.0) —
 -- COUNT(DISTINCT user_id) WHERE ip = $1 AND last_seen_at > NOW() -
 -- INTERVAL '1 hour' feeds IP/ASN velocity (>5 distinct users / hour =
 -- 1.0). The two signals were 0-weighted scaffolds in Phase A.

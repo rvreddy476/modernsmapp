@@ -35,7 +35,7 @@ ALTER TABLE payments.payment_intents
 -- Audit P7-deep: paise-minor source-of-truth for the intent amount.
 -- Backfills from the deprecated NUMERIC(12,2) `amount` column on first
 -- run. `amount` is kept as a deprecated mirror for one release cycle
--- (analytics + dashboards still read it); the Go writer dual-writes.
+-- (analytics + dashboards still read it) — the Go writer dual-writes.
 ALTER TABLE payments.payment_intents
     ADD COLUMN IF NOT EXISTS amount_minor BIGINT;
 UPDATE payments.payment_intents
@@ -117,7 +117,7 @@ CREATE TABLE IF NOT EXISTS payments.outbox_events (
 CREATE INDEX IF NOT EXISTS idx_payments_outbox_unpublished
     ON payments.outbox_events(id) WHERE published_at IS NULL;
 
--- Audit P3: webhook idempotency. Razorpay retries deliveries; without
+-- Audit P3: webhook idempotency. Razorpay retries deliveries — without
 -- this table every retry re-runs the state-machine update and re-
 -- publishes the Kafka event. The handler now SELECT-INSERTs each
 -- event_id and short-circuits when ON CONFLICT DO NOTHING returns 0

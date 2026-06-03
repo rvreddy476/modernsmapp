@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS live_viewer_events (
 CREATE INDEX IF NOT EXISTS idx_live_viewer_events_stream ON live_viewer_events(stream_id, occurred_at);
 
 -- Phase 2: minimal chat overlay. Persistent buffer so a late viewer
--- can replay the last N messages on page load; live fanout is via
+-- can replay the last N messages on page load — live fanout is via
 -- Redis pub/sub on channel `livestream:chat:{streamID}` consumed by
 -- the ws-gateway via its dynamic subscribe_* pattern. Mute /
 -- word-filter / pin features (v1 live-service equivalents) are out
@@ -69,7 +69,7 @@ CREATE INDEX IF NOT EXISTS idx_live_chat_messages_stream
 -- moderation endpoints on /v1/livestream/streams/:id/chat/{mute,word-filters,pin}.
 
 -- Per-stream mutes. Creator can mute a viewer for the rest of the
--- stream; auto-cleared on stream end via ON DELETE CASCADE if/when
+-- stream — auto-cleared on stream end via ON DELETE CASCADE if/when
 -- the stream row is dropped.
 CREATE TABLE IF NOT EXISTS live_chat_mutes (
     stream_id   UUID NOT NULL REFERENCES live_streams(id) ON DELETE CASCADE,
@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS live_chat_mutes (
     PRIMARY KEY (stream_id, user_id)
 );
 
--- Per-stream word filters. Free-text substring match; case-insensitive
+-- Per-stream word filters. Free-text substring match — case-insensitive
 -- enforced in Go (lower(text) LIKE '%lower(word)%').
 CREATE TABLE IF NOT EXISTS live_chat_word_filters (
     stream_id   UUID NOT NULL REFERENCES live_streams(id) ON DELETE CASCADE,

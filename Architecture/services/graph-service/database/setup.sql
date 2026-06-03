@@ -59,3 +59,16 @@ CREATE TABLE IF NOT EXISTS connections (
 );
 
 CREATE INDEX IF NOT EXISTS idx_connections_b ON connections(user_b);
+
+-- migration 003 backfill: mute table (soft-block, no notification).
+-- Lives in a dedicated `graph` schema, so the schema must exist first.
+CREATE SCHEMA IF NOT EXISTS graph;
+
+CREATE TABLE IF NOT EXISTS graph.mutes (
+    muter_id   UUID NOT NULL,
+    muted_id   UUID NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (muter_id, muted_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_mutes_muter ON graph.mutes(muter_id);

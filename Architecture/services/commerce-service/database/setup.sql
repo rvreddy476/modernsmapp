@@ -789,22 +789,10 @@ ALTER TABLE reviews ADD COLUMN IF NOT EXISTS seller_responded_at TIMESTAMPTZ;
 -- Phase 3.4 — admin moderation needs a "request changes" terminal state
 -- distinct from rejection. The original CHECK was already implicitly
 -- broken (CreateProduct writes 'draft', ApproveProductByAdmin writes
--- 'live'); the rewrite documents the full set the code actually uses.
+-- 'live') — the rewrite documents the full set the code actually uses.
 ALTER TABLE products DROP CONSTRAINT IF EXISTS products_approval_status_check;
 ALTER TABLE products ADD CONSTRAINT products_approval_status_check
     CHECK (approval_status IN ('draft','pending','approved','rejected','flagged','changes_requested','live'));
-
--- Phase F2.3 — bulk SKU import + Phase F2.2 RFQ added two new fulfillment
--- job kinds. Idempotent ALTER so existing deployments accept the new
--- enum values without a manual migration.
-ALTER TABLE fulfillment_jobs DROP CONSTRAINT IF EXISTS fulfillment_jobs_kind_check;
-ALTER TABLE fulfillment_jobs ADD CONSTRAINT fulfillment_jobs_kind_check
-    CHECK (kind IN (
-        'fulfill_paid_order',
-        'process_return_approved',
-        'bulk_import_validate',
-        'bulk_import_execute'
-    ));
 
 -- ─── Phase 6.1 — Fulfillment job queue ─────────────────────────
 -- Replaces `go s.fulfillPaidOrder()` with a durable retry-with-backoff
@@ -831,6 +819,19 @@ CREATE TABLE IF NOT EXISTS fulfillment_jobs (
     completed_at    TIMESTAMPTZ,
     dead_letter_at  TIMESTAMPTZ
 );
+
+-- Phase F2.3 — bulk SKU import + Phase F2.2 RFQ added two new fulfillment
+-- job kinds. Idempotent ALTER so existing deployments accept the new
+-- enum values without a manual migration. Moved AFTER the CREATE TABLE
+-- above so first-run bootstrap doesn't error on a missing relation.
+ALTER TABLE fulfillment_jobs DROP CONSTRAINT IF EXISTS fulfillment_jobs_kind_check;
+ALTER TABLE fulfillment_jobs ADD CONSTRAINT fulfillment_jobs_kind_check
+    CHECK (kind IN (
+        'fulfill_paid_order',
+        'process_return_approved',
+        'bulk_import_validate',
+        'bulk_import_execute'
+    ));
 CREATE INDEX IF NOT EXISTS idx_fulfillment_jobs_pending
     ON fulfillment_jobs(status, next_run_at)
     WHERE status IN ('pending','processing');
@@ -840,7 +841,7 @@ CREATE INDEX IF NOT EXISTS idx_fulfillment_jobs_dead
 
 -- ─── Phase 6.2 — Stock reservation expiry tracking ─────────────
 -- The reservation table existed but lacked an explicit expiry-only
--- index; the worker needs to find rows where expires_at <= NOW()
+-- index — the worker needs to find rows where expires_at <= NOW()
 -- cheaply, separate from the variant-scoped lookup index.
 CREATE INDEX IF NOT EXISTS idx_inventory_reservations_expiry
     ON inventory_reservations(expires_at);
@@ -865,13 +866,17 @@ CREATE INDEX IF NOT EXISTS idx_price_tiers_variant ON product_price_tiers(varian
 
 -- ─── Phase F2.2 — Request For Quote (RFQ) ─────────────────────
 -- Buyer-initiated quote requests. The seller responds with a quote
--- (rfq_quotes); on acceptance, AcceptRFQQuote bypasses priceCart and
+-- (rfq_quotes) — on acceptance, AcceptRFQQuote bypasses priceCart and
 -- creates an order at the negotiated price. Personal + org buyers
 -- both supported (organization_id is nullable).
 CREATE TABLE IF NOT EXISTS rfqs (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     buyer_user_id   UUID NOT NULL,
-    organization_id UUID REFERENCES organizations(id),
+    -- FK to organizations(id) added via idempotent ALTER at end of file —
+    -- organizations table is defined further down in Phase 5 and the
+    -- naive `strings.Split(sql, ";")` bootstrapper applies statements
+    -- in file order, so an inline FK fails on first-run install.
+    organization_id UUID,
     seller_id       UUID NOT NULL REFERENCES sellers(id),
     status          TEXT NOT NULL DEFAULT 'requested'
                        CHECK (status IN ('requested','quoted','accepted','expired','rejected','cancelled')),
@@ -909,7 +914,7 @@ CREATE INDEX IF NOT EXISTS idx_rfq_quotes_rfq ON rfq_quotes(rfq_id);
 -- ─── Phase F2.3 — Bulk SKU upload — already-present table ────
 -- product_import_jobs already exists from earlier work (status,
 -- total_rows, valid_rows, imported_rows, error_file_id). No new
--- table needed; service layer fills it in.
+-- table needed — service layer fills it in.
 
 -- ─── Phase 5 — B2B / Organizations ─────────────────────────────
 -- Business customers (corporates, schools, govt) buying through the
@@ -978,7 +983,7 @@ CREATE TABLE IF NOT EXISTS organization_invites (
 CREATE INDEX IF NOT EXISTS idx_org_invites_token ON organization_invites(token);
 CREATE INDEX IF NOT EXISTS idx_org_invites_org ON organization_invites(organization_id);
 
--- Order-level B2B context. NULL organization_id = retail order; the
+-- Order-level B2B context. NULL organization_id = retail order — the
 -- existing customer_user_id field continues to identify the placer.
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS organization_id UUID
     REFERENCES organizations(id);
@@ -1001,7 +1006,7 @@ CREATE INDEX IF NOT EXISTS idx_orders_approval ON orders(approval_status)
 
 -- ─── Production-launch blocker #2: CancelOrder refund tracking ─────
 --
--- CancelOrder used to only flip status; now it kicks off a refund via
+-- CancelOrder used to only flip status — now it kicks off a refund via
 -- payments-service for prepaid orders. We stamp the refund intent ID
 -- onto the order row so the refund consumer can flip payment_status
 -- to 'refunded' when payments-service publishes payment.refunded.
@@ -1012,7 +1017,7 @@ CREATE INDEX IF NOT EXISTS idx_orders_refund_intent ON orders(refund_intent_id)
 -- ─── Catalog scale: cursor pagination + filters ──────────────────────
 --
 -- The cursor sort is (created_at DESC, id DESC). idx_products_created
--- already covers created_at DESC; we add a composite (created_at, id)
+-- already covers created_at DESC — we add a composite (created_at, id)
 -- so the tie-breaker on id doesn't require a separate sort step. The
 -- avg_rating index supports the MinRating filter (skipped when 0 — a
 -- partial index keeps it small).
@@ -1020,3 +1025,18 @@ CREATE INDEX IF NOT EXISTS idx_products_created_id
     ON products(created_at DESC, id DESC) WHERE status = 'active' AND approval_status = 'approved';
 CREATE INDEX IF NOT EXISTS idx_products_rating
     ON products(avg_rating DESC) WHERE status = 'active' AND avg_rating > 0;
+
+-- Idempotent FK additions deferred until referenced tables exist
+-- (avoids the naive strings.Split(sql, ";") bootstrapper failing on
+-- first-run install). DO blocks let us skip cleanly when the FK is
+-- already in place.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'rfqs_organization_id_fkey'
+    ) THEN
+        ALTER TABLE rfqs
+            ADD CONSTRAINT rfqs_organization_id_fkey
+            FOREIGN KEY (organization_id) REFERENCES organizations(id);
+    END IF;
+END $$;

@@ -55,6 +55,35 @@ CREATE INDEX IF NOT EXISTS idx_transcoding_jobs_media ON transcoding_jobs(media_
 -- migration 008: per-asset content-moderation verdict (video frame scan).
 ALTER TABLE media_assets ADD COLUMN IF NOT EXISTS moderation_status TEXT NOT NULL DEFAULT 'pending';
 
+-- migration 002 backfill: vertical orientation flag for reels rendering.
+ALTER TABLE media_assets ADD COLUMN IF NOT EXISTS is_vertical BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- migration 003 backfill: HLS master playlist key (blob storage path).
+-- NULL means HLS not generated for the asset.
+ALTER TABLE media_assets ADD COLUMN IF NOT EXISTS hls_master_key TEXT;
+
+-- migration 004 backfill: resumable_uploads table (Gold Spec §5.2).
+-- Lives in migrations/ but BootstrapSchema doesn't run those, so the
+-- ALTER + parts table below need it created here for fresh installs.
+CREATE TABLE IF NOT EXISTS resumable_uploads (
+    upload_id       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    media_id        UUID NOT NULL REFERENCES media_assets(id) ON DELETE CASCADE,
+    uploader_id     UUID NOT NULL,
+    total_bytes     BIGINT NOT NULL,
+    uploaded_bytes  BIGINT NOT NULL DEFAULT 0,
+    chunk_size      BIGINT NOT NULL DEFAULT 5242880,
+    status          TEXT NOT NULL DEFAULT 'initiated'
+                       CHECK (status IN ('initiated','uploading','completed','aborted','expired')),
+    storage_key     TEXT NOT NULL,
+    last_chunk_at   TIMESTAMPTZ,
+    expires_at      TIMESTAMPTZ NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_resumable_uploads_media ON resumable_uploads(media_id);
+CREATE INDEX IF NOT EXISTS idx_resumable_uploads_status ON resumable_uploads(status) WHERE status IN ('initiated', 'uploading');
+CREATE INDEX IF NOT EXISTS idx_resumable_uploads_expiry ON resumable_uploads(expires_at) WHERE status != 'completed';
+
 -- migration 007: real S3/MinIO multipart upload backing for resumable uploads.
 ALTER TABLE resumable_uploads ADD COLUMN IF NOT EXISTS storage_upload_id TEXT NOT NULL DEFAULT '';
 

@@ -105,7 +105,76 @@ CREATE TABLE IF NOT EXISTS engagement_event_log (
 CREATE INDEX IF NOT EXISTS idx_event_log_age ON engagement_event_log (processed_at);
 
 -- Idempotent schema upgrades — applied on every boot by BootstrapSchema.
+-- migration 005: spam-flagging review_status. Added inline so the
+-- bootstrap doesn't depend on migrations/005_review_status.sql running
+-- first (the constraint ALTER below referenced the column before it
+-- existed on a fresh install).
+ALTER TABLE posts
+    ADD COLUMN IF NOT EXISTS review_status TEXT NOT NULL DEFAULT 'approved';
+-- Full posts-table column reconciliation. internal/store/postgres/posts.go
+-- references 28+ columns that weren't in the original CREATE TABLE. Each
+-- ADD COLUMN IF NOT EXISTS is idempotent so re-runs on existing DBs are
+-- safe. Types match the Post struct in posts.go.
+ALTER TABLE posts
+    ADD COLUMN IF NOT EXISTS no_comments         BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS no_likes            BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS hashtags            TEXT[]  NOT NULL DEFAULT '{}',
+    ADD COLUMN IF NOT EXISTS mentions            UUID[]  NOT NULL DEFAULT '{}',
+    ADD COLUMN IF NOT EXISTS location_name       TEXT,
+    ADD COLUMN IF NOT EXISTS location_lat        DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS location_lng        DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS post_type           TEXT    NOT NULL DEFAULT 'post',
+    ADD COLUMN IF NOT EXISTS app_origin          TEXT    NOT NULL DEFAULT 'postbook',
+    ADD COLUMN IF NOT EXISTS share_to_postbook   BOOLEAN NOT NULL DEFAULT TRUE,
+    ADD COLUMN IF NOT EXISTS title               TEXT    NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS tags                TEXT[]  NOT NULL DEFAULT '{}',
+    ADD COLUMN IF NOT EXISTS category            TEXT    NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS language            TEXT    NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS seo_title           TEXT    NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS paid_promotion      BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS altered_content     BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS is_made_for_kids    BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS license             TEXT    NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS allow_embedding     BOOLEAN NOT NULL DEFAULT TRUE,
+    ADD COLUMN IF NOT EXISTS publish_to_feed     BOOLEAN NOT NULL DEFAULT TRUE,
+    ADD COLUMN IF NOT EXISTS remix_setting       TEXT    NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS comment_moderation  TEXT    NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS comment_access      TEXT    NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS recording_date      TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS recording_location  TEXT    NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS cover_media_id      UUID,
+    ADD COLUMN IF NOT EXISTS original_audio_volume REAL  NOT NULL DEFAULT 1.0,
+    ADD COLUMN IF NOT EXISTS overlay_audio_volume  REAL  NOT NULL DEFAULT 0.0,
+    ADD COLUMN IF NOT EXISTS tier_required_id    UUID;
+CREATE INDEX IF NOT EXISTS idx_posts_review_status
+    ON posts(review_status)
+    WHERE review_status != 'approved';
 -- migration 018: allow the 'pending' review state for the video publish gate.
 ALTER TABLE posts DROP CONSTRAINT IF EXISTS posts_review_status_check;
 ALTER TABLE posts ADD CONSTRAINT posts_review_status_check
     CHECK (review_status IN ('approved', 'flagged', 'rejected', 'pending'));
+
+-- migration 015 backfill: post_reposts (Echo) table.
+-- BootstrapSchema doesn't run migrations/, so a fresh install needs this here.
+CREATE TABLE IF NOT EXISTS post_reposts (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id             UUID NOT NULL,
+    original_post_id    UUID NOT NULL,
+    repost_type         TEXT NOT NULL CHECK (repost_type IN ('plain', 'quote')),
+    quote_text          TEXT,
+    visibility          TEXT NOT NULL DEFAULT 'public',
+    status              TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'undone')),
+    source_context_type TEXT CHECK (source_context_type IS NULL OR source_context_type IN ('feed', 'post_detail', 'profile', 'search', 'stash')),
+    source_context_id   UUID,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at          TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_post_reposts_active_unique
+    ON post_reposts (user_id, original_post_id) WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_post_reposts_user
+    ON post_reposts (user_id, created_at DESC) WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_post_reposts_original
+    ON post_reposts (original_post_id, created_at DESC) WHERE status = 'active';
+ALTER TABLE post_engagement_counts
+    ADD COLUMN IF NOT EXISTS repost_count INT NOT NULL DEFAULT 0;
