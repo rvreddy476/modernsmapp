@@ -89,6 +89,12 @@ hard to ship blindly — copy the diff, don't divergent-edit.
 - **EKS cluster + node groups** — landed (Phase 2, see `modules/eks/`).
   Cluster 1.31, IRSA enabled, three node groups (general / memory /
   system), EBS CSI + VPC CNI add-ons via IRSA.
+- **Aurora PostgreSQL Multi-AZ** — landed (Phase 2, see
+  `modules/aurora/`). Aurora PG 16.4, writer + reader in prod, single
+  writer in staging. KMS-encrypted, IAM database auth enabled,
+  Performance Insights on, master in Secrets Manager. Logical DBs
+  (`app`, `identity_db`, `chat_db`, `commerce_db`, `feed_db`) are
+  created by a post-create kubernetes Job — pending follow-up.
 - **Aurora PostgreSQL Multi-AZ** — Phase 2. Use `terraform-aws-rds-aurora`.
 - **MSK Provisioned / Serverless** — Phase 2.
 - **OpenSearch Service** — Phase 2.

@@ -76,6 +76,24 @@ output "ecr_repository_urls" { value = module.ecr.repository_urls }
 output "ci_role_arn" { value = module.iam.ci_role_arn }
 output "dns_name_servers" { value = module.dns.name_servers }
 output "wildcard_cert_arn" { value = module.dns.wildcard_cert_arn }
+module "aurora" {
+  source = "../../modules/aurora"
+
+  environment                = "prod"
+  vpc_id                     = module.vpc.vpc_id
+  isolated_subnet_ids        = module.vpc.isolated_subnet_ids
+  eks_node_security_group_id = module.eks.node_security_group_id
+
+  instance_class        = "db.r7g.large" # bump to xlarge under sustained write load
+  create_reader         = true
+  backup_retention_days = 30   # DPDP + PCI evidence window
+  deletion_protection   = true # belt-and-braces against `terraform destroy`
+  apply_immediately     = false
+}
+
 output "eks_cluster_name" { value = module.eks.cluster_name }
 output "eks_cluster_endpoint" { value = module.eks.cluster_endpoint }
 output "eks_oidc_provider_arn" { value = module.eks.oidc_provider_arn }
+output "aurora_cluster_endpoint" { value = module.aurora.cluster_endpoint }
+output "aurora_reader_endpoint" { value = module.aurora.reader_endpoint }
+output "aurora_master_secret_arn" { value = module.aurora.master_secret_arn }
