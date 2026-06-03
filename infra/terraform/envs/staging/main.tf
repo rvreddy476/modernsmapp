@@ -158,6 +158,16 @@ module "external_secrets" {
   ]
 }
 
+module "aws_lb_controller" {
+  source = "../../modules/aws-lb-controller"
+
+  environment       = "staging"
+  aws_region        = var.aws_region
+  vpc_id            = module.vpc.vpc_id
+  cluster_name      = module.eks.cluster_name
+  oidc_provider_arn = module.eks.oidc_provider_arn
+}
+
 output "eks_cluster_name" { value = module.eks.cluster_name }
 output "eks_cluster_endpoint" { value = module.eks.cluster_endpoint }
 output "eks_oidc_provider_arn" { value = module.eks.oidc_provider_arn }
