@@ -114,6 +114,18 @@ module "elasticache" {
   apply_immediately       = false
 }
 
+module "opensearch" {
+  source = "../../modules/opensearch"
+
+  environment                = "prod"
+  vpc_id                     = module.vpc.vpc_id
+  isolated_subnet_ids        = module.vpc.isolated_subnet_ids
+  eks_node_security_group_id = module.eks.node_security_group_id
+
+  # Defaults already match prod sizing (r6g.large data × 3,
+  # m6g.large masters × 3, 100GB gp3).
+}
+
 output "eks_cluster_name" { value = module.eks.cluster_name }
 output "eks_cluster_endpoint" { value = module.eks.cluster_endpoint }
 output "eks_oidc_provider_arn" { value = module.eks.oidc_provider_arn }
@@ -125,3 +137,5 @@ output "msk_client_iam_policy_arn" { value = module.msk.client_iam_policy_arn }
 output "elasticache_primary_endpoint" { value = module.elasticache.primary_endpoint }
 output "elasticache_reader_endpoint" { value = module.elasticache.reader_endpoint }
 output "elasticache_auth_secret_arn" { value = module.elasticache.auth_secret_arn }
+output "opensearch_endpoint" { value = module.opensearch.endpoint }
+output "opensearch_master_secret_arn" { value = module.opensearch.master_secret_arn }

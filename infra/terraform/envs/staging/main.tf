@@ -112,6 +112,20 @@ module "elasticache" {
   apply_immediately       = true
 }
 
+module "opensearch" {
+  source = "../../modules/opensearch"
+
+  environment                = "staging"
+  vpc_id                     = module.vpc.vpc_id
+  isolated_subnet_ids        = module.vpc.isolated_subnet_ids
+  eks_node_security_group_id = module.eks.node_security_group_id
+
+  data_instance_type       = "t3.small.search"
+  data_instance_count      = 1
+  dedicated_master_enabled = false
+  ebs_volume_size_gb       = 30
+}
+
 output "eks_cluster_name" { value = module.eks.cluster_name }
 output "eks_cluster_endpoint" { value = module.eks.cluster_endpoint }
 output "eks_oidc_provider_arn" { value = module.eks.oidc_provider_arn }
@@ -123,3 +137,5 @@ output "msk_client_iam_policy_arn" { value = module.msk.client_iam_policy_arn }
 output "elasticache_primary_endpoint" { value = module.elasticache.primary_endpoint }
 output "elasticache_reader_endpoint" { value = module.elasticache.reader_endpoint }
 output "elasticache_auth_secret_arn" { value = module.elasticache.auth_secret_arn }
+output "opensearch_endpoint" { value = module.opensearch.endpoint }
+output "opensearch_master_secret_arn" { value = module.opensearch.master_secret_arn }

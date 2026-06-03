@@ -106,7 +106,12 @@ hard to ship blindly — copy the diff, don't divergent-edit.
   encryption at rest (KMS) + in transit (TLS) + AUTH token in
   Secrets Manager. Cluster-mode-disabled — key-namespace sharding in
   the app is the escape hatch if a hot key ever shows up.
-- **OpenSearch Service** — Phase 2.
+- **OpenSearch Service** — landed (Phase 2, see `modules/opensearch/`).
+  OpenSearch 2.13, 3 data + 3 master nodes (prod), 1 data + no
+  masters (staging). KMS-encrypted, node-to-node encryption on,
+  fine-grained access control with IAM auth, VPC-only (no public
+  endpoint). Slow-query + app logs to CloudWatch. Auto-Tune enabled
+  with a nightly maintenance window.
 - **S3 buckets + CloudFront** — Phase 2.
 - **WAF + Shield** — Phase 5 (hardening).
 - **Helm umbrella chart + ArgoCD** — Phase 3.
