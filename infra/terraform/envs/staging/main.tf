@@ -168,6 +168,19 @@ module "aws_lb_controller" {
   oidc_provider_arn = module.eks.oidc_provider_arn
 }
 
+module "scylla" {
+  source = "../../modules/scylla"
+
+  environment        = "staging"
+  availability_zones = module.vpc.availability_zones
+
+  # Staging sizing — matches the staging memory node group
+  # (r7g.large = 2 vCPU, 16 GB).
+  cpu_per_replica     = "1500m"
+  memory_per_replica  = "12Gi"
+  storage_per_replica = "30Gi"
+}
+
 output "eks_cluster_name" { value = module.eks.cluster_name }
 output "eks_cluster_endpoint" { value = module.eks.cluster_endpoint }
 output "eks_oidc_provider_arn" { value = module.eks.oidc_provider_arn }

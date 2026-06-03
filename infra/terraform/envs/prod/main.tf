@@ -165,6 +165,16 @@ module "aws_lb_controller" {
   oidc_provider_arn = module.eks.oidc_provider_arn
 }
 
+module "scylla" {
+  source = "../../modules/scylla"
+
+  environment        = "prod"
+  availability_zones = module.vpc.availability_zones
+
+  # Prod defaults already match r7g.xlarge sizing — see
+  # modules/scylla/variables.tf (3 vCPU req/limit, 28 Gi RAM, 100 GB).
+}
+
 output "eks_cluster_name" { value = module.eks.cluster_name }
 output "eks_cluster_endpoint" { value = module.eks.cluster_endpoint }
 output "eks_oidc_provider_arn" { value = module.eks.oidc_provider_arn }
