@@ -15,6 +15,7 @@ import (
 	"github.com/atpost/feed-service/internal/ranking"
 	"github.com/atpost/feed-service/internal/store/postgres"
 	"github.com/atpost/feed-service/internal/store/scylla"
+	"github.com/atpost/shared/httpclient"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
@@ -28,6 +29,13 @@ type Service struct {
 	profileServiceURL string
 	userServiceURL    string
 	ranker            *ranking.Ranker
+	// Per-upstream HTTP clients with timeouts + circuit breakers. One
+	// breaker per remote service so a slow graph-service doesn't open
+	// the breaker on post-service calls (H1 risk in arch review plan).
+	graphClient   *http.Client
+	postClient    *http.Client
+	profileClient *http.Client
+	userClient    *http.Client
 }
 
 func New(scylla *scylla.TimelineStore, pg *postgres.MetaStore, rdb *redis.Client) *Service {
@@ -55,6 +63,10 @@ func New(scylla *scylla.TimelineStore, pg *postgres.MetaStore, rdb *redis.Client
 		postServiceURL:    postServiceURL,
 		profileServiceURL: profileServiceURL,
 		userServiceURL:    userServiceURL,
+		graphClient:       httpclient.NewWithBreaker(5*time.Second, "feed->graph"),
+		postClient:        httpclient.NewWithBreaker(5*time.Second, "feed->post"),
+		profileClient:     httpclient.NewWithBreaker(5*time.Second, "feed->profile"),
+		userClient:        httpclient.NewWithBreaker(5*time.Second, "feed->user"),
 	}
 }
 
@@ -594,7 +606,7 @@ func (s *Service) getBlockedAndMuted(ctx context.Context, userID uuid.UUID) ([]u
 	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
 		req.Header.Set("X-Internal-Service-Key", key)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := s.graphClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -619,7 +631,7 @@ func (s *Service) fetchCloseFriends(ctx context.Context, userID uuid.UUID) ([]uu
 	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
 		req.Header.Set("X-Internal-Service-Key", key)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := s.graphClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -653,7 +665,7 @@ func (s *Service) closeFriendsPostsEnabled(ctx context.Context, userID uuid.UUID
 	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
 		req.Header.Set("X-Internal-Service-Key", key)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := s.userClient.Do(req)
 	if err != nil {
 		return true // fail-open
 	}
@@ -692,7 +704,7 @@ func (s *Service) fetchFollowers(ctx context.Context, userID uuid.UUID) ([]uuid.
 			req.Header.Set("X-Internal-Service-Key", key)
 		}
 
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := s.graphClient.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("graph-service request failed: %w", err)
 		}
@@ -746,7 +758,7 @@ func (s *Service) fetchFollowing(ctx context.Context, userID uuid.UUID) ([]uuid.
 			req.Header.Set("X-Internal-Service-Key", key)
 		}
 
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := s.graphClient.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("graph-service request failed: %w", err)
 		}
@@ -802,7 +814,7 @@ func (s *Service) fetchCircleMembers(ctx context.Context, userID uuid.UUID) ([]u
 			req.Header.Set("X-Internal-Service-Key", key)
 		}
 
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := s.graphClient.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("graph-service request failed: %w", err)
 		}
@@ -845,7 +857,7 @@ func (s *Service) getRecentPublicPosts(ctx context.Context, limit int) ([]FeedIt
 	}
 	req.Header.Set("X-Internal-Service-Key", os.Getenv("INTERNAL_SERVICE_KEY"))
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := s.postClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("post-service request failed: %w", err)
 	}

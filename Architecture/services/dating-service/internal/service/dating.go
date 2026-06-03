@@ -5,6 +5,7 @@
 package service
 
 import (
+	"net/http"
 	"sync"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/atpost/dating-service/internal/matcher"
 	"github.com/atpost/dating-service/internal/payments"
 	"github.com/atpost/dating-service/internal/store"
+	"github.com/atpost/shared/httpclient"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -41,11 +43,20 @@ type Service struct {
 	strictMu       sync.RWMutex
 	strictCacheVal bool
 	strictCacheAt  time.Time
+
+	// H1 (arch review): shared HTTP client with timeout + circuit breaker
+	// for the best-effort block-propagation call to graph-service. Avoids
+	// the http.DefaultClient leak that hangs goroutines on a slow graph.
+	graphHTTPClient *http.Client
 }
 
 // New builds a Service. The producer + graphProvider are set later in main.go.
 func New(s *store.Store, rdb *redis.Client) *Service {
-	return &Service{store: s, rdb: rdb}
+	return &Service{
+		store:           s,
+		rdb:             rdb,
+		graphHTTPClient: httpclient.NewWithBreaker(5*time.Second, "dating->graph"),
+	}
 }
 
 // SetProducer wires the Kafka producer for emit-on-write paths.

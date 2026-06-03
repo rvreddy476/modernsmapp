@@ -217,7 +217,7 @@ func (s *Service) Block(ctx context.Context, userID, targetID uuid.UUID) error {
 			if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
 				req.Header.Set("X-Internal-Key", key)
 			}
-			resp, err := http.DefaultClient.Do(req)
+			resp, err := s.graphHTTPClient.Do(req)
 			if err != nil {
 				slog.Warn("graph block propagation failed", "error", err)
 				return
