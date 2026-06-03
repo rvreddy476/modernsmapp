@@ -184,6 +184,16 @@ module "argocd" {
   acm_certificate_arn = module.dns.wildcard_cert_arn
 }
 
+module "aurora_bootstrap" {
+  source = "../../modules/aurora-bootstrap"
+
+  environment               = "prod"
+  master_secret_name        = "atpost/prod/aurora/master"
+  cluster_secret_store_name = module.external_secrets.cluster_secret_store_name
+
+  depends_on = [module.aurora, module.external_secrets]
+}
+
 output "eks_cluster_name" { value = module.eks.cluster_name }
 output "eks_cluster_endpoint" { value = module.eks.cluster_endpoint }
 output "eks_oidc_provider_arn" { value = module.eks.oidc_provider_arn }

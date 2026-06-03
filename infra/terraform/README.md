@@ -141,7 +141,28 @@ two-pass approach is simpler and harder to misuse.
   Phase-2 decision; CloudFront's *.cloudfront.net hostname goes
   behind a Cloudflare CNAME at cutover.
 - **WAF + Shield** — Phase 5 (hardening).
-- **Helm umbrella chart + ArgoCD** — Phase 3.
+- **ArgoCD** — landed (Phase 2, see `modules/argocd/`). HA install
+  (2 replicas of every component), ALB Ingress with cert from the
+  dns module, admin password mirrored to Secrets Manager, AppProject
+  "atpost" defined. Per-service ApplicationSet pending the umbrella
+  Helm chart.
+- **External Secrets Operator** — landed (Phase 2, see
+  `modules/external-secrets/`). ClusterSecretStore
+  "aws-secrets-manager" exposed; IRSA-bound IAM role permits read
+  on atpost/${env}/* + decrypt on the four data-plane KMS keys.
+- **AWS Load Balancer Controller** — landed (Phase 2, see
+  `modules/aws-lb-controller/`). Required for any Ingress to
+  resolve to an ALB.
+- **Scylla on EKS** — landed (Phase 2, see `modules/scylla/`).
+  Scylla Operator + ScyllaCluster CR, 3 replicas across AZs on the
+  memory node group with the workload=scylla:NoSchedule taint.
+  gp3 made the cluster-default StorageClass.
+- **Aurora bootstrap Job** — landed (Phase 2, see
+  `modules/aurora-bootstrap/`). One-shot kubernetes Job that
+  CREATEs the 5 logical databases (app, identity_db, chat_db,
+  commerce_db, feed_db) once Aurora + ESO are ready. Idempotent;
+  re-runs on database-list changes.
+- **Helm umbrella chart + per-service Applications** — Phase 3.
 - **Secrets Manager + External Secrets Operator** — Phase 2, after EKS.
 - **AWS Backup + Config + Security Hub + GuardDuty** — Phase 5.
 
