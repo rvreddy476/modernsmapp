@@ -1299,6 +1299,17 @@ type CheckoutInput struct {
 // quote API and any client-side display can never drift from the value
 // actually persisted on the order.
 func (s *Service) Checkout(ctx context.Context, in CheckoutInput) (*postgres.Order, error) {
+	// H4 — idempotency dedup. When the caller supplies an Idempotency-Key
+	// header and we already have an order for that (user, key) pair,
+	// return it verbatim instead of double-creating + double-charging.
+	// This must run before priceCart so a double-tap during a slow round
+	// trip doesn't waste a pricing query.
+	if in.IdempotencyKey != "" {
+		if existing, err := s.store.GetOrderByIdempotencyKey(ctx, in.UserID, in.IdempotencyKey); err == nil && existing != nil {
+			return existing, nil
+		}
+	}
+
 	res, err := s.priceCart(ctx, in.UserID, in.PaymentMethod, in.CouponCode, true)
 	if err != nil {
 		return nil, err

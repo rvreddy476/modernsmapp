@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -887,6 +888,38 @@ func (s *Store) CreateOrder(ctx context.Context, o *Order, items []*OrderItem) e
 	}
 
 	return tx.Commit(ctx)
+}
+
+// GetOrderByIdempotencyKey returns the order (if any) created by `userID`
+// against `key`. Underlies H4 — Checkout uses this to short-circuit a
+// retried/double-tap checkout into the original order. Returns (nil, nil)
+// when no row matches.
+func (s *Store) GetOrderByIdempotencyKey(ctx context.Context, userID uuid.UUID, key string) (*Order, error) {
+	var o Order
+	err := s.db.QueryRow(ctx, `SELECT id,customer_user_id,order_number,subtotal,discount_amount,
+		shipping_charges,tax_amount,coupon_code,coupon_discount,final_amount,currency_code,
+		payment_method,payment_status,payment_id,payment_gateway,delivery_address_id,
+		delivery_address_snapshot,gift_message,status,cancellation_reason,cancelled_by,
+		idempotency_key,created_at,updated_at,
+		organization_id,po_number,cost_center,billing_address_snapshot,invoice_email,
+		approval_status,approved_by_user_id,approved_at,approval_notes,credit_terms_days,payment_due_date
+		FROM orders WHERE customer_user_id=$1 AND idempotency_key=$2`, userID, key).Scan(
+		&o.ID, &o.CustomerUserID, &o.OrderNumber, &o.Subtotal, &o.DiscountAmount,
+		&o.ShippingCharges, &o.TaxAmount, &o.CouponCode, &o.CouponDiscount, &o.FinalAmount,
+		&o.CurrencyCode, &o.PaymentMethod, &o.PaymentStatus, &o.PaymentID, &o.PaymentGateway,
+		&o.DeliveryAddressID, &o.DeliveryAddressSnapshot, &o.GiftMessage, &o.Status,
+		&o.CancellationReason, &o.CancelledBy, &o.IdempotencyKey, &o.CreatedAt, &o.UpdatedAt,
+		&o.OrganizationID, &o.PONumber, &o.CostCenter, &o.BillingAddressSnapshot, &o.InvoiceEmail,
+		&o.ApprovalStatus, &o.ApprovedByUserID, &o.ApprovedAt, &o.ApprovalNotes,
+		&o.CreditTermsDays, &o.PaymentDueDate,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &o, nil
 }
 
 func (s *Store) GetOrderByID(ctx context.Context, id uuid.UUID) (*Order, error) {

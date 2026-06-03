@@ -1199,13 +1199,19 @@ func (h *Handler) Checkout(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
+	// H4 — accept idempotency from the standard header too; body field stays
+	// for clients that can't set headers. Header wins when both are set.
+	idemp := req.IdempotencyKey
+	if hk := c.GetHeader("Idempotency-Key"); hk != "" {
+		idemp = hk
+	}
 	order, err := h.svc.Checkout(c.Request.Context(), service.CheckoutInput{
 		UserID:         userID,
 		AddressID:      req.AddressID,
 		PaymentMethod:  req.PaymentMethod,
 		CouponCode:     req.CouponCode,
 		GiftMessage:    req.GiftMessage,
-		IdempotencyKey: req.IdempotencyKey,
+		IdempotencyKey: idemp,
 		OrganizationID: req.OrganizationID,
 		PONumber:       req.PONumber,
 		CostCenter:     req.CostCenter,
