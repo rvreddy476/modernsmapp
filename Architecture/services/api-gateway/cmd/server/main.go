@@ -63,6 +63,14 @@ func main() {
 	if jwtSecret == "dev_secret_change_me" {
 		slog.Warn("JWT_SECRET is set to the development default — do not use in production")
 	}
+	// C7 — accept the previous secret too during a kid rotation window.
+	// See aws_prep_sprint_2026_06.md for the rotation runbook.
+	jwtKeys := jwtKeySet{
+		activeKID:      env("JWT_KID", "v1"),
+		activeSecret:   jwtSecret,
+		previousKID:    env("JWT_KID_PREVIOUS", ""),
+		previousSecret: env("JWT_SECRET_PREVIOUS", ""),
+	}
 
 	routeDefs := []struct {
 		prefix string
@@ -185,10 +193,7 @@ func main() {
 	promHandler := promhttp.Handler()
 
 	coreHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Health check
-		if r.URL.Path == "/health" || r.URL.Path == "/v1/health" {
-			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"status":"ok"}`))
+		if handleProbe(w, r, len(routes)) {
 			return
 		}
 		// Prometheus scrape endpoint.
@@ -213,12 +218,29 @@ func main() {
 		slog.Warn("INTERNAL_SERVICE_KEY not set — internal service authentication disabled")
 	}
 
+	// H5 — Redis-backed rate limiter so per-IP / per-user limits hold
+	// across the whole gateway fleet, not just per-pod. The in-memory
+	// limiter still runs in front of this and acts as a fast-path
+	// short-circuit + the dev fallback when REDIS_ADDR isn't set.
+	rateRDB := connectRedisForRateLimit(env("REDIS_ADDR", ""))
+	var rateLimitHandler func(http.Handler) http.Handler
+	if rateRDB != nil {
+		rl := newRedisRateLimiter(rateRDB, 100, 60, time.Second)
+		rateLimitHandler = func(next http.Handler) http.Handler {
+			return rateLimitMiddleware(redisRateLimitMiddleware(rl, next))
+		}
+		slog.Info("rate limiter: redis-backed (fleet-wide) enabled")
+	} else {
+		rateLimitHandler = rateLimitMiddleware
+		slog.Info("rate limiter: in-memory only (per-pod)")
+	}
+
 	// CORS middleware is outermost so headers are present on ALL responses (including 401/429).
 	// Phase F3.5 — otelhttp wraps the chain inside CORS so a server span
 	// is opened on every request. The span name is just the method;
 	// downstream services produce the more specific route names.
 	tracedCore := otelhttp.NewHandler(
-		requestIDMiddleware(jwtExtractMiddleware(jwtSecret, rateLimitMiddleware(requireAdminForInternalPaths(injectInternalKeyMiddleware(internalKey, coreHandler))))),
+		requestIDMiddleware(jwtExtractMiddleware(jwtKeys, rateLimitHandler(requireAdminForInternalPaths(injectInternalKeyMiddleware(internalKey, coreHandler))))),
 		"api-gateway",
 		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
 			return r.Method + " " + r.URL.Path
@@ -255,7 +277,27 @@ func main() {
 // Requests without a Bearer token are passed through unchanged so that
 // unauthenticated (public) endpoints continue to work normally.
 // Requests with an invalid or expired token receive HTTP 401.
-func jwtExtractMiddleware(jwtSecret string, next http.Handler) http.Handler {
+// jwtKeySet — C7. Active is used for signing (auth-service only); both are
+// accepted on verify so a kid rotation has a window where prior tokens stay
+// valid. A token with no `kid` header (legacy, pre-C7) falls back to active.
+type jwtKeySet struct {
+	activeKID      string
+	activeSecret   string
+	previousKID    string
+	previousSecret string
+}
+
+func (k jwtKeySet) secretFor(kid string) (string, bool) {
+	if kid == "" || kid == k.activeKID {
+		return k.activeSecret, true
+	}
+	if k.previousSecret != "" && kid == k.previousKID {
+		return k.previousSecret, true
+	}
+	return "", false
+}
+
+func jwtExtractMiddleware(keys jwtKeySet, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Resolve JWT from one of (in priority order):
 		//   1. Authorization: Bearer header   — mobile + REST callers
@@ -280,7 +322,7 @@ func jwtExtractMiddleware(jwtSecret string, next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		userID, scopes, deviceID, err := verifyJWT(token, jwtSecret)
+		userID, scopes, deviceID, err := verifyJWT(token, keys)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
@@ -301,12 +343,35 @@ func jwtExtractMiddleware(jwtSecret string, next http.Handler) http.Handler {
 	})
 }
 
-// verifyJWT validates an HS256 JWT against secret, checks expiry, and returns
-// the user ID, scopes, and device ID from the claims.
-func verifyJWT(tokenStr, secret string) (userID, scopes, deviceID string, err error) {
+// verifyJWT validates an HS256 JWT against the configured key set, checks
+// expiry, and returns the user ID, scopes, and device ID from the claims.
+// C7: the `kid` header selects the secret so a rotation window can accept
+// both old and new signatures simultaneously.
+func verifyJWT(tokenStr string, keys jwtKeySet) (userID, scopes, deviceID string, err error) {
 	parts := strings.Split(tokenStr, ".")
 	if len(parts) != 3 {
 		return "", "", "", &jwtError{"malformed token"}
+	}
+
+	// Pick the secret by `kid` (C7). Tokens without a `kid` fall back to
+	// the active secret so legacy tokens minted before C7 still verify.
+	headerRaw, hdrErr := base64.RawURLEncoding.DecodeString(parts[0])
+	if hdrErr != nil {
+		return "", "", "", &jwtError{"invalid header encoding"}
+	}
+	var header struct {
+		Alg string `json:"alg"`
+		Kid string `json:"kid"`
+	}
+	if jsonErr := json.Unmarshal(headerRaw, &header); jsonErr != nil {
+		return "", "", "", &jwtError{"invalid header JSON"}
+	}
+	if header.Alg != "" && header.Alg != "HS256" {
+		return "", "", "", &jwtError{"unsupported jwt algorithm"}
+	}
+	secret, ok := keys.secretFor(header.Kid)
+	if !ok {
+		return "", "", "", &jwtError{"unknown kid"}
 	}
 
 	// Verify HMAC-SHA256 signature.
