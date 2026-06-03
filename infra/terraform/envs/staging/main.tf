@@ -137,6 +137,27 @@ module "media" {
   cloudfront_price_class = "PriceClass_100" # cheap; staging traffic is dev-only
 }
 
+# ─── In-cluster tooling (helm + kubernetes providers) ───────────────
+# These wait on the EKS cluster — see the two-apply bootstrap note in
+# the README. On a fresh apply they fail; re-applying after EKS is up
+# installs cleanly.
+
+module "external_secrets" {
+  source = "../../modules/external-secrets"
+
+  environment       = "staging"
+  aws_region        = var.aws_region
+  oidc_provider_arn = module.eks.oidc_provider_arn
+  oidc_provider_url = module.eks.oidc_provider_url
+
+  kms_key_arns = [
+    module.aurora.kms_key_arn,
+    module.elasticache.kms_key_arn,
+    module.opensearch.kms_key_arn,
+    module.media.kms_key_arn,
+  ]
+}
+
 output "eks_cluster_name" { value = module.eks.cluster_name }
 output "eks_cluster_endpoint" { value = module.eks.cluster_endpoint }
 output "eks_oidc_provider_arn" { value = module.eks.oidc_provider_arn }
