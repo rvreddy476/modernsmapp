@@ -89,9 +89,20 @@ module "aurora" {
   apply_immediately     = true  # iterate fast in staging
 }
 
+module "msk" {
+  source = "../../modules/msk"
+
+  environment                = "staging"
+  vpc_id                     = module.vpc.vpc_id
+  private_subnet_ids         = module.vpc.private_subnet_ids
+  eks_node_security_group_id = module.eks.node_security_group_id
+}
+
 output "eks_cluster_name" { value = module.eks.cluster_name }
 output "eks_cluster_endpoint" { value = module.eks.cluster_endpoint }
 output "eks_oidc_provider_arn" { value = module.eks.oidc_provider_arn }
 output "aurora_cluster_endpoint" { value = module.aurora.cluster_endpoint }
 output "aurora_reader_endpoint" { value = module.aurora.reader_endpoint }
 output "aurora_master_secret_arn" { value = module.aurora.master_secret_arn }
+output "msk_bootstrap_brokers" { value = module.msk.bootstrap_brokers_sasl_iam }
+output "msk_client_iam_policy_arn" { value = module.msk.client_iam_policy_arn }

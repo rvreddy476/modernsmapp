@@ -95,8 +95,11 @@ hard to ship blindly — copy the diff, don't divergent-edit.
   Performance Insights on, master in Secrets Manager. Logical DBs
   (`app`, `identity_db`, `chat_db`, `commerce_db`, `feed_db`) are
   created by a post-create kubernetes Job — pending follow-up.
-- **Aurora PostgreSQL Multi-AZ** — Phase 2. Use `terraform-aws-rds-aurora`.
-- **MSK Provisioned / Serverless** — Phase 2.
+- **MSK Serverless** — landed (Phase 2, see `modules/msk/`). IAM-auth
+  only (port 9098). Shared client IAM policy exported as
+  `msk_client_iam_policy_arn` — attach to every service's IRSA role
+  to grant produce/consume. Topics are managed explicitly per service
+  (not auto-create) so partitions + retention are reviewable in PR.
 - **OpenSearch Service** — Phase 2.
 - **S3 buckets + CloudFront** — Phase 2.
 - **WAF + Shield** — Phase 5 (hardening).
