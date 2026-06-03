@@ -99,14 +99,24 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 		// Public routes
 		v1.POST("/request-otp", middleware.OTPRateLimit(h.rdb), h.RequestOTP)
 		v1.POST("/verify-otp", middleware.LoginRateLimit(h.rdb), h.VerifyOTP)
-		v1.POST("/register", h.Register)
+		// H2 (arch review): /register is direct password signup. Without a
+		// limit an attacker can spam-create accounts to exhaust handle/email
+		// namespace or burn captcha quotas. Reuse the login limiter (10/IP
+		// /15min, 5/identifier/15min) — same abuse surface.
+		v1.POST("/register", middleware.LoginRateLimit(h.rdb), h.Register)
 		v1.POST("/login", middleware.LoginRateLimit(h.rdb), h.Login)
-		v1.POST("/refresh", h.Refresh)
+		// H2: refresh-token flood is unlikely (long opaque tokens) but a
+		// stolen refresh could DoS the service before fingerprint mismatch
+		// burns the session. IP-only cap is cheap defence in depth.
+		v1.POST("/refresh", middleware.LoginRateLimit(h.rdb), h.Refresh)
 		v1.POST("/logout", h.Logout)
 		v1.GET("/health", h.Health)
 
-		// 2FA public route (called after login returns requires_2fa)
-		v1.POST("/2fa/verify", h.Verify2FA)
+		// 2FA public route (called after login returns requires_2fa).
+		// H2: was unprotected — a 6-digit TOTP code is 10^6 attempts.
+		// LoginRateLimit (5/identifier/15min + 10/IP/15min) makes
+		// online brute force infeasible.
+		v1.POST("/2fa/verify", middleware.LoginRateLimit(h.rdb), h.Verify2FA)
 
 		// A13 — anomaly step-up. Public (the user is mid-login and
 		// doesn't have a session yet). Both endpoints consume a
