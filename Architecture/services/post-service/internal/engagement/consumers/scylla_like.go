@@ -13,6 +13,12 @@ import (
 	"github.com/segmentio/kafka-go"
 )
 
+// cqlID converts a google/uuid UUID to gocql.UUID. The two types are both
+// `[16]byte` but gocql v1.6 still chokes on google/uuid as a query arg in
+// some setups ("can not marshal uuid.UUID into uuid"). Casting explicitly
+// removes the ambiguity at the call site.
+func cqlID(u uuid.UUID) gocql.UUID { return gocql.UUID(u) }
+
 // ScyllaLikeConsumer writes like/unlike events to ScyllaDB (sharded post_likes + user_likes)
 // and updates engagement_counters via LWT.
 type ScyllaLikeConsumer struct {
@@ -64,7 +70,7 @@ func (c *ScyllaLikeConsumer) handleLike(ctx context.Context, event *engagement.E
 		if err := c.session.Query(`
 			INSERT INTO post_likes (post_id, shard, user_id, created_at)
 			VALUES (?, ?, ?, ?) USING TIMESTAMP ?`,
-			event.PostID, shard, event.UserID, event.ActionTS, ts,
+			cqlID(event.PostID), shard, cqlID(event.UserID), event.ActionTS, ts,
 		).WithContext(ctx).Exec(); err != nil {
 			return fmt.Errorf("insert post_likes: %w", err)
 		}
@@ -72,7 +78,7 @@ func (c *ScyllaLikeConsumer) handleLike(ctx context.Context, event *engagement.E
 		if err := c.session.Query(`
 			INSERT INTO user_likes (user_id, post_id, created_at)
 			VALUES (?, ?, ?) USING TIMESTAMP ?`,
-			event.UserID, event.PostID, event.ActionTS, ts,
+			cqlID(event.UserID), cqlID(event.PostID), event.ActionTS, ts,
 		).WithContext(ctx).Exec(); err != nil {
 			return fmt.Errorf("insert user_likes: %w", err)
 		}
@@ -81,13 +87,13 @@ func (c *ScyllaLikeConsumer) handleLike(ctx context.Context, event *engagement.E
 		c.session.Query(`
 			DELETE FROM post_likes USING TIMESTAMP ?
 			WHERE post_id = ? AND shard = ? AND user_id = ?`,
-			ts, event.PostID, shard, event.UserID,
+			ts, cqlID(event.PostID), shard, cqlID(event.UserID),
 		).WithContext(ctx).Exec()
 
 		c.session.Query(`
 			DELETE FROM user_likes USING TIMESTAMP ?
 			WHERE user_id = ? AND created_at = ? AND post_id = ?`,
-			ts, event.UserID, event.ActionTS, event.PostID,
+			ts, cqlID(event.UserID), event.ActionTS, cqlID(event.PostID),
 		).WithContext(ctx).Exec()
 	}
 
@@ -113,7 +119,7 @@ func (c *ScyllaLikeConsumer) handleCommentLike(ctx context.Context, event *engag
 		if err := c.session.Query(`
 			INSERT INTO comment_likes (comment_id, user_id, created_at)
 			VALUES (?, ?, ?) USING TIMESTAMP ?`,
-			event.TargetID, event.UserID, event.ActionTS, ts,
+			cqlID(event.TargetID), cqlID(event.UserID), event.ActionTS, ts,
 		).WithContext(ctx).Exec(); err != nil {
 			return fmt.Errorf("insert comment_likes: %w", err)
 		}
@@ -121,7 +127,7 @@ func (c *ScyllaLikeConsumer) handleCommentLike(ctx context.Context, event *engag
 		c.session.Query(`
 			DELETE FROM comment_likes USING TIMESTAMP ?
 			WHERE comment_id = ? AND user_id = ?`,
-			ts, event.TargetID, event.UserID,
+			ts, cqlID(event.TargetID), cqlID(event.UserID),
 		).WithContext(ctx).Exec()
 	}
 
@@ -141,7 +147,7 @@ func (c *ScyllaLikeConsumer) handleCommentDislike(ctx context.Context, event *en
 		if err := c.session.Query(`
 			INSERT INTO comment_dislikes (comment_id, user_id, created_at)
 			VALUES (?, ?, ?) USING TIMESTAMP ?`,
-			event.TargetID, event.UserID, event.ActionTS, ts,
+			cqlID(event.TargetID), cqlID(event.UserID), event.ActionTS, ts,
 		).WithContext(ctx).Exec(); err != nil {
 			return fmt.Errorf("insert comment_dislikes: %w", err)
 		}
@@ -149,7 +155,7 @@ func (c *ScyllaLikeConsumer) handleCommentDislike(ctx context.Context, event *en
 		c.session.Query(`
 			DELETE FROM comment_dislikes USING TIMESTAMP ?
 			WHERE comment_id = ? AND user_id = ?`,
-			ts, event.TargetID, event.UserID,
+			ts, cqlID(event.TargetID), cqlID(event.UserID),
 		).WithContext(ctx).Exec()
 	}
 
@@ -169,7 +175,7 @@ func (c *ScyllaLikeConsumer) handleShare(ctx context.Context, event *engagement.
 	if err := c.session.Query(`
 		INSERT INTO post_shares (post_id, shard, user_id, created_at, share_type, quote_text)
 		VALUES (?, ?, ?, ?, ?, ?) USING TIMESTAMP ?`,
-		event.PostID, shard, event.UserID, event.ActionTS, event.ShareType, event.QuoteText, ts,
+		cqlID(event.PostID), shard, cqlID(event.UserID), event.ActionTS, event.ShareType, event.QuoteText, ts,
 	).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("insert post_shares: %w", err)
 	}
@@ -177,7 +183,7 @@ func (c *ScyllaLikeConsumer) handleShare(ctx context.Context, event *engagement.
 	if err := c.session.Query(`
 		INSERT INTO user_shares (user_id, post_id, created_at, share_type)
 		VALUES (?, ?, ?, ?) USING TIMESTAMP ?`,
-		event.UserID, event.PostID, event.ActionTS, event.ShareType, ts,
+		cqlID(event.UserID), cqlID(event.PostID), event.ActionTS, event.ShareType, ts,
 	).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("insert user_shares: %w", err)
 	}
@@ -195,7 +201,7 @@ func (c *ScyllaLikeConsumer) handleBookmark(ctx context.Context, event *engageme
 		if err := c.session.Query(`
 			INSERT INTO user_bookmarks (user_id, collection, created_at, post_id)
 			VALUES (?, 'default', ?, ?) USING TIMESTAMP ?`,
-			event.UserID, event.ActionTS, event.PostID, ts,
+			cqlID(event.UserID), event.ActionTS, cqlID(event.PostID), ts,
 		).WithContext(ctx).Exec(); err != nil {
 			return fmt.Errorf("insert user_bookmarks: %w", err)
 		}
@@ -203,7 +209,7 @@ func (c *ScyllaLikeConsumer) handleBookmark(ctx context.Context, event *engageme
 		if err := c.session.Query(`
 			INSERT INTO bookmark_check (user_id, post_id, collection)
 			VALUES (?, ?, 'default') USING TIMESTAMP ?`,
-			event.UserID, event.PostID, ts,
+			cqlID(event.UserID), cqlID(event.PostID), ts,
 		).WithContext(ctx).Exec(); err != nil {
 			return fmt.Errorf("insert bookmark_check: %w", err)
 		}
@@ -211,13 +217,13 @@ func (c *ScyllaLikeConsumer) handleBookmark(ctx context.Context, event *engageme
 		c.session.Query(`
 			DELETE FROM user_bookmarks USING TIMESTAMP ?
 			WHERE user_id = ? AND collection = 'default' AND created_at = ? AND post_id = ?`,
-			ts, event.UserID, event.ActionTS, event.PostID,
+			ts, cqlID(event.UserID), event.ActionTS, cqlID(event.PostID),
 		).WithContext(ctx).Exec()
 
 		c.session.Query(`
 			DELETE FROM bookmark_check USING TIMESTAMP ?
 			WHERE user_id = ? AND post_id = ?`,
-			ts, event.UserID, event.PostID,
+			ts, cqlID(event.UserID), cqlID(event.PostID),
 		).WithContext(ctx).Exec()
 	}
 
@@ -233,12 +239,13 @@ func (c *ScyllaLikeConsumer) handleBookmark(ctx context.Context, event *engageme
 // incrementCounter performs a read-then-CAS update on engagement_counters.
 // Retries up to 3 times on CAS failures.
 func incrementCounter(session *gocql.Session, targetType string, targetID uuid.UUID, counterType string, delta int) error {
+	tid := cqlID(targetID)
 	for retries := 0; retries < 3; retries++ {
 		var current int64
 		if err := session.Query(`
 			SELECT count FROM engagement_counters
 			WHERE target_type = ? AND target_id = ? AND counter_type = ?`,
-			targetType, targetID, counterType,
+			targetType, tid, counterType,
 		).Scan(&current); err != nil {
 			// Row doesn't exist yet, initialize it
 			current = 0
@@ -256,7 +263,7 @@ func incrementCounter(session *gocql.Session, targetType string, targetID uuid.U
 				INSERT INTO engagement_counters (target_type, target_id, counter_type, count, updated_at)
 				VALUES (?, ?, ?, ?, toTimestamp(now()))
 				IF NOT EXISTS`,
-				targetType, targetID, counterType, newCount,
+				targetType, tid, counterType, newCount,
 			).Scan(&applied, nil, nil, nil, nil, nil); err != nil {
 				// If scan fails, try the UPDATE path
 				applied = false
@@ -272,7 +279,7 @@ func incrementCounter(session *gocql.Session, targetType string, targetID uuid.U
 			SET count = ?, updated_at = toTimestamp(now())
 			WHERE target_type = ? AND target_id = ? AND counter_type = ?
 			IF count = ?`,
-			newCount, targetType, targetID, counterType, current,
+			newCount, targetType, tid, counterType, current,
 		).Scan(&applied, nil); err != nil {
 			return fmt.Errorf("counter CAS: %w", err)
 		}
