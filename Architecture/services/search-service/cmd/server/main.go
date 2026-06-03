@@ -11,6 +11,7 @@ import (
 	"github.com/atpost/search-service/internal/graphclient"
 	"github.com/atpost/search-service/internal/http"
 	"github.com/atpost/search-service/internal/reindex"
+	"github.com/atpost/search-service/database"
 	"github.com/atpost/search-service/internal/store/postgres"
 	"github.com/atpost/search-service/internal/store/search"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -126,6 +127,11 @@ func main() {
 			slog.Warn("search-service: postgres ping failed; analytics + extras disabled", "err", err)
 			pgPool.Close()
 		} else {
+			if err := postgres.BootstrapSchema(ctx, pgPool, database.SetupSQL, database.Migrations); err != nil {
+				slog.Warn("search-service: schema bootstrap failed; analytics + extras may misbehave", "err", err)
+			} else {
+				slog.Info("search-service: schema ready")
+			}
 			handler.WithAnalyticsStore(postgres.NewAnalyticsStore(pgPool))
 			handler.WithExtrasStore(postgres.NewExtrasStore(pgPool))
 			slog.Info("search-service: analytics + extras stores wired")

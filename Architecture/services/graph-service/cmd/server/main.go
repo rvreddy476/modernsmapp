@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/graph-service/database"
 	"github.com/atpost/graph-service/internal/events"
 	graphHttp "github.com/atpost/graph-service/internal/http"
 	"github.com/atpost/graph-service/internal/reconcile"
@@ -61,6 +62,12 @@ func main() {
 		os.Exit(1)
 	}
 	slog.Info("connected to postgres")
+
+	if err := store.BootstrapSchema(ctx, dbPool, database.SetupSQL, database.Migrations); err != nil {
+		slog.Error("failed to bootstrap graph schema", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("graph schema ready")
 
 	// 4. Redis
 	rdb, err := transport.NewRedisClientFromEnv(redisAddr)

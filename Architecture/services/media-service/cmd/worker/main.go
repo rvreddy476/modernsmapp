@@ -105,7 +105,7 @@ func main() {
 	}
 	log.Println("Connected to Postgres")
 
-	if err := postgres.BootstrapSchema(ctx, dbPool, database.SetupSQL); err != nil {
+	if err := postgres.BootstrapSchema(ctx, dbPool, database.SetupSQL, database.Migrations); err != nil {
 		log.Fatalf("Failed to bootstrap media schema: %v\n", err)
 	}
 	log.Println("Media schema ready")

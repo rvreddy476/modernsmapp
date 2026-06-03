@@ -72,7 +72,7 @@ func main() {
 		slog.Error("postgres ping", "error", err)
 		os.Exit(1)
 	}
-	if err := pgstore.BootstrapSchema(ctx, dbPool, dbschema.SetupSQL); err != nil {
+	if err := pgstore.BootstrapSchema(ctx, dbPool, dbschema.SetupSQL, dbschema.Migrations); err != nil {
 		slog.Error("bootstrap schema", "error", err)
 		os.Exit(1)
 	}

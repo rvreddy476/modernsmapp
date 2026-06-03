@@ -17,6 +17,8 @@ var SetupSQL string
 // database has the Pulse tables before runtime consumers start.
 //
 // Mirrors the qa-service pattern (see qa-service/internal/store/postgres/bootstrap.go).
+// NOTE: no migration runner yet — `database/migrations/` is empty. Wire the
+// migrationrunner here when the first migration file is added.
 func BootstrapSchema(ctx context.Context, db *pgxpool.Pool) error {
 	if db == nil {
 		return fmt.Errorf("db pool is nil")

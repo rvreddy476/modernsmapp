@@ -13,7 +13,8 @@ import (
 	"github.com/atpost/analytics-service/internal/reconcile"
 	"github.com/atpost/analytics-service/internal/scoring"
 	"github.com/atpost/analytics-service/internal/service"
-	"github.com/atpost/analytics-service/internal/store/postgres"
+	"github.com/atpost/analytics-service/database"
+	pgstore "github.com/atpost/analytics-service/internal/store/postgres"
 	scyllaStore "github.com/atpost/analytics-service/internal/store/scylla"
 	"github.com/atpost/shared/health"
 	"github.com/atpost/shared/middleware"
@@ -58,7 +59,16 @@ func main() {
 	}
 	defer dbPool.Close()
 
+	if err := pgstore.BootstrapSchema(ctx, dbPool, database.SetupSQL, database.Migrations); err != nil {
+		slog.Error("failed to bootstrap analytics schema", "error", err)
+		os.Exit(1)
+	}
+	// Belt-and-braces: ensureSchema's DDL is all CREATE IF NOT EXISTS so
+	// it's a safe no-op once migrations 001-002 are recorded, but keeps
+	// the historical fallback path intact until the migrations file set
+	// covers every object ensureSchema creates.
 	ensureSchema(ctx, dbPool)
+	slog.Info("analytics schema ready")
 
 	// 4. Redis
 	rdb, err := transport.NewRedisClientFromEnv(redisAddr)
@@ -139,8 +149,8 @@ func main() {
 	}
 
 	// 9. Dependencies
-	store := postgres.New(dbPool)
-	aggStore := postgres.NewAggregateStore(dbPool)
+	store := pgstore.New(dbPool)
+	aggStore := pgstore.NewAggregateStore(dbPool)
 	svc := service.New(ctx, store, kafkaWriter)
 	handler := httpHandler.New(svc, rdb)
 	dashHandler := httpHandler.NewDashboardHandler(aggStore).WithWatchStore(watchStore)

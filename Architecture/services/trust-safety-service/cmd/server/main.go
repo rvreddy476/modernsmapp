@@ -56,12 +56,8 @@ func main() {
 	}
 	slog.Info("connected to postgres")
 
-	if err := postgres.BootstrapSchema(ctx, dbPool, database.SetupSQL); err != nil {
+	if err := postgres.BootstrapSchema(ctx, dbPool, database.SetupSQL, database.Migrations); err != nil {
 		slog.Error("failed to bootstrap trust-safety schema", "error", err)
-		os.Exit(1)
-	}
-	if err := postgres.RunMigrations(ctx, dbPool, database.Migrations); err != nil {
-		slog.Error("failed to run trust-safety migrations", "error", err)
 		os.Exit(1)
 	}
 	slog.Info("trust-safety schema ready")

@@ -80,7 +80,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := pgstore.BootstrapSchema(ctx, dbPool, database.SetupSQL); err != nil {
+	if err := pgstore.BootstrapSchema(ctx, dbPool, database.SetupSQL, database.Migrations); err != nil {
 		slog.Error("failed to bootstrap community schema", "error", err)
 		os.Exit(1)
 	}

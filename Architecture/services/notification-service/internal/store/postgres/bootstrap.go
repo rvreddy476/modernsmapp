@@ -10,8 +10,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// BootstrapSchema applies the base media-service schema, then runs any migration
-// files in `migrations` not yet recorded in `schema_migrations`.
+// BootstrapSchema applies the base notification-service schema (setup.sql),
+// then runs any migration files in `migrations` not yet recorded in
+// `schema_migrations`. Replaces the previous inline `ensureNotifSchema`
+// in main.go which duplicated migrations/001 in Go DDL.
 func BootstrapSchema(ctx context.Context, db *pgxpool.Pool, schemaSQL string, migrations fs.FS) error {
 	if db == nil {
 		return fmt.Errorf("db pool is nil")
@@ -20,11 +22,11 @@ func BootstrapSchema(ctx context.Context, db *pgxpool.Pool, schemaSQL string, mi
 		return fmt.Errorf("schema sql is empty")
 	}
 	if _, err := db.Exec(ctx, schemaSQL); err != nil {
-		return fmt.Errorf("apply media schema: %w", err)
+		return fmt.Errorf("apply notification schema: %w", err)
 	}
 	if migrations != nil {
-		if err := migrationrunner.Run(ctx, db, "media-service", migrations, "migrations"); err != nil {
-			return fmt.Errorf("apply media migrations: %w", err)
+		if err := migrationrunner.Run(ctx, db, "notification-service", migrations, "migrations"); err != nil {
+			return fmt.Errorf("apply notification migrations: %w", err)
 		}
 	}
 	return nil

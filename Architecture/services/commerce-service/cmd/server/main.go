@@ -102,12 +102,8 @@ func main() {
 	}
 
 	// 6. Bootstrap schema + run migrations
-	if err := pgstore.BootstrapSchema(ctx, dbPool, database.SetupSQL); err != nil {
+	if err := pgstore.BootstrapSchema(ctx, dbPool, database.SetupSQL, database.Migrations); err != nil {
 		slog.Error("failed to bootstrap commerce schema", "error", err)
-		os.Exit(1)
-	}
-	if err := pgstore.RunMigrations(ctx, dbPool, database.Migrations); err != nil {
-		slog.Error("failed to run commerce migrations", "error", err)
 		os.Exit(1)
 	}
 	slog.Info("commerce schema ready")

@@ -13,6 +13,7 @@ import (
 	"github.com/atpost/notification-service/internal/http"
 	"github.com/atpost/notification-service/internal/push"
 	"github.com/atpost/notification-service/internal/service"
+	"github.com/atpost/notification-service/database"
 	"github.com/atpost/notification-service/internal/store/postgres"
 	"github.com/atpost/notification-service/internal/store/scylla"
 	"github.com/atpost/notification-service/internal/workers"
@@ -101,7 +102,11 @@ func main() {
 				} else {
 					slog.Info("connected to postgres")
 					pgStore = postgres.New(dbPool)
-					ensureNotifSchema(ctx, dbPool)
+					if err := postgres.BootstrapSchema(ctx, dbPool, database.SetupSQL, database.Migrations); err != nil {
+						slog.Warn("notification schema bootstrap failed", "error", err)
+					} else {
+						slog.Info("notification schema ready")
+					}
 				}
 			}
 		}
@@ -424,35 +429,3 @@ func collectDBPoolStats(ctx context.Context, pool *pgxpool.Pool, m *metrics.DBPo
 	}
 }
 
-// ensureNotifSchema creates Postgres tables for notification preferences and devices.
-func ensureNotifSchema(ctx context.Context, db *pgxpool.Pool) {
-	ddl := []string{
-		`CREATE TABLE IF NOT EXISTS notification_preferences (
-			user_id          UUID PRIMARY KEY,
-			email_enabled    BOOLEAN NOT NULL DEFAULT TRUE,
-			push_enabled     BOOLEAN NOT NULL DEFAULT TRUE,
-			sms_enabled      BOOLEAN NOT NULL DEFAULT FALSE,
-			quiet_hours_start TIME,
-			quiet_hours_end   TIME,
-			muted_types      JSONB NOT NULL DEFAULT '[]',
-			updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
-		)`,
-		`CREATE TABLE IF NOT EXISTS user_devices (
-			id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-			user_id    UUID NOT NULL,
-			platform   TEXT NOT NULL CHECK (platform IN ('ios', 'android', 'web')),
-			push_token TEXT NOT NULL,
-			is_active  BOOLEAN NOT NULL DEFAULT TRUE,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-			UNIQUE(user_id, platform, push_token)
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_user_devices_user ON user_devices (user_id) WHERE is_active = TRUE`,
-	}
-	for _, stmt := range ddl {
-		if _, err := db.Exec(ctx, stmt); err != nil {
-			slog.Warn("notification schema migration", "error", err)
-		}
-	}
-	slog.Info("notification preferences schema ensured")
-}

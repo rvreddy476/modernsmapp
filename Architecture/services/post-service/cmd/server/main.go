@@ -67,7 +67,7 @@ func main() {
 	}
 	slog.Info("connected to postgres")
 
-	if err := postgres.BootstrapSchema(ctx, dbPool, database.SetupSQL); err != nil {
+	if err := postgres.BootstrapSchema(ctx, dbPool, database.SetupSQL, database.Migrations); err != nil {
 		slog.Error("failed to bootstrap post schema", "error", err)
 		os.Exit(1)
 	}

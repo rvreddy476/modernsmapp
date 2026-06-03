@@ -3,14 +3,18 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"strings"
 
+	"github.com/atpost/shared/store/migrationrunner"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// BootstrapSchema applies the base trust-safety schema on startup so a fresh
-// database has the reports tables before moderation traffic arrives.
-func BootstrapSchema(ctx context.Context, db *pgxpool.Pool, schemaSQL string) error {
+// BootstrapSchema applies the base trust-safety schema on startup, then runs
+// any migration files in `migrations` that haven't already been applied
+// (tracked in `schema_migrations`). Pass nil for `migrations` to skip the
+// migration phase.
+func BootstrapSchema(ctx context.Context, db *pgxpool.Pool, schemaSQL string, migrations fs.FS) error {
 	if db == nil {
 		return fmt.Errorf("db pool is nil")
 	}
@@ -20,22 +24,9 @@ func BootstrapSchema(ctx context.Context, db *pgxpool.Pool, schemaSQL string) er
 	if _, err := db.Exec(ctx, schemaSQL); err != nil {
 		return fmt.Errorf("apply trust-safety schema: %w", err)
 	}
-	return nil
-}
-
-// RunMigrations applies each incremental migration SQL in order. Every migration
-// uses IF NOT EXISTS / IF EXISTS guards so re-runs on an already-migrated
-// database are safe.
-func RunMigrations(ctx context.Context, db *pgxpool.Pool, migrations []string) error {
-	if db == nil {
-		return fmt.Errorf("db pool is nil")
-	}
-	for i, m := range migrations {
-		if strings.TrimSpace(m) == "" {
-			continue
-		}
-		if _, err := db.Exec(ctx, m); err != nil {
-			return fmt.Errorf("trust-safety migration %d failed: %w", i+1, err)
+	if migrations != nil {
+		if err := migrationrunner.Run(ctx, db, "trust-safety-service", migrations, "migrations"); err != nil {
+			return fmt.Errorf("apply trust-safety migrations: %w", err)
 		}
 	}
 	return nil

@@ -75,7 +75,7 @@ func main() {
 	}
 	slog.Info("connected to postgres")
 
-	if err := postgres.BootstrapSchema(ctx, dbPool, database.SetupSQL); err != nil {
+	if err := postgres.BootstrapSchema(ctx, dbPool, database.SetupSQL, database.Migrations); err != nil {
 		slog.Error("failed to bootstrap media schema", "error", err)
 		os.Exit(1)
 	}
@@ -141,8 +141,15 @@ func main() {
 	checker.Register("postgres", health.PingCheck(dbPool))
 
 	// 9. HTTP Server with middleware
-	authMW := mediaHttp.AuthMiddleware(jwtSecret)
-	optionalAuthMW := mediaHttp.OptionalAuthMiddleware(jwtSecret)
+	// C7 — accept the previous secret too during a kid rotation window.
+	jwtKeys := mediaHttp.JWTKeySet{
+		ActiveKID:      env("JWT_KID", "v1"),
+		ActiveSecret:   jwtSecret,
+		PreviousKID:    os.Getenv("JWT_KID_PREVIOUS"),
+		PreviousSecret: os.Getenv("JWT_SECRET_PREVIOUS"),
+	}
+	authMW := mediaHttp.AuthMiddlewareWithKeys(jwtKeys)
+	optionalAuthMW := mediaHttp.OptionalAuthMiddlewareWithKeys(jwtKeys)
 	mediaHandler := mediaHttp.New(mediaSvc)
 
 	gin.SetMode(gin.ReleaseMode)
