@@ -127,7 +127,7 @@ services:
   # auto-maps :4318 → :4317 so existing OTEL_EXPORTER_OTLP_ENDPOINT
   # values keep working. Open http://localhost:16686 to view traces.
   jaeger:
-    image: jaegertracing/all-in-one:1.62
+    image: jaegertracing/all-in-one:latest
     container_name: atpost_jaeger
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
@@ -345,6 +345,11 @@ services:
       POSTGRES_DSN: *identity_postgres_dsn
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
+      # JWT_SECRET must match auth-service; otherwise tokens validate at
+      # the gateway but get rejected here → 401 → UI clears session →
+      # "Authorization Required" on /settings/profile even after a fresh
+      # login.
+      JWT_SECRET: ${JWT_SECRET:-local_dev_jwt_change_me}
       # Gates /v1/users/* (incl. the privacy-settings endpoint the graph
       # permission resolver reads). The api-gateway injects this key.
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
@@ -405,6 +410,7 @@ services:
       KAFKA_BROKERS: redpanda:9092
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       PROFILE_SERVICE_URL: http://identity-profile:8098
+      PAGES_ADMIN_USER_IDS: ${PAGES_ADMIN_USER_IDS:-c52b44aa-c75f-4843-98fa-2225041a5e00}
     ports:
       - "8082:8082"
     depends_on:
@@ -503,6 +509,12 @@ services:
       USER_SERVICE_URL: http://identity-user:8110
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
+      # Migration runner baseline knob — leave default ("false") so new migration
+      # files added to database/migrations/ get applied on next boot. Set to
+      # "true" only when adopting the runner against an existing DB whose
+      # migrations were applied out-of-band; the first such boot marks them
+      # as applied without executing. (One-shot, see migrationrunner package.)
+      SCHEMA_MIGRATIONS_BASELINE: ${SCHEMA_MIGRATIONS_BASELINE:-false}
     ports:
       - "8084:8084"
     depends_on:
