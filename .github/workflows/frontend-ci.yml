@@ -1,0 +1,33 @@
+name: Frontend / Mobile CI
+
+# The web frontend lives in the sibling postbook-ui repo so it isn't checked
+# here. This workflow covers the Flutter mobile app only. Web CI is owned by
+# the postbook-ui repo's own workflows.
+
+on:
+  pull_request:
+    paths:
+      - 'mobile/atpost_app/**'
+      - '.github/workflows/frontend-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'mobile/atpost_app/**'
+
+jobs:
+  flutter:
+    name: Flutter (analyze + test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: mobile/atpost_app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter analyze --no-fatal-infos
+      - run: flutter test

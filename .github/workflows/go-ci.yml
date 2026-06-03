@@ -1,0 +1,72 @@
+name: Go CI
+
+# Builds, vets, and tests every Go workspace on PR + merge to main.
+# Each workspace is a job so a failure surfaces against the right module
+# without scrolling through 20+ services. govulncheck + gosec run weekly via
+# a scheduled workflow (security.yml) — they're too slow for PR.
+
+on:
+  pull_request:
+    paths:
+      - 'Architecture/**'
+      - 'identity-platform/**'
+      - 'chat-service/**'
+      - '.github/workflows/go-ci.yml'
+  push:
+    branches: [main]
+
+jobs:
+  architecture:
+    name: Architecture (build / vet / test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache-dependency-path: Architecture/go.sum
+      - name: go vet
+        run: cd Architecture && go vet ./...
+      - name: go build
+        run: cd Architecture && go build ./...
+      - name: go test
+        run: cd Architecture && go test -race -count=1 ./...
+
+  identity-platform:
+    name: identity-platform (per-service)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [auth-service, user-service, profile-service]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache-dependency-path: identity-platform/services/${{ matrix.service }}/go.sum
+      - name: go vet
+        run: cd identity-platform/services/${{ matrix.service }} && go vet ./...
+      - name: go build
+        run: cd identity-platform/services/${{ matrix.service }} && go build ./...
+      - name: go test
+        run: cd identity-platform/services/${{ matrix.service }} && go test -race -count=1 ./...
+
+  chat-service:
+    name: chat-service (build / vet / test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache-dependency-path: chat-service/go.sum
+      - name: go vet
+        run: cd chat-service && go vet ./...
+      - name: go build
+        run: cd chat-service && go build ./...
+      - name: go test
+        run: cd chat-service && go test -race -count=1 ./...
