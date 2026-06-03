@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/atpost/shared/api"
@@ -30,6 +31,9 @@ type Handler struct {
 	internalKey      string
 	internalRouteKey string
 	dlqConsumer      *events.Consumer
+	// pageAdmins is the platform-admin allowlist for page lifecycle actions
+	// (approve/reject/suspend/disable + doc review), from PAGES_ADMIN_USER_IDS.
+	pageAdmins map[string]bool
 }
 
 func New(svc *service.Service, presenceStore *presence.Store, st *store.Store) *Handler {
@@ -39,7 +43,18 @@ func New(svc *service.Service, presenceStore *presence.Store, st *store.Store) *
 	}
 	h := &Handler{svc: svc, store: st, graphURL: graphURL, presenceStore: presenceStore}
 	h.graphClient = httpclient.NewWithBreaker(5*time.Second, "user->graph")
+	h.pageAdmins = map[string]bool{}
+	for _, id := range strings.Split(os.Getenv("PAGES_ADMIN_USER_IDS"), ",") {
+		if id = strings.TrimSpace(id); id != "" {
+			h.pageAdmins[id] = true
+		}
+	}
 	return h
+}
+
+// isPageAdmin reports whether the caller (X-User-Id) is a platform page admin.
+func (h *Handler) isPageAdmin(c *gin.Context) bool {
+	return h.pageAdmins[c.GetHeader("X-User-Id")]
 }
 
 // WithDLQConsumer wires the Kafka consumer so the /internal DLQ routes can
@@ -214,16 +229,26 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	r.POST("/v1/onboarding/ensure-publisher", h.EnsurePublisher)
 
 	// Business Pages — use :id for all sub-paths (Gin requires uniform wildcard names)
-	pages := r.Group("/v1/pages")
+	pagesGrp := r.Group("/v1/pages")
 	{
-		pages.GET("", h.DiscoverPages)
-		pages.GET("/:id", h.GetBusinessPage)
-		pages.PATCH("/:id", h.UpdateBusinessPage)
-		pages.DELETE("/:id", h.DeleteBusinessPage)
-		pages.POST("/:id/follow", h.FollowPage)
-		pages.DELETE("/:id/follow", h.UnfollowPage)
-		pages.GET("/:id/reviews", h.GetPageReviews)
-		pages.POST("/:id/reviews", h.SubmitReview)
+		pagesGrp.GET("", h.DiscoverPages)
+		pagesGrp.GET("/:id", h.GetBusinessPage)
+		pagesGrp.PATCH("/:id", h.UpdateBusinessPage)
+		pagesGrp.DELETE("/:id", h.DeleteBusinessPage)
+		pagesGrp.POST("/:id/follow", h.FollowPage)
+		pagesGrp.DELETE("/:id/follow", h.UnfollowPage)
+		pagesGrp.GET("/:id/reviews", h.GetPageReviews)
+		pagesGrp.POST("/:id/reviews", h.SubmitReview)
+		// Lifecycle (owner/admin submit; platform-admin approve/reject/suspend/disable)
+		pagesGrp.POST("/:id/submit-review", h.SubmitPageForReview)
+		pagesGrp.POST("/:id/approve", h.ApprovePage)
+		pagesGrp.POST("/:id/reject", h.RejectPage)
+		pagesGrp.POST("/:id/suspend", h.SuspendPage)
+		pagesGrp.POST("/:id/disable", h.DisablePage)
+		// Verification documents
+		pagesGrp.GET("/:id/documents", h.ListPageDocuments)
+		pagesGrp.POST("/:id/documents", h.AddPageDocument)
+		pagesGrp.POST("/:id/documents/:docId/:action", h.ReviewPageDocument)
 	}
 	myPages := r.Group("/v1/users/me/pages")
 	{

@@ -263,6 +263,29 @@ func main() {
 		}
 	}()
 
+	// Page follower-count reconciliation — recompute from active follow rows
+	// to catch drift (spec §11). Runs once on startup, then every 6h.
+	go func() {
+		ticker := time.NewTicker(6 * time.Hour)
+		defer ticker.Stop()
+		run := func() {
+			if n, err := userSvc.ReconcileFollowerCounts(ctx); err != nil {
+				slog.Error("page follower reconcile error", "error", err)
+			} else if n > 0 {
+				slog.Info("page follower counts reconciled", "pages_updated", n)
+			}
+		}
+		run()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				run()
+			}
+		}
+	}()
+
 	// 9. Gin with middleware stack
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()

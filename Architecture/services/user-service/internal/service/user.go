@@ -443,14 +443,59 @@ func (s *Service) DiscoverPages(ctx context.Context, category, search string, li
 	return s.store.DiscoverPages(ctx, category, search, limit, offset)
 }
 
-// FollowPage follows a business page.
-func (s *Service) FollowPage(ctx context.Context, pageID, userID uuid.UUID) error {
+// FollowPage follows a business page; returns the new follower count.
+func (s *Service) FollowPage(ctx context.Context, pageID, userID uuid.UUID) (int, error) {
 	return s.store.FollowPage(ctx, pageID, userID)
 }
 
-// UnfollowPage unfollows a business page.
-func (s *Service) UnfollowPage(ctx context.Context, pageID, userID uuid.UUID) error {
+// UnfollowPage unfollows a business page; returns the resulting follower count.
+func (s *Service) UnfollowPage(ctx context.Context, pageID, userID uuid.UUID) (int, error) {
 	return s.store.UnfollowPage(ctx, pageID, userID)
+}
+
+// UpdatePageStatus performs a lifecycle transition (caller checks legality/authz).
+func (s *Service) UpdatePageStatus(ctx context.Context, pageID, actorID uuid.UUID, to, reason string) error {
+	return s.store.UpdatePageStatus(ctx, pageID, to, actorID, reason)
+}
+
+// CountActivePagesOwned returns the count of non-disabled pages a user owns.
+func (s *Service) CountActivePagesOwned(ctx context.Context, userID uuid.UUID) (int, error) {
+	return s.store.CountActivePagesOwned(ctx, userID)
+}
+
+// ReconcileFollowerCounts recomputes page follower counts from active rows.
+func (s *Service) ReconcileFollowerCounts(ctx context.Context) (int64, error) {
+	return s.store.ReconcileFollowerCounts(ctx)
+}
+
+// GetPageRole returns a user's active role on a page ("" if none).
+func (s *Service) GetPageRole(ctx context.Context, pageID, userID uuid.UUID) (string, error) {
+	return s.store.GetPageRole(ctx, pageID, userID)
+}
+
+// IsPageOwnerOrAdmin reports whether the user holds owner/admin on the page.
+func (s *Service) IsPageOwnerOrAdmin(ctx context.Context, pageID, userID uuid.UUID) (bool, error) {
+	return s.store.IsPageOwnerOrAdmin(ctx, pageID, userID)
+}
+
+// AddPageDocument inserts a pending verification document.
+func (s *Service) AddPageDocument(ctx context.Context, d *store.PageDocument) error {
+	return s.store.AddPageDocument(ctx, d)
+}
+
+// ListPageDocuments lists a page's verification documents.
+func (s *Service) ListPageDocuments(ctx context.Context, pageID uuid.UUID) ([]store.PageDocument, error) {
+	return s.store.ListPageDocuments(ctx, pageID)
+}
+
+// UploadedDocTypes returns the set of uploaded doc types (pending|approved).
+func (s *Service) UploadedDocTypes(ctx context.Context, pageID uuid.UUID) (map[string]bool, error) {
+	return s.store.UploadedDocTypes(ctx, pageID)
+}
+
+// SetPageDocStatus reviews a single document.
+func (s *Service) SetPageDocStatus(ctx context.Context, docID, reviewerID uuid.UUID, status, reason string) error {
+	return s.store.SetPageDocStatus(ctx, docID, reviewerID, status, reason)
 }
 
 // UpdateBusinessPage updates a business page.
