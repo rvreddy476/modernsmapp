@@ -175,6 +175,15 @@ module "scylla" {
   # modules/scylla/variables.tf (3 vCPU req/limit, 28 Gi RAM, 100 GB).
 }
 
+module "argocd" {
+  source = "../../modules/argocd"
+
+  environment         = "prod"
+  ingress_scheme      = "internal" # prod UI is VPN-gated
+  argocd_hostname     = "argocd.aws.cleestudio.com"
+  acm_certificate_arn = module.dns.wildcard_cert_arn
+}
+
 output "eks_cluster_name" { value = module.eks.cluster_name }
 output "eks_cluster_endpoint" { value = module.eks.cluster_endpoint }
 output "eks_oidc_provider_arn" { value = module.eks.oidc_provider_arn }

@@ -181,6 +181,15 @@ module "scylla" {
   storage_per_replica = "30Gi"
 }
 
+module "argocd" {
+  source = "../../modules/argocd"
+
+  environment         = "staging"
+  ingress_scheme      = "internet-facing" # staging UI is public; ACM + admin password gate it
+  argocd_hostname     = "argocd.staging.aws.cleestudio.com"
+  acm_certificate_arn = module.dns.wildcard_cert_arn
+}
+
 output "eks_cluster_name" { value = module.eks.cluster_name }
 output "eks_cluster_endpoint" { value = module.eks.cluster_endpoint }
 output "eks_oidc_provider_arn" { value = module.eks.oidc_provider_arn }
