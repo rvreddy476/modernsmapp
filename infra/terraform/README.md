@@ -71,6 +71,26 @@ terraform apply -var-file=staging.tfvars
 `prod` is intentionally identical so a misconfigured staging change is
 hard to ship blindly — copy the diff, don't divergent-edit.
 
+### Two-apply bootstrap
+
+The first `terraform apply` against a new environment will FAIL on the
+helm_release / kubernetes_manifest resources because the
+`kubernetes` + `helm` providers can't authenticate against an EKS
+cluster that doesn't exist yet. This is expected:
+
+1. First `apply`: creates AWS infra (VPC, EKS, Aurora, MSK,
+   ElastiCache, OpenSearch, S3/CloudFront). Cluster-tooling resources
+   fail with `connection refused` / `Unauthorized` — ignore.
+2. Second `apply` (re-run the same command): the EKS cluster now
+   responds, so kubernetes + helm authenticate and the cluster
+   tooling (External Secrets Operator, ALB Controller, ArgoCD,
+   Scylla Operator) installs cleanly.
+
+This is the standard pattern for "Terraform manages both AWS and the
+kubernetes resources inside it". Targeted applies are an alternative
+(`terraform apply -target=module.eks` then full apply) but the
+two-pass approach is simpler and harder to misuse.
+
 ## Conventions
 
 - **Region**: `ap-south-1` (Mumbai) — India DPDP compliance, decision
