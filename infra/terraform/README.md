@@ -100,6 +100,12 @@ hard to ship blindly — copy the diff, don't divergent-edit.
   `msk_client_iam_policy_arn` — attach to every service's IRSA role
   to grant produce/consume. Topics are managed explicitly per service
   (not auto-create) so partitions + retention are reviewable in PR.
+- **ElastiCache Valkey 7.2** — landed (Phase 2, see
+  `modules/elasticache/`). Replication group across 3 AZs (1 primary
+  + 2 replicas prod, +1 replica staging). Multi-AZ failover on,
+  encryption at rest (KMS) + in transit (TLS) + AUTH token in
+  Secrets Manager. Cluster-mode-disabled — key-namespace sharding in
+  the app is the escape hatch if a hot key ever shows up.
 - **OpenSearch Service** — Phase 2.
 - **S3 buckets + CloudFront** — Phase 2.
 - **WAF + Shield** — Phase 5 (hardening).
