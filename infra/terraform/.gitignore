@@ -1,0 +1,22 @@
+# Local state (the bucket lives in the bootstrap workspace; never
+# commit terraform.tfstate outside of bootstrap/, which itself uses
+# local state by design — see README).
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Per-env tfvars contain account IDs and (eventually) module-specific
+# secrets. The .example files in each env show the shape; the real
+# files stay local.
+*.tfvars
+!*.tfvars.example
+
+# Terraform provider cache / lock — these are useful to commit
+# selectively, but they get noisy across workstations. Operator
+# preference; keep ignored for now.
+.terraform/
+.terraform.lock.hcl
+
+# Crash logs
+crash.log
+crash.*.log
