@@ -19,6 +19,11 @@ import (
 
 type ServerOptions struct {
 	JWTSecret      string
+	// JWTKeys (C7) — optional. When ActiveSecret is set, takes precedence
+	// over JWTSecret and enables kid-aware verification (including the
+	// previous secret during rotation). When unset, JWTSecret is used as
+	// the only active secret with no kid binding.
+	JWTKeys        JWTKeySet
 	AllowedOrigins []string
 	AllowQueryToken bool
 
@@ -138,7 +143,11 @@ func (s *Server) handleHealth(w nethttp.ResponseWriter, _ *nethttp.Request) {
 }
 
 func (s *Server) handleWS(w nethttp.ResponseWriter, r *nethttp.Request) {
-	userID, tokenExp, err := authenticateUserFromJWTWithExpiry(r, s.opts.JWTSecret, s.opts.AllowQueryToken)
+	keys := s.opts.JWTKeys
+	if keys.ActiveSecret == "" {
+		keys.ActiveSecret = s.opts.JWTSecret
+	}
+	userID, tokenExp, err := authenticateUserFromJWTWithKeys(r, keys, s.opts.AllowQueryToken)
 	if err != nil {
 		s.log.Warn("websocket auth failed", "err", err, "client_ip", s.readClientIP(r))
 		nethttp.Error(w, "unauthorized", nethttp.StatusUnauthorized)

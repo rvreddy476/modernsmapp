@@ -15,6 +15,10 @@ type Config struct {
 	KafkaBrokers         []string
 	KafkaTopic           string
 	JWTSecret            string
+	// C7 — kid + previous-secret rotation knobs.
+	JWTKID               string
+	JWTSecretPrevious    string
+	JWTKIDPrevious       string
 	UserServiceURL       string
 	GraphServiceURL      string
 	InternalServiceKey   string
@@ -39,6 +43,9 @@ func Load() *Config {
 		KafkaBrokers:         splitAndClean(getEnv("KAFKA_BROKERS", "localhost:9092")),
 		KafkaTopic:           getEnv("KAFKA_TOPIC", "chat.events.v1"),
 		JWTSecret:            getEnv("JWT_SECRET", ""),
+		JWTKID:               getEnv("JWT_KID", "v1"),
+		JWTSecretPrevious:    getEnv("JWT_SECRET_PREVIOUS", ""),
+		JWTKIDPrevious:       getEnv("JWT_KID_PREVIOUS", ""),
 		UserServiceURL:       getEnv("USER_SERVICE_URL", "http://user-service:8082"),
 		GraphServiceURL:      getEnv("GRAPH_SERVICE_URL", "http://graph-service:8083"),
 		InternalServiceKey:   getEnv("INTERNAL_SERVICE_KEY", ""),

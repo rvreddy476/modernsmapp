@@ -112,18 +112,45 @@ func CORSMiddleware() gin.HandlerFunc {
 	}
 }
 
+// JWTKeySet — C7. Picks the verifying secret by `kid` so a kid-rotation
+// window can verify both old and new tokens. Pre-C7 tokens (no kid) fall
+// back to the active secret.
+type JWTKeySet struct {
+	ActiveKID      string
+	ActiveSecret   string
+	PreviousKID    string
+	PreviousSecret string
+}
+
+func (k JWTKeySet) secretFor(kid string) ([]byte, bool) {
+	active := strings.TrimSpace(k.ActiveSecret)
+	if kid == "" || kid == k.ActiveKID {
+		if active == "" {
+			return nil, false
+		}
+		return []byte(active), true
+	}
+	prev := strings.TrimSpace(k.PreviousSecret)
+	if prev != "" && kid == k.PreviousKID {
+		return []byte(prev), true
+	}
+	return nil, false
+}
+
 func AuthMiddleware(jwtSecret string, log *slog.Logger) gin.HandlerFunc {
+	return AuthMiddlewareWithKeys(JWTKeySet{ActiveSecret: jwtSecret}, log)
+}
+
+func AuthMiddlewareWithKeys(keys JWTKeySet, log *slog.Logger) gin.HandlerFunc {
 	if log == nil {
 		log = slog.Default()
 	}
-	secret := []byte(strings.TrimSpace(jwtSecret))
-
 	return func(c *gin.Context) {
 		if strings.HasSuffix(c.Request.URL.Path, "/health") {
 			c.Next()
 			return
 		}
-		if len(secret) == 0 {
+		if strings.TrimSpace(keys.ActiveSecret) == "" {
 			api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Authentication not configured", nil, nil)
 			c.Abort()
 			return
@@ -137,7 +164,7 @@ func AuthMiddleware(jwtSecret string, log *slog.Logger) gin.HandlerFunc {
 		}
 
 		token := strings.TrimSpace(strings.TrimPrefix(authz, "Bearer "))
-		userID, err := parseAndValidateJWT(token, secret)
+		userID, err := parseAndValidateJWTWithKeys(token, keys)
 		if err != nil {
 			log.Warn("invalid bearer token", "err", err, "request_id", RequestIDFromContext(c))
 			api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid token", nil, nil)
@@ -151,6 +178,10 @@ func AuthMiddleware(jwtSecret string, log *slog.Logger) gin.HandlerFunc {
 }
 
 func parseAndValidateJWT(token string, secret []byte) (string, error) {
+	return parseAndValidateJWTWithKeys(token, JWTKeySet{ActiveSecret: string(secret)})
+}
+
+func parseAndValidateJWTWithKeys(token string, keys JWTKeySet) (string, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return "", errors.New("invalid token format")
@@ -176,6 +207,11 @@ func parseAndValidateJWT(token string, secret []byte) (string, error) {
 	alg, _ := header["alg"].(string)
 	if alg != "HS256" {
 		return "", errors.New("unsupported jwt algorithm")
+	}
+	kid, _ := header["kid"].(string)
+	secret, ok := keys.secretFor(kid)
+	if !ok {
+		return "", errors.New("unknown kid")
 	}
 
 	signingInput := parts[0] + "." + parts[1]

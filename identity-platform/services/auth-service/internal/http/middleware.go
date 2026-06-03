@@ -114,6 +114,35 @@ func AuthMiddleware(jwtSecret string) gin.HandlerFunc {
 	return AuthMiddlewareWithRevoke(jwtSecret, nil)
 }
 
+// JWTKeySet describes the kid-versioned secret set used to verify access
+// tokens. The active (kid, secret) is used for new signatures; the previous
+// pair (when set) verifies tokens minted before the most recent rotation.
+// A token with no `kid` (legacy, pre-C7) falls back to the active secret.
+type JWTKeySet struct {
+	ActiveKID        string
+	ActiveSecret     string
+	PreviousKID      string
+	PreviousSecret   string
+}
+
+func (k JWTKeySet) secretFor(kid string) ([]byte, bool) {
+	if kid == "" || kid == k.ActiveKID {
+		return []byte(k.ActiveSecret), true
+	}
+	if k.PreviousSecret != "" && kid == k.PreviousKID {
+		return []byte(k.PreviousSecret), true
+	}
+	return nil, false
+}
+
+// AuthMiddlewareWithKeys is the kid-aware verify path. Use this when the
+// caller has loaded a JWTKeySet from config (active + optional previous
+// during rotation). For backward compatibility, AuthMiddleware /
+// AuthMiddlewareWithRevoke continue to accept a single secret.
+func AuthMiddlewareWithKeys(keys JWTKeySet, rdb *redis.Client) gin.HandlerFunc {
+	return authMiddleware(keys, rdb)
+}
+
 // AuthMiddlewareWithRevoke is the cache-backed variant. When `rdb` is
 // non-nil, every request looks up `sess_revoked:<sid>` to short-circuit
 // access tokens whose session has been revoked since the token was
@@ -126,6 +155,10 @@ func AuthMiddleware(jwtSecret string) gin.HandlerFunc {
 // Revocation entries are TTL'd to the access-token life so the cache
 // drains naturally without a cleaner job.
 func AuthMiddlewareWithRevoke(jwtSecret string, rdb *redis.Client) gin.HandlerFunc {
+	return authMiddleware(JWTKeySet{ActiveSecret: jwtSecret}, rdb)
+}
+
+func authMiddleware(keys JWTKeySet, rdb *redis.Client) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var tokenStr string
 
@@ -155,11 +188,19 @@ func AuthMiddlewareWithRevoke(jwtSecret string, rdb *redis.Client) gin.HandlerFu
 		// so a future library downgrade or accidental method
 		// registration can't reintroduce the classic alg-confusion
 		// vulnerability. Tokens not signed with HS256 are rejected.
+		//
+		// C7: pick the secret by `kid`. Tokens minted before C7 omit
+		// `kid` entirely — secretFor("") falls back to the active key.
 		token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
 			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 				return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 			}
-			return []byte(jwtSecret), nil
+			kid, _ := t.Header["kid"].(string)
+			secret, ok := keys.secretFor(kid)
+			if !ok {
+				return nil, fmt.Errorf("unknown kid: %s", kid)
+			}
+			return secret, nil
 		})
 		if err != nil || !token.Valid {
 			api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid access token", nil, nil)

@@ -14,6 +14,10 @@ type Config struct {
 	HTTPIdleTimeout  time.Duration
 	RedisAddr        string
 	JWTSecret        string
+	// C7 — kid + previous-secret rotation knobs. See aws_prep_sprint_2026_06.
+	JWTKID           string
+	JWTSecretPrevious string
+	JWTKIDPrevious    string
 	AllowedOrigins   []string
 	WSAllowQueryToken bool
 	WSWriteWait      time.Duration
@@ -32,6 +36,9 @@ func Load() *Config {
 		HTTPIdleTimeout:  getEnvDuration("HTTP_IDLE_TIMEOUT", 60*time.Second),
 		RedisAddr:        getEnv("REDIS_ADDR", "localhost:6379"),
 		JWTSecret:        getEnv("JWT_SECRET", ""),
+		JWTKID:            getEnv("JWT_KID", "v1"),
+		JWTSecretPrevious: getEnv("JWT_SECRET_PREVIOUS", ""),
+		JWTKIDPrevious:    getEnv("JWT_KID_PREVIOUS", ""),
 		AllowedOrigins:   splitAndClean(getEnv("ALLOWED_ORIGINS", "")),
 		WSAllowQueryToken: getEnvBool("WS_ALLOW_QUERY_TOKEN", true),
 		WSWriteWait:      getEnvDuration("WS_WRITE_WAIT", 10*time.Second),

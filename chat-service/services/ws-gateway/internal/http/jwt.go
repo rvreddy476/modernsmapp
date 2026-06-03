@@ -14,6 +14,31 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// JWTKeySet — C7. Picks the verifying secret by `kid` so a kid-rotation
+// window can verify both old and new tokens. A token without a `kid`
+// header (pre-C7) falls back to the active secret.
+type JWTKeySet struct {
+	ActiveKID      string
+	ActiveSecret   string
+	PreviousKID    string
+	PreviousSecret string
+}
+
+func (k JWTKeySet) secretFor(kid string) ([]byte, bool) {
+	active := strings.TrimSpace(k.ActiveSecret)
+	if kid == "" || kid == k.ActiveKID {
+		if active == "" {
+			return nil, false
+		}
+		return []byte(active), true
+	}
+	prev := strings.TrimSpace(k.PreviousSecret)
+	if prev != "" && kid == k.PreviousKID {
+		return []byte(prev), true
+	}
+	return nil, false
+}
+
 func authenticateUserFromJWT(r *http.Request, jwtSecret string, allowQueryToken bool) (uuid.UUID, error) {
 	userID, _, err := authenticateUserFromJWTWithExpiry(r, jwtSecret, allowQueryToken)
 	return userID, err
@@ -29,15 +54,21 @@ func authenticateUserFromJWT(r *http.Request, jwtSecret string, allowQueryToken 
 // revoked or expired token keeps the WS alive until the client
 // disconnects on its own.
 func authenticateUserFromJWTWithExpiry(r *http.Request, jwtSecret string, allowQueryToken bool) (uuid.UUID, time.Time, error) {
-	secret := []byte(strings.TrimSpace(jwtSecret))
-	if len(secret) == 0 {
+	return authenticateUserFromJWTWithKeys(r, JWTKeySet{ActiveSecret: jwtSecret}, allowQueryToken)
+}
+
+// authenticateUserFromJWTWithKeys is the C7 entry point. Callers with a
+// rotation window construct a key set from JWT_KID / JWT_SECRET_PREVIOUS
+// / JWT_KID_PREVIOUS and pass it here.
+func authenticateUserFromJWTWithKeys(r *http.Request, keys JWTKeySet, allowQueryToken bool) (uuid.UUID, time.Time, error) {
+	if strings.TrimSpace(keys.ActiveSecret) == "" {
 		return uuid.Nil, time.Time{}, errors.New("jwt secret not configured")
 	}
 	token := readBearerToken(r, allowQueryToken)
 	if token == "" {
 		return uuid.Nil, time.Time{}, errors.New("missing bearer token")
 	}
-	userID, exp, err := parseAndValidateJWT(token, secret)
+	userID, exp, err := parseAndValidateJWTWithKeys(token, keys)
 	if err != nil {
 		return uuid.Nil, time.Time{}, err
 	}
@@ -75,6 +106,10 @@ func readSubprotocolBearerToken(r *http.Request) string {
 }
 
 func parseAndValidateJWT(token string, secret []byte) (uuid.UUID, time.Time, error) {
+	return parseAndValidateJWTWithKeys(token, JWTKeySet{ActiveSecret: string(secret)})
+}
+
+func parseAndValidateJWTWithKeys(token string, keys JWTKeySet) (uuid.UUID, time.Time, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return uuid.Nil, time.Time{}, errors.New("invalid token format")
@@ -100,6 +135,11 @@ func parseAndValidateJWT(token string, secret []byte) (uuid.UUID, time.Time, err
 	alg, _ := header["alg"].(string)
 	if alg != "HS256" {
 		return uuid.Nil, time.Time{}, errors.New("unsupported jwt algorithm")
+	}
+	kid, _ := header["kid"].(string)
+	secret, ok := keys.secretFor(kid)
+	if !ok {
+		return uuid.Nil, time.Time{}, errors.New("unknown kid")
 	}
 
 	signingInput := parts[0] + "." + parts[1]

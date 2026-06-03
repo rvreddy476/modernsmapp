@@ -167,7 +167,15 @@ func main() {
 	// A10 — pass Redis so the JWT middleware can consult the session
 	// revocation cache. Fail-open on miss; the access-token TTL caps
 	// the worst-case revocation lag.
-	authMW := internalhttp.AuthMiddlewareWithRevoke(cfg.JWTSecret, rdb)
+	// C7 — kid-aware verify so a rotation has a window where both the
+	// previous and active secret verify (set JWT_SECRET_PREVIOUS during
+	// the cutover; unset once AccessTokenTTL has elapsed).
+	authMW := internalhttp.AuthMiddlewareWithKeys(internalhttp.JWTKeySet{
+		ActiveKID:      cfg.JWTKID,
+		ActiveSecret:   cfg.JWTSecret,
+		PreviousKID:    cfg.JWTKIDPrevious,
+		PreviousSecret: cfg.JWTSecretPrevious,
+	}, rdb)
 	csrfMW := internalhttp.RequireCSRFMiddleware()
 	authHandler.RegisterRoutes(r, authMW, csrfMW)
 	authHandler.RegisterDocsRoutes(r)

@@ -671,6 +671,12 @@ func (s *Service) generateAccessToken(userID, sessionID uuid.UUID) (string, erro
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	// C7: stamp `kid` so the verifier can pick the right secret during
+	// rotation. Old (pre-C7) tokens omit `kid` and fall back to the
+	// active secret on the verifier side.
+	if s.cfg.JWTKID != "" {
+		token.Header["kid"] = s.cfg.JWTKID
+	}
 	return token.SignedString([]byte(s.cfg.JWTSecret))
 }
 

@@ -41,6 +41,12 @@ func main() {
 
 	server := httpapi.NewServer(rdb, logger, httpapi.ServerOptions{
 		JWTSecret:      cfg.JWTSecret,
+		JWTKeys: httpapi.JWTKeySet{
+			ActiveKID:      cfg.JWTKID,
+			ActiveSecret:   cfg.JWTSecret,
+			PreviousKID:    cfg.JWTKIDPrevious,
+			PreviousSecret: cfg.JWTSecretPrevious,
+		},
 		AllowedOrigins: cfg.AllowedOrigins,
 		AllowQueryToken: cfg.WSAllowQueryToken,
 		WriteWait:      cfg.WSWriteWait,

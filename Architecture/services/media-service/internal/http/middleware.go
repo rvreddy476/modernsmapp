@@ -21,12 +21,52 @@ type jwtClaims struct {
 	Exp    int64  `json:"exp"`
 }
 
-// verifyJWT validates an HS256 JWT and returns the user ID.
-// Uses stdlib only (crypto/hmac + crypto/sha256) — no external JWT library needed.
-func verifyJWT(tokenStr string, secret []byte) (string, error) {
+// JWTKeySet — C7. Active is the current signing secret; previous is the
+// outgoing one accepted during a rotation window. A token with no `kid`
+// header (pre-C7) falls back to the active secret.
+type JWTKeySet struct {
+	ActiveKID      string
+	ActiveSecret   string
+	PreviousKID    string
+	PreviousSecret string
+}
+
+func (k JWTKeySet) secretFor(kid string) ([]byte, bool) {
+	if kid == "" || kid == k.ActiveKID {
+		return []byte(k.ActiveSecret), true
+	}
+	if k.PreviousSecret != "" && kid == k.PreviousKID {
+		return []byte(k.PreviousSecret), true
+	}
+	return nil, false
+}
+
+// verifyJWT validates an HS256 JWT against the key set and returns the
+// user ID. Uses stdlib only (crypto/hmac + crypto/sha256). C7: picks
+// secret by `kid` so rotation windows can verify both old + new tokens.
+func verifyJWT(tokenStr string, keys JWTKeySet) (string, error) {
 	parts := strings.Split(tokenStr, ".")
 	if len(parts) != 3 {
 		return "", fmt.Errorf("invalid token format")
+	}
+
+	headerRaw, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return "", fmt.Errorf("header decode: %w", err)
+	}
+	var header struct {
+		Alg string `json:"alg"`
+		Kid string `json:"kid"`
+	}
+	if err := json.Unmarshal(headerRaw, &header); err != nil {
+		return "", fmt.Errorf("header parse: %w", err)
+	}
+	if header.Alg != "" && header.Alg != "HS256" {
+		return "", fmt.Errorf("unsupported jwt algorithm")
+	}
+	secret, ok := keys.secretFor(header.Kid)
+	if !ok {
+		return "", fmt.Errorf("unknown kid")
 	}
 
 	// Verify HMAC-SHA256 signature
@@ -78,7 +118,13 @@ func extractToken(c *gin.Context) string {
 
 // AuthMiddleware validates JWT and sets X-User-Id header. Rejects unauthenticated requests.
 func AuthMiddleware(jwtSecret string) gin.HandlerFunc {
-	secret := []byte(jwtSecret)
+	return AuthMiddlewareWithKeys(JWTKeySet{ActiveSecret: jwtSecret})
+}
+
+// AuthMiddlewareWithKeys is the C7 kid-aware entry point. Use it from main.go
+// when JWT_KID / JWT_SECRET_PREVIOUS / JWT_KID_PREVIOUS are configured for a
+// rotation window.
+func AuthMiddlewareWithKeys(keys JWTKeySet) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		tokenStr := extractToken(c)
 		if tokenStr == "" {
@@ -87,7 +133,7 @@ func AuthMiddleware(jwtSecret string) gin.HandlerFunc {
 			return
 		}
 
-		userID, err := verifyJWT(tokenStr, secret)
+		userID, err := verifyJWT(tokenStr, keys)
 		if err != nil {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid access token", nil)
 			c.Abort()
@@ -102,7 +148,10 @@ func AuthMiddleware(jwtSecret string) gin.HandlerFunc {
 // OptionalAuthMiddleware validates JWT if present but doesn't require it.
 // If token is present and invalid, returns 401. If absent, continues without user context.
 func OptionalAuthMiddleware(jwtSecret string) gin.HandlerFunc {
-	secret := []byte(jwtSecret)
+	return OptionalAuthMiddlewareWithKeys(JWTKeySet{ActiveSecret: jwtSecret})
+}
+
+func OptionalAuthMiddlewareWithKeys(keys JWTKeySet) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		tokenStr := extractToken(c)
 		if tokenStr == "" {
@@ -110,7 +159,7 @@ func OptionalAuthMiddleware(jwtSecret string) gin.HandlerFunc {
 			return
 		}
 
-		userID, err := verifyJWT(tokenStr, secret)
+		userID, err := verifyJWT(tokenStr, keys)
 		if err != nil {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid access token", nil)
 			c.Abort()

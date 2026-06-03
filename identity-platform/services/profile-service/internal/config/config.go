@@ -15,20 +15,27 @@ type Config struct {
 	KafkaGroupID   string
 	CacheTTL       time.Duration
 	JWTSecret      string
-	TrustedProxies []string
+	// C7: see user-service/internal/config/config.go for the rotation model.
+	JWTKID            string
+	JWTSecretPrevious string
+	JWTKIDPrevious    string
+	TrustedProxies    []string
 }
 
 func Load() *Config {
 	return &Config{
-		HTTPPort:       getEnv("HTTP_PORT", "8083"),
-		PostgresDSN:    getEnv("POSTGRES_DSN", "postgres://postgres:postgres@localhost:5432/identity_db?sslmode=disable"),
-		RedisAddr:      getEnv("REDIS_ADDR", "localhost:6379"),
-		KafkaBrokers:   splitAndClean(getEnv("KAFKA_BROKERS", "localhost:9092")),
-		KafkaTopic:     getEnv("KAFKA_TOPIC", "identity.events.v1"),
-		KafkaGroupID:   getEnv("KAFKA_GROUP_ID", "profile-service-group"),
-		CacheTTL:       getEnvDuration("CACHE_TTL", 5*time.Minute),
-		JWTSecret:      getEnv("JWT_SECRET", ""),
-		TrustedProxies: splitAndClean(getEnv("TRUSTED_PROXIES", "")),
+		HTTPPort:          getEnv("HTTP_PORT", "8083"),
+		PostgresDSN:       getEnv("POSTGRES_DSN", "postgres://postgres:postgres@localhost:5432/identity_db?sslmode=disable"),
+		RedisAddr:         getEnv("REDIS_ADDR", "localhost:6379"),
+		KafkaBrokers:      splitAndClean(getEnv("KAFKA_BROKERS", "localhost:9092")),
+		KafkaTopic:        getEnv("KAFKA_TOPIC", "identity.events.v1"),
+		KafkaGroupID:      getEnv("KAFKA_GROUP_ID", "profile-service-group"),
+		CacheTTL:          getEnvDuration("CACHE_TTL", 5*time.Minute),
+		JWTSecret:         getEnv("JWT_SECRET", ""),
+		JWTKID:            getEnv("JWT_KID", "v1"),
+		JWTSecretPrevious: getEnv("JWT_SECRET_PREVIOUS", ""),
+		JWTKIDPrevious:    getEnv("JWT_KID_PREVIOUS", ""),
+		TrustedProxies:    splitAndClean(getEnv("TRUSTED_PROXIES", "")),
 	}
 }
 

@@ -26,7 +26,31 @@ type AccessClaims struct {
 	SessionID string `json:"sid"`
 }
 
+// JWTKeySet describes the kid-versioned secret set used to verify access
+// tokens. Mirrors auth-service.JWTKeySet so a coordinated rotation across
+// services uses the same env-var vocabulary.
+type JWTKeySet struct {
+	ActiveKID      string
+	ActiveSecret   string
+	PreviousKID    string
+	PreviousSecret string
+}
+
+func (k JWTKeySet) secretFor(kid string) ([]byte, bool) {
+	if kid == "" || kid == k.ActiveKID {
+		return []byte(k.ActiveSecret), true
+	}
+	if k.PreviousSecret != "" && kid == k.PreviousKID {
+		return []byte(k.PreviousSecret), true
+	}
+	return nil, false
+}
+
 func AuthMiddleware(secret string) gin.HandlerFunc {
+	return AuthMiddlewareWithKeys(JWTKeySet{ActiveSecret: secret})
+}
+
+func AuthMiddlewareWithKeys(keys JWTKeySet) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if strings.HasSuffix(c.Request.URL.Path, "/health") {
 			c.Next()
@@ -42,7 +66,18 @@ func AuthMiddleware(secret string) gin.HandlerFunc {
 
 		claims := &AccessClaims{}
 		parsed, err := jwt.ParseWithClaims(tokenStr, claims, func(token *jwt.Token) (interface{}, error) {
-			return []byte(secret), nil
+			// C7 + A1: pin HS256 (defence-in-depth against alg confusion)
+			// and pick the secret by `kid`. Legacy tokens (no kid) fall
+			// back to the active secret.
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, jwt.ErrTokenUnverifiable
+			}
+			kid, _ := token.Header["kid"].(string)
+			secret, ok := keys.secretFor(kid)
+			if !ok {
+				return nil, jwt.ErrTokenUnverifiable
+			}
+			return secret, nil
 		})
 		if err != nil || !parsed.Valid || claims.Subject == "" {
 			api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid access token", nil, nil)

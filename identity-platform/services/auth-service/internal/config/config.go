@@ -28,6 +28,15 @@ type Config struct {
 	AccessTokenTTL           time.Duration
 	RefreshTokenTTL          time.Duration
 	JWTSecret                string
+	// C7: JWT key versioning. JWTKID is stamped into the `kid` header of
+	// every minted access token so future verification can pick the right
+	// secret. JWTSecretPrevious + JWTKIDPrevious allow rolling rotation:
+	// during the cutover, both kids verify; once tokens minted with the
+	// old kid have expired (≤ AccessTokenTTL), the previous can be
+	// unset. Tokens with no `kid` (legacy) fall back to JWTSecret.
+	JWTKID                   string
+	JWTSecretPrevious        string
+	JWTKIDPrevious           string
 	CookieDomain             string
 	CookieSecure             bool
 	TrustedProxies           []string
@@ -67,6 +76,9 @@ func Load() *Config {
 		AccessTokenTTL:           getEnvDuration("ACCESS_TOKEN_TTL", 15*time.Minute),
 		RefreshTokenTTL:          getEnvDuration("REFRESH_TOKEN_TTL", 30*24*time.Hour),
 		JWTSecret:                getEnv("JWT_SECRET", ""),
+		JWTKID:                   getEnv("JWT_KID", "v1"),
+		JWTSecretPrevious:        getEnv("JWT_SECRET_PREVIOUS", ""),
+		JWTKIDPrevious:           getEnv("JWT_KID_PREVIOUS", ""),
 		CookieDomain:             getEnv("COOKIE_DOMAIN", ""),
 		CookieSecure:             getEnvBool("COOKIE_SECURE", false),
 		TrustedProxies:           splitAndClean(getEnv("TRUSTED_PROXIES", "")),

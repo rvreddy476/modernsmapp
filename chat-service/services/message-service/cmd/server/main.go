@@ -139,7 +139,12 @@ func main() {
 	r.Use(http.LoggerMiddleware(logger))
 	r.Use(http.RecoveryMiddleware(logger))
 	r.Use(http.CORSMiddleware())
-	r.Use(http.AuthMiddleware(cfg.JWTSecret, logger))
+	r.Use(http.AuthMiddlewareWithKeys(http.JWTKeySet{
+		ActiveKID:      cfg.JWTKID,
+		ActiveSecret:   cfg.JWTSecret,
+		PreviousKID:    cfg.JWTKIDPrevious,
+		PreviousSecret: cfg.JWTSecretPrevious,
+	}, logger))
 
 	proxies := cfg.TrustedProxies
 	if len(proxies) == 0 {

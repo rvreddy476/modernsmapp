@@ -166,7 +166,12 @@ func main() {
 	r.Use(callhttp.LoggerMiddleware(logger))
 	r.Use(callhttp.RecoveryMiddleware(logger))
 	r.Use(callhttp.CORSMiddleware())
-	r.Use(callhttp.AuthMiddleware(cfg.JWTSecret, logger))
+	r.Use(callhttp.AuthMiddlewareWithKeys(callhttp.JWTKeySet{
+		ActiveKID:      cfg.JWTKID,
+		ActiveSecret:   cfg.JWTSecret,
+		PreviousKID:    cfg.JWTKIDPrevious,
+		PreviousSecret: cfg.JWTSecretPrevious,
+	}, logger))
 
 	proxies := cfg.TrustedProxies
 	if len(proxies) == 0 {

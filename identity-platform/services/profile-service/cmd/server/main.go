@@ -131,7 +131,12 @@ func main() {
 		logger.Error("failed to set trusted proxies", "err", err)
 		os.Exit(1)
 	}
-	profileHandler.RegisterRoutes(r, http.AuthMiddleware(cfg.JWTSecret), http.RequireCSRFMiddleware())
+	profileHandler.RegisterRoutes(r, http.AuthMiddlewareWithKeys(http.JWTKeySet{
+		ActiveKID:      cfg.JWTKID,
+		ActiveSecret:   cfg.JWTSecret,
+		PreviousKID:    cfg.JWTKIDPrevious,
+		PreviousSecret: cfg.JWTSecretPrevious,
+	}), http.RequireCSRFMiddleware())
 
 	logger.Info("starting profile-service", "port", cfg.HTTPPort)
 	if err := r.Run(":" + cfg.HTTPPort); err != nil {
