@@ -598,12 +598,8 @@ func unmarshalPayload(raw json.RawMessage, v interface{}) error {
 // per-event sub-pool of 16 workers so even one event's fan-out
 // doesn't sit waiting on serial Scylla latency.
 func (c *Consumer) fanOutCreatorUpload(ctx context.Context, e events.PostCreatedPayload) error {
-	switch e.ContentType {
-	case "flick", "long_video", "reel", "video":
-		// supported — fall through
-	default:
-		return nil
-	}
+	// Skip private/unlisted posts — followers shouldn't be pinged on
+	// posts they can't see.
 	if e.Visibility == "private" || e.Visibility == "unlisted" {
 		return nil
 	}
@@ -623,14 +619,23 @@ func (c *Consumer) fanOutCreatorUpload(ctx context.Context, e events.PostCreated
 
 	const pageSize = 200
 	const maxFollowers = 5000
-	deepLink := fmt.Sprintf("/posttube/watch/%s", e.PostID)
-	if e.ContentType == "flick" || e.ContentType == "reel" {
-		deepLink = fmt.Sprintf("/reels/%s", e.PostID)
-	}
 
-	notifType := "creator_uploaded_video"
-	if e.ContentType == "flick" || e.ContentType == "reel" {
+	// Deep link + notification type depend on what was posted.
+	// Text/photo/poll → /post/:id with a generic "new_post" type.
+	// Video/long_video → /posttube/watch/:id, "creator_uploaded_video".
+	// Flick/reel → /reels/:id, "creator_uploaded_flick".
+	var deepLink, notifType string
+	switch e.ContentType {
+	case "flick", "reel":
+		deepLink = fmt.Sprintf("/reels/%s", e.PostID)
 		notifType = "creator_uploaded_flick"
+	case "video", "long_video":
+		deepLink = fmt.Sprintf("/posttube/watch/%s", e.PostID)
+		notifType = "creator_uploaded_video"
+	default:
+		// post, poll, photo, anything else — generic post notification.
+		deepLink = fmt.Sprintf("/post/%s", e.PostID)
+		notifType = "new_post"
 	}
 
 	// Per-event sub-pool: parallelize the Scylla writes for one
