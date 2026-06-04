@@ -1,0 +1,67 @@
+# chat-ws-gateway overrides for the staging environment.
+#
+# The atpost-service chart owns Deployment / Service / SA / ESO /
+# HPA / PDB / ServiceMonitor. Anything not listed here inherits the
+# chart default. CI rewrites image.tag on every push to main; never
+# hand-edit it.
+
+service:
+  name: chat-ws-gateway
+  port: 8093
+
+image:
+  repository: 123456789012.dkr.ecr.ap-south-1.amazonaws.com/atpost/chat-ws-gateway
+  tag: latest # CI overrides via --set image.tag=<sha>
+
+replicaCount: 2
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+serviceAccount:
+  irsaRoleArn: arn:aws:iam::123456789012:role/atpost-staging-chat-ws-gateway-irsa
+
+externalSecret:
+  enabled: true
+  remoteKey: atpost/staging/chat-ws-gateway
+  data:
+    - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
+    - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
+    - { secretKey: JWT_KID, remoteRef: jwt_kid }
+    # Add per-service secrets here (POSTGRES_DSN, REDIS_ADDR,
+    # KAFKA_BROKERS, SCYLLA_HOSTS, courier API keys, etc.).
+
+env:
+  ENV: staging
+  LOG_LEVEL: info
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  # Add per-service inter-service URLs here. Common ones:
+  #   USER_SERVICE_URL:  http://user-service.atpost.svc.cluster.local:8082
+  #   GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083
+  #   POST_SERVICE_URL:  http://post-service.atpost.svc.cluster.local:8084
+  #   MEDIA_SERVICE_URL: http://media-service.atpost.svc.cluster.local:8087
+
+# Internal-only — api-gateway is the external surface.
+ingress:
+  enabled: false
+
+# WebSocket endpoint — long-lived connections need idle-timeout bumps.
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:ap-south-1:123456789012:certificate/CHANGEME
+    # WS keepalives can exceed the default 60s idle. Bump to 4h.
+    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=14400
+  hosts:
+    - host: ws.staging.cleestudio.com
+      paths:
+        - { path: /, pathType: Prefix }

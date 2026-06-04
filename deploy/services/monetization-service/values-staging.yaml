@@ -1,0 +1,51 @@
+# monetization-service overrides for the staging environment.
+#
+# The atpost-service chart owns Deployment / Service / SA / ESO /
+# HPA / PDB / ServiceMonitor. Anything not listed here inherits the
+# chart default. CI rewrites image.tag on every push to main; never
+# hand-edit it.
+
+service:
+  name: monetization-service
+  port: 8099
+
+image:
+  repository: 123456789012.dkr.ecr.ap-south-1.amazonaws.com/atpost/monetization-service
+  tag: latest # CI overrides via --set image.tag=<sha>
+
+replicaCount: 2
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+serviceAccount:
+  irsaRoleArn: arn:aws:iam::123456789012:role/atpost-staging-monetization-service-irsa
+
+externalSecret:
+  enabled: true
+  remoteKey: atpost/staging/monetization-service
+  data:
+    - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
+    - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
+    - { secretKey: JWT_KID, remoteRef: jwt_kid }
+    # Add per-service secrets here (POSTGRES_DSN, REDIS_ADDR,
+    # KAFKA_BROKERS, SCYLLA_HOSTS, courier API keys, etc.).
+
+env:
+  ENV: staging
+  LOG_LEVEL: info
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  # Add per-service inter-service URLs here. Common ones:
+  #   USER_SERVICE_URL:  http://user-service.atpost.svc.cluster.local:8082
+  #   GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083
+  #   POST_SERVICE_URL:  http://post-service.atpost.svc.cluster.local:8084
+  #   MEDIA_SERVICE_URL: http://media-service.atpost.svc.cluster.local:8087
+
+# Internal-only — api-gateway is the external surface.
+ingress:
+  enabled: false

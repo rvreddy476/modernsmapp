@@ -1,0 +1,83 @@
+# api-gateway overrides for staging.
+# This is the external entry point — only service with Ingress on.
+
+service:
+  name: api-gateway
+  port: 8080
+
+image:
+  repository: 123456789012.dkr.ecr.ap-south-1.amazonaws.com/atpost/api-gateway
+  tag: latest
+
+replicaCount: 2
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  limits:
+    cpu: 1
+    memory: 1Gi
+
+serviceAccount:
+  irsaRoleArn: arn:aws:iam::123456789012:role/atpost-staging-api-gateway-irsa
+
+externalSecret:
+  enabled: true
+  remoteKey: atpost/staging/api-gateway
+  data:
+    - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
+    - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
+    - { secretKey: JWT_KID, remoteRef: jwt_kid }
+
+env:
+  ENV: staging
+  LOG_LEVEL: info
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  REDIS_ADDR: redis-master.observability.svc.cluster.local:6379 # H5 fleet-wide rate limit
+  CORS_ORIGINS: https://staging.cleestudio.com,https://app.staging.cleestudio.com
+  # Upstream service URLs — every prefix the gateway routes to.
+  AUTH_SERVICE_URL: http://identity-auth-service.atpost.svc.cluster.local:8081
+  PROFILE_SERVICE_URL: http://identity-profile-service.atpost.svc.cluster.local:8098
+  USER_SERVICE_URL: http://user-service.atpost.svc.cluster.local:8082
+  GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083
+  POST_SERVICE_URL: http://post-service.atpost.svc.cluster.local:8084
+  FEED_SERVICE_URL: http://feed-service.atpost.svc.cluster.local:8086
+  MEDIA_SERVICE_URL: http://media-service.atpost.svc.cluster.local:8087
+  NOTIFY_SERVICE_URL: http://notification-service.atpost.svc.cluster.local:8088
+  SEARCH_SERVICE_URL: http://search-service.atpost.svc.cluster.local:8089
+  GROUP_SERVICE_URL: http://group-service.atpost.svc.cluster.local:8090
+  TRUST_SAFETY_SERVICE_URL: http://trust-safety-service.atpost.svc.cluster.local:8091
+  MESSAGE_SERVICE_URL: http://chat-message-service.atpost.svc.cluster.local:8092
+  WS_GATEWAY_URL: http://chat-ws-gateway.atpost.svc.cluster.local:8093
+  ANALYTICS_SERVICE_URL: http://analytics-service.atpost.svc.cluster.local:8094
+  ADMIN_SERVICE_URL: http://admin-service.atpost.svc.cluster.local:8096
+  CALL_SERVICE_URL: http://chat-call-service.atpost.svc.cluster.local:8097
+  MONETIZATION_SERVICE_URL: http://monetization-service.atpost.svc.cluster.local:8099
+  PAYMENTS_SERVICE_URL: http://payments-service.atpost.svc.cluster.local:8102
+  CHANNEL_SERVICE_URL: http://channel-service.atpost.svc.cluster.local:8106
+  COMMUNITY_SERVICE_URL: http://community-service.atpost.svc.cluster.local:8107
+  QA_SERVICE_URL: http://qa-service.atpost.svc.cluster.local:8108
+  COMMERCE_SERVICE_URL: http://commerce-service.atpost.svc.cluster.local:8109
+  DATING_SERVICE_URL: http://dating-service.atpost.svc.cluster.local:8112
+  WALLET_SERVICE_URL: http://wallet-service.atpost.svc.cluster.local:8114
+  BILL_PAY_SERVICE_URL: http://bill-pay-service.atpost.svc.cluster.local:8115
+  RIDER_SERVICE_URL: http://rider-service.atpost.svc.cluster.local:8116
+  LIVE_V2_SERVICE_URL: http://live-service-v2.atpost.svc.cluster.local:8117
+  AI_SERVICE_URL: http://ai-service.atpost.svc.cluster.local:8098
+
+# External entry point — ALB Ingress with the wildcard cert from
+# the dns module.
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:ap-south-1:123456789012:certificate/CHANGEME
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+  hosts:
+    - host: api.staging.cleestudio.com
+      paths:
+        - { path: /, pathType: Prefix }
