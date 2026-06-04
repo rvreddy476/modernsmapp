@@ -217,6 +217,42 @@ module "observability" {
   prometheus_retention_size = "20GB"
 }
 
+# Stable bucket suffix for Tempo + Loki — generated once, reused on
+# every plan. Each gets its own to keep teardown surgical.
+resource "random_id" "tempo_suffix" {
+  byte_length = 4
+}
+
+resource "random_id" "loki_suffix" {
+  byte_length = 4
+}
+
+module "tempo" {
+  source = "../../modules/tempo"
+
+  environment       = "staging"
+  aws_region        = var.aws_region
+  oidc_provider_arn = module.eks.oidc_provider_arn
+  oidc_provider_url = module.eks.oidc_provider_url
+  random_suffix     = random_id.tempo_suffix.hex
+  retention_days    = 3 # staging traces are cheap; short retention saves S3 cost
+
+  depends_on = [module.observability]
+}
+
+module "loki" {
+  source = "../../modules/loki"
+
+  environment       = "staging"
+  aws_region        = var.aws_region
+  oidc_provider_arn = module.eks.oidc_provider_arn
+  oidc_provider_url = module.eks.oidc_provider_url
+  random_suffix     = random_id.loki_suffix.hex
+  retention_days    = 7
+
+  depends_on = [module.observability]
+}
+
 output "eks_cluster_name" { value = module.eks.cluster_name }
 output "eks_cluster_endpoint" { value = module.eks.cluster_endpoint }
 output "eks_oidc_provider_arn" { value = module.eks.oidc_provider_arn }

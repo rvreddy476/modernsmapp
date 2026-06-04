@@ -207,6 +207,40 @@ module "observability" {
   # Prod defaults already match (100Gi PVC, 70GB soft retention, 15d).
 }
 
+resource "random_id" "tempo_suffix" {
+  byte_length = 4
+}
+
+resource "random_id" "loki_suffix" {
+  byte_length = 4
+}
+
+module "tempo" {
+  source = "../../modules/tempo"
+
+  environment       = "prod"
+  aws_region        = var.aws_region
+  oidc_provider_arn = module.eks.oidc_provider_arn
+  oidc_provider_url = module.eks.oidc_provider_url
+  random_suffix     = random_id.tempo_suffix.hex
+  retention_days    = 14 # prod traces — 2-week incident-postmortem window
+
+  depends_on = [module.observability]
+}
+
+module "loki" {
+  source = "../../modules/loki"
+
+  environment       = "prod"
+  aws_region        = var.aws_region
+  oidc_provider_arn = module.eks.oidc_provider_arn
+  oidc_provider_url = module.eks.oidc_provider_url
+  random_suffix     = random_id.loki_suffix.hex
+  retention_days    = 30 # prod logs — DPDP audit window
+
+  depends_on = [module.observability]
+}
+
 output "eks_cluster_name" { value = module.eks.cluster_name }
 output "eks_cluster_endpoint" { value = module.eks.cluster_endpoint }
 output "eks_oidc_provider_arn" { value = module.eks.oidc_provider_arn }
