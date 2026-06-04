@@ -1,0 +1,208 @@
+# Build + push service images to ECR, then bump the tag in the
+# deploy/services/<svc>/values-<env>.yaml file. ArgoCD's auto-sync
+# (staging) or manual sync (prod) picks the new tag up.
+#
+# Trigger model:
+#   push to main           → build all changed services → push :sha,
+#                            :latest → bump values-staging.yaml,
+#                            commit + push back.
+#   push to release/prod   → build all changed services → push :sha,
+#                            :prod-latest → bump values-prod.yaml,
+#                            commit + push back.
+#
+# `Changed services` = the set of services whose code-under-test
+# changed in the push range. Inferred from the diff via the
+# detect-changes job. Falls back to ALL services on a workflow_dispatch
+# / manual run.
+
+name: build-push
+
+on:
+  push:
+    branches:
+      - main
+      - release/prod
+    paths:
+      - "Architecture/services/**"
+      - "identity-platform/services/**"
+      - "chat-service/services/**"
+      - "deploy/services/**"
+      - ".github/workflows/build-push.yml"
+  workflow_dispatch:
+    inputs:
+      services:
+        description: "Comma-separated services to rebuild (or 'all')"
+        required: true
+        default: "all"
+
+env:
+  AWS_REGION: ap-south-1
+  # ECR repo prefix. Filled in by the per-env account ID below.
+  ECR_PREFIX: atpost
+
+permissions:
+  contents: write        # needed to push the bumped values file back
+  id-token: write        # OIDC token to assume the CI role
+  pull-requests: read    # for the changed-files action
+
+jobs:
+  # ─── Job 1: figure out which services to build ───────────────────
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.set.outputs.services }}
+      env_name: ${{ steps.env.outputs.env_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Pick environment from branch
+        id: env
+        run: |
+          if [[ "${{ github.ref_name }}" == "release/prod" ]]; then
+            echo "env_name=prod" >> "$GITHUB_OUTPUT"
+          else
+            echo "env_name=staging" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Detect changed services
+        id: set
+        run: |
+          # workflow_dispatch with 'all' → every service.
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ github.event.inputs.services }}" != "all" ]]; then
+            echo "services=${{ github.event.inputs.services }}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            ALL=$(ls -d Architecture/services/*/ identity-platform/services/*/ chat-service/services/*/ 2>/dev/null \
+              | xargs -I{} basename {} | sort -u | grep -v '^_archived' | paste -sd, -)
+            echo "services=$ALL" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Otherwise diff against the previous push (or default branch
+          # ancestor on PR-derived pushes).
+          BASE="${{ github.event.before }}"
+          if [[ -z "$BASE" || "$BASE" == "0000000000000000000000000000000000000000" ]]; then
+            BASE=$(git merge-base HEAD origin/main || echo HEAD~1)
+          fi
+          # Map each changed path to a service name. Code under a
+          # service dir = that service. A change under deploy/services/
+          # <svc> also triggers that service (in case only the values
+          # file changed and we want to re-tag).
+          CHANGED=$(git diff --name-only "$BASE" HEAD \
+            | awk -F/ '
+                /^Architecture\/services\// && NF >= 3 { print $3 }
+                /^identity-platform\/services\// && NF >= 3 { print $3 }
+                /^chat-service\/services\// && NF >= 3 { print $3 }
+                /^deploy\/services\// && NF >= 3 { print $3 }
+              ' \
+            | sort -u | grep -v '^_archived' | paste -sd, -)
+          if [[ -z "$CHANGED" ]]; then
+            echo "No service changes detected; nothing to do."
+            echo "services=" >> "$GITHUB_OUTPUT"
+          else
+            echo "services=$CHANGED" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ─── Job 2: matrixed build + push ────────────────────────────────
+  build-push:
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.services != '' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Build each service in parallel. Comma-split happens inline
+        # so the matrix can grow without a separate fanout step.
+        service: ${{ fromJson(format('[{0}]', join(split(needs.detect-changes.outputs.services, ','), '","'))) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve service path
+        id: path
+        run: |
+          for prefix in Architecture/services identity-platform/services chat-service/services; do
+            if [[ -d "$prefix/${{ matrix.service }}" ]]; then
+              echo "service_path=$prefix/${{ matrix.service }}" >> "$GITHUB_OUTPUT"
+              echo "workspace_root=$prefix" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "::error ::service '${{ matrix.service }}' not found under any workspace"
+          exit 1
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_CI_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build + push image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ steps.path.outputs.workspace_root }}
+          file: ${{ steps.path.outputs.service_path }}/Dockerfile
+          push: true
+          # Two tags: immutable :<sha> for ArgoCD pinning + a moving
+          # :<env>-latest for ops convenience (kubectl debug etc).
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/${{ env.ECR_PREFIX }}/${{ matrix.service }}:${{ github.sha }}
+            ${{ steps.ecr.outputs.registry }}/${{ env.ECR_PREFIX }}/${{ matrix.service }}:${{ needs.detect-changes.outputs.env_name }}-latest
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+          # Linux/arm64 because the EKS node groups are Graviton.
+          platforms: linux/arm64
+          provenance: false
+
+  # ─── Job 3: bump tag in the values file + push back ──────────────
+  bump-tag:
+    needs: [detect-changes, build-push]
+    if: ${{ needs.detect-changes.outputs.services != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Token with push perms — repo settings must grant the
+          # default GITHUB_TOKEN write:contents.
+          token: ${{ secrets.VALUES_BUMP_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "atpost-ci"
+          git config user.email "ci@atpost.io"
+
+      - name: Bump image.tag per service
+        env:
+          ENV_NAME: ${{ needs.detect-changes.outputs.env_name }}
+          SERVICES: ${{ needs.detect-changes.outputs.services }}
+          SHA: ${{ github.sha }}
+        run: |
+          IFS=, read -ra SVCS <<< "$SERVICES"
+          for svc in "${SVCS[@]}"; do
+            f="deploy/services/$svc/values-$ENV_NAME.yaml"
+            if [[ ! -f "$f" ]]; then
+              echo "::warning ::$f missing — skipping bump for $svc"
+              continue
+            fi
+            # Replace the image.tag value. Match either bare token or
+            # quoted; preserve other formatting via in-place sed with a
+            # tab-tolerant regex.
+            sed -i -E "s|^([[:space:]]*tag:[[:space:]]*).*$|\1\"$SHA\"|" "$f"
+            git add "$f"
+          done
+          # No-op when there was nothing to commit (e.g. the only
+          # changes were the values files themselves).
+          if ! git diff --cached --quiet; then
+            git commit -m "ci(deploy): bump $ENV_NAME image tags to $SHA"
+            git push
+          else
+            echo "No values changes to commit."
+          fi
