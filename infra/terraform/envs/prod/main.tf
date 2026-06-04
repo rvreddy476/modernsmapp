@@ -196,6 +196,17 @@ module "aurora_bootstrap" {
   depends_on = [module.aurora, module.external_secrets]
 }
 
+module "observability" {
+  source = "../../modules/observability"
+
+  environment            = "prod"
+  grafana_hostname       = "grafana.aws.cleestudio.com"
+  grafana_ingress_scheme = "internal" # VPN-gated like ArgoCD
+  acm_certificate_arn    = module.dns.wildcard_cert_arn
+
+  # Prod defaults already match (100Gi PVC, 70GB soft retention, 15d).
+}
+
 output "eks_cluster_name" { value = module.eks.cluster_name }
 output "eks_cluster_endpoint" { value = module.eks.cluster_endpoint }
 output "eks_oidc_provider_arn" { value = module.eks.oidc_provider_arn }

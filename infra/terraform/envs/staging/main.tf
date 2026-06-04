@@ -204,6 +204,19 @@ module "aurora_bootstrap" {
   depends_on = [module.aurora, module.external_secrets]
 }
 
+module "observability" {
+  source = "../../modules/observability"
+
+  environment            = "staging"
+  grafana_hostname       = "grafana.staging.aws.cleestudio.com"
+  grafana_ingress_scheme = "internet-facing"
+  acm_certificate_arn    = module.dns.wildcard_cert_arn
+
+  # Smaller storage in staging.
+  prometheus_storage_size   = "30Gi"
+  prometheus_retention_size = "20GB"
+}
+
 output "eks_cluster_name" { value = module.eks.cluster_name }
 output "eks_cluster_endpoint" { value = module.eks.cluster_endpoint }
 output "eks_oidc_provider_arn" { value = module.eks.oidc_provider_arn }
