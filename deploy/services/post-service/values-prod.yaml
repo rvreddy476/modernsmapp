@@ -1,0 +1,59 @@
+# post-service overrides for the prod environment.
+
+service:
+  name: post-service
+  port: 8084
+
+image:
+  repository: 123456789012.dkr.ecr.ap-south-1.amazonaws.com/atpost/post-service
+  tag: latest # CI overrides via `--set image.tag=<sha>`
+
+# HPA on for prod — base 6 replicas, can grow to 24 on CPU pressure.
+replicaCount: 6
+hpa:
+  enabled: true
+  minReplicas: 6
+  maxReplicas: 24
+  targetCPUUtilizationPercentage: 65
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 512Mi
+  limits:
+    cpu: 2
+    memory: 2Gi
+
+serviceAccount:
+  irsaRoleArn: arn:aws:iam::123456789012:role/atpost-prod-post-service-irsa
+
+externalSecret:
+  enabled: true
+  remoteKey: atpost/prod/post-service
+  data:
+    - { secretKey: POSTGRES_DSN, remoteRef: postgres_dsn }
+    - { secretKey: REDIS_ADDR, remoteRef: redis_addr }
+    - { secretKey: REDIS_PASSWORD, remoteRef: redis_password }
+    - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
+    - { secretKey: SCYLLA_HOSTS, remoteRef: scylla_hosts }
+    - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
+    - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
+    - { secretKey: JWT_KID, remoteRef: jwt_kid }
+    - { secretKey: JWT_SECRET_PREVIOUS, remoteRef: jwt_secret_previous }
+    - { secretKey: JWT_KID_PREVIOUS, remoteRef: jwt_kid_previous }
+
+env:
+  ENV: prod
+  LOG_LEVEL: info
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  USER_SERVICE_URL: http://user-service.atpost.svc.cluster.local:8082
+  GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083
+  MEDIA_SERVICE_URL: http://media-service.atpost.svc.cluster.local:8087
+
+# Internal-only.
+ingress:
+  enabled: false
+
+pdb:
+  enabled: true
+  minAvailable: 4 # tolerate one AZ loss without unfreezing the cluster

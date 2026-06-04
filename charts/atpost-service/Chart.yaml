@@ -1,0 +1,12 @@
+apiVersion: v2
+name: atpost-service
+description: |
+  Shared Helm chart for atpost Go services. One chart, ~30 instances
+  via per-service values files. Owns Deployment + Service +
+  ServiceAccount (IRSA-annotated) + optional Ingress / HPA /
+  ExternalSecret / ServiceMonitor.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+maintainers:
+  - name: atpost-platform
