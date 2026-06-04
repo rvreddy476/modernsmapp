@@ -253,6 +253,20 @@ module "loki" {
   depends_on = [module.observability]
 }
 
+module "karpenter" {
+  source = "../../modules/karpenter"
+
+  environment        = "staging"
+  cluster_name       = module.eks.cluster_name
+  oidc_provider_arn  = module.eks.oidc_provider_arn
+  private_subnet_ids = module.vpc.private_subnet_ids
+
+  # Staging: spot-first to save money. Interruption is fine in dev.
+  capacity_types = ["spot", "on-demand"]
+  cpu_limit      = "200"
+  memory_limit   = "400Gi"
+}
+
 output "eks_cluster_name" { value = module.eks.cluster_name }
 output "eks_cluster_endpoint" { value = module.eks.cluster_endpoint }
 output "eks_oidc_provider_arn" { value = module.eks.oidc_provider_arn }
