@@ -182,6 +182,8 @@ module "argocd" {
   ingress_scheme      = "internal" # prod UI is VPN-gated
   argocd_hostname     = "argocd.aws.cleestudio.com"
   acm_certificate_arn = module.dns.wildcard_cert_arn
+
+  applicationset_manifest_path = "${path.root}/../../../deploy/argocd/applicationset.yaml"
 }
 
 module "aurora_bootstrap" {

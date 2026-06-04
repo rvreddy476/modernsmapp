@@ -28,7 +28,19 @@ variable "allowed_source_repos" {
   description = "Git repos ArgoCD may pull from. Format: https://github.com/<org>/<repo>.git or `*` for any."
   type        = list(string)
   default = [
-    "https://github.com/*/atpost-helm-charts.git",
     "https://github.com/*/atpost.git",
+    "https://github.com/*/atpost-helm-charts.git",
   ]
+}
+
+variable "applicationset_manifest_path" {
+  description = <<EOT
+Optional. Path to a YAML file containing one or more ApplicationSet
+manifests (deploy/argocd/applicationset.yaml in this repo). When set,
+the module applies it via kubernetes_manifest so the per-service
+Applications come up automatically post-install. Leave empty to manage
+the ApplicationSet out-of-band.
+EOT
+  type        = string
+  default     = ""
 }

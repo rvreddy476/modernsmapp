@@ -1,0 +1,147 @@
+# ApplicationSet — generates one ArgoCD Application per service per
+# environment from the deploy/services/ directory tree.
+#
+# The "git directories" generator walks deploy/services/*/ and emits
+# one Application per match; the values-${env}.yaml file becomes the
+# Helm values source. Adding a new service is just creating the
+# directory + values files; the next ArgoCD reconcile picks it up
+# without a touch to this file.
+#
+# Two ApplicationSet objects below — staging + prod — so the per-env
+# diff stays simple (annotations, project, sync policy can differ
+# per env without templating).
+
+# ─── Staging ApplicationSet ────────────────────────────────────────
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: atpost-services-staging
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+
+  generators:
+    - git:
+        repoURL: https://github.com/CHANGEME/atpost.git
+        revision: main
+        directories:
+          # One Application per service directory in deploy/services/.
+          - path: deploy/services/*
+        # The path's basename is the service name; capture it for
+        # the template via `path.basename`.
+
+  template:
+    metadata:
+      name: 'staging-{{.path.basename}}'
+      labels:
+        app.kubernetes.io/part-of: atpost
+        atpost.io/env: staging
+        atpost.io/service: '{{.path.basename}}'
+    spec:
+      project: atpost
+      source:
+        repoURL: https://github.com/CHANGEME/atpost.git
+        targetRevision: main
+        # Inline Helm config — points at the shared chart with the
+        # per-service+env values file as overrides.
+        helm:
+          valueFiles:
+            - $values/{{.path.path}}/values-staging.yaml
+        # Multi-source pattern: chart in one path, values in another
+        # (lets ArgoCD diff the chart + values independently).
+        path: charts/atpost-service
+      # `sources` block for multi-source (chart + values from same
+      # repo, but ArgoCD treats them as separate sources).
+      sources:
+        - repoURL: https://github.com/CHANGEME/atpost.git
+          targetRevision: main
+          path: charts/atpost-service
+          helm:
+            valueFiles:
+              - $values/{{.path.path}}/values-staging.yaml
+        - repoURL: https://github.com/CHANGEME/atpost.git
+          targetRevision: main
+          ref: values
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: atpost
+      syncPolicy:
+        # Auto-sync ON in staging — we want changes to flow without a
+        # manual ArgoCD click. Prune deletes pods/services for files
+        # we delete; selfHeal reverts a kubectl-edit drift.
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - PrunePropagationPolicy=foreground
+          - PruneLast=true
+        retry:
+          limit: 3
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 3m
+
+---
+# ─── Prod ApplicationSet ───────────────────────────────────────────
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: atpost-services-prod
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+
+  generators:
+    - git:
+        repoURL: https://github.com/CHANGEME/atpost.git
+        # Prod tracks a `release/prod` branch so staging churn doesn't
+        # land in prod until promoted. The promotion flow is `git
+        # merge main` → `release/prod` once staging is green.
+        revision: release/prod
+        directories:
+          - path: deploy/services/*
+
+  template:
+    metadata:
+      name: 'prod-{{.path.basename}}'
+      labels:
+        app.kubernetes.io/part-of: atpost
+        atpost.io/env: prod
+        atpost.io/service: '{{.path.basename}}'
+    spec:
+      project: atpost
+      sources:
+        - repoURL: https://github.com/CHANGEME/atpost.git
+          targetRevision: release/prod
+          path: charts/atpost-service
+          helm:
+            valueFiles:
+              - $values/{{.path.path}}/values-prod.yaml
+        - repoURL: https://github.com/CHANGEME/atpost.git
+          targetRevision: release/prod
+          ref: values
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: atpost
+      syncPolicy:
+        # PROD: no auto-sync. Every prod deploy is a manual click in
+        # ArgoCD UI (or `argocd app sync prod-<svc>`) so a bad commit
+        # on release/prod doesn't auto-roll out. selfHeal stays ON
+        # because reverting drift is always safe.
+        automated:
+          prune: false
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - PrunePropagationPolicy=foreground
+          - PruneLast=true
+        retry:
+          limit: 5
+          backoff:
+            duration: 30s
+            factor: 2
+            maxDuration: 10m

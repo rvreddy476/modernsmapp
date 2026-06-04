@@ -198,3 +198,22 @@ resource "kubernetes_manifest" "project_atpost" {
 
   depends_on = [helm_release.argocd]
 }
+
+# Apply the multi-document ApplicationSet YAML (deploy/argocd/
+# applicationset.yaml). Empty path = skip; useful in staging if you
+# want the ApplicationSet to be managed by hand for the first few
+# iterations.
+locals {
+  applicationsets = var.applicationset_manifest_path != "" ? [
+    for doc in split("\n---\n", file(var.applicationset_manifest_path)) :
+    yamldecode(doc) if trimspace(doc) != ""
+  ] : []
+}
+
+resource "kubernetes_manifest" "applicationsets" {
+  for_each = { for i, m in local.applicationsets : "${m.metadata.name}" => m }
+
+  manifest = each.value
+
+  depends_on = [kubernetes_manifest.project_atpost]
+}

@@ -188,6 +188,10 @@ module "argocd" {
   ingress_scheme      = "internet-facing" # staging UI is public; ACM + admin password gate it
   argocd_hostname     = "argocd.staging.aws.cleestudio.com"
   acm_certificate_arn = module.dns.wildcard_cert_arn
+
+  # Apply the multi-doc ApplicationSet so per-service Applications
+  # land on the first reconcile. Relative path from this dir.
+  applicationset_manifest_path = "${path.root}/../../../deploy/argocd/applicationset.yaml"
 }
 
 module "aurora_bootstrap" {
