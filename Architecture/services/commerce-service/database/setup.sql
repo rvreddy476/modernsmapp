@@ -454,13 +454,16 @@ CREATE TABLE IF NOT EXISTS orders (
                             CHECK (status IN ('created','payment_pending','paid','confirmed','packed','shipped','out_for_delivery','delivered','cancelled','return_requested','return_approved','return_rejected','return_picked_up','returned','refund_pending','refunded')),
     cancellation_reason TEXT,
     cancelled_by        TEXT CHECK (cancelled_by IN ('customer','seller','system','admin')),
-    idempotency_key     TEXT UNIQUE,
+    idempotency_key     TEXT,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_orders_customer ON orders(customer_user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_orders_status   ON orders(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_orders_number   ON orders(order_number);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_customer_idempotency_key
+    ON orders(customer_user_id, idempotency_key)
+    WHERE idempotency_key IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS order_items (
     id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),

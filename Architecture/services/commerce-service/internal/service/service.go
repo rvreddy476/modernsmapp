@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -21,6 +22,7 @@ import (
 	"github.com/atpost/shared/events"
 	tracepkg "github.com/atpost/shared/o11y/trace"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/redis/go-redis/v9"
 	kafka "github.com/segmentio/kafka-go"
 )
@@ -612,11 +614,11 @@ func (s *Service) ListSellerOrders(ctx context.Context, sellerID uuid.UUID, limi
 // a multi-seller order are intentionally excluded — sellers only see what
 // they're responsible for shipping.
 type SellerOrderCard struct {
-	Order               *postgres.Order      `json:"order"`
-	Items               []*postgres.OrderItem `json:"items"`
-	Shipment            *postgres.Shipment    `json:"shipment,omitempty"`
-	SellerSubtotal      float64              `json:"seller_subtotal"`
-	DeliveryAddress     []byte               `json:"delivery_address,omitempty"`
+	Order           *postgres.Order       `json:"order"`
+	Items           []*postgres.OrderItem `json:"items"`
+	Shipment        *postgres.Shipment    `json:"shipment,omitempty"`
+	SellerSubtotal  float64               `json:"seller_subtotal"`
+	DeliveryAddress []byte                `json:"delivery_address,omitempty"`
 }
 
 // ListSellerFulfillment returns the seller's fulfillment queue, optionally
@@ -823,16 +825,16 @@ func (s *Service) UpdateCartItem(ctx context.Context, userID, variantID uuid.UUI
 }
 
 type CartSummary struct {
-	CartID      uuid.UUID
-	Items       []*CartItemDetail
-	Subtotal    float64
-	ItemCount   int
+	CartID    uuid.UUID
+	Items     []*CartItemDetail
+	Subtotal  float64
+	ItemCount int
 }
 
 type CartItemDetail struct {
-	Item     *postgres.CartItem
-	Product  *postgres.Product
-	Variant  *postgres.ProductVariant
+	Item    *postgres.CartItem
+	Product *postgres.Product
+	Variant *postgres.ProductVariant
 }
 
 func (s *Service) GetCart(ctx context.Context, userID uuid.UUID) (*CartSummary, error) {
@@ -1409,6 +1411,11 @@ func (s *Service) Checkout(ctx context.Context, in CheckoutInput) (*postgres.Ord
 	}
 
 	if err := s.store.CreateOrder(ctx, order, res.OrderItems); err != nil {
+		if in.IdempotencyKey != "" && isPostgresUniqueViolation(err) {
+			if existing, lookupErr := s.store.GetOrderByIdempotencyKey(ctx, in.UserID, in.IdempotencyKey); lookupErr == nil && existing != nil {
+				return existing, nil
+			}
+		}
 		return nil, fmt.Errorf("create order: %w", err)
 	}
 
@@ -2445,4 +2452,9 @@ func coalesceInt(n, def int) int {
 		return def
 	}
 	return n
+}
+
+func isPostgresUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
