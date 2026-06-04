@@ -366,7 +366,7 @@ func verifyJWT(tokenStr string, keys jwtKeySet) (userID, scopes, deviceID string
 	if jsonErr := json.Unmarshal(headerRaw, &header); jsonErr != nil {
 		return "", "", "", &jwtError{"invalid header JSON"}
 	}
-	if header.Alg != "" && header.Alg != "HS256" {
+	if header.Alg != "HS256" {
 		return "", "", "", &jwtError{"unsupported jwt algorithm"}
 	}
 	secret, ok := keys.secretFor(header.Kid)

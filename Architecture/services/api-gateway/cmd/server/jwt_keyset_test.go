@@ -1,6 +1,13 @@
 package main
 
-import "testing"
+import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"testing"
+	"time"
+)
 
 // C7 — kid-based secret resolution underlies the zero-downtime rotation
 // story for JWT_SECRET at the api-gateway. Same contract as the identity
@@ -39,4 +46,44 @@ func TestJWTKeySetSecretFor(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestVerifyJWTRequiresHS256Alg(t *testing.T) {
+	keys := jwtKeySet{activeKID: "v1", activeSecret: "secret"}
+	payload := map[string]any{
+		"sub": "user-1",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	}
+
+	valid := signJWT(t, map[string]any{"alg": "HS256", "kid": "v1"}, payload, keys.activeSecret)
+	userID, _, _, err := verifyJWT(valid, keys)
+	if err != nil {
+		t.Fatalf("valid HS256 token rejected: %v", err)
+	}
+	if userID != "user-1" {
+		t.Fatalf("userID=%q want user-1", userID)
+	}
+
+	missingAlg := signJWT(t, map[string]any{"kid": "v1"}, payload, keys.activeSecret)
+	if _, _, _, err := verifyJWT(missingAlg, keys); err == nil {
+		t.Fatal("token with missing alg should be rejected")
+	}
+}
+
+func signJWT(t *testing.T, header, payload map[string]any, secret string) string {
+	t.Helper()
+	headerBytes, err := json.Marshal(header)
+	if err != nil {
+		t.Fatalf("marshal header: %v", err)
+	}
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	encHeader := base64.RawURLEncoding.EncodeToString(headerBytes)
+	encPayload := base64.RawURLEncoding.EncodeToString(payloadBytes)
+	input := encHeader + "." + encPayload
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(input))
+	return input + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
