@@ -23,7 +23,7 @@ spec:
 
   generators:
     - git:
-        repoURL: https://github.com/CHANGEME/atpost.git
+        repoURL: https://github.com/rvreddy476/modernsmapp.git
         revision: main
         directories:
           # One Application per service directory in deploy/services/.
@@ -41,7 +41,7 @@ spec:
     spec:
       project: atpost
       source:
-        repoURL: https://github.com/CHANGEME/atpost.git
+        repoURL: https://github.com/rvreddy476/modernsmapp.git
         targetRevision: main
         # Inline Helm config — points at the shared chart with the
         # per-service+env values file as overrides.
@@ -54,13 +54,13 @@ spec:
       # `sources` block for multi-source (chart + values from same
       # repo, but ArgoCD treats them as separate sources).
       sources:
-        - repoURL: https://github.com/CHANGEME/atpost.git
+        - repoURL: https://github.com/rvreddy476/modernsmapp.git
           targetRevision: main
           path: charts/atpost-service
           helm:
             valueFiles:
               - $values/{{.path.path}}/values-staging.yaml
-        - repoURL: https://github.com/CHANGEME/atpost.git
+        - repoURL: https://github.com/rvreddy476/modernsmapp.git
           targetRevision: main
           ref: values
       destination:
@@ -97,7 +97,7 @@ spec:
 
   generators:
     - git:
-        repoURL: https://github.com/CHANGEME/atpost.git
+        repoURL: https://github.com/rvreddy476/modernsmapp.git
         # Prod tracks a `release/prod` branch so staging churn doesn't
         # land in prod until promoted. The promotion flow is `git
         # merge main` → `release/prod` once staging is green.
@@ -115,13 +115,13 @@ spec:
     spec:
       project: atpost
       sources:
-        - repoURL: https://github.com/CHANGEME/atpost.git
+        - repoURL: https://github.com/rvreddy476/modernsmapp.git
           targetRevision: release/prod
           path: charts/atpost-service
           helm:
             valueFiles:
               - $values/{{.path.path}}/values-prod.yaml
-        - repoURL: https://github.com/CHANGEME/atpost.git
+        - repoURL: https://github.com/rvreddy476/modernsmapp.git
           targetRevision: release/prod
           ref: values
       destination:
