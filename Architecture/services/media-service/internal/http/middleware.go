@@ -61,7 +61,10 @@ func verifyJWT(tokenStr string, keys JWTKeySet) (string, error) {
 	if err := json.Unmarshal(headerRaw, &header); err != nil {
 		return "", fmt.Errorf("header parse: %w", err)
 	}
-	if header.Alg != "" && header.Alg != "HS256" {
+	// C7: reject anything that isn't HS256, including a missing alg
+	// header. A token with no alg is a spec violation + a known alg-
+	// confusion shape; mirrors the api-gateway tightening.
+	if header.Alg != "HS256" {
 		return "", fmt.Errorf("unsupported jwt algorithm")
 	}
 	secret, ok := keys.secretFor(header.Kid)
