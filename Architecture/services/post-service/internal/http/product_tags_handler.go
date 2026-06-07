@@ -72,6 +72,18 @@ func (h *Handler) CreateProductTag(c *gin.Context) {
 		return
 	}
 
+	// Cross-service validation: the affiliate link must exist + be
+	// active + be owned by the caller. Fail-closed on monetization-
+	// service unreachability — a creator tagging someone else's
+	// affiliate link is a real commission-fraud vector, so a transient
+	// outage should NOT let a bad tag through.
+	if _, _, err := h.svc.ValidateAffiliateLink(
+		c.Request.Context(), req.AffiliateLinkID, callerID,
+	); err != nil {
+		writeProductTagError(c, err)
+		return
+	}
+
 	tag, err := h.svc.CreateProductTag(c.Request.Context(), service.CreateProductTagInput{
 		PostID:          postID,
 		AffiliateLinkID: req.AffiliateLinkID,
@@ -212,12 +224,18 @@ func mustCallerID(c *gin.Context) (uuid.UUID, bool) {
 
 func writeProductTagError(c *gin.Context, err error) {
 	switch {
-	case errors.Is(err, service.ErrPostNotFound), errors.Is(err, postgres.ErrTagNotFound):
+	case errors.Is(err, service.ErrPostNotFound),
+		errors.Is(err, postgres.ErrTagNotFound),
+		errors.Is(err, service.ErrAffiliateLinkNotFound):
 		api.ErrorWithContext(c.Request.Context(), c.Writer,
 			http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
-	case errors.Is(err, service.ErrProductTagNotAuthorized):
+	case errors.Is(err, service.ErrProductTagNotAuthorized),
+		errors.Is(err, service.ErrAffiliateLinkNotOwned):
 		api.ErrorWithContext(c.Request.Context(), c.Writer,
 			http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
+	case errors.Is(err, service.ErrAffiliateLinkInactive):
+		api.ErrorWithContext(c.Request.Context(), c.Writer,
+			http.StatusGone, "GONE", err.Error(), nil)
 	case errors.Is(err, postgres.ErrTagAlreadyExists):
 		api.ErrorWithContext(c.Request.Context(), c.Writer,
 			http.StatusConflict, "CONFLICT", err.Error(), nil)

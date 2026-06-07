@@ -39,6 +39,14 @@ func (s *Service) GetAffiliateLinkByCode(ctx context.Context, code string) (*pos
 	return link, nil
 }
 
+// GetAffiliateLinkByID returns the affiliate link by its UUID without
+// incrementing the click count. Used by post-service's product-tag
+// validator — we don't want a tag-creation flow to inflate click
+// stats.
+func (s *Service) GetAffiliateLinkByID(ctx context.Context, id uuid.UUID) (*postgres.AffiliateLink, error) {
+	return s.store.GetAffiliateLinkByID(ctx, id)
+}
+
 // ListAffiliateLinks returns paginated active affiliate links for a creator.
 func (s *Service) ListAffiliateLinks(ctx context.Context, creatorID uuid.UUID, limit, offset int) ([]postgres.AffiliateLink, error) {
 	return s.store.GetAffiliateLinksByCreator(ctx, creatorID, limit, offset)

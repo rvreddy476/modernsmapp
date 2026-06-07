@@ -91,6 +91,30 @@ func (h *Handler) GetAffiliateLinkByCode(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, link, nil)
 }
 
+// GetAffiliateLinkByID is the internal validator endpoint used by
+// post-service when creating an in-video product tag. Looks the link
+// up by UUID (not by link_code) so the post-service tag → affiliate
+// reference stays stable across human-friendly code edits.
+//
+// Internal-only: gated by RequireInternalKey at the route level.
+func (h *Handler) GetAffiliateLinkByID(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("linkId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "linkId must be a UUID", nil)
+		return
+	}
+	link, err := h.svc.GetAffiliateLinkByID(c.Request.Context(), id)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	if link == nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Affiliate link not found", nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, link, nil)
+}
+
 func (h *Handler) ListAffiliateConversions(c *gin.Context) {
 	_, ok := getUserID(c)
 	if !ok {

@@ -85,6 +85,31 @@ func (s *Store) GetAffiliateLinkByCode(ctx context.Context, code string) (*Affil
 	return &l, nil
 }
 
+// GetAffiliateLinkByID returns the affiliate link with the given UUID.
+// post-service's product-tag handler uses this to validate ownership
+// before persisting the tag — the tag stores the link by UUID, not by
+// link_code (UUIDs are stable; link_code is human-friendly and could
+// be regenerated).
+func (s *Store) GetAffiliateLinkByID(ctx context.Context, id uuid.UUID) (*AffiliateLink, error) {
+	var l AffiliateLink
+	err := s.db.QueryRow(ctx, `
+		SELECT id, creator_id, listing_id, commission_pct, commission_flat,
+		       link_code, click_count, conversion_count, total_earned, is_active, created_at
+		FROM affiliate_links
+		WHERE id = $1
+	`, id).Scan(
+		&l.ID, &l.CreatorID, &l.ListingID, &l.CommissionPct, &l.CommissionFlat,
+		&l.LinkCode, &l.ClickCount, &l.ConversionCount, &l.TotalEarned, &l.IsActive, &l.CreatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &l, nil
+}
+
 // GetAffiliateLinksByCreator returns active affiliate links for a creator, ordered by created_at DESC.
 func (s *Store) GetAffiliateLinksByCreator(ctx context.Context, creatorID uuid.UUID, limit, offset int) ([]AffiliateLink, error) {
 	rows, err := s.db.Query(ctx, `
