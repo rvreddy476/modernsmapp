@@ -218,6 +218,15 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	r.POST("/v1/videos/:videoId/progress", h.SaveWatchProgress)
 	r.GET("/v1/videos/continue-watching", h.GetContinueWatching)
 	r.DELETE("/v1/videos/:videoId/progress", h.DeleteWatchProgress)
+
+	// In-video product tags (affiliate overlays). See
+	// internal/http/product_tags_handler.go for the contract.
+	r.POST("/v1/posts/:postId/product-tags", h.CreateProductTag)
+	r.GET("/v1/posts/:postId/product-tags", h.ListProductTagsByPost)
+	r.DELETE("/v1/posts/:postId/product-tags/:tagId", h.DeleteProductTag)
+	r.POST("/v1/posts/:postId/product-tags/:tagId/impression", h.RecordProductTagImpression)
+	r.POST("/v1/posts/:postId/product-tags/:tagId/click", h.RecordProductTagClick)
+	r.GET("/v1/creators/:creatorId/product-tags", h.ListProductTagsByCreator)
 }
 
 type CreatePollRequest struct {
