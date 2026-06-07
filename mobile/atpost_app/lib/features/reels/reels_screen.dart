@@ -14,6 +14,7 @@ import 'package:atpost_app/features/shell/shell_providers.dart';
 import 'package:atpost_app/features/shell/shell_scaffold.dart';
 import 'package:atpost_app/providers/data_saver_provider.dart';
 import 'package:atpost_app/shared/widgets/caption_toggle.dart';
+import 'package:atpost_app/shared/widgets/product_tag_overlay.dart';
 import 'package:atpost_app/shared/widgets/video_player_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -679,6 +680,9 @@ class _ReelPage extends StatefulWidget {
 
 class _ReelPageState extends State<_ReelPage> {
   final GlobalKey<VideoPlayerWidgetState> _playerKey = GlobalKey();
+  // Playhead fed to ProductTagOverlay so it knows which tags are
+  // currently in-window. Throttled to 10Hz by VideoPlayerWidget.
+  int _positionMs = 0;
 
   String get _title {
     final text = widget.post.content.trim();
@@ -752,9 +756,25 @@ class _ReelPageState extends State<_ReelPage> {
                   looping: true,
                   showControls: false,
                   placeholder: gradientBg,
+                  onPositionUpdate: (ms) {
+                    if (!mounted) return;
+                    setState(() => _positionMs = ms);
+                  },
                 )
               : gradientBg,
         ),
+        // In-video product-tag overlay. Renders nothing when the post
+        // has no tags (the FutureProvider returns []). The whole layer
+        // is layered between the player and the chrome/CTA controls
+        // below so taps on empty space still hit the player's
+        // tap-to-pause GestureDetector.
+        if (hasVideo)
+          Positioned.fill(
+            child: ProductTagOverlay(
+              postId: widget.post.id,
+              positionMs: _positionMs,
+            ),
+          ),
         if (hasVideo && !shouldAutoplay)
           Positioned.fill(
             child: GestureDetector(

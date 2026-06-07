@@ -20,6 +20,7 @@ class VideoPlayerWidget extends StatefulWidget {
     this.aspectRatio,
     this.placeholder,
     this.onTogglePlay,
+    this.onPositionUpdate,
   });
 
   final String videoUrl;
@@ -33,6 +34,12 @@ class VideoPlayerWidget extends StatefulWidget {
 
   /// Called when the user taps to toggle play/pause (for reel-style tap).
   final VoidCallback? onTogglePlay;
+
+  /// Absolute playhead in milliseconds, emitted on the controller's
+  /// value listener. Feeds ProductTagOverlay so it knows which tags
+  /// are currently in-window. Throttled to ~10Hz in the listener to
+  /// avoid setState pressure inside whoever consumes it.
+  final void Function(int positionMs)? onPositionUpdate;
 
   @override
   State<VideoPlayerWidget> createState() => VideoPlayerWidgetState();
@@ -82,6 +89,21 @@ class VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       if (!mounted) return;
 
       controller.setLooping(widget.looping);
+
+      // Throttled position emitter — fires onPositionUpdate at most
+      // every 100ms (10 Hz). Fine-grained enough that a 1-second tag
+      // window is hit ~10 times; cheap enough that the consumer's
+      // setState doesn't thrash on every frame.
+      if (widget.onPositionUpdate != null) {
+        var lastEmittedMs = -1000;
+        controller.addListener(() {
+          final pos = controller.value.position.inMilliseconds;
+          if ((pos - lastEmittedMs).abs() >= 100) {
+            lastEmittedMs = pos;
+            widget.onPositionUpdate?.call(pos);
+          }
+        });
+      }
 
       _chewieController = ChewieController(
         videoPlayerController: controller,
