@@ -58,17 +58,19 @@ func (s *Service) ResolveAffiliateRedirect(
 	if err != nil {
 		return "", fmt.Errorf("affiliate redirect: lookup product: %w", err)
 	}
-	if product == nil || product.Slug == "" {
+	if product == nil {
 		return "", ErrAffiliateRedirectProductMissing
 	}
 
 	// Anchor on a relative URL so the redirect honours whatever the
-	// public host is (CloudFront, dev tunnel, localhost). The web app
-	// is responsible for resolving /c/<slug>?via= into a real listing
-	// page. Mobile interprets the relative URL via its deep-link map.
+	// public host is (CloudFront, dev tunnel, localhost). Web maps
+	// /products/<id> to the existing product page; mobile resolves
+	// the same path via its deep-link table. via= carries the
+	// affiliate code through the checkout flow for commission
+	// attribution.
 	v := url.Values{}
 	v.Set("via", link.LinkCode)
-	return fmt.Sprintf("/c/%s?%s", product.Slug, v.Encode()), nil
+	return fmt.Sprintf("/products/%s?%s", product.ID, v.Encode()), nil
 }
 
 type monetizationAffiliateLink struct {
