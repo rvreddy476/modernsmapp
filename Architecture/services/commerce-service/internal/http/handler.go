@@ -35,10 +35,17 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 	v1 := r.Group("/v1/commerce")
 
+	// ── Affiliate redirect (public; viewer click target) ─────
+	// Lands the viewer on the canonical product page with the
+	// affiliate code in the query string. See
+	// internal/service/affiliate_redirect.go for the resolver.
+	v1.GET("/affiliate/:linkId", h.AffiliateRedirect)
+
 	// ── Catalog ──────────────────────────────────────────────
 	v1.GET("/categories", h.ListCategories)
 	v1.GET("/products", h.ListProducts)
 	v1.GET("/products/:productId", h.GetProduct)
+	v1.GET("/products/:productId/preview", h.GetProductPreview)
 	v1.POST("/products", h.CreateProduct)
 	v1.GET("/products/:productId/media", h.ListProductMedia)
 	v1.POST("/products/:productId/media", h.AddProductMedia)

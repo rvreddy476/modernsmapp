@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -78,6 +79,39 @@ type Service struct {
 	// single PG UPDATE row. Nil-safe — falls back to the legacy
 	// IncrProductViewCount when Redis is absent (dev loop).
 	productViewCounter *counters.Counter
+
+	// ─── cross-service plumbing for affiliate redirects ────────────
+	// commerce-service hosts the public /v1/commerce/affiliate/:linkId
+	// redirect, which needs the link's metadata. Reaches monetization
+	// via internal-key. Fields are nil-safe — set via the With…
+	// setters from cmd/server/main.go.
+	monetizationServiceURL string
+	internalServiceKey     string
+	httpClient             *http.Client
+}
+
+// WithMonetizationServiceURL sets the base URL for monetization-service
+// (used by the affiliate-redirect resolver). Empty = redirect endpoint
+// returns 503 since it can't reach the link metadata.
+func (s *Service) WithMonetizationServiceURL(u string) *Service {
+	s.monetizationServiceURL = u
+	return s
+}
+
+// WithInternalServiceKey configures the X-Internal-Service-Key header
+// that commerce-service sends on outbound calls to monetization. The
+// inbound gate (commerce-side) is configured on the handler.
+func (s *Service) WithInternalServiceKey(k string) *Service {
+	s.internalServiceKey = k
+	return s
+}
+
+// WithHTTPClient lets callers inject a circuit-breaker-wrapped client
+// (Architecture/shared/httpclient.NewWithBreaker). Tests inject a
+// 2-second-timeout client. Defaults to a plain 5-second client.
+func (s *Service) WithHTTPClient(c *http.Client) *Service {
+	s.httpClient = c
+	return s
 }
 
 func New(store *postgres.Store, rdb *redis.Client, kafkaBrokers string) *Service {

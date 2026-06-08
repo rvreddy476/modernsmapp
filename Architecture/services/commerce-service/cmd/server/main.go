@@ -128,6 +128,13 @@ func main() {
 	// Courier provider (stub in dev, shiprocket in prod). Env COURIER_PROVIDER selects.
 	svc.WithCourier(courier.New())
 
+	// Cross-service plumbing for the affiliate-redirect resolver. The
+	// /v1/commerce/affiliate/:linkId endpoint calls monetization-service
+	// via the internal-key channel; both env vars are wired here so a
+	// missing one degrades gracefully (handler returns 503).
+	svc.WithMonetizationServiceURL(env("MONETIZATION_SERVICE_URL", "http://monetization-service:8099"))
+	svc.WithInternalServiceKey(env("INTERNAL_SERVICE_KEY", ""))
+
 	// MinIO for invoice HTML storage.
 	minioEndpoint := env("MINIO_ENDPOINT", "minio:9000")
 	minioAccess := env("MINIO_ACCESS_KEY", "minioadmin")
