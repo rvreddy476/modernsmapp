@@ -5,6 +5,7 @@ import 'package:atpost_app/features/channels/channels_list_screen.dart';
 import 'package:atpost_app/features/channels/channel_detail_screen.dart';
 import 'package:atpost_app/features/channels/create_channel_screen.dart';
 import 'package:atpost_app/features/commerce/address_book_screen.dart';
+import 'package:atpost_app/features/commerce/affiliate_redirect_screen.dart';
 import 'package:atpost_app/features/commerce/address_form_screen.dart';
 import 'package:atpost_app/features/commerce/cart_screen.dart';
 import 'package:atpost_app/features/seller/seller_bulk_import_screen.dart';
@@ -525,6 +526,16 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: '/commerce/cart',
             builder: (_, _) => const CartScreen(),
+          ),
+          // In-video affiliate redirect. Mirrors the public web URL
+          // /v1/commerce/affiliate/:linkId; the screen calls the
+          // server endpoint with redirects disabled, captures
+          // ?via= into AffiliateAttribution, then routes onward.
+          GoRoute(
+            path: '/commerce/affiliate/:linkId',
+            builder: (context, state) => AffiliateRedirectScreen(
+              linkId: state.pathParameters['linkId']!,
+            ),
           ),
           GoRoute(
             path: '/commerce/checkout',

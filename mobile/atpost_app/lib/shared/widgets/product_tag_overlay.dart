@@ -20,6 +20,7 @@ import 'package:atpost_app/data/repositories/product_tags_repository.dart';
 import 'package:atpost_app/providers/product_tags_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 class ProductTagOverlay extends ConsumerWidget {
   const ProductTagOverlay({
@@ -108,7 +109,16 @@ class _ProductCardState extends ConsumerState<_ProductCard> {
           postId: widget.postId,
           tagId: widget.tag.id,
         );
-    widget.onTap?.call(widget.tag);
+    // If the host passed a custom handler (e.g. a Dart test), let it
+    // win; otherwise route through the canonical affiliate redirect
+    // screen which captures ?via= into AffiliateAttribution + lands
+    // on the product detail.
+    if (widget.onTap != null) {
+      widget.onTap!(widget.tag);
+      return;
+    }
+    if (!mounted) return;
+    GoRouter.of(context).push('/commerce/affiliate/${widget.tag.affiliateLinkId}');
   }
 
   @override

@@ -14,6 +14,7 @@ import 'package:atpost_app/features/shell/shell_providers.dart';
 import 'package:atpost_app/features/shell/shell_scaffold.dart';
 import 'package:atpost_app/providers/data_saver_provider.dart';
 import 'package:atpost_app/shared/widgets/caption_toggle.dart';
+import 'package:atpost_app/features/reels/product_tag_composer_button.dart';
 import 'package:atpost_app/shared/widgets/product_tag_overlay.dart';
 import 'package:atpost_app/shared/widgets/video_player_widget.dart';
 import 'package:flutter/material.dart';
@@ -773,6 +774,19 @@ class _ReelPageState extends State<_ReelPage> {
             child: ProductTagOverlay(
               postId: widget.post.id,
               positionMs: _positionMs,
+            ),
+          ),
+        // Author-gated "Tag products" CTA. Pinned upper-left so it
+        // doesn't collide with the right-side action rail (like /
+        // comment / share / save) or the bottom captions strip. The
+        // widget renders nothing for non-authors.
+        if (hasVideo)
+          Positioned(
+            top: MediaQuery.of(context).padding.top + 56,
+            left: 12,
+            child: ProductTagComposerButton(
+              postId: widget.post.id,
+              postAuthorId: widget.post.authorId,
             ),
           ),
         if (hasVideo && !shouldAutoplay)
