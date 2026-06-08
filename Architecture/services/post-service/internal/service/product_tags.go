@@ -111,15 +111,35 @@ func (s *Service) DeleteProductTag(ctx context.Context, tagID, callerID uuid.UUI
 	return s.pgStore.SoftDeleteProductTag(ctx, tagID)
 }
 
-// RecordImpression / RecordClick are unauthenticated (or weakly-auth) —
-// the player calls them when the overlay renders / is tapped. Counts
-// flow through the regular abuse pipeline; per-IP throttling happens
-// at the gateway.
-func (s *Service) RecordProductTagImpression(ctx context.Context, tagID uuid.UUID) error {
+// RecordProductTagImpression accepts an impression event from the
+// player, dedups against the (tag, ipHash) tuple via Redis, and (when
+// the dedup window is fresh) bumps the counter. The handler is
+// responsible for hashing the IP — keeping a salt on the service
+// would leak it through the func signature.
+//
+// Returns nil on dedup (the player gets 204; the counter just didn't
+// move). Errors propagate when the underlying UPDATE fails.
+func (s *Service) RecordProductTagImpression(
+	ctx context.Context,
+	tagID uuid.UUID,
+	ipHash string,
+) error {
+	if !s.AcceptProductTagImpression(ctx, tagID, ipHash) {
+		return nil
+	}
 	return s.pgStore.BumpProductTagImpression(ctx, tagID, 1)
 }
 
-func (s *Service) RecordProductTagClick(ctx context.Context, tagID uuid.UUID) error {
+// RecordProductTagClick — sibling. Click dedup is shorter than
+// impression dedup (15m vs 1h) — see product_tag_dedup.go.
+func (s *Service) RecordProductTagClick(
+	ctx context.Context,
+	tagID uuid.UUID,
+	ipHash string,
+) error {
+	if !s.AcceptProductTagClick(ctx, tagID, ipHash) {
+		return nil
+	}
 	return s.pgStore.BumpProductTagClick(ctx, tagID, 1)
 }
 

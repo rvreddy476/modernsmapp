@@ -1,9 +1,12 @@
 package http
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/atpost/post-service/internal/service"
 	"github.com/atpost/post-service/internal/store/postgres"
@@ -170,15 +173,18 @@ func (h *Handler) DeleteProductTag(c *gin.Context) {
 
 // RecordProductTagImpression — POST /v1/posts/:postId/product-tags/:tagId/impression
 //
-// Player view event. Unauthenticated path — gateway rate-limit (H5) is
-// the abuse defence. We don't validate that postId matches the tag's
-// post; the tag ID alone is sufficient.
+// Player view event. Unauthenticated path — gateway rate-limit (H5)
+// throttles aggregate traffic, and per-(tag, IP) dedup in the service
+// layer prevents a single viewer's repeat watches from inflating
+// counts. We don't validate that postId matches the tag's post; the
+// tag ID alone is sufficient.
 func (h *Handler) RecordProductTagImpression(c *gin.Context) {
 	tagID, ok := parsePathUUID(c, "tagId")
 	if !ok {
 		return
 	}
-	if err := h.svc.RecordProductTagImpression(c.Request.Context(), tagID); err != nil {
+	ipHash := hashClientIP(c)
+	if err := h.svc.RecordProductTagImpression(c.Request.Context(), tagID, ipHash); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer,
 			http.StatusInternalServerError, "INTERNAL", err.Error(), nil)
 		return
@@ -192,12 +198,44 @@ func (h *Handler) RecordProductTagClick(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := h.svc.RecordProductTagClick(c.Request.Context(), tagID); err != nil {
+	ipHash := hashClientIP(c)
+	if err := h.svc.RecordProductTagClick(c.Request.Context(), tagID, ipHash); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer,
 			http.StatusInternalServerError, "INTERNAL", err.Error(), nil)
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+// hashClientIP returns a stable hex digest of the request's client IP.
+// Used as the dedup key so a long-lived Redis record doesn't store the
+// raw IP (PII). Falls back to "" if no IP can be determined — the
+// service's dedup layer treats that as "skip dedup" and accepts the
+// event (the gateway flood gate is the upstream guard).
+//
+// Precedence:
+//   X-Real-IP (the gateway already sets this for the proxied request)
+//   X-Forwarded-For first hop
+//   c.ClientIP() (gin's helper, ultimately RemoteAddr)
+func hashClientIP(c *gin.Context) string {
+	ip := strings.TrimSpace(c.GetHeader("X-Real-IP"))
+	if ip == "" {
+		if xff := c.GetHeader("X-Forwarded-For"); xff != "" {
+			if idx := strings.Index(xff, ","); idx != -1 {
+				ip = strings.TrimSpace(xff[:idx])
+			} else {
+				ip = strings.TrimSpace(xff)
+			}
+		}
+	}
+	if ip == "" {
+		ip = c.ClientIP()
+	}
+	if ip == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(ip))
+	return hex.EncodeToString(sum[:16]) // first 128 bits is plenty
 }
 
 // ─── helpers ────────────────────────────────────────────────────────
