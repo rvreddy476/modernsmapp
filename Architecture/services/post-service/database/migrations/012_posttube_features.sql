@@ -54,7 +54,6 @@ CREATE INDEX IF NOT EXISTS idx_playlist_items_post ON playlist_items(post_id);
 
 -- Video Chapters
 CREATE TABLE IF NOT EXISTS media_chapters (
-    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     post_id       UUID NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
     chapter_index INT NOT NULL,
     title         TEXT NOT NULL,
