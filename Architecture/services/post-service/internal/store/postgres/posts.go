@@ -248,6 +248,15 @@ func (s *Store) CreatePost(ctx context.Context, p *Post) error {
 	if reviewStatus == "" {
 		reviewStatus = "approved"
 	}
+	// posts.hashtags / posts.mentions are NOT NULL DEFAULT '{}'. pgx encodes
+	// a nil Go slice as SQL NULL, which beats the default and trips the
+	// constraint. Coerce here so callers can pass either nil or [].
+	if p.Hashtags == nil {
+		p.Hashtags = []string{}
+	}
+	if p.Mentions == nil {
+		p.Mentions = []uuid.UUID{}
+	}
 	_, err = tx.Exec(ctx, `
 		INSERT INTO posts (id, author_id, text, visibility, content_type,
 			feeling, activity, activity_detail, rich_text,
