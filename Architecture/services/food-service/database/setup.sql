@@ -948,31 +948,14 @@ FOR EACH ROW EXECUTE FUNCTION food.set_updated_at();
 -- ============================================================
 -- SUPPORT, AUDIT, IDEMPOTENCY
 -- ============================================================
-
-CREATE TABLE IF NOT EXISTS food.support_tickets (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    order_id UUID REFERENCES food.orders(id) ON DELETE SET NULL,
-    user_id UUID NOT NULL,
-    restaurant_id UUID REFERENCES food.restaurants(id) ON DELETE SET NULL,
-    delivery_partner_id UUID REFERENCES food.delivery_partners(id) ON DELETE SET NULL,
-    category VARCHAR(80) NOT NULL,
-    subject VARCHAR(200) NOT NULL,
-    description TEXT,
-    status VARCHAR(40) NOT NULL DEFAULT 'OPEN',
-    assigned_to UUID,
-    resolution TEXT,
-    resolved_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS ix_food_support_tickets_user ON food.support_tickets(user_id);
-CREATE INDEX IF NOT EXISTS ix_food_support_tickets_status ON food.support_tickets(status);
-
-DROP TRIGGER IF EXISTS trg_support_tickets_updated_at ON food.support_tickets;
-CREATE TRIGGER trg_support_tickets_updated_at
-BEFORE UPDATE ON food.support_tickets
-FOR EACH ROW EXECUTE FUNCTION food.set_updated_at();
+--
+-- NOTE: food.support_tickets is intentionally NOT defined here. An older
+-- shape lived in this block (user_id + restaurant_id + delivery_partner_id)
+-- but the application repo (internal/store/postgres/support.go) was
+-- redesigned in Wave B6 to use a leaner customer_id/detail shape. The
+-- canonical definition now lives further down this file in the B6 block —
+-- defining it here too created a duplicate-CREATE-TABLE race that left a
+-- mismatched schema in the DB and broke the customer_id index on boot.
 
 CREATE TABLE IF NOT EXISTS food.admin_audit_logs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
