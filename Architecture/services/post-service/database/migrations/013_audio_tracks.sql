@@ -1,5 +1,12 @@
 -- Migration 013: Audio/Music Layer for posts
--- Tracks audio used in reels/videos, trending sounds, attribution, and reuse chain.
+--
+-- NOTE on cross-service collision: media-service migration 004 also creates
+-- `audio_tracks` in the same `app` DB but with a different shape (source_media_id,
+-- audio_key, usage_count, status, license_type, ...). Whichever service boots first
+-- wins the CREATE TABLE race. This migration is therefore written defensively:
+-- it adds the columns post-service queries by, on top of whatever shape exists.
+-- The full reconciliation (single canonical audio_tracks owner) is tracked
+-- separately as tech debt; this just keeps both services bootable on a shared DB.
 
 CREATE TABLE IF NOT EXISTS audio_tracks (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -14,6 +21,15 @@ CREATE TABLE IF NOT EXISTS audio_tracks (
     is_trending BOOLEAN NOT NULL DEFAULT false,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Idempotent column adds — cover the case where media-service migration 004
+-- already created `audio_tracks` with its own shape and these columns are
+-- missing.
+ALTER TABLE audio_tracks ADD COLUMN IF NOT EXISTS media_id UUID;
+ALTER TABLE audio_tracks ADD COLUMN IF NOT EXISTS original_post_id UUID;
+ALTER TABLE audio_tracks ADD COLUMN IF NOT EXISTS use_count INT NOT NULL DEFAULT 0;
+ALTER TABLE audio_tracks ADD COLUMN IF NOT EXISTS is_trending BOOLEAN NOT NULL DEFAULT false;
+
 CREATE INDEX IF NOT EXISTS idx_audio_trending ON audio_tracks(is_trending, use_count DESC) WHERE is_trending = true;
 CREATE INDEX IF NOT EXISTS idx_audio_post ON audio_tracks(original_post_id);
 
