@@ -143,16 +143,25 @@ void main() {
         async.flushMicrotasks();
         clearInteractions(repo);
 
+        // First keystroke sends the leading typing ping immediately
         notifier.onComposerChanged('hel');
-        async.elapse(const Duration(milliseconds: 349));
-        verifyNever(() => repo.sendTyping(any()));
-
-        async.elapse(const Duration(milliseconds: 1));
         verify(() => repo.sendTyping('conv-1')).called(1);
         clearInteractions(repo);
 
+        // Subsequent keystrokes within 2 seconds (throttle) do not send another ping
+        notifier.onComposerChanged('hello');
+        async.elapse(const Duration(seconds: 1));
+        verifyNever(() => repo.sendTyping(any()));
+
+        // Keystroke after the idle reset interval sends another ping
+        async.elapse(const Duration(seconds: 3));
+        notifier.onComposerChanged('hello world');
+        verify(() => repo.sendTyping('conv-1')).called(1);
+        clearInteractions(repo);
+
+        // Empty composer resets/cancels the typing state and doesn't send pings
         notifier.onComposerChanged('   ');
-        async.elapse(const Duration(milliseconds: 400));
+        async.elapse(const Duration(seconds: 3));
         verifyNever(() => repo.sendTyping(any()));
       });
     });

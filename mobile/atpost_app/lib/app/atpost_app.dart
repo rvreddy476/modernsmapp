@@ -13,7 +13,7 @@ class AtpostApp extends ConsumerWidget {
     return MaterialApp.router(
       title: 'VChat',
       themeMode: ThemeMode.dark,
-      theme: AppTheme.lightTheme,
+      theme: AppTheme.darkTheme,
       darkTheme: AppTheme.darkTheme,
       debugShowCheckedModeBanner: false,
       routerConfig: router,

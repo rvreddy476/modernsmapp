@@ -90,7 +90,7 @@ void main() {
 
         final success = await service.login('user@example.com', 'secret');
 
-        expect(success, isTrue);
+        expect(success.success, isTrue);
         expect(service.userId, 'user-1');
         expect(service.token, 'fresh-token');
         expect(service.refreshToken, isNull);

@@ -5,6 +5,7 @@ import 'package:atpost_app/data/models/realtime_event.dart';
 import 'package:atpost_app/data/repositories/chat_repository.dart';
 import 'package:atpost_app/services/auth_service.dart';
 import 'package:atpost_app/services/realtime_service.dart';
+import 'package:clock/clock.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 /// Live conversation list. Emits an initial fetch, then re-pulls the
@@ -313,7 +314,7 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
       return;
     }
 
-    final now = DateTime.now();
+    final now = clock.now();
     final last = _lastTypingSentAt;
     if (last == null || now.difference(last) >= _typingThrottle) {
       _lastTypingSentAt = now;
