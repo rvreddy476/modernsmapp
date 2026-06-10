@@ -56,6 +56,17 @@ func (s *Store) SaveItem(ctx context.Context, userID uuid.UUID, targetType strin
 	return item, nil
 }
 
+// UnsaveItemByTarget removes the saved-items row for (user, target). No-op if
+// it doesn't exist. Used by ToggleBookmark to keep the /saved page in sync
+// without forcing the caller to look up the saved_items.id first.
+func (s *Store) UnsaveItemByTarget(ctx context.Context, userID uuid.UUID, targetType string, targetID uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `
+		DELETE FROM saved_items
+		WHERE user_id = $1 AND target_type = $2 AND target_id = $3
+	`, userID, targetType, targetID)
+	return err
+}
+
 // UnsaveItem removes a saved item by ID. Returns error if not found or not owned by user.
 func (s *Store) UnsaveItem(ctx context.Context, savedID, userID uuid.UUID) error {
 	tag, err := s.db.Exec(ctx, `

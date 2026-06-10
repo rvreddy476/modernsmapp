@@ -1429,6 +1429,20 @@ func (s *Service) ToggleBookmarkNew(ctx context.Context, postID, userID uuid.UUI
 		return nil, err
 	}
 
+	// Keep the Postgres saved_items row in sync so the /v1/saved page mirrors
+	// the post bookmark icon. Best-effort: failures here don't unwind the
+	// Redis/Scylla bookmark — the icon's source of truth is still the
+	// engagement layer.
+	if result.IsSet {
+		if _, err := s.pgStore.SaveItem(ctx, userID, "post", postID, ""); err != nil {
+			log.Printf("Warning: failed to mirror bookmark into saved_items: %v", err)
+		}
+	} else {
+		if err := s.pgStore.UnsaveItemByTarget(ctx, userID, "post", postID); err != nil {
+			log.Printf("Warning: failed to remove bookmark from saved_items: %v", err)
+		}
+	}
+
 	// Publish engagement event for durable write (ScyllaDB consumer only — no notification, no WS)
 	eventType := engagement.EventPostBookmarked
 	if !result.IsSet {

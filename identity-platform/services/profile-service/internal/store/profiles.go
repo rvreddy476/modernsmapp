@@ -326,10 +326,14 @@ func (s *Store) UpdateProfile(ctx context.Context, userID uuid.UUID, p UpdatePro
 			first_name = $6, last_name = $7, preferred_name = $8, pronouns = $9,
 			gender = $10, dob = $11, username = $12,
 			category = $13, profession = $14, website = $15, location = $16,
-			status_text = $17, status_emoji = $18, status_expires_at = $19,
-			profile_theme_color = $20, intro_media_url = $21, intro_media_type = $22,
-			cta_label = $23, cta_url = $24, member_since_badge = COALESCE($25, member_since_badge),
-			timezone = $26,
+			-- NOT NULL columns wrapped in COALESCE: omitting the field in the
+			-- request should mean "leave it alone", not "blow up with 23502".
+			-- Without this, any partial-update PUT (e.g. just display_name + bio)
+			-- failed because nil *string args were sent as SQL NULL.
+			status_text = COALESCE($17, status_text), status_emoji = COALESCE($18, status_emoji), status_expires_at = $19,
+			profile_theme_color = COALESCE($20, profile_theme_color), intro_media_url = COALESCE($21, intro_media_url), intro_media_type = COALESCE($22, intro_media_type),
+			cta_label = COALESCE($23, cta_label), cta_url = COALESCE($24, cta_url), member_since_badge = COALESCE($25, member_since_badge),
+			timezone = COALESCE($26, timezone),
 			updated_at = NOW()
 		WHERE user_id = $1
 		RETURNING `+allProfileCols,
