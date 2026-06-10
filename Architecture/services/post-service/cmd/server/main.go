@@ -470,6 +470,12 @@ func ensureSchema(ctx context.Context, db *pgxpool.Pool) {
 		`CREATE INDEX IF NOT EXISTS idx_comments_post ON comments (post_id, created_at DESC) WHERE is_deleted = FALSE`,
 		`CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments (parent_id, created_at ASC) WHERE parent_id IS NOT NULL AND is_deleted = FALSE`,
 		`CREATE INDEX IF NOT EXISTS idx_comments_author ON comments (author_id, created_at DESC) WHERE is_deleted = FALSE`,
+		// dislike_count was added to the CREATE TABLE above after the
+		// schema first shipped, so any DB that bootstrapped before this
+		// commit is missing the column and every GET /comments hits
+		// "column dislike_count does not exist". Additive ALTER mirrors
+		// the pattern used for moderation_status / flagged_count below.
+		`ALTER TABLE comments ADD COLUMN IF NOT EXISTS dislike_count INTEGER NOT NULL DEFAULT 0`,
 		// Tier 2b: comment moderation queue
 		`ALTER TABLE comments ADD COLUMN IF NOT EXISTS moderation_status TEXT NOT NULL DEFAULT 'visible'
 			CHECK (moderation_status IN ('visible','hidden','removed','review'))`,
