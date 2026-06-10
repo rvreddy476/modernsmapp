@@ -16,8 +16,11 @@ COPY shared /shared
 # Copy all services to satisfy go.work
 COPY services /services
 
-# Build the application
-RUN go build -mod=vendor -o /server ./services/api-gateway/cmd/server/main.go
+# Build the application — point at the package, not main.go alone, so
+# sibling files (ratelimit_redis.go, probes.go, jwt_keyset.go) are
+# compiled into the binary too. Building only main.go misses every
+# symbol declared in those siblings (e.g. redisRateLimitMiddleware).
+RUN go build -mod=vendor -o /server ./services/api-gateway/cmd/server
 
 FROM alpine:3.19
 WORKDIR /
