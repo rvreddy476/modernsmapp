@@ -293,6 +293,11 @@ func main() {
 	r.Use(middleware.RequestID())
 	r.Use(middleware.Logger())
 	r.Use(middleware.Metrics(httpMetrics))
+	// Belt-and-suspenders runtime canary for the relationship-separation
+	// contract. Logs (but does not mutate) responses where a follow field
+	// leaks onto a "user" payload or a friend field onto a "page" payload.
+	// See shared/middleware/entity_response_guard.go.
+	r.Use(middleware.EntityResponseGuard())
 
 	checker.RegisterRoutes(r)
 	r.GET("/metrics", metrics.Handler())
