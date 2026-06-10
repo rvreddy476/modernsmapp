@@ -24,6 +24,12 @@ import (
 // the per-user, per-action quota (spec §10.4). Handlers map it to HTTP 429.
 var ErrRateLimited = errors.New("rate limit exceeded")
 
+// ErrWrongEntityType is returned when a relationship operation is invoked
+// against the wrong entity kind — e.g. a friend request whose target is a
+// page, or a follow whose target is a user. Handlers map it to HTTP 400
+// with code WRONG_ENTITY_TYPE per the relationship separation spec §2.3.
+var ErrWrongEntityType = errors.New("wrong entity type for operation")
+
 // Trusted Circle (close-friends) validation errors — friends-sheets spec §4.1.
 // Handlers map each to its own HTTP status + error code.
 var (
@@ -117,6 +123,18 @@ type Relationship struct {
 // --- Follows ---
 
 func (s *Service) Follow(ctx context.Context, followerID, followeeID uuid.UUID) error {
+	// Relationship separation spec §2.3: Follow is hubs-only. A user-as-
+	// followee silently created a follows row before, which leaked into
+	// the "Following" list and exposed user-follows-user semantics the
+	// product is explicitly removing.
+	et, err := s.store.LookupEntityType(ctx, followeeID)
+	if err != nil {
+		return fmt.Errorf("lookup followee entity type: %w", err)
+	}
+	if et != store.EntityTypePage {
+		return ErrWrongEntityType
+	}
+
 	// Per-action rate limit (spec §10.4): 200 follows / 24h / user.
 	if allowed, _ := s.rateLimit.Allow(ctx, ratelimit.ActionFollow, followerID); !allowed {
 		return ErrRateLimited
@@ -155,6 +173,17 @@ func (s *Service) Follow(ctx context.Context, followerID, followeeID uuid.UUID) 
 }
 
 func (s *Service) Unfollow(ctx context.Context, followerID, followeeID uuid.UUID) error {
+	// Symmetric with Follow: only pages can be unfollowed. Reject before
+	// we hit DeleteFollow so the route can't be used as a probe for what
+	// follows rows still exist on a user UUID.
+	et, err := s.store.LookupEntityType(ctx, followeeID)
+	if err != nil {
+		return fmt.Errorf("lookup followee entity type: %w", err)
+	}
+	if et != store.EntityTypePage {
+		return ErrWrongEntityType
+	}
+
 	removed, err := s.store.DeleteFollow(ctx, followerID, followeeID)
 	if err != nil {
 		return err
@@ -392,6 +421,18 @@ func (s *Service) GetMutualFollowers(ctx context.Context, userA, userB uuid.UUID
 // --- Connections ---
 
 func (s *Service) SendConnectionRequest(ctx context.Context, senderID, receiverID uuid.UUID, source, message string) error {
+	// Relationship separation spec §2.3: friend requests are users-only.
+	// A page UUID as receiver silently created an orphan connection_request
+	// row before — the row was unreachable from the page's UI and the user
+	// who sent it got stuck with "Requested" forever.
+	et, err := s.store.LookupEntityType(ctx, receiverID)
+	if err != nil {
+		return fmt.Errorf("lookup receiver entity type: %w", err)
+	}
+	if et != store.EntityTypeUser {
+		return ErrWrongEntityType
+	}
+
 	// Per-action rate limit (spec §10.4): 30 connection requests / 24h / user.
 	if allowed, _ := s.rateLimit.Allow(ctx, ratelimit.ActionConnectionRequest, senderID); !allowed {
 		return ErrRateLimited

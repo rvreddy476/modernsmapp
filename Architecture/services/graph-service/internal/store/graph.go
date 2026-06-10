@@ -19,6 +19,18 @@ type Follow struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
+// EntityType discriminates between a normal user account and a business
+// page (a.k.a. "hub" in newer UI vocabulary). The relationship separation
+// spec routes friend requests to users and follows to pages — the graph
+// service uses LookupEntityType to reject cross-type operations.
+type EntityType string
+
+const (
+	EntityTypeUser    EntityType = "user"
+	EntityTypePage    EntityType = "page"
+	EntityTypeUnknown EntityType = "unknown"
+)
+
 type Relationship struct {
 	Follows    bool `json:"follows"`
 	FollowedBy bool `json:"followed_by"`
@@ -57,6 +69,36 @@ type Store struct {
 
 func New(db *pgxpool.Pool) *Store {
 	return &Store{db: db}
+}
+
+// LookupEntityType returns whether the given ID is a user, a page (hub),
+// or unknown. One round-trip — uses EXISTS on both tables so a missing
+// id returns (EntityTypeUnknown, nil) instead of an error.
+//
+// Called by the service layer before SendConnectionRequest / Follow /
+// Unfollow so cross-type operations are rejected with 400 instead of
+// silently writing to the underlying relationship tables.
+func (s *Store) LookupEntityType(ctx context.Context, id uuid.UUID) (EntityType, error) {
+	var isUser, isPage bool
+	err := s.db.QueryRow(ctx, `
+		SELECT
+			EXISTS(SELECT 1 FROM users          WHERE id = $1),
+			EXISTS(SELECT 1 FROM business_pages WHERE id = $1)
+	`, id).Scan(&isUser, &isPage)
+	if err != nil {
+		return EntityTypeUnknown, err
+	}
+	switch {
+	case isUser:
+		// If both somehow matched (UUID collision across tables — should
+		// never happen) prefer user, since friend semantics are the
+		// stricter path and pages have their own follow route.
+		return EntityTypeUser, nil
+	case isPage:
+		return EntityTypePage, nil
+	default:
+		return EntityTypeUnknown, nil
+	}
 }
 
 // --- Follows ---

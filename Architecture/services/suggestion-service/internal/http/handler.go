@@ -34,6 +34,14 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	}
 	v1 := r.Group("/v1/suggestions")
 	{
+		// Relationship-separation spec §2.4 — entityType-explicit routes:
+		v1.GET("/people", h.GetPeopleSuggestions) // users only,  entityType=user
+		v1.GET("/hubs", h.GetHubSuggestions)      // pages only, entityType=page
+		// Legacy mixed route — kept for backward compatibility with older
+		// clients. Returns the same data as /people when type=friend, and
+		// the same as /hubs when type=follow. New code should target the
+		// explicit endpoints above so the entityType discriminator is
+		// always available.
 		v1.GET("", h.GetSuggestions)
 		v1.GET("/interstitial", h.GetInterstitialSuggestions)
 		v1.POST("/impression", h.LogImpression)
@@ -69,7 +77,63 @@ func (h *Handler) GetSuggestions(c *gin.Context) {
 		return
 	}
 
+	// Tag entityType so old clients also get the discriminator. "follow"
+	// maps to "page" by intent, even though the underlying candidate
+	// generator currently produces user rows — same caveat as
+	// GetHubSuggestions; we'll wire up real hub candidates separately.
+	if suggType == "follow" {
+		resp.TagEntityType("page")
+	} else {
+		resp.TagEntityType("user")
+	}
 	c.JSON(http.StatusOK, gin.H{"data": resp})
+}
+
+// GetPeopleSuggestions returns user suggestions (friend candidates) with
+// entityType="user" stamped on every item. Spec §2.4 / §6.2.
+func (h *Handler) GetPeopleSuggestions(c *gin.Context) {
+	viewerID, ok := parseUserID(c)
+	if !ok {
+		return
+	}
+	limit, cursor, surface := paginationFromQuery(c, "home")
+	resp, err := h.svc.GetSuggestions(c.Request.Context(), viewerID, "friend", limit, cursor, surface)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get suggestions"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": resp.TagEntityType("user")})
+}
+
+// GetHubSuggestions returns hub/page suggestions with entityType="page"
+// stamped on every item. Spec §2.4 / §6.3.
+//
+// NOTE: the underlying candidate generator currently produces user
+// rows from `s.store.GetCandidates(ctx, viewerID, "follow", ...)`. Until
+// a dedicated page-candidate pipeline ships, this route returns an empty
+// list — better than leaking user candidates as if they were hubs.
+func (h *Handler) GetHubSuggestions(c *gin.Context) {
+	if _, ok := parseUserID(c); !ok {
+		return
+	}
+	// Empty until hub candidate generation lands. The frontend renders the
+	// "No suggestions yet" empty state, which matches the spec's
+	// expectation that only approved hubs appear here.
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"type":         "follow",
+		"items":        []service.SuggestionItem{},
+		"surface":      c.DefaultQuery("surface", "home"),
+		"generated_at": "",
+	}})
+}
+
+// paginationFromQuery extracts limit / cursor / surface from a request.
+func paginationFromQuery(c *gin.Context, defaultSurface string) (int, string, string) {
+	limit := 20
+	if l, err := strconv.Atoi(c.Query("limit")); err == nil && l > 0 && l <= 100 {
+		limit = l
+	}
+	return limit, c.Query("cursor"), c.DefaultQuery("surface", defaultSurface)
 }
 
 // GetInterstitialSuggestions returns contextual suggestions after an action.

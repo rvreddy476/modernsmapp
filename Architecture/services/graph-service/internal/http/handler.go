@@ -267,6 +267,10 @@ func (h *Handler) Follow(c *gin.Context) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", err.Error(), nil)
 			return
 		}
+		if errors.Is(err, service.ErrWrongEntityType) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "WRONG_ENTITY_TYPE", "follow is only valid against a page", nil)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
@@ -279,6 +283,10 @@ func (h *Handler) Unfollow(c *gin.Context) {
 		return
 	}
 	if err := h.svc.Unfollow(c.Request.Context(), followerID, followeeID); err != nil {
+		if errors.Is(err, service.ErrWrongEntityType) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "WRONG_ENTITY_TYPE", "unfollow is only valid against a page", nil)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
@@ -517,6 +525,10 @@ func (h *Handler) SendConnectionRequest(c *gin.Context) {
 	if err := h.svc.SendConnectionRequest(c.Request.Context(), senderID, receiverID, req.Source, req.Message); err != nil {
 		if errors.Is(err, service.ErrRateLimited) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", err.Error(), nil)
+			return
+		}
+		if errors.Is(err, service.ErrWrongEntityType) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "WRONG_ENTITY_TYPE", "friend request is only valid against a user", nil)
 			return
 		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)

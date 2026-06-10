@@ -32,6 +32,11 @@ func (s *Service) SetScyllaStore(ss *store.ScyllaStore) {
 
 // SuggestionItem is the API-facing suggestion object.
 type SuggestionItem struct {
+	// EntityType is the relationship-separation discriminator (spec §2.4).
+	// "user" for friend suggestions, "page" for hub suggestions. Clients
+	// use it to render the correct CTA (Add Friend vs Follow) without
+	// inferring from the endpoint path.
+	EntityType        string   `json:"entityType"`
 	CandidateUserID   string   `json:"candidate_user_id"`
 	Username          *string  `json:"username,omitempty"`
 	DisplayName       string   `json:"display_name"`
@@ -55,6 +60,17 @@ type SuggestionsResponse struct {
 	ExperimentID string           `json:"experiment_id,omitempty"`
 	VariantID    string           `json:"variant_id,omitempty"`
 	GeneratedAt  string           `json:"generated_at,omitempty"`
+}
+
+// TagEntityType stamps every item with the relationship-separation
+// discriminator. Called by the split handlers /v1/suggestions/people
+// (entityType="user") and /v1/suggestions/hubs (entityType="page") so
+// clients can branch CTA rendering without inferring from the URL.
+func (r *SuggestionsResponse) TagEntityType(et string) *SuggestionsResponse {
+	for i := range r.Items {
+		r.Items[i].EntityType = et
+	}
+	return r
 }
 
 // ImpressionRequest is the request body for logging impressions.

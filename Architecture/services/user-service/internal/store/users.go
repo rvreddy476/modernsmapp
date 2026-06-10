@@ -12,6 +12,11 @@ import (
 
 // User represents a user profile.
 type User struct {
+	// EntityType is the relationship-separation discriminator (spec §1.2).
+	// Always "user" on this struct — the field is set in scanUser so every
+	// row returned from the store is self-describing. Pages set "page" via
+	// their own struct.
+	EntityType      string     `json:"entityType"`
 	ID              uuid.UUID  `json:"id"`
 	Username        *string    `json:"username,omitempty"`
 	DisplayName     string     `json:"display_name"`
@@ -82,6 +87,7 @@ func scanUser(row pgx.Row) (*User, error) {
 		}
 		return nil, err
 	}
+	u.EntityType = "user"
 	return &u, nil
 }
 

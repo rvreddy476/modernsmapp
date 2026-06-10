@@ -12,6 +12,11 @@ import (
 
 // BusinessPage represents a business listing page.
 type BusinessPage struct {
+	// EntityType is the relationship-separation discriminator (spec §1.2).
+	// Always "page" on this struct so clients can branch CTAs without
+	// guessing from the response shape. Users carry "user" on their
+	// User struct.
+	EntityType     string          `json:"entityType"`
 	ID             uuid.UUID       `json:"id"`
 	UserID         uuid.UUID       `json:"user_id"`
 	PageHandle     string          `json:"page_handle"`
@@ -95,6 +100,7 @@ func scanPage(row interface {
 	if err := scanPageRow(&p, row); err != nil {
 		return nil, err
 	}
+	p.EntityType = "page"
 	return &p, nil
 }
 
