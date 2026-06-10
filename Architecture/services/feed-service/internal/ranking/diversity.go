@@ -73,6 +73,21 @@ func ApplyDiversity(scored []Candidate, limit int) []Candidate {
 		}
 	}
 
+	// Relaxed second pass: if the diversity rules prevented us from filling
+	// `limit` and there are still unused candidates, place them in score
+	// order without the consecutive-author / consecutive-type constraints.
+	// Without this, a cold-start user whose timeline has only their own
+	// posts gets capped at 3, even though they expect to see all of them.
+	if len(placed) < limit {
+		for idx := 0; idx < len(scored) && len(placed) < limit; idx++ {
+			if used[idx] {
+				continue
+			}
+			placed = append(placed, scored[idx])
+			used[idx] = true
+		}
+	}
+
 	// --- Freshness floor ---
 	// At least 3 of the top 10 must be < 4 h old.
 	enforceFreshnessFloor(placed, scored, used, limit)
