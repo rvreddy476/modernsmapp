@@ -62,6 +62,7 @@ type UserLoggedInPayload struct {
 // UserProfileUpdatedPayload is emitted by profile-service on profile changes.
 type UserProfileUpdatedPayload struct {
 	UserID        string    `json:"user_id"`
+	Username      string    `json:"username,omitempty"`
 	DisplayName   string    `json:"display_name"`
 	FirstName     string    `json:"first_name,omitempty"`
 	LastName      string    `json:"last_name,omitempty"`

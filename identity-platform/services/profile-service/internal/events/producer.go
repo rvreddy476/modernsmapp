@@ -28,7 +28,7 @@ func NewProducerWithDialer(brokers []string, topic string, dialer *kafka.Dialer)
 	})}
 }
 
-func (p *Producer) PublishUserProfileUpdated(ctx context.Context, userID uuid.UUID, displayName, bio string, avatarMediaID *uuid.UUID, firstName, lastName string) error {
+func (p *Producer) PublishUserProfileUpdated(ctx context.Context, userID uuid.UUID, username, displayName, bio string, avatarMediaID *uuid.UUID, firstName, lastName string) error {
 	var avatarStr *string
 	if avatarMediaID != nil {
 		s := avatarMediaID.String()
@@ -37,6 +37,7 @@ func (p *Producer) PublishUserProfileUpdated(ctx context.Context, userID uuid.UU
 
 	payload := sharedEvents.UserProfileUpdatedPayload{
 		UserID:        userID.String(),
+		Username:      username,
 		DisplayName:   displayName,
 		FirstName:     firstName,
 		LastName:      lastName,

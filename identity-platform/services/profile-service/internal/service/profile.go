@@ -131,7 +131,11 @@ func (s *Service) UpdateProfile(ctx context.Context, userID uuid.UUID, params st
 	if params.LastName != nil {
 		lnPtr = *params.LastName
 	}
-	if err := s.producer.PublishUserProfileUpdated(ctx, userID, p.DisplayName, p.Bio, p.AvatarMediaID, fnPtr, lnPtr); err != nil {
+	usernameStr := ""
+	if p.Username != nil {
+		usernameStr = *p.Username
+	}
+	if err := s.producer.PublishUserProfileUpdated(ctx, userID, usernameStr, p.DisplayName, p.Bio, p.AvatarMediaID, fnPtr, lnPtr); err != nil {
 		s.log.Warn("failed to publish profile updated event", "err", err, "user_id", userID)
 	}
 
