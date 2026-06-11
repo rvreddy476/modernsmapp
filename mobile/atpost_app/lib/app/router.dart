@@ -1173,6 +1173,162 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             builder: (context, state) =>
                 StoryViewerScreen(userId: state.pathParameters['userId']!),
           ),
+          // ── Restored routes ───────────────────────────────────────────
+          // The module-wiring commit (eba4a40) rewrote this file and
+          // accidentally dropped the whole pre-existing block below
+          // (bookmarks/discover/hashtag/search/channels/groups/
+          // monetization/orders/qa/upload/posttube). Restored verbatim
+          // from the last commit that had them (e5796fb), minus the
+          // four /communities routes — that feature is disabled.
+          GoRoute(
+            path: '/bookmarks',
+            builder: (context, state) => const BookmarksScreen(),
+          ),
+          GoRoute(
+            path: '/discover',
+            builder: (context, state) => const DiscoverScreen(),
+          ),
+          GoRoute(
+            path: '/hashtag/:tag',
+            builder: (context, state) => HashtagScreen(
+              tag: state.pathParameters['tag'] ?? '',
+            ),
+          ),
+          GoRoute(
+            path: '/search/results',
+            builder: (context, state) => SearchResultsScreen(
+              query: state.uri.queryParameters['q'] ?? '',
+            ),
+          ),
+          GoRoute(
+            path: '/channels',
+            builder: (context, state) => const ChannelsListScreen(),
+          ),
+          GoRoute(
+            path: '/channels/create',
+            builder: (context, state) => const CreateChannelScreen(),
+          ),
+          GoRoute(
+            path: '/channels/:channelId',
+            builder: (context, state) => ChannelDetailScreen(
+              channelId: state.pathParameters['channelId']!,
+            ),
+          ),
+          GoRoute(
+            path: '/groups',
+            builder: (context, state) => const GroupsListScreen(),
+          ),
+          GoRoute(
+            path: '/groups/create',
+            builder: (context, state) => const CreateGroupScreen(),
+          ),
+          GoRoute(
+            path: '/groups/:groupId',
+            builder: (context, state) =>
+                GroupDetailScreen(groupId: state.pathParameters['groupId']!),
+          ),
+          GoRoute(
+            path: '/groups/:groupId/post',
+            builder: (context, state) => GroupPostComposerScreen(
+              groupId: state.pathParameters['groupId']!,
+            ),
+          ),
+          GoRoute(
+            path: '/groups/:groupId/admin',
+            builder: (context, state) =>
+                GroupAdminScreen(groupId: state.pathParameters['groupId']!),
+          ),
+          GoRoute(
+            path: '/monetization',
+            builder: (context, state) => const MonetizationDashboardScreen(),
+          ),
+          GoRoute(
+            path: '/monetization/tiers',
+            builder: (context, state) => const SubscriptionTiersScreen(),
+          ),
+          GoRoute(
+            path: '/monetization/payouts',
+            builder: (context, state) => const PayoutsScreen(),
+          ),
+          GoRoute(
+            path: '/monetization/analytics',
+            builder: (context, state) => const CreatorAnalyticsScreen(),
+          ),
+          GoRoute(
+            path: '/orders',
+            builder: (context, state) => const OrdersScreen(),
+          ),
+          GoRoute(
+            path: '/orders/:orderId',
+            builder: (context, state) =>
+                OrderDetailScreen(orderId: state.pathParameters['orderId']!),
+          ),
+          GoRoute(
+            path: '/qa',
+            builder: (context, state) => const QAFeedScreen(),
+          ),
+          GoRoute(
+            path: '/qa/ask',
+            builder: (context, state) => const AskQuestionScreen(),
+          ),
+          GoRoute(
+            path: '/qa/question/:questionId',
+            builder: (context, state) => QuestionDetailScreen(
+              questionId: state.pathParameters['questionId']!,
+            ),
+          ),
+          GoRoute(
+            path: '/qa/search',
+            builder: (context, state) => QaSearchScreen(
+              initialQuery: state.uri.queryParameters['q'],
+              communityId: state.uri.queryParameters['community_id'],
+              topicId: state.uri.queryParameters['topic_id'],
+            ),
+          ),
+          GoRoute(
+            path: '/qa/drafts',
+            builder: (_, _) => const QaDraftsScreen(),
+          ),
+          GoRoute(
+            path: '/qa/profile/:userId',
+            builder: (context, state) => QaProfileScreen(
+              userId: state.pathParameters['userId']!,
+            ),
+          ),
+          GoRoute(
+            path: '/upload/progress',
+            builder: (context, state) {
+              final extra = state.extra as Map<String, dynamic>? ?? {};
+              return UploadProgressScreen(
+                videoPath: extra['videoPath'] as String? ?? '',
+                caption: extra['caption'] as String? ?? '',
+                hashtags: List<String>.from(extra['hashtags'] as List? ?? []),
+                visibility: extra['visibility'] as String? ?? 'public',
+              );
+            },
+          ),
+          GoRoute(
+            path: '/posttube/upload',
+            builder: (_, _) => const PosttubeUploadScreen(),
+          ),
+          GoRoute(
+            path: '/posttube/subscriptions',
+            builder: (_, _) => const PosttubeSubscriptionsScreen(),
+          ),
+          GoRoute(
+            path: '/posttube/trending',
+            builder: (_, _) => const PosttubeTrendingScreen(),
+          ),
+          GoRoute(
+            path: '/posttube/history',
+            builder: (_, _) => const WatchHistoryScreen(),
+          ),
+          GoRoute(
+            path: '/posttube/channel/:userId',
+            builder: (_, state) => PosttubeChannelScreen(
+              userId: state.pathParameters['userId'] ?? '',
+            ),
+          ),
         ],
       ),
     ],
