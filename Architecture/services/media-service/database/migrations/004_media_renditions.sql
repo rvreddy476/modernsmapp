@@ -28,7 +28,17 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_renditions_media_quality ON media_renditio
 
 COMMENT ON TABLE media_renditions IS 'Tracks every output rendition for a media asset with retry support';
 
--- Audio tracks table for the audio/music system (Gold Spec §5.5)
+-- Audio tracks table for the audio/music system (Gold Spec §5.5).
+--
+-- NOTE on cross-service collision: post-service migration 013 also creates
+-- `audio_tracks` in the same `app` DB with a different shape (media_id,
+-- use_count, is_trending, original_post_id, ...). Whichever service boots
+-- first wins the CREATE TABLE race. Mirror the defensive pattern post-service
+-- 013 already uses — add the media-service-specific columns idempotently so
+-- the subsequent CREATE INDEX statements have something to reference.
+-- The full reconciliation (one canonical owner of audio_tracks) is tracked
+-- separately as tech debt; this just keeps both services bootable on a
+-- shared DB.
 CREATE TABLE IF NOT EXISTS audio_tracks (
     id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     source_media_id  UUID REFERENCES media_assets(id) ON DELETE SET NULL,
@@ -36,7 +46,7 @@ CREATE TABLE IF NOT EXISTS audio_tracks (
     title            TEXT NOT NULL DEFAULT 'Original Sound',
     artist           TEXT NOT NULL DEFAULT '',
     genre            TEXT,
-    audio_key        TEXT NOT NULL,  -- blob storage key for extracted audio (AAC/M4A)
+    audio_key        TEXT,           -- blob storage key for extracted audio (AAC/M4A)
     waveform_key     TEXT,           -- blob storage key for waveform JSON
     duration_ms      INT NOT NULL DEFAULT 0,
     sample_rate      INT,
@@ -48,7 +58,21 @@ CREATE TABLE IF NOT EXISTS audio_tracks (
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_audio_tracks_source_media ON audio_tracks(source_media_id);
+-- Idempotent column adds — cover the case where post-service migration 013
+-- already created `audio_tracks` with its own shape and these columns are
+-- missing. All nullable on the additive path; the index below tolerates
+-- nulls via the partial predicate.
+ALTER TABLE audio_tracks ADD COLUMN IF NOT EXISTS source_media_id UUID;
+ALTER TABLE audio_tracks ADD COLUMN IF NOT EXISTS source_reel_id  UUID;
+ALTER TABLE audio_tracks ADD COLUMN IF NOT EXISTS audio_key       TEXT;
+ALTER TABLE audio_tracks ADD COLUMN IF NOT EXISTS waveform_key    TEXT;
+ALTER TABLE audio_tracks ADD COLUMN IF NOT EXISTS sample_rate     INT;
+ALTER TABLE audio_tracks ADD COLUMN IF NOT EXISTS status          TEXT NOT NULL DEFAULT 'processing';
+ALTER TABLE audio_tracks ADD COLUMN IF NOT EXISTS license_type    TEXT NOT NULL DEFAULT 'standard';
+ALTER TABLE audio_tracks ADD COLUMN IF NOT EXISTS usage_count     INT  NOT NULL DEFAULT 0;
+ALTER TABLE audio_tracks ADD COLUMN IF NOT EXISTS updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+CREATE INDEX IF NOT EXISTS idx_audio_tracks_source_media ON audio_tracks(source_media_id) WHERE source_media_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_audio_tracks_status ON audio_tracks(status);
 CREATE INDEX IF NOT EXISTS idx_audio_tracks_usage ON audio_tracks(usage_count DESC) WHERE status = 'ready';
 
