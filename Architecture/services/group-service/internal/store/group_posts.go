@@ -143,3 +143,81 @@ func (s *Store) ListGroupReports(ctx context.Context, groupID uuid.UUID) ([]map[
 
 // suppress unused import
 var _ = json.RawMessage{}
+
+// GroupInviteDetail is a pending invite enriched with the target group's
+// display fields so clients can render an invite card without extra lookups.
+type GroupInviteDetail struct {
+	GroupInvite
+	GroupName          string     `json:"group_name"`
+	GroupAvatarMediaID *uuid.UUID `json:"group_avatar_media_id,omitempty"`
+	GroupMemberCount   int64      `json:"group_member_count"`
+}
+
+// ListInvitesForUserDetailed returns the user's pending invites joined with
+// the group name/avatar/member count.
+func (s *Store) ListInvitesForUserDetailed(ctx context.Context, userID uuid.UUID) ([]GroupInviteDetail, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT i.id, i.group_id, i.inviter_id, i.invitee_id, i.status, i.created_at, i.updated_at, i.expires_at,
+		       g.name, g.avatar_media_id, g.member_count
+		FROM group_invites i
+		JOIN groups g ON g.id = i.group_id
+		WHERE i.invitee_id = $1 AND i.status = 'pending' AND g.is_archived = FALSE
+		ORDER BY i.created_at DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var invites []GroupInviteDetail
+	for rows.Next() {
+		var inv GroupInviteDetail
+		if err := rows.Scan(&inv.ID, &inv.GroupID, &inv.InviterID, &inv.InviteeID, &inv.Status,
+			&inv.CreatedAt, &inv.UpdatedAt, &inv.ExpiresAt,
+			&inv.GroupName, &inv.GroupAvatarMediaID, &inv.GroupMemberCount); err != nil {
+			return nil, err
+		}
+		invites = append(invites, inv)
+	}
+	return invites, rows.Err()
+}
+
+// ListMyGroupsFeed returns published posts across every group the user is a
+// member of, newest first — powers the aggregated MySpace "Your feed".
+func (s *Store) ListMyGroupsFeed(ctx context.Context, userID uuid.UUID, limit, offset int) ([]GroupPostV2, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT p.id, p.group_id, p.channel_id, p.author_id, p.content_type, p.title, p.body, p.body_html,
+		       p.type_payload, p.attachments, p.needs_approval, p.is_pinned, p.is_announcement, p.status,
+		       p.spark_count, p.comment_count, p.echo_count, p.view_count, p.created_at, p.updated_at
+		FROM group_posts p
+		JOIN group_members m ON m.group_id = p.group_id AND m.user_id = $1
+		WHERE p.status = 'published'
+		ORDER BY p.created_at DESC
+		LIMIT $2 OFFSET $3`, userID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var posts []GroupPostV2
+	for rows.Next() {
+		var p GroupPostV2
+		if err := rows.Scan(&p.ID, &p.GroupID, &p.ChannelID, &p.AuthorID, &p.ContentType,
+			&p.Title, &p.Body, &p.BodyHTML, &p.TypePayload, &p.Attachments,
+			&p.NeedsApproval, &p.IsPinned, &p.IsAnnouncement, &p.Status,
+			&p.SparkCount, &p.CommentCount, &p.EchoCount, &p.ViewCount,
+			&p.CreatedAt, &p.UpdatedAt); err != nil {
+			return nil, err
+		}
+		if p.TypePayload == nil {
+			p.TypePayload = json.RawMessage(`{}`)
+		}
+		if p.Attachments == nil {
+			p.Attachments = json.RawMessage(`[]`)
+		}
+		posts = append(posts, p)
+	}
+	return posts, rows.Err()
+}

@@ -2232,3 +2232,17 @@ func (s *Service) RSVPGroupEvent(ctx context.Context, actorID, groupID, eventID 
 	}
 	return s.store.RSVPGroupEvent(ctx, eventID, actorID.String(), status)
 }
+
+// GetMyGroupsFeed returns the aggregated reverse-chronological feed of
+// published posts across all groups the actor belongs to. Access control is
+// the membership join itself — only groups the actor is a member of
+// contribute posts.
+func (s *Service) GetMyGroupsFeed(ctx context.Context, actorID uuid.UUID, limit, offset int) ([]store.GroupPostV2, error) {
+	return s.store.ListMyGroupsFeed(ctx, actorID, limit, offset)
+}
+
+// ListMyInvites returns the actor's pending group invites with group display
+// fields attached.
+func (s *Service) ListMyInvites(ctx context.Context, actorID uuid.UUID) ([]store.GroupInviteDetail, error) {
+	return s.store.ListInvitesForUserDetailed(ctx, actorID)
+}
