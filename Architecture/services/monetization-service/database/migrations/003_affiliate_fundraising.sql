@@ -2,7 +2,9 @@
 CREATE TABLE IF NOT EXISTS affiliate_links (
     id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     creator_id       UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    listing_id       UUID NOT NULL REFERENCES marketplace.listings(id) ON DELETE CASCADE,
+    -- listing_id points at marketplace.listings in commerce_db — a different
+    -- database, so no FK here (same pattern as creator_tiers migration 012).
+    listing_id       UUID NOT NULL,
     commission_pct   REAL NOT NULL DEFAULT 5.0,
     commission_flat  NUMERIC(8,2),
     link_code        TEXT NOT NULL UNIQUE,

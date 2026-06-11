@@ -150,11 +150,14 @@ func main() {
 	// tx as the domain write; this publisher drains the table and
 	// retries on Kafka outage. The existing direct producer
 	// continues to work for legacy paths until they migrate.
+	// DBSchema "rider": public.outbox_events on the shared app DB belongs
+	// to another service with a different column shape — see setup.sql.
 	outboxPublisher := outbox.New(dbPool, outbox.Config{
+		DBSchema:     "rider",
 		KafkaBrokers: strings.Join(kafkaBrokers, ","),
 		DefaultTopic: kafkaTopic,
 	})
-	riderSvc.WithOutbox(outbox.NewQueuer(""), dbPool)
+	riderSvc.WithOutbox(outbox.NewQueuer("rider"), dbPool)
 	go outboxPublisher.Run(dispatchCtx)
 	slog.Info("outbox publisher started", "topic", kafkaTopic)
 

@@ -634,21 +634,10 @@ CREATE TABLE IF NOT EXISTS rider_masked_calls (
     status      TEXT NOT NULL DEFAULT 'initiated'
                 CHECK (status IN ('initiated','connected','completed','failed'))
 );
-CREATE INDEX IF NOT EXISTS idx_rider_masked_calls_ride ON rider_masked_calls(ride_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_rider_masked_calls_ride ON rider_masked_calls(ride_id, started_at DESC);
 
--- rider_safety_contact_alerts records every trusted-contact dispatch
--- (SMS / push / call) so an admin can audit who was notified for a SOS.
-CREATE TABLE IF NOT EXISTS rider_safety_contact_alerts (
-    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    incident_id  UUID NOT NULL REFERENCES rider_safety_incidents(id) ON DELETE CASCADE,
-    contact_phone TEXT NOT NULL,
-    contact_name TEXT,
-    channel      TEXT NOT NULL CHECK (channel IN ('sms','push','call')),
-    result       TEXT NOT NULL CHECK (result IN ('sent','failed','queued')),
-    error        TEXT,
-    sent_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-CREATE INDEX IF NOT EXISTS idx_safety_alerts_incident ON rider_safety_contact_alerts(incident_id);
+-- (rider_safety_contact_alerts moved below — it references
+--  rider_safety_incidents, which is created in section 6.2.)
 
 -- ─── C5: ride/partner rating moderation + partner response ────────────
 ALTER TABLE rider_rides
@@ -769,6 +758,21 @@ CREATE INDEX IF NOT EXISTS idx_rider_safety_customer
     ON rider_safety_incidents(customer_id);
 CREATE INDEX IF NOT EXISTS idx_rider_safety_partner
     ON rider_safety_incidents(partner_id);
+
+-- rider_safety_contact_alerts records every trusted-contact dispatch
+-- (SMS / push / call) so an admin can audit who was notified for a SOS.
+-- Lives after 6.2 because of the FK on rider_safety_incidents.
+CREATE TABLE IF NOT EXISTS rider_safety_contact_alerts (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    incident_id  UUID NOT NULL REFERENCES rider_safety_incidents(id) ON DELETE CASCADE,
+    contact_phone TEXT NOT NULL,
+    contact_name TEXT,
+    channel      TEXT NOT NULL CHECK (channel IN ('sms','push','call')),
+    result       TEXT NOT NULL CHECK (result IN ('sent','failed','queued')),
+    error        TEXT,
+    sent_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_safety_alerts_incident ON rider_safety_contact_alerts(incident_id);
 
 -- 6.3 Share-ride tokens (rider_share_tokens) ---------------------------------
 CREATE TABLE IF NOT EXISTS rider_share_tokens (
@@ -897,8 +901,14 @@ ALTER TABLE rider_partner_subscriptions
 
 -- ============================================================
 -- P0.3 — Outbox table for durable event publishing
+--
+-- Lives in its own `rider` schema: the shared `app` DB already has a
+-- public.outbox_events owned by another service with a different shape
+-- (aggregate_type/aggregate_id/published), and two sweepers draining
+-- one table would cross-publish each other's events.
 -- ============================================================
-CREATE TABLE IF NOT EXISTS outbox_events (
+CREATE SCHEMA IF NOT EXISTS rider;
+CREATE TABLE IF NOT EXISTS rider.outbox_events (
     id              BIGSERIAL PRIMARY KEY,
     event_type      TEXT NOT NULL,
     partition_key   TEXT NOT NULL,
@@ -907,7 +917,7 @@ CREATE TABLE IF NOT EXISTS outbox_events (
     published_at    TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_unpublished
-    ON outbox_events (id)
+    ON rider.outbox_events (id)
     WHERE published_at IS NULL;
 
 -- ─── G4.5: scheduled rides ────────────────────────────────────────────
