@@ -30,10 +30,12 @@ import 'package:atpost_app/features/commerce/return_request_screen.dart';
 import 'package:atpost_app/features/commerce/search_screen.dart';
 import 'package:atpost_app/features/commerce/wishlist_screen.dart';
 import 'package:atpost_app/features/commerce/write_review_screen.dart';
-import 'package:atpost_app/features/communities/communities_list_screen.dart';
-import 'package:atpost_app/features/communities/community_detail_screen.dart';
-import 'package:atpost_app/features/communities/community_space_screen.dart';
-import 'package:atpost_app/features/communities/create_community_screen.dart';
+// Communities feature disabled — consolidated into Groups ("MySpace").
+// Screens kept on disk; no routes reference them.
+// import 'package:atpost_app/features/communities/communities_list_screen.dart';
+// import 'package:atpost_app/features/communities/community_detail_screen.dart';
+// import 'package:atpost_app/features/communities/community_space_screen.dart';
+// import 'package:atpost_app/features/communities/create_community_screen.dart';
 import 'package:atpost_app/features/auth/forgot_password_screen.dart';
 import 'package:atpost_app/features/billpay/billpay_account_detail_screen.dart';
 import 'package:atpost_app/features/billpay/billpay_add_account_screen.dart';

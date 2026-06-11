@@ -177,8 +177,8 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
         colors: [AppColors.postgramPrimary, AppColors.posttubePrimary],
       ),
       const _RouteFeature(
-        title: 'Groups',
-        subtitle: 'Communities',
+        title: 'MySpace',
+        subtitle: 'Groups',
         icon: Icons.groups_rounded,
         route: '/groups',
         colors: [AppColors.posttubePrimary, AppColors.accentPurple],
@@ -263,7 +263,7 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
                           decoration: InputDecoration(
                             border: InputBorder.none,
                             hintText:
-                                'Search topics, users, communities, and tags',
+                                'Search topics, users, groups, and tags',
                             hintStyle: AppTextStyles.bodySmall,
                             prefixIcon: const Icon(
                               Icons.search,

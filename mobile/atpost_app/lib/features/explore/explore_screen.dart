@@ -247,8 +247,8 @@ class _ExploreScreenState extends ConsumerState<ExploreScreen> {
       ),
       const _ExploreAction(
         icon: Icons.groups_rounded,
-        title: 'Groups',
-        subtitle: 'Communities',
+        title: 'MySpace',
+        subtitle: 'Groups',
         route: '/groups',
         gradient: LinearGradient(
           colors: [AppColors.posttubePrimary, AppColors.accentPurple],

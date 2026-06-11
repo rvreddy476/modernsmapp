@@ -48,7 +48,8 @@ class _SearchResultsScreenState extends ConsumerState<SearchResultsScreen>
     SearchEntity.users,
     SearchEntity.hashtags,
     SearchEntity.products,
-    SearchEntity.communities,
+    // Communities feature disabled — tab hidden, row renderer kept below.
+    // SearchEntity.communities,
     SearchEntity.channels,
   ];
 
@@ -74,7 +75,7 @@ class _SearchResultsScreenState extends ConsumerState<SearchResultsScreen>
       SearchEntity.users: r.users.items.length,
       SearchEntity.hashtags: r.hashtags.items.length,
       SearchEntity.products: r.products.items.length,
-      SearchEntity.communities: r.communities.items.length,
+      // Communities feature disabled.
       SearchEntity.channels: r.channels.items.length,
     };
     // Pick the bucket with the most hits; ties keep the default order.
