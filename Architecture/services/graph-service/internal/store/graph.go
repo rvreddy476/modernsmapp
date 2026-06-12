@@ -36,6 +36,9 @@ type Relationship struct {
 	FollowedBy bool `json:"followed_by"`
 	Blocked    bool `json:"blocked"`
 	IsMuted    bool `json:"is_muted"`
+	// IsConnection: viewer and target are friends (a connections row in
+	// either direction). Drives friend-aware CTAs on the client.
+	IsConnection bool `json:"is_connection"`
 }
 
 type Block struct {
@@ -960,6 +963,24 @@ func (s *Store) GetRelationshipBatch(ctx context.Context, viewerID uuid.UUID, ta
 			rows.Scan(&id)
 			r := result[id]
 			r.IsMuted = true
+			result[id] = r
+		}
+		rows.Close()
+	}
+
+	// Connections (friendship): rows are stored once in either column
+	// order, so match both directions.
+	rows, _ = s.db.Query(ctx,
+		`SELECT CASE WHEN user_a = $1 THEN user_b ELSE user_a END
+		 FROM connections
+		 WHERE (user_a = $1 AND user_b = ANY($2)) OR (user_b = $1 AND user_a = ANY($2))`,
+		viewerID, targetIDs)
+	if rows != nil {
+		for rows.Next() {
+			var id uuid.UUID
+			rows.Scan(&id)
+			r := result[id]
+			r.IsConnection = true
 			result[id] = r
 		}
 		rows.Close()
