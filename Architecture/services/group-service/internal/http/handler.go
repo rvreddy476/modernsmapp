@@ -1212,7 +1212,7 @@ func (h *Handler) GetGroupMedia(c *gin.Context) {
 		return
 	}
 	if posts == nil {
-		posts = []store.GroupPost{}
+		posts = []store.GroupMediaItem{}
 	}
 	api.JSON(c.Writer, http.StatusOK, posts, nil)
 }

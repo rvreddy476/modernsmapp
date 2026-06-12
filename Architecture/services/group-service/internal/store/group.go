@@ -1170,18 +1170,30 @@ func (s *Store) DecrementPendingRequestCount(ctx context.Context, groupID uuid.U
 	return err
 }
 
-// ListGroupMedia returns media posts (image, video, flick) for a group.
-func (s *Store) ListGroupMedia(ctx context.Context, groupID uuid.UUID, limit, offset int) ([]GroupPost, error) {
+// GroupMediaItem is one media-bearing post: attachments holds the media
+// IDs the client renders via /v1/media/{id}/serve.
+type GroupMediaItem struct {
+	PostID      uuid.UUID       `json:"post_id"`
+	AuthorID    string          `json:"author_id"`
+	ContentType string          `json:"content_type"`
+	Attachments json.RawMessage `json:"attachments"`
+	CreatedAt   time.Time       `json:"created_at"`
+}
+
+// ListGroupMedia returns posts that carry attachments. Space posts live
+// in the v2 group_posts table (attachments JSONB of media IDs) — the
+// previous implementation joined the legacy posts table and therefore
+// never matched anything.
+func (s *Store) ListGroupMedia(ctx context.Context, groupID uuid.UUID, limit, offset int) ([]GroupMediaItem, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 30
 	}
 	rows, err := s.db.Query(ctx, `
-		SELECT gp.group_id, gp.post_id, gp.author_id, gp.created_at
-		FROM group_posts gp
-		JOIN posts p ON p.id = gp.post_id
-		WHERE gp.group_id = $1 AND p.content_type IN ('image', 'video', 'flick')
-		  AND p.status = 'published'
-		ORDER BY gp.created_at DESC
+		SELECT id, author_id, content_type, attachments, created_at
+		FROM group_posts
+		WHERE group_id = $1 AND status = 'published'
+		  AND attachments IS NOT NULL AND jsonb_array_length(attachments) > 0
+		ORDER BY created_at DESC
 		LIMIT $2 OFFSET $3
 	`, groupID, limit, offset)
 	if err != nil {
@@ -1189,15 +1201,18 @@ func (s *Store) ListGroupMedia(ctx context.Context, groupID uuid.UUID, limit, of
 	}
 	defer rows.Close()
 
-	var posts []GroupPost
+	var items []GroupMediaItem
 	for rows.Next() {
-		var p GroupPost
-		if err := rows.Scan(&p.GroupID, &p.PostID, &p.AuthorID, &p.CreatedAt); err != nil {
+		var it GroupMediaItem
+		if err := rows.Scan(&it.PostID, &it.AuthorID, &it.ContentType, &it.Attachments, &it.CreatedAt); err != nil {
 			return nil, err
 		}
-		posts = append(posts, p)
+		if it.Attachments == nil {
+			it.Attachments = json.RawMessage(`[]`)
+		}
+		items = append(items, it)
 	}
-	return posts, rows.Err()
+	return items, rows.Err()
 }
 
 // ═══════════════════════════════════════════════════════════

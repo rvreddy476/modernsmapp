@@ -1463,7 +1463,7 @@ func (s *Service) UnbanMember(ctx context.Context, actorID, groupID, targetID uu
 }
 
 // GetGroupMedia returns media posts for a group.
-func (s *Service) GetGroupMedia(ctx context.Context, actorID, groupID uuid.UUID, limit, offset int) ([]store.GroupPost, error) {
+func (s *Service) GetGroupMedia(ctx context.Context, actorID, groupID uuid.UUID, limit, offset int) ([]store.GroupMediaItem, error) {
 	g, err := s.store.GetGroupByID(ctx, groupID)
 	if err != nil {
 		return nil, err
