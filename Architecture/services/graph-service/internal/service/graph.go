@@ -123,15 +123,14 @@ type Relationship struct {
 // --- Follows ---
 
 func (s *Service) Follow(ctx context.Context, followerID, followeeID uuid.UUID) error {
-	// Relationship separation spec §2.3: Follow is hubs-only. A user-as-
-	// followee silently created a follows row before, which leaked into
-	// the "Following" list and exposed user-follows-user semantics the
-	// product is explicitly removing.
+	// Product pivot 2026-06-12 (FB model): users AND pages are both
+	// followable; friendship is the mutual layer on top. Only unknown
+	// targets are rejected. (Supersedes relationship-separation §2.3.)
 	et, err := s.store.LookupEntityType(ctx, followeeID)
 	if err != nil {
 		return fmt.Errorf("lookup followee entity type: %w", err)
 	}
-	if et != store.EntityTypePage {
+	if et != store.EntityTypePage && et != store.EntityTypeUser {
 		return ErrWrongEntityType
 	}
 
@@ -173,14 +172,12 @@ func (s *Service) Follow(ctx context.Context, followerID, followeeID uuid.UUID) 
 }
 
 func (s *Service) Unfollow(ctx context.Context, followerID, followeeID uuid.UUID) error {
-	// Symmetric with Follow: only pages can be unfollowed. Reject before
-	// we hit DeleteFollow so the route can't be used as a probe for what
-	// follows rows still exist on a user UUID.
+	// Symmetric with Follow: users and pages can both be unfollowed.
 	et, err := s.store.LookupEntityType(ctx, followeeID)
 	if err != nil {
 		return fmt.Errorf("lookup followee entity type: %w", err)
 	}
-	if et != store.EntityTypePage {
+	if et != store.EntityTypePage && et != store.EntityTypeUser {
 		return ErrWrongEntityType
 	}
 
@@ -498,6 +495,21 @@ func (s *Service) SendConnectionRequest(ctx context.Context, senderID, receiverI
 func (s *Service) AcceptConnectionRequest(ctx context.Context, senderID, receiverID uuid.UUID) error {
 	if err := s.store.AcceptConnectionRequest(ctx, senderID, receiverID); err != nil {
 		return err
+	}
+
+	// FB model: becoming friends auto-follows both ways so each side
+	// sees the other's posts and shows "Following". Idempotent inserts;
+	// counters bump only on genuinely new rows.
+	for _, pair := range [][2]uuid.UUID{{senderID, receiverID}, {receiverID, senderID}} {
+		inserted, err := s.store.CreateFollow(ctx, pair[0], pair[1])
+		if err != nil {
+			log.Printf("[graph] auto-follow on friendship accept failed: %v", err)
+			continue
+		}
+		if inserted {
+			s.adjustCount(ctx, s.followingCounter, pair[0], "following_count", 1)
+			s.adjustCount(ctx, s.followerCounter, pair[1], "follower_count", 1)
+		}
 	}
 
 	s.invalidateRel(ctx, senderID, receiverID)
