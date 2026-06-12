@@ -344,10 +344,10 @@ aws secretsmanager update-secret \
 (The aurora_master_password output exists; the other URL outputs
 are similarly available — see `infra/terraform/envs/staging/main.tf`.)
 
-Repeat for every service that has additional secrets. **Document the
-expected shape in a follow-up `docs/deploy/secret_shapes.md` so the
-next operator doesn't have to source-dive.** (Captured as a known
-follow-up at the bottom.)
+Repeat for every service that has additional secrets. Use
+`docs/deploy/secret_shapes.md` as the source of truth for each
+service's Secrets Manager JSON shape and matching
+`externalSecret.data` mappings.
 
 ---
 
@@ -508,10 +508,9 @@ Same flow, different env directory + manual sync gate. Before
 These are scoped intentionally — capture them for the operator who
 takes the next step:
 
-- `docs/deploy/secret_shapes.md` — per-service Secrets Manager
-  JSON schema (what keys does post-service expect? commerce?).
-  Today this is implicit in each service's
-  `internal/config/config.go`.
+- Keep `docs/deploy/secret_shapes.md` current as services add or remove
+  environment variables. The doc now exists, but it must stay tied to
+  each service's `internal/config/config.go` and Helm values.
 - AWS Backup plan for Aurora + Scylla EBS volumes. Module ships the
   cluster + snapshots but no automated DR drill.
 - WAF web ACL on the public ALB (Phase 5 hardening).
