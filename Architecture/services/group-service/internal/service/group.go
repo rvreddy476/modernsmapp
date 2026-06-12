@@ -221,6 +221,7 @@ func (s *Service) CreateGroup(ctx context.Context, actorID uuid.UUID, req Create
 		CommentPermission: commentPermission,
 		MemberListVisible: memberListVisible,
 		LinkSharing:       linkSharing,
+		IsMature:          req.IsMature,
 	}
 
 	if err := s.store.CreateGroup(ctx, g); err != nil {
@@ -275,6 +276,7 @@ type CreateGroupParams struct {
 	CommentPermission string
 	MemberListVisible *bool
 	LinkSharing       *bool
+	IsMature          bool
 }
 
 var validGroupTypes = map[string]bool{

@@ -303,7 +303,7 @@ func (s *Store) DiscoverGroupsForUser(ctx context.Context, userID uuid.UUID, gro
 			&d.Visibility, &d.IsArchived, &d.ChatConversationID, &d.MemberCount, &d.PostCount,
 			&d.CreatedAt, &d.UpdatedAt, &d.Handle, &d.Category, &d.PrivacyLevel, &d.JoinMode,
 			&d.WhoCanPost, &d.WhoCanInvite, &d.Location, &d.Language, &d.Status, &d.DeletedAt, &d.PendingRequestCount,
-			&d.GroupType, &d.MaxMembers, &d.JoinQuestions, &d.TopicTags, &d.CommentPermission, &d.MemberListVisible, &d.LinkSharing,
+			&d.GroupType, &d.MaxMembers, &d.JoinQuestions, &d.TopicTags, &d.CommentPermission, &d.MemberListVisible, &d.LinkSharing, &d.IsMature,
 			&d.FriendsInGroup, &d.CategoryMatch, &d.LocationMatch, &d.Score,
 		); err != nil {
 			return nil, err

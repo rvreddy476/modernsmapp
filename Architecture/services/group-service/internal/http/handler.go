@@ -160,6 +160,7 @@ type CreateGroupRequest struct {
 	CommentPermission string          `json:"comment_permission"`
 	MemberListVisible *bool           `json:"member_list_visible"`
 	LinkSharing       *bool           `json:"link_sharing"`
+	IsMature          bool            `json:"is_mature"`
 }
 
 type UpdateGroupRequest struct {
@@ -296,6 +297,7 @@ func (h *Handler) CreateGroup(c *gin.Context) {
 		CommentPermission: req.CommentPermission,
 		MemberListVisible: req.MemberListVisible,
 		LinkSharing:       req.LinkSharing,
+		IsMature:          req.IsMature,
 	}
 
 	group, err := h.svc.CreateGroup(c.Request.Context(), actorID, params)

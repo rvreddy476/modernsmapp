@@ -47,6 +47,7 @@ type Group struct {
 	CommentPermission string          `json:"comment_permission"`
 	MemberListVisible bool            `json:"member_list_visible"`
 	LinkSharing       bool            `json:"link_sharing"`
+	IsMature          bool            `json:"is_mature"`
 }
 
 type GroupMember struct {
@@ -170,7 +171,7 @@ const groupColumns = `g.id, g.name, g.description, g.avatar_media_id, g.cover_me
        g.visibility, g.is_archived, g.chat_conversation_id, g.member_count, g.post_count,
        g.created_at, g.updated_at, g.handle, g.category, g.privacy_level, g.join_mode,
        g.who_can_post, g.who_can_invite, g.location, g.language, g.status, g.deleted_at, g.pending_request_count,
-       g.group_type, g.max_members, g.join_questions, g.topic_tags, g.comment_permission, g.member_list_visible, g.link_sharing`
+       g.group_type, g.max_members, g.join_questions, g.topic_tags, g.comment_permission, g.member_list_visible, g.link_sharing, g.is_mature`
 
 func scanGroup(row pgx.Row) (*Group, error) {
 	var g Group
@@ -179,7 +180,7 @@ func scanGroup(row pgx.Row) (*Group, error) {
 		&g.Visibility, &g.IsArchived, &g.ChatConversationID, &g.MemberCount, &g.PostCount,
 		&g.CreatedAt, &g.UpdatedAt, &g.Handle, &g.Category, &g.PrivacyLevel, &g.JoinMode,
 		&g.WhoCanPost, &g.WhoCanInvite, &g.Location, &g.Language, &g.Status, &g.DeletedAt, &g.PendingRequestCount,
-		&g.GroupType, &g.MaxMembers, &g.JoinQuestions, &g.TopicTags, &g.CommentPermission, &g.MemberListVisible, &g.LinkSharing,
+		&g.GroupType, &g.MaxMembers, &g.JoinQuestions, &g.TopicTags, &g.CommentPermission, &g.MemberListVisible, &g.LinkSharing, &g.IsMature,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -199,7 +200,7 @@ func scanGroups(rows pgx.Rows) ([]Group, error) {
 			&g.Visibility, &g.IsArchived, &g.ChatConversationID, &g.MemberCount, &g.PostCount,
 			&g.CreatedAt, &g.UpdatedAt, &g.Handle, &g.Category, &g.PrivacyLevel, &g.JoinMode,
 			&g.WhoCanPost, &g.WhoCanInvite, &g.Location, &g.Language, &g.Status, &g.DeletedAt, &g.PendingRequestCount,
-			&g.GroupType, &g.MaxMembers, &g.JoinQuestions, &g.TopicTags, &g.CommentPermission, &g.MemberListVisible, &g.LinkSharing,
+			&g.GroupType, &g.MaxMembers, &g.JoinQuestions, &g.TopicTags, &g.CommentPermission, &g.MemberListVisible, &g.LinkSharing, &g.IsMature,
 		); err != nil {
 			return nil, err
 		}
@@ -223,15 +224,15 @@ func (s *Store) CreateGroup(ctx context.Context, g *Group) error {
 		                    privacy_level, join_mode, who_can_post, who_can_invite,
 		                    location, language, status,
 		                    group_type, max_members, join_questions, topic_tags,
-		                    comment_permission, member_list_visible, link_sharing)
+		                    comment_permission, member_list_visible, link_sharing, is_mature)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-		        $14, $15, $16, $17, $18, $19, $20)
+		        $14, $15, $16, $17, $18, $19, $20, $21)
 		RETURNING id, member_count, post_count, is_archived, created_at, updated_at
 	`, g.Name, g.Description, g.CreatorID, g.Visibility, g.Handle, g.Category,
 		g.PrivacyLevel, g.JoinMode, g.WhoCanPost, g.WhoCanInvite,
 		g.Location, g.Language, g.Status,
 		g.GroupType, g.MaxMembers, g.JoinQuestions, g.TopicTags,
-		g.CommentPermission, g.MemberListVisible, g.LinkSharing).Scan(
+		g.CommentPermission, g.MemberListVisible, g.LinkSharing, g.IsMature).Scan(
 		&g.ID, &g.MemberCount, &g.PostCount, &g.IsArchived, &g.CreatedAt, &g.UpdatedAt,
 	)
 	if err != nil {
