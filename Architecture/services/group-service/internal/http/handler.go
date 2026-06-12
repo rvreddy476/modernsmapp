@@ -854,16 +854,20 @@ func (h *Handler) GetMyGroups(c *gin.Context) {
 }
 
 func (h *Handler) DiscoverGroups(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
 	limit, offset := parsePagination(c)
 	groupType := c.Query("type")
 
-	groups, err := h.svc.DiscoverGroups(c.Request.Context(), limit, offset, groupType)
+	groups, err := h.svc.DiscoverGroupsForUser(c.Request.Context(), actorID, limit, offset, groupType)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if groups == nil {
-		groups = []store.Group{}
+		groups = []service.DiscoveredGroup{}
 	}
 	api.JSON(c.Writer, http.StatusOK, groups, nil)
 }

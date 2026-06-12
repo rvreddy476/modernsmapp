@@ -2246,3 +2246,53 @@ func (s *Service) GetMyGroupsFeed(ctx context.Context, actorID uuid.UUID, limit,
 func (s *Service) ListMyInvites(ctx context.Context, actorID uuid.UUID) ([]store.GroupInviteDetail, error) {
 	return s.store.ListInvitesForUserDetailed(ctx, actorID)
 }
+
+// DiscoveredGroup is a discover result with human-readable reasons the
+// client can render under the card ("2 friends are in this space", ...).
+type DiscoveredGroup struct {
+	store.Group
+	FriendsInGroup int      `json:"friends_in_group"`
+	Reasons        []string `json:"reasons"`
+}
+
+// DiscoverGroupsForUser ranks joinable public + request-to-join spaces for
+// the viewer (friends inside > category affinity > same area > popularity)
+// and attaches the reasons behind each suggestion. Falls back to plain
+// popularity ordering naturally when the viewer has no friends or spaces
+// yet (all personalization terms score zero).
+func (s *Service) DiscoverGroupsForUser(ctx context.Context, actorID uuid.UUID, limit, offset int, groupType string) ([]DiscoveredGroup, error) {
+	if groupType != "" {
+		if err := ValidateGroupType(groupType); err != nil {
+			return nil, err
+		}
+	}
+	scored, err := s.store.DiscoverGroupsForUser(ctx, actorID, groupType, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]DiscoveredGroup, 0, len(scored))
+	for _, d := range scored {
+		var reasons []string
+		switch {
+		case d.FriendsInGroup == 1:
+			reasons = append(reasons, "1 friend is in this space")
+		case d.FriendsInGroup > 1:
+			reasons = append(reasons, fmt.Sprintf("%d friends are in this space", d.FriendsInGroup))
+		}
+		if d.CategoryMatch && d.Category != "" {
+			reasons = append(reasons, "Matches your interest in "+d.Category)
+		}
+		if d.LocationMatch && d.Location != "" {
+			reasons = append(reasons, "Active in "+d.Location)
+		}
+		if len(reasons) == 0 {
+			if d.MemberCount >= 10 {
+				reasons = append(reasons, "Popular on VChat")
+			} else {
+				reasons = append(reasons, "New space")
+			}
+		}
+		out = append(out, DiscoveredGroup{Group: d.Group, FriendsInGroup: d.FriendsInGroup, Reasons: reasons})
+	}
+	return out, nil
+}
