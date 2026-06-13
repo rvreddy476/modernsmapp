@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/atpost/dating-service/internal/store"
 	"github.com/google/uuid"
@@ -20,6 +21,27 @@ func validVisibility(v string) bool {
 // ListPhotos returns the user's photos.
 func (s *Service) ListPhotos(ctx context.Context, userID uuid.UUID) ([]store.Photo, error) {
 	return s.store.ListPhotos(ctx, userID)
+}
+
+// ListMyPhotos returns the caller's photos filtered by moderation_status.
+// Used by `GET /v1/dating/photos/me?status=rejected` so the owner can
+// see the moderation reason for each photo — the §P1-2 "Why was my
+// photo rejected?" transparency control.
+//
+// Empty status returns every photo (same as ListPhotos but ordered
+// newest-first so the most recent moderation actions surface first).
+// Other status values are passed through verbatim; an unknown value
+// yields an empty list rather than an error so the UI can call the
+// endpoint with any client-side filter without breaking.
+func (s *Service) ListMyPhotos(ctx context.Context, userID uuid.UUID, status string) ([]store.Photo, error) {
+	switch status {
+	case "", "pending", "approved", "rejected":
+	default:
+		// Unknown status → empty list (defensive — clients can
+		// evolve filter chips without coordinating).
+		return []store.Photo{}, nil
+	}
+	return s.store.ListPhotosByStatus(ctx, userID, status)
 }
 
 // CreatePhoto validates input and inserts the photo.
@@ -44,4 +66,83 @@ func (s *Service) UpdatePhoto(ctx context.Context, userID, photoID uuid.UUID, p 
 // DeletePhoto removes the photo.
 func (s *Service) DeletePhoto(ctx context.Context, userID, photoID uuid.UUID) error {
 	return s.store.DeletePhoto(ctx, userID, photoID)
+}
+
+// SetPhotoModerationStatus is the admin / content-scanner entry point
+// for flipping a photo's moderation_status. Wires three side-effects:
+//
+//  1. Updates the dating_photos row.
+//  2. Drops every viewer's cached deck that contains the owner (via
+//     InvalidateDecksForCandidate) so the candidate query's
+//     approved-only filter takes effect on the next pulse refresh.
+//  3. Graduates the owner's profile_status from pending_photo to
+//     pending_selfie if this is their first approved primary photo.
+//
+// On rejection, publishes dating.photo.moderation_rejected so the
+// notification consumer can push a user-facing notice.
+//
+// adminID is the X-Admin-Id header value the gateway injects on
+// admin-scope traffic. uuid.Nil is accepted with a slog.Warn so the
+// action never bounces because of a missing header. Every call
+// writes one row to dating_admin_audit after the photo flip lands;
+// an audit insert failure is logged but does NOT roll back the
+// moderation action. PHASE_0_TEST_PLANS.md §P0-8 acceptance test D.
+//
+// P0-6 (approved-only discovery — wire the invalidation) + §P1-1
+// (profile lifecycle — wire pending_photo → pending_selfie) +
+// §P0-8 (audit trail) in dating/PRODUCTION_GAP_ANALYSIS.md.
+func (s *Service) SetPhotoModerationStatus(ctx context.Context, adminID, photoID uuid.UUID, status, rejectReason string) (*store.Photo, error) {
+	photo, err := s.store.SetPhotoModerationStatus(ctx, photoID, status, rejectReason)
+	if err != nil {
+		return nil, err
+	}
+
+	// Fan out deck invalidation regardless of approve/reject — both
+	// flip whether this user is discoverable.
+	s.InvalidateDecksForCandidate(ctx, photo.UserID)
+
+	switch status {
+	case "approved":
+		// Profile state transition: pending_photo → pending_selfie when
+		// the user has at least one approved primary photo and is
+		// still in pending_photo. Idempotent — re-running on a profile
+		// already past pending_photo is a no-op.
+		prof, perr := s.store.GetProfile(ctx, photo.UserID)
+		if perr == nil && prof != nil && prof.ProfileStatus == store.ProfileStatusPendingPhoto {
+			if photo.IsPrimary && photo.ModerationStatus == "approved" {
+				if _, err := s.store.SetProfileStatus(ctx, photo.UserID, store.ProfileStatusPendingSelfie); err != nil {
+					slog.Warn("photo moderation: graduate to pending_selfie failed",
+						"user_id", photo.UserID, "photo_id", photoID, "error", err)
+				}
+			}
+		}
+	case "rejected":
+		if s.producer != nil {
+			if err := s.producer.PublishPhotoModerationRejected(ctx, photo.UserID, photoID.String(), rejectReason); err != nil {
+				slog.Warn("photo moderation: publish rejected event failed",
+					"user_id", photo.UserID, "photo_id", photoID, "error", err)
+			}
+		}
+	}
+
+	if adminID == uuid.Nil {
+		slog.Warn("admin audit: actor id missing on SetPhotoModerationStatus",
+			"photo_id", photoID, "status", status, "user_id", photo.UserID)
+	}
+	entry := &store.AdminAuditEntry{
+		ActorAdminID:   adminID,
+		Action:         "photo_" + status,
+		TargetUserID:   photo.UserID,
+		TargetResource: "photo:" + photoID.String(),
+		Reason:         rejectReason,
+	}
+	if err := s.store.InsertAdminAudit(ctx, entry); err != nil {
+		// Audit failure must not roll back the moderation flip — see godoc.
+		slog.Error("admin audit: insert failed for SetPhotoModerationStatus",
+			"photo_id", photoID, "status", status,
+			"user_id", photo.UserID, "actor_admin_id", adminID,
+			"error", err)
+	}
+
+	return photo, nil
 }

@@ -284,6 +284,11 @@ func (h *Handler) RespondToAnswerRequest(c *gin.Context) {
 	if !ok {
 		return
 	}
+	// Audit CQ2: ensure the caller is the targeted user.
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
 
 	var body struct {
 		Status string `json:"status"`
@@ -293,7 +298,7 @@ func (h *Handler) RespondToAnswerRequest(c *gin.Context) {
 		return
 	}
 
-	if err := h.svc.RespondToAnswerRequest(c.Request.Context(), reqID, body.Status); err != nil {
+	if err := h.svc.RespondToAnswerRequest(c.Request.Context(), reqID, userID, body.Status); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "RESPOND_FAILED", err.Error(), nil)
 		return
 	}

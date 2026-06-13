@@ -75,6 +75,7 @@ class MopeduRepository {
     required String cityId,
     required String paymentMethod,
     required String idempotencyKey,
+    DateTime? scheduledFor,
   }) async {
     final res = await _api.post(
       '/v1/rider/rides',
@@ -85,6 +86,8 @@ class MopeduRepository {
         'city_id': cityId,
         'payment_method': paymentMethod,
         'idempotency_key': idempotencyKey,
+        if (scheduledFor != null)
+          'scheduled_for': scheduledFor.toUtc().toIso8601String(),
       },
     );
     final raw = res.data['data'];
@@ -587,6 +590,25 @@ class MopeduRepository {
         if (heading != null) 'heading': heading,
       },
     );
+  }
+
+  // ─── Realtime token ─────────────────────────────────────────────────
+
+  /// Issues an HMAC-signed topic token for the realtime SSE gateway.
+  /// Returns `{token, topics}` where `topics` lists the names the
+  /// caller is authorized to subscribe to.
+  Future<({String token, List<String> topics})> getRealtimeToken() async {
+    final res = await _api.post('/v1/rider/realtime/token');
+    final body = res.data is Map ? (res.data as Map)['data'] : null;
+    if (body is! Map) {
+      throw StateError('realtime token: malformed response');
+    }
+    final token = (body['token'] as String?) ?? '';
+    final raw = body['topics'];
+    final topics = (raw is List)
+        ? raw.whereType<String>().toList()
+        : const <String>[];
+    return (token: token, topics: topics);
   }
 
   // ─── Offers ─────────────────────────────────────────────────────────

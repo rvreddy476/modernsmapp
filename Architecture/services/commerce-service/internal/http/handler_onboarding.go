@@ -38,9 +38,18 @@ func (h *Handler) RegisterOnboardingRoutes(r *gin.Engine) {
 	adm.POST("/sellers/:sellerId/reject", h.AdminRejectSeller)
 	adm.POST("/sellers/:sellerId/request-changes", h.AdminRequestSellerChanges)
 	adm.POST("/sellers/:sellerId/suspend", h.AdminSuspendSeller)
+	adm.POST("/sellers/:sellerId/kyc/verify", h.AdminVerifySellerKYC)
+	adm.GET("/payouts/pending", h.AdminListPendingPayouts)
+	adm.GET("/jobs/dead-letter", h.AdminListDeadLetterJobs)
 	adm.GET("/products/queue", h.AdminListProductQueue)
 	adm.POST("/products/:productId/approve", h.AdminApproveProduct)
 	adm.POST("/products/:productId/reject", h.AdminRejectProduct)
+	adm.POST("/products/:productId/request-changes", h.AdminRequestProductChanges)
+	// COD remittance settlement — Ops marks a remittance row as paid
+	// once the seller has been credited via the actual payout cycle.
+	// Store-level MarkCODRemittanceSettled has existed since the COD
+	// schema landed; the HTTP route was the missing piece.
+	adm.POST("/cod-remittances/:remittanceId/settle", h.AdminSettleCODRemittance)
 }
 
 // ─── Onboarding handlers ────────────────────────────────────────
@@ -444,4 +453,81 @@ func (h *Handler) AdminRejectProduct(c *gin.Context) {
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+// AdminRequestProductChanges POST /v1/commerce/internal/products/:productId/request-changes — Phase 3.4.
+// Moderator parks the listing in changes_requested with feedback for the seller.
+func (h *Handler) AdminRequestProductChanges(c *gin.Context) {
+	productID, ok := parseUUID(c, "productId")
+	if !ok {
+		return
+	}
+	var req adminActionReq
+	_ = c.ShouldBindJSON(&req)
+	if err := h.svc.AdminRequestProductChanges(c.Request.Context(), productID, actorID(c), req.Reason); err != nil {
+		handleErr(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// AdminListDeadLetterJobs GET /v1/commerce/internal/jobs/dead-letter —
+// Phase 6.3. Surfaces the durable fulfillment queue's dead-lettered rows
+// so ops can replay or investigate persistent failures.
+func (h *Handler) AdminListDeadLetterJobs(c *gin.Context) {
+	limit := 50
+	if v := c.Query("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 500 {
+			limit = n
+		}
+	}
+	out, err := h.svc.AdminListDeadLetterJobs(c.Request.Context(), limit)
+	if err != nil {
+		handleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"jobs": out}, nil)
+}
+
+// AdminListPendingPayouts GET /v1/commerce/internal/payouts/pending —
+// Phase 4.5. Aggregates outstanding (unsettled) COD remittances per seller
+// so finance can reconcile owed amounts before kicking off a payout batch.
+func (h *Handler) AdminListPendingPayouts(c *gin.Context) {
+	limit := 100
+	if v := c.Query("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 500 {
+			limit = n
+		}
+	}
+	out, err := h.svc.AdminListPendingPayouts(c.Request.Context(), limit)
+	if err != nil {
+		handleErr(c, err)
+		return
+	}
+	if out == nil {
+		out = []*postgres.PendingPayoutSummary{}
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"sellers": out}, nil)
+}
+
+// AdminVerifySellerKYC POST /v1/commerce/internal/sellers/:sellerId/kyc/verify — Phase 3.2.
+// Runs the configured KYC adapter against the seller's GSTIN/PAN + primary
+// payout account; returns the per-field report. The verdict is also stored
+// on the seller row (verification_status = "verified" iff all_valid).
+func (h *Handler) AdminVerifySellerKYC(c *gin.Context) {
+	sellerID, ok := parseUUID(c, "sellerId")
+	if !ok {
+		return
+	}
+	rep, err := h.svc.AdminVerifySellerKYC(c.Request.Context(), sellerID)
+	if err != nil {
+		if err == service.ErrKYCNotConfigured {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable,
+				"KYC_NOT_CONFIGURED", err.Error(), nil)
+			return
+		}
+		handleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, rep, nil)
 }

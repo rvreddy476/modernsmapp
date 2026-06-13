@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func loggingMiddleware(log *slog.Logger, next nethttp.Handler) nethttp.Handler {
+func loggingMiddleware(log *slog.Logger, trustedProxies []string, next nethttp.Handler) nethttp.Handler {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -27,7 +27,7 @@ func loggingMiddleware(log *slog.Logger, next nethttp.Handler) nethttp.Handler {
 			"path", r.URL.Path,
 			"status", rec.status,
 			"duration_ms", duration.Milliseconds(),
-			"client_ip", readClientIP(r),
+			"client_ip", readClientIP(r, trustedProxies),
 		}
 		switch {
 		case rec.status >= nethttp.StatusInternalServerError:

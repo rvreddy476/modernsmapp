@@ -37,16 +37,36 @@ func (s *Service) SearchAudio(ctx context.Context, query string, limit int) ([]p
 	return s.pgStore.SearchAudio(ctx, query, limit)
 }
 
-// AttachAudioToPost associates an audio track with a post and increments the use count.
-func (s *Service) AttachAudioToPost(ctx context.Context, postID, audioTrackID uuid.UUID) error {
-	// Verify the audio track exists
-	if _, err := s.pgStore.GetAudioTrack(ctx, audioTrackID); err != nil {
+// ErrAudioTrackPrivate is returned when an actor tries to attach a
+// private audio track they don't own. M10 — previously any actor
+// could attach any audio_track to their own post, including ones a
+// creator had explicitly marked private.
+var ErrAudioTrackPrivate = fmt.Errorf("audio track is private to its creator")
+
+// AttachAudioToPost associates an audio track with a post and
+// increments the use count. actorID is the post's author — needed
+// for the M10 ownership check against private tracks.
+func (s *Service) AttachAudioToPost(ctx context.Context, actorID, postID, audioTrackID uuid.UUID) error {
+	track, err := s.pgStore.GetAudioTrack(ctx, audioTrackID)
+	if err != nil {
 		return fmt.Errorf("audio track not found: %w", err)
+	}
+	// M10: private tracks can only be attached by the creator. Public
+	// tracks stay reusable by anyone (TikTok/Reels default UX).
+	if !track.IsPublic {
+		if track.CreatorUserID == nil || *track.CreatorUserID != actorID {
+			return ErrAudioTrackPrivate
+		}
 	}
 	if err := s.pgStore.AttachAudioToPost(ctx, postID, audioTrackID); err != nil {
 		return fmt.Errorf("attach audio to post: %w", err)
 	}
-	// Increment use count (best-effort)
-	_ = s.pgStore.IncrementAudioUseCount(ctx, audioTrackID)
+	// Increment use count (best-effort). Routes through the sharded
+	// counter when Redis is configured; falls back to the per-event PG
+	// UPDATE otherwise. Counter-sharding rollout — replaces the previous
+	// direct s.pgStore.IncrementAudioUseCount call so concurrent attach
+	// load on a trending audio row no longer pins audio_tracks under
+	// row-level lock contention.
+	_ = s.adjustAudioUseCount(ctx, audioTrackID)
 	return nil
 }

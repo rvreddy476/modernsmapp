@@ -16,6 +16,11 @@ class PostRepository {
   }
 
   /// Create a new post with verified backend fields.
+  ///
+  /// `richText` carries an optional `{background, text_color}` map for
+  /// solid-coloured text-only posts (matches the web composer's rainbow
+  /// picker output). Sent through to post-service which persists it on
+  /// the post row and returns it on subsequent reads.
   Future<Post> createPost({
     required String text,
     required String contentType,
@@ -27,6 +32,7 @@ class PostRepository {
     String? activityDetail,
     String? locationName,
     Map<String, dynamic>? poll,
+    Map<String, dynamic>? richText,
   }) async {
     final response = await _api.post(
       '/v1/posts',
@@ -41,6 +47,7 @@ class PostRepository {
         'activity_detail': activityDetail,
         'location_name': locationName,
         'poll': poll,
+        'rich_text': richText,
       },
     );
     return Post.fromJson(_unwrapObjectEnvelope(response.data));

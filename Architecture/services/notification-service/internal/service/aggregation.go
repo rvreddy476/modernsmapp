@@ -20,6 +20,34 @@ type AggregationState struct {
 	CreatedAt      time.Time `json:"created_at"`
 }
 
+// tryAggregateScript runs the GET → mutate → SET cycle inside Redis
+// itself so two concurrent likes can't both read the same Count and
+// land the same increment (audit CR4: previously the pattern was
+// `raw := GET; state.Count++; SET`, with two callers racing both got
+// the pre-increment count and the second SET overwrote the first).
+//
+// KEYS[1] = aggKey
+// ARGV[1] = actorID, ARGV[2] = ttlSeconds, ARGV[3] = maxActors
+// Returns: { existingNotifID (or ""), newCount } when a state already
+// existed; nil when the caller should create a new notification.
+var tryAggregateScript = redis.NewScript(`
+local raw = redis.call("GET", KEYS[1])
+if not raw then
+  return nil
+end
+local ok, state = pcall(cjson.decode, raw)
+if not ok or type(state) ~= "table" then
+  return nil
+end
+state.count = (state.count or 1) + 1
+state.actors = state.actors or {}
+if #state.actors < tonumber(ARGV[3]) then
+  table.insert(state.actors, ARGV[1])
+end
+redis.call("SET", KEYS[1], cjson.encode(state), "EX", ARGV[2])
+return {state.notification_id or "", state.count}
+`)
+
 // TryAggregate checks if a notification should be aggregated with an existing one.
 // Returns (shouldCreateNew bool, existingNotifID string, newCount int).
 func TryAggregate(ctx context.Context, rdb *redis.Client, recipientID, eventType, targetID, actorID string) (bool, string, int) {
@@ -29,10 +57,15 @@ func TryAggregate(ctx context.Context, rdb *redis.Client, recipientID, eventType
 	}
 
 	aggKey := fmt.Sprintf("agg:%s:%s:%s", recipientID, eventType, targetID)
+	ttlSecs := int(template.AggregateWindow.Seconds())
+	if ttlSecs <= 0 {
+		ttlSecs = 60
+	}
 
-	raw, err := rdb.Get(ctx, aggKey).Result()
+	res, err := tryAggregateScript.Run(ctx, rdb, []string{aggKey}, actorID, ttlSecs, 5).Result()
 	if err == redis.Nil {
-		// First event in window — create new notification, store aggregation state
+		// No existing window — caller should create a new notification
+		// and then call StartAggregation to seed the state.
 		return true, "", 0
 	}
 	if err != nil {
@@ -40,24 +73,20 @@ func TryAggregate(ctx context.Context, rdb *redis.Client, recipientID, eventType
 		return true, "", 0
 	}
 
-	var state AggregationState
-	if err := json.Unmarshal([]byte(raw), &state); err != nil {
+	// Lua returns []any{notifID string, count int64} on success.
+	arr, ok := res.([]any)
+	if !ok || len(arr) != 2 {
 		return true, "", 0
 	}
-
-	// Update existing aggregation
-	state.Count++
-	// Only track first 5 actor names for display
-	if len(state.Actors) < 5 {
-		state.Actors = append(state.Actors, actorID)
-	}
-
-	data, _ := json.Marshal(state)
-	ttl := template.AggregateWindow
-	rdb.Set(ctx, aggKey, string(data), ttl)
-
-	return false, state.NotificationID, state.Count
+	notifID, _ := arr[0].(string)
+	count64, _ := arr[1].(int64)
+	return false, notifID, int(count64)
 }
+
+// AggregationState's JSON tags drive the Redis payload that the Lua
+// script in tryAggregateScript decodes. Keep `notification_id`,
+// `count`, `actors` keys in sync with the struct tags above — the
+// Lua script depends on those exact names.
 
 // StartAggregation creates a new aggregation window in Redis.
 func StartAggregation(ctx context.Context, rdb *redis.Client, recipientID, eventType, targetID, actorID, notificationID string) {

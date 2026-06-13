@@ -57,7 +57,7 @@ ALTER TABLE dating_profiles ADD COLUMN IF NOT EXISTS echoes_consent    BOOLEAN  
 ALTER TABLE dating_profiles ADD COLUMN IF NOT EXISTS echo_refreshed_at TIMESTAMPTZ;
 ALTER TABLE dating_profiles ADD COLUMN IF NOT EXISTS last_active_at    TIMESTAMPTZ NOT NULL DEFAULT now();
 ALTER TABLE dating_profiles ADD COLUMN IF NOT EXISTS first_name        TEXT;
--- Sprint 6: per-user salt for the soft-launch cohort gate. Stable per-user;
+-- Sprint 6: per-user salt for the soft-launch cohort gate. Stable per-user —
 -- generated at profile creation, never rotated. See service/cohort.go.
 ALTER TABLE dating_profiles ADD COLUMN IF NOT EXISTS cohort_salt       TEXT;
 
@@ -342,6 +342,28 @@ CREATE TABLE IF NOT EXISTS dating_reports (
 CREATE INDEX IF NOT EXISTS idx_dating_reports_target
     ON dating_reports(target_id, created_at DESC);
 
+-- P0-8 admin queue: status column for the /admin/dating/reports flow.
+-- Idempotent ALTER so existing rows default to 'submitted'.
+ALTER TABLE dating_reports
+    ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'submitted'
+        CHECK (status IN ('submitted','under_review','investigating',
+                          'actioned','resolved','dismissed','closed_no_action'));
+CREATE INDEX IF NOT EXISTS idx_dating_reports_status_created
+    ON dating_reports(status, created_at DESC);
+
+-- §P1-6 sweeper bookkeeping: idempotency markers so the safe-meet
+-- reminder + missed-check-in sweepers don't re-fire the same event
+-- every minute. NULL = not yet fired — NOW() = sent.
+ALTER TABLE dating_meets
+    ADD COLUMN IF NOT EXISTS reminder_fired_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS missed_check_in_fired_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_dating_meets_reminder_due
+    ON dating_meets(scheduled_at)
+    WHERE reminder_fired_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_dating_meets_missed_due
+    ON dating_meets(scheduled_at)
+    WHERE missed_check_in_fired_at IS NULL AND check_in_status IS NULL;
+
 -- ---------------------------------------------------------------------------
 -- Sprint 4 — AI moderation results (shadow + strict)
 --
@@ -373,12 +395,20 @@ CREATE INDEX IF NOT EXISTS idx_dating_profiles_intent_geo
     ON dating_profiles(intent) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_dating_profiles_geohash
     ON dating_profiles(location_geohash) WHERE deleted_at IS NULL;
+-- P0-10 Phase A: prefix index using text_pattern_ops so the candidate
+-- query's LIKE 'cell%' filter is index-bounded. Without this opclass
+-- the planner falls back to a sequential scan even with the column
+-- indexed normally — LIKE with leading literal only uses an index
+-- when text_pattern_ops (or default collation = "C") is in play.
+CREATE INDEX IF NOT EXISTS idx_dating_profiles_geohash_prefix
+    ON dating_profiles(location_geohash text_pattern_ops)
+    WHERE deleted_at IS NULL AND location_geohash IS NOT NULL;
 
 -- ---------------------------------------------------------------------------
 -- Sprint 5 — Premium plans, Razorpay/UPI checkout
 -- ---------------------------------------------------------------------------
 --
--- See PULSE_DATING_SPEC.md §14. Plans are seeded on bootstrap; entries with
+-- See PULSE_DATING_SPEC.md §14. Plans are seeded on bootstrap — entries with
 -- the well-known ids ('monthly_399', 'quarterly_999', 'yearly_2499',
 -- 'boost_49') are upserted by service.SeedPremiumPlans on every boot.
 
@@ -411,7 +441,7 @@ CREATE INDEX IF NOT EXISTS idx_dating_payment_intents_user
     ON dating_payment_intents(user_id, created_at DESC);
 
 -- payment_events: idempotency log for Razorpay webhook deliveries. The UNIQUE
--- on razorpay_event_id is the idempotency key; webhook re-deliveries hit the
+-- on razorpay_event_id is the idempotency key — webhook re-deliveries hit the
 -- conflict and become a no-op.
 CREATE TABLE IF NOT EXISTS dating_payment_events (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -433,7 +463,7 @@ ALTER TABLE dating_premium_subscriptions ADD COLUMN IF NOT EXISTS cancelled_at T
 -- ---------------------------------------------------------------------------
 --
 -- See PULSE_DATING_SPEC.md §15.8. Export job is produced by the data-exporter
--- consumer; the consent log is the audit trail required by the DPDP Act for
+-- consumer — the consent log is the audit trail required by the DPDP Act for
 -- every consent toggle (Echoes, Aadhaar, AI moderation, location share).
 
 CREATE TABLE IF NOT EXISTS dating_data_exports (
@@ -461,3 +491,229 @@ CREATE TABLE IF NOT EXISTS dating_consent_log (
 
 CREATE INDEX IF NOT EXISTS idx_dating_consent_log_user
     ON dating_consent_log(user_id, created_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- Phase 1 (§P1-1) — profile activation state machine.
+--
+-- New profiles begin at 'draft' and graduate through the following lifecycle:
+--    draft -> pending_photo -> pending_selfie -> active
+-- Existing pause / soft-delete actions also drive 'paused' / 'deleted'.
+-- 'restricted' + 'suspended' are reserved for trust-safety moderation.
+--
+-- The legacy boolean columns (paused, deleted_at) remain authoritative for
+-- back-compat with the current discovery query — profile_status is the
+-- single source of truth going forward and discovery now filters on it.
+-- ---------------------------------------------------------------------------
+ALTER TABLE dating_profiles
+    ADD COLUMN IF NOT EXISTS profile_status TEXT NOT NULL DEFAULT 'draft'
+    CHECK (profile_status IN
+      ('draft','pending_photo','pending_selfie','pending_review',
+       'active','paused','restricted','suspended','deleted'));
+CREATE INDEX IF NOT EXISTS idx_dating_profiles_status_active
+    ON dating_profiles(profile_status) WHERE profile_status = 'active';
+
+-- §P1-1: re-assert the CHECK constraint on every boot. The
+-- ADD COLUMN IF NOT EXISTS above is a no-op once the column exists,
+-- which means deployed databases initialised before 'pending_review'
+-- was added to the IN-list still carry the older constraint. Drop +
+-- re-add (named explicitly) is idempotent and cheap.
+DO $$
+BEGIN
+    -- Postgres auto-generates the constraint name as
+    -- dating_profiles_profile_status_check when the CHECK is declared
+    -- inline. Drop it (IF EXISTS — safe on fresh installs and on
+    -- environments that already have the named constraint) and re-add
+    -- under a stable name so the next boot is a true no-op.
+    ALTER TABLE dating_profiles
+        DROP CONSTRAINT IF EXISTS dating_profiles_profile_status_check;
+    ALTER TABLE dating_profiles
+        DROP CONSTRAINT IF EXISTS dating_profiles_status_chk;
+    ALTER TABLE dating_profiles
+        ADD CONSTRAINT dating_profiles_status_chk
+        CHECK (profile_status IN
+          ('draft','pending_photo','pending_selfie','pending_review',
+           'active','paused','restricted','suspended','deleted'));
+EXCEPTION WHEN duplicate_object THEN
+    NULL;
+END $$;
+
+-- Backfill: pre-existing rows go to 'active' so they don't disappear from
+-- discovery on first deploy. The service layer will downshift any row
+-- that fails the new minimum-fields gate the next time it's edited.
+UPDATE dating_profiles SET profile_status = 'active'
+    WHERE profile_status = 'draft' AND deleted_at IS NULL AND paused = false
+      AND first_name IS NOT NULL AND birth_date IS NOT NULL;
+UPDATE dating_profiles SET profile_status = 'paused' WHERE paused = true AND deleted_at IS NULL;
+UPDATE dating_profiles SET profile_status = 'deleted' WHERE deleted_at IS NOT NULL;
+
+-- ---------------------------------------------------------------------------
+-- §P0-8 — dating_admin_audit (append-only log of every admin action).
+--
+-- Every report transition + photo moderation flip taken from the
+-- /admin/dating console writes one row here. The trigger below makes
+-- the table append-only so the trust-safety + compliance team has a
+-- tamper-proof trail of who-did-what. PHASE_0_TEST_PLANS.md §P0-8
+-- acceptance test D verifies UPDATE/DELETE are rejected.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS dating_admin_audit (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    actor_admin_id  UUID NOT NULL,
+    action          TEXT NOT NULL,
+    target_user_id  UUID,
+    target_resource TEXT,
+    reason          TEXT,
+    policy_code     TEXT,
+    internal_notes  TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_dating_admin_audit_actor
+    ON dating_admin_audit(actor_admin_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_dating_admin_audit_target_user
+    ON dating_admin_audit(target_user_id, created_at DESC)
+    WHERE target_user_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_dating_admin_audit_created
+    ON dating_admin_audit(created_at DESC);
+
+-- Immutability: refuse UPDATE/DELETE. Append-only by design.
+CREATE OR REPLACE FUNCTION dating_admin_audit_immutable() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'dating_admin_audit is append-only';
+END $$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS dating_admin_audit_no_update ON dating_admin_audit;
+CREATE TRIGGER dating_admin_audit_no_update
+    BEFORE UPDATE OR DELETE ON dating_admin_audit
+    FOR EACH ROW EXECUTE FUNCTION dating_admin_audit_immutable();
+
+-- ---------------------------------------------------------------------------
+-- §P0-7 Phase A — Fake-account risk scoring.
+--
+-- Aggregates seven signals (verification tier, profile completeness, photo
+-- approval, IP/ASN velocity, report count + quality, block rate, spark
+-- velocity) into a 0..100 score that maps to one of seven enforcement
+-- levels. Phase A defers device-reuse (15w) — the signal is surfaced as
+-- null in the signals JSON with a TODO marker so Phase B can wire it
+-- without a schema change. The IP/ASN velocity signal is currently a
+-- placeholder (no request-log aggregation hook yet) and contributes 0.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS dating_account_risk (
+    user_id           UUID PRIMARY KEY,
+    risk_score        INT  NOT NULL CHECK (risk_score BETWEEN 0 AND 100),
+    risk_level        TEXT NOT NULL DEFAULT 'allow'
+        CHECK (risk_level IN
+            ('allow','reduce_reach','require_recheck',
+             'hide_from_discovery','chat_hold','admin_review','suspend')),
+    signals           JSONB NOT NULL DEFAULT '{}'::jsonb,
+    last_evaluated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_dating_account_risk_level
+    ON dating_account_risk(risk_level) WHERE risk_level != 'allow';
+CREATE INDEX IF NOT EXISTS idx_dating_account_risk_evaluated_at
+    ON dating_account_risk(last_evaluated_at);
+
+-- ---------------------------------------------------------------------------
+-- §P1-3 — Privacy controls.
+--
+-- Five user-facing privacy levers, all stored on the profile row so a
+-- single read covers the discovery query's hard-filter needs AND the
+-- response builder's masking logic. Defaults are conservative-OFF so
+-- existing profiles keep their current visibility.
+--
+--   * incognito                — viewer doesn't appear in anyone else's
+--                                deck unless they've already sparked.
+--   * hide_last_active         — last_active_at omitted from pulse +
+--                                match-list responses.
+--   * approximate_location     — distance bucketed to coarse ranges
+--                                instead of an exact km value.
+--   * verified_only_filter     — viewer-side toggle — FetchCandidates
+--                                excludes trust_tier 'phone' (must be
+--                                'selfie' or 'aadhaar').
+--   * blur_photos_until_match  — owner's photos return a blurred URL
+--                                for non-matched viewers. Matched
+--                                viewers see the original.
+--
+-- The blurred URL is uploaded alongside the original by the media
+-- pipeline. Phase A leaves blurred_url NULL when not yet generated —
+-- the response builder falls back to "<url>?blurred=1" the client
+-- honours so blur still takes effect end-to-end.
+-- ---------------------------------------------------------------------------
+ALTER TABLE dating_profiles
+    ADD COLUMN IF NOT EXISTS incognito               BOOLEAN NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS hide_last_active        BOOLEAN NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS approximate_location    BOOLEAN NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS verified_only_filter    BOOLEAN NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS blur_photos_until_match BOOLEAN NOT NULL DEFAULT false;
+
+ALTER TABLE dating_photos
+    ADD COLUMN IF NOT EXISTS blurred_url TEXT;
+
+-- ---------------------------------------------------------------------------
+-- §P1-2 — Transparency controls.
+--
+-- Surface the moderation reason set by the scanner/admin so the photo
+-- owner can see "Why was my photo rejected?". The column is set by
+-- SetPhotoModerationStatus and read by the owner-only photo list
+-- endpoint (`GET /v1/dating/photos/me`). NULL means "no reason yet" —
+-- legacy rows + pending photos.
+--
+-- Idempotent — pre-existing deploys will pick this up on next bootstrap.
+-- ---------------------------------------------------------------------------
+ALTER TABLE dating_photos
+    ADD COLUMN IF NOT EXISTS moderation_reason TEXT;
+
+-- ---------------------------------------------------------------------------
+-- Phase 1 notification follow-ups — idempotency markers for the four
+-- previously-uncalled publishers (PublishMatchQuietNotify,
+-- PublishSafetyPanicAcknowledged, PublishReportStatusUpdated,
+-- PublishPremiumPaymentFailure).
+--
+-- quiet_notified_at gates dating.match.quiet_notify so the sweeper
+-- emits at most once per match.
+--
+-- acknowledged_at + acknowledged_by gate
+-- dating.safety.panic.acknowledged so each panic row can be ack'd at
+-- most once.
+-- ---------------------------------------------------------------------------
+ALTER TABLE dating_matches
+    ADD COLUMN IF NOT EXISTS quiet_notified_at TIMESTAMPTZ;
+
+CREATE INDEX IF NOT EXISTS idx_dating_matches_quiet_unnotified
+    ON dating_matches(status)
+    WHERE quiet_notified_at IS NULL AND status = 'quiet';
+
+ALTER TABLE dating_safety_events
+    ADD COLUMN IF NOT EXISTS acknowledged_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS acknowledged_by UUID;
+
+CREATE INDEX IF NOT EXISTS idx_dating_safety_panic_open
+    ON dating_safety_events(created_at DESC)
+    WHERE kind = 'panic' AND acknowledged_at IS NULL;
+
+-- ---------------------------------------------------------------------------
+-- §P0-7 Phase B — device-fingerprint + IP/ASN velocity signals.
+--
+-- A row is upserted on every pulse/spark request that carries an
+-- X-Device-Fingerprint header. CountUsersByFingerprint feeds the
+-- device-reuse signal (>3 distinct users on a fingerprint = 1.0) —
+-- COUNT(DISTINCT user_id) WHERE ip = $1 AND last_seen_at > NOW() -
+-- INTERVAL '1 hour' feeds IP/ASN velocity (>5 distinct users / hour =
+-- 1.0). The two signals were 0-weighted scaffolds in Phase A.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS dating_device_fingerprints (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id         UUID NOT NULL,
+    fingerprint     TEXT NOT NULL,
+    first_seen_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ip              TEXT,
+    UNIQUE(user_id, fingerprint)
+);
+CREATE INDEX IF NOT EXISTS idx_dating_device_fp_fp
+    ON dating_device_fingerprints(fingerprint);
+CREATE INDEX IF NOT EXISTS idx_dating_device_fp_ip_recent
+    ON dating_device_fingerprints(ip, last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_dating_device_fp_user
+    ON dating_device_fingerprints(user_id, last_seen_at DESC);
+

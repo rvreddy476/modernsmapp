@@ -15,7 +15,10 @@ import (
 	internalhttp "github.com/atpost/identity-auth-service/internal/http"
 	"github.com/atpost/identity-auth-service/internal/service"
 	"github.com/atpost/identity-auth-service/internal/store"
+	authcrypto "github.com/atpost/identity-shared/crypto"
 	"github.com/atpost/identity-shared/logging"
+	sharedmiddleware "github.com/atpost/identity-shared/middleware"
+	tracepkg "github.com/atpost/identity-shared/o11y/trace"
 	"github.com/atpost/identity-shared/transport"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -25,6 +28,21 @@ func main() {
 	cfg := config.Load()
 	logger := logging.New("auth-service")
 	slog.SetDefault(logger)
+
+	// Phase F3.7 — wire OpenTelemetry. The gateway already injects
+	// `traceparent` headers, so spans created here link back to the
+	// originating browser/mobile request. Falls back to a no-op
+	// provider when the collector is unreachable so boot still
+	// succeeds in environments without observability infra.
+	tracerProvider, _ := tracepkg.InitTracer(
+		"auth-service",
+		envOr("OTEL_EXPORTER_OTLP_ENDPOINT", "http://jaeger:4317"),
+	)
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = tracerProvider.Shutdown(shutdownCtx)
+	}()
 
 	if cfg.PostgresDSN == "" {
 		slog.Error("DATABASE_URL is required")
@@ -93,6 +111,21 @@ func main() {
 
 	// 3. Dependencies
 	authStore := store.New(dbPool)
+	// TOTP secret encryption at rest. Without TOTP_ENCRYPTION_KEY the
+	// store falls back to plaintext column — a startup warning here
+	// makes the misconfig visible in logs + ops dashboards. Key must
+	// be 64 hex chars (AES-256 key).
+	if hexKey := os.Getenv("TOTP_ENCRYPTION_KEY"); hexKey != "" {
+		box, err := authcrypto.NewSecretBox(hexKey)
+		if err != nil {
+			logger.Error("totp encryption disabled — bad key", "err", err)
+		} else {
+			authStore.WithTOTPEncryption(box)
+			logger.Info("totp secret encryption enabled")
+		}
+	} else {
+		logger.Warn("TOTP_ENCRYPTION_KEY not set — 2FA secrets stored in plaintext (DO NOT run this in production)")
+	}
 	authProducer := events.NewProducerWithDialer(cfg.KafkaBrokers, cfg.KafkaTopic, kafkaDialer)
 	defer func() {
 		if err := authProducer.Close(); err != nil {
@@ -115,6 +148,10 @@ func main() {
 
 	// 5. Server
 	r := gin.New()
+	// Phase F3.7 — tracing middleware runs first so the span context
+	// is available to RequestID + Logger downstream. Same ordering
+	// as the Architecture-side services.
+	r.Use(sharedmiddleware.OtelTracing("auth-service"))
 	r.Use(internalhttp.RequestIDMiddleware())
 	r.Use(internalhttp.LoggerMiddleware(logger))
 	r.Use(internalhttp.RecoveryMiddleware(logger))
@@ -127,7 +164,18 @@ func main() {
 		logger.Error("failed to set trusted proxies", "err", err)
 		os.Exit(1)
 	}
-	authMW := internalhttp.AuthMiddleware(cfg.JWTSecret)
+	// A10 — pass Redis so the JWT middleware can consult the session
+	// revocation cache. Fail-open on miss; the access-token TTL caps
+	// the worst-case revocation lag.
+	// C7 — kid-aware verify so a rotation has a window where both the
+	// previous and active secret verify (set JWT_SECRET_PREVIOUS during
+	// the cutover; unset once AccessTokenTTL has elapsed).
+	authMW := internalhttp.AuthMiddlewareWithKeys(internalhttp.JWTKeySet{
+		ActiveKID:      cfg.JWTKID,
+		ActiveSecret:   cfg.JWTSecret,
+		PreviousKID:    cfg.JWTKIDPrevious,
+		PreviousSecret: cfg.JWTSecretPrevious,
+	}, rdb)
 	csrfMW := internalhttp.RequireCSRFMiddleware()
 	authHandler.RegisterRoutes(r, authMW, csrfMW)
 	authHandler.RegisterDocsRoutes(r)
@@ -155,4 +203,13 @@ func main() {
 		slog.Error("shutdown error", "error", err)
 	}
 	slog.Info("auth service stopped")
+}
+
+// envOr returns the env var or fallback. Local helper so we don't
+// pull in another shared package just for one read.
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }

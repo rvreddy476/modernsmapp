@@ -91,9 +91,9 @@ class UserRepository {
   }
 
   /// Unblock a user.
-  /// Synchronized with DELETE /v1/graph/unblock/{userId}
+  /// Synchronized with DELETE /v1/graph/block
   Future<void> unblockUser(String userId) async {
-    await _api.delete('/v1/graph/unblock/$userId');
+    await _api.delete('/v1/graph/block', data: {'user_id': userId});
   }
 
   /// Search users with pagination support.
@@ -149,12 +149,117 @@ class UserRepository {
     return getUsersBatch(ids);
   }
 
-  /// Fetch pending friend requests.
-  /// Synchronized with GET /v1/graph/friends/pending
-  Future<List<Map<String, dynamic>>> getPendingFriendRequests() async {
-    final response = await _api.get('/v1/graph/friends/pending');
+  /// Cursor-paged follower IDs (graph-service keyset). Pass `cursor: null`
+  /// for page one; reuse the returned `nextCursor` for each subsequent
+  /// page. Stays O(log n) at celebrity scale; legacy getFollowerIds
+  /// stays for callers that don't need pagination.
+  Future<FollowerIdPage> getFollowerIdsCursor(
+    String userId, {
+    int limit = 50,
+    String? cursor,
+  }) async {
+    final params = <String, dynamic>{'limit': limit};
+    if (cursor != null && cursor.isNotEmpty) {
+      params['cursor'] = cursor;
+    } else {
+      params['paginate'] = 'cursor';
+    }
+    final response = await _api.get(
+      '/v1/graph/followers/$userId',
+      queryParameters: params,
+    );
+    final data = response.data['data'];
+    if (data is List) {
+      return FollowerIdPage(
+        ids: data.whereType<String>().toList(),
+        nextCursor: '',
+      );
+    }
+    final m = Map<String, dynamic>.from(data as Map);
+    final items = (m['items'] as List?) ?? const [];
+    return FollowerIdPage(
+      ids: items.whereType<String>().toList(),
+      nextCursor: m['next_cursor']?.toString() ?? '',
+    );
+  }
+
+  Future<FollowerIdPage> getFollowingIdsCursor(
+    String userId, {
+    int limit = 50,
+    String? cursor,
+  }) async {
+    final params = <String, dynamic>{'limit': limit};
+    if (cursor != null && cursor.isNotEmpty) {
+      params['cursor'] = cursor;
+    } else {
+      params['paginate'] = 'cursor';
+    }
+    final response = await _api.get(
+      '/v1/graph/following/$userId',
+      queryParameters: params,
+    );
+    final data = response.data['data'];
+    if (data is List) {
+      return FollowerIdPage(
+        ids: data.whereType<String>().toList(),
+        nextCursor: '',
+      );
+    }
+    final m = Map<String, dynamic>.from(data as Map);
+    final items = (m['items'] as List?) ?? const [];
+    return FollowerIdPage(
+      ids: items.whereType<String>().toList(),
+      nextCursor: m['next_cursor']?.toString() ?? '',
+    );
+  }
+
+  /// Hydrated follower page — keyset cursor + User objects in one call.
+  /// Convenience wrapper for screens that don't want to deal with the
+  /// raw ID page + batch hydration two-step.
+  Future<FollowerPage> getFollowersCursor(
+    String userId, {
+    int limit = 50,
+    String? cursor,
+  }) async {
+    final idPage = await getFollowerIdsCursor(userId, limit: limit, cursor: cursor);
+    if (idPage.ids.isEmpty) {
+      return FollowerPage(users: const [], nextCursor: idPage.nextCursor);
+    }
+    final users = await getUsersBatch(idPage.ids);
+    return FollowerPage(users: users, nextCursor: idPage.nextCursor);
+  }
+
+  Future<FollowerPage> getFollowingCursor(
+    String userId, {
+    int limit = 50,
+    String? cursor,
+  }) async {
+    final idPage = await getFollowingIdsCursor(userId, limit: limit, cursor: cursor);
+    if (idPage.ids.isEmpty) {
+      return FollowerPage(users: const [], nextCursor: idPage.nextCursor);
+    }
+    final users = await getUsersBatch(idPage.ids);
+    return FollowerPage(users: users, nextCursor: idPage.nextCursor);
+  }
+
+  /// Fetch pending connection requests (both sent and received).
+  /// Synchronized with GET /v1/graph/connection-requests
+  Future<List<Map<String, dynamic>>> getPendingConnectionRequests() async {
+    final response = await _api.get('/v1/graph/connection-requests');
     final items = (response.data['data'] as List<dynamic>?) ?? [];
     return items.map((e) => e as Map<String, dynamic>).toList();
+  }
+
+  /// Returns the viewer's connection status with another user:
+  /// 'none', 'pending_sent', 'pending_received', or 'accepted'.
+  /// Synchronized with GET /v1/graph/relationship
+  Future<String> getConnectionStatus(String viewerId, String otherId) async {
+    final response = await _api.get(
+      '/v1/graph/relationship',
+      queryParameters: {'user_id': viewerId, 'other_id': otherId},
+    );
+    final data = response.data['data'] as Map<String, dynamic>?;
+    return (data?['connection_status'] as String?) ?? 'none';
   }
 
   /// Autocomplete search for users.
@@ -165,22 +270,138 @@ class UserRepository {
     return items.map((e) => e as Map<String, dynamic>).toList();
   }
 
-  /// Accept a friend request.
-  /// Synchronized with POST /v1/graph/friends/accept
-  Future<void> acceptFriendRequest(String userId) async {
-    await _api.post('/v1/graph/friends/accept', data: {'user_id': userId});
+  /// Send a connection request to another user.
+  /// Synchronized with POST /v1/graph/connection-request
+  Future<void> sendConnectionRequest(String userId) async {
+    await _api.post('/v1/graph/connection-request', data: {'user_id': userId});
   }
 
-  /// Reject or cancel a friend request.
-  /// Synchronized with POST /v1/graph/friends/reject
-  Future<void> rejectFriendRequest(String userId) async {
-    await _api.post('/v1/graph/friends/reject', data: {'user_id': userId});
+  /// Accept a received connection request. [userId] is the sender's ID.
+  /// Synchronized with POST /v1/graph/connection-request/accept
+  Future<void> acceptConnectionRequest(String userId) async {
+    await _api.post(
+      '/v1/graph/connection-request/accept',
+      data: {'user_id': userId},
+    );
+  }
+
+  /// Decline a received connection request. [userId] is the sender's ID.
+  /// Synchronized with POST /v1/graph/connection-request/decline
+  Future<void> declineConnectionRequest(String userId) async {
+    await _api.post(
+      '/v1/graph/connection-request/decline',
+      data: {'user_id': userId},
+    );
+  }
+
+  /// Cancel/withdraw a connection request the current user sent.
+  /// [userId] is the receiver's ID.
+  /// Synchronized with POST /v1/graph/connection-request/cancel
+  Future<void> cancelConnectionRequest(String userId) async {
+    await _api.post(
+      '/v1/graph/connection-request/cancel',
+      data: {'user_id': userId},
+    );
+  }
+
+  /// Remove an existing connection.
+  /// Synchronized with DELETE /v1/graph/connection
+  Future<void> removeConnection(String userId) async {
+    await _api.delete('/v1/graph/connection', data: {'user_id': userId});
   }
 
   /// Request an export of account data.
   /// Synchronized with POST /v1/auth/export
   Future<void> requestDataExport() async {
     await _api.post('/v1/auth/export');
+  }
+
+  /// Fetch the current user's close-friends ("Trusted Circle") IDs.
+  /// Synchronized with GET /v1/graph/close-friends
+  Future<List<String>> getCloseFriendIds() async {
+    final response = await _api.get('/v1/graph/close-friends');
+    final items = (response.data['data'] as List<dynamic>?) ?? [];
+    return items.whereType<String>().toList();
+  }
+
+  /// Add a user to the current user's close-friends list.
+  /// Synchronized with POST /v1/graph/close-friends/{userId}
+  Future<void> addCloseFriend(String userId) async {
+    await _api.post('/v1/graph/close-friends/$userId');
+  }
+
+  /// Remove a user from the current user's close-friends list.
+  /// Synchronized with DELETE /v1/graph/close-friends/{userId}
+  Future<void> removeCloseFriend(String userId) async {
+    await _api.delete('/v1/graph/close-friends/$userId');
+  }
+
+  /// Fetch ranked friend suggestions ("people you may know").
+  /// Synchronized with GET /v1/suggestions?type=friend
+  Future<List<Map<String, dynamic>>> getFriendSuggestions({
+    int limit = 20,
+  }) async {
+    final response = await _api.get(
+      '/v1/suggestions',
+      queryParameters: {'type': 'friend', 'limit': limit},
+    );
+    final data = response.data['data'];
+    final List raw = data is List
+        ? data
+        : (data is Map && data['items'] is List)
+            ? data['items'] as List
+            : const [];
+    return raw
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList();
+  }
+
+  /// Hide a friend suggestion so it stops being recommended.
+  /// Synchronized with POST /v1/suggestions/action
+  Future<void> hideSuggestion(String candidateUserId) async {
+    await _api.post(
+      '/v1/suggestions/action',
+      data: {
+        'type': 'friend',
+        'surface': 'home',
+        'candidate_user_id': candidateUserId,
+        'action': 'hide',
+      },
+    );
+  }
+
+  /// Fetch the current user's settings map (privacy, Trusted Circle
+  /// toggles, etc.). Synchronized with GET /v1/users/me/settings.
+  Future<Map<String, dynamic>> getUserSettings() async {
+    final response = await _api.get('/v1/users/me/settings');
+    final data = response.data['data'];
+    return data is Map ? Map<String, dynamic>.from(data) : {};
+  }
+
+  /// Partially update the current user's settings — send only the
+  /// changed field(s). Synchronized with PUT /v1/users/me/settings.
+  Future<void> updateUserSettings(Map<String, dynamic> fields) async {
+    await _api.put('/v1/users/me/settings', data: fields);
+  }
+
+  /// Fetch connection requests that trust-safety filtered out of the
+  /// normal inbox. Same response shape as getPendingConnectionRequests.
+  /// Synchronized with GET /v1/graph/connection-requests/filtered
+  Future<List<Map<String, dynamic>>> getFilteredConnectionRequests() async {
+    final response = await _api.get('/v1/graph/connection-requests/filtered');
+    final items = (response.data['data'] as List<dynamic>?) ?? [];
+    return items.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+  }
+
+  /// Move a filtered connection request back into the normal inbox.
+  /// [userId] is the sender's ID.
+  /// Synchronized with POST /v1/graph/connection-request/unfilter
+  Future<void> unfilterConnectionRequest(String userId) async {
+    await _api.post(
+      '/v1/graph/connection-request/unfilter',
+      data: {'user_id': userId},
+    );
   }
 }
 
@@ -193,3 +414,23 @@ class UserSearchResult {
 final userRepositoryProvider = Provider<UserRepository>((ref) {
   return UserRepository(ref.watch(apiClientProvider));
 });
+
+/// FollowerIdPage is one page of follower IDs from the graph-service
+/// keyset endpoint. `nextCursor` is empty on the last page.
+class FollowerIdPage {
+  const FollowerIdPage({required this.ids, required this.nextCursor});
+  final List<String> ids;
+  final String nextCursor;
+
+  bool get hasMore => nextCursor.isNotEmpty;
+}
+
+/// FollowerPage is the hydrated variant — same cursor semantics but
+/// the IDs have been batched-resolved to User objects.
+class FollowerPage {
+  const FollowerPage({required this.users, required this.nextCursor});
+  final List<User> users;
+  final String nextCursor;
+
+  bool get hasMore => nextCursor.isNotEmpty;
+}

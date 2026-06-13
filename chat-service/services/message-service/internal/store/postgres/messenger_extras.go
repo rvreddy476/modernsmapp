@@ -409,6 +409,68 @@ func (s *ConversationStore) ListMessageRequests(ctx context.Context, userID uuid
 	return out, rows.Err()
 }
 
+// --- Message Request Envelopes (spec §8.6) ---
+
+// MessageRequest is the request envelope: who reached out, the first-message
+// preview, and the request lifecycle status.
+type MessageRequest struct {
+	ID             int64      `json:"id"`
+	ConversationID uuid.UUID  `json:"conversation_id"`
+	SenderID       uuid.UUID  `json:"sender_id"`
+	ReceiverID     uuid.UUID  `json:"receiver_id"`
+	Preview        string     `json:"preview"`
+	Status         string     `json:"status"`
+	RiskScore      int        `json:"risk_score"`
+	CreatedAt      time.Time  `json:"created_at"`
+	RespondedAt    *time.Time `json:"responded_at,omitempty"`
+	ExpiresAt      time.Time  `json:"expires_at"`
+}
+
+// CreateMessageRequest inserts the envelope for a new request conversation.
+// Idempotent on conversation_id so a retried conversation create is safe.
+func (s *ConversationStore) CreateMessageRequest(ctx context.Context, convID, senderID, receiverID uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO chat.message_requests (conversation_id, sender_id, receiver_id)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (conversation_id) DO NOTHING
+	`, convID, senderID, receiverID)
+	return err
+}
+
+func (s *ConversationStore) GetMessageRequestByConversation(ctx context.Context, convID uuid.UUID) (*MessageRequest, error) {
+	var m MessageRequest
+	err := s.db.QueryRow(ctx, `
+		SELECT id, conversation_id, sender_id, receiver_id, preview, status, risk_score, created_at, responded_at, expires_at
+		FROM chat.message_requests WHERE conversation_id = $1
+	`, convID).Scan(&m.ID, &m.ConversationID, &m.SenderID, &m.ReceiverID, &m.Preview,
+		&m.Status, &m.RiskScore, &m.CreatedAt, &m.RespondedAt, &m.ExpiresAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &m, nil
+}
+
+// SetMessageRequestPreview stores the sender's first-message text as the
+// preview shown in the recipient's Requests folder.
+func (s *ConversationStore) SetMessageRequestPreview(ctx context.Context, convID uuid.UUID, preview string) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE chat.message_requests SET preview = $2 WHERE conversation_id = $1
+	`, convID, preview)
+	return err
+}
+
+// UpdateMessageRequestStatus moves the request to a terminal status.
+func (s *ConversationStore) UpdateMessageRequestStatus(ctx context.Context, convID uuid.UUID, status string) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE chat.message_requests SET status = $2, responded_at = NOW()
+		WHERE conversation_id = $1 AND status = 'pending'
+	`, convID, status)
+	return err
+}
+
 // --- Starred Messages ---
 
 func (s *ConversationStore) StarMessage(ctx context.Context, userID, convID, messageID uuid.UUID, preview *string) (*StarredMessage, error) {

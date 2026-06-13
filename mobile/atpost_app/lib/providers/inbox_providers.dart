@@ -179,7 +179,7 @@ String _titleForNotification(AppNotification n) {
       return 'New comment';
     case 'system':
     case 'announcement':
-      return 'AtPost';
+      return 'VChat';
     default:
       return 'Notification';
   }
@@ -225,7 +225,7 @@ InboxItem _fromOrder(Order o) {
       title = 'Order ${o.status}';
   }
   final firstItem =
-      o.items.isNotEmpty ? o.items.first.productName : 'your order';
+      o.items.isNotEmpty ? o.items.first.productTitle : 'your order';
   return InboxItem(
     id: 'order-${o.id}',
     kind: kind,

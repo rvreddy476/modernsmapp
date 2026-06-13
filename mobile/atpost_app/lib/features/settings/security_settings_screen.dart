@@ -32,10 +32,15 @@ class _SecuritySettingsScreenState
   bool _loadingSessions = false;
   List<_ActiveSession> _sessions = const [];
 
+  bool _loadingAnomalies = false;
+  List<_LoginAnomaly> _anomalies = const [];
+  final Set<String> _ackingAnomalyIds = <String>{};
+
   @override
   void initState() {
     super.initState();
     Future.microtask(_loadSessions);
+    Future.microtask(_loadAnomalies);
   }
 
   @override
@@ -124,6 +129,57 @@ class _SecuritySettingsScreenState
       );
     } finally {
       if (mounted) setState(() => _loadingSessions = false);
+    }
+  }
+
+  // A13 — security inbox loader. Pulls the last 20 login_anomalies the
+  // server has recorded for this user. Best-effort: a failure just
+  // leaves the list empty rather than blocking the rest of the page.
+  Future<void> _loadAnomalies() async {
+    if (_loadingAnomalies) return;
+    setState(() => _loadingAnomalies = true);
+    try {
+      final response = await ref
+          .read(apiClientProvider)
+          .get('${Environment.authPath}/security/anomalies');
+      final items = (response.data['data'] as List<dynamic>?) ?? [];
+      if (!mounted) return;
+      setState(() {
+        _anomalies = items
+            .whereType<Map>()
+            .map(
+              (item) =>
+                  _LoginAnomaly.fromJson(Map<String, dynamic>.from(item)),
+            )
+            .toList();
+      });
+    } catch (_) {
+      // Soft-fail: empty inbox is the safe default. Don't ruin the
+      // page because the inbox didn't load.
+    } finally {
+      if (mounted) setState(() => _loadingAnomalies = false);
+    }
+  }
+
+  Future<void> _acknowledgeAnomaly(String anomalyId) async {
+    if (_ackingAnomalyIds.contains(anomalyId)) return;
+    setState(() => _ackingAnomalyIds.add(anomalyId));
+    try {
+      await ref
+          .read(apiClientProvider)
+          .post(
+            '${Environment.authPath}/security/anomalies/$anomalyId/ack',
+          );
+      await _loadAnomalies();
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Failed to dismiss alert')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _ackingAnomalyIds.remove(anomalyId));
+      }
     }
   }
 
@@ -317,10 +373,120 @@ class _SecuritySettingsScreenState
             ),
           ),
           const SizedBox(height: 24),
+          // --- Security Alerts (A13) ---
+          _SectionHeader('SECURITY ALERTS'),
+          const SizedBox(height: 12),
+          _buildAnomaliesCard(),
+          const SizedBox(height: 24),
           // --- Active Sessions Section ---
           _SectionHeader('ACTIVE SESSIONS'),
           const SizedBox(height: 12),
           _buildSessionsCard(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAnomaliesCard() {
+    final unack = _anomalies.where((a) => a.acknowledgedAt == null).toList();
+    final highRisk = unack.where((a) => a.riskScore >= 70).toList();
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.bgCard,
+        borderRadius: BorderRadius.circular(AppSpacing.radiusXL),
+        border: Border.all(color: AppColors.borderSubtle),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (highRisk.isNotEmpty) ...[
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFFF1F2),
+                borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
+                border: Border.all(color: const Color(0xFFFCA5A5)),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(Icons.warning_amber_rounded,
+                      color: Color(0xFFB91C1C), size: 20),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          highRisk.length == 1
+                              ? 'We blocked a suspicious sign-in'
+                              : '${highRisk.length} suspicious sign-ins blocked',
+                          style: AppTextStyles.bodySmall.copyWith(
+                            fontWeight: FontWeight.w800,
+                            color: const Color(0xFFB91C1C),
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          "If any of these weren't you, change your password now.",
+                          style: AppTextStyles.labelTiny.copyWith(
+                            color: const Color(0xFFB91C1C),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
+          Row(
+            children: [
+              const Icon(Icons.shield_outlined,
+                  color: AppColors.textMuted, size: 22),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  unack.isEmpty
+                      ? 'No recent alerts'
+                      : '${unack.length} unread alert${unack.length == 1 ? '' : 's'}',
+                  style: AppTextStyles.body,
+                ),
+              ),
+              IconButton(
+                onPressed: _loadingAnomalies ? null : _loadAnomalies,
+                icon: _loadingAnomalies
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.refresh, color: AppColors.textSecondary),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          if (_anomalies.isEmpty && !_loadingAnomalies)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                "Your account looks healthy. We'll flag any unusual sign-ins here.",
+                style: AppTextStyles.bodySmall.copyWith(
+                  color: AppColors.textSecondary,
+                ),
+              ),
+            )
+          else
+            ..._anomalies.take(10).map(
+                  (a) => _AnomalyTile(
+                    anomaly: a,
+                    busy: _ackingAnomalyIds.contains(a.id),
+                    onAck: () => _acknowledgeAnomaly(a.id),
+                  ),
+                ),
         ],
       ),
     );
@@ -470,6 +636,224 @@ class _SectionHeader extends StatelessWidget {
       title,
       style: AppTextStyles.labelSmall.copyWith(color: AppColors.textMuted),
     );
+  }
+}
+
+// A13 — one row in auth.login_anomalies. The server-side schema lives
+// in identity-platform/services/auth-service/database/setup.sql; this
+// is the wire shape consumed by the security inbox.
+class _LoginAnomaly {
+  const _LoginAnomaly({
+    required this.id,
+    required this.anomalyType,
+    required this.ip,
+    required this.userAgent,
+    required this.deviceId,
+    required this.countryCode,
+    required this.riskScore,
+    required this.challenged,
+    required this.acknowledgedAt,
+    required this.occurredAt,
+  });
+
+  final String id;
+  final String anomalyType;
+  final String ip;
+  final String userAgent;
+  final String deviceId;
+  final String countryCode;
+  final int riskScore;
+  final bool challenged;
+  final DateTime? acknowledgedAt;
+  final DateTime? occurredAt;
+
+  factory _LoginAnomaly.fromJson(Map<String, dynamic> json) {
+    return _LoginAnomaly(
+      id: json['id']?.toString() ?? '',
+      anomalyType: json['anomaly_type']?.toString() ?? '',
+      ip: json['ip']?.toString() ?? '',
+      userAgent: json['user_agent']?.toString() ?? '',
+      deviceId: json['device_id']?.toString() ?? '',
+      countryCode: json['country_code']?.toString() ?? '',
+      riskScore: (json['risk_score'] as num?)?.toInt() ?? 0,
+      challenged: json['challenged'] == true,
+      acknowledgedAt:
+          DateTime.tryParse(json['acknowledged_at']?.toString() ?? ''),
+      occurredAt: DateTime.tryParse(json['occurred_at']?.toString() ?? ''),
+    );
+  }
+
+  String get label {
+    switch (anomalyType) {
+      case 'new_ip':
+        return 'Signed in from a new IP';
+      case 'new_device':
+        return 'Signed in from a new device';
+      case 'new_country':
+        return 'Signed in from a new country';
+      case 'impossible_travel':
+        return 'Impossible-travel alert';
+      case 'many_failed':
+        return 'Multiple failed sign-in attempts';
+      case 'password_reset_used':
+        return 'Password reset used';
+      case 'session_revoked':
+        return 'We blocked a suspicious sign-in';
+      default:
+        return 'Security alert';
+    }
+  }
+}
+
+class _AnomalyTile extends StatelessWidget {
+  const _AnomalyTile({
+    required this.anomaly,
+    required this.busy,
+    required this.onAck,
+  });
+
+  final _LoginAnomaly anomaly;
+  final bool busy;
+  final VoidCallback onAck;
+
+  @override
+  Widget build(BuildContext context) {
+    final ackd = anomaly.acknowledgedAt != null;
+    final high = anomaly.riskScore >= 70;
+    final med = !high && anomaly.riskScore >= 30;
+
+    final Color border;
+    final Color bg;
+    final Color iconColor;
+    if (ackd) {
+      border = AppColors.borderSubtle;
+      bg = AppColors.bgCard;
+      iconColor = AppColors.textSecondary;
+    } else if (high) {
+      border = const Color(0xFFFCA5A5);
+      bg = const Color(0xFFFFF1F2);
+      iconColor = const Color(0xFFB91C1C);
+    } else if (med) {
+      border = const Color(0xFFFCD34D);
+      bg = const Color(0xFFFFFBEB);
+      iconColor = const Color(0xFF92400E);
+    } else {
+      border = AppColors.borderSubtle;
+      bg = AppColors.bgCard;
+      iconColor = AppColors.postbookPrimary;
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: bg,
+          borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
+          border: Border.all(color: border),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(Icons.warning_amber_rounded, color: iconColor, size: 20),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          anomaly.label,
+                          style: AppTextStyles.bodySmall.copyWith(
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: iconColor.withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          'Risk ${anomaly.riskScore}',
+                          style: AppTextStyles.labelTiny.copyWith(
+                            color: iconColor,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    [
+                      if (anomaly.ip.isNotEmpty) 'IP ${anomaly.ip}',
+                      if (anomaly.occurredAt != null)
+                        _dateLabelStatic(anomaly.occurredAt!),
+                    ].join(' · '),
+                    style: AppTextStyles.labelTiny.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                  if (anomaly.anomalyType == 'session_revoked' && !ackd) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      "We revoked a sign-in that didn't match this device. "
+                      "If it wasn't you, change your password now.",
+                      style: AppTextStyles.labelTiny.copyWith(
+                        color: const Color(0xFFB91C1C),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            if (!ackd) ...[
+              const SizedBox(width: 8),
+              TextButton(
+                onPressed: busy ? null : onAck,
+                style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 8, vertical: 4),
+                  minimumSize: const Size(0, 28),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                child: busy
+                    ? const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : Text(
+                        'Dismiss',
+                        style: AppTextStyles.labelTiny.copyWith(
+                          color: AppColors.postbookPrimary,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  // Local copy of the date formatter from _SessionTile — kept private
+  // so a future refactor can pull both into a shared helper without
+  // touching either widget's API.
+  static String _dateLabelStatic(DateTime value) {
+    final now = DateTime.now();
+    final diff = now.difference(value);
+    if (diff.inMinutes < 1) return 'just now';
+    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
+    if (diff.inHours < 24) return '${diff.inHours}h ago';
+    if (diff.inDays < 7) return '${diff.inDays}d ago';
+    return '${value.year}-${value.month.toString().padLeft(2, '0')}-${value.day.toString().padLeft(2, '0')}';
   }
 }
 

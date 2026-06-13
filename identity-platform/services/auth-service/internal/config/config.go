@@ -18,9 +18,25 @@ type Config struct {
 	OTPDigits                int
 	OTPExpiry                time.Duration
 	OTPMaxAttempts           int
+	// BcryptCost is the bcrypt work factor used for password hashing.
+	// Audit A9: default was bcrypt.DefaultCost (10), but under high
+	// login load this was the throughput bottleneck. Make it tunable
+	// so production can dial up the cost for sensitive deploys (12+)
+	// and CI / test can dial down to 4 for fast suites. 10 is the
+	// safe default for everyone else.
+	BcryptCost               int
 	AccessTokenTTL           time.Duration
 	RefreshTokenTTL          time.Duration
 	JWTSecret                string
+	// C7: JWT key versioning. JWTKID is stamped into the `kid` header of
+	// every minted access token so future verification can pick the right
+	// secret. JWTSecretPrevious + JWTKIDPrevious allow rolling rotation:
+	// during the cutover, both kids verify; once tokens minted with the
+	// old kid have expired (≤ AccessTokenTTL), the previous can be
+	// unset. Tokens with no `kid` (legacy) fall back to JWTSecret.
+	JWTKID                   string
+	JWTSecretPrevious        string
+	JWTKIDPrevious           string
 	CookieDomain             string
 	CookieSecure             bool
 	TrustedProxies           []string
@@ -29,6 +45,15 @@ type Config struct {
 	FrontendURL              string
 	OAuth                    *OAuthConfig
 	RateLimitEnabled         bool
+	// LoginAnomalyEnforce controls A13 anomaly enforcement at login.
+	// Allowed values:
+	//   "shadow"  — log anomaly + issue session (legacy behaviour, default).
+	//   "enforce" — gate the session behind step-up verification when the
+	//               risk band warrants it (new IP+device combo). Safe to
+	//               toggle at runtime; no migration required.
+	// Keep "shadow" as default so rolling out the feature flag is opt-in
+	// and ops can revert without a deploy if step-up causes UX issues.
+	LoginAnomalyEnforce      string
 	MiniAppSessionTTL        time.Duration
 	MiniAppSessionIssuer     string
 	MiniAppSessionKeyID      string
@@ -47,9 +72,13 @@ func Load() *Config {
 		OTPDigits:                getEnvInt("OTP_DIGITS", 6),
 		OTPExpiry:                getEnvDuration("OTP_EXPIRY", 5*time.Minute),
 		OTPMaxAttempts:           getEnvInt("OTP_MAX_ATTEMPTS", 5),
+		BcryptCost:               getEnvInt("BCRYPT_COST", 10),
 		AccessTokenTTL:           getEnvDuration("ACCESS_TOKEN_TTL", 15*time.Minute),
 		RefreshTokenTTL:          getEnvDuration("REFRESH_TOKEN_TTL", 30*24*time.Hour),
 		JWTSecret:                getEnv("JWT_SECRET", ""),
+		JWTKID:                   getEnv("JWT_KID", "v1"),
+		JWTSecretPrevious:        getEnv("JWT_SECRET_PREVIOUS", ""),
+		JWTKIDPrevious:           getEnv("JWT_KID_PREVIOUS", ""),
 		CookieDomain:             getEnv("COOKIE_DOMAIN", ""),
 		CookieSecure:             getEnvBool("COOKIE_SECURE", false),
 		TrustedProxies:           splitAndClean(getEnv("TRUSTED_PROXIES", "")),
@@ -58,6 +87,7 @@ func Load() *Config {
 		FrontendURL:              getEnv("FRONTEND_URL", "http://localhost:3000"),
 		OAuth:                    LoadOAuth(),
 		RateLimitEnabled:         getEnvBool("RATE_LIMIT_ENABLED", true),
+		LoginAnomalyEnforce:      strings.ToLower(getEnv("LOGIN_ANOMALY_ENFORCE", "shadow")),
 		MiniAppSessionTTL:        getEnvDuration("MINI_APP_SESSION_TTL", 5*time.Minute),
 		MiniAppSessionIssuer:     getEnv("MINI_APP_SESSION_ISSUER", "atpost-mini-app-runtime"),
 		MiniAppSessionKeyID:      getEnv("MINI_APP_SESSION_KEY_ID", "mini-app-session-1"),

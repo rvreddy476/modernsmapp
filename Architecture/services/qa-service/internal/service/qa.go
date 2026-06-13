@@ -12,6 +12,11 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// ErrCannotVoteOwn is returned when a user attempts to vote on a
+// question or answer they authored themselves. Schema can't enforce
+// (no JOIN in CHECK constraints); service-layer guard.
+var ErrCannotVoteOwn = fmt.Errorf("cannot vote on your own content")
+
 type Service struct {
 	store    *store.Store
 	rdb      *redis.Client
@@ -132,7 +137,20 @@ func (s *Service) CloseQuestion(ctx context.Context, questionID, closedBy uuid.U
 	return nil
 }
 
-func (s *Service) ReopenQuestion(ctx context.Context, questionID uuid.UUID) error {
+// ReopenQuestion now requires the actor to be the question author.
+// Audit CQ1: previously had no auth at all — any caller could reopen
+// any closed question, bypassing the close decision.
+func (s *Service) ReopenQuestion(ctx context.Context, questionID, actorID uuid.UUID) error {
+	q, err := s.store.GetQuestion(ctx, questionID)
+	if err != nil {
+		return err
+	}
+	if q == nil {
+		return fmt.Errorf("question not found")
+	}
+	if q.AuthorID != actorID {
+		return fmt.Errorf("forbidden: only the question author can reopen it")
+	}
 	return s.store.ReopenQuestion(ctx, questionID)
 }
 
@@ -199,6 +217,12 @@ func (s *Service) GetTopContributors(ctx context.Context, topicID uuid.UUID, lim
 
 // --- Answers ---
 
+// maxAnswersPerQuestion caps how many answers can live on a single
+// question. Audit HQ5: previously unbounded — a malicious actor could
+// dump thousands of answers on one question, blowing up answer_count
+// + pagination + downstream notifications.
+const maxAnswersPerQuestion = 500
+
 func (s *Service) CreateAnswer(ctx context.Context, questionID, authorID uuid.UUID, body, bodyHTML string, isAnonymous bool) (*store.Answer, error) {
 	if body == "" {
 		return nil, fmt.Errorf("invalid: answer body is required")
@@ -212,6 +236,9 @@ func (s *Service) CreateAnswer(ctx context.Context, questionID, authorID uuid.UU
 	}
 	if q.Status != "open" {
 		return nil, fmt.Errorf("forbidden: question is not open for answers")
+	}
+	if q.AnswerCount >= maxAnswersPerQuestion {
+		return nil, fmt.Errorf("forbidden: question has reached the maximum number of answers (%d)", maxAnswersPerQuestion)
 	}
 	if q.CommunityID != nil {
 		_, role, settings, err := s.getCommunityAccess(ctx, *q.CommunityID, &authorID)
@@ -330,12 +357,36 @@ func (s *Service) CreateComment(ctx context.Context, answerID, authorID uuid.UUI
 	return c, nil
 }
 
-func (s *Service) UpdateComment(ctx context.Context, commentID uuid.UUID, body string) (*store.AnswerComment, error) {
-	return s.store.UpdateComment(ctx, commentID, body)
+// UpdateComment now requires actorID and verifies ownership.
+// Audit CQ5: previously had no auth — any caller could rewrite any
+// comment.
+func (s *Service) UpdateComment(ctx context.Context, commentID, actorID uuid.UUID, body string) (*store.AnswerComment, error) {
+	existing, err := s.store.GetComment(ctx, commentID)
+	if err != nil {
+		return nil, err
+	}
+	if existing == nil {
+		return nil, fmt.Errorf("comment not found")
+	}
+	if existing.AuthorID != actorID {
+		return nil, fmt.Errorf("forbidden: only the comment author can edit")
+	}
+	return s.store.UpdateComment(ctx, commentID, actorID, body)
 }
 
-func (s *Service) DeleteComment(ctx context.Context, commentID uuid.UUID) error {
-	return s.store.DeleteComment(ctx, commentID)
+// DeleteComment now requires actorID and verifies ownership (audit CQ5).
+func (s *Service) DeleteComment(ctx context.Context, commentID, actorID uuid.UUID) error {
+	existing, err := s.store.GetComment(ctx, commentID)
+	if err != nil {
+		return err
+	}
+	if existing == nil {
+		return fmt.Errorf("comment not found")
+	}
+	if existing.AuthorID != actorID {
+		return fmt.Errorf("forbidden: only the comment author can delete")
+	}
+	return s.store.DeleteComment(ctx, commentID, actorID)
 }
 
 func (s *Service) ListComments(ctx context.Context, answerID uuid.UUID, limit, offset int) ([]store.AnswerComment, error) {
@@ -348,10 +399,18 @@ func (s *Service) VoteQuestion(ctx context.Context, userID, questionID uuid.UUID
 	if voteType != "up" && voteType != "down" {
 		return fmt.Errorf("vote_type must be 'up' or 'down'")
 	}
+	// Self-vote check up-front so we don't write a useless row +
+	// short-circuit the reputation award (which already skipped
+	// self-votes). The DB CHECK constraint can't enforce this
+	// directly (needs a JOIN to questions.author_user_id), so the
+	// service layer is the right place.
+	q, _ := s.store.GetQuestion(ctx, questionID)
+	if q != nil && q.AuthorID == userID {
+		return ErrCannotVoteOwn
+	}
 	if err := s.store.VoteQuestion(ctx, userID, questionID, voteType); err != nil {
 		return err
 	}
-	q, _ := s.store.GetQuestion(ctx, questionID)
 	if q != nil && q.AuthorID != userID {
 		if voteType == "up" {
 			s.awardReputation(ctx, q.AuthorID, "question_upvoted", ReputationQuestionUpvoted, "question", &questionID)
@@ -373,10 +432,13 @@ func (s *Service) VoteAnswer(ctx context.Context, userID, answerID uuid.UUID, vo
 	if voteType != "up" && voteType != "down" {
 		return fmt.Errorf("vote_type must be 'up' or 'down'")
 	}
+	a, _ := s.store.GetAnswer(ctx, answerID)
+	if a != nil && a.AuthorID == userID {
+		return ErrCannotVoteOwn
+	}
 	if err := s.store.VoteAnswer(ctx, userID, answerID, voteType); err != nil {
 		return err
 	}
-	a, _ := s.store.GetAnswer(ctx, answerID)
 	if a != nil && a.AuthorID != userID {
 		if voteType == "up" {
 			s.awardReputation(ctx, a.AuthorID, "answer_upvoted", ReputationAnswerUpvoted, "answer", &answerID)
@@ -484,8 +546,22 @@ func (s *Service) CreateAnswerRequest(ctx context.Context, questionID, requester
 	return r, nil
 }
 
-func (s *Service) RespondToAnswerRequest(ctx context.Context, requestID uuid.UUID, status string) error {
-	return s.store.RespondToAnswerRequest(ctx, requestID, status)
+// RespondToAnswerRequest verifies the actor is the targeted user before
+// updating status. Audit CQ2: previously had no scoping at all — any
+// authenticated caller could accept/decline any other user's pending
+// answer request.
+func (s *Service) RespondToAnswerRequest(ctx context.Context, requestID, actorID uuid.UUID, status string) error {
+	r, err := s.store.GetAnswerRequestByID(ctx, requestID)
+	if err != nil {
+		return err
+	}
+	if r == nil {
+		return fmt.Errorf("answer request not found")
+	}
+	if r.RequestedUserID != actorID {
+		return fmt.Errorf("forbidden: this request is not for you")
+	}
+	return s.store.RespondToAnswerRequest(ctx, requestID, actorID, status)
 }
 
 func (s *Service) GetAnswerRequests(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.AnswerRequest, error) {

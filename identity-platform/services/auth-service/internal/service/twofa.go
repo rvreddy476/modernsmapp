@@ -3,9 +3,7 @@ package service
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base32"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,10 +23,11 @@ var (
 )
 
 const (
-	pendingSessionPrefix = "2fa:pending:"
-	recoveryCodesPrefix  = "2fa:recovery:"
-	pendingSessionTTL    = 5 * time.Minute
-	recoveryCodeCount    = 8
+	pendingSessionPrefix     = "2fa:pending:"
+	pendingByUserSetPrefix   = "2fa:pending_by_user:"
+	recoveryCodesPrefix      = "2fa:recovery:"
+	pendingSessionTTL        = 5 * time.Minute
+	recoveryCodeCount        = 8
 )
 
 // TwoFASetupResponse is returned when a user initiates 2FA setup.
@@ -233,8 +232,11 @@ func (s *Service) Verify2FA(ctx context.Context, userID uuid.UUID, code, pending
 		}
 	}
 
-	// Delete the pending session
+	// Delete the pending session and drop it from the per-user index
+	// set so InvalidatePending2FASessions doesn't try to revoke a
+	// token that's already been consumed.
 	s.rdb.Del(ctx, key)
+	s.rdb.SRem(ctx, pendingByUserSetPrefix+parsedUserID.String(), pendingToken)
 
 	// Look up the user for session creation
 	user, err := s.store.GetUserByID(ctx, parsedUserID)
@@ -274,7 +276,47 @@ func (s *Service) StorePending2FASession(ctx context.Context, userID uuid.UUID, 
 		return "", fmt.Errorf("failed to store pending session: %w", err)
 	}
 
+	// A16: maintain a per-user index set of live pending tokens so that
+	// ResetPassword (and any future ChangePassword) can wipe every
+	// step-2-pending login for this user atomically. Without this set
+	// an attacker who completed step 1 (password) right before a
+	// password reset could still complete step 2 (TOTP) against the
+	// now-revoked credentials. The set entry's TTL is bumped on each
+	// store so it lives at least as long as any individual pending
+	// session.
+	idxKey := pendingByUserSetPrefix + userID.String()
+	_ = s.rdb.SAdd(ctx, idxKey, token).Err()
+	_ = s.rdb.Expire(ctx, idxKey, pendingSessionTTL).Err()
+
 	return token, nil
+}
+
+// InvalidatePending2FASessions wipes every live pending 2FA session for
+// a user. Called from password-change and account-deletion paths so a
+// step-1-passed-but-step-2-pending attacker can't complete the second
+// factor with stale credentials. Best-effort: errors are logged but
+// don't fail the caller, because the password update has already
+// succeeded and stranding the change behind a Redis blip would be
+// worse than the small replay window.
+func (s *Service) InvalidatePending2FASessions(ctx context.Context, userID uuid.UUID) {
+	if s.rdb == nil {
+		return
+	}
+	idxKey := pendingByUserSetPrefix + userID.String()
+	tokens, err := s.rdb.SMembers(ctx, idxKey).Result()
+	if err != nil {
+		s.log.Warn("2fa: failed to list pending tokens for invalidation",
+			"err", err, "user_id", userID)
+		return
+	}
+	for _, token := range tokens {
+		_ = s.rdb.Del(ctx, pendingSessionPrefix+token).Err()
+	}
+	_ = s.rdb.Del(ctx, idxKey).Err()
+	if len(tokens) > 0 {
+		s.log.Info("2fa: invalidated pending sessions on credential change",
+			"user_id", userID, "count", len(tokens))
+	}
 }
 
 
@@ -295,7 +337,7 @@ func generateRecoveryCodes(count int) ([]string, error) {
 func (s *Service) storeRecoveryCodesTemp(ctx context.Context, userID uuid.UUID, codes []string) error {
 	hashed := make([]string, len(codes))
 	for i, code := range codes {
-		h, err := bcrypt.GenerateFromPassword([]byte(code), bcrypt.DefaultCost)
+		h, err := bcrypt.GenerateFromPassword([]byte(code), s.cfg.BcryptCost)
 		if err != nil {
 			return err
 		}
@@ -310,32 +352,30 @@ func (s *Service) storeRecoveryCodesTemp(ctx context.Context, userID uuid.UUID, 
 	return s.rdb.Set(ctx, "2fa:setup:recovery:"+userID.String(), data, 10*time.Minute).Err()
 }
 
-// promoteRecoveryCodes moves temp recovery codes to permanent storage after 2FA is verified.
-// It persists SHA-256 hashed codes to Postgres and also keeps bcrypt hashes in Redis.
+// promoteRecoveryCodes moves temp recovery codes to permanent storage
+// after 2FA is verified. Stores the bcrypt hashes (the same ones in
+// Redis) directly in Postgres so a Redis flush doesn't strand the
+// user out of their codes — A8.
 func (s *Service) promoteRecoveryCodes(ctx context.Context, userID uuid.UUID) error {
 	data, err := s.rdb.Get(ctx, "2fa:setup:recovery:"+userID.String()).Result()
 	if err != nil {
 		return err
 	}
 
-	// Move to permanent Redis key (bcrypt hashes for fast lookup)
+	// Move to permanent Redis key (bcrypt hashes for fast lookup).
 	if err := s.rdb.Set(ctx, recoveryCodesPrefix+userID.String(), data, 0).Err(); err != nil {
 		return err
 	}
 
-	// Also store SHA-256 hashes in Postgres for durable persistence (Change 2)
-	// We retrieve the raw codes from the temp setup key; since we only stored bcrypt hashes,
-	// we re-read the hashed list and derive sha256 hashes from the bcrypt hash bytes.
-	// Note: the plain codes are not available here; we store sha256 of the bcrypt hash string
-	// as a stable identifier to mark used_at. Actual verification still uses the bcrypt path.
+	// A8: also persist the bcrypt hashes to Postgres. Previously this
+	// stored SHA-256 of the bcrypt hash, which is useless for plaintext
+	// verification — on Redis miss the fallback path bailed out and
+	// the user couldn't redeem any recovery code. Storing the bcrypt
+	// hash directly lets useRecoveryCode bcrypt.CompareHashAndPassword
+	// against PG when Redis is unavailable.
 	var bcryptHashes []string
 	if jsonErr := json.Unmarshal([]byte(data), &bcryptHashes); jsonErr == nil {
-		sha256Hashes := make([]string, len(bcryptHashes))
-		for i, bh := range bcryptHashes {
-			sum := sha256.Sum256([]byte(bh))
-			sha256Hashes[i] = hex.EncodeToString(sum[:])
-		}
-		if pgErr := s.store.StoreRecoveryCodes(ctx, userID, sha256Hashes); pgErr != nil {
+		if pgErr := s.store.StoreRecoveryCodes(ctx, userID, bcryptHashes); pgErr != nil {
 			s.log.Warn("failed to persist recovery codes to postgres", "err", pgErr, "user_id", userID)
 		}
 	}
@@ -345,14 +385,15 @@ func (s *Service) promoteRecoveryCodes(ctx context.Context, userID uuid.UUID) er
 	return nil
 }
 
-// useRecoveryCode checks if the code matches any stored hashed recovery code and removes it.
-// It first tries Redis (bcrypt); on Redis miss it falls back to Postgres.
+// useRecoveryCode checks if the code matches any stored hashed recovery
+// code and removes it. Redis is the hot path; on Redis miss it falls
+// back to Postgres, where bcrypt hashes are persisted (A8).
 func (s *Service) useRecoveryCode(ctx context.Context, userID uuid.UUID, code string) (bool, error) {
 	key := recoveryCodesPrefix + userID.String()
 	data, redisErr := s.rdb.Get(ctx, key).Result()
 
 	if redisErr == nil {
-		// Redis hit — verify using bcrypt hashes
+		// Redis hit — verify using bcrypt hashes.
 		var hashed []string
 		if err := json.Unmarshal([]byte(data), &hashed); err != nil {
 			return false, err
@@ -360,7 +401,7 @@ func (s *Service) useRecoveryCode(ctx context.Context, userID uuid.UUID, code st
 
 		for i, h := range hashed {
 			if err := bcrypt.CompareHashAndPassword([]byte(h), []byte(code)); err == nil {
-				// Remove the used code from Redis
+				// Remove the used code from Redis.
 				hashed = append(hashed[:i], hashed[i+1:]...)
 				updated, err := json.Marshal(hashed)
 				if err != nil {
@@ -370,13 +411,13 @@ func (s *Service) useRecoveryCode(ctx context.Context, userID uuid.UUID, code st
 					return false, err
 				}
 
-				// Mark as used in Postgres via the sha256 of the bcrypt hash (our stable identifier)
-				sum := sha256.Sum256([]byte(h))
-				sha256ID := hex.EncodeToString(sum[:])
+				// Mark the matching PG row used so the durable record
+				// stays in sync. PG now stores the bcrypt hash itself,
+				// so the lookup is a direct string match.
 				pgRows, pgErr := s.store.GetUnusedRecoveryCodes(ctx, userID)
 				if pgErr == nil {
 					for _, row := range pgRows {
-						if row.CodeHash == sha256ID {
+						if row.CodeHash == h {
 							_ = s.store.MarkRecoveryCodeUsed(ctx, row.ID)
 							break
 						}
@@ -393,11 +434,39 @@ func (s *Service) useRecoveryCode(ctx context.Context, userID uuid.UUID, code st
 		return false, redisErr
 	}
 
-	// Redis miss — fall back to Postgres (SHA-256 of bcrypt hash is not directly searchable
-	// by plaintext code; we cannot verify the code without bcrypt. Log and return false.)
-	// TODO: if Redis is unavailable and recovery codes were never cached, re-verify via
-	// a re-hashing approach or prompt user to reset 2FA.
-	s.log.Warn("recovery codes not found in Redis; Postgres fallback not possible without bcrypt hashes",
-		"user_id", userID)
+	// Redis miss — A8: fall back to Postgres. The bcrypt hashes are
+	// persisted there so we can verify the plaintext code without
+	// needing Redis. On success we mark the PG row used and re-seed
+	// Redis with the remaining unused hashes so subsequent verifies
+	// hit the hot path again.
+	pgRows, pgErr := s.store.GetUnusedRecoveryCodes(ctx, userID)
+	if pgErr != nil {
+		return false, fmt.Errorf("recovery code pg fallback: %w", pgErr)
+	}
+	if len(pgRows) == 0 {
+		return false, nil
+	}
+	for _, row := range pgRows {
+		if err := bcrypt.CompareHashAndPassword([]byte(row.CodeHash), []byte(code)); err != nil {
+			continue
+		}
+		if err := s.store.MarkRecoveryCodeUsed(ctx, row.ID); err != nil {
+			return false, fmt.Errorf("mark recovery used: %w", err)
+		}
+		// Re-seed Redis with the remaining unused codes. Best-effort —
+		// if Redis is genuinely down this will fail silently and the
+		// next call will hit the PG fallback again.
+		remaining := make([]string, 0, len(pgRows)-1)
+		for _, r := range pgRows {
+			if r.ID == row.ID {
+				continue
+			}
+			remaining = append(remaining, r.CodeHash)
+		}
+		if raw, mErr := json.Marshal(remaining); mErr == nil {
+			_ = s.rdb.Set(ctx, key, raw, 0).Err()
+		}
+		return true, nil
+	}
 	return false, nil
 }

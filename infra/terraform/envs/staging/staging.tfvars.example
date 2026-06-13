@@ -1,0 +1,20 @@
+# Copy this to `staging.tfvars` (gitignored) and fill in the real values
+# from the bootstrap/ outputs + your GitHub org/repo names. Pass to
+# `terraform plan -var-file=staging.tfvars`.
+
+# AWS account that holds the remote state bucket. Both staging and prod
+# point at the same bucket but write to different keys (see backend.tf).
+tfstate_bucket_arn     = "arn:aws:s3:::atpost-tfstate-CHANGEME"
+tfstate_lock_table_arn = "arn:aws:dynamodb:ap-south-1:CHANGEME:table/atpost-tfstate-locks"
+
+github_repos = [
+  "CHANGEME/atpost",
+  "CHANGEME/postbook-ui",
+]
+
+# Optional — IAM principals (roles / users) that get cluster-admin on EKS
+# in addition to the principal running `terraform apply`. Leave empty for
+# first apply; add break-glass / on-call ARNs in a follow-up.
+cluster_admin_arns = [
+  # "arn:aws:iam::CHANGEME:role/AdminBreakGlass",
+]

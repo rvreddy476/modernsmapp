@@ -11,6 +11,7 @@ import 'package:atpost_app/providers/data_saver_provider.dart';
 import 'package:atpost_app/providers/feed_provider.dart';
 import 'package:atpost_app/providers/notification_provider.dart';
 import 'package:atpost_app/providers/stories_provider.dart';
+import 'package:atpost_app/services/auth_service.dart';
 import 'package:atpost_app/providers/user_provider.dart';
 import 'package:atpost_app/services/image_url_helper.dart';
 import 'package:atpost_app/shared/widgets/badge_icon_button.dart';
@@ -173,6 +174,13 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
         ),
         const SizedBox(width: 8),
         BadgeIconButton(
+          icon: Icons.chat_bubble_rounded,
+          tooltip: 'Messages',
+          tintColor: AppColors.accentPurple,
+          onPressed: () => context.push('/chat'),
+        ),
+        const SizedBox(width: 8),
+        BadgeIconButton(
           icon: Icons.notifications_rounded,
           tooltip: 'Notifications',
           tintColor: AppColors.postbookPrimary,
@@ -181,15 +189,28 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
           onPressed: () => context.push('/notifications'),
         ),
         const SizedBox(width: 8),
-        GestureDetector(
-          onTap: () =>
-              ref.read(shellTabProvider.notifier).state = 4,
-          child: Builder(
-            builder: (_) {
-              final me = ref.watch(currentUserProvider).valueOrNull;
-              final avatar = me?.hasAvatar == true ? me!.avatarUrl : null;
-              final dataSaver = ref.watch(effectiveDataSaverProvider);
-              return CircleAvatar(
+        Builder(
+          builder: (_) {
+            final me = ref.watch(currentUserProvider).valueOrNull;
+            final avatar = me?.hasAvatar == true ? me!.avatarUrl : null;
+            final dataSaver = ref.watch(effectiveDataSaverProvider);
+            return GestureDetector(
+              onTap: () {
+                // Fall back to the authenticated user-id from authState when
+                // currentUserProvider hasn't resolved yet (cold start, slow
+                // network, transient API failure). Without this fallback the
+                // icon silently no-ops in exactly the cases users notice it
+                // — first open after install, weak connection, etc.
+                final id =
+                    me?.id ??
+                    ref.read(authStateProvider).valueOrNull?.userId;
+                if (id != null && id.isNotEmpty) {
+                  context.push('/profile/$id');
+                } else {
+                  context.push('/login');
+                }
+              },
+              child: CircleAvatar(
                 radius: 18,
                 backgroundColor: AppColors.bgTertiary,
                 backgroundImage: avatar != null
@@ -208,9 +229,9 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
                         color: AppColors.textDim,
                       )
                     : null,
-              );
-            },
-          ),
+              ),
+            );
+          },
         ),
       ],
     );

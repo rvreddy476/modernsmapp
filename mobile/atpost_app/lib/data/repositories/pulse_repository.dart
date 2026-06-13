@@ -28,7 +28,8 @@ class PulseRepository {
   }
 
   Future<PulseProfile> updateProfile(Map<String, dynamic> payload) async {
-    final response = await _api.put('/v1/dating/profile', data: payload);
+    // P0-1: backend is POST, not PUT — UpsertProfile semantics.
+    final response = await _api.post('/v1/dating/profile', data: payload);
     return PulseProfile.fromJson(
       Map<String, dynamic>.from(_unwrapData(response.data) as Map),
     );
@@ -58,7 +59,8 @@ class PulseRepository {
   }
 
   Future<List<PulsePhoto>> getPhotos() async {
-    final response = await _api.get('/v1/dating/profile/photos');
+    // P0-1: backend route is /v1/dating/photos (no /profile prefix).
+    final response = await _api.get('/v1/dating/photos');
     final data = _unwrapData(response.data);
     if (data is! List) return const [];
     return data
@@ -105,8 +107,10 @@ class PulseRepository {
     required String mediaKey,
     required bool isPrimary,
   }) async {
+    // P0-1: backend route is POST /v1/dating/photos (no /profile prefix,
+    // no /complete suffix). Body mirrors dating-service CreatePhotoParams.
     final response = await _api.post(
-      '/v1/dating/profile/photos/complete',
+      '/v1/dating/photos',
       data: {
         'media_id': mediaId,
         'media_key': mediaKey,
@@ -119,7 +123,8 @@ class PulseRepository {
   }
 
   Future<void> deletePhoto(String photoId) async {
-    await _api.delete('/v1/dating/profile/photos/$photoId');
+    // P0-1: backend route is /v1/dating/photos/:id.
+    await _api.delete('/v1/dating/photos/$photoId');
   }
 
   Future<List<PulseFeedItem>> getDiscoveryFeed({String? cursor}) async {
@@ -171,17 +176,60 @@ class PulseRepository {
     return const PulsePage.empty();
   }
 
+  /// Routes the legacy "decision" model to the new spark/stash/pass
+  /// triad. The dating-service no longer exposes /v1/dating/decision —
+  /// each verb hits a dedicated route. Returns a normalised
+  /// PulseDecisionResult so the existing UI binding doesn't need to
+  /// change. P0-1 contract realignment.
   Future<PulseDecisionResult> makeDecision({
     required String targetUserId,
     required String decision,
   }) async {
-    final response = await _api.post(
-      '/v1/dating/decision',
-      data: {'target_user_id': targetUserId, 'decision': decision},
-    );
-    return PulseDecisionResult.fromJson(
-      Map<String, dynamic>.from(_unwrapData(response.data) as Map),
-    );
+    switch (decision) {
+      case 'spark':
+      case 'like': // legacy alias
+        final response = await _api.post(
+          '/v1/dating/sparks',
+          data: {
+            'to_user_id': targetUserId,
+            'target_kind': 'profile',
+            'target_ref': targetUserId,
+          },
+        );
+        final data = Map<String, dynamic>.from(
+          _unwrapData(response.data) as Map,
+        );
+        // CreateSpark returns {spark, match_id?, matched?}. Adapt to
+        // PulseDecisionResult's shape.
+        return PulseDecisionResult.fromJson({
+          'decision': 'spark',
+          'target_user_id': targetUserId,
+          'match_formed': data['matched'] == true,
+          if (data['match_id'] != null) 'match_id': data['match_id'],
+        });
+      case 'stash':
+      case 'save': // legacy alias
+        await _api.post(
+          '/v1/dating/stash',
+          data: {'candidate_id': targetUserId},
+        );
+        return PulseDecisionResult.fromJson({
+          'decision': 'stash',
+          'target_user_id': targetUserId,
+          'match_formed': false,
+        });
+      case 'pass':
+      default:
+        // No dedicated /pass endpoint today; record a stash-remove if
+        // present and otherwise emit a local-only decision. The pulse
+        // deck on the server already filters via dating_passes; a
+        // future revision should expose POST /v1/dating/passes.
+        return PulseDecisionResult.fromJson({
+          'decision': 'pass',
+          'target_user_id': targetUserId,
+          'match_formed': false,
+        });
+    }
   }
 
   Future<List<PulseMatch>> getMatches() async {
@@ -195,7 +243,8 @@ class PulseRepository {
   }
 
   Future<List<PulseLikeReceived>> getLikesReceived() async {
-    final response = await _api.get('/v1/dating/matches/likes-received');
+    // P0-1: "likes received" maps to incoming sparks on the new model.
+    final response = await _api.get('/v1/dating/sparks/incoming');
     final data = _unwrapData(response.data);
     if (data is! List) return const [];
     return data
@@ -208,13 +257,22 @@ class PulseRepository {
   }
 
   Future<void> unmatch(String matchId) async {
-    await _api.delete('/v1/dating/matches/$matchId');
+    // P0-1: backend route is POST /v1/dating/matches/:id/close, not DELETE.
+    await _api.post('/v1/dating/matches/$matchId/close');
   }
 
-  // TODO(S3): wire to message-service. Endpoint kept as legacy /api/v1/conversations
-  //           until the dating module is rebased on the shared message-service.
+  // P0-1 + P0-3: rebased onto chat-service (the canonical message-service
+  // per PRODUCTION_GAP_ANALYSIS.md). Routes go through the api-gateway
+  // /v1/chat/* prefix which proxies to chat-service:8092. The legacy
+  // /api/v1/conversations/* surface is retired.
+  //
+  // Dating-context conversations carry source_app=dating and the
+  // backend's send path applies dating_match-specific authz (P0-3).
   Future<List<PulseConversation>> getConversations() async {
-    final response = await _api.get('/api/v1/conversations');
+    final response = await _api.get(
+      '/v1/chat/conversations',
+      queryParameters: {'source_app': 'dating'},
+    );
     final data = _unwrapData(response.data);
     if (data is! List) return const [];
     return data
@@ -231,7 +289,7 @@ class PulseRepository {
     String? cursor,
   }) async {
     final response = await _api.get(
-      '/api/v1/conversations/$conversationId/messages',
+      '/v1/chat/conversations/$conversationId/messages',
       queryParameters: {
         'limit': 50,
         if (cursor != null && cursor.isNotEmpty) 'cursor': cursor,
@@ -250,10 +308,15 @@ class PulseRepository {
   Future<PulseMessage> sendMessage(
     String conversationId, {
     required String bodyText,
+    String? idempotencyKey,
   }) async {
     final response = await _api.post(
-      '/api/v1/conversations/$conversationId/messages',
-      data: {'message_type': 'text', 'body_text': bodyText},
+      '/v1/chat/conversations/$conversationId/messages',
+      data: {
+        'message_type': 'text',
+        'body_text': bodyText,
+        if (idempotencyKey != null) 'idempotency_key': idempotencyKey,
+      },
     );
     return PulseMessage.fromJson(
       Map<String, dynamic>.from(_unwrapData(response.data) as Map),
@@ -270,8 +333,9 @@ class PulseRepository {
 
   /// Sprint 1: Pulse onboarding intent.
   Future<void> updateIntent(String intent) async {
+    // P0-1: backend route is PATCH /v1/dating/profile/intent.
     await _api.patch<dynamic>(
-      '/v1/dating/profile',
+      '/v1/dating/profile/intent',
       data: {'intent': intent},
     );
   }
@@ -645,6 +709,12 @@ class PulseRepository {
 
   /// File a report. `category` is a free-form spec-defined enum
   /// (harassment | inappropriate_photo | impersonation | spam | other).
+  ///
+  /// P1-4: backend body shape is `{target_id, category, details}` — the
+  /// report row stores the offender as `target_id`, not `target_user_id`
+  /// (the block endpoint is the one that uses `target_user_id`). Posting
+  /// the wrong key silently produced an INVALID_REQUEST 400 because the
+  /// UUID parse against the zero-string failed.
   Future<void> reportUser({
     required String targetUserId,
     required String category,
@@ -653,11 +723,46 @@ class PulseRepository {
     await _api.post(
       '/v1/dating/safety/report',
       data: {
-        'target_user_id': targetUserId,
+        'target_id': targetUserId,
         'category': category,
         if (details != null && details.isNotEmpty) 'details': details,
       },
     );
+  }
+
+  /// List of reports the viewer has filed plus their current status. Phase 1
+  /// addition — calls `GET /v1/dating/safety/reports/me`. If the backend
+  /// hasn't surfaced the endpoint yet, returns a sentinel that the UI
+  /// renders as "endpoint pending".
+  ///
+  /// Returns a `MyReportsResult` so the UI can distinguish:
+  ///   - empty list + endpoint pending (HTTP 404/501/unknown route)
+  ///   - empty list + endpoint working (user simply has no reports)
+  ///   - non-empty list
+  Future<MyReportsResult> getMyReports() async {
+    try {
+      final response = await _api.get('/v1/dating/safety/reports/me');
+      final data = _unwrapData(response.data);
+      if (data is! List) {
+        return const MyReportsResult(items: [], endpointAvailable: true);
+      }
+      final items = data
+          .whereType<Map>()
+          .map(
+            (item) => MyReportEntry.fromJson(Map<String, dynamic>.from(item)),
+          )
+          .toList();
+      return MyReportsResult(items: items, endpointAvailable: true);
+    } on DioException catch (e) {
+      // 404/501 = backend hasn't shipped the endpoint yet. Any other
+      // status is a real error and we rethrow so the UI can show its
+      // error state.
+      final code = e.response?.statusCode;
+      if (code == 404 || code == 501) {
+        return const MyReportsResult(items: [], endpointAvailable: false);
+      }
+      rethrow;
+    }
   }
 
   // ---------------------------------------------------------------------

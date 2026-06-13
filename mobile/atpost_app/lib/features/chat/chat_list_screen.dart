@@ -100,6 +100,8 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
 
     return Column(
       children: [
+        _buildRequestsEntry(),
+        _buildFriendsStrip(),
         _buildFilters(activeFilter),
         Expanded(
           child: conversationsAsync.when(
@@ -159,6 +161,151 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
           ),
         ),
       ],
+    );
+  }
+
+  /// Entry point into the Message Requests folder (spec §3.3). Hidden when
+  /// there are no pending requests so it does not clutter the inbox.
+  Widget _buildRequestsEntry() {
+    final requestsAsync = ref.watch(messageRequestsProvider);
+    final count = requestsAsync.maybeWhen(
+      data: (requests) => requests.length,
+      orElse: () => 0,
+    );
+    if (count == 0) return const SizedBox.shrink();
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+      child: GestureDetector(
+        onTap: () => context.push('/chat/requests'),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          decoration: BoxDecoration(
+            color: AppColors.bgCard,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: AppColors.borderSubtle),
+          ),
+          child: Row(
+            children: [
+              const CircleAvatar(
+                radius: 20,
+                backgroundColor: Colors.white10,
+                child: Icon(
+                  Icons.mark_email_unread_outlined,
+                  size: 20,
+                  color: AppColors.postbookPrimary,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Message Requests', style: AppTextStyles.h3),
+                    const SizedBox(height: 2),
+                    Text(
+                      count == 1
+                          ? '1 pending request'
+                          : '$count pending requests',
+                      style: AppTextStyles.bodySmall,
+                    ),
+                  ],
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 8,
+                  vertical: 4,
+                ),
+                decoration: BoxDecoration(
+                  color: AppColors.postbookPrimary,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  '$count',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 4),
+              const Icon(
+                Icons.chevron_right,
+                color: Colors.white24,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// A horizontal strip of every accepted friend, so the user can start a
+  /// DM with anyone — not just people they already have a conversation
+  /// with. Online friends carry a green dot driven by [friendsPresenceProvider]
+  /// and are sorted to the front. Hidden while selecting a friend.
+  Widget _buildFriendsStrip() {
+    final friendsAsync = ref.watch(friendsProvider);
+    final presence =
+        ref.watch(friendsPresenceProvider).valueOrNull ?? const <String, bool>{};
+
+    return friendsAsync.maybeWhen(
+      data: (friends) {
+        if (friends.isEmpty) return const SizedBox.shrink();
+
+        // Online friends first, otherwise keep the backend order.
+        final sorted = List<User>.from(friends)
+          ..sort((a, b) {
+            final ao = presence[a.id] == true ? 0 : 1;
+            final bo = presence[b.id] == true ? 0 : 1;
+            return ao.compareTo(bo);
+          });
+        final onlineCount =
+            friends.where((u) => presence[u.id] == true).length;
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 8, 16, 6),
+              child: Row(
+                children: [
+                  Text('Friends', style: AppTextStyles.h3),
+                  const SizedBox(width: 8),
+                  if (onlineCount > 0)
+                    Text(
+                      '$onlineCount online',
+                      style: const TextStyle(
+                        color: AppColors.onlineGreen,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            SizedBox(
+              height: 86,
+              child: ListView.builder(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                itemCount: sorted.length,
+                itemBuilder: (context, index) {
+                  final friend = sorted[index];
+                  return _FriendStripItem(
+                    friend: friend,
+                    online: presence[friend.id] == true,
+                    onTap: () => _startDirectChat(friend),
+                  );
+                },
+              ),
+            ),
+          ],
+        );
+      },
+      orElse: () => const SizedBox.shrink(),
     );
   }
 
@@ -256,6 +403,85 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
         context,
       ).showSnackBar(const SnackBar(content: Text('Failed to start chat')));
     }
+  }
+}
+
+/// A single avatar in the Messages "Friends" strip. Tapping it opens or
+/// creates a DM. A green dot in the corner marks the friend as online.
+class _FriendStripItem extends StatelessWidget {
+  final User friend;
+  final bool online;
+  final VoidCallback onTap;
+  const _FriendStripItem({
+    required this.friend,
+    required this.online,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final label = friend.displayName.trim().isNotEmpty
+        ? friend.displayName.trim()
+        : '@${friend.username}';
+
+    return GestureDetector(
+      onTap: onTap,
+      child: SizedBox(
+        width: 68,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Stack(
+                children: [
+                  CircleAvatar(
+                    radius: 26,
+                    backgroundColor: Colors.white10,
+                    backgroundImage:
+                        friend.hasAvatar ? NetworkImage(friend.avatarUrl) : null,
+                    child: friend.hasAvatar
+                        ? null
+                        : Text(
+                            label[0].toUpperCase(),
+                            style: AppTextStyles.h3,
+                          ),
+                  ),
+                  if (online)
+                    Positioned(
+                      right: 0,
+                      bottom: 0,
+                      child: Container(
+                        width: 14,
+                        height: 14,
+                        decoration: BoxDecoration(
+                          color: AppColors.onlineGreen,
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: Colors.black,
+                            width: 2.4,
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: AppColors.textSecondary,
+                  fontSize: 11,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 

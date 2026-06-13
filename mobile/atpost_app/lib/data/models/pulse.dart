@@ -1257,6 +1257,62 @@ class SafeMeet {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 1 — "My Reports" list (status of reports the viewer filed).
+//
+// `endpointAvailable` is false when dating-service hasn't shipped
+// `GET /v1/dating/safety/reports/me` yet — the UI uses it to show a
+// pending-endpoint banner instead of an empty state.
+// ---------------------------------------------------------------------------
+
+class MyReportEntry {
+  final String id;
+  final String targetUserId;
+  final String? targetName;
+  final String category;
+  final String status; // submitted | under_review | actioned | dismissed
+  final String? details;
+  final DateTime? createdAt;
+  final DateTime? updatedAt;
+  final String? resolutionNote;
+
+  const MyReportEntry({
+    required this.id,
+    required this.targetUserId,
+    this.targetName,
+    required this.category,
+    required this.status,
+    this.details,
+    this.createdAt,
+    this.updatedAt,
+    this.resolutionNote,
+  });
+
+  factory MyReportEntry.fromJson(Map<String, dynamic> json) {
+    return MyReportEntry(
+      id: (json['id'] ?? '').toString(),
+      targetUserId: (json['target_user_id'] ?? '').toString(),
+      targetName: json['target_name'] as String?,
+      category: (json['category'] ?? '').toString(),
+      status: (json['status'] ?? 'submitted').toString(),
+      details: json['details'] as String?,
+      createdAt: DateTime.tryParse((json['created_at'] ?? '').toString()),
+      updatedAt: DateTime.tryParse((json['updated_at'] ?? '').toString()),
+      resolutionNote: json['resolution_note'] as String?,
+    );
+  }
+}
+
+class MyReportsResult {
+  final List<MyReportEntry> items;
+  final bool endpointAvailable;
+
+  const MyReportsResult({
+    required this.items,
+    required this.endpointAvailable,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Sprint 5 — Premium tier, data export.
 //
 // Spec §14 (Premium tier) and §13 (India-first / DPDP).

@@ -2,6 +2,7 @@ package http
 
 import (
 	"crypto/hmac"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
@@ -12,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 )
 
 type AccessClaims struct {
@@ -109,6 +111,54 @@ func isSafeMethod(method string) bool {
 }
 
 func AuthMiddleware(jwtSecret string) gin.HandlerFunc {
+	return AuthMiddlewareWithRevoke(jwtSecret, nil)
+}
+
+// JWTKeySet describes the kid-versioned secret set used to verify access
+// tokens. The active (kid, secret) is used for new signatures; the previous
+// pair (when set) verifies tokens minted before the most recent rotation.
+// A token with no `kid` (legacy, pre-C7) falls back to the active secret.
+type JWTKeySet struct {
+	ActiveKID        string
+	ActiveSecret     string
+	PreviousKID      string
+	PreviousSecret   string
+}
+
+func (k JWTKeySet) secretFor(kid string) ([]byte, bool) {
+	if kid == "" || kid == k.ActiveKID {
+		return []byte(k.ActiveSecret), true
+	}
+	if k.PreviousSecret != "" && kid == k.PreviousKID {
+		return []byte(k.PreviousSecret), true
+	}
+	return nil, false
+}
+
+// AuthMiddlewareWithKeys is the kid-aware verify path. Use this when the
+// caller has loaded a JWTKeySet from config (active + optional previous
+// during rotation). For backward compatibility, AuthMiddleware /
+// AuthMiddlewareWithRevoke continue to accept a single secret.
+func AuthMiddlewareWithKeys(keys JWTKeySet, rdb *redis.Client) gin.HandlerFunc {
+	return authMiddleware(keys, rdb)
+}
+
+// AuthMiddlewareWithRevoke is the cache-backed variant. When `rdb` is
+// non-nil, every request looks up `sess_revoked:<sid>` to short-circuit
+// access tokens whose session has been revoked since the token was
+// minted. Fail-open on Redis errors — the access-token TTL is the
+// upper bound on revocation lag anyway, so a Redis blip doesn't
+// degrade security beyond that.
+//
+// A10: at billions-of-users scale the session table itself is too hot
+// to consult on every authenticated request. Redis is the right tier.
+// Revocation entries are TTL'd to the access-token life so the cache
+// drains naturally without a cleaner job.
+func AuthMiddlewareWithRevoke(jwtSecret string, rdb *redis.Client) gin.HandlerFunc {
+	return authMiddleware(JWTKeySet{ActiveSecret: jwtSecret}, rdb)
+}
+
+func authMiddleware(keys JWTKeySet, rdb *redis.Client) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var tokenStr string
 
@@ -131,13 +181,44 @@ func AuthMiddleware(jwtSecret string) gin.HandlerFunc {
 		}
 
 		claims := &AccessClaims{}
+		// Audit A1: defense-in-depth algorithm pin. golang-jwt/jwt v5
+		// already rejects `alg: none` and prevents RSA→HMAC confusion
+		// (type-asserts the keyfunc's return against the algorithm's
+		// expected key type), but we pin the algorithm explicitly here
+		// so a future library downgrade or accidental method
+		// registration can't reintroduce the classic alg-confusion
+		// vulnerability. Tokens not signed with HS256 are rejected.
+		//
+		// C7: pick the secret by `kid`. Tokens minted before C7 omit
+		// `kid` entirely — secretFor("") falls back to the active key.
 		token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
-			return []byte(jwtSecret), nil
+			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
+			}
+			kid, _ := t.Header["kid"].(string)
+			secret, ok := keys.secretFor(kid)
+			if !ok {
+				return nil, fmt.Errorf("unknown kid: %s", kid)
+			}
+			return secret, nil
 		})
 		if err != nil || !token.Valid {
 			api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid access token", nil, nil)
 			c.Abort()
 			return
+		}
+
+		// A10 — session revocation check. Cache-only; the session
+		// table itself is not hit. Empty `sid` (legacy tokens predating
+		// this change) bypass — the next refresh will mint one.
+		if rdb != nil && claims.SessionID != "" {
+			val, err := rdb.Get(c.Request.Context(), "sess_revoked:"+claims.SessionID).Result()
+			if err == nil && val != "" {
+				api.Error(c.Writer, http.StatusUnauthorized, "SESSION_REVOKED", "Session has been revoked", nil, nil)
+				c.Abort()
+				return
+			}
+			// redis.Nil (key absent) + any transient errors → fail open.
 		}
 
 		c.Request.Header.Set("X-User-Id", claims.Subject)

@@ -4,13 +4,16 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/atpost/notification-service/internal/events"
 	"github.com/atpost/notification-service/internal/graph"
 	"github.com/atpost/notification-service/internal/http"
+	"github.com/atpost/notification-service/internal/push"
 	"github.com/atpost/notification-service/internal/service"
+	"github.com/atpost/notification-service/database"
 	"github.com/atpost/notification-service/internal/store/postgres"
 	"github.com/atpost/notification-service/internal/store/scylla"
 	"github.com/atpost/notification-service/internal/workers"
@@ -39,10 +42,14 @@ func main() {
 	ctx := context.Background()
 
 	// 3. Database (Scylla)
+	// Audit HS3: NumConns was hardcoded to 10 — at 100k notifications/sec
+	// with 50 ms Scylla latency that means ~5k concurrent requests
+	// queueing on 10 conns. Make it env-tunable; default bumped to 40
+	// which matches the postgres pool sizing pattern in other services.
 	cluster := gocql.NewCluster(strings.Split(scyllaHosts, ",")...)
 	cluster.Keyspace = "social_notify"
 	cluster.Consistency = gocql.Quorum
-	cluster.NumConns = 10
+	cluster.NumConns = envInt("SCYLLA_NUM_CONNS", 40)
 	cluster.MaxPreparedStmts = 1000
 	session, err := cluster.CreateSession()
 	if err != nil {
@@ -95,7 +102,11 @@ func main() {
 				} else {
 					slog.Info("connected to postgres")
 					pgStore = postgres.New(dbPool)
-					ensureNotifSchema(ctx, dbPool)
+					if err := postgres.BootstrapSchema(ctx, dbPool, database.SetupSQL, database.Migrations); err != nil {
+						slog.Warn("notification schema bootstrap failed", "error", err)
+					} else {
+						slog.Info("notification schema ready")
+					}
 				}
 			}
 		}
@@ -144,7 +155,73 @@ func main() {
 		slog.Info("smtp not configured; using noop mailer")
 	}
 
+	// Push dispatcher (FCM + APNs). Either pusher may be nil — the
+	// dispatcher logs a warning and skips when the platform's provider
+	// is unconfigured. Without this wiring, every notification falls
+	// back to the in-app delivery path (DB row + WS push) only.
+	var fcmPusher *push.FCMPusher
+	if pid := os.Getenv("FCM_PROJECT_ID"); pid != "" {
+		serviceAccountJSON := os.Getenv("FCM_SERVICE_ACCOUNT_KEY")
+		// FCM_SERVICE_ACCOUNT_KEY can be either inline JSON or a file path
+		// (e.g., mounted secret). Detect by checking the leading byte.
+		if strings.HasPrefix(serviceAccountJSON, "/") || strings.HasPrefix(serviceAccountJSON, "./") {
+			if data, err := os.ReadFile(serviceAccountJSON); err == nil {
+				serviceAccountJSON = string(data)
+			} else {
+				slog.Error("fcm: failed to read service account key file", "path", serviceAccountJSON, "error", err)
+				serviceAccountJSON = ""
+			}
+		}
+		if serviceAccountJSON != "" {
+			fcmPusher = push.NewFCMPusher(pid, serviceAccountJSON)
+			slog.Info("fcm pusher configured", "project_id", pid)
+		} else {
+			slog.Warn("fcm: FCM_PROJECT_ID set but FCM_SERVICE_ACCOUNT_KEY missing — Android/Web push disabled")
+		}
+	} else {
+		slog.Info("fcm not configured; android + web push disabled")
+	}
+
+	var apnsPusher *push.APNSPusher
+	if teamID := os.Getenv("APNS_TEAM_ID"); teamID != "" {
+		keyID := os.Getenv("APNS_KEY_ID")
+		bundleID := env("APNS_BUNDLE_ID", "com.atpost.app")
+		keyPath := os.Getenv("APNS_PRIVATE_KEY_PATH")
+		production := env("APNS_PRODUCTION", "false") == "true"
+		if keyPath != "" {
+			if pemBytes, err := os.ReadFile(keyPath); err == nil {
+				if p, err := push.NewAPNSPusher(teamID, keyID, string(pemBytes), bundleID, production); err == nil {
+					apnsPusher = p
+					slog.Info("apns pusher configured", "bundle_id", bundleID, "production", production)
+				} else {
+					slog.Error("apns: NewAPNSPusher failed", "error", err)
+				}
+			} else {
+				slog.Error("apns: failed to read private key file", "path", keyPath, "error", err)
+			}
+		} else {
+			slog.Warn("apns: APNS_TEAM_ID set but APNS_PRIVATE_KEY_PATH missing — iOS push disabled")
+		}
+	} else {
+		slog.Info("apns not configured; ios push disabled")
+	}
+
+	notifSvc.SetPusher(push.NewDispatcher(fcmPusher, apnsPusher))
+
 	notifHandler := http.New(notifSvc, rdb)
+
+	// Audit CS1: previously the handler defined WithInternalKey but
+	// main.go never called it — every /v1/notifications/* endpoint
+	// was reachable directly, including the bundle endpoint that
+	// accepts an arbitrary recipient user_id. The env was already
+	// being read (for the graph client below) but not passed here.
+	internalKey := os.Getenv("INTERNAL_SERVICE_KEY")
+	if internalKey != "" {
+		notifHandler.WithInternalKey(internalKey)
+		slog.Info("notification-service: internal-service-key gate enabled")
+	} else {
+		slog.Warn("notification-service: INTERNAL_SERVICE_KEY not set — every endpoint is unauthenticated. Do not run this configuration in production.")
+	}
 
 	// 9. Kafka Consumers
 	consumer := events.NewConsumerWithDialer(
@@ -156,7 +233,6 @@ func main() {
 	)
 	// Attach graph-service client so PostCreated events fan out to followers.
 	graphURL := env("GRAPH_SERVICE_URL", "http://graph-service:8083")
-	internalKey := os.Getenv("INTERNAL_SERVICE_KEY")
 	consumer.WithGraph(graph.New(graphURL, internalKey))
 	slog.Info("graph client attached", "graph_url", graphURL)
 	go consumer.Start(ctx)
@@ -171,6 +247,98 @@ func main() {
 	)
 	go callConsumer.Start(ctx)
 	slog.Info("kafka call consumer started", "topic", "call.notifications")
+
+	// Chat events (spec §18): DM + message-request notifications. Separate
+	// topic + consumer group so chat-event lag doesn't block social/call
+	// notification delivery.
+	chatTopic := env("CHAT_KAFKA_TOPIC", "chat.events.v1")
+	chatConsumer := events.NewChatConsumerWithDialer(
+		strings.Split(kafkaBrokers, ","),
+		env("CHAT_KAFKA_GROUP_ID", "notification-service-chat"),
+		chatTopic,
+		notifSvc,
+		kafkaDialer,
+	)
+	go chatConsumer.Start(ctx)
+	slog.Info("kafka chat consumer started", "topic", chatTopic)
+
+	// QA events live on a dedicated topic by default. Reuse the main consumer
+	// type — its processMessage routes Q&A events through handleQAEvent.
+	qaTopic := env("KAFKA_QA_TOPIC", "qa-events")
+	qaConsumer := events.NewConsumerWithDialer(
+		strings.Split(kafkaBrokers, ","),
+		"notification-service-qa-group",
+		qaTopic,
+		notifSvc,
+		kafkaDialer,
+	)
+	go qaConsumer.Start(ctx)
+	slog.Info("kafka qa consumer started", "topic", qaTopic)
+
+	// Sprint 3: Dating events live on dating-events topic. Same Consumer
+	// type, separate consumer-group so dating-event lag doesn't impact
+	// QA delivery.
+	datingTopic := env("KAFKA_DATING_TOPIC", "dating-events")
+	datingConsumer := events.NewConsumerWithDialer(
+		strings.Split(kafkaBrokers, ","),
+		"notification-service-dating-group",
+		datingTopic,
+		notifSvc,
+		kafkaDialer,
+	)
+	go datingConsumer.Start(ctx)
+	slog.Info("kafka dating consumer started", "topic", datingTopic)
+
+	// Phase 2 mini-apps: each has its own Kafka topic + consumer group so
+	// lag in one domain (e.g. wallet replay during a payments incident)
+	// doesn't block other domains' notification delivery. The shared
+	// processMessage dispatcher routes to handleWalletEvent /
+	// handleBillPayEvent / handleRiderEvent based on event-type prefix.
+	walletTopic := env("KAFKA_WALLET_TOPIC", "wallet-events")
+	walletConsumer := events.NewConsumerWithDialer(
+		strings.Split(kafkaBrokers, ","),
+		"notification-service-wallet-group",
+		walletTopic,
+		notifSvc,
+		kafkaDialer,
+	)
+	go walletConsumer.Start(ctx)
+	slog.Info("kafka wallet consumer started", "topic", walletTopic)
+
+	billpayTopic := env("KAFKA_BILLPAY_TOPIC", "billpay-events")
+	billpayConsumer := events.NewConsumerWithDialer(
+		strings.Split(kafkaBrokers, ","),
+		"notification-service-billpay-group",
+		billpayTopic,
+		notifSvc,
+		kafkaDialer,
+	)
+	go billpayConsumer.Start(ctx)
+	slog.Info("kafka billpay consumer started", "topic", billpayTopic)
+
+	riderTopic := env("KAFKA_RIDER_TOPIC", "rider-events")
+	riderConsumer := events.NewConsumerWithDialer(
+		strings.Split(kafkaBrokers, ","),
+		"notification-service-rider-group",
+		riderTopic,
+		notifSvc,
+		kafkaDialer,
+	)
+	go riderConsumer.Start(ctx)
+	slog.Info("kafka rider consumer started", "topic", riderTopic)
+
+	// Food (FiGo) events — same Consumer type, dedicated group so food
+	// lag (busy lunch rush) doesn't block other domains.
+	foodTopic := env("KAFKA_FOOD_TOPIC", "food-events")
+	foodConsumer := events.NewConsumerWithDialer(
+		strings.Split(kafkaBrokers, ","),
+		"notification-service-food-group",
+		foodTopic,
+		notifSvc,
+		kafkaDialer,
+	)
+	go foodConsumer.Start(ctx)
+	slog.Info("kafka food consumer started", "topic", foodTopic)
 
 	// 9b. Background workers
 	go workers.StartCleanupWorker(ctx, session)
@@ -191,6 +359,20 @@ func main() {
 
 	checker.RegisterRoutes(r)
 	r.GET("/metrics", metrics.Handler())
+
+	// Realtime SSE gateway. Registered BEFORE notifHandler.RegisterRoutes
+	// because notifHandler.RegisterRoutes installs RequireInternalKey via
+	// r.Use(...) which would otherwise gate this end-user endpoint behind
+	// the service-to-service key.
+	rtSecret := env("REALTIME_TOKEN_SECRET", internalKey)
+	if rtSecret == "" {
+		slog.Warn("REALTIME_TOKEN_SECRET not set — realtime gateway disabled")
+	} else {
+		realtimeHandler := http.NewRealtimeHandler([]byte(rtSecret), rdb)
+		realtimeHandler.Register(r)
+		slog.Info("realtime SSE gateway registered", "path", "/v1/realtime/sse")
+	}
+
 	notifHandler.RegisterRoutes(r)
 
 	// 11. Graceful shutdown
@@ -218,6 +400,15 @@ func env(key, fallback string) string {
 	return fallback
 }
 
+func envInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return fallback
+}
+
 func collectDBPoolStats(ctx context.Context, pool *pgxpool.Pool, m *metrics.DBPoolMetrics) {
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
@@ -238,35 +429,3 @@ func collectDBPoolStats(ctx context.Context, pool *pgxpool.Pool, m *metrics.DBPo
 	}
 }
 
-// ensureNotifSchema creates Postgres tables for notification preferences and devices.
-func ensureNotifSchema(ctx context.Context, db *pgxpool.Pool) {
-	ddl := []string{
-		`CREATE TABLE IF NOT EXISTS notification_preferences (
-			user_id          UUID PRIMARY KEY,
-			email_enabled    BOOLEAN NOT NULL DEFAULT TRUE,
-			push_enabled     BOOLEAN NOT NULL DEFAULT TRUE,
-			sms_enabled      BOOLEAN NOT NULL DEFAULT FALSE,
-			quiet_hours_start TIME,
-			quiet_hours_end   TIME,
-			muted_types      JSONB NOT NULL DEFAULT '[]',
-			updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
-		)`,
-		`CREATE TABLE IF NOT EXISTS user_devices (
-			id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-			user_id    UUID NOT NULL,
-			platform   TEXT NOT NULL CHECK (platform IN ('ios', 'android', 'web')),
-			push_token TEXT NOT NULL,
-			is_active  BOOLEAN NOT NULL DEFAULT TRUE,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-			UNIQUE(user_id, platform, push_token)
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_user_devices_user ON user_devices (user_id) WHERE is_active = TRUE`,
-	}
-	for _, stmt := range ddl {
-		if _, err := db.Exec(ctx, stmt); err != nil {
-			slog.Warn("notification schema migration", "error", err)
-		}
-	}
-	slog.Info("notification preferences schema ensured")
-}

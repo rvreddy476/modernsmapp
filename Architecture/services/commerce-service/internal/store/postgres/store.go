@@ -3,11 +3,14 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -16,6 +19,12 @@ type Store struct {
 }
 
 func New(db *pgxpool.Pool) *Store { return &Store{db: db} }
+
+// DB returns the underlying pool for callers that need to open a
+// cross-domain transaction (e.g. AcceptRFQQuote spans orders +
+// rfq_quotes + rfqs). Most code paths should use the helper methods
+// on Store; reach for DB() sparingly.
+func (s *Store) DB() *pgxpool.Pool { return s.db }
 
 // ─── Seller ──────────────────────────────────────────────────
 
@@ -100,15 +109,17 @@ func (s *Store) CreateProduct(ctx context.Context, p *Product) error {
 	p.CreatedAt = time.Now()
 	p.UpdatedAt = time.Now()
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO products (id,seller_id,category_id,tax_class_id,title,short_title,slug,description,
-		  short_description,product_type,condition,sku_root,status,visibility,approval_status,
-		  primary_image_media_id,weight_grams,country_of_origin,return_policy_type,return_policy_days,
-		  hsn_code,meta_title,meta_description,created_at,updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)`,
-		p.ID, p.SellerID, p.CategoryID, p.TaxClassID, p.Title, p.ShortTitle, p.Slug, p.Description,
-		p.ShortDescription, p.ProductType, p.Condition, p.SKURoot, p.Status, p.Visibility, p.ApprovalStatus,
-		p.PrimaryImageMediaID, p.WeightGrams, p.CountryOfOrigin, p.ReturnPolicyType, p.ReturnPolicyDays,
-		p.HSNCode, p.MetaTitle, p.MetaDescription, p.CreatedAt, p.UpdatedAt,
+		INSERT INTO products (id,seller_id,category_id,brand_id,tax_class_id,title,short_title,slug,description,
+		  short_description,brand_name,manufacturer_name,product_type,condition,sku_root,status,visibility,approval_status,
+		  primary_image_media_id,video_media_id,weight_grams,length_cm,width_cm,height_cm,
+		  country_of_origin,warranty_info,return_policy_type,return_policy_days,
+		  hsn_code,search_keywords,meta_title,meta_description,created_at,updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34)`,
+		p.ID, p.SellerID, p.CategoryID, p.BrandID, p.TaxClassID, p.Title, p.ShortTitle, p.Slug, p.Description,
+		p.ShortDescription, p.BrandName, p.ManufacturerName, p.ProductType, p.Condition, p.SKURoot, p.Status, p.Visibility, p.ApprovalStatus,
+		p.PrimaryImageMediaID, p.VideoMediaID, p.WeightGrams, p.LengthCm, p.WidthCm, p.HeightCm,
+		p.CountryOfOrigin, p.WarrantyInfo, p.ReturnPolicyType, p.ReturnPolicyDays,
+		p.HSNCode, p.SearchKeywords, p.MetaTitle, p.MetaDescription, p.CreatedAt, p.UpdatedAt,
 	)
 	return err
 }
@@ -117,22 +128,116 @@ func (s *Store) GetProductByID(ctx context.Context, id uuid.UUID) (*Product, err
 	var p Product
 	err := s.db.QueryRow(ctx, `
 		SELECT id,seller_id,category_id,brand_id,tax_class_id,title,short_title,slug,description,
-		  short_description,product_type,condition,sku_root,status,visibility,approval_status,
-		  rejection_reason,primary_image_media_id,weight_grams,country_of_origin,warranty_info,
-		  return_policy_type,return_policy_days,hsn_code,meta_title,meta_description,
+		  short_description,brand_name,manufacturer_name,product_type,condition,sku_root,status,visibility,approval_status,
+		  rejection_reason,primary_image_media_id,video_media_id,weight_grams,length_cm,width_cm,height_cm,
+		  country_of_origin,warranty_info,return_policy_type,return_policy_days,hsn_code,search_keywords,
+		  meta_title,meta_description,
 		  avg_rating,review_count,order_count,view_count,wishlist_count,is_featured,created_at,updated_at,published_at
 		FROM products WHERE id=$1`, id).Scan(
 		&p.ID, &p.SellerID, &p.CategoryID, &p.BrandID, &p.TaxClassID,
 		&p.Title, &p.ShortTitle, &p.Slug, &p.Description, &p.ShortDescription,
+		&p.BrandName, &p.ManufacturerName,
 		&p.ProductType, &p.Condition, &p.SKURoot, &p.Status, &p.Visibility,
-		&p.ApprovalStatus, &p.RejectionReason, &p.PrimaryImageMediaID,
-		&p.WeightGrams, &p.CountryOfOrigin, &p.WarrantyInfo,
-		&p.ReturnPolicyType, &p.ReturnPolicyDays, &p.HSNCode,
+		&p.ApprovalStatus, &p.RejectionReason, &p.PrimaryImageMediaID, &p.VideoMediaID,
+		&p.WeightGrams, &p.LengthCm, &p.WidthCm, &p.HeightCm,
+		&p.CountryOfOrigin, &p.WarrantyInfo,
+		&p.ReturnPolicyType, &p.ReturnPolicyDays, &p.HSNCode, &p.SearchKeywords,
 		&p.MetaTitle, &p.MetaDescription, &p.AvgRating, &p.ReviewCount,
 		&p.OrderCount, &p.ViewCount, &p.WishlistCount, &p.IsFeatured,
 		&p.CreatedAt, &p.UpdatedAt, &p.PublishedAt,
 	)
 	return &p, err
+}
+
+// ─── Product Media + Attributes (Phase 3.1) ─────────────────
+
+// AddProductMedia attaches an image / video / size-chart / infographic
+// (already uploaded via media-service) to a product, ordering it among
+// the product's gallery.
+func (s *Store) AddProductMedia(ctx context.Context, productID, mediaID uuid.UUID, mediaType string, sortOrder int) error {
+	if mediaType == "" {
+		mediaType = "image"
+	}
+	_, err := s.db.Exec(ctx,
+		`INSERT INTO product_media (product_id, media_id, media_type, sort_order)
+		 VALUES ($1, $2, $3, $4)`,
+		productID, mediaID, mediaType, sortOrder,
+	)
+	return err
+}
+
+// ListProductMedia returns the gallery for a product, ordered for display.
+func (s *Store) ListProductMedia(ctx context.Context, productID uuid.UUID) ([]ProductMedia, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT id, product_id, media_id, media_type, sort_order, created_at
+		 FROM product_media WHERE product_id=$1 ORDER BY sort_order ASC, created_at ASC`,
+		productID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ProductMedia
+	for rows.Next() {
+		var m ProductMedia
+		if err := rows.Scan(&m.ID, &m.ProductID, &m.MediaID, &m.MediaType, &m.SortOrder, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, nil
+}
+
+// RemoveProductMedia deletes a media row by id. Caller verifies seller ownership.
+func (s *Store) RemoveProductMedia(ctx context.Context, productMediaID uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `DELETE FROM product_media WHERE id=$1`, productMediaID)
+	return err
+}
+
+// SetProductAttributes replaces the product's attribute list in one
+// atomic UPDATE. The schema allows free-form name/value/unit triples for
+// the structured spec block.
+func (s *Store) SetProductAttributes(ctx context.Context, productID uuid.UUID, attrs []ProductAttribute) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `DELETE FROM product_attributes WHERE product_id=$1`, productID); err != nil {
+		return err
+	}
+	for i, a := range attrs {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO product_attributes (product_id, name, value, unit, sort_order)
+			 VALUES ($1, $2, $3, $4, $5)`,
+			productID, a.Name, a.Value, a.Unit, i,
+		); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+// GetProductAttributes returns the attribute rows for the product.
+func (s *Store) GetProductAttributes(ctx context.Context, productID uuid.UUID) ([]ProductAttribute, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT id, product_id, name, value, unit, sort_order
+		 FROM product_attributes WHERE product_id=$1 ORDER BY sort_order ASC`,
+		productID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ProductAttribute
+	for rows.Next() {
+		var a ProductAttribute
+		if err := rows.Scan(&a.ID, &a.ProductID, &a.Name, &a.Value, &a.Unit, &a.SortOrder); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, nil
 }
 
 func (s *Store) ListSellerProducts(ctx context.Context, sellerID uuid.UUID, status string, limit, offset int) ([]*Product, int, error) {
@@ -166,6 +271,165 @@ func (s *Store) ListSellerProducts(ctx context.Context, sellerID uuid.UUID, stat
 	return products, total, nil
 }
 
+// ProductFilter is the rich filter set the customer-facing browse
+// surface uses. All fields are optional. Cursor takes precedence over
+// Offset: pass `cursor` for keyset pagination (recommended at scale —
+// O(1) regardless of page depth) or `offset` for the legacy
+// admin-style offset pagination. Cursor format is `<unix_micros>:<id>`
+// matching the (created_at DESC, id DESC) sort order.
+type ProductFilter struct {
+	CategoryID *uuid.UUID
+	Query      string
+	// Price filter (selling_price range, inclusive). Either or both may
+	// be zero to skip that side.
+	MinPrice float64
+	MaxPrice float64
+	// Minimum average rating, 1-5; 0 = no filter.
+	MinRating float64
+	// Restrict to one seller (used by /seller/:id storefronts).
+	SellerID *uuid.UUID
+	// In-stock filter: when true we require total_stock > 0 across
+	// the product's active variants.
+	InStockOnly bool
+	Limit       int
+	// Either Cursor (recommended) or Offset is used; never both.
+	Cursor string
+	Offset int
+}
+
+// ListProductsFiltered is the scale-friendly variant. Cursor pagination
+// is the default; offset is supported only as a fallback for legacy
+// callers (admin grid). Returns the products + a `nextCursor` the
+// client should pass to keep paging; empty nextCursor means end of
+// list.
+func (s *Store) ListProductsFiltered(ctx context.Context, f ProductFilter) ([]*Product, string, error) {
+	limit := f.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	conds := []string{"p.status = 'active'", "p.approval_status = 'approved'"}
+	args := []any{}
+	idx := 1
+	if f.CategoryID != nil {
+		conds = append(conds, fmt.Sprintf("p.category_id = $%d", idx))
+		args = append(args, *f.CategoryID)
+		idx++
+	}
+	if f.SellerID != nil {
+		conds = append(conds, fmt.Sprintf("p.seller_id = $%d", idx))
+		args = append(args, *f.SellerID)
+		idx++
+	}
+	if q := strings.TrimSpace(f.Query); q != "" {
+		conds = append(conds, fmt.Sprintf("p.title ILIKE $%d", idx))
+		args = append(args, "%"+q+"%")
+		idx++
+	}
+	if f.MinRating > 0 {
+		conds = append(conds, fmt.Sprintf("p.avg_rating >= $%d", idx))
+		args = append(args, f.MinRating)
+		idx++
+	}
+	// Keyset cursor: rows are sorted (created_at DESC, id DESC) so a
+	// cursor of `(t,c)` means "give me rows older than (t, c)".
+	// Format: "<unix_micros>:<id>". Falls back to offset when not
+	// supplied.
+	if f.Cursor != "" {
+		cParts := strings.SplitN(f.Cursor, ":", 2)
+		if len(cParts) == 2 {
+			tsMicros, err := strconv.ParseInt(cParts[0], 10, 64)
+			if err == nil {
+				cursorID, err2 := uuid.Parse(cParts[1])
+				if err2 == nil {
+					ts := time.UnixMicro(tsMicros).UTC()
+					conds = append(conds, fmt.Sprintf("(p.created_at, p.id) < ($%d, $%d)", idx, idx+1))
+					args = append(args, ts, cursorID)
+					idx += 2
+				}
+			}
+		}
+	}
+	where := "WHERE " + strings.Join(conds, " AND ")
+
+	// Price + in-stock filters apply on the LATERAL-derived columns,
+	// so they go into the outer WHERE via HAVING-equivalent (we use a
+	// SELECT-from-subquery to keep the SQL portable). To stay simple,
+	// embed them in the outer WHERE using the LATERAL output cols.
+	priceFilter := ""
+	if f.MinPrice > 0 || f.MaxPrice > 0 || f.InStockOnly {
+		var clauses []string
+		if f.MinPrice > 0 {
+			clauses = append(clauses, fmt.Sprintf("v.min_selling_price >= $%d", idx))
+			args = append(args, f.MinPrice)
+			idx++
+		}
+		if f.MaxPrice > 0 {
+			clauses = append(clauses, fmt.Sprintf("v.min_selling_price <= $%d", idx))
+			args = append(args, f.MaxPrice)
+			idx++
+		}
+		if f.InStockOnly {
+			clauses = append(clauses, "COALESCE(s.total_stock, 0) > 0")
+		}
+		priceFilter = " AND " + strings.Join(clauses, " AND ")
+	}
+
+	args = append(args, limit+1) // +1 to peek whether there is a next page
+	query := `
+		SELECT p.id, p.seller_id, p.category_id, p.title, p.slug, p.status, p.approval_status,
+		       p.avg_rating, p.review_count, p.order_count, p.view_count, p.created_at, p.updated_at,
+		       p.primary_image_media_id,
+		       v.id  AS default_variant_id,
+		       v.min_selling_price,
+		       v.min_mrp,
+		       COALESCE(s.total_stock, 0) AS total_stock
+		FROM products p
+		LEFT JOIN LATERAL (
+			SELECT id, selling_price AS min_selling_price, mrp AS min_mrp
+			FROM product_variants
+			WHERE product_id = p.id AND status = 'active'
+			ORDER BY selling_price ASC
+			LIMIT 1
+		) v ON true
+		LEFT JOIN LATERAL (
+			SELECT SUM(GREATEST(i.total_qty - i.reserved_qty, 0))::int AS total_stock
+			FROM product_variants pv
+			JOIN inventory_items i ON i.variant_id = pv.id
+			WHERE pv.product_id = p.id AND pv.status = 'active'
+		) s ON true
+		` + where + priceFilter + fmt.Sprintf(`
+		ORDER BY p.created_at DESC, p.id DESC
+		LIMIT $%d`, idx)
+	rows, err := s.db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+	var products []*Product
+	for rows.Next() {
+		var p Product
+		if err := rows.Scan(&p.ID, &p.SellerID, &p.CategoryID, &p.Title, &p.Slug,
+			&p.Status, &p.ApprovalStatus, &p.AvgRating, &p.ReviewCount, &p.OrderCount,
+			&p.ViewCount, &p.CreatedAt, &p.UpdatedAt,
+			&p.PrimaryImageMediaID,
+			&p.DefaultVariantID, &p.MinSellingPrice, &p.MinMRP, &p.TotalStock); err != nil {
+			return nil, "", err
+		}
+		products = append(products, &p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	// Use the +1 peek to derive nextCursor.
+	var nextCursor string
+	if len(products) > limit {
+		last := products[limit-1]
+		nextCursor = fmt.Sprintf("%d:%s", last.CreatedAt.UnixMicro(), last.ID.String())
+		products = products[:limit]
+	}
+	return products, nextCursor, nil
+}
+
 // ListProducts returns paginated products for the customer-facing browse
 // surface: active + approved only, optionally filtered by category and a
 // title search. Newest first. Returns total count for pagination.
@@ -174,30 +438,56 @@ func (s *Store) ListSellerProducts(ctx context.Context, sellerID uuid.UUID, stat
 // paused, archived. approval_status: draft, submitted, under_review,
 // approved, rejected, live, hidden, archived. We surface active+approved.
 func (s *Store) ListProducts(ctx context.Context, categoryID *uuid.UUID, query string, limit, offset int) ([]*Product, int, error) {
-	conds := []string{"status = 'active'", "approval_status = 'approved'"}
+	conds := []string{"p.status = 'active'", "p.approval_status = 'approved'"}
 	args := []any{}
 	idx := 1
 	if categoryID != nil {
-		conds = append(conds, fmt.Sprintf("category_id = $%d", idx))
+		conds = append(conds, fmt.Sprintf("p.category_id = $%d", idx))
 		args = append(args, *categoryID)
 		idx++
 	}
 	if q := strings.TrimSpace(query); q != "" {
-		conds = append(conds, fmt.Sprintf("title ILIKE $%d", idx))
+		conds = append(conds, fmt.Sprintf("p.title ILIKE $%d", idx))
 		args = append(args, "%"+q+"%")
 		idx++
 	}
 	where := "WHERE " + strings.Join(conds, " AND ")
 
 	var total int
-	if err := s.db.QueryRow(ctx, "SELECT COUNT(*) FROM products "+where, args...).Scan(&total); err != nil {
+	if err := s.db.QueryRow(ctx, "SELECT COUNT(*) FROM products p "+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
 	args = append(args, limit, offset)
-	rows, err := s.db.Query(ctx, `SELECT id,seller_id,category_id,title,slug,status,approval_status,
-		avg_rating,review_count,order_count,view_count,created_at,updated_at FROM products `+
-		where+fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d OFFSET $%d", idx, idx+1), args...)
+	// Phase F1 — enrich each row with variant pricing + stock so the
+	// catalog grid renders without N+1 detail fetches. LATERAL picks
+	// the cheapest active variant as the card's "from price"; mobile
+	// uses default_variant_id to add to cart in one click.
+	rows, err := s.db.Query(ctx, `
+		SELECT p.id, p.seller_id, p.category_id, p.title, p.slug, p.status, p.approval_status,
+		       p.avg_rating, p.review_count, p.order_count, p.view_count, p.created_at, p.updated_at,
+		       p.primary_image_media_id,
+		       v.id  AS default_variant_id,
+		       v.min_selling_price,
+		       v.min_mrp,
+		       COALESCE(s.total_stock, 0) AS total_stock
+		FROM products p
+		LEFT JOIN LATERAL (
+			SELECT id, selling_price AS min_selling_price, mrp AS min_mrp
+			FROM product_variants
+			WHERE product_id = p.id AND status = 'active'
+			ORDER BY selling_price ASC
+			LIMIT 1
+		) v ON true
+		LEFT JOIN LATERAL (
+			SELECT SUM(GREATEST(i.total_qty - i.reserved_qty, 0))::int AS total_stock
+			FROM product_variants pv
+			JOIN inventory_items i ON i.variant_id = pv.id
+			WHERE pv.product_id = p.id AND pv.status = 'active'
+		) s ON true
+		` + where + fmt.Sprintf(`
+		ORDER BY p.created_at DESC
+		LIMIT $%d OFFSET $%d`, idx, idx+1), args...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -207,7 +497,9 @@ func (s *Store) ListProducts(ctx context.Context, categoryID *uuid.UUID, query s
 		var p Product
 		if err := rows.Scan(&p.ID, &p.SellerID, &p.CategoryID, &p.Title, &p.Slug,
 			&p.Status, &p.ApprovalStatus, &p.AvgRating, &p.ReviewCount, &p.OrderCount,
-			&p.ViewCount, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			&p.ViewCount, &p.CreatedAt, &p.UpdatedAt,
+			&p.PrimaryImageMediaID,
+			&p.DefaultVariantID, &p.MinSellingPrice, &p.MinMRP, &p.TotalStock); err != nil {
 			return nil, 0, err
 		}
 		products = append(products, &p)
@@ -235,8 +527,20 @@ func (s *Store) UpdateProduct(ctx context.Context, id uuid.UUID, updates map[str
 	return err
 }
 
+// IncrProductViewCount is the Redis-nil fallback for the sharded
+// product-view counter. Production traffic flows through
+// Service.adjustProductViewCount → counters.Counter → flush-worker
+// SetProductViewCount.
 func (s *Store) IncrProductViewCount(ctx context.Context, id uuid.UUID) {
 	_, _ = s.db.Exec(ctx, "UPDATE products SET view_count=view_count+1 WHERE id=$1", id)
+}
+
+// SetProductViewCount overwrites products.view_count to the absolute
+// sum from the sharded Redis counter. Called by the flush worker
+// every ~10s per dirty product.
+func (s *Store) SetProductViewCount(ctx context.Context, id uuid.UUID, total int64) error {
+	_, err := s.db.Exec(ctx, "UPDATE products SET view_count=$2 WHERE id=$1", id, total)
+	return err
 }
 
 // ─── Product Variants ────────────────────────────────────────
@@ -291,6 +595,68 @@ func (s *Store) GetVariantsByProduct(ctx context.Context, productID uuid.UUID) (
 		variants = append(variants, &v)
 	}
 	return variants, nil
+}
+
+// UpdateVariant patches the mutable fields of an existing variant.
+// Returns ErrProductNotFound when the variant doesn't exist. The
+// product_id + sku are intentionally NOT updatable (sku is used as the
+// merge key for bulk import; product_id is a foreign key that defines
+// what the variant belongs to — moving it would break orders + carts).
+func (s *Store) UpdateVariant(ctx context.Context, id uuid.UUID, updates map[string]any) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	allowed := map[string]bool{
+		"option_1_name": true, "option_1_value": true,
+		"option_2_name": true, "option_2_value": true,
+		"option_3_name": true, "option_3_value": true,
+		"mrp": true, "selling_price": true, "cost_price": true,
+		"currency_code": true, "status": true, "image_media_id": true,
+		"weight_grams": true, "barcode": true,
+	}
+	setClauses := []string{}
+	args := []any{}
+	idx := 1
+	for k, v := range updates {
+		if !allowed[k] {
+			continue
+		}
+		setClauses = append(setClauses, fmt.Sprintf("%s = $%d", k, idx))
+		args = append(args, v)
+		idx++
+	}
+	if len(setClauses) == 0 {
+		return nil
+	}
+	setClauses = append(setClauses, "updated_at = NOW()")
+	args = append(args, id)
+	q := "UPDATE product_variants SET " + strings.Join(setClauses, ", ") +
+		" WHERE id = $" + strconv.Itoa(idx)
+	cmd, err := s.db.Exec(ctx, q, args...)
+	if err != nil {
+		return err
+	}
+	if cmd.RowsAffected() == 0 {
+		return ErrProductNotFound
+	}
+	return nil
+}
+
+// ArchiveVariant flips a variant to status='archived' so it's hidden
+// from browse + cart but kept on existing orders for history.
+// Deleting variants is intentionally not supported — referential
+// integrity from orders/cart_items would break.
+func (s *Store) ArchiveVariant(ctx context.Context, id uuid.UUID) error {
+	cmd, err := s.db.Exec(ctx, `
+		UPDATE product_variants SET status='archived', updated_at=NOW()
+		WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	if cmd.RowsAffected() == 0 {
+		return ErrProductNotFound
+	}
+	return nil
 }
 
 // ─── Inventory ───────────────────────────────────────────────
@@ -479,12 +845,17 @@ func (s *Store) CreateOrder(ctx context.Context, o *Order, items []*OrderItem) e
 	if _, err = tx.Exec(ctx, `
 		INSERT INTO orders (id,customer_user_id,order_number,subtotal,discount_amount,shipping_charges,
 		  tax_amount,coupon_code,coupon_discount,final_amount,currency_code,payment_method,payment_status,
-		  delivery_address_id,delivery_address_snapshot,gift_message,status,idempotency_key,created_at,updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
+		  delivery_address_id,delivery_address_snapshot,gift_message,status,idempotency_key,created_at,updated_at,
+		  organization_id,po_number,cost_center,billing_address_snapshot,invoice_email,
+		  approval_status,credit_terms_days,payment_due_date)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
+		        $21,$22,$23,$24,$25,$26,$27,$28)`,
 		o.ID, o.CustomerUserID, o.OrderNumber, o.Subtotal, o.DiscountAmount, o.ShippingCharges,
 		o.TaxAmount, o.CouponCode, o.CouponDiscount, o.FinalAmount, o.CurrencyCode,
 		o.PaymentMethod, o.PaymentStatus, o.DeliveryAddressID, addrSnapshot, o.GiftMessage,
 		o.Status, o.IdempotencyKey, o.CreatedAt, o.UpdatedAt,
+		o.OrganizationID, o.PONumber, o.CostCenter, o.BillingAddressSnapshot, o.InvoiceEmail,
+		o.ApprovalStatus, o.CreditTermsDays, o.PaymentDueDate,
 	); err != nil {
 		return fmt.Errorf("insert order: %w", err)
 	}
@@ -519,20 +890,140 @@ func (s *Store) CreateOrder(ctx context.Context, o *Order, items []*OrderItem) e
 	return tx.Commit(ctx)
 }
 
+// GetOrderByIdempotencyKey returns the order (if any) created by `userID`
+// against `key`. Underlies H4 — Checkout uses this to short-circuit a
+// retried/double-tap checkout into the original order. Returns (nil, nil)
+// when no row matches.
+func (s *Store) GetOrderByIdempotencyKey(ctx context.Context, userID uuid.UUID, key string) (*Order, error) {
+	var o Order
+	err := s.db.QueryRow(ctx, `SELECT id,customer_user_id,order_number,subtotal,discount_amount,
+		shipping_charges,tax_amount,coupon_code,coupon_discount,final_amount,currency_code,
+		payment_method,payment_status,payment_id,payment_gateway,delivery_address_id,
+		delivery_address_snapshot,gift_message,status,cancellation_reason,cancelled_by,
+		idempotency_key,created_at,updated_at,
+		organization_id,po_number,cost_center,billing_address_snapshot,invoice_email,
+		approval_status,approved_by_user_id,approved_at,approval_notes,credit_terms_days,payment_due_date
+		FROM orders WHERE customer_user_id=$1 AND idempotency_key=$2`, userID, key).Scan(
+		&o.ID, &o.CustomerUserID, &o.OrderNumber, &o.Subtotal, &o.DiscountAmount,
+		&o.ShippingCharges, &o.TaxAmount, &o.CouponCode, &o.CouponDiscount, &o.FinalAmount,
+		&o.CurrencyCode, &o.PaymentMethod, &o.PaymentStatus, &o.PaymentID, &o.PaymentGateway,
+		&o.DeliveryAddressID, &o.DeliveryAddressSnapshot, &o.GiftMessage, &o.Status,
+		&o.CancellationReason, &o.CancelledBy, &o.IdempotencyKey, &o.CreatedAt, &o.UpdatedAt,
+		&o.OrganizationID, &o.PONumber, &o.CostCenter, &o.BillingAddressSnapshot, &o.InvoiceEmail,
+		&o.ApprovalStatus, &o.ApprovedByUserID, &o.ApprovedAt, &o.ApprovalNotes,
+		&o.CreditTermsDays, &o.PaymentDueDate,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &o, nil
+}
+
 func (s *Store) GetOrderByID(ctx context.Context, id uuid.UUID) (*Order, error) {
 	var o Order
 	err := s.db.QueryRow(ctx, `SELECT id,customer_user_id,order_number,subtotal,discount_amount,
 		shipping_charges,tax_amount,coupon_code,coupon_discount,final_amount,currency_code,
 		payment_method,payment_status,payment_id,payment_gateway,delivery_address_id,
 		delivery_address_snapshot,gift_message,status,cancellation_reason,cancelled_by,
-		idempotency_key,created_at,updated_at FROM orders WHERE id=$1`, id).Scan(
+		idempotency_key,created_at,updated_at,
+		organization_id,po_number,cost_center,billing_address_snapshot,invoice_email,
+		approval_status,approved_by_user_id,approved_at,approval_notes,credit_terms_days,payment_due_date
+		FROM orders WHERE id=$1`, id).Scan(
 		&o.ID, &o.CustomerUserID, &o.OrderNumber, &o.Subtotal, &o.DiscountAmount,
 		&o.ShippingCharges, &o.TaxAmount, &o.CouponCode, &o.CouponDiscount, &o.FinalAmount,
 		&o.CurrencyCode, &o.PaymentMethod, &o.PaymentStatus, &o.PaymentID, &o.PaymentGateway,
 		&o.DeliveryAddressID, &o.DeliveryAddressSnapshot, &o.GiftMessage, &o.Status,
 		&o.CancellationReason, &o.CancelledBy, &o.IdempotencyKey, &o.CreatedAt, &o.UpdatedAt,
+		&o.OrganizationID, &o.PONumber, &o.CostCenter, &o.BillingAddressSnapshot, &o.InvoiceEmail,
+		&o.ApprovalStatus, &o.ApprovedByUserID, &o.ApprovedAt, &o.ApprovalNotes,
+		&o.CreditTermsDays, &o.PaymentDueDate,
 	)
 	return &o, err
+}
+
+// OrderCard is the customer order-list row — Phase 2.1. Adds item +
+// seller counts and the first item's product so the customer can tell
+// orders apart without opening every one. Aggregates come from a single
+// LATERAL subquery so the list query is O(page-size) instead of N+1.
+type OrderCard struct {
+	ID                uuid.UUID  `json:"id"`
+	OrderNumber       string     `json:"order_number"`
+	FinalAmount       float64    `json:"final_amount"`
+	Currency          string     `json:"currency"`
+	PaymentMethod     *string    `json:"payment_method,omitempty"`
+	PaymentStatus     string     `json:"payment_status"`
+	Status            string     `json:"status"`
+	ItemCount         int        `json:"item_count"`
+	SellerCount       int        `json:"seller_count"`
+	FirstProductID    *uuid.UUID `json:"first_product_id,omitempty"`
+	FirstProductTitle string     `json:"first_product_title,omitempty"`
+	CreatedAt         time.Time  `json:"created_at"`
+}
+
+// ListOrderCardsByCustomer returns one page of order cards for the
+// customer using keyset pagination on (created_at, id). cursorTime nil
+// means first page. Returns the page (up to limit) plus a flag whether
+// more rows exist (so the caller can mint a next cursor).
+func (s *Store) ListOrderCardsByCustomer(ctx context.Context, userID uuid.UUID, cursorTime *time.Time, cursorID *uuid.UUID, limit int) ([]OrderCard, bool, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	// Fetch limit+1 so we can detect whether a next page exists without a
+	// separate COUNT(*) — count would index-scan the full set per request.
+	rows, err := s.db.Query(ctx, `
+		SELECT o.id, o.order_number, o.final_amount, o.currency_code,
+		       o.payment_method, o.payment_status, o.status, o.created_at,
+		       COALESCE(items.item_count, 0),
+		       COALESCE(items.seller_count, 0),
+		       items.first_product_id,
+		       items.first_product_title
+		FROM orders o
+		LEFT JOIN LATERAL (
+			SELECT
+				COUNT(*) AS item_count,
+				COUNT(DISTINCT seller_id) AS seller_count,
+				(ARRAY_AGG(product_id ORDER BY created_at ASC))[1] AS first_product_id,
+				(ARRAY_AGG(product_title ORDER BY created_at ASC))[1] AS first_product_title
+			FROM order_items oi
+			WHERE oi.order_id = o.id
+		) items ON TRUE
+		WHERE o.customer_user_id = $1
+		  AND ($2::TIMESTAMPTZ IS NULL OR (o.created_at, o.id) < ($2, $3::UUID))
+		ORDER BY o.created_at DESC, o.id DESC
+		LIMIT $4
+	`, userID, cursorTime, cursorID, limit+1)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+
+	out := make([]OrderCard, 0, limit+1)
+	for rows.Next() {
+		var c OrderCard
+		var firstProductID *uuid.UUID
+		var firstProductTitle *string
+		if err := rows.Scan(
+			&c.ID, &c.OrderNumber, &c.FinalAmount, &c.Currency,
+			&c.PaymentMethod, &c.PaymentStatus, &c.Status, &c.CreatedAt,
+			&c.ItemCount, &c.SellerCount,
+			&firstProductID, &firstProductTitle,
+		); err != nil {
+			return nil, false, err
+		}
+		c.FirstProductID = firstProductID
+		if firstProductTitle != nil {
+			c.FirstProductTitle = *firstProductTitle
+		}
+		out = append(out, c)
+	}
+	hasMore := len(out) > limit
+	if hasMore {
+		out = out[:limit]
+	}
+	return out, hasMore, nil
 }
 
 func (s *Store) GetOrdersByCustomer(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*Order, int, error) {
@@ -639,6 +1130,26 @@ func (s *Store) GetOrderItems(ctx context.Context, orderID uuid.UUID) ([]*OrderI
 		items = append(items, &item)
 	}
 	return items, nil
+}
+
+// GetOrderItemByID fetches a single order item. Used by the review-create
+// path (Phase 0.6) to validate that the reviewer's order item actually
+// matches the product + seller they're trying to review.
+func (s *Store) GetOrderItemByID(ctx context.Context, id uuid.UUID) (*OrderItem, error) {
+	var item OrderItem
+	err := s.db.QueryRow(ctx, `SELECT id,order_id,product_id,variant_id,seller_id,product_title,
+		variant_details,sku,quantity,unit_mrp,unit_price,discount_amount,tax_amount,final_price,
+		status,shipment_id,tracking_number,return_eligible_until,delivered_at,created_at
+		FROM order_items WHERE id=$1`, id).Scan(
+		&item.ID, &item.OrderID, &item.ProductID, &item.VariantID, &item.SellerID,
+		&item.ProductTitle, &item.VariantDetails, &item.SKU, &item.Quantity,
+		&item.UnitMRP, &item.UnitPrice, &item.DiscountAmount, &item.TaxAmount, &item.FinalPrice,
+		&item.Status, &item.ShipmentID, &item.TrackingNumber, &item.ReturnEligibleUntil,
+		&item.DeliveredAt, &item.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &item, nil
 }
 
 func (s *Store) UpdatePaymentStatus(ctx context.Context, orderID uuid.UUID, paymentStatus, paymentID, gateway string) error {
@@ -790,11 +1301,17 @@ func (s *Store) CreateReview(ctx context.Context, r *Review) error {
 
 func (s *Store) GetProductReviews(ctx context.Context, productID uuid.UUID, limit, offset int) ([]*Review, int, error) {
 	var total int
-	_ = s.db.QueryRow(ctx, `SELECT COUNT(*) FROM reviews WHERE product_id=$1 AND is_published=TRUE`, productID).Scan(&total)
+	_ = s.db.QueryRow(ctx, `
+		SELECT COUNT(*) FROM reviews
+		WHERE product_id=$1 AND is_published=TRUE
+		  AND COALESCE(moderation_status,'approved') <> 'rejected'
+	`, productID).Scan(&total)
 
 	rows, err := s.db.Query(ctx, `SELECT id,product_id,seller_id,order_item_id,reviewer_id,
-		rating,title,body,is_verified_purchase,helpful_count,created_at
+		rating,title,body,is_verified_purchase,helpful_count,
+		COALESCE(moderation_status,'approved'),seller_response,seller_responded_at,created_at
 		FROM reviews WHERE product_id=$1 AND is_published=TRUE
+		  AND COALESCE(moderation_status,'approved') <> 'rejected'
 		ORDER BY helpful_count DESC, created_at DESC LIMIT $2 OFFSET $3`, productID, limit, offset)
 	if err != nil {
 		return nil, 0, err
@@ -804,12 +1321,43 @@ func (s *Store) GetProductReviews(ctx context.Context, productID uuid.UUID, limi
 	for rows.Next() {
 		var r Review
 		if err := rows.Scan(&r.ID, &r.ProductID, &r.SellerID, &r.OrderItemID, &r.ReviewerID,
-			&r.Rating, &r.Title, &r.Body, &r.IsVerifiedPurchase, &r.HelpfulCount, &r.CreatedAt); err != nil {
+			&r.Rating, &r.Title, &r.Body, &r.IsVerifiedPurchase, &r.HelpfulCount,
+			&r.ModerationStatus, &r.SellerResponse, &r.SellerRespondedAt, &r.CreatedAt); err != nil {
 			return nil, 0, err
 		}
 		reviews = append(reviews, &r)
 	}
 	return reviews, total, nil
+}
+
+// GetReviewByID fetches a single review — used by the seller-response
+// handler (Phase 2.4) to verify the actor is the seller before allowing
+// a response, and to return the updated row.
+func (s *Store) GetReviewByID(ctx context.Context, id uuid.UUID) (*Review, error) {
+	var r Review
+	err := s.db.QueryRow(ctx, `SELECT id,product_id,seller_id,order_item_id,reviewer_id,
+		rating,title,body,is_verified_purchase,helpful_count,
+		COALESCE(moderation_status,'approved'),seller_response,seller_responded_at,created_at
+		FROM reviews WHERE id=$1`, id).Scan(
+		&r.ID, &r.ProductID, &r.SellerID, &r.OrderItemID, &r.ReviewerID,
+		&r.Rating, &r.Title, &r.Body, &r.IsVerifiedPurchase, &r.HelpfulCount,
+		&r.ModerationStatus, &r.SellerResponse, &r.SellerRespondedAt, &r.CreatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
+// SetSellerResponse adds (or replaces) the seller's response to a review.
+// Returns the affected row count so the service layer can distinguish a
+// no-op (id not found) from a legitimate skip.
+func (s *Store) SetSellerResponse(ctx context.Context, id uuid.UUID, response string) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE reviews SET seller_response=$2, seller_responded_at=NOW() WHERE id=$1`,
+		id, response,
+	)
+	return err
 }
 
 // ─── Coupons ─────────────────────────────────────────────────
@@ -826,6 +1374,17 @@ func (s *Store) GetCouponByCode(ctx context.Context, code string) (*Coupon, erro
 		&c.ApplicableTo, &c.IsActive, &c.StartsAt, &c.ExpiresAt,
 	)
 	return &c, err
+}
+
+// CountCouponUsagesByUser returns how many times a user has already
+// redeemed a coupon. Audit O10: the service uses this against
+// max_uses_per_user before applying the discount at checkout.
+func (s *Store) CountCouponUsagesByUser(ctx context.Context, couponID, userID uuid.UUID) (int, error) {
+	var n int
+	err := s.db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM coupon_usages WHERE coupon_id = $1 AND user_id = $2`,
+		couponID, userID).Scan(&n)
+	return n, err
 }
 
 func (s *Store) IncrCouponUsage(ctx context.Context, couponID, userID, orderID uuid.UUID) error {
@@ -857,6 +1416,48 @@ func (s *Store) CreateReturnRequest(ctx context.Context, r *ReturnRequest) error
 		r.ReasonCode, r.ReasonDescription, r.Status, r.RequestedAt,
 	)
 	return err
+}
+
+// ListReturnsBySeller returns return requests for a seller, optionally
+// filtered by status. Phase 4.3 — feeds the seller returns inbox.
+// status="" returns all states.
+func (s *Store) ListReturnsBySeller(ctx context.Context, sellerID uuid.UUID, status string, limit, offset int) ([]*ReturnRequest, error) {
+	var rows pgx.Rows
+	var err error
+	if status == "" {
+		rows, err = s.db.Query(ctx, `
+			SELECT id, order_id, order_item_id, customer_user_id, seller_id, reason_code,
+				reason_description, status, approved_at, rejected_at, rejection_reason,
+				requested_at, refund_amount
+			FROM return_requests
+			WHERE seller_id = $1
+			ORDER BY requested_at DESC
+			LIMIT $2 OFFSET $3`, sellerID, limit, offset)
+	} else {
+		rows, err = s.db.Query(ctx, `
+			SELECT id, order_id, order_item_id, customer_user_id, seller_id, reason_code,
+				reason_description, status, approved_at, rejected_at, rejection_reason,
+				requested_at, refund_amount
+			FROM return_requests
+			WHERE seller_id = $1 AND status = $2
+			ORDER BY requested_at DESC
+			LIMIT $3 OFFSET $4`, sellerID, status, limit, offset)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*ReturnRequest
+	for rows.Next() {
+		var r ReturnRequest
+		if err := rows.Scan(&r.ID, &r.OrderID, &r.OrderItemID, &r.CustomerUserID, &r.SellerID,
+			&r.ReasonCode, &r.ReasonDescription, &r.Status, &r.ApprovedAt, &r.RejectedAt,
+			&r.RejectionReason, &r.RequestedAt, &r.RefundAmount); err != nil {
+			return nil, err
+		}
+		out = append(out, &r)
+	}
+	return out, rows.Err()
 }
 
 // ListReturnsByCustomer returns a customer's return requests across all orders.
@@ -997,16 +1598,124 @@ func (s *Store) ListCODRemittancesBySeller(ctx context.Context, sellerID uuid.UU
 	return out, total, rows.Err()
 }
 
+// PendingPayoutSummary groups outstanding (unsettled) COD remittances by
+// seller so the admin reconciliation dashboard can show "how much do we owe
+// each seller" in one query. Phase 4.5.
+type PendingPayoutSummary struct {
+	SellerID         uuid.UUID `db:"seller_id" json:"seller_id"`
+	StoreName        string    `db:"store_name" json:"store_name"`
+	Email            string    `db:"email" json:"email"`
+	RemittanceCount  int       `db:"remittance_count" json:"remittance_count"`
+	TotalGross       float64   `db:"total_gross" json:"total_gross"`
+	TotalCommission  float64   `db:"total_commission" json:"total_commission"`
+	TotalPlatformFee float64   `db:"total_platform_fee" json:"total_platform_fee"`
+	TotalTDS         float64   `db:"total_tds" json:"total_tds"`
+	TotalNet         float64   `db:"total_net" json:"total_net"`
+	OldestDelivered  time.Time `db:"oldest_delivered" json:"oldest_delivered"`
+}
+
+// ListPendingPayoutsBySeller returns one row per seller with an outstanding
+// COD remittance balance. Used by the admin reconciliation dashboard.
+// Phase 4.5.
+func (s *Store) ListPendingPayoutsBySeller(ctx context.Context, limit int) ([]*PendingPayoutSummary, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT
+			cr.seller_id,
+			COALESCE(sl.store_name, '') AS store_name,
+			COALESCE(sl.email, '') AS email,
+			COUNT(*)::int AS remittance_count,
+			COALESCE(SUM(cr.gross_amount), 0)      AS total_gross,
+			COALESCE(SUM(cr.commission_amount), 0) AS total_commission,
+			COALESCE(SUM(cr.platform_fee), 0)      AS total_platform_fee,
+			COALESCE(SUM(cr.tds_amount), 0)        AS total_tds,
+			COALESCE(SUM(cr.net_amount), 0)        AS total_net,
+			MIN(cr.delivered_at)                   AS oldest_delivered
+		FROM cod_remittances cr
+		LEFT JOIN sellers sl ON sl.id = cr.seller_id
+		WHERE cr.status = 'pending'
+		GROUP BY cr.seller_id, sl.store_name, sl.email
+		ORDER BY MIN(cr.delivered_at) ASC
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*PendingPayoutSummary
+	for rows.Next() {
+		var r PendingPayoutSummary
+		if err := rows.Scan(&r.SellerID, &r.StoreName, &r.Email, &r.RemittanceCount,
+			&r.TotalGross, &r.TotalCommission, &r.TotalPlatformFee, &r.TotalTDS, &r.TotalNet,
+			&r.OldestDelivered); err != nil {
+			return nil, err
+		}
+		out = append(out, &r)
+	}
+	return out, rows.Err()
+}
+
+// DeliveredItemRow joins a delivered order item with its order header so the
+// caller can render or compute earnings without a second round trip.
+// Phase 4.4.
+type DeliveredItemRow struct {
+	Item          *OrderItem
+	OrderNumber   string
+	PaymentMethod *string
+}
+
+// ListDeliveredItemsForSeller returns delivered order items for the seller,
+// newest first. The order header carries payment_method so the service layer
+// can split COD vs prepaid (COD has its own remittance ledger).
+// Phase 4.4.
+func (s *Store) ListDeliveredItemsForSeller(ctx context.Context, sellerID uuid.UUID, limit, offset int) ([]*DeliveredItemRow, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT oi.id, oi.order_id, oi.product_id, oi.variant_id, oi.seller_id, oi.product_title,
+		       oi.sku, oi.quantity, oi.unit_mrp, oi.unit_price, oi.discount_amount, oi.tax_amount,
+		       oi.final_price, oi.status, oi.shipment_id, oi.tracking_number, oi.return_eligible_until,
+		       oi.delivered_at, oi.created_at,
+		       o.order_number, o.payment_method
+		FROM order_items oi
+		JOIN orders o ON o.id = oi.order_id
+		WHERE oi.seller_id = $1
+		  AND (oi.status = 'delivered' OR oi.delivered_at IS NOT NULL)
+		ORDER BY oi.delivered_at DESC NULLS LAST
+		LIMIT $2 OFFSET $3`, sellerID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*DeliveredItemRow
+	for rows.Next() {
+		var it OrderItem
+		var orderNumber string
+		var paymentMethod *string
+		if err := rows.Scan(&it.ID, &it.OrderID, &it.ProductID, &it.VariantID, &it.SellerID,
+			&it.ProductTitle, &it.SKU, &it.Quantity, &it.UnitMRP, &it.UnitPrice, &it.DiscountAmount,
+			&it.TaxAmount, &it.FinalPrice, &it.Status, &it.ShipmentID, &it.TrackingNumber,
+			&it.ReturnEligibleUntil, &it.DeliveredAt, &it.CreatedAt,
+			&orderNumber, &paymentMethod); err != nil {
+			return nil, err
+		}
+		out = append(out, &DeliveredItemRow{Item: &it, OrderNumber: orderNumber, PaymentMethod: paymentMethod})
+	}
+	return out, rows.Err()
+}
+
 // MarkCODRemittanceSettled flips a pending remittance to settled and stamps
 // the payout batch. Used by the Ops-side payout job when cash actually
-// transfers to the seller's bank/UPI.
+// transfers to the seller's bank/UPI. payoutBatchID may be uuid.Nil for a
+// standalone settlement (Ops marked it paid outside any batch); we store
+// NULL in that case so the row isn't tied to a non-existent batch.
 func (s *Store) MarkCODRemittanceSettled(ctx context.Context, remittanceID, payoutBatchID uuid.UUID) error {
+	var batchArg interface{}
+	if payoutBatchID != uuid.Nil {
+		batchArg = payoutBatchID
+	}
 	_, err := s.db.Exec(ctx, `
 		UPDATE cod_remittances
 		SET status = 'settled',
 		    settled_at = NOW(),
 		    payout_batch_id = $2
-		WHERE id = $1 AND status = 'pending'`, remittanceID, payoutBatchID)
+		WHERE id = $1 AND status = 'pending'`, remittanceID, batchArg)
 	return err
 }
 
@@ -1019,6 +1728,56 @@ func (s *Store) SetReturnRefund(ctx context.Context, returnID uuid.UUID, refundI
 		SET refund_intent_id=$2, refund_status=$3, refund_amount=$4
 		WHERE id=$1`, returnID, refundIntentID, status, amount)
 	return err
+}
+
+// MarkReturnRefundSucceededByIntent flips a return's refund_status to
+// 'succeeded' once payments-service confirms the refund via Kafka. Keyed
+// on refund_intent_id (set by SetReturnRefund at approve time) so the
+// consumer doesn't need to know the return ID. Returns the affected row
+// count so the caller can log a no-op gracefully (event for a refund
+// that was never tied to a return).
+func (s *Store) MarkReturnRefundSucceededByIntent(ctx context.Context, intentID string) (int64, error) {
+	cmd, err := s.db.Exec(ctx, `
+		UPDATE return_requests
+		SET refund_status='succeeded'
+		WHERE refund_intent_id=$1 AND refund_status IN ('pending','processing')`,
+		intentID)
+	if err != nil {
+		return 0, err
+	}
+	return cmd.RowsAffected(), nil
+}
+
+// StampOrderRefundIntent records the refund intent ID + flips the
+// order's payment_status to 'refund_pending'. Used by CancelOrder when
+// it kicks off the refund on payments-service so the later
+// payment.refunded event can find the order via intent_id.
+func (s *Store) StampOrderRefundIntent(ctx context.Context, orderID uuid.UUID, intentID string) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE orders
+		SET refund_intent_id = $2,
+		    payment_status = 'refund_pending',
+		    updated_at = NOW()
+		WHERE id = $1 AND payment_status = 'paid'`,
+		orderID, intentID)
+	return err
+}
+
+// MarkOrderRefundedByPayment is used by the consumer when a refund
+// event arrives for an order-level intent (i.e. a CancelOrder refund
+// rather than a per-line return). Flips orders.payment_status to
+// 'refunded' if currently 'paid'. Keyed on the intent id stamped onto
+// the order at refund-initiation time. Returns affected row count.
+func (s *Store) MarkOrderRefundedByPayment(ctx context.Context, intentID string) (int64, error) {
+	cmd, err := s.db.Exec(ctx, `
+		UPDATE orders
+		SET payment_status='refunded', updated_at=NOW()
+		WHERE refund_intent_id=$1 AND payment_status IN ('paid','refund_pending')`,
+		intentID)
+	if err != nil {
+		return 0, err
+	}
+	return cmd.RowsAffected(), nil
 }
 
 // ─── Payout Batches ──────────────────────────────────────────

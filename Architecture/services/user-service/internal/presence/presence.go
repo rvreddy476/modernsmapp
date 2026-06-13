@@ -42,3 +42,25 @@ func (s *Store) IsOnline(ctx context.Context, userID string) (bool, error) {
 	}
 	return n > 0, nil
 }
+
+// AreOnline resolves presence for many users in a single Redis round-trip
+// (MGET). The returned map has an entry for every input id; a missing or
+// expired presence key reads as false.
+func (s *Store) AreOnline(ctx context.Context, userIDs []string) (map[string]bool, error) {
+	result := make(map[string]bool, len(userIDs))
+	if len(userIDs) == 0 {
+		return result, nil
+	}
+	keys := make([]string, len(userIDs))
+	for i, id := range userIDs {
+		keys[i] = fmt.Sprintf("%s%s", presencePrefix, id)
+	}
+	vals, err := s.rdb.MGet(ctx, keys...).Result()
+	if err != nil {
+		return nil, err
+	}
+	for i, v := range vals {
+		result[userIDs[i]] = v != nil
+	}
+	return result, nil
+}

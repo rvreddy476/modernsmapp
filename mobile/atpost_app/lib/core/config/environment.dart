@@ -59,7 +59,9 @@ class Environment {
         _trimOrNull(_configuredWsBaseUrl) != null) {
       return null;
     }
-    // Default to the production domain to avoid 127.0.0.1 hangs on physical devices
+    // In debug mode, we might want to default to null to use 127.0.0.1 with adb reverse.
+    // However, to keep existing behavior, we only switch if a specific flag is set
+    // or we can detect we want local. For now, let's keep the default but allow override.
     return _defaultExternalDomain;
   }
 
@@ -137,4 +139,7 @@ class Environment {
   static const String foodPath = '/v1/food';
   static const String memoriesPath = '/v1/memories';
   static const String livePath = '/v1/live';
+  // Live streaming v2 (LiveKit / live-service-v2). Separate prefix
+  // from the legacy v1 service to avoid route collisions at the gateway.
+  static const String liveV2Path = '/v1/livestream';
 }

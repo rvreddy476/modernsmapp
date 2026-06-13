@@ -18,8 +18,12 @@ import 'dart:math';
 
 import 'package:atpost_app/data/models/mopedu.dart';
 import 'package:atpost_app/data/repositories/mopedu_repository.dart';
+import 'package:atpost_app/services/auth_service.dart';
+import 'package:atpost_app/services/mopedu_location_service.dart';
 import 'package:atpost_app/services/mopedu_telemetry.dart';
+import 'package:atpost_app/services/realtime_stream_service.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:geolocator/geolocator.dart';
 
 // ─── Idempotency / id mint ─────────────────────────────────────────────
 
@@ -235,6 +239,7 @@ class MopeduBookingState {
     this.estimate,
     this.rideId,
     this.error,
+    this.scheduledFor,
   });
 
   final MopeduBookingPhase phase;
@@ -246,6 +251,10 @@ class MopeduBookingState {
   final FareEstimate? estimate;
   final String? rideId;
   final Object? error;
+  /// When set + in the future, the booking is parked at status='scheduled'
+  /// until the rider-service activation worker promotes it ≈ T-15 min.
+  /// Wave G4.5 backend.
+  final DateTime? scheduledFor;
 
   bool get canEstimate =>
       pickup != null &&
@@ -267,9 +276,11 @@ class MopeduBookingState {
     FareEstimate? estimate,
     String? rideId,
     Object? error,
+    DateTime? scheduledFor,
     bool clearEstimate = false,
     bool clearRideId = false,
     bool clearError = false,
+    bool clearScheduledFor = false,
   }) {
     return MopeduBookingState(
       phase: phase ?? this.phase,
@@ -281,6 +292,8 @@ class MopeduBookingState {
       estimate: clearEstimate ? null : (estimate ?? this.estimate),
       rideId: clearRideId ? null : (rideId ?? this.rideId),
       error: clearError ? null : (error ?? this.error),
+      scheduledFor:
+          clearScheduledFor ? null : (scheduledFor ?? this.scheduledFor),
     );
   }
 }
@@ -314,6 +327,17 @@ class MopeduBookingNotifier extends StateNotifier<MopeduBookingState> {
     state = state.copyWith(estimate: e, phase: MopeduBookingPhase.confirming);
   }
 
+  /// G4.5 — schedule the booking. `at` must be in the future for the
+  /// activation worker to pick it up; passing a past time defaults to
+  /// immediate booking (clears the schedule).
+  void setScheduledFor(DateTime? at) {
+    if (at != null && at.isAfter(DateTime.now())) {
+      state = state.copyWith(scheduledFor: at);
+    } else {
+      state = state.copyWith(clearScheduledFor: true);
+    }
+  }
+
   void reset() {
     state = const MopeduBookingState();
   }
@@ -336,6 +360,7 @@ class MopeduBookingNotifier extends StateNotifier<MopeduBookingState> {
             cityId: st.cityId!,
             paymentMethod: st.paymentMethod,
             idempotencyKey: key,
+            scheduledFor: st.scheduledFor,
           );
 
       // Record drop as a recent saved place — best-effort, never blocks.
@@ -958,6 +983,12 @@ final partnerOnlineStateProvider = StateNotifierProvider<
 });
 
 // ─── Incoming offers (polling every 5s when online) ───────────────────
+//
+// The 5s polling provider is kept as the REST snapshot — it shows
+// every pending offer on first paint + recovers state after a
+// reconnect when the SSE stream missed frames. The SSE-driven push
+// path below (incomingOfferPushProvider, C1) is what triggers the
+// modal within ~100ms of arrival.
 
 final incomingOffersProvider =
     FutureProvider.autoDispose<List<RideOffer>>((ref) async {
@@ -968,13 +999,82 @@ final incomingOffersProvider =
   return ref.watch(mopeduRepositoryProvider).getIncomingOffers();
 });
 
+// ─── Realtime offer push (C1) ─────────────────────────────────────────
+//
+// 1. Fetches an HMAC topic token from rider-service.
+// 2. Opens an SSE connection to notification-service /v1/realtime/sse
+//    and filters frames where event == "rider.ride.offered".
+// 3. Decodes the payload into a RideOffer and pushes onto a broadcast
+//    stream the dashboard can listen to. The dashboard watches this
+//    stream and surfaces the RideRequestModal as soon as a frame
+//    arrives — eliminating the 5-second polling lag.
+//
+// Lifecycle: the StreamProvider auto-cancels when the dashboard
+// disposes (e.g. partner goes offline or backgrounds the app).
+
+final _realtimeSessionProvider = FutureProvider.autoDispose<
+    RealtimeStreamService?>((ref) async {
+  final isOnline =
+      ref.watch(partnerOnlineStateProvider.select((s) => s.isOnline));
+  if (!isOnline) return null;
+  final repo = ref.read(mopeduRepositoryProvider);
+  final result = await repo.getRealtimeToken();
+  final token = result.token;
+  final topics = result.topics;
+  if (token.isEmpty) return null;
+  // Only subscribe to offer topics; ignore ride-state topics on this
+  // session to keep the inbound chatter minimal.
+  final offerTopics = topics
+      .where((t) => t.startsWith('rider.partner.') && t.endsWith('.offers'))
+      .toList();
+  if (offerTopics.isEmpty) return null;
+  final auth = ref.read(authServiceProvider);
+  final svc = RealtimeStreamService(
+    auth: auth,
+    token: token,
+    topics: offerTopics,
+  );
+  svc.start();
+  ref.onDispose(svc.dispose);
+  return svc;
+});
+
+/// Streams RideOffer payloads as they arrive over SSE. Use this to
+/// trigger the partner offer modal without polling latency.
+final incomingOfferPushProvider =
+    StreamProvider.autoDispose<RideOffer>((ref) async* {
+  final svc = await ref.watch(_realtimeSessionProvider.future);
+  if (svc == null) {
+    return;
+  }
+  await for (final frame in svc.events) {
+    if (frame.event != 'rider.ride.offered') continue;
+    try {
+      yield RideOffer.fromJson(frame.data);
+    } catch (_) {
+      // Malformed payload — skip. The polling provider will pick the
+      // offer up via the next REST refresh.
+      continue;
+    }
+  }
+});
+
 // ─── Partner location service ─────────────────────────────────────────
 //
-// `geolocator` *is* in pubspec. We avoid importing it from this Riverpod
-// file to keep the providers layer device-platform-agnostic; the screen
-// layer can swap a real implementation. For now we use a tick-based
-// stub that pushes a fixed Bengaluru point every 30s when online — wire
-// `geolocator` in S3 as a polished service replacement.
+// Streams the device GPS while the partner is online so the backend
+// can match them to nearby riders and render their pin to the customer.
+//
+// Two sources are combined for resilience:
+//   1. A `Geolocator.getPositionStream` subscription delivers fresh
+//      fixes the moment the device crosses [distanceFilter] metres.
+//   2. A `Timer.periodic` heartbeat re-pushes the latest fix even when
+//      stationary so backend "last-seen" stays current.
+//
+// Foreground cadence: 5s heartbeat, 10m distance filter.
+// Background cadence: 30s heartbeat, 25m distance filter.
+//
+// PRIVACY: lat/lng never go through telemetry. We swallow push errors
+// and never log coordinates.
 
 abstract class PartnerLocationService {
   /// Begin streaming. Idempotent — a second call is a no-op.
@@ -988,48 +1088,81 @@ abstract class PartnerLocationService {
   void setForeground(bool foreground);
 }
 
-class _StubLocationService implements PartnerLocationService {
-  _StubLocationService(this._ref);
+class _GeolocatorPartnerLocationService implements PartnerLocationService {
+  _GeolocatorPartnerLocationService(this._ref);
 
   final Ref _ref;
-  Timer? _timer;
+  StreamSubscription<Position>? _sub;
+  Timer? _heartbeat;
+  Position? _last;
   bool _foreground = true;
-
-  // Bengaluru centroid. NEVER goes through telemetry.
-  static const double _stubLat = 12.9716;
-  static const double _stubLng = 77.5946;
+  bool _starting = false;
 
   Duration get _cadence =>
       _foreground ? const Duration(seconds: 5) : const Duration(seconds: 30);
+  int get _distanceFilter => _foreground ? 10 : 25;
 
   @override
   void start() {
-    if (_timer != null) return;
-    _push();
-    _timer = Timer.periodic(_cadence, (_) => _push());
+    if (_sub != null || _starting) return;
+    _starting = true;
+    _bootstrap();
+  }
+
+  Future<void> _bootstrap() async {
+    try {
+      final initial = await MopeduLocationService.getCurrentPosition();
+      if (initial.isOk) {
+        _last = initial.position;
+        await _push();
+      }
+      _sub = MopeduLocationService.positionStream(
+        distanceFilter: _distanceFilter,
+      ).listen(
+        (pos) {
+          _last = pos;
+          _push();
+        },
+        onError: (_) {
+          // permission revoked mid-stream / GPS off — stream will end.
+        },
+      );
+      _heartbeat = Timer.periodic(_cadence, (_) {
+        if (_last != null) _push();
+      });
+    } finally {
+      _starting = false;
+    }
   }
 
   @override
   void stop() {
-    _timer?.cancel();
-    _timer = null;
+    _sub?.cancel();
+    _sub = null;
+    _heartbeat?.cancel();
+    _heartbeat = null;
+    _last = null;
   }
 
   @override
   void setForeground(bool foreground) {
     if (_foreground == foreground) return;
     _foreground = foreground;
-    if (_timer != null) {
-      _timer!.cancel();
-      _timer = Timer.periodic(_cadence, (_) => _push());
+    if (_heartbeat != null) {
+      _heartbeat!.cancel();
+      _heartbeat = Timer.periodic(_cadence, (_) {
+        if (_last != null) _push();
+      });
     }
   }
 
   Future<void> _push() async {
+    final pos = _last;
+    if (pos == null) return;
     try {
       await _ref
           .read(mopeduRepositoryProvider)
-          .updateLocation(lat: _stubLat, lng: _stubLng);
+          .updateLocation(lat: pos.latitude, lng: pos.longitude);
     } catch (_) {
       // best-effort; silent. Privacy: never log lat/lng on failure.
     }
@@ -1037,7 +1170,7 @@ class _StubLocationService implements PartnerLocationService {
 }
 
 final partnerLocationServiceProvider = Provider<PartnerLocationService>((ref) {
-  final svc = _StubLocationService(ref);
+  final svc = _GeolocatorPartnerLocationService(ref);
   ref.onDispose(svc.stop);
   return svc;
 });

@@ -9,20 +9,52 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
+	"github.com/atpost/chat-message-service/internal/ratelimit"
 	"github.com/atpost/chat-message-service/internal/store/postgres"
 	"github.com/atpost/chat-message-service/internal/store/scylla"
 	sharedEvents "github.com/atpost/chat-shared/events"
+	"github.com/atpost/chat-shared/presence"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
+// Per-user chat rate limits (messaging/privacy spec §10.4).
+var (
+	// dmRateLimit caps direct-message sends at 60 per 60s per user.
+	dmRateLimit = ratelimit.Limit{Action: "dm", Max: 60, Window: 60 * time.Second}
+	// messageRequestRateLimit caps message-request creation at 20 per 24h
+	// per user to blunt mass cold-outreach spam.
+	messageRequestRateLimit = ratelimit.Limit{Action: "message_request", Max: 20, Window: 24 * time.Hour}
+)
+
+// bareDomainRe matches an unadorned domain (e.g. "example.com") so a message
+// request's first message cannot smuggle a link without an http(s):// prefix.
+var bareDomainRe = regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.(com|net|org|io|co|in|me|app|dev|xyz|info|link|to|ly|gg|sh)\b`)
+
+// containsLink reports whether text contains a URL or bare domain. Message
+// requests are link-free (spec §9.5) to blunt the most common spam vector.
+func containsLink(text string) bool {
+	lower := strings.ToLower(text)
+	if strings.Contains(lower, "http://") || strings.Contains(lower, "https://") || strings.Contains(lower, "www.") {
+		return true
+	}
+	return bareDomainRe.MatchString(text)
+}
+
 // --- Interfaces ---
 
 type ConversationStore interface {
-	CreateDirectConversation(ctx context.Context, userA, userB, createdBy uuid.UUID) (uuid.UUID, error)
+	CreateDirectConversation(ctx context.Context, userA, userB, createdBy uuid.UUID) (uuid.UUID, bool, error)
+	MarkConversationAsRequest(ctx context.Context, conversationID uuid.UUID) error
+	CreateMessageRequest(ctx context.Context, convID, senderID, receiverID uuid.UUID) error
+	GetMessageRequestByConversation(ctx context.Context, convID uuid.UUID) (*postgres.MessageRequest, error)
+	SetMessageRequestPreview(ctx context.Context, convID uuid.UUID, preview string) error
+	UpdateMessageRequestStatus(ctx context.Context, convID uuid.UUID, status string) error
 	CreateGroupConversation(ctx context.Context, creatorID uuid.UUID, title string, memberIDs []uuid.UUID) (uuid.UUID, error)
 	GetConversation(ctx context.Context, id uuid.UUID) (*postgres.Conversation, error)
 	TouchConversation(ctx context.Context, id uuid.UUID, ts time.Time) error
@@ -43,6 +75,10 @@ type ConversationStore interface {
 	// User profile cache
 	UpsertUserProfile(ctx context.Context, userID uuid.UUID, displayName string, avatarMediaID *uuid.UUID) error
 	GetUserProfiles(ctx context.Context, userIDs []uuid.UUID) (map[uuid.UUID]postgres.UserProfile, error)
+	// P0-3 dating-match support.
+	CreateDatingMatchConversation(ctx context.Context, userA, userB, matchID uuid.UUID) (uuid.UUID, bool, error)
+	MarkConversationClosedByMatch(ctx context.Context, matchID uuid.UUID) error
+	GetConversationMeta(ctx context.Context, conversationID uuid.UUID) (*postgres.ConversationMeta, error)
 }
 
 type MessageStore interface {
@@ -77,6 +113,7 @@ type ConversationResponse struct {
 	Type      string              `json:"type"`
 	Title     *string             `json:"title,omitempty"`
 	CreatedBy *uuid.UUID          `json:"created_by,omitempty"`
+	IsRequest bool                `json:"is_request"`
 	Members   []MemberWithProfile `json:"members"`
 	CreatedAt time.Time           `json:"created_at"`
 	UpdatedAt time.Time           `json:"updated_at"`
@@ -118,10 +155,13 @@ type Service struct {
 	convStore          ConversationStore
 	msgStore           MessageStore
 	rdb                *redis.Client
+	pres               presence.Store
+	rateLimiter        *ratelimit.Limiter
 	producer           EventProducer
 	log                *slog.Logger
 	pollInterval       time.Duration
 	userServiceURL     string
+	graphServiceURL    string
 	internalServiceKey string
 	httpClient         *http.Client
 }
@@ -130,6 +170,25 @@ var (
 	ErrIdempotencyKeyRequired = errors.New("idempotency key is required")
 	ErrIdempotencyConflict    = errors.New("idempotency key reused with different request")
 	ErrIdempotencyInProgress  = errors.New("request with this idempotency key is still processing")
+
+	// ErrMessagingNotAllowed is returned when the actor's privacy/relationship
+	// state permits neither a direct DM nor a message request to the target
+	// (messaging/privacy spec v2 §4).
+	ErrMessagingNotAllowed = errors.New("messaging this user is not permitted")
+	// ErrRequestFirstMessageInvalid is returned when a message request's first
+	// message violates the text-only / no-link / 500-char constraints (§9.5).
+	ErrRequestFirstMessageInvalid = errors.New("message request first message is invalid")
+	// ErrAwaitingRequestAcceptance is returned when a sender tries to send a
+	// follow-up before the recipient has accepted the request.
+	ErrAwaitingRequestAcceptance = errors.New("awaiting message request acceptance")
+	// ErrRateLimited is returned when a per-user chat rate limit is exceeded
+	// (spec §10.4). Mapped to HTTP 429.
+	ErrRateLimited = errors.New("rate limit exceeded")
+
+	// ErrMatchClosed is returned when SendMessage targets a dating-match
+	// conversation whose match has ended (unmatched, expired, or one side
+	// blocked / deleted / paused). P0-3 in dating/PRODUCTION_GAP_ANALYSIS.md.
+	ErrMatchClosed = errors.New("dating match is closed; no further messages allowed")
 )
 
 func New(convStore ConversationStore, msgStore MessageStore, rdb *redis.Client, producer EventProducer, log *slog.Logger, pollInterval time.Duration) *Service {
@@ -140,6 +199,8 @@ func New(convStore ConversationStore, msgStore MessageStore, rdb *redis.Client, 
 		convStore:    convStore,
 		msgStore:     msgStore,
 		rdb:          rdb,
+		pres:         presence.NewRedisStore(rdb, presence.Options{}),
+		rateLimiter:  ratelimit.New(rdb),
 		producer:     producer,
 		log:          log,
 		pollInterval: pollInterval,
@@ -147,9 +208,85 @@ func New(convStore ConversationStore, msgStore MessageStore, rdb *redis.Client, 
 	}
 }
 
+// ConversationPresence describes who's currently viewing or typing in
+// a conversation. activeCount is always present; activeUsers is only
+// populated for small conversations (≤100 members) per the production
+// realtime architecture rules — large groups get count-only to avoid
+// leaking a viewer list.
+type ConversationPresence struct {
+	ActiveCount  int64    `json:"active_count"`
+	ActiveUsers  []string `json:"active_users,omitempty"`
+	TypingUsers  []string `json:"typing_users,omitempty"`
+	IsBigGroup   bool     `json:"is_big_group"`
+}
+
+// GetConversationPresence returns who's actively viewing convID right
+// now. Caller must already be a member. The user-list-vs-count decision
+// is made server-side based on the group size cap so a client can't
+// scrape big channels.
+func (s *Service) GetConversationPresence(ctx context.Context, userID, convID uuid.UUID) (*ConversationPresence, error) {
+	ok, err := s.convStore.CheckMembership(ctx, convID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, errors.New("not a member of this conversation")
+	}
+
+	const smallGroupCap = 100
+	members, err := s.convStore.GetMembers(ctx, convID)
+	if err != nil {
+		return nil, err
+	}
+	isBig := len(members) > smallGroupCap
+
+	count, err := s.pres.ActiveCount(ctx, convID.String())
+	if err != nil {
+		return nil, err
+	}
+	out := &ConversationPresence{ActiveCount: count, IsBigGroup: isBig}
+	if !isBig {
+		users, err := s.pres.ActiveUsers(ctx, convID.String(), smallGroupCap)
+		if err != nil {
+			return nil, err
+		}
+		out.ActiveUsers = users
+		typing, err := s.pres.TypingUsers(ctx, convID.String(), smallGroupCap)
+		if err != nil {
+			return nil, err
+		}
+		out.TypingUsers = typing
+	}
+	return out, nil
+}
+
 func (s *Service) SetUserDirectory(userServiceURL, internalServiceKey string) {
 	s.userServiceURL = strings.TrimRight(userServiceURL, "/")
 	s.internalServiceKey = internalServiceKey
+}
+
+// SetGraphService wires the graph-service base URL used for DM permission
+// checks (spec §9.8). Without it, DM gating fails closed (see checkMessagePermission).
+func (s *Service) SetGraphService(graphServiceURL string) {
+	s.graphServiceURL = strings.TrimRight(graphServiceURL, "/")
+}
+
+// checkRateLimit enforces a per-user chat rate limit (spec §10.4). It returns
+// ErrRateLimited when the quota is exceeded. A Redis failure fails open (the
+// action is allowed) and is logged rather than surfaced to the caller.
+func (s *Service) checkRateLimit(ctx context.Context, limit ratelimit.Limit, userID uuid.UUID) error {
+	if s.rateLimiter == nil {
+		return nil
+	}
+	allowed, err := s.rateLimiter.Allow(ctx, limit, userID.String())
+	if err != nil {
+		s.log.Warn("rate limiter check failed — failing open", "err", err, "action", limit.Action, "user_id", userID)
+		return nil
+	}
+	if !allowed {
+		return ErrRateLimited
+	}
+	return nil
 }
 
 // --- Conversations ---
@@ -159,17 +296,130 @@ func (s *Service) CreateDirectConversation(ctx context.Context, userID, otherID 
 		return nil, errors.New("cannot create conversation with self")
 	}
 
+	// DM gating (spec §1, §4): a non-connection cannot silently open a direct
+	// DM. Depending on the target's privacy + relationship state the attempt
+	// is permitted, downgraded to a Message Request, or rejected outright.
+	allowed, asRequest, err := s.checkMessagePermission(ctx, userID, otherID)
+	if err != nil {
+		return nil, err
+	}
+	if !allowed && !asRequest {
+		return nil, ErrMessagingNotAllowed
+	}
+
 	req := struct {
 		UserID  uuid.UUID `json:"user_id"`
 		OtherID uuid.UUID `json:"other_id"`
 	}{UserID: userID, OtherID: otherID}
 	return withIdempotency(ctx, s, idempotencyKey, req, func() (*ConversationResponse, error) {
-		convID, err := s.convStore.CreateDirectConversation(ctx, userID, otherID, userID)
+		convID, created, err := s.convStore.CreateDirectConversation(ctx, userID, otherID, userID)
 		if err != nil {
 			return nil, err
 		}
+		// Downgrade to a Message Request only for a brand-new conversation —
+		// an existing conversation means the pair could already talk.
+		if !allowed && asRequest && created {
+			// Rate-limit message-request creation (spec §10.4): a single
+			// user may open at most messageRequestRateLimit.Max new
+			// requests per window. Checked only on the actual creation
+			// path so idempotent retries / existing conversations are free.
+			if err := s.checkRateLimit(ctx, messageRequestRateLimit, userID); err != nil {
+				return nil, err
+			}
+			if err := s.convStore.MarkConversationAsRequest(ctx, convID); err != nil {
+				return nil, err
+			}
+			if err := s.convStore.CreateMessageRequest(ctx, convID, userID, otherID); err != nil {
+				return nil, err
+			}
+		}
 		return s.getConversationResponse(ctx, convID)
 	})
+}
+
+// CreateDatingMatchConversation provisions the 1:1 conversation that
+// backs a freshly formed dating match. Bypasses the usual
+// checkMessagePermission DM gate — the match itself is the consent
+// signal, so requiring mutual-circle membership would lock matched
+// pairs out of chat. Idempotent on matchID via a partial unique index;
+// safe to retry from the match-formation saga.
+//
+// Caller is dating-service (internal-key gated at the handler).
+// P0-3 in dating/PRODUCTION_GAP_ANALYSIS.md.
+func (s *Service) CreateDatingMatchConversation(ctx context.Context, userA, userB, matchID uuid.UUID) (*ConversationResponse, error) {
+	if userA == userB {
+		return nil, errors.New("dating-match conversation requires two distinct users")
+	}
+	if matchID == uuid.Nil {
+		return nil, errors.New("match_id is required")
+	}
+	convID, _, err := s.convStore.CreateDatingMatchConversation(ctx, userA, userB, matchID)
+	if err != nil {
+		return nil, err
+	}
+	return s.getConversationResponse(ctx, convID)
+}
+
+// CloseDatingMatchConversation flips closed_at on the conversation
+// keyed by matchID. Idempotent — a re-close preserves the original
+// closed_at. Called by the dating-event consumer when
+// match.closed / match.expired lands.
+func (s *Service) CloseDatingMatchConversation(ctx context.Context, matchID uuid.UUID) error {
+	if matchID == uuid.Nil {
+		return errors.New("match_id is required")
+	}
+	return s.convStore.MarkConversationClosedByMatch(ctx, matchID)
+}
+
+// checkMessagePermission asks graph-service whether actor may DM target.
+// Returns (allowed, asRequest): allowed=true means a direct DM is permitted;
+// allowed=false + asRequest=true means it must route through a Message
+// Request; both false means messaging is not permitted at all.
+func (s *Service) checkMessagePermission(ctx context.Context, actorID, targetID uuid.UUID) (allowed bool, asRequest bool, err error) {
+	if s.graphServiceURL == "" {
+		// Deploy misconfiguration. Fail closed on direct DMs but keep the
+		// request path open so messaging is degraded, not bricked.
+		s.log.Warn("GRAPH_SERVICE_URL not configured — DM gating degraded to request-only")
+		return false, true, nil
+	}
+	url := fmt.Sprintf("%s/v1/permissions/check?target_user_id=%s&actions=message", s.graphServiceURL, targetID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return false, false, err
+	}
+	req.Header.Set("X-User-Id", actorID.String())
+	if s.internalServiceKey != "" {
+		req.Header.Set("X-Internal-Service-Key", s.internalServiceKey)
+	}
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return false, false, fmt.Errorf("permission check request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return false, false, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return false, false, fmt.Errorf("permission check returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	var envelope struct {
+		Data struct {
+			Decisions struct {
+				Message struct {
+					Allowed  bool   `json:"allowed"`
+					Fallback string `json:"fallback"`
+				} `json:"message"`
+			} `json:"decisions"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return false, false, fmt.Errorf("decode permission response: %w", err)
+	}
+	d := envelope.Data.Decisions.Message
+	return d.Allowed, d.Fallback == "message_request", nil
 }
 
 func (s *Service) CreateGroupConversation(ctx context.Context, userID uuid.UUID, title string, memberIDs []uuid.UUID, idempotencyKey string) (*ConversationResponse, error) {
@@ -248,6 +498,7 @@ func (s *Service) ListConversations(ctx context.Context, userID uuid.UUID, limit
 			Type:      c.Type,
 			Title:     c.Title,
 			CreatedBy: c.CreatedBy,
+			IsRequest: c.IsRequest,
 			Members:   enrichedMembers,
 			CreatedAt: c.CreatedAt,
 			UpdatedAt: c.UpdatedAt,
@@ -414,6 +665,21 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 		return nil, errors.New("not a conversation member")
 	}
 
+	// P0-3 dating-match send gate: reject sends to a closed dating
+	// conversation (match unmatched / expired / one side blocked /
+	// paused / suspended). The closed_at flag is flipped by the
+	// dating-event consumer when match.closed / match.expired land.
+	// Membership already covers the block case via
+	// conversation_members.left_at; the closed_at check is the
+	// dating-side equivalent.
+	meta, err := s.convStore.GetConversationMeta(ctx, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	if meta != nil && meta.SourceApp == "dating" && meta.ClosedAt != nil {
+		return nil, ErrMatchClosed
+	}
+
 	req := struct {
 		UserID         uuid.UUID  `json:"user_id"`
 		ConversationID uuid.UUID  `json:"conversation_id"`
@@ -422,6 +688,51 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 		MediaID        *uuid.UUID `json:"media_id,omitempty"`
 	}{UserID: userID, ConversationID: conversationID, Type: msgType, Text: text, MediaID: mediaID}
 	return withIdempotency(ctx, s, idempotencyKey, req, func() (*MessageResponse, error) {
+		// DM rate limit (spec §10.4): cap message sends per user per window.
+		// Inside the idempotency closure so a 429 releases the key and an
+		// idempotent retry of a previously-accepted send returns the cache.
+		if err := s.checkRateLimit(ctx, dmRateLimit, userID); err != nil {
+			return nil, err
+		}
+
+		// Message-request gating (spec §3.3, §9.5): in a pending request
+		// conversation only the original sender may post, and only a single
+		// constrained first message until the recipient accepts. This runs
+		// inside the idempotency closure so an idempotent retry returns the
+		// cached response instead of being rejected as a follow-up.
+		firstRequestMessage := false
+		conv, err := s.convStore.GetConversation(ctx, conversationID)
+		if err != nil {
+			return nil, err
+		}
+		if conv != nil && conv.IsRequest {
+			mr, err := s.convStore.GetMessageRequestByConversation(ctx, conversationID)
+			if err != nil {
+				return nil, err
+			}
+			if mr == nil || mr.Status != "pending" {
+				return nil, ErrAwaitingRequestAcceptance
+			}
+			if userID != mr.SenderID {
+				// The recipient must accept the request before replying.
+				return nil, ErrAwaitingRequestAcceptance
+			}
+			if mr.Preview != "" {
+				// The one allowed first message was already sent.
+				return nil, ErrAwaitingRequestAcceptance
+			}
+			if msgType != "text" || strings.TrimSpace(text) == "" {
+				return nil, fmt.Errorf("%w: first message must be non-empty text", ErrRequestFirstMessageInvalid)
+			}
+			if containsLink(text) {
+				return nil, fmt.Errorf("%w: links are not allowed", ErrRequestFirstMessageInvalid)
+			}
+			if utf8.RuneCountInString(text) > 500 {
+				return nil, fmt.Errorf("%w: exceeds 500 characters", ErrRequestFirstMessageInvalid)
+			}
+			firstRequestMessage = true
+		}
+
 		now := time.Now()
 		msgID := uuid.New()
 		bucket := now.UTC().Format("200601")
@@ -460,34 +771,162 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 			}
 		}()
 
-		// 4. Real-time delivery via Redis pub/sub to all members
+		// 4. Outbox event — critical synchronous handoff.
+		//
+		// Audit H5: this previously discarded the error with `_ =`. A
+		// transient Postgres blip would silently drop the downstream
+		// notification path (push, email) — the recipient would see the
+		// message only if they were already connected via Redis pub/sub.
+		//
+		// Now: retry briefly to absorb transient failures, then log
+		// CRITICAL if the row never lands. We still return success to
+		// the sender because Scylla has durably persisted the message;
+		// the alternative (failing the request) would create a duplicate
+		// on retry because the idempotency key gets released on error
+		// and a fresh msgID is generated.
+		recipientIDs := make([]string, 0, len(members))
+		for _, m := range members {
+			if m.UserID != userID {
+				recipientIDs = append(recipientIDs, m.UserID.String())
+			}
+		}
+		outboxPayload := sharedEvents.MessageCreatedPayload{
+			MessageID:      msgID.String(),
+			ConversationID: conversationID.String(),
+			SenderID:       userID.String(),
+			Type:           msgType,
+			RecipientIDs:   recipientIDs,
+			CreatedAt:      now,
+		}
+		var outboxErr error
+		for attempt := 0; attempt < 3; attempt++ {
+			outboxErr = s.convStore.InsertOutboxEvent(ctx, sharedEvents.MessageCreated, outboxPayload)
+			if outboxErr == nil {
+				break
+			}
+			if attempt < 2 {
+				time.Sleep(time.Duration(100*(attempt+1)) * time.Millisecond)
+			}
+		}
+		if outboxErr != nil {
+			l.Error("CRITICAL: outbox insert failed for chat message — downstream notifications will be lost",
+				"err", outboxErr)
+		}
+
+		// 4a. Dating-match send: emit a chat.dating.message.new outbox
+		// event per recipient so notification-service can drive push for
+		// recipients who aren't WS-connected. Phase 1 §1. The main
+		// MessageCreated outbox row already runs above; this is a
+		// dating-specific second event with the match_id + preview that
+		// the dating notification path needs.
+		if meta != nil && meta.SourceApp == "dating" && meta.MatchID != nil {
+			preview := text
+			if len(preview) > 140 {
+				// Conservative preview cap — push payloads are size
+				// constrained on iOS, and we don't want full PII in the
+				// Kafka log of a sensitive conversation.
+				preview = preview[:140]
+			}
+			for _, recipientID := range recipientIDs {
+				dpayload := sharedEvents.ChatDatingMessageNewPayload{
+					ConversationID: conversationID.String(),
+					MatchID:        meta.MatchID.String(),
+					SenderID:       userID.String(),
+					RecipientID:    recipientID,
+					MessagePreview: preview,
+					SentAt:         now,
+				}
+				if err := s.convStore.InsertOutboxEvent(ctx, sharedEvents.ChatDatingMessageNew, dpayload); err != nil {
+					l.Warn("dating outbox insert failed", "err", err, "recipient_id", recipientID)
+				}
+			}
+		}
+
+		// 4b. Message-request first message: store it as the request preview
+		// and emit MessageRequestCreated so notify routes it to the
+		// recipient's Requests folder (spec §3.3, §18.2).
+		if firstRequestMessage {
+			if err := s.convStore.SetMessageRequestPreview(ctx, conversationID, text); err != nil {
+				l.Warn("failed to set message request preview", "err", err)
+			}
+			var receiverID uuid.UUID
+			for _, m := range members {
+				if m.UserID != userID {
+					receiverID = m.UserID
+					break
+				}
+			}
+			_ = s.convStore.InsertOutboxEvent(ctx, sharedEvents.MessageRequestCreated, sharedEvents.MessageRequestPayload{
+				ConversationID: conversationID.String(),
+				SenderID:       userID.String(),
+				ReceiverID:     receiverID.String(),
+				Preview:        text,
+				OccurredAt:     now,
+			})
+		}
+
+		// 5. Real-time delivery via Redis pub/sub to all members (best-effort).
+		// Runs after the durable outbox handoff so a successful publish
+		// always corresponds to a queued outbox event.
+		//
+		// Phase 1 §1: for dating_match conversations we tag the payload
+		// with source_app + match_id so ws-gateway / clients can route to
+		// the dating UI rather than the generic chat list.
+		var sourceAppMeta string
+		var matchIDMeta string
+		if meta != nil && meta.SourceApp == "dating" {
+			sourceAppMeta = meta.SourceApp
+			if meta.MatchID != nil {
+				matchIDMeta = meta.MatchID.String()
+			}
+		}
 		go func() {
 			pubCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
+			msgBody := map[string]interface{}{
+				"conversation_id": conversationID,
+				"message_id":      msgID,
+				"sender_id":       userID,
+				"type":            msgType,
+				"text":            text,
+				"media_id":        mediaID,
+				"created_at":      now,
+			}
+			if sourceAppMeta != "" {
+				msgBody["source_app"] = sourceAppMeta
+			}
+			if matchIDMeta != "" {
+				msgBody["match_id"] = matchIDMeta
+			}
 			payload, _ := json.Marshal(map[string]interface{}{
-				"type": "message",
-				"payload": map[string]interface{}{
-					"conversation_id": conversationID,
-					"message_id":      msgID,
-					"sender_id":       userID,
-					"type":            msgType,
-					"text":            text,
-					"media_id":        mediaID,
-					"created_at":      now,
-				},
+				"type":    "message",
+				"payload": msgBody,
 			})
+			// M2: per-member fan-out collapsed into a single Redis
+			// pipeline. The previous loop issued one round-trip per
+			// member, which for a 100-member group added 100×RTT to
+			// the send (~100ms in the same DC, much worse cross-AZ).
+			// Pipeline batches the PUBLISH commands and waits for one
+			// flush. Pub/Sub fan-out semantics stay identical from
+			// the ws-gateway's point of view — it subscribes per
+			// chat:<user_id> channel as before.
+			pipe := s.rdb.Pipeline()
+			recipients := 0
 			for _, m := range members {
 				if m.UserID == userID {
 					continue // Don't notify sender
 				}
-				channel := fmt.Sprintf("chat:%s", m.UserID)
-				if err := s.rdb.Publish(pubCtx, channel, payload).Err(); err != nil {
-					l.Warn("failed to publish to redis pubsub", "err", err, "member_id", m.UserID)
+				pipe.Publish(pubCtx, fmt.Sprintf("chat:%s", m.UserID), payload)
+				recipients++
+			}
+			if recipients > 0 {
+				if _, err := pipe.Exec(pubCtx); err != nil {
+					l.Warn("failed to pipeline-publish to redis pubsub", "err", err, "recipients", recipients)
 				}
 			}
 		}()
 
-		// 5. Redis cache update (async)
+		// 6. Redis cache update (best-effort).
 		go func() {
 			cacheCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
@@ -500,15 +939,6 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 				l.Warn("failed to update redis cache", "err", err)
 			}
 		}()
-
-		// 6. Outbox event
-		_ = s.convStore.InsertOutboxEvent(ctx, sharedEvents.MessageCreated, sharedEvents.MessageCreatedPayload{
-			MessageID:      msgID.String(),
-			ConversationID: conversationID.String(),
-			SenderID:       userID.String(),
-			Type:           msgType,
-			CreatedAt:      now,
-		})
 
 		return &MessageResponse{
 			ConversationID: conversationID,
@@ -702,13 +1132,20 @@ func (s *Service) ToggleReaction(ctx context.Context, userID, conversationID, me
 				"added":           added,
 			},
 		})
+		// M2: pipeline the per-member PUBLISH commands (see message-
+		// send path above for the rationale).
+		pipe := s.rdb.Pipeline()
+		recipients := 0
 		for _, m := range members {
 			if m.UserID == userID {
 				continue
 			}
-			channel := fmt.Sprintf("chat:%s", m.UserID)
-			if err := s.rdb.Publish(pubCtx, channel, payload).Err(); err != nil {
-				s.log.Warn("failed to publish reaction to redis", "err", err, "member_id", m.UserID)
+			pipe.Publish(pubCtx, fmt.Sprintf("chat:%s", m.UserID), payload)
+			recipients++
+		}
+		if recipients > 0 {
+			if _, err := pipe.Exec(pubCtx); err != nil {
+				s.log.Warn("failed to pipeline-publish reaction to redis", "err", err, "recipients", recipients)
 			}
 		}
 	}()
@@ -799,6 +1236,7 @@ func (s *Service) getConversationResponse(ctx context.Context, convID uuid.UUID)
 		Type:      conv.Type,
 		Title:     conv.Title,
 		CreatedBy: conv.CreatedBy,
+		IsRequest: conv.IsRequest,
 		Members:   enrichedMembers,
 		CreatedAt: conv.CreatedAt,
 		UpdatedAt: conv.UpdatedAt,

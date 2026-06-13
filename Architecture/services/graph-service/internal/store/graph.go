@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,11 +19,26 @@ type Follow struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
+// EntityType discriminates between a normal user account and a business
+// page (a.k.a. "hub" in newer UI vocabulary). The relationship separation
+// spec routes friend requests to users and follows to pages — the graph
+// service uses LookupEntityType to reject cross-type operations.
+type EntityType string
+
+const (
+	EntityTypeUser    EntityType = "user"
+	EntityTypePage    EntityType = "page"
+	EntityTypeUnknown EntityType = "unknown"
+)
+
 type Relationship struct {
 	Follows    bool `json:"follows"`
 	FollowedBy bool `json:"followed_by"`
 	Blocked    bool `json:"blocked"`
 	IsMuted    bool `json:"is_muted"`
+	// IsConnection: viewer and target are friends (a connections row in
+	// either direction). Drives friend-aware CTAs on the client.
+	IsConnection bool `json:"is_connection"`
 }
 
 type Block struct {
@@ -38,12 +55,15 @@ type Counts struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
-type FriendRequest struct {
+type ConnectionRequest struct {
 	SenderID   uuid.UUID `json:"sender_id"`
 	ReceiverID uuid.UUID `json:"receiver_id"`
 	Status     string    `json:"status"`
+	Source     string    `json:"source"`
+	Message    *string   `json:"message,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
+	ExpiresAt  time.Time `json:"expires_at"`
 }
 
 type Store struct {
@@ -52,6 +72,36 @@ type Store struct {
 
 func New(db *pgxpool.Pool) *Store {
 	return &Store{db: db}
+}
+
+// LookupEntityType returns whether the given ID is a user, a page (hub),
+// or unknown. One round-trip — uses EXISTS on both tables so a missing
+// id returns (EntityTypeUnknown, nil) instead of an error.
+//
+// Called by the service layer before SendConnectionRequest / Follow /
+// Unfollow so cross-type operations are rejected with 400 instead of
+// silently writing to the underlying relationship tables.
+func (s *Store) LookupEntityType(ctx context.Context, id uuid.UUID) (EntityType, error) {
+	var isUser, isPage bool
+	err := s.db.QueryRow(ctx, `
+		SELECT
+			EXISTS(SELECT 1 FROM users          WHERE id = $1),
+			EXISTS(SELECT 1 FROM business_pages WHERE id = $1)
+	`, id).Scan(&isUser, &isPage)
+	if err != nil {
+		return EntityTypeUnknown, err
+	}
+	switch {
+	case isUser:
+		// If both somehow matched (UUID collision across tables — should
+		// never happen) prefer user, since friend semantics are the
+		// stricter path and pages have their own follow route.
+		return EntityTypeUser, nil
+	case isPage:
+		return EntityTypePage, nil
+	default:
+		return EntityTypeUnknown, nil
+	}
 }
 
 // --- Follows ---
@@ -65,71 +115,81 @@ func (s *Store) CheckBlock(ctx context.Context, blockerID, blockedID uuid.UUID) 
 	return exists, err
 }
 
-// CreateFollow adds a follow relationship.
-func (s *Store) CreateFollow(ctx context.Context, followerID, followeeID uuid.UUID) error {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-
-	_, err = tx.Exec(ctx, `
+// CreateFollow adds a follow relationship. Returns (inserted, err)
+// where inserted is true only when a new follows row landed — duplicate
+// calls return (false, nil) so the caller can skip its counter bump.
+//
+// Audit HG5: previously the count increments fired unconditionally
+// even when ON CONFLICT DO NOTHING skipped the insert, so concurrent
+// duplicate follows drifted the counters upward forever.
+//
+// counts.follower_count / counts.following_count are no longer touched
+// here — at celebrity scale that singleton row was the platform's #1
+// lock-contention point. The service layer bumps a sharded Redis
+// counter and a flush worker materialises the sum back to PG every
+// ~10s. See (*Service).Follow / Unfollow.
+func (s *Store) CreateFollow(ctx context.Context, followerID, followeeID uuid.UUID) (bool, error) {
+	cmdTag, err := s.db.Exec(ctx, `
 		INSERT INTO follows (follower_id, followee_id, created_at)
 		VALUES ($1, $2, NOW())
 		ON CONFLICT (follower_id, followee_id) DO NOTHING
 	`, followerID, followeeID)
 	if err != nil {
-		return err
+		return false, err
 	}
-
-	_, err = tx.Exec(ctx, `
-		INSERT INTO counts (user_id, following_count, follower_count, friend_count, updated_at)
-		VALUES ($1, 1, 0, 0, NOW())
-		ON CONFLICT (user_id) DO UPDATE SET following_count = counts.following_count + 1, updated_at = NOW()
-	`, followerID)
-	if err != nil {
-		return err
-	}
-
-	_, err = tx.Exec(ctx, `
-		INSERT INTO counts (user_id, following_count, follower_count, friend_count, updated_at)
-		VALUES ($1, 0, 1, 0, NOW())
-		ON CONFLICT (user_id) DO UPDATE SET follower_count = counts.follower_count + 1, updated_at = NOW()
-	`, followeeID)
-	if err != nil {
-		return err
-	}
-
-	return tx.Commit(ctx)
+	return cmdTag.RowsAffected() > 0, nil
 }
 
-// DeleteFollow removes a follow relationship.
-func (s *Store) DeleteFollow(ctx context.Context, followerID, followeeID uuid.UUID) error {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-
-	cmdTag, err := tx.Exec(ctx, `
+// DeleteFollow removes a follow relationship. Returns (removed, err)
+// — false when the follow didn't exist to begin with (idempotent).
+// Like CreateFollow, the counts.* UPDATE is now handled at the service
+// layer via the sharded counter.
+func (s *Store) DeleteFollow(ctx context.Context, followerID, followeeID uuid.UUID) (bool, error) {
+	cmdTag, err := s.db.Exec(ctx, `
 		DELETE FROM follows WHERE follower_id = $1 AND followee_id = $2
 	`, followerID, followeeID)
 	if err != nil {
-		return err
+		return false, err
 	}
+	return cmdTag.RowsAffected() > 0, nil
+}
 
-	if cmdTag.RowsAffected() > 0 {
-		_, err = tx.Exec(ctx, `UPDATE counts SET following_count = following_count - 1 WHERE user_id = $1`, followerID)
-		if err != nil {
-			return err
-		}
-		_, err = tx.Exec(ctx, `UPDATE counts SET follower_count = follower_count - 1 WHERE user_id = $1`, followeeID)
-		if err != nil {
-			return err
-		}
+// IncrementCountColumn is the legacy per-event UPDATE path used as a
+// fallback when the sharded Redis counter is unavailable (Redis nil or
+// transient failure). column must be "follower_count" or
+// "following_count" — friend_count stays on the in-tx path inside
+// AcceptConnectionRequest / RemoveConnection because the volume is
+// lower and the transactional semantics matter for the bidirectional
+// row.
+func (s *Store) IncrementCountColumn(ctx context.Context, userID uuid.UUID, column string, delta int64) error {
+	if column != "follower_count" && column != "following_count" {
+		return fmt.Errorf("invalid count column: %s", column)
 	}
+	query := fmt.Sprintf(`
+		INSERT INTO counts (user_id, follower_count, following_count, friend_count, updated_at)
+		VALUES ($1, 0, 0, 0, NOW())
+		ON CONFLICT (user_id) DO UPDATE SET
+			%s = GREATEST(counts.%s + $2, 0),
+			updated_at = NOW()`, column, column)
+	_, err := s.db.Exec(ctx, query, userID, delta)
+	return err
+}
 
-	return tx.Commit(ctx)
+// SetCountColumn overwrites the column to the absolute value. Used by
+// the sharded-counter flush worker — Redis is the realtime buffer,
+// this UPDATE periodically materialises the shard sum back to PG.
+func (s *Store) SetCountColumn(ctx context.Context, userID uuid.UUID, column string, total int64) error {
+	if column != "follower_count" && column != "following_count" {
+		return fmt.Errorf("invalid count column: %s", column)
+	}
+	query := fmt.Sprintf(`
+		INSERT INTO counts (user_id, follower_count, following_count, friend_count, updated_at)
+		VALUES ($1, 0, 0, 0, NOW())
+		ON CONFLICT (user_id) DO UPDATE SET
+			%s = GREATEST($2, 0),
+			updated_at = NOW()`, column)
+	_, err := s.db.Exec(ctx, query, userID, total)
+	return err
 }
 
 // CreateBlock adds a block.
@@ -173,6 +233,8 @@ func (s *Store) GetCounts(ctx context.Context, userID uuid.UUID) (*Counts, error
 }
 
 // GetFollowers returns paginated list of user IDs that follow the given user.
+// Legacy offset-based path. Prefer GetFollowersCursor at scale —
+// OFFSET 1M on a celebrity's followers scans a million rows.
 func (s *Store) GetFollowers(ctx context.Context, userID uuid.UUID, limit, offset int) ([]uuid.UUID, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 20
@@ -199,6 +261,128 @@ func (s *Store) GetFollowers(ctx context.Context, userID uuid.UUID, limit, offse
 	return ids, rows.Err()
 }
 
+// GetFollowersCursor returns one page of followers using keyset
+// pagination on (created_at DESC, follower_id DESC). Cursor format is
+// "<unix_micros>:<uuid>". Empty cursor = start of list. Returns the
+// followers + nextCursor (empty on last page).
+//
+// HG2 — full cursor migration. At billions-of-users scale the offset
+// path becomes O(N) for celebrities; this stays O(log n) regardless of
+// page depth via idx_follows_followee_desc.
+func (s *Store) GetFollowersCursor(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]FollowEdge, string, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	args := []any{userID}
+	cursorClause := ""
+	if cursor != "" {
+		ts, id, ok := parseFollowCursor(cursor)
+		if ok {
+			cursorClause = " AND (created_at, follower_id) < ($2, $3)"
+			args = append(args, ts, id)
+		}
+	}
+	args = append(args, limit+1)
+	q := `
+		SELECT follower_id, created_at FROM follows
+		WHERE followee_id = $1` + cursorClause + `
+		ORDER BY created_at DESC, follower_id DESC
+		LIMIT $` + strconv.Itoa(len(args))
+	rows, err := s.db.Query(ctx, q, args...)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+	var edges []FollowEdge
+	for rows.Next() {
+		var e FollowEdge
+		if err := rows.Scan(&e.UserID, &e.CreatedAt); err != nil {
+			return nil, "", err
+		}
+		edges = append(edges, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	var next string
+	if len(edges) > limit {
+		last := edges[limit-1]
+		next = fmt.Sprintf("%d:%s", last.CreatedAt.UnixMicro(), last.UserID.String())
+		edges = edges[:limit]
+	}
+	return edges, next, nil
+}
+
+// FollowEdge is one (follower or followee, created_at) tuple. The
+// created_at is exposed for cursor derivation; the handler only ships
+// the user id to clients.
+type FollowEdge struct {
+	UserID    uuid.UUID
+	CreatedAt time.Time
+}
+
+func parseFollowCursor(cursor string) (time.Time, uuid.UUID, bool) {
+	parts := strings.SplitN(cursor, ":", 2)
+	if len(parts) != 2 {
+		return time.Time{}, uuid.Nil, false
+	}
+	micros, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		return time.Time{}, uuid.Nil, false
+	}
+	id, err := uuid.Parse(parts[1])
+	if err != nil {
+		return time.Time{}, uuid.Nil, false
+	}
+	return time.UnixMicro(micros).UTC(), id, true
+}
+
+// GetFollowingCursor is the keyset-paginated variant of GetFollowing.
+// Symmetric to GetFollowersCursor — backed by idx_follows_follower_desc.
+func (s *Store) GetFollowingCursor(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]FollowEdge, string, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	args := []any{userID}
+	cursorClause := ""
+	if cursor != "" {
+		ts, id, ok := parseFollowCursor(cursor)
+		if ok {
+			cursorClause = " AND (created_at, followee_id) < ($2, $3)"
+			args = append(args, ts, id)
+		}
+	}
+	args = append(args, limit+1)
+	q := `
+		SELECT followee_id, created_at FROM follows
+		WHERE follower_id = $1` + cursorClause + `
+		ORDER BY created_at DESC, followee_id DESC
+		LIMIT $` + strconv.Itoa(len(args))
+	rows, err := s.db.Query(ctx, q, args...)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+	var edges []FollowEdge
+	for rows.Next() {
+		var e FollowEdge
+		if err := rows.Scan(&e.UserID, &e.CreatedAt); err != nil {
+			return nil, "", err
+		}
+		edges = append(edges, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	var next string
+	if len(edges) > limit {
+		last := edges[limit-1]
+		next = fmt.Sprintf("%d:%s", last.CreatedAt.UnixMicro(), last.UserID.String())
+		edges = edges[:limit]
+	}
+	return edges, next, nil
+}
+
 // GetFollowing returns paginated list of user IDs that the given user follows.
 func (s *Store) GetFollowing(ctx context.Context, userID uuid.UUID, limit, offset int) ([]uuid.UUID, error) {
 	if limit <= 0 || limit > 100 {
@@ -216,6 +400,38 @@ func (s *Store) GetFollowing(ctx context.Context, userID uuid.UUID, limit, offse
 	defer rows.Close()
 
 	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// GetFollowingIDs returns up to `limit` user IDs that `userID` follows,
+// most-recently-followed first. Used by search-service to drive the
+// author-affinity boost in function_score ranking — we trade strict
+// "interaction recency" for "follow recency" because the follows row's
+// created_at column already exists and the index on it is hot. limit is
+// capped at 500 to keep the OpenSearch `terms` array bounded.
+func (s *Store) GetFollowingIDs(ctx context.Context, userID uuid.UUID, limit int) ([]uuid.UUID, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 500
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT followee_id FROM follows
+		WHERE follower_id = $1
+		ORDER BY created_at DESC
+		LIMIT $2
+	`, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	ids := make([]uuid.UUID, 0, limit)
 	for rows.Next() {
 		var id uuid.UUID
 		if err := rows.Scan(&id); err != nil {
@@ -253,7 +469,7 @@ func (s *Store) GetMutualFollowers(ctx context.Context, userA, userB uuid.UUID, 
 	return ids, rows.Err()
 }
 
-// --- Friends ---
+// --- Connections ---
 
 // normalizePair ensures a < b (lexicographic UUID ordering).
 func normalizePair(a, b uuid.UUID) (uuid.UUID, uuid.UUID) {
@@ -263,21 +479,35 @@ func normalizePair(a, b uuid.UUID) (uuid.UUID, uuid.UUID) {
 	return b, a
 }
 
-// SendFriendRequest creates a pending friend request.
-func (s *Store) SendFriendRequest(ctx context.Context, senderID, receiverID uuid.UUID) error {
+// SendConnectionRequest creates a pending connection request, or re-opens a
+// previously declined/cancelled/expired one for the same pair.
+func (s *Store) SendConnectionRequest(ctx context.Context, senderID, receiverID uuid.UUID, source, message string) error {
+	if source == "" {
+		source = "profile"
+	}
+	var msg *string
+	if message != "" {
+		msg = &message
+	}
+	// expires_at is computed in Go and passed as its own parameter.
+	// Deriving it in SQL ($5 + INTERVAL '30 days') made Postgres deduce
+	// conflicting types for $5 — it is also used as created_at/updated_at.
 	now := time.Now()
+	expiresAt := now.AddDate(0, 0, 30)
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO friend_requests (sender_id, receiver_id, status, created_at, updated_at)
-		VALUES ($1, $2, 'pending', $3, $3)
+		INSERT INTO connection_requests (sender_id, receiver_id, status, source, message, created_at, updated_at, expires_at)
+		VALUES ($1, $2, 'pending', $3, $4, $5, $5, $6)
 		ON CONFLICT (sender_id, receiver_id) DO UPDATE
-		SET status = 'pending', updated_at = $3
-		WHERE friend_requests.status = 'rejected'
-	`, senderID, receiverID, now)
+		SET status = 'pending', source = EXCLUDED.source, message = EXCLUDED.message,
+		    created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at,
+		    expires_at = EXCLUDED.expires_at, responded_at = NULL
+		WHERE connection_requests.status IN ('declined', 'cancelled', 'expired')
+	`, senderID, receiverID, source, msg, now, expiresAt)
 	return err
 }
 
-// AcceptFriendRequest accepts a pending request and creates the friendship.
-func (s *Store) AcceptFriendRequest(ctx context.Context, senderID, receiverID uuid.UUID) error {
+// AcceptConnectionRequest accepts a pending request and creates the connection.
+func (s *Store) AcceptConnectionRequest(ctx context.Context, senderID, receiverID uuid.UUID) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return err
@@ -286,20 +516,20 @@ func (s *Store) AcceptFriendRequest(ctx context.Context, senderID, receiverID uu
 
 	// 1. Update request status
 	cmdTag, err := tx.Exec(ctx, `
-		UPDATE friend_requests SET status = 'accepted', updated_at = NOW()
+		UPDATE connection_requests SET status = 'accepted', responded_at = NOW(), updated_at = NOW()
 		WHERE sender_id = $1 AND receiver_id = $2 AND status = 'pending'
 	`, senderID, receiverID)
 	if err != nil {
 		return err
 	}
 	if cmdTag.RowsAffected() == 0 {
-		return fmt.Errorf("no pending friend request found")
+		return fmt.Errorf("no pending connection request found")
 	}
 
-	// 2. Insert into friends table (normalized order)
+	// 2. Insert into connections table (normalized order)
 	userA, userB := normalizePair(senderID, receiverID)
 	_, err = tx.Exec(ctx, `
-		INSERT INTO friends (user_a, user_b, created_at)
+		INSERT INTO connections (user_a, user_b, created_at)
 		VALUES ($1, $2, NOW())
 		ON CONFLICT (user_a, user_b) DO NOTHING
 	`, userA, userB)
@@ -307,7 +537,7 @@ func (s *Store) AcceptFriendRequest(ctx context.Context, senderID, receiverID uu
 		return err
 	}
 
-	// 3. Increment friend_count for both users
+	// 3. Increment connection count for both users
 	for _, uid := range []uuid.UUID{senderID, receiverID} {
 		_, err = tx.Exec(ctx, `
 			INSERT INTO counts (user_id, follower_count, following_count, friend_count, updated_at)
@@ -322,17 +552,43 @@ func (s *Store) AcceptFriendRequest(ctx context.Context, senderID, receiverID uu
 	return tx.Commit(ctx)
 }
 
-// RejectFriendRequest rejects a pending request.
-func (s *Store) RejectFriendRequest(ctx context.Context, senderID, receiverID uuid.UUID) error {
+// DeclineConnectionRequest declines a pending request (receiver action).
+func (s *Store) DeclineConnectionRequest(ctx context.Context, senderID, receiverID uuid.UUID) error {
 	_, err := s.db.Exec(ctx, `
-		UPDATE friend_requests SET status = 'rejected', updated_at = NOW()
+		UPDATE connection_requests SET status = 'declined', responded_at = NOW(), updated_at = NOW()
 		WHERE sender_id = $1 AND receiver_id = $2 AND status = 'pending'
 	`, senderID, receiverID)
 	return err
 }
 
-// RemoveFriend removes a friendship and decrements counts.
-func (s *Store) RemoveFriend(ctx context.Context, userA, userB uuid.UUID) error {
+// CancelConnectionRequest lets the sender withdraw their own pending request.
+// Returns true when a pending request was actually cancelled.
+func (s *Store) CancelConnectionRequest(ctx context.Context, senderID, receiverID uuid.UUID) (bool, error) {
+	cmdTag, err := s.db.Exec(ctx, `
+		UPDATE connection_requests SET status = 'cancelled', responded_at = NOW(), updated_at = NOW()
+		WHERE sender_id = $1 AND receiver_id = $2 AND status = 'pending'
+	`, senderID, receiverID)
+	if err != nil {
+		return false, err
+	}
+	return cmdTag.RowsAffected() > 0, nil
+}
+
+// ExpireStaleConnectionRequests flips pending requests past expires_at to
+// 'expired'. Returns the number of rows expired. Driven by the sweeper.
+func (s *Store) ExpireStaleConnectionRequests(ctx context.Context) (int64, error) {
+	cmdTag, err := s.db.Exec(ctx, `
+		UPDATE connection_requests SET status = 'expired', updated_at = NOW()
+		WHERE status = 'pending' AND expires_at < NOW()
+	`)
+	if err != nil {
+		return 0, err
+	}
+	return cmdTag.RowsAffected(), nil
+}
+
+// RemoveConnection removes a connection and decrements counts.
+func (s *Store) RemoveConnection(ctx context.Context, userA, userB uuid.UUID) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return err
@@ -341,7 +597,7 @@ func (s *Store) RemoveFriend(ctx context.Context, userA, userB uuid.UUID) error 
 
 	nA, nB := normalizePair(userA, userB)
 	cmdTag, err := tx.Exec(ctx, `
-		DELETE FROM friends WHERE user_a = $1 AND user_b = $2
+		DELETE FROM connections WHERE user_a = $1 AND user_b = $2
 	`, nA, nB)
 	if err != nil {
 		return err
@@ -358,31 +614,37 @@ func (s *Store) RemoveFriend(ctx context.Context, userA, userB uuid.UUID) error 
 			}
 		}
 
-		// Clean up the friend_requests row
-		_, _ = tx.Exec(ctx, `DELETE FROM friend_requests WHERE sender_id = $1 AND receiver_id = $2`, userA, userB)
-		_, _ = tx.Exec(ctx, `DELETE FROM friend_requests WHERE sender_id = $1 AND receiver_id = $2`, userB, userA)
+		// Clean up the connection_requests row
+		_, _ = tx.Exec(ctx, `DELETE FROM connection_requests WHERE sender_id = $1 AND receiver_id = $2`, userA, userB)
+		_, _ = tx.Exec(ctx, `DELETE FROM connection_requests WHERE sender_id = $1 AND receiver_id = $2`, userB, userA)
+
+		// Cascade: a removed connection can no longer be a close friend
+		// (friends-sheets spec §10). Both directions, same transaction.
+		_, _ = tx.Exec(ctx,
+			`DELETE FROM close_friends WHERE (user_id = $1 AND friend_id = $2) OR (user_id = $2 AND friend_id = $1)`,
+			userA, userB)
 	}
 
 	return tx.Commit(ctx)
 }
 
-// CheckFriendship returns true if userA and userB are friends.
-func (s *Store) CheckFriendship(ctx context.Context, userA, userB uuid.UUID) (bool, error) {
+// CheckConnection returns true if userA and userB are connected.
+func (s *Store) CheckConnection(ctx context.Context, userA, userB uuid.UUID) (bool, error) {
 	nA, nB := normalizePair(userA, userB)
 	var exists bool
 	err := s.db.QueryRow(ctx, `
-		SELECT EXISTS(SELECT 1 FROM friends WHERE user_a = $1 AND user_b = $2)
+		SELECT EXISTS(SELECT 1 FROM connections WHERE user_a = $1 AND user_b = $2)
 	`, nA, nB).Scan(&exists)
 	return exists, err
 }
 
-// GetFriendRequestStatus returns the friend request status between actor and target.
-// Returns: "none", "pending_sent", "pending_received", "accepted", "rejected".
-func (s *Store) GetFriendRequestStatus(ctx context.Context, actorID, targetID uuid.UUID) (string, error) {
+// GetConnectionRequestStatus returns the request status between actor and
+// target: "none", "pending_sent", "pending_received", or a terminal status.
+func (s *Store) GetConnectionRequestStatus(ctx context.Context, actorID, targetID uuid.UUID) (string, error) {
 	// Check actor → target
 	var status string
 	err := s.db.QueryRow(ctx, `
-		SELECT status FROM friend_requests
+		SELECT status FROM connection_requests
 		WHERE sender_id = $1 AND receiver_id = $2
 	`, actorID, targetID).Scan(&status)
 	if err == nil {
@@ -397,7 +659,7 @@ func (s *Store) GetFriendRequestStatus(ctx context.Context, actorID, targetID uu
 
 	// Check target → actor
 	err = s.db.QueryRow(ctx, `
-		SELECT status FROM friend_requests
+		SELECT status FROM connection_requests
 		WHERE sender_id = $1 AND receiver_id = $2
 	`, targetID, actorID).Scan(&status)
 	if err == nil {
@@ -413,14 +675,14 @@ func (s *Store) GetFriendRequestStatus(ctx context.Context, actorID, targetID uu
 	return "none", nil
 }
 
-// GetFriends returns paginated list of friend user IDs.
-func (s *Store) GetFriends(ctx context.Context, userID uuid.UUID, limit, offset int) ([]uuid.UUID, error) {
+// GetConnections returns a paginated list of connection user IDs.
+func (s *Store) GetConnections(ctx context.Context, userID uuid.UUID, limit, offset int) ([]uuid.UUID, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
 	rows, err := s.db.Query(ctx, `
-		SELECT CASE WHEN user_a = $1 THEN user_b ELSE user_a END AS friend_id
-		FROM friends
+		SELECT CASE WHEN user_a = $1 THEN user_b ELSE user_a END AS connection_id
+		FROM connections
 		WHERE user_a = $1 OR user_b = $1
 		ORDER BY created_at DESC
 		LIMIT $2 OFFSET $3
@@ -441,12 +703,14 @@ func (s *Store) GetFriends(ctx context.Context, userID uuid.UUID, limit, offset 
 	return ids, rows.Err()
 }
 
-// GetPendingRequests returns pending friend requests received by the user.
-func (s *Store) GetPendingRequests(ctx context.Context, userID uuid.UUID) ([]FriendRequest, error) {
+// GetPendingConnectionRequests returns pending requests received by the user
+// that are NOT auto-filtered — i.e. the visible "main inbox" queue. Filtered
+// requests are retrieved separately via GetFilteredConnectionRequests.
+func (s *Store) GetPendingConnectionRequests(ctx context.Context, userID uuid.UUID) ([]ConnectionRequest, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT sender_id, receiver_id, status, created_at, updated_at
-		FROM friend_requests
-		WHERE receiver_id = $1 AND status = 'pending'
+		SELECT sender_id, receiver_id, status, source, message, created_at, updated_at, expires_at
+		FROM connection_requests
+		WHERE receiver_id = $1 AND status = 'pending' AND is_filtered = FALSE
 		ORDER BY created_at DESC
 	`, userID)
 	if err != nil {
@@ -454,10 +718,82 @@ func (s *Store) GetPendingRequests(ctx context.Context, userID uuid.UUID) ([]Fri
 	}
 	defer rows.Close()
 
-	var reqs []FriendRequest
+	var reqs []ConnectionRequest
 	for rows.Next() {
-		var r FriendRequest
-		if err := rows.Scan(&r.SenderID, &r.ReceiverID, &r.Status, &r.CreatedAt, &r.UpdatedAt); err != nil {
+		var r ConnectionRequest
+		if err := rows.Scan(&r.SenderID, &r.ReceiverID, &r.Status, &r.Source, &r.Message, &r.CreatedAt, &r.UpdatedAt, &r.ExpiresAt); err != nil {
+			return nil, err
+		}
+		reqs = append(reqs, r)
+	}
+	return reqs, rows.Err()
+}
+
+// GetFilteredConnectionRequests returns pending requests received by the user
+// that trust-safety-service has auto-filtered as abusive — the hidden queue.
+func (s *Store) GetFilteredConnectionRequests(ctx context.Context, receiverID uuid.UUID) ([]ConnectionRequest, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT sender_id, receiver_id, status, source, message, created_at, updated_at, expires_at
+		FROM connection_requests
+		WHERE receiver_id = $1 AND status = 'pending' AND is_filtered = TRUE
+		ORDER BY filtered_at DESC
+	`, receiverID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var reqs []ConnectionRequest
+	for rows.Next() {
+		var r ConnectionRequest
+		if err := rows.Scan(&r.SenderID, &r.ReceiverID, &r.Status, &r.Source, &r.Message, &r.CreatedAt, &r.UpdatedAt, &r.ExpiresAt); err != nil {
+			return nil, err
+		}
+		reqs = append(reqs, r)
+	}
+	return reqs, rows.Err()
+}
+
+// SetRequestFiltered moves a pending request into the recipient's hidden queue.
+// Driven by trust-safety-service auto-scoring.
+func (s *Store) SetRequestFiltered(ctx context.Context, senderID, receiverID uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE connection_requests
+		SET is_filtered = TRUE, filtered_at = NOW(), updated_at = NOW()
+		WHERE sender_id = $1 AND receiver_id = $2 AND status = 'pending'
+	`, senderID, receiverID)
+	return err
+}
+
+// UnfilterConnectionRequest moves a pending request back out of the hidden
+// queue into the recipient's visible inbox.
+func (s *Store) UnfilterConnectionRequest(ctx context.Context, senderID, receiverID uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE connection_requests
+		SET is_filtered = FALSE, filtered_at = NULL, updated_at = NOW()
+		WHERE sender_id = $1 AND receiver_id = $2 AND status = 'pending'
+	`, senderID, receiverID)
+	return err
+}
+
+// GetSentConnectionRequests returns the pending requests the user has sent
+// (outgoing). Powers the "sent requests" UI; spec §9.2.
+func (s *Store) GetSentConnectionRequests(ctx context.Context, userID uuid.UUID) ([]ConnectionRequest, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT sender_id, receiver_id, status, source, message, created_at, updated_at, expires_at
+		FROM connection_requests
+		WHERE sender_id = $1 AND status = 'pending'
+		ORDER BY created_at DESC
+	`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var reqs []ConnectionRequest
+	for rows.Next() {
+		var r ConnectionRequest
+		if err := rows.Scan(&r.SenderID, &r.ReceiverID, &r.Status, &r.Source, &r.Message, &r.CreatedAt, &r.UpdatedAt, &r.ExpiresAt); err != nil {
 			return nil, err
 		}
 		reqs = append(reqs, r)
@@ -481,6 +817,66 @@ func (s *Store) Unmute(ctx context.Context, muterID, mutedID uuid.UUID) error {
 		`DELETE FROM graph.mutes WHERE muter_id = $1 AND muted_id = $2`,
 		muterID, mutedID)
 	return err
+}
+
+// CheckMute returns true when muterID has muted mutedID.
+//
+// Audit CG1: previously absent, so service.GetRelationship returned
+// IsMuted=false even when the row existed in graph.mutes — feed-service
+// (and any client that gates UI on this flag) silently broke for muted
+// pairs.
+func (s *Store) CheckMute(ctx context.Context, muterID, mutedID uuid.UUID) (bool, error) {
+	var exists bool
+	err := s.db.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM graph.mutes WHERE muter_id = $1 AND muted_id = $2)`,
+		muterID, mutedID).Scan(&exists)
+	return exists, err
+}
+
+// RelationshipFull is the consolidated relationship snapshot returned
+// by GetRelationshipFull. It carries everything service.GetRelationship
+// needs in a single DB round trip.
+type RelationshipFull struct {
+	Follows                  bool
+	FollowedBy               bool
+	Blocked                  bool
+	IsMuted                  bool
+	IsConnection             bool
+	ConnectionRequestSent     bool // actor → target row exists with status='pending'
+	ConnectionRequestReceived bool // target → actor row exists with status='pending'
+}
+
+// GetRelationshipFull collapses CheckFollow (×2) + CheckBlock + CheckMute
+// + CheckConnection + GetConnectionRequestStatus (×2) into a single
+// EXISTS-based query. Audit HG1: the previous service-layer code did
+// up to 6 sequential pg round trips per /v1/graph/relationship hit,
+// which is the dominant cost of the feed-hydration profile bar.
+func (s *Store) GetRelationshipFull(ctx context.Context, actorID, targetID uuid.UUID) (*RelationshipFull, error) {
+	connA, connB := normalizePair(actorID, targetID)
+	row := s.db.QueryRow(ctx, `
+		SELECT
+			EXISTS(SELECT 1 FROM follows WHERE follower_id = $1 AND followee_id = $2),
+			EXISTS(SELECT 1 FROM follows WHERE follower_id = $2 AND followee_id = $1),
+			EXISTS(SELECT 1 FROM blocks  WHERE blocker_id  = $2 AND blocked_id  = $1),
+			EXISTS(SELECT 1 FROM graph.mutes WHERE muter_id = $1 AND muted_id = $2),
+			EXISTS(SELECT 1 FROM connections WHERE user_a = $3 AND user_b = $4),
+			EXISTS(SELECT 1 FROM connection_requests WHERE sender_id = $1 AND receiver_id = $2 AND status = 'pending'),
+			EXISTS(SELECT 1 FROM connection_requests WHERE sender_id = $2 AND receiver_id = $1 AND status = 'pending')
+	`, actorID, targetID, connA, connB)
+
+	var r RelationshipFull
+	if err := row.Scan(
+		&r.Follows,
+		&r.FollowedBy,
+		&r.Blocked,
+		&r.IsMuted,
+		&r.IsConnection,
+		&r.ConnectionRequestSent,
+		&r.ConnectionRequestReceived,
+	); err != nil {
+		return nil, err
+	}
+	return &r, nil
 }
 
 // GetBlockedAndMuted returns all user IDs that the given user has blocked OR muted
@@ -572,6 +968,24 @@ func (s *Store) GetRelationshipBatch(ctx context.Context, viewerID uuid.UUID, ta
 		rows.Close()
 	}
 
+	// Connections (friendship): rows are stored once in either column
+	// order, so match both directions.
+	rows, _ = s.db.Query(ctx,
+		`SELECT CASE WHEN user_a = $1 THEN user_b ELSE user_a END
+		 FROM connections
+		 WHERE (user_a = $1 AND user_b = ANY($2)) OR (user_b = $1 AND user_a = ANY($2))`,
+		viewerID, targetIDs)
+	if rows != nil {
+		for rows.Next() {
+			var id uuid.UUID
+			rows.Scan(&id)
+			r := result[id]
+			r.IsConnection = true
+			result[id] = r
+		}
+		rows.Close()
+	}
+
 	return result, nil
 }
 
@@ -579,10 +993,10 @@ func (s *Store) GetRelationshipBatch(ctx context.Context, viewerID uuid.UUID, ta
 // Close Friends
 // ═══════════════════════════════════════════════════════════
 
-func (s *Store) AddCloseFriend(ctx context.Context, userID, friendID uuid.UUID) error {
+func (s *Store) AddCloseFriend(ctx context.Context, userID, friendID uuid.UUID, source string) error {
 	_, err := s.db.Exec(ctx,
-		`INSERT INTO close_friends (user_id, friend_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-		userID, friendID)
+		`INSERT INTO close_friends (user_id, friend_id, source) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+		userID, friendID, source)
 	return err
 }
 
@@ -618,6 +1032,14 @@ func (s *Store) IsCloseFriend(ctx context.Context, userID, friendID uuid.UUID) (
 		`SELECT EXISTS(SELECT 1 FROM close_friends WHERE user_id = $1 AND friend_id = $2)`,
 		userID, friendID).Scan(&exists)
 	return exists, err
+}
+
+// CountCloseFriends returns how many members are in userID's Trusted Circle.
+func (s *Store) CountCloseFriends(ctx context.Context, userID uuid.UUID) (int, error) {
+	var n int
+	err := s.db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM close_friends WHERE user_id = $1`, userID).Scan(&n)
+	return n, err
 }
 
 // ═══════════════════════════════════════════════════════════

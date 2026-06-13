@@ -52,10 +52,28 @@ type Profile struct {
 	Paused           bool       `json:"paused"`
 	LanguagePrefs    []string   `json:"language_prefs"`
 	TrustTier        string     `json:"trust_tier"`
+	// ProfileStatus is the §P1-1 lifecycle column. Values: draft,
+	// pending_photo, pending_selfie, pending_review, active, paused,
+	// restricted, suspended, deleted. Discovery filters on 'active'.
+	ProfileStatus    string     `json:"profile_status"`
 	CreatedAt        time.Time  `json:"created_at"`
 	UpdatedAt        time.Time  `json:"updated_at"`
 	DeletedAt        *time.Time `json:"deleted_at,omitempty"`
 }
+
+// Profile status constants (§P1-1). Centralised to avoid string drift
+// between transition logic and discovery query filters.
+const (
+	ProfileStatusDraft         = "draft"
+	ProfileStatusPendingPhoto  = "pending_photo"
+	ProfileStatusPendingSelfie = "pending_selfie"
+	ProfileStatusPendingReview = "pending_review"
+	ProfileStatusActive        = "active"
+	ProfileStatusPaused        = "paused"
+	ProfileStatusRestricted    = "restricted"
+	ProfileStatusSuspended     = "suspended"
+	ProfileStatusDeleted       = "deleted"
+)
 
 // Tune is the multi-axis personality / vibe profile (spec §6.1.6, §10).
 type Tune struct {
@@ -71,15 +89,22 @@ type Tune struct {
 }
 
 // Photo is one media reference attached to a dating profile.
+//
+// ModerationReason is the human-readable note the moderator/scanner
+// recorded when flipping the photo's moderation_status. Owner-only
+// surfaces (GET /v1/dating/photos/me) expose this to the photo's
+// owner so "Why was my photo rejected?" can render the actual reason
+// rather than a generic message. §P1-2 transparency control.
 type Photo struct {
-	ID               uuid.UUID `json:"id"`
-	UserID           uuid.UUID `json:"user_id"`
-	MediaID          uuid.UUID `json:"media_id"`
-	SortOrder        int       `json:"sort_order"`
-	IsPrimary        bool      `json:"is_primary"`
-	Visibility       string    `json:"visibility"`
-	ModerationStatus string    `json:"moderation_status"`
-	CreatedAt        time.Time `json:"created_at"`
+	ID                uuid.UUID `json:"id"`
+	UserID            uuid.UUID `json:"user_id"`
+	MediaID           uuid.UUID `json:"media_id"`
+	SortOrder         int       `json:"sort_order"`
+	IsPrimary         bool      `json:"is_primary"`
+	Visibility        string    `json:"visibility"`
+	ModerationStatus  string    `json:"moderation_status"`
+	ModerationReason  *string   `json:"moderation_reason,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
 }
 
 // Prompt is a user's answer to a static prompt-catalog item.

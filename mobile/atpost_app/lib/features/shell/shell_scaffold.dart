@@ -19,25 +19,42 @@
 
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_app/data/models/realtime_event.dart';
+import 'package:atpost_app/features/home/home_feed_screen.dart';
+import 'package:atpost_app/features/reels/reels_screen.dart';
+import 'package:atpost_app/features/services/services_screen.dart';
 import 'package:atpost_app/features/shell/create_options_sheet.dart';
-import 'package:atpost_app/features/shell/home_tab.dart';
-import 'package:atpost_app/features/shell/inbox_tab.dart';
-import 'package:atpost_app/features/shell/me_tab.dart';
-import 'package:atpost_app/features/shell/search_tab.dart';
+import 'package:atpost_app/features/shell/notification_toast_queue.dart';
 import 'package:atpost_app/features/shell/shell_providers.dart';
+import 'package:atpost_app/features/social/friends_screen.dart';
+import 'package:atpost_app/providers/notification_provider.dart';
+import 'package:atpost_app/services/presence_service.dart';
+import 'package:atpost_app/services/realtime_service.dart';
 import 'package:atpost_app/services/shell_telemetry.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
-/// Stable index map for the four real tabs. `create` (index 2 in the visual
-/// row) is intentionally NOT a tab — it's a FAB that opens a sheet.
+/// Stable index map for the four real tabs. `create` (visually centered)
+/// is intentionally NOT a tab — it's a FAB that opens a sheet.
+///
+/// Layout (left → right): Home · Friends · [+] · Reels · Explore
+///   * Home    — feed (For You / Following / #HashTag)
+///   * Friends — connections list (search, requests, refresh)
+///   * Reels   — vertical short-form video feed
+///   * Explore — mini-app launcher (services_screen.dart). Hosts every
+///               module that doesn't get its own bottom-tab slot
+///               (Pulse, Mopedu, Billpay, Commerce, Figo, etc.).
+///
+/// Wallet is still reachable via the `/wallet` route and the Me-tab
+/// launcher tile — it just no longer occupies a bottom-nav slot.
 class ShellTabIndex {
   ShellTabIndex._();
 
   static const home = 0;
-  static const search = 1;
-  static const inbox = 2;
-  static const me = 3;
+  static const friends = 1;
+  static const reels = 2;
+  static const explore = 3;
 
   static const count = 4;
 }
@@ -51,10 +68,17 @@ class ShellScaffold extends ConsumerStatefulWidget {
   ConsumerState<ShellScaffold> createState() => _ShellScaffoldState();
 }
 
-class _ShellScaffoldState extends ConsumerState<ShellScaffold> {
+class _ShellScaffoldState extends ConsumerState<ShellScaffold>
+    with WidgetsBindingObserver {
+  late final NotificationToastQueue _toastQueue;
+
   @override
   void initState() {
     super.initState();
+    _toastQueue = NotificationToastQueue(onView: _renderToast);
+    // Observe app lifecycle so the presence heartbeat pauses while the
+    // app is backgrounded and resumes (with an immediate beat) on return.
+    WidgetsBinding.instance.addObserver(this);
     // Hop the active tab to whatever the deep-link asked for. We do this in
     // a post-frame callback so we don't mutate provider state during the
     // first build.
@@ -68,8 +92,70 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    final presence = ref.read(presenceServiceProvider);
+    switch (state) {
+      case AppLifecycleState.resumed:
+        // Foregrounded: resume heartbeats and flip the dot back on now.
+        presence.start();
+        presence.beatNow();
+      case AppLifecycleState.paused:
+      case AppLifecycleState.detached:
+      case AppLifecycleState.hidden:
+        // Backgrounded: stop pinging — the 90 s TTL lets presence lapse.
+        presence.stop();
+      case AppLifecycleState.inactive:
+        break; // transient (e.g. system overlay) — keep heartbeating.
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _toastQueue.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final current = ref.watch(shellTabProvider);
+
+    // Instantiate the presence heartbeat for the whole authenticated
+    // session. Watching it here (rather than relying on a lazy read)
+    // guarantees the user is marked online the moment the shell mounts,
+    // regardless of which tab they land on — without this, opening the
+    // Friends tab first meant no `presence:` key was ever written and
+    // the user (plus everyone they viewed) showed as offline.
+    ref.watch(presenceServiceProvider);
+
+    // Hold the realtime WebSocket open for the whole authenticated session.
+    // The WS gateway treats an open connection as "online" and broadcasts
+    // presence changes over it — watching it here (not lazily on a chat
+    // screen) is what lets a friend coming online flip green instantly on
+    // the Friends tab. See friendsPresenceProvider.
+    ref.watch(realtimeServiceProvider);
+
+    // Live notifications. Every NotificationEvent off the WS multiplex
+    // surfaces here exactly once: we invalidate the bell + inbox so
+    // the badge updates without a refetch, then show a tap-to-open
+    // toast. Sitting at the shell level means the toast is reachable
+    // from every tab, but a fullscreen route on top (e.g. /reels) can
+    // still cover it — that's intentional, the snackbar host follows
+    // the topmost Scaffold.
+    ref.listen<AsyncValue<NotificationEvent>>(liveNotificationsProvider, (
+      _,
+      next,
+    ) {
+      final evt = next.valueOrNull;
+      if (evt == null || !mounted) return;
+      ref.invalidate(unreadNotificationCountProvider);
+      ref.invalidate(notificationsProvider);
+      // Hand to the queue: it debounces bursts and collapses
+      // matching collapse_keys into a single toast view, then calls
+      // _renderToast with the merged result.
+      _toastQueue.add(evt);
+    });
 
     return Scaffold(
       backgroundColor: AppColors.bgPrimary,
@@ -77,10 +163,18 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold> {
       body: IndexedStack(
         index: _safeIndex(current),
         children: const [
-          HomeTab(),
-          SearchTab(),
-          InboxTab(),
-          MeTab(),
+          // Home — original 3-strip feed (For You / Following /
+          // #HashTag). Twitter/IG shape; top-bar icons cover the
+          // shortcuts (search, shopping, posttube, notifications,
+          // profile-avatar).
+          HomeFeedScreen(),
+          // Friends — connections list with search, requests, refresh.
+          FriendsScreen(),
+          // Reels — vertical PageView feed.
+          ReelsScreen(),
+          // Explore — mini-app launcher: Pulse, Mopedu, Billpay,
+          // Commerce, Figo, plus the legacy services menu.
+          ServicesScreen(),
         ],
       ),
       floatingActionButton: _CreateFab(
@@ -97,6 +191,102 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold> {
   int _safeIndex(int v) {
     if (v < 0 || v >= ShellTabIndex.count) return ShellTabIndex.home;
     return v;
+  }
+
+  /// Returns the deep link only if it's a safe in-app path
+  /// ("/foo/bar"). Rejects external URLs, scheme-prefixed inputs,
+  /// query-string-only fragments, and malformed strings — go_router
+  /// crashes on anything but a route path, and a server that emits a
+  /// `https://evil.example/...` deep link must NOT be allowed to
+  /// punt the user out of the app.
+  String? _validateDeepLink(String? raw) {
+    if (raw == null) return null;
+    final trimmed = raw.trim();
+    if (trimmed.isEmpty) return null;
+    if (!trimmed.startsWith('/')) return null;
+    if (trimmed.startsWith('//')) return null; // protocol-relative
+    // Path can include query + fragment but the prefix must look like
+    // a route — letters, digits, `_`, `-`, `/`, `:` for params, and
+    // common URL chars after.
+    final pathOnly = trimmed.split('?').first.split('#').first;
+    if (!RegExp(r'^[A-Za-z0-9_\-/:%.]+$').hasMatch(pathOnly)) return null;
+    return trimmed;
+  }
+
+  /// Render a (potentially merged) toast view from the queue. The
+  /// queue handles the bursty merge logic; this method only knows how
+  /// to paint pixels. Dismissing the current snackbar before showing
+  /// the new one keeps the visible stack at one — the queue already
+  /// folded the prior bursts into the view we're about to render.
+  void _renderToast(NotificationToastView view) {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    if (messenger == null) return;
+    final hasBody = view.body.isNotEmpty && view.body != view.title;
+    final deepLink = view.deepLink;
+    messenger.removeCurrentSnackBar();
+    messenger.showSnackBar(
+      SnackBar(
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: AppColors.bgSecondary,
+        duration: const Duration(seconds: 4),
+        content: Row(
+          children: [
+            Container(
+              width: 32,
+              height: 32,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: AppColors.postbookPrimary.withValues(alpha: 0.18),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Icon(
+                Icons.notifications_rounded,
+                size: 18,
+                color: AppColors.postbookPrimary,
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    view.title.isNotEmpty ? view.title : 'New notification',
+                    style: AppTextStyles.label.copyWith(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w700,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  if (hasBody)
+                    Text(
+                      view.body,
+                      style: AppTextStyles.labelSmall.copyWith(
+                        color: Colors.white70,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        action: _validateDeepLink(deepLink) != null
+            ? SnackBarAction(
+                label: 'Open',
+                textColor: AppColors.postbookPrimary,
+                onPressed: () {
+                  final path = _validateDeepLink(deepLink);
+                  if (!mounted || path == null) return;
+                  context.push(path);
+                },
+              )
+            : null,
+      ),
+    );
   }
 }
 
@@ -161,27 +351,28 @@ class _BottomBar extends ConsumerWidget {
               telemetryKey: ShellTab.home,
             ),
             _NavItem(
-              icon: Icons.search,
-              label: 'Search',
-              index: ShellTabIndex.search,
+              icon: Icons.people_alt_rounded,
+              label: 'Friends',
+              index: ShellTabIndex.friends,
               currentIndex: currentIndex,
-              telemetryKey: ShellTab.search,
+              telemetryKey: ShellTab.friends,
             ),
             // Visual gap for the FAB notch.
             const SizedBox(width: 56),
             _NavItem(
-              icon: Icons.notifications,
-              label: 'Inbox',
-              index: ShellTabIndex.inbox,
+              icon: Icons.movie_creation_rounded,
+              label: 'Reels',
+              index: ShellTabIndex.reels,
               currentIndex: currentIndex,
-              telemetryKey: ShellTab.inbox,
+              telemetryKey: ShellTab.reels,
             ),
             _NavItem(
-              icon: Icons.person,
-              label: 'Me',
-              index: ShellTabIndex.me,
+              // Apps grid icon — the user-facing mini-app center.
+              icon: Icons.apps_rounded,
+              label: 'Explore',
+              index: ShellTabIndex.explore,
               currentIndex: currentIndex,
-              telemetryKey: ShellTab.me,
+              telemetryKey: ShellTab.explore,
             ),
           ],
         ),

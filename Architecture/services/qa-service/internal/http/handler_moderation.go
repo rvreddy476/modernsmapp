@@ -38,6 +38,9 @@ func (h *Handler) CreateReport(c *gin.Context) {
 }
 
 func (h *Handler) ListReports(c *gin.Context) {
+	if !h.requireModerator(c) {
+		return
+	}
 	status := c.DefaultQuery("status", "pending")
 	limit, offset := parsePagination(c)
 
@@ -50,6 +53,9 @@ func (h *Handler) ListReports(c *gin.Context) {
 }
 
 func (h *Handler) GetReport(c *gin.Context) {
+	if !h.requireModerator(c) {
+		return
+	}
 	reportID, ok := parseUUID(c, "reportId")
 	if !ok {
 		return
@@ -64,6 +70,9 @@ func (h *Handler) GetReport(c *gin.Context) {
 }
 
 func (h *Handler) ResolveReport(c *gin.Context) {
+	if !h.requireModerator(c) {
+		return
+	}
 	userID, ok := getUserID(c)
 	if !ok {
 		return
@@ -81,6 +90,9 @@ func (h *Handler) ResolveReport(c *gin.Context) {
 }
 
 func (h *Handler) DismissReport(c *gin.Context) {
+	if !h.requireModerator(c) {
+		return
+	}
 	userID, ok := getUserID(c)
 	if !ok {
 		return
@@ -98,6 +110,9 @@ func (h *Handler) DismissReport(c *gin.Context) {
 }
 
 func (h *Handler) HideQuestion(c *gin.Context) {
+	if !h.requireModerator(c) {
+		return
+	}
 	userID, ok := getUserID(c)
 	if !ok {
 		return
@@ -120,6 +135,9 @@ func (h *Handler) HideQuestion(c *gin.Context) {
 }
 
 func (h *Handler) LockQuestion(c *gin.Context) {
+	if !h.requireModerator(c) {
+		return
+	}
 	userID, ok := getUserID(c)
 	if !ok {
 		return
@@ -142,6 +160,9 @@ func (h *Handler) LockQuestion(c *gin.Context) {
 }
 
 func (h *Handler) MergeQuestion(c *gin.Context) {
+	if !h.requireModerator(c) {
+		return
+	}
 	userID, ok := getUserID(c)
 	if !ok {
 		return
@@ -172,6 +193,9 @@ func (h *Handler) MergeQuestion(c *gin.Context) {
 }
 
 func (h *Handler) MarkDuplicate(c *gin.Context) {
+	if !h.requireModerator(c) {
+		return
+	}
 	userID, ok := getUserID(c)
 	if !ok {
 		return
@@ -202,6 +226,9 @@ func (h *Handler) MarkDuplicate(c *gin.Context) {
 }
 
 func (h *Handler) HideAnswer(c *gin.Context) {
+	if !h.requireModerator(c) {
+		return
+	}
 	userID, ok := getUserID(c)
 	if !ok {
 		return
@@ -224,6 +251,9 @@ func (h *Handler) HideAnswer(c *gin.Context) {
 }
 
 func (h *Handler) HideComment(c *gin.Context) {
+	if !h.requireModerator(c) {
+		return
+	}
 	userID, ok := getUserID(c)
 	if !ok {
 		return
@@ -246,6 +276,9 @@ func (h *Handler) HideComment(c *gin.Context) {
 }
 
 func (h *Handler) ListModerationActions(c *gin.Context) {
+	if !h.requireModerator(c) {
+		return
+	}
 	limit, offset := parsePagination(c)
 
 	actions, err := h.svc.ListModerationActions(c.Request.Context(), limit, offset)

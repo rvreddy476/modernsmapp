@@ -309,6 +309,11 @@ func (p *Producer) publishRealtime(ctx context.Context, postID, updateType strin
 	}
 }
 
+// publish serializes the envelope synchronously and writes to Kafka
+// asynchronously. Audit HG4: every Publish* method previously blocked
+// the request on broker ACK (50-200 ms x 50+ call sites). Downstream
+// consumers tolerate at-least-once + duplicates, so a transient broker
+// blip becomes a logged warning rather than a user-facing failure.
 func (p *Producer) publish(ctx context.Context, eventType string, actorID *uuid.UUID, payload any) error {
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -328,10 +333,19 @@ func (p *Producer) publish(ctx context.Context, eventType string, actorID *uuid.
 		return fmt.Errorf("failed to marshal envelope: %w", err)
 	}
 
-	return p.writer.WriteMessages(ctx, kafka.Message{
+	msg := kafka.Message{
 		Key:   []byte(envelope.EventID),
 		Value: envelopeBytes,
-	})
+	}
+	go func() {
+		writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := p.writer.WriteMessages(writeCtx, msg); err != nil {
+			slog.Warn("group-events: async Kafka publish failed",
+				"event_type", eventType, "event_id", envelope.EventID, "err", err)
+		}
+	}()
+	return nil
 }
 
 func (p *Producer) Close() error {

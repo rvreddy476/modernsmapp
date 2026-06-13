@@ -64,7 +64,23 @@ func Idempotency(rdb *redis.Client) gin.HandlerFunc {
 
 		// Check if we already processed this key
 		cached, err := rdb.HGetAll(ctx, redisKey).Result()
-		if err == nil && len(cached) > 0 {
+		// M6: fail CLOSED on Redis lookup error rather than letting the
+		// request through unduped. Idempotency-Key is a safety promise
+		// to the client — silently dropping it during a Redis outage
+		// turns a single-tap retry into a duplicate write (duplicate
+		// like, duplicate comment, duplicate post). 503 surfaces the
+		// outage so the client backs off + retries with the same key
+		// once Redis is back.
+		if err != nil && err != redis.Nil {
+			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
+				"error": gin.H{
+					"code":    "IDEMPOTENCY_UNAVAILABLE",
+					"message": "Idempotency cache temporarily unavailable, retry with the same Idempotency-Key.",
+				},
+			})
+			return
+		}
+		if len(cached) > 0 {
 			// Cache hit — return the stored response
 			status := http.StatusOK
 			if s, ok := cached["status"]; ok {

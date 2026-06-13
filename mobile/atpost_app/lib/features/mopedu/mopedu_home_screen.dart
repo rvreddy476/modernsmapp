@@ -20,9 +20,11 @@ import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/models/mopedu.dart';
 import 'package:atpost_app/features/mopedu/city_picker_sheet.dart';
+import 'package:atpost_app/features/mopedu/map_picker_screen.dart';
 import 'package:atpost_app/providers/mopedu_providers.dart';
 import 'package:atpost_app/services/money_format.dart';
 import 'package:atpost_app/services/mopedu_crash_breadcrumbs.dart';
+import 'package:atpost_app/services/mopedu_location_service.dart';
 import 'package:atpost_app/services/mopedu_telemetry.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -242,10 +244,10 @@ class _PickupDropCard extends ConsumerWidget {
             iconColor: AppColors.postbookPrimary,
             label: 'Pickup',
             point: booking.pickup,
-            onTap: () => _editPoint(
+            onTap: () => _pickOnMap(
               context,
-              title: 'Pickup',
-              point: booking.pickup,
+              mode: MapPickerMode.pickup,
+              current: booking.pickup,
               onSave: notifier.setPickup,
             ),
             onClear: booking.pickup == null
@@ -261,67 +263,67 @@ class _PickupDropCard extends ConsumerWidget {
             iconColor: AppColors.statusError,
             label: 'Drop',
             point: booking.drop,
-            onTap: () => _editPoint(
+            onTap: () => _pickOnMap(
               context,
-              title: 'Drop',
-              point: booking.drop,
+              mode: MapPickerMode.drop,
+              current: booking.drop,
               onSave: notifier.setDrop,
             ),
             onClear: booking.drop == null
                 ? null
                 : () => notifier.setDrop(null),
           ),
-          const SizedBox(height: 6),
-          Text(
-            'Map view coming in Sprint 2. For now, set the address and '
-            'coordinates manually.',
-            style: AppTextStyles.bodySmall.copyWith(color: AppColors.textMuted),
-          ),
         ],
       ),
     );
   }
 
-  void _useCurrentLocation(
+  Future<void> _useCurrentLocation(
     BuildContext context,
     MopeduBookingNotifier notifier,
-  ) {
-    // Sprint 2: real device location. For v1 we seed with a Bengaluru
-    // landmark so a developer / first-time user can flow through.
-    notifier.setPickup(
-      const RidePoint(
-        lat: 12.9716,
-        lng: 77.5946,
-        address: 'Indiranagar, Bengaluru',
-        placeName: 'Current location',
+  ) async {
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(
+      const SnackBar(
+        content: Text('Locating you…'),
+        duration: Duration(seconds: 2),
       ),
     );
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text(
-          'Live location lookup ships in Sprint 2 — using a stub for now.',
-        ),
+    final result = await MopeduLocationService.getCurrentPosition();
+    if (!context.mounted) return;
+    if (!result.isOk) {
+      messenger.showSnackBar(
+        SnackBar(content: Text(MopeduLocationService.describe(result.failure!))),
+      );
+      return;
+    }
+    final pos = result.position!;
+    notifier.setPickup(
+      RidePoint(
+        lat: pos.latitude,
+        lng: pos.longitude,
+        placeName: 'Current location',
       ),
     );
   }
 
-  Future<void> _editPoint(
+  /// Opens the Google Maps picker (C6). Falls through to the
+  /// manual-coordinate sheet only when the caller explicitly wants
+  /// the textual fallback (e.g. on a device without Maps).
+  Future<void> _pickOnMap(
     BuildContext context, {
-    required String title,
-    required RidePoint? point,
+    required MapPickerMode mode,
+    required RidePoint? current,
     required void Function(RidePoint?) onSave,
   }) async {
-    final result = await showModalBottomSheet<RidePoint?>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: AppColors.bgSecondary,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (_) => _PointEditorSheet(title: title, initial: point),
+    final result = await MopeduMapPicker.show(
+      context,
+      mode: mode,
+      initial: current,
     );
     if (result != null) onSave(result);
   }
+
 }
 
 class _PointRow extends StatelessWidget {
@@ -381,162 +383,6 @@ class _PointRow extends StatelessWidget {
                 onPressed: onClear,
               ),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-// ─── Point editor sheet ───────────────────────────────────────────────
-
-class _PointEditorSheet extends StatefulWidget {
-  const _PointEditorSheet({required this.title, required this.initial});
-
-  final String title;
-  final RidePoint? initial;
-
-  @override
-  State<_PointEditorSheet> createState() => _PointEditorSheetState();
-}
-
-class _PointEditorSheetState extends State<_PointEditorSheet> {
-  late final TextEditingController _label;
-  late final TextEditingController _addr;
-  late final TextEditingController _lat;
-  late final TextEditingController _lng;
-
-  @override
-  void initState() {
-    super.initState();
-    _label = TextEditingController(text: widget.initial?.placeName ?? '');
-    _addr = TextEditingController(text: widget.initial?.address ?? '');
-    _lat = TextEditingController(
-      text: widget.initial == null ? '' : widget.initial!.lat.toString(),
-    );
-    _lng = TextEditingController(
-      text: widget.initial == null ? '' : widget.initial!.lng.toString(),
-    );
-  }
-
-  @override
-  void dispose() {
-    _label.dispose();
-    _addr.dispose();
-    _lat.dispose();
-    _lng.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final padding = MediaQuery.of(context).viewInsets.bottom;
-    return Padding(
-      padding: EdgeInsets.fromLTRB(16, 16, 16, 16 + padding),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text('Set ${widget.title}', style: AppTextStyles.h2),
-          const SizedBox(height: 12),
-          _Field(controller: _label, hint: 'Place name (e.g. MG Road)'),
-          const SizedBox(height: 8),
-          _Field(controller: _addr, hint: 'Full address'),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              Expanded(
-                child: _Field(
-                  controller: _lat,
-                  hint: 'Latitude',
-                  keyboard: TextInputType.number,
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: _Field(
-                  controller: _lng,
-                  hint: 'Longitude',
-                  keyboard: TextInputType.number,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton(
-                  onPressed: () => Navigator.of(context).pop(),
-                  child: const Text('Cancel'),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: ElevatedButton(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.postbookPrimary,
-                    foregroundColor: Colors.white,
-                  ),
-                  onPressed: _onSave,
-                  child: const Text('Save'),
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _onSave() {
-    final lat = double.tryParse(_lat.text.trim()) ?? 0;
-    final lng = double.tryParse(_lng.text.trim()) ?? 0;
-    if (lat == 0 && lng == 0) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Enter a valid latitude and longitude')),
-      );
-      return;
-    }
-    Navigator.of(context).pop(
-      RidePoint(
-        lat: lat,
-        lng: lng,
-        address: _addr.text.trim().isEmpty ? null : _addr.text.trim(),
-        placeName: _label.text.trim().isEmpty ? null : _label.text.trim(),
-      ),
-    );
-  }
-}
-
-class _Field extends StatelessWidget {
-  const _Field({
-    required this.controller,
-    required this.hint,
-    this.keyboard,
-  });
-
-  final TextEditingController controller;
-  final String hint;
-  final TextInputType? keyboard;
-
-  @override
-  Widget build(BuildContext context) {
-    return TextField(
-      controller: controller,
-      keyboardType: keyboard,
-      style: AppTextStyles.body,
-      decoration: InputDecoration(
-        hintText: hint,
-        hintStyle: AppTextStyles.bodySmall,
-        filled: true,
-        fillColor: AppColors.bgTertiary,
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(AppSpacing.radiusMedium),
-          borderSide: BorderSide.none,
-        ),
-        contentPadding: const EdgeInsets.symmetric(
-          horizontal: 12,
-          vertical: 12,
         ),
       ),
     );
@@ -890,6 +736,7 @@ class _BookCta extends ConsumerWidget {
     final booking = ref.watch(mopeduBookingNotifier);
     final canBook =
         booking.canBook && booking.phase != MopeduBookingPhase.booking;
+    final scheduled = booking.scheduledFor;
 
     return SafeArea(
       child: Container(
@@ -900,34 +747,50 @@ class _BookCta extends ConsumerWidget {
             top: BorderSide(color: AppColors.borderSubtle, width: 0.5),
           ),
         ),
-        child: SizedBox(
-          width: double.infinity,
-          height: 50,
-          child: ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: canBook
-                  ? AppColors.postbookPrimary
-                  : AppColors.bgTertiary,
-              foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // G4.5 — schedule control. Inline so the Book CTA below
+            // visibly flips to "Schedule ride" when a future time
+            // is set.
+            _ScheduleControl(scheduled: scheduled),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              height: 50,
+              child: ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: canBook
+                      ? AppColors.postbookPrimary
+                      : AppColors.bgTertiary,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                    borderRadius:
+                        BorderRadius.circular(AppSpacing.radiusLarge),
+                  ),
+                ),
+                onPressed: canBook ? () => _book(context, ref) : null,
+                child: booking.phase == MopeduBookingPhase.booking
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          color: Colors.white,
+                          strokeWidth: 2,
+                        ),
+                      )
+                    : Text(
+                        !canBook
+                            ? 'Set pickup, drop & vehicle'
+                            : (scheduled != null
+                                ? 'Schedule ride'
+                                : 'Book ride'),
+                        style:
+                            AppTextStyles.h3.copyWith(color: Colors.white),
+                      ),
               ),
             ),
-            onPressed: canBook ? () => _book(context, ref) : null,
-            child: booking.phase == MopeduBookingPhase.booking
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(
-                      color: Colors.white,
-                      strokeWidth: 2,
-                    ),
-                  )
-                : Text(
-                    canBook ? 'Book ride' : 'Set pickup, drop & vehicle',
-                    style: AppTextStyles.h3.copyWith(color: Colors.white),
-                  ),
-          ),
+          ],
         ),
       ),
     );
@@ -942,6 +805,8 @@ class _BookCta extends ConsumerWidget {
     );
     final id = await notifier.book();
     if (id != null && context.mounted) {
+      // Scheduled rides route to the same booking screen — it can
+      // render the "waiting for activation" state from the ride row.
       context.push('/mopedu/booking/$id');
     } else if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -949,4 +814,103 @@ class _BookCta extends ConsumerWidget {
       );
     }
   }
+}
+
+class _ScheduleControl extends ConsumerWidget {
+  const _ScheduleControl({required this.scheduled});
+
+  final DateTime? scheduled;
+
+  Future<void> _pick(BuildContext context, WidgetRef ref) async {
+    final now = DateTime.now();
+    final date = await showDatePicker(
+      context: context,
+      initialDate: scheduled ?? now.add(const Duration(hours: 1)),
+      firstDate: now,
+      lastDate: now.add(const Duration(days: 7)),
+    );
+    if (!context.mounted || date == null) return;
+    final time = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(
+        scheduled ?? now.add(const Duration(hours: 1)),
+      ),
+    );
+    if (!context.mounted || time == null) return;
+    final picked = DateTime(
+      date.year,
+      date.month,
+      date.day,
+      time.hour,
+      time.minute,
+    );
+    if (!picked.isAfter(now.add(const Duration(minutes: 15)))) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Schedule at least 15 minutes from now')),
+      );
+      return;
+    }
+    ref.read(mopeduBookingNotifier.notifier).setScheduledFor(picked);
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return InkWell(
+      onTap: () => _pick(context, ref),
+      borderRadius: BorderRadius.circular(AppSpacing.radiusMedium),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: scheduled != null
+              ? AppColors.postbookPrimary.withValues(alpha: 0.12)
+              : AppColors.bgSecondary,
+          borderRadius: BorderRadius.circular(AppSpacing.radiusMedium),
+          border: Border.all(
+            color: scheduled != null
+                ? AppColors.postbookPrimary
+                : AppColors.borderSubtle,
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(
+              Icons.schedule,
+              size: 16,
+              color: scheduled != null
+                  ? AppColors.postbookPrimary
+                  : AppColors.textTertiary,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                scheduled != null
+                    ? 'Scheduled for ${_fmt(scheduled!)}'
+                    : 'Book now or schedule for later',
+                style: AppTextStyles.labelSmall,
+              ),
+            ),
+            if (scheduled != null)
+              GestureDetector(
+                onTap: () => ref
+                    .read(mopeduBookingNotifier.notifier)
+                    .setScheduledFor(null),
+                child: const Icon(
+                  Icons.close,
+                  size: 14,
+                  color: AppColors.textTertiary,
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+String _fmt(DateTime t) {
+  final local = t.toLocal();
+  final h = local.hour > 12 ? local.hour - 12 : (local.hour == 0 ? 12 : local.hour);
+  final m = local.minute.toString().padLeft(2, '0');
+  final ap = local.hour >= 12 ? 'PM' : 'AM';
+  return '${local.day}/${local.month} $h:$m $ap';
 }

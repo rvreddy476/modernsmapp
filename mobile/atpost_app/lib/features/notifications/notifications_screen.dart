@@ -51,9 +51,14 @@ class _NotificationsScreenState extends ConsumerState<NotificationsScreen>
       if (!mounted) return;
       // Prefer the server-supplied deep link; otherwise fall back to a
       // type-based resolver. Sprint 3 added the four dating cases.
-      final link = (notification.deepLink ?? '').isNotEmpty
+      var link = (notification.deepLink ?? '').isNotEmpty
           ? notification.deepLink!
           : _resolveDeepLink(notification);
+      // notification-service emits web-style "/u/<id>" profile links;
+      // the mobile profile route is "/profile/<id>".
+      if (link.startsWith('/u/')) {
+        link = '/profile/${link.substring(3)}';
+      }
       if (link.isNotEmpty) {
         context.push(link);
       }
@@ -121,6 +126,18 @@ class _NotificationsScreenState extends ConsumerState<NotificationsScreen>
           color: AppColors.accentPurple,
           text: 'mentioned you',
         );
+      case 'friend_request':
+        return const _NotifMeta(
+          icon: Icons.person_add_alt_1_rounded,
+          color: AppColors.postbookPrimary,
+          text: 'sent you a connection request',
+        );
+      case 'friend_accepted':
+        return const _NotifMeta(
+          icon: Icons.how_to_reg_rounded,
+          color: AppColors.posttubePrimary,
+          text: 'accepted your connection request',
+        );
       // Sprint 3 — Pulse dating notifications.
       case 'dating.spark.created':
         return const _NotifMeta(
@@ -145,6 +162,62 @@ class _NotificationsScreenState extends ConsumerState<NotificationsScreen>
           icon: Icons.hourglass_bottom_rounded,
           color: AppColors.statusWarning,
           text: 'match expired',
+        );
+      // Phase 1 — extended dating notification types (vouch, safe-meet,
+      // report status, verification, photo moderation, data export).
+      case 'dating.vouch.requested':
+        return const _NotifMeta(
+          icon: Icons.handshake_outlined,
+          color: AppColors.accentPurple,
+          text: 'asked you to vouch for them',
+        );
+      case 'dating.vouch.accepted':
+        return const _NotifMeta(
+          icon: Icons.verified_user_outlined,
+          color: AppColors.statusSuccess,
+          text: 'accepted your vouch',
+        );
+      case 'dating.safe_meet.reminder':
+        return const _NotifMeta(
+          icon: Icons.event_available_outlined,
+          color: AppColors.posttubePrimary,
+          text: 'safe meet reminder',
+        );
+      case 'dating.safe_meet.missed_check_in':
+        return const _NotifMeta(
+          icon: Icons.warning_amber_rounded,
+          color: AppColors.statusError,
+          text: 'missed safe-meet check-in',
+        );
+      case 'dating.report.status_updated':
+        return const _NotifMeta(
+          icon: Icons.flag_outlined,
+          color: AppColors.posttubePrimary,
+          text: 'report status updated',
+        );
+      case 'dating.verification.completed':
+        return const _NotifMeta(
+          icon: Icons.verified_outlined,
+          color: AppColors.statusSuccess,
+          text: 'verification complete',
+        );
+      case 'dating.verification.rejected':
+        return const _NotifMeta(
+          icon: Icons.cancel_outlined,
+          color: AppColors.statusError,
+          text: 'verification rejected',
+        );
+      case 'dating.photo.moderation_rejected':
+        return const _NotifMeta(
+          icon: Icons.image_not_supported_outlined,
+          color: AppColors.statusError,
+          text: 'photo not approved',
+        );
+      case 'dating.data_export.ready':
+        return const _NotifMeta(
+          icon: Icons.cloud_download_outlined,
+          color: AppColors.postbookPrimary,
+          text: 'your data export is ready',
         );
       default:
         return const _NotifMeta(
@@ -174,6 +247,34 @@ class _NotificationsScreenState extends ConsumerState<NotificationsScreen>
         return '/pulse/matches';
       case 'dating.spark.created':
         return '/pulse/matches?tab=sparks';
+      // Phase 1 — extended dating notification routing.
+      case 'dating.vouch.requested':
+        return '/pulse/safety/vouches/inbox';
+      case 'dating.vouch.accepted':
+        return '/pulse/safety/vouches';
+      case 'dating.safe_meet.reminder':
+      case 'dating.safe_meet.missed_check_in':
+        // entity is the safe-meet id; we don't have a dedicated detail
+        // route yet so we deep-link to the safety center where the
+        // meet card is rendered.
+        return '/pulse/safety';
+      case 'dating.report.status_updated':
+        return '/pulse/safety/reports';
+      case 'dating.verification.completed':
+      case 'dating.verification.rejected':
+        return '/pulse/verification';
+      case 'dating.photo.moderation_rejected':
+        // Owner's profile screen renders pending/rejected photos with
+        // status badges (P0-6 owner-view work).
+        return '/pulse/profile';
+      case 'dating.data_export.ready':
+        return '/pulse/safety';
+      case 'friend_request':
+        // Land on the requester's profile — its connection button shows
+        // "Accept" for a pending incoming request.
+        return n.entityId.isNotEmpty ? '/profile/${n.entityId}' : '/friend-requests';
+      case 'friend_accepted':
+        return n.entityId.isNotEmpty ? '/profile/${n.entityId}' : '/friends';
       default:
         return '';
     }

@@ -39,6 +39,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		rider.GET("/cities", h.GetCities)
 		rider.POST("/estimate", h.PostEstimate)
 
+		// --- Realtime token (issued for SSE subscription) ----------------
+		rider.POST("/realtime/token", h.IssueRealtimeToken)
+
 		// --- Customer rides ----------------------------------------------
 		rider.POST("/rides", h.PostRide)
 		rider.GET("/rides/me", h.GetMyRides)
@@ -51,6 +54,12 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		rider.POST("/rides/:id/arrived", h.PostMarkArrived)
 		rider.POST("/rides/:id/start", h.PostStartRide)
 		rider.POST("/rides/:id/complete", h.PostCompleteRide)
+		rider.POST("/rides/:id/no-show", h.PostMarkNoShow)
+		rider.POST("/safety/masked-call", h.PostInitiateMaskedCall)
+		rider.POST("/rides/:id/rating/response", h.PostPartnerRespondRating)
+		rider.GET("/rides/:id/messages", h.ListRideMessages)
+		rider.POST("/rides/:id/messages", h.PostRideMessage)
+		rider.POST("/rides/:id/messages/:msgId/read", h.MarkRideMessageRead)
 
 		// --- Partner ops (online/offline/location/dashboard) (S2) ---------
 		rider.POST("/partners/me/online", h.PostGoOnline)
@@ -127,6 +136,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 		admin.GET("/rides", h.AdminListRides)
 		admin.GET("/rides/live", h.AdminListLiveRides)
+		admin.GET("/safety/incidents/:id/alerts", h.AdminListSafetyContactAlerts)
+		admin.POST("/rides/:id/rating/visibility", h.AdminHideRideRating)
+		admin.GET("/reports/matching-health", h.AdminMatchingHealthReport)
+		admin.GET("/reports/partner-quality", h.AdminPartnerQualityReport)
+		admin.GET("/reports/supply-demand", h.AdminSupplyDemandReport)
+		admin.GET("/reports/safety", h.AdminSafetyIncidentReport)
+		admin.GET("/reports/compliance", h.AdminPartnerComplianceReport)
 		admin.POST("/rides/:id/cancel", h.AdminCancelRide)
 
 		admin.GET("/complaints", h.AdminListComplaints)

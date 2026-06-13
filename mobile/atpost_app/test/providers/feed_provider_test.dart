@@ -37,14 +37,14 @@ void main() {
           limit: any(named: 'limit'),
           cursor: any(named: 'cursor'),
           circleOnly: any(named: 'circleOnly'),
+          followingOnly: any(named: 'followingOnly'),
         ),
       ).thenAnswer((_) async => FeedPage(items: posts));
 
       final notifier = createNotifier();
 
       // Wait for _init() to complete
-      await Future<void>.delayed(Duration.zero);
-      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
 
       final state = notifier.state;
       expect(state.hasValue, true);
@@ -58,13 +58,13 @@ void main() {
           limit: any(named: 'limit'),
           cursor: any(named: 'cursor'),
           circleOnly: any(named: 'circleOnly'),
+          followingOnly: any(named: 'followingOnly'),
         ),
       ).thenThrow(Exception('Network error'));
 
       final notifier = createNotifier();
 
-      await Future<void>.delayed(Duration.zero);
-      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
 
       expect(notifier.state.hasError, true);
     });
@@ -76,18 +76,17 @@ void main() {
           limit: any(named: 'limit'),
           cursor: any(named: 'cursor'),
           circleOnly: any(named: 'circleOnly'),
+          followingOnly: any(named: 'followingOnly'),
         ),
       ).thenAnswer((_) async => FeedPage(items: fakePosts(count: 2)));
 
       final notifier = createNotifier();
 
-      await Future<void>.delayed(Duration.zero);
-      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
 
       notifier.updateFilter('Following');
 
-      await Future<void>.delayed(Duration.zero);
-      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
 
       // getHomeFeed called twice: once on init, once after filter change
       verify(
@@ -96,6 +95,7 @@ void main() {
           limit: any(named: 'limit'),
           cursor: any(named: 'cursor'),
           circleOnly: any(named: 'circleOnly'),
+          followingOnly: any(named: 'followingOnly'),
         ),
       ).called(2);
     });
@@ -107,13 +107,13 @@ void main() {
           limit: any(named: 'limit'),
           cursor: any(named: 'cursor'),
           circleOnly: any(named: 'circleOnly'),
+          followingOnly: any(named: 'followingOnly'),
         ),
       ).thenAnswer((_) async => const FeedPage(items: []));
 
       final notifier = createNotifier();
 
-      await Future<void>.delayed(Duration.zero);
-      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
 
       notifier.updateFilter('For You'); // same as default
 
@@ -123,6 +123,7 @@ void main() {
           limit: any(named: 'limit'),
           cursor: any(named: 'cursor'),
           circleOnly: any(named: 'circleOnly'),
+          followingOnly: any(named: 'followingOnly'),
         ),
       ).called(1); // only the initial call
     });
@@ -135,13 +136,13 @@ void main() {
           limit: any(named: 'limit'),
           cursor: any(named: 'cursor'),
           circleOnly: any(named: 'circleOnly'),
+          followingOnly: any(named: 'followingOnly'),
         ),
       ).thenAnswer((_) async => FeedPage(items: posts));
 
       final notifier = createNotifier();
 
-      await Future<void>.delayed(Duration.zero);
-      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
 
       notifier.removePost(posts.first.id);
 

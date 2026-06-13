@@ -60,16 +60,16 @@ func (r *recordingPublisher) PublishRideOfferRejected(ctx context.Context, rideI
 func (r *recordingPublisher) PublishRideOfferExpired(ctx context.Context, rideID, offerID, partnerID uuid.UUID) error {
 	return nil
 }
-func (r *recordingPublisher) PublishRideAssigned(ctx context.Context, rideID, partnerID, vehicleID, offerID uuid.UUID) error {
+func (r *recordingPublisher) PublishRideAssigned(ctx context.Context, rideID, customerID, partnerID, vehicleID, offerID uuid.UUID) error {
 	return nil
 }
-func (r *recordingPublisher) PublishRideArriving(ctx context.Context, rideID, partnerID uuid.UUID) error {
+func (r *recordingPublisher) PublishRideArriving(ctx context.Context, rideID, customerID, partnerID uuid.UUID) error {
 	return nil
 }
-func (r *recordingPublisher) PublishRideArrived(ctx context.Context, rideID, partnerID uuid.UUID) error {
+func (r *recordingPublisher) PublishRideArrived(ctx context.Context, rideID, customerID, partnerID uuid.UUID) error {
 	return nil
 }
-func (r *recordingPublisher) PublishRideStarted(ctx context.Context, rideID, partnerID uuid.UUID) error {
+func (r *recordingPublisher) PublishRideStarted(ctx context.Context, rideID, customerID, partnerID uuid.UUID) error {
 	return nil
 }
 func (r *recordingPublisher) PublishRideCompleted(ctx context.Context, p events.RideCompletedPayload) error {

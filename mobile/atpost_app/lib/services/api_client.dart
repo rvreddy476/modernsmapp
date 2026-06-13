@@ -143,6 +143,27 @@ class ApiClient {
     }
   }
 
+  // --- Orphan cleanup ---
+
+  /// Best-effort delete of a media asset whose downstream consumer
+  /// (post create, story create, etc.) failed after upload. Audit H7:
+  /// without this the row stays at processing_status='uploaded' until
+  /// the 24h server-side orphan GC sweep — adequate but slow. Calling
+  /// this on the failure path drops storage immediately for the common
+  /// case (server returns an error, network blip after confirm). All
+  /// errors are swallowed: the goal is opportunistic cleanup, not
+  /// reliable deletion (the server sweeper is the reliable path).
+  Future<void> tryDeleteMedia(String mediaId) async {
+    if (mediaId.isEmpty) return;
+    try {
+      await _dio.delete('/v1/media/$mediaId');
+      AppLogger.info('Cleaned up orphan media $mediaId', tag: _tag);
+    } catch (e) {
+      AppLogger.info('Orphan media cleanup failed (will rely on server GC): $e',
+          tag: _tag);
+    }
+  }
+
   // --- Production Scale Media Upload (3-Step Spec) ---
 
   /// Orchestrates a resilient 3-step media upload as per OpenAPI spec:
@@ -154,13 +175,20 @@ class ApiClient {
     required String type, // 'image' or 'video'
     void Function(int sent, int total)? onProgress,
   }) async {
+    String step = 'init';
+    String? presignedHost;
+    int? fileSizeForDiag;
     try {
       final fileData = File(file.path);
       final fileSize = await fileData.length();
+      fileSizeForDiag = fileSize;
       final mimeType = lookupMimeType(file.path) ?? 'application/octet-stream';
 
       // 1. Initialize Upload
-      AppLogger.info('Initializing upload for ${file.name}', tag: _tag);
+      AppLogger.info(
+        'Initializing upload for ${file.name} (${fileSize}B, $mimeType)',
+        tag: _tag,
+      );
       final initRes = await post(
         '/v1/media/init',
         data: {
@@ -173,32 +201,136 @@ class ApiClient {
       final initData = initRes.data['data'] as Map<String, dynamic>;
       final mediaId = initData['media_id'] as String;
       final uploadUrl = initData['upload_url'] as String;
+      presignedHost = Uri.tryParse(uploadUrl)?.host;
 
       // 2. Perform Physical Upload (using a raw Dio instance to avoid global interceptors for presigned URL)
-      AppLogger.info('Uploading bytes to presigned URL', tag: _tag);
+      step = 'put';
+      AppLogger.info(
+        'Uploading bytes to presigned URL host=$presignedHost size=${fileSize}B',
+        tag: _tag,
+      );
       await Dio().put(
         uploadUrl,
         data: fileData.openRead(),
         onSendProgress: onProgress,
         options: Options(
           headers: {'Content-Type': mimeType, 'Content-Length': fileSize},
+          // The default 30 s connectTimeout is fine, but receive can
+          // run for a while on a real video — let it finish.
+          sendTimeout: const Duration(minutes: 5),
+          receiveTimeout: const Duration(minutes: 2),
         ),
       );
 
       // 3. Confirm Upload
+      step = 'confirm';
       AppLogger.info('Confirming upload completion', tag: _tag);
       await post('/v1/media/confirm', data: {'media_id': mediaId});
 
       return mediaId;
     } catch (e, st) {
+      // Pull a useful one-liner out of DioException so logcat actually
+      // tells us which step blew up + the underlying status / message.
+      final detail = e is DioException
+          ? 'type=${e.type} status=${e.response?.statusCode} '
+                'msg=${e.message} body=${e.response?.data}'
+          : e.toString();
       AppLogger.error(
-        'Resilient upload failed',
+        'Resilient upload failed [step=$step host=$presignedHost size=${fileSizeForDiag ?? -1}B] $detail',
         tag: _tag,
         error: e,
         stackTrace: st,
       );
-      throw ErrorHandler.handle(e, st, context: 'ApiClient.uploadMedia');
+      throw ErrorHandler.handle(e, st, context: 'ApiClient.uploadMedia.$step');
     }
+  }
+
+  /// Files at or above this size use the resumable (chunked) upload path.
+  static const int resumableUploadThreshold = 20 * 1024 * 1024; // 20 MB
+
+  /// Resumable multipart upload: init -> upload each part (with per-part
+  /// retry) -> complete. A dropped connection costs one 5 MB part's
+  /// re-send rather than the whole file. Used for large videos.
+  Future<String> uploadMediaResumable(
+    XFile file, {
+    required String type, // 'image' or 'video'
+    void Function(int sent, int total)? onProgress,
+  }) async {
+    String step = 'init';
+    try {
+      final fileData = File(file.path);
+      final fileSize = await fileData.length();
+      final mimeType = lookupMimeType(file.path) ?? 'application/octet-stream';
+
+      // 1. Open the resumable session.
+      final initRes = await post(
+        '/v1/media/upload/resumable/init',
+        data: {
+          'file_type': type,
+          'mime_type': mimeType,
+          'total_bytes': fileSize,
+        },
+      );
+      final initData = initRes.data['data'] as Map<String, dynamic>;
+      final uploadId = initData['upload_id'] as String;
+      final mediaId = initData['media_id'] as String;
+      final chunkSize = initData['chunk_size'] as int;
+      final totalParts = initData['total_parts'] as int;
+
+      // 2. Upload each part.
+      step = 'chunk';
+      for (var part = 1; part <= totalParts; part++) {
+        final start = (part - 1) * chunkSize;
+        final end = (start + chunkSize < fileSize) ? start + chunkSize : fileSize;
+        final bytes = <int>[];
+        await for (final slice in fileData.openRead(start, end)) {
+          bytes.addAll(slice);
+        }
+        await _uploadPartWithRetry(uploadId, part, bytes);
+        onProgress?.call(part, totalParts);
+      }
+
+      // 3. Assemble the object + trigger processing.
+      step = 'complete';
+      await post('/v1/media/upload/resumable/$uploadId/complete');
+
+      return mediaId;
+    } catch (e, st) {
+      AppLogger.error(
+        'Resumable upload failed [step=$step]',
+        tag: _tag,
+        error: e,
+        stackTrace: st,
+      );
+      throw ErrorHandler.handle(e, st,
+          context: 'ApiClient.uploadMediaResumable.$step');
+    }
+  }
+
+  Future<void> _uploadPartWithRetry(
+    String uploadId,
+    int partNumber,
+    List<int> bytes, {
+    int maxAttempts = 3,
+  }) async {
+    Object? lastErr;
+    for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        await post(
+          '/v1/media/upload/resumable/$uploadId/chunk',
+          data: bytes,
+          queryParameters: {'part_number': partNumber},
+          options: Options(contentType: 'application/octet-stream'),
+        );
+        return;
+      } catch (e) {
+        lastErr = e;
+        if (attempt < maxAttempts) {
+          await Future<void>.delayed(Duration(milliseconds: 500 * attempt));
+        }
+      }
+    }
+    throw lastErr!;
   }
 
   Never _handleError(Object error, String path) {

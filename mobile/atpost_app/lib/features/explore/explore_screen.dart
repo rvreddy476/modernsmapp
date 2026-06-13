@@ -247,8 +247,8 @@ class _ExploreScreenState extends ConsumerState<ExploreScreen> {
       ),
       const _ExploreAction(
         icon: Icons.groups_rounded,
-        title: 'Groups',
-        subtitle: 'Communities',
+        title: 'MySpace',
+        subtitle: 'Groups',
         route: '/groups',
         gradient: LinearGradient(
           colors: [AppColors.posttubePrimary, AppColors.accentPurple],
@@ -548,7 +548,7 @@ class _ExploreHero extends StatelessWidget {
           Text('Explore', style: AppTextStyles.h1.copyWith(fontSize: 30)),
           const SizedBox(height: 6),
           Text(
-            'Discover creators, trends, and community spaces built for AtPost.',
+            'Discover creators, trends, and community spaces built for VChat.',
             style: AppTextStyles.bodySmall.copyWith(
               color: AppColors.textSecondary,
             ),

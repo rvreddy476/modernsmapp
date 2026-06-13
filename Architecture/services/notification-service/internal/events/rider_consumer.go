@@ -47,8 +47,13 @@ func (c *Consumer) handleRiderEvent(ctx context.Context, envelope events.EventEn
 	case events.EventRiderRideAssigned,
 		events.EventRiderRideArriving,
 		events.EventRiderRideArrived,
-		events.EventRiderRideStarted,
-		events.EventRiderRideCompleted,
+		events.EventRiderRideStarted:
+		// Customer-facing ride lifecycle — push the "driver assigned /
+		// arriving / arrived / trip started" notification. The payload
+		// carries customer_user_id (enriched 2026-05-22) so no
+		// round-trip to rider-service is needed.
+		return true, c.handleRiderRideLifecycle(ctx, envelope.EventType, envelope.Payload)
+	case events.EventRiderRideCompleted,
 		events.EventRiderRideCancelled,
 		events.EventRiderRideExpired,
 		events.EventRiderRideRated,
@@ -83,6 +88,55 @@ func (c *Consumer) handleRiderEvent(ctx context.Context, envelope events.EventEn
 		return true, nil
 	}
 	return false, nil
+}
+
+// riderRideLifecyclePayload covers ride.assigned / arriving / arrived /
+// started. All four carry ride_id + customer_user_id (the latter was
+// added to the rider-service producer on 2026-05-22 specifically so
+// the FCM push can be dispatched without a round-trip).
+type riderRideLifecyclePayload struct {
+	RideID         string    `json:"ride_id"`
+	CustomerUserID string    `json:"customer_user_id"`
+	PartnerID      string    `json:"partner_id"`
+	OccurredAt     time.Time `json:"occurred_at"`
+	AssignedAt     time.Time `json:"assigned_at"`
+}
+
+// handleRiderRideLifecycle pushes the customer-facing ride-status
+// notification (driver assigned / arriving / arrived / trip started).
+func (c *Consumer) handleRiderRideLifecycle(ctx context.Context, eventType string, raw json.RawMessage) error {
+	var e riderRideLifecyclePayload
+	if err := unmarshalPayload(raw, &e); err != nil {
+		return fmt.Errorf("rider lifecycle: decode %s: %w", eventType, err)
+	}
+	customerID, err := uuid.Parse(e.CustomerUserID)
+	if err != nil {
+		// Pre-enrichment events (or a malformed payload) lack the
+		// customer id — claim + skip rather than DLQ.
+		slog.Warn("rider lifecycle: missing customer_user_id", "event", eventType, "ride_id", e.RideID)
+		return nil
+	}
+	rideID, err := uuid.Parse(e.RideID)
+	if err != nil {
+		return fmt.Errorf("rider lifecycle: invalid ride_id in %s: %w", eventType, err)
+	}
+	occurredAt := e.OccurredAt
+	if occurredAt.IsZero() {
+		occurredAt = e.AssignedAt
+	}
+	if occurredAt.IsZero() {
+		occurredAt = time.Now().UTC()
+	}
+	deepLink := "/mopedu/booking/" + e.RideID
+	if err := c.service.CreateNotification(
+		ctx, customerID, customerID,
+		eventType, "rider_ride", rideID,
+		deepLink, occurredAt,
+	); err != nil {
+		slog.Warn("rider lifecycle: notify customer failed",
+			"customer_id", customerID, "ride_id", e.RideID, "event", eventType, "error", err)
+	}
+	return nil
 }
 
 // rider.safety.sos → priority push to admin queue + trusted contact (the

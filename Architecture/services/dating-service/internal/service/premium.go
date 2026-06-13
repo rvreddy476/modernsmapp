@@ -264,8 +264,16 @@ func (s *Service) HandleWebhook(ctx context.Context, signature string, body []by
 		if err := s.handleSubscriptionCharged(ctx, intent, env.Payload); err != nil {
 			return nil, err
 		}
-	case "subscription.completed", "subscription.cancelled", "subscription.halted":
+	case "subscription.completed", "subscription.cancelled":
 		if err := s.handleSubscriptionCompleted(ctx, intent, env.Payload); err != nil {
+			return nil, err
+		}
+	case "subscription.halted", "subscription.charged_failed":
+		// Phase 1 fanout: surface to the user as
+		// dating.premium.payment_failure ("we couldn't charge you,
+		// retry to keep premium"). subscription.halted still closes
+		// the subscription out so MyPremium reflects expired status.
+		if err := s.handleSubscriptionPaymentFailure(ctx, intent, env.Event, env.Payload); err != nil {
 			return nil, err
 		}
 	case "payment.failed":
@@ -433,7 +441,11 @@ func (s *Service) handleSubscriptionCompleted(ctx context.Context, intent *store
 	return nil
 }
 
-// handlePaymentFailed marks the intent failed. v1: no user-facing action.
+// handlePaymentFailed marks the intent failed. Phase 1 follow-up:
+// also emit dating.premium.payment_failure so the user sees "we
+// couldn't charge you; retry to keep premium". This is the one-time
+// payment.failed path; the subscription path is in
+// handleSubscriptionPaymentFailure.
 func (s *Service) handlePaymentFailed(ctx context.Context, intent *store.PaymentIntent, payload map[string]any) {
 	if intent == nil {
 		return
@@ -441,4 +453,88 @@ func (s *Service) handlePaymentFailed(ctx context.Context, intent *store.Payment
 	if err := s.store.MarkPaymentIntentFailed(ctx, intent.ID); err != nil {
 		slog.Warn("mark intent failed errored", "intent_id", intent.ID, "error", err)
 	}
+	if s.producer != nil {
+		reason := extractFailureReason(payload)
+		if perr := s.producer.PublishPremiumPaymentFailure(ctx, intent.UserID, intent.PlanID, reason); perr != nil {
+			slog.Warn("publish premium.payment_failure failed", "user_id", intent.UserID, "error", perr)
+		}
+	}
+}
+
+// handleSubscriptionPaymentFailure surfaces a subscription-level
+// failure (Razorpay event subscription.charged_failed or
+// subscription.halted). subscription.halted also expires the
+// subscription so the MyPremium check goes to false on the next read.
+//
+// Idempotency: the unique razorpay_event_id row already short-circuits
+// replays at the top of HandleWebhook. The cancellation leg below is
+// safe to re-run (MarkSubscriptionCancelled becomes a no-op once
+// auto_renew is already false).
+func (s *Service) handleSubscriptionPaymentFailure(ctx context.Context, intent *store.PaymentIntent, eventType string, payload map[string]any) error {
+	if intent == nil {
+		slog.Info("subscription payment failure without matching intent; skipping", "event", eventType)
+		return nil
+	}
+	// Mark the intent failed so MyPremium responses + admin queues
+	// can distinguish "active premium" from "premium pending the
+	// retry".
+	if err := s.store.MarkPaymentIntentFailed(ctx, intent.ID); err != nil {
+		slog.Warn("mark intent failed errored on sub payment failure", "intent_id", intent.ID, "error", err)
+	}
+	// subscription.halted is terminal — Razorpay has given up
+	// retrying. Cancel auto_renew so the next charge cycle does not
+	// re-attempt. subscription.charged_failed is recoverable (the
+	// user can update their UPI mandate) — leave auto_renew alone.
+	if eventType == "subscription.halted" {
+		if err := s.store.MarkSubscriptionCancelled(ctx, intent.UserID); err != nil {
+			if !errors.Is(err, store.ErrSubscriptionNotFound) {
+				return fmt.Errorf("mark sub cancelled on halt: %w", err)
+			}
+		}
+		if s.producer != nil {
+			_ = s.producer.PublishPremiumExpired(ctx, intent.UserID, intent.PlanID)
+		}
+	}
+	if s.producer != nil {
+		reason := extractFailureReason(payload)
+		if reason == "" {
+			reason = eventType
+		}
+		if perr := s.producer.PublishPremiumPaymentFailure(ctx, intent.UserID, intent.PlanID, reason); perr != nil {
+			slog.Warn("publish premium.payment_failure failed", "user_id", intent.UserID, "error", perr)
+		}
+	}
+	return nil
+}
+
+// extractFailureReason digs through the Razorpay payload shape to
+// surface a human-readable reason. Returns empty string when the
+// shape doesn't include one — callers fall back to the event type.
+//
+// Shapes observed:
+//
+//	{"payload":{"payment":{"entity":{"error_description":"..."}}}}
+//	{"payload":{"subscription":{"entity":{"status":"halted"}}}}
+func extractFailureReason(payload map[string]any) string {
+	if payload == nil {
+		return ""
+	}
+	if pay, ok := payload["payment"].(map[string]any); ok {
+		if ent, ok := pay["entity"].(map[string]any); ok {
+			if d, ok := ent["error_description"].(string); ok && d != "" {
+				return d
+			}
+			if d, ok := ent["error_reason"].(string); ok && d != "" {
+				return d
+			}
+		}
+	}
+	if sub, ok := payload["subscription"].(map[string]any); ok {
+		if ent, ok := sub["entity"].(map[string]any); ok {
+			if d, ok := ent["status"].(string); ok && d != "" {
+				return d
+			}
+		}
+	}
+	return ""
 }

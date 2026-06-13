@@ -3,22 +3,22 @@ import 'package:flutter/material.dart';
 class AppColors {
   const AppColors._();
 
-  static const Color bgPrimary = Color(0xFF08080F);
-  static const Color bgSecondary = Color(0xFF0D0D18);
-  static const Color bgTertiary = Color(0xFF14141F);
+  static const Color bgPrimary = Color(0xFF000000);
+  static const Color bgSecondary = Color(0xFF121212);
+  static const Color bgTertiary = Color(0xFF1C1C1E);
   static const Color bgCard = Color(0x0AFFFFFF);
   static const Color bgCardHover = Color(0x0FFFFFFF);
 
   static const Color borderSubtle = Color(0x0FFFFFFF);
   static const Color borderMedium = Color(0x14FFFFFF);
 
-  static const Color textPrimary = Color(0xFFE8E8F0);
-  static const Color textSecondary = Color(0xFFC8C8D8);
-  static const Color textTertiary = Color(0xFF8B8BA7);
-  static const Color textMuted = Color(0xFF6B6B80);
-  static const Color textDim = Color(0xFF5A5A72);
-  static const Color textDimmest = Color(0xFF4A4A62);
-  static const Color textGhost = Color(0xFF3A3A52);
+  static const Color textPrimary = Color(0xFFFFFFFF);
+  static const Color textSecondary = Color(0xFFE5E5EA);
+  static const Color textTertiary = Color(0xFFD1D1D6);
+  static const Color textMuted = Color(0xFF8E8E93);
+  static const Color textDim = Color(0xFF636366);
+  static const Color textDimmest = Color(0xFF48484A);
+  static const Color textGhost = Color(0xFF2C2C2E);
 
   static const Color postbookPrimary = Color(0xFFFF6B35);
   static const Color postbookSecondary = Color(0xFFFF8F65);

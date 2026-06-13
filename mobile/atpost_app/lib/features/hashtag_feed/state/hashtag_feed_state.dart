@@ -25,6 +25,7 @@ class HashtagFeedState {
     this.nextCursor,
     this.errorMessage,
     this.isSearching = false,
+    this.newPostCount = 0,
   });
 
   final HashtagFeedStatus status;
@@ -38,6 +39,11 @@ class HashtagFeedState {
   final String? nextCursor;
   final String? errorMessage;
   final bool isSearching;
+  /// Count of new posts received on the SSE stream for the currently
+  /// selected hashtag since the last refresh / acknowledgement. Drives
+  /// the inline "N new posts" pill at the top of the list; tapping
+  /// the pill refetches the first page and resets this counter.
+  final int newPostCount;
 
   HashtagFeedState copyWith({
     HashtagFeedStatus? status,
@@ -54,6 +60,7 @@ class HashtagFeedState {
     String? errorMessage,
     bool clearErrorMessage = false,
     bool? isSearching,
+    int? newPostCount,
   }) {
     return HashtagFeedState(
       status: status ?? this.status,
@@ -70,6 +77,7 @@ class HashtagFeedState {
       errorMessage:
           clearErrorMessage ? null : (errorMessage ?? this.errorMessage),
       isSearching: isSearching ?? this.isSearching,
+      newPostCount: newPostCount ?? this.newPostCount,
     );
   }
 }

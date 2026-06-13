@@ -176,8 +176,14 @@ func (h *Handler) ReopenQuestion(c *gin.Context) {
 	if !ok {
 		return
 	}
+	// Audit CQ1: previously no auth check. Require X-User-Id and let
+	// the service layer enforce author-only.
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
 
-	if err := h.svc.ReopenQuestion(c.Request.Context(), qID); err != nil {
+	if err := h.svc.ReopenQuestion(c.Request.Context(), qID, userID); err != nil {
 		respondServiceError(c, err, http.StatusInternalServerError, "REOPEN_FAILED")
 		return
 	}

@@ -98,12 +98,38 @@ class MonetizationRepository {
     return EarningsSummary.fromJson(response.data as Map<String, dynamic>);
   }
 
-  /// Fetch payout history.
-  Future<List<PayoutRecord>> getPayouts() async {
-    final response = await _api.get('/v1/shop/payouts');
-    final items = (response.data['data'] as List<dynamic>?) ?? [];
+  /// Phase F1.1 — re-pointed from the retired `/v1/shop/payouts` to the
+  /// commerce-service per-line earnings ledger added in Phase 4.4. The
+  /// response shape changed: each row is now an order item with gross
+  /// / commission / fee / TDS / net broken out instead of a single
+  /// aggregated payout transaction.
+  Future<List<SellerEarning>> getSellerEarnings({int limit = 50, int offset = 0}) async {
+    final response = await _api.get(
+      '/v1/commerce/seller/earnings',
+      queryParameters: {'limit': limit, 'offset': offset},
+    );
+    final data = response.data['data'] as Map<String, dynamic>? ?? const {};
+    final items = (data['earnings'] as List<dynamic>?) ?? [];
     return items
-        .map((e) => PayoutRecord.fromJson(e as Map<String, dynamic>))
+        .map((e) => SellerEarning.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// Legacy-shape adapter so the monetization dashboard (which still
+  /// renders PayoutRecord rows) keeps working without a UI rewrite.
+  /// Each commerce earning row collapses into a PayoutRecord with the
+  /// net amount + delivered_at + payment_method. Will be removed once
+  /// the dashboard migrates to the richer SellerEarning view.
+  Future<List<PayoutRecord>> getPayouts() async {
+    final earnings = await getSellerEarnings(limit: 100);
+    return earnings
+        .map((e) => PayoutRecord(
+              id: e.orderItemId,
+              amount: e.netAmount,
+              status: e.status.isEmpty ? 'pending' : e.status,
+              createdAt: e.deliveredAt ?? DateTime.now(),
+              method: e.paymentMethod,
+            ))
         .toList();
   }
 

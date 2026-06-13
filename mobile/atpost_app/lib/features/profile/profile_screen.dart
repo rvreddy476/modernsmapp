@@ -1,4 +1,6 @@
+import 'package:atpost_app/core/config/environment.dart';
 import 'package:atpost_app/core/theme/app_colors.dart';
+import 'package:atpost_app/data/models/post.dart';
 import 'package:atpost_app/data/models/user.dart';
 import 'package:atpost_app/providers/data_saver_provider.dart';
 import 'package:atpost_app/providers/profile_provider.dart';
@@ -7,72 +9,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-/// Visibility scope for a profile section.
-enum SectionPrivacy { public, followers, onlyMe }
-
-extension SectionPrivacyX on SectionPrivacy {
-  String get label {
-    switch (this) {
-      case SectionPrivacy.public:
-        return 'Public';
-      case SectionPrivacy.followers:
-        return 'Followers';
-      case SectionPrivacy.onlyMe:
-        return 'Only me';
-    }
-  }
-
-  IconData get icon {
-    switch (this) {
-      case SectionPrivacy.public:
-        return Icons.public_rounded;
-      case SectionPrivacy.followers:
-        return Icons.people_rounded;
-      case SectionPrivacy.onlyMe:
-        return Icons.lock_rounded;
-    }
-  }
-
-  (Color bg, Color fg) get palette {
-    switch (this) {
-      case SectionPrivacy.public:
-        return (const Color(0xFF1A3A1A), const Color(0xFF4ADE80));
-      case SectionPrivacy.followers:
-        return (const Color(0xFF1A1A3A), const Color(0xFF818CF8));
-      case SectionPrivacy.onlyMe:
-        return (const Color(0xFF2A2A2A), const Color(0xFF888888));
-    }
-  }
-
-  SectionPrivacy get next {
-    switch (this) {
-      case SectionPrivacy.public:
-        return SectionPrivacy.followers;
-      case SectionPrivacy.followers:
-        return SectionPrivacy.onlyMe;
-      case SectionPrivacy.onlyMe:
-        return SectionPrivacy.public;
-    }
-  }
-}
-
-/// Local privacy/UI state held until a backend persistence layer ships.
-class _ProfileLocalState {
-  SectionPrivacy aboutPrivacy = SectionPrivacy.public;
-  SectionPrivacy educationPrivacy = SectionPrivacy.followers;
-  SectionPrivacy workPrivacy = SectionPrivacy.public;
-  SectionPrivacy interestsPrivacy = SectionPrivacy.followers;
-  SectionPrivacy contactPrivacy = SectionPrivacy.onlyMe;
-
-  bool showOnlineStatus = true;
-  bool showInSearch = true;
-  bool privateAccount = false;
-  bool showEarningsBadge = true;
-
-  /// 0 = All, 1 = Followers, 2 = None
-  int allowMessages = 0;
-}
-
+/// The signed-in user's own profile.
+///
+/// Instagram-style layout: a gradient cover with overlaid share/settings
+/// actions, an avatar that overhangs the cover, a four-up stats card, and a
+/// Posts / Reels / Saved tab strip over a 3-column media grid.
 class ProfileScreen extends ConsumerStatefulWidget {
   const ProfileScreen({super.key});
 
@@ -80,762 +21,301 @@ class ProfileScreen extends ConsumerStatefulWidget {
   ConsumerState<ProfileScreen> createState() => _ProfileScreenState();
 }
 
-class _ProfileScreenState extends ConsumerState<ProfileScreen> {
-  final _local = _ProfileLocalState();
+enum _ProfileTab { posts, reels, saved }
 
-  static const _bg = Color(0xFF111111);
-  static const _bgCard = Color(0xFF1C1C1C);
-  static const _divider = Color(0xFF1E1E1E);
-  static const _textPrimary = Colors.white;
-  static const _textSecondary = Color(0xFFBBBBBB);
-  static const _textMuted = Color(0xFF888888);
-  static const _textDim = Color(0xFF666666);
+class _ProfileScreenState extends ConsumerState<ProfileScreen> {
+  _ProfileTab _tab = _ProfileTab.posts;
 
   @override
   Widget build(BuildContext context) {
     final profileAsync = ref.watch(profileProvider);
 
     return Scaffold(
-      backgroundColor: _bg,
+      backgroundColor: AppColors.bgPrimary,
       body: profileAsync.when(
         loading: () => const Center(
-          child: CircularProgressIndicator(
-            color: AppColors.postbookPrimary,
-          ),
+          child: CircularProgressIndicator(color: AppColors.postbookPrimary),
         ),
-        error: (e, _) => _buildError(),
+        error: (_, _) => _buildError(),
         data: (state) => state.user == null
             ? _buildError()
             : RefreshIndicator(
                 color: AppColors.postbookPrimary,
-                backgroundColor: _bgCard,
-                onRefresh: () =>
-                    ref.read(profileProvider.notifier).refresh(),
-                child: _buildBody(state.user!, state.posts.length),
+                backgroundColor: AppColors.bgSecondary,
+                onRefresh: () => ref.read(profileProvider.notifier).refresh(),
+                child: _buildBody(state),
               ),
       ),
     );
   }
 
-  Widget _buildBody(User user, int postsCount) {
-    return ListView(
-      padding: EdgeInsets.zero,
-      children: [
-        _buildCover(user),
-        Transform.translate(
-          offset: const Offset(0, -36),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: _buildAvatar(user),
+  // ---------------- Body ----------------
+
+  Widget _buildBody(ProfileState state) {
+    final posts = state.posts.where((p) => !p.isReel).toList();
+    final reels = state.posts.where((p) => p.isReel).toList();
+    final dataSaver = ref.watch(effectiveDataSaverProvider);
+
+    final tabItems = switch (_tab) {
+      _ProfileTab.posts => posts,
+      _ProfileTab.reels => reels,
+      _ProfileTab.saved => const <Post>[],
+    };
+
+    return CustomScrollView(
+      physics: const AlwaysScrollableScrollPhysics(),
+      slivers: [
+        SliverToBoxAdapter(child: _buildHeader(state)),
+        SliverToBoxAdapter(child: _buildTabBar()),
+        if (_tab == _ProfileTab.saved)
+          SliverFillRemaining(
+            hasScrollBody: false,
+            child: _emptyState(
+              icon: Icons.bookmark_border_rounded,
+              title: 'Nothing saved yet',
+              subtitle: 'Posts you bookmark will show up here.',
+            ),
+          )
+        else if (tabItems.isEmpty)
+          SliverFillRemaining(
+            hasScrollBody: false,
+            child: _emptyState(
+              icon: _tab == _ProfileTab.reels
+                  ? Icons.movie_outlined
+                  : Icons.grid_view_rounded,
+              title: _tab == _ProfileTab.reels
+                  ? 'No reels yet'
+                  : 'No posts yet',
+              subtitle: _tab == _ProfileTab.reels
+                  ? 'Reels you create will appear here.'
+                  : 'Share your first post to fill this grid.',
+            ),
+          )
+        else
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(14, 14, 14, 32),
+            sliver: SliverGrid(
+              gridDelegate:
+                  const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 3,
+                crossAxisSpacing: 10,
+                mainAxisSpacing: 10,
+              ),
+              delegate: SliverChildBuilderDelegate(
+                (context, i) {
+                  final post = tabItems[i];
+                  return _GridTile(
+                    post: post,
+                    dataSaver: dataSaver,
+                    onTap: () => context.push('/comments/${post.id}'),
+                  );
+                },
+                childCount: tabItems.length,
+              ),
+            ),
           ),
-        ),
-        Transform.translate(
-          offset: const Offset(0, -28),
-          child: _buildHeader(user, postsCount),
-        ),
-        Transform.translate(
-          offset: const Offset(0, -16),
-          child: Column(
-            children: [
-              _divLine(),
-              _buildAbout(user),
-              _buildEducation(),
-              _buildWork(),
-              _buildInterests(),
-              _buildContact(user),
-              _buildPrivacySettings(),
-              const SizedBox(height: 32),
-            ],
-          ),
-        ),
       ],
     );
   }
 
-  // ---------------- Cover + Avatar ----------------
+  // ---------------- Header (cover + avatar + identity + stats) ----
 
-  Widget _buildCover(User user) {
-    return Stack(
-      children: [
-        Container(
-          height: 120,
-          width: double.infinity,
-          decoration: BoxDecoration(
-            gradient: const LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                Color(0xFF1A1040),
-                Color(0xFF2D1060),
-                Color(0xFF1A2060),
-              ],
-            ),
-            image: user.hasCover
-                ? DecorationImage(
-                    image: NetworkImage(
-                      resolveImageUrl(
-                        user.coverUrl!,
-                        dataSaver: ref.watch(effectiveDataSaverProvider),
-                        size: ImageSize.large,
-                      ),
-                    ),
-                    fit: BoxFit.cover,
-                    onError: (_, _) {},
-                  )
-                : null,
-          ),
-        ),
-        Positioned(
-          right: 8,
-          bottom: 8,
-          child: _circleIconButton(
-            icon: Icons.camera_alt_outlined,
-            onTap: () => _toast('Cover photo update — coming soon'),
-            background: Colors.black.withValues(alpha: 0.55),
-            iconSize: 14,
-          ),
-        ),
-      ],
-    );
-  }
+  Widget _buildHeader(ProfileState state) {
+    final user = state.user!;
+    final topInset = MediaQuery.viewPaddingOf(context).top;
+    const coverHeight = 148.0;
+    const avatarSize = 84.0;
+    final coverTotal = coverHeight + topInset;
 
-  Widget _buildAvatar(User user) {
-    final initials = _initialsFor(user.displayName);
-    return SizedBox(
-      width: 72,
-      height: 72,
-      child: Stack(
-        clipBehavior: Clip.none,
-        children: [
-          Container(
-            width: 72,
-            height: 72,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              gradient: const LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [Color(0xFF5C4AFF), Color(0xFFFF6B35)],
-              ),
-              border: Border.all(color: _bg, width: 3),
-              image: user.hasAvatar
-                  ? DecorationImage(
-                      image: NetworkImage(
-                        resolveImageUrl(
-                          user.avatarUrl,
-                          dataSaver: ref.watch(effectiveDataSaverProvider),
-                          size: ImageSize.medium,
-                        ),
-                      ),
-                      fit: BoxFit.cover,
-                    )
-                  : null,
-            ),
-            alignment: Alignment.center,
-            child: user.hasAvatar
-                ? null
-                : Text(
-                    initials,
-                    style: const TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.w500,
-                      color: Colors.white,
-                    ),
-                  ),
-          ),
-          Positioned(
-            right: 2,
-            bottom: 2,
-            child: _circleIconButton(
-              icon: Icons.camera_alt_rounded,
-              onTap: () => _toast('Avatar update — coming soon'),
-              background: AppColors.postbookPrimary,
-              size: 22,
-              iconSize: 11,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ---------------- Header ----------------
-
-  Widget _buildHeader(User user, int postsCount) {
-    final handle = user.username.isNotEmpty ? '@${user.username}' : '@user';
-    final loc = user.location?.trim();
-    final handleLine =
-        loc == null || loc.isEmpty ? handle : '$handle · $loc';
-    final bio = (user.bio == null || user.bio!.trim().isEmpty)
-        ? 'No bio yet — tap "Edit profile" to add one.'
-        : user.bio!;
-
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            user.displayName,
-            style: const TextStyle(
-              color: _textPrimary,
-              fontSize: 18,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: 2),
-          Text(
-            handleLine,
-            style: const TextStyle(color: _textDim, fontSize: 12),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            bio,
-            style: const TextStyle(
-              color: _textSecondary,
-              fontSize: 13,
-              height: 1.5,
-            ),
-          ),
-          const SizedBox(height: 14),
-          Row(
-            children: [
-              _stat(_formatCount(user.followerCount), 'Followers'),
-              const SizedBox(width: 24),
-              _stat(_formatCount(user.followingCount), 'Following'),
-              const SizedBox(width: 24),
-              _stat(
-                _formatCount(
-                  user.postCount > 0 ? user.postCount : postsCount,
-                ),
-                'Posts',
-              ),
-            ],
-          ),
-          const SizedBox(height: 14),
-          Row(
-            children: [
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: () => context.push('/settings/profile'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.postbookPrimary,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 11),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    elevation: 0,
-                  ),
-                  child: const Text(
-                    'Edit profile',
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              _squareIconButton(
-                icon: Icons.photo_library_outlined,
-                onTap: () => context.push('/profile/media'),
-              ),
-              const SizedBox(width: 8),
-              _squareIconButton(
-                icon: Icons.share_outlined,
-                onTap: () => _toast('Profile share — coming soon'),
-              ),
-              const SizedBox(width: 8),
-              _squareIconButton(
-                icon: Icons.settings_outlined,
-                onTap: () => context.push('/settings'),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _stat(String value, String label) {
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          value,
-          style: const TextStyle(
-            color: _textPrimary,
-            fontSize: 15,
+        SizedBox(
+          height: coverTotal + 48,
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              // Gradient cover (or the uploaded cover photo).
+              Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                child: _buildCover(user, coverTotal),
+              ),
+              // Top-left: share profile (rounded-square glass button).
+              Positioned(
+                top: topInset + 10,
+                left: 16,
+                child: _glassButton(
+                  icon: Icons.ios_share_rounded,
+                  circle: false,
+                  onTap: () => _toast('Profile share — coming soon'),
+                ),
+              ),
+              // Top-right: settings (circular glass button).
+              Positioned(
+                top: topInset + 10,
+                right: 16,
+                child: _glassButton(
+                  icon: Icons.settings_outlined,
+                  circle: true,
+                  onTap: () => context.push('/settings'),
+                ),
+              ),
+              // Avatar — overhangs the cover's bottom edge.
+              Positioned(
+                left: 16,
+                top: coverTotal - avatarSize / 2,
+                child: _buildAvatar(user, avatarSize),
+              ),
+              // Edit profile + QR — aligned with the avatar's lower half.
+              Positioned(
+                right: 16,
+                top: coverTotal + 2,
+                child: Row(
+                  children: [
+                    _editProfileButton(),
+                    const SizedBox(width: 8),
+                    _circleAction(
+                      icon: Icons.qr_code_rounded,
+                      onTap: () => _toast('Profile QR — coming soon'),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 18),
+          child: _buildIdentity(user),
+        ),
+        const SizedBox(height: 16),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: _buildStatsCard(state),
+        ),
+        const SizedBox(height: 4),
+      ],
+    );
+  }
+
+  Widget _buildCover(User user, double height) {
+    return Container(
+      height: height,
+      width: double.infinity,
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            AppColors.accentPurple,
+            Color(0xFF4A6CF7),
+            AppColors.posttubePrimary,
+          ],
+        ),
+        image: user.hasCover
+            ? DecorationImage(
+                image: NetworkImage(
+                  resolveImageUrl(
+                    user.coverUrl!,
+                    dataSaver: ref.watch(effectiveDataSaverProvider),
+                    size: ImageSize.large,
+                  ),
+                ),
+                fit: BoxFit.cover,
+                onError: (_, _) {},
+              )
+            : null,
+      ),
+    );
+  }
+
+  Widget _buildAvatar(User user, double size) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF5C8DFF), Color(0xFF4A3FB0)],
+        ),
+        border: Border.all(color: AppColors.bgPrimary, width: 3.5),
+        image: user.hasAvatar
+            ? DecorationImage(
+                image: NetworkImage(
+                  resolveImageUrl(
+                    user.avatarUrl,
+                    dataSaver: ref.watch(effectiveDataSaverProvider),
+                    size: ImageSize.medium,
+                  ),
+                ),
+                fit: BoxFit.cover,
+              )
+            : null,
+      ),
+      alignment: Alignment.center,
+      child: user.hasAvatar
+          ? null
+          : Text(
+              _initialsFor(user.displayName),
+              style: const TextStyle(
+                fontSize: 26,
+                fontWeight: FontWeight.w700,
+                color: Colors.white,
+              ),
+            ),
+    );
+  }
+
+  Widget _editProfileButton() {
+    return GestureDetector(
+      onTap: () => context.push('/settings/profile'),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 9),
+        decoration: BoxDecoration(
+          color: const Color(0x1FFFFFFF),
+          borderRadius: BorderRadius.circular(22),
+          border: Border.all(color: AppColors.borderMedium),
+        ),
+        child: const Text(
+          'Edit profile',
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 13,
             fontWeight: FontWeight.w600,
           ),
         ),
-        const SizedBox(height: 1),
-        Text(
-          label,
-          style: const TextStyle(color: _textDim, fontSize: 10),
-        ),
-      ],
-    );
-  }
-
-  // ---------------- About ----------------
-
-  Widget _buildAbout(User user) {
-    final about = (user.bio == null || user.bio!.trim().isEmpty)
-        ? 'Tell people a bit about yourself. Tap the edit pencil to add an "about" blurb that appears on your profile.'
-        : user.bio!;
-    return _section(
-      title: 'About',
-      icon: Icons.info_outline_rounded,
-      privacy: _local.aboutPrivacy,
-      onCyclePrivacy: () => setState(
-          () => _local.aboutPrivacy = _local.aboutPrivacy.next),
-      onEdit: () => context.push('/settings/profile'),
-      child: Text(
-        about,
-        style: const TextStyle(
-          color: Color(0xFFAAAAAA),
-          fontSize: 13,
-          height: 1.6,
-        ),
       ),
     );
   }
 
-  // ---------------- Education ----------------
-
-  Widget _buildEducation() {
-    return _section(
-      title: 'Education',
-      icon: Icons.school_outlined,
-      privacy: _local.educationPrivacy,
-      onCyclePrivacy: () => setState(
-          () => _local.educationPrivacy = _local.educationPrivacy.next),
-      onEdit: () => _toast('Edit education — coming soon'),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _emptyHint('Add the schools or colleges you attended.'),
-          _addButton('Add education',
-              onTap: () => _toast('Add education — coming soon')),
-        ],
-      ),
-    );
-  }
-
-  // ---------------- Work ----------------
-
-  Widget _buildWork() {
-    return _section(
-      title: 'Work experience',
-      icon: Icons.work_outline_rounded,
-      privacy: _local.workPrivacy,
-      onCyclePrivacy: () =>
-          setState(() => _local.workPrivacy = _local.workPrivacy.next),
-      onEdit: () => _toast('Edit work — coming soon'),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _emptyHint('Add roles, companies, and what you build.'),
-          _addButton('Add experience',
-              onTap: () => _toast('Add experience — coming soon')),
-        ],
-      ),
-    );
-  }
-
-  // ---------------- Interests ----------------
-
-  Widget _buildInterests() {
-    return _section(
-      title: 'Interests & hobbies',
-      icon: Icons.favorite_border_rounded,
-      privacy: _local.interestsPrivacy,
-      onCyclePrivacy: () => setState(
-          () => _local.interestsPrivacy = _local.interestsPrivacy.next),
-      onEdit: () => _toast('Edit interests — coming soon'),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _emptyHint('Tag what you love — gets you better recommendations.'),
-          _addButton('Add interests',
-              onTap: () => _toast('Add interests — coming soon')),
-        ],
-      ),
-    );
-  }
-
-  // ---------------- Contact ----------------
-
-  Widget _buildContact(User user) {
-    final rows = <Widget>[];
-
-    // We don't have email/phone on the User model yet, so contact is
-    // entirely empty for now. Show the empty state + add prompt.
-    rows.add(_emptyHint(
-        'Share an email or phone visible to people you choose.'));
-    rows.add(_addButton('Add contact',
-        onTap: () => _toast('Add contact info — coming soon')));
-
-    return _section(
-      title: 'Contact',
-      icon: Icons.call_outlined,
-      privacy: _local.contactPrivacy,
-      onCyclePrivacy: () => setState(
-          () => _local.contactPrivacy = _local.contactPrivacy.next),
-      onEdit: () => _toast('Edit contact — coming soon'),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: rows,
-      ),
-    );
-  }
-
-  // ---------------- Privacy settings ----------------
-
-  Widget _buildPrivacySettings() {
-    return Container(
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: const [
-              Icon(Icons.settings_outlined, size: 14, color: _textMuted),
-              SizedBox(width: 6),
-              Text(
-                'Privacy settings',
-                style: TextStyle(
-                  color: _textPrimary,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          _toggleRow(
-            label: 'Show online status',
-            sub: "Let followers see when you're active",
-            value: _local.showOnlineStatus,
-            onChanged: (v) => setState(() => _local.showOnlineStatus = v),
-          ),
-          _settingsRow(
-            label: 'Allow messages',
-            sub: 'Who can message you directly',
-            trailing: _segmented(
-              options: const ['All', 'Followers', 'None'],
-              selectedIndex: _local.allowMessages,
-              onChanged: (i) => setState(() => _local.allowMessages = i),
-            ),
-          ),
-          _toggleRow(
-            label: 'Show in search',
-            sub: 'Appear in people search results',
-            value: _local.showInSearch,
-            onChanged: (v) => setState(() => _local.showInSearch = v),
-          ),
-          _toggleRow(
-            label: 'Private account',
-            sub: 'Only followers see your posts',
-            value: _local.privateAccount,
-            onChanged: (v) => setState(() => _local.privateAccount = v),
-          ),
-          _toggleRow(
-            label: 'Show earnings badge',
-            sub: 'Display creator earnings on profile',
-            value: _local.showEarningsBadge,
-            onChanged: (v) => setState(() => _local.showEarningsBadge = v),
-            isLast: true,
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ---------------- Section helpers ----------------
-
-  Widget _section({
-    required String title,
+  Widget _circleAction({
     required IconData icon,
-    required SectionPrivacy privacy,
-    required VoidCallback onCyclePrivacy,
-    required VoidCallback onEdit,
-    required Widget child,
-  }) {
-    return Container(
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
-      decoration: const BoxDecoration(
-        border: Border(bottom: BorderSide(color: _divider)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(icon, size: 14, color: _textMuted),
-              const SizedBox(width: 6),
-              Text(
-                title,
-                style: const TextStyle(
-                  color: _textPrimary,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-              const Spacer(),
-              _privacyPill(privacy: privacy, onTap: onCyclePrivacy),
-              const SizedBox(width: 8),
-              GestureDetector(
-                onTap: onEdit,
-                child: const Icon(
-                  Icons.edit_outlined,
-                  size: 13,
-                  color: Color(0xFF555555),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          child,
-        ],
-      ),
-    );
-  }
-
-  Widget _privacyPill({
-    required SectionPrivacy privacy,
     required VoidCallback onTap,
   }) {
-    final (bg, fg) = privacy.palette;
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-        decoration: BoxDecoration(
-          color: bg,
-          borderRadius: BorderRadius.circular(20),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(privacy.icon, size: 9, color: fg),
-            const SizedBox(width: 3),
-            Text(
-              privacy.label,
-              style: TextStyle(
-                color: fg,
-                fontSize: 10,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _emptyHint(String text) {
-    return Text(
-      text,
-      style: const TextStyle(
-        color: _textMuted,
-        fontSize: 12,
-        height: 1.5,
-      ),
-    );
-  }
-
-  Widget _addButton(String label, {required VoidCallback onTap}) {
-    return Padding(
-      padding: const EdgeInsets.only(top: 6),
-      child: GestureDetector(
-        onTap: onTap,
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.add_rounded,
-                size: 14, color: AppColors.postbookPrimary),
-            const SizedBox(width: 4),
-            Text(
-              label,
-              style: const TextStyle(
-                color: AppColors.postbookPrimary,
-                fontSize: 12,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // ---------------- Settings row helpers ----------------
-
-  Widget _settingsRow({
-    required String label,
-    required String sub,
-    required Widget trailing,
-    bool isLast = false,
-  }) {
-    return Container(
-      padding: const EdgeInsets.symmetric(vertical: 10),
-      decoration: BoxDecoration(
-        border: Border(
-          bottom: BorderSide(
-            color: isLast ? Colors.transparent : _divider,
-            width: 0.5,
-          ),
-        ),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  label,
-                  style: const TextStyle(
-                    color: Color(0xFFDDDDDD),
-                    fontSize: 13,
-                  ),
-                ),
-                const SizedBox(height: 1),
-                Text(
-                  sub,
-                  style: const TextStyle(
-                    color: Color(0xFF555555),
-                    fontSize: 11,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 12),
-          trailing,
-        ],
-      ),
-    );
-  }
-
-  Widget _toggleRow({
-    required String label,
-    required String sub,
-    required bool value,
-    required ValueChanged<bool> onChanged,
-    bool isLast = false,
-  }) {
-    return _settingsRow(
-      label: label,
-      sub: sub,
-      isLast: isLast,
-      trailing: _customSwitch(value: value, onChanged: onChanged),
-    );
-  }
-
-  Widget _customSwitch({
-    required bool value,
-    required ValueChanged<bool> onChanged,
-  }) {
-    return GestureDetector(
-      onTap: () => onChanged(!value),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 180),
         width: 36,
-        height: 20,
+        height: 36,
         decoration: BoxDecoration(
-          color:
-              value ? AppColors.postbookPrimary : const Color(0xFF333333),
-          borderRadius: BorderRadius.circular(10),
-        ),
-        child: AnimatedAlign(
-          duration: const Duration(milliseconds: 180),
-          alignment: value ? Alignment.centerRight : Alignment.centerLeft,
-          child: Padding(
-            padding: const EdgeInsets.all(2),
-            child: Container(
-              width: 16,
-              height: 16,
-              decoration: const BoxDecoration(
-                color: Colors.white,
-                shape: BoxShape.circle,
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _segmented({
-    required List<String> options,
-    required int selectedIndex,
-    required ValueChanged<int> onChanged,
-  }) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: List.generate(options.length, (i) {
-        final selected = i == selectedIndex;
-        return Padding(
-          padding: EdgeInsets.only(left: i == 0 ? 0 : 4),
-          child: GestureDetector(
-            onTap: () => onChanged(i),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 160),
-              padding: const EdgeInsets.symmetric(
-                  horizontal: 8, vertical: 3),
-              decoration: BoxDecoration(
-                color: selected
-                    ? AppColors.postbookPrimary
-                    : const Color(0xFF252525),
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: Text(
-                options[i],
-                style: TextStyle(
-                  color:
-                      selected ? Colors.white : const Color(0xFF666666),
-                  fontSize: 10,
-                  fontWeight:
-                      selected ? FontWeight.w600 : FontWeight.w500,
-                ),
-              ),
-            ),
-          ),
-        );
-      }),
-    );
-  }
-
-  // ---------------- Misc ----------------
-
-  Widget _circleIconButton({
-    required IconData icon,
-    required VoidCallback onTap,
-    required Color background,
-    double size = 28,
-    double iconSize = 13,
-  }) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        width: size,
-        height: size,
-        decoration: BoxDecoration(
-          color: background,
+          color: const Color(0x1FFFFFFF),
           shape: BoxShape.circle,
+          border: Border.all(color: AppColors.borderMedium),
         ),
         alignment: Alignment.center,
-        child: Icon(icon, color: Colors.white, size: iconSize),
+        child: Icon(icon, size: 17, color: Colors.white),
       ),
     );
   }
 
-  Widget _squareIconButton({
+  Widget _glassButton({
     required IconData icon,
+    required bool circle,
     required VoidCallback onTap,
   }) {
     return GestureDetector(
@@ -844,31 +324,253 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
         width: 38,
         height: 38,
         decoration: BoxDecoration(
-          color: const Color(0xFF252525),
-          borderRadius: BorderRadius.circular(10),
+          color: const Color(0x40000000),
+          shape: circle ? BoxShape.circle : BoxShape.rectangle,
+          borderRadius: circle ? null : BorderRadius.circular(12),
+          border: Border.all(color: const Color(0x33FFFFFF)),
         ),
         alignment: Alignment.center,
-        child: Icon(icon, color: Colors.white, size: 15),
+        child: Icon(icon, size: 18, color: Colors.white),
       ),
     );
   }
 
-  Widget _divLine() => const Divider(height: 1, thickness: 1, color: Color(0xFF222222));
+  Widget _buildIdentity(User user) {
+    final handle =
+        user.username.isNotEmpty ? '@${user.username}' : '@user';
+    final pronouns = user.pronouns?.trim();
+    final location = user.location?.trim();
+    final handleLine = [
+      handle,
+      if (pronouns != null && pronouns.isNotEmpty) pronouns,
+      if (location != null && location.isNotEmpty) location,
+    ].join('  ·  ');
+    final bio = user.bio?.trim() ?? '';
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Flexible(
+              child: Text(
+                user.displayName,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 24,
+                  fontWeight: FontWeight.w800,
+                  height: 1.1,
+                ),
+              ),
+            ),
+            if (user.isVerified) ...[
+              const SizedBox(width: 6),
+              const Icon(
+                Icons.verified,
+                size: 18,
+                color: AppColors.postbookPrimary,
+              ),
+            ],
+          ],
+        ),
+        const SizedBox(height: 4),
+        Text(
+          handleLine,
+          style: const TextStyle(
+            color: AppColors.textTertiary,
+            fontSize: 13,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+        if (bio.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          Text(
+            bio,
+            style: const TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: 13.5,
+              height: 1.5,
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildStatsCard(ProfileState state) {
+    final user = state.user!;
+    final postsCount =
+        user.postCount > 0 ? user.postCount : state.posts.length;
+    final totalLikes =
+        state.posts.fold<int>(0, (sum, p) => sum + p.likeCount);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 4),
+      decoration: BoxDecoration(
+        color: AppColors.bgTertiary,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.borderSubtle),
+      ),
+      child: Row(
+        children: [
+          _stat(_compactCount(user.followerCount), 'Followers'),
+          _statDivider(),
+          _stat(_compactCount(user.followingCount), 'Following'),
+          _statDivider(),
+          _stat(_compactCount(postsCount), 'Posts'),
+          _statDivider(),
+          _stat(_compactCount(totalLikes), 'Likes'),
+        ],
+      ),
+    );
+  }
+
+  Widget _stat(String value, String label) {
+    return Expanded(
+      child: Column(
+        children: [
+          Text(
+            value,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 16,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 3),
+          Text(
+            label.toUpperCase(),
+            style: const TextStyle(
+              color: AppColors.textMuted,
+              fontSize: 9.5,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 0.6,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _statDivider() => Container(
+        width: 1,
+        height: 26,
+        color: AppColors.borderMedium,
+      );
+
+  // ---------------- Tab bar ----------------
+
+  Widget _buildTabBar() {
+    return Container(
+      margin: const EdgeInsets.only(top: 4),
+      decoration: const BoxDecoration(
+        border: Border(
+          bottom: BorderSide(color: AppColors.borderSubtle),
+        ),
+      ),
+      child: Row(
+        children: [
+          _tabItem(_ProfileTab.posts, Icons.grid_view_rounded, 'Posts'),
+          _tabItem(_ProfileTab.reels, Icons.movie_outlined, 'Reels'),
+          _tabItem(_ProfileTab.saved, Icons.bookmark_border_rounded, 'Saved'),
+        ],
+      ),
+    );
+  }
+
+  Widget _tabItem(_ProfileTab tab, IconData icon, String label) {
+    final active = _tab == tab;
+    final color =
+        active ? AppColors.postbookPrimary : AppColors.textMuted;
+    return Expanded(
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => setState(() => _tab = tab),
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(icon, size: 16, color: color),
+                  const SizedBox(width: 7),
+                  Text(
+                    label,
+                    style: TextStyle(
+                      color: color,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Container(
+              height: 2.5,
+              color: active
+                  ? AppColors.postbookPrimary
+                  : Colors.transparent,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ---------------- Empty / error states ----------------
+
+  Widget _emptyState({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+  }) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(32, 40, 32, 40),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 36, color: AppColors.textMuted),
+            const SizedBox(height: 12),
+            Text(
+              title,
+              style: const TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              subtitle,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: AppColors.textMuted,
+                fontSize: 12,
+                height: 1.5,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   Widget _buildError() {
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          const Icon(Icons.error_outline,
-              color: Colors.redAccent, size: 40),
+          const Icon(Icons.error_outline, color: Colors.redAccent, size: 40),
           const SizedBox(height: 12),
-          const Text('Could not load profile.',
-              style: TextStyle(color: Colors.white70)),
+          const Text(
+            'Could not load profile.',
+            style: TextStyle(color: Colors.white70),
+          ),
           const SizedBox(height: 8),
           TextButton(
-            onPressed: () =>
-                ref.read(profileProvider.notifier).refresh(),
+            onPressed: () => ref.read(profileProvider.notifier).refresh(),
             child: const Text('Retry'),
           ),
         ],
@@ -876,11 +578,13 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     );
   }
 
+  // ---------------- Misc ----------------
+
   void _toast(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
-        backgroundColor: const Color(0xFF1F1F1F),
+        backgroundColor: AppColors.bgSecondary,
         behavior: SnackBarBehavior.floating,
         duration: const Duration(seconds: 2),
       ),
@@ -897,10 +601,162 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     if (parts.length == 1) return parts.first.substring(0, 1).toUpperCase();
     return '${parts[0][0]}${parts[1][0]}'.toUpperCase();
   }
+}
 
-  String _formatCount(int n) {
-    if (n >= 1000000) return '${(n / 1000000).toStringAsFixed(1)}M';
-    if (n >= 1000) return '${(n / 1000).toStringAsFixed(1)}k';
-    return n.toString();
+/// Compact follower-style count: 2.1M, 12.4K, 482.
+String _compactCount(int n) {
+  if (n >= 1000000) return '${(n / 1000000).toStringAsFixed(1)}M';
+  if (n >= 1000) return '${(n / 1000).toStringAsFixed(1)}K';
+  return n.toString();
+}
+
+/// Decorative gradients for media-less post tiles, picked deterministically
+/// from the post id so a given post always renders the same colour.
+const List<List<Color>> _tileGradients = [
+  [Color(0xFF7B5BFF), Color(0xFF4A3FB0)], // violet
+  [Color(0xFF1FB6AD), Color(0xFF155E63)], // teal
+  [Color(0xFFD6249F), Color(0xFF7B2FF7)], // magenta
+  [Color(0xFF5B8DEF), Color(0xFF3A4FB8)], // blue
+];
+
+/// A single 3-column grid tile: the post's first media if it has any,
+/// otherwise a deterministic gradient with a short text preview.
+class _GridTile extends StatelessWidget {
+  const _GridTile({
+    required this.post,
+    required this.dataSaver,
+    required this.onTap,
+  });
+
+  final Post post;
+  final bool dataSaver;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors =
+        _tileGradients[post.id.hashCode.abs() % _tileGradients.length];
+
+    return GestureDetector(
+      onTap: onTap,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(14),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            if (post.mediaIds.isNotEmpty)
+              Image.network(
+                resolveImageUrl(
+                  '${Environment.apiBaseUrl}${post.firstMediaUrl}',
+                  dataSaver: dataSaver,
+                  size: ImageSize.medium,
+                ),
+                fit: BoxFit.cover,
+                errorBuilder: (_, _, _) => _gradientFill(colors),
+              )
+            else
+              _gradientFill(colors),
+            // Top-right marker: play for reels, stack for carousels.
+            if (post.isReel)
+              const Positioned(
+                top: 7,
+                right: 7,
+                child: _TileChip(icon: Icons.play_arrow_rounded),
+              )
+            else if (post.mediaIds.length > 1)
+              const Positioned(
+                top: 7,
+                right: 7,
+                child: _TileChip(icon: Icons.collections_rounded),
+              ),
+            // Bottom-left: like count over a soft scrim.
+            if (post.likeCount > 0)
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: Container(
+                  padding: const EdgeInsets.fromLTRB(8, 16, 8, 7),
+                  decoration: const BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.bottomCenter,
+                      end: Alignment.topCenter,
+                      colors: [Color(0x99000000), Color(0x00000000)],
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(
+                        Icons.favorite,
+                        size: 12,
+                        color: Colors.white,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        _compactCount(post.likeCount),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _gradientFill(List<Color> colors) {
+    final preview = post.content.trim();
+    return Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: colors,
+        ),
+      ),
+      padding: const EdgeInsets.all(10),
+      alignment: Alignment.topLeft,
+      child: preview.isEmpty
+          ? null
+          : Text(
+              preview,
+              maxLines: 5,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.92),
+                fontSize: 11,
+                height: 1.35,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+    );
+  }
+}
+
+/// Small translucent corner chip used for the carousel / reel markers.
+class _TileChip extends StatelessWidget {
+  const _TileChip({required this.icon});
+
+  final IconData icon;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 22,
+      height: 22,
+      decoration: const BoxDecoration(
+        color: Color(0x59000000),
+        shape: BoxShape.circle,
+      ),
+      alignment: Alignment.center,
+      child: Icon(icon, size: 14, color: Colors.white),
+    );
   }
 }

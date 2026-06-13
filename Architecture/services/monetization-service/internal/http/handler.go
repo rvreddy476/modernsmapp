@@ -77,6 +77,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// Affiliate links
 		v1.POST("/affiliate/links", h.CreateAffiliateLink)
 		v1.GET("/affiliate/links", h.ListAffiliateLinks)
+		v1.GET("/affiliate/links/:linkId", h.GetAffiliateLinkByID)
 		v1.GET("/affiliate/:linkCode", h.GetAffiliateLinkByCode)
 		v1.GET("/affiliate/conversions", h.ListAffiliateConversions)
 

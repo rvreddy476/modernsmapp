@@ -445,18 +445,28 @@ class ProductPage {
     required this.total,
     required this.limit,
     required this.offset,
+    this.nextCursor,
   });
 
   final List<Product> items;
   final int total;
   final int limit;
   final int offset;
+  // nextCursor is non-null when the backend returned a cursor-paginated
+  // response. When set, the legacy `total` is unreliable (cursor mode
+  // doesn't compute it); callers should use `hasMore` instead.
+  final String? nextCursor;
 
-  bool get hasMore => offset + items.length < total;
+  bool get hasMore {
+    if (nextCursor != null) return nextCursor!.isNotEmpty;
+    return offset + items.length < total;
+  }
+
   int get nextOffset => offset + items.length;
 
   factory ProductPage.fromJson(Map<String, dynamic> json) {
     final raw = (json['items'] as List?) ?? const [];
+    final next = json['next_cursor'];
     return ProductPage(
       items: raw
           .whereType<Map>()
@@ -465,6 +475,7 @@ class ProductPage {
       total: _toInt(json['total']),
       limit: _toInt(json['limit']),
       offset: _toInt(json['offset']),
+      nextCursor: next is String && next.isNotEmpty ? next : null,
     );
   }
 }
@@ -567,6 +578,36 @@ class CartItemSnapshot {
   final String? primaryImageUrl;
   final String sellerId;
   final String? variantLabel;
+}
+
+/// CouponPreview is the response shape of
+/// GET /v1/commerce/cart/coupon-preview?code=XYZ. Read-only — the
+/// actual coupon application happens at checkout, so the user can
+/// try several codes without committing state.
+class CouponPreview {
+  const CouponPreview({
+    required this.couponCode,
+    required this.couponDiscount,
+    required this.subtotal,
+    required this.grandTotal,
+    required this.applied,
+  });
+
+  final String couponCode;
+  final double couponDiscount;
+  final double subtotal;
+  final double grandTotal;
+  final bool applied;
+
+  factory CouponPreview.fromJson(Map<String, dynamic> json) {
+    return CouponPreview(
+      couponCode: json['coupon_code']?.toString() ?? '',
+      couponDiscount: _toDouble(json['coupon_discount']),
+      subtotal: _toDouble(json['subtotal']),
+      grandTotal: _toDouble(json['grand_total']),
+      applied: json['applied'] == true,
+    );
+  }
 }
 
 class Cart {
@@ -871,6 +912,13 @@ class Order {
     this.shippedAt,
     this.deliveredAt,
     this.shipments,
+    // Phase F4 mobile — Phase 5 / F2 B2B fields. Null on retail orders.
+    this.organizationId,
+    this.poNumber,
+    this.costCenter,
+    this.approvalStatus,
+    this.creditTermsDays,
+    this.paymentDueDate,
   });
 
   final String id;
@@ -883,7 +931,7 @@ class Order {
   final double amountDiscount;
   final double amountGrand;
   final String currency;
-  final String? paymentMethod; // upi|card|wallet|cod|netbanking
+  final String? paymentMethod; // upi|card|wallet|cod|netbanking|credit
   final String paymentStatus; // pending|paid|failed|refunded
   final Address? shippingAddress;
   final DateTime placedAt;
@@ -891,6 +939,16 @@ class Order {
   final DateTime? shippedAt;
   final DateTime? deliveredAt;
   final List<Shipment>? shipments;
+  // ─── Phase F4 — B2B fields ───────────────────────────────────────
+  final String? organizationId;
+  final String? poNumber;
+  final String? costCenter;
+  final String? approvalStatus; // not_required | pending | approved | rejected
+  final int? creditTermsDays;
+  final DateTime? paymentDueDate;
+
+  bool get awaitingApproval => approvalStatus == 'pending';
+  bool get isCreditOrder => (creditTermsDays ?? 0) > 0;
 
   factory Order.fromJson(Map<String, dynamic> json) {
     // Backend wraps `GET /v1/commerce/orders/:id/items` as `{order, items}`.
@@ -939,6 +997,16 @@ class Order {
               .map((m) => Shipment.fromJson(Map<String, dynamic>.from(m)))
               .toList(growable: false)
           : null,
+      // Phase F4 — B2B fields. Nullable so retail responses without
+      // these columns still parse cleanly.
+      organizationId: _toStrOrNull(o['organization_id']),
+      poNumber: _toStrOrNull(o['po_number']),
+      costCenter: _toStrOrNull(o['cost_center']),
+      approvalStatus: _toStrOrNull(o['approval_status']),
+      creditTermsDays: (o['credit_terms_days'] is num)
+          ? (o['credit_terms_days'] as num).toInt()
+          : null,
+      paymentDueDate: _toDateOrNull(o['payment_due_date']),
     );
   }
 }
@@ -1095,7 +1163,10 @@ class OrderListItem {
       itemCount: count,
       placedAt: _toDate(json['created_at'] ?? json['placed_at']),
       primaryThumbUrl: thumb ?? _toStrOrNull(json['primary_image_url']),
-      firstItemTitle: firstTitle ?? _toStrOrNull(json['first_item_title']),
+      // Phase 2.1 backend ships `first_product_title`; older payloads
+      // may carry `first_item_title`. Either is accepted.
+      firstItemTitle: firstTitle ??
+          _toStrOrNull(json['first_product_title'] ?? json['first_item_title']),
     );
   }
 }
@@ -1403,4 +1474,468 @@ class SearchFilters {
         hasFreeShipping,
         hasCod,
       );
+}
+
+// ─── Seller surfaces ──────────────────────────────────────────────────
+
+/// SellerProfile mirrors commerce-service's sellers row. The mobile
+/// seller dashboard only needs a small subset (id, status, store name)
+/// to gate access — the full record is fetched only when the seller
+/// hits the settings edit screen.
+class SellerProfile {
+  const SellerProfile({
+    required this.id,
+    required this.userId,
+    required this.storeName,
+    required this.status,
+    this.email,
+  });
+
+  final String id;
+  final String userId;
+  final String storeName;
+  final String status; // pending|approved|suspended|rejected
+  final String? email;
+
+  factory SellerProfile.fromJson(Map<String, dynamic> json) {
+    return SellerProfile(
+      id: _toStr(json['id']),
+      userId: _toStr(json['user_id']),
+      storeName: _toStr(json['store_name']),
+      status: _toStr(json['status']),
+      email: json['email']?.toString(),
+    );
+  }
+}
+
+/// SellerDashboardStats — GET /v1/commerce/dashboard. Same shape as
+/// commerce-service postgres.DashboardStats; revenueTotal is a float
+/// because the backend returns float64 paise-as-rupees.
+class SellerDashboardStats {
+  const SellerDashboardStats({
+    required this.totalProducts,
+    required this.liveProducts,
+    required this.draftProducts,
+    required this.pendingProducts,
+    required this.lowStockItems,
+    required this.ordersToday,
+    required this.revenueTotal,
+    required this.sellerStatus,
+  });
+
+  final int totalProducts;
+  final int liveProducts;
+  final int draftProducts;
+  final int pendingProducts;
+  final int lowStockItems;
+  final int ordersToday;
+  final double revenueTotal;
+  final String sellerStatus;
+
+  factory SellerDashboardStats.fromJson(Map<String, dynamic> json) {
+    return SellerDashboardStats(
+      totalProducts: _toInt(json['total_products']),
+      liveProducts: _toInt(json['live_products']),
+      draftProducts: _toInt(json['draft_products']),
+      pendingProducts: _toInt(json['pending_products']),
+      lowStockItems: _toInt(json['low_stock_items']),
+      ordersToday: _toInt(json['orders_today']),
+      revenueTotal: _toDouble(json['revenue_total']),
+      sellerStatus: _toStr(json['seller_status']),
+    );
+  }
+}
+
+/// SellerProductSummary is the row shape from
+/// GET /v1/commerce/sellers/:id/products. Includes the approval_status
+/// and a short timestamp so the seller list can render a status chip +
+/// "created X ago" label.
+class SellerProductSummary {
+  const SellerProductSummary({
+    required this.id,
+    required this.title,
+    required this.slug,
+    required this.status,
+    required this.approvalStatus,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String title;
+  final String slug;
+  final String status;
+  final String approvalStatus;
+  final DateTime? createdAt;
+
+  factory SellerProductSummary.fromJson(Map<String, dynamic> json) {
+    return SellerProductSummary(
+      id: _toStr(json['id']),
+      title: _toStr(json['title']),
+      slug: _toStr(json['slug']),
+      status: _toStr(json['status']),
+      approvalStatus: _toStr(json['approval_status']),
+      createdAt: DateTime.tryParse(json['created_at']?.toString() ?? ''),
+    );
+  }
+}
+
+/// ProductVariantDetail is the full variant shape used by the seller's
+/// variants management screen. Public-facing browse uses the lighter
+/// ProductVariant — this includes the cost price + weight + status
+/// fields a seller needs to manage.
+class ProductVariantDetail {
+  const ProductVariantDetail({
+    required this.id,
+    required this.productId,
+    required this.sku,
+    required this.mrp,
+    required this.sellingPrice,
+    required this.status,
+    this.barcode,
+    this.option1Name,
+    this.option1Value,
+    this.option2Name,
+    this.option2Value,
+    this.option3Name,
+    this.option3Value,
+    this.costPrice,
+    this.weightGrams,
+    this.currencyCode = 'INR',
+  });
+
+  final String id;
+  final String productId;
+  final String sku;
+  final double mrp;
+  final double sellingPrice;
+  final String status; // active|paused|archived
+  final String? barcode;
+  final String? option1Name;
+  final String? option1Value;
+  final String? option2Name;
+  final String? option2Value;
+  final String? option3Name;
+  final String? option3Value;
+  final double? costPrice;
+  final int? weightGrams;
+  final String currencyCode;
+
+  String get optionsLabel {
+    final parts = <String>[];
+    if (option1Name != null && option1Value != null) {
+      parts.add('$option1Name: $option1Value');
+    }
+    if (option2Name != null && option2Value != null) {
+      parts.add('$option2Name: $option2Value');
+    }
+    if (option3Name != null && option3Value != null) {
+      parts.add('$option3Name: $option3Value');
+    }
+    return parts.isEmpty ? '—' : parts.join(' / ');
+  }
+
+  factory ProductVariantDetail.fromJson(Map<String, dynamic> json) {
+    return ProductVariantDetail(
+      id: _toStr(json['id']),
+      productId: _toStr(json['product_id']),
+      sku: _toStr(json['sku']),
+      mrp: _toDouble(json['mrp']),
+      sellingPrice: _toDouble(json['selling_price']),
+      status: _toStr(json['status']),
+      barcode: json['barcode']?.toString(),
+      option1Name: json['option_1_name']?.toString(),
+      option1Value: json['option_1_value']?.toString(),
+      option2Name: json['option_2_name']?.toString(),
+      option2Value: json['option_2_value']?.toString(),
+      option3Name: json['option_3_name']?.toString(),
+      option3Value: json['option_3_value']?.toString(),
+      costPrice: json['cost_price'] == null ? null : _toDouble(json['cost_price']),
+      weightGrams: json['weight_grams'] == null ? null : _toInt(json['weight_grams']),
+      currencyCode: json['currency_code']?.toString() ?? 'INR',
+    );
+  }
+}
+
+/// SellerOrderCard mirrors service.SellerOrderCard. We deliberately
+/// flatten the wire shape — the seller's queue only needs item count,
+/// order number, status, total, and shipment status to render the row.
+class SellerOrderCard {
+  const SellerOrderCard({
+    required this.orderId,
+    required this.orderNumber,
+    required this.status,
+    required this.paymentStatus,
+    required this.sellerSubtotal,
+    required this.itemCount,
+    required this.placedAt,
+    this.shipmentStatus,
+    this.trackingNumber,
+  });
+
+  final String orderId;
+  final String orderNumber;
+  final String status;
+  final String paymentStatus;
+  final double sellerSubtotal;
+  final int itemCount;
+  final DateTime? placedAt;
+  final String? shipmentStatus;
+  final String? trackingNumber;
+
+  factory SellerOrderCard.fromJson(Map<String, dynamic> json) {
+    final orderMap = (json['order'] as Map?) ?? const {};
+    final shipmentMap = (json['shipment'] as Map?);
+    final items = (json['items'] as List?) ?? const [];
+    return SellerOrderCard(
+      orderId: _toStr(orderMap['id']),
+      orderNumber: _toStr(orderMap['order_number']),
+      status: _toStr(orderMap['status']),
+      paymentStatus: _toStr(orderMap['payment_status']),
+      sellerSubtotal: _toDouble(json['seller_subtotal']),
+      itemCount: items.length,
+      placedAt: DateTime.tryParse(orderMap['created_at']?.toString() ?? ''),
+      shipmentStatus: shipmentMap?['status']?.toString(),
+      trackingNumber: shipmentMap?['tracking_number']?.toString(),
+    );
+  }
+}
+
+/// SellerReturnCard mirrors service.SellerReturnCard — a return request
+/// from the seller's perspective. Only the row-render fields are
+/// modelled; the detail screen (when added later) can fetch the full
+/// record by ID.
+class SellerReturnCard {
+  const SellerReturnCard({
+    required this.id,
+    required this.orderId,
+    required this.orderNumber,
+    required this.status,
+    required this.reasonCode,
+    required this.refundAmount,
+    required this.refundStatus,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String orderId;
+  final String orderNumber;
+  final String status;
+  final String reasonCode;
+  final double refundAmount;
+  final String refundStatus;
+  final DateTime? createdAt;
+
+  factory SellerReturnCard.fromJson(Map<String, dynamic> json) {
+    return SellerReturnCard(
+      id: _toStr(json['id']),
+      orderId: _toStr(json['order_id']),
+      orderNumber: _toStr(json['order_number']),
+      status: _toStr(json['status']),
+      reasonCode: _toStr(json['reason_code']),
+      refundAmount: _toDouble(json['refund_amount']),
+      refundStatus: _toStr(json['refund_status']),
+      createdAt: DateTime.tryParse(json['created_at']?.toString() ?? ''),
+    );
+  }
+}
+
+/// SellerEarning is one delivered prepaid item with the payout split.
+/// COD earnings live in CODRemittance.
+class SellerEarning {
+  const SellerEarning({
+    required this.orderItemId,
+    required this.orderId,
+    required this.orderNumber,
+    required this.productTitle,
+    required this.sku,
+    required this.quantity,
+    required this.grossAmount,
+    required this.commissionAmount,
+    required this.platformFee,
+    required this.tdsAmount,
+    required this.netAmount,
+    required this.status,
+    this.paymentMethod,
+    this.deliveredAt,
+  });
+
+  final String orderItemId;
+  final String orderId;
+  final String orderNumber;
+  final String productTitle;
+  final String sku;
+  final int quantity;
+  final double grossAmount;
+  final double commissionAmount;
+  final double platformFee;
+  final double tdsAmount;
+  final double netAmount;
+  final String status;
+  final String? paymentMethod;
+  final DateTime? deliveredAt;
+
+  factory SellerEarning.fromJson(Map<String, dynamic> json) {
+    return SellerEarning(
+      orderItemId: _toStr(json['order_item_id']),
+      orderId: _toStr(json['order_id']),
+      orderNumber: _toStr(json['order_number']),
+      productTitle: _toStr(json['product_title']),
+      sku: _toStr(json['sku']),
+      quantity: _toInt(json['quantity']),
+      grossAmount: _toDouble(json['gross_amount']),
+      commissionAmount: _toDouble(json['commission_amount']),
+      platformFee: _toDouble(json['platform_fee']),
+      tdsAmount: _toDouble(json['tds_amount']),
+      netAmount: _toDouble(json['net_amount']),
+      status: _toStr(json['status']),
+      paymentMethod: json['payment_method']?.toString(),
+      deliveredAt: DateTime.tryParse(json['delivered_at']?.toString() ?? ''),
+    );
+  }
+}
+
+/// CODRemittance — one shipment's COD ledger row. Status flips from
+/// pending to settled when Ops pays the seller.
+class CODRemittance {
+  const CODRemittance({
+    required this.id,
+    required this.orderId,
+    required this.grossAmount,
+    required this.commissionAmount,
+    required this.platformFee,
+    required this.tdsAmount,
+    required this.netAmount,
+    required this.status,
+    this.deliveredAt,
+    this.settledAt,
+    this.payoutBatchId,
+  });
+
+  final String id;
+  final String orderId;
+  final double grossAmount;
+  final double commissionAmount;
+  final double platformFee;
+  final double tdsAmount;
+  final double netAmount;
+  final String status;
+  final DateTime? deliveredAt;
+  final DateTime? settledAt;
+  final String? payoutBatchId;
+
+  factory CODRemittance.fromJson(Map<String, dynamic> json) {
+    return CODRemittance(
+      id: _toStr(json['id']),
+      orderId: _toStr(json['order_id']),
+      grossAmount: _toDouble(json['gross_amount']),
+      commissionAmount: _toDouble(json['commission_amount']),
+      platformFee: _toDouble(json['platform_fee']),
+      tdsAmount: _toDouble(json['tds_amount']),
+      netAmount: _toDouble(json['net_amount']),
+      status: _toStr(json['status']),
+      deliveredAt: DateTime.tryParse(json['delivered_at']?.toString() ?? ''),
+      settledAt: DateTime.tryParse(json['settled_at']?.toString() ?? ''),
+      payoutBatchId: json['payout_batch_id']?.toString(),
+    );
+  }
+}
+
+/// BulkImportJob mirrors postgres.ImportJob. Mobile only renders +
+/// finalizes; the actual upload step requires a desktop file picker
+/// so stays on web.
+class BulkImportJob {
+  const BulkImportJob({
+    required this.id,
+    required this.filename,
+    required this.status,
+    required this.totalRows,
+    required this.validRows,
+    required this.importedRows,
+    required this.errorRows,
+    required this.dryRun,
+    required this.createdAt,
+    this.completedAt,
+  });
+
+  final String id;
+  final String filename;
+  final String status; // uploaded|validating|validated|importing|imported|failed
+  final int totalRows;
+  final int validRows;
+  final int importedRows;
+  final int errorRows;
+  final bool dryRun;
+  final DateTime? createdAt;
+  final DateTime? completedAt;
+
+  bool get canExecute => status == 'validated' && validRows > 0;
+
+  factory BulkImportJob.fromJson(Map<String, dynamic> json) {
+    return BulkImportJob(
+      id: _toStr(json['id']),
+      filename: _toStr(json['filename']),
+      status: _toStr(json['status']),
+      totalRows: _toInt(json['total_rows']),
+      validRows: _toInt(json['valid_rows']),
+      importedRows: _toInt(json['imported_rows']),
+      errorRows: _toInt(json['error_rows']),
+      dryRun: json['dry_run'] == true,
+      createdAt: DateTime.tryParse(json['created_at']?.toString() ?? ''),
+      completedAt: DateTime.tryParse(json['completed_at']?.toString() ?? ''),
+    );
+  }
+}
+
+/// CreateVariantInput is the wire shape POSTed to
+/// /v1/commerce/products/:productId/variants. Optional fields are
+/// omitted (null) when the seller leaves them blank.
+class CreateVariantInput {
+  const CreateVariantInput({
+    required this.sku,
+    required this.mrp,
+    required this.sellingPrice,
+    this.barcode,
+    this.option1Name,
+    this.option1Value,
+    this.option2Name,
+    this.option2Value,
+    this.option3Name,
+    this.option3Value,
+    this.costPrice,
+    this.weightGrams,
+    this.currencyCode = 'INR',
+  });
+
+  final String sku;
+  final double mrp;
+  final double sellingPrice;
+  final String? barcode;
+  final String? option1Name;
+  final String? option1Value;
+  final String? option2Name;
+  final String? option2Value;
+  final String? option3Name;
+  final String? option3Value;
+  final double? costPrice;
+  final int? weightGrams;
+  final String currencyCode;
+
+  Map<String, dynamic> toJson() {
+    final out = <String, dynamic>{
+      'sku': sku,
+      'mrp': mrp,
+      'selling_price': sellingPrice,
+      'currency_code': currencyCode,
+    };
+    if (barcode != null && barcode!.isNotEmpty) out['barcode'] = barcode;
+    if (option1Name != null && option1Name!.isNotEmpty) out['option_1_name'] = option1Name;
+    if (option1Value != null && option1Value!.isNotEmpty) out['option_1_value'] = option1Value;
+    if (option2Name != null && option2Name!.isNotEmpty) out['option_2_name'] = option2Name;
+    if (option2Value != null && option2Value!.isNotEmpty) out['option_2_value'] = option2Value;
+    if (option3Name != null && option3Name!.isNotEmpty) out['option_3_name'] = option3Name;
+    if (option3Value != null && option3Value!.isNotEmpty) out['option_3_value'] = option3Value;
+    if (costPrice != null) out['cost_price'] = costPrice;
+    if (weightGrams != null) out['weight_grams'] = weightGrams;
+    return out;
+  }
 }

@@ -21,6 +21,12 @@ type AudioTrack struct {
 	UseCount       int        `json:"use_count"`
 	IsTrending     bool       `json:"is_trending"`
 	CreatedAt      time.Time  `json:"created_at"`
+	// M10 audio-track ownership. IsPublic defaults true (existing
+	// reuse-by-default UX). CreatorUserID identifies the rights
+	// owner — anyone can use a public track in their own post; a
+	// private track requires CreatorUserID == actor.
+	IsPublic       bool       `json:"is_public"`
+	CreatorUserID  *uuid.UUID `json:"creator_user_id,omitempty"`
 }
 
 // CreateAudioTrack inserts a new audio track record.
@@ -38,15 +44,19 @@ func (s *Store) CreateAudioTrack(ctx context.Context, t *AudioTrack) error {
 	return err
 }
 
-// GetAudioTrack retrieves an audio track by ID.
+// GetAudioTrack retrieves an audio track by ID. Includes the M10
+// ownership columns; COALESCE on is_public so pre-migration rows
+// (which may have NULL) are treated as public.
 func (s *Store) GetAudioTrack(ctx context.Context, id uuid.UUID) (*AudioTrack, error) {
 	var t AudioTrack
 	err := s.db.QueryRow(ctx, `
-		SELECT id, title, artist, duration_ms, media_id, original_post_id, genre, is_original, use_count, is_trending, created_at
+		SELECT id, title, artist, duration_ms, media_id, original_post_id, genre, is_original, use_count, is_trending, created_at,
+		       COALESCE(is_public, TRUE), creator_user_id
 		FROM audio_tracks WHERE id = $1
 	`, id).Scan(
 		&t.ID, &t.Title, &t.Artist, &t.DurationMs, &t.MediaID, &t.OriginalPostID,
 		&t.Genre, &t.IsOriginal, &t.UseCount, &t.IsTrending, &t.CreatedAt,
+		&t.IsPublic, &t.CreatorUserID,
 	)
 	if err != nil {
 		return nil, err
@@ -94,6 +104,18 @@ func (s *Store) IncrementAudioUseCount(ctx context.Context, id uuid.UUID) error 
 	_, err := s.db.Exec(ctx, `
 		UPDATE audio_tracks SET use_count = use_count + 1 WHERE id = $1
 	`, id)
+	return err
+}
+
+// SetAudioUseCount writes an absolute use_count. Used by the
+// sharded-counter flush worker: every flush interval it materializes
+// the sum across Redis shards back into audio_tracks.use_count. The
+// per-event IncrementAudioUseCount path stays for the Redis-less
+// fallback (dev loops + degraded-mode operation).
+func (s *Store) SetAudioUseCount(ctx context.Context, id uuid.UUID, total int64) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE audio_tracks SET use_count = $2 WHERE id = $1
+	`, id, total)
 	return err
 }
 

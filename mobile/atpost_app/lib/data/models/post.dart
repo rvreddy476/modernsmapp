@@ -13,6 +13,7 @@ class Post {
   final int likeCount;
   final int commentCount;
   final int shareCount;
+  final int viewCount;
   final int? durationSeconds;
   final bool isLiked;
   final bool isBookmarked;
@@ -41,6 +42,7 @@ class Post {
     this.likeCount = 0,
     this.commentCount = 0,
     this.shareCount = 0,
+    this.viewCount = 0,
     this.durationSeconds,
     this.isLiked = false,
     this.isBookmarked = false,
@@ -71,6 +73,7 @@ class Post {
         likeCount: _toInt(json['like_count'] ?? counts['likes']),
         commentCount: _toInt(json['comment_count'] ?? counts['comments']),
         shareCount: _toInt(json['share_count'] ?? counts['shares']),
+        viewCount: _toInt(json['view_count'] ?? counts['views']),
         durationSeconds: _toIntNullable(json['duration_seconds']),
         isLiked:
             _toBool(json['is_liked']) ||
@@ -119,6 +122,7 @@ class Post {
       likeCount: likeCount ?? this.likeCount,
       commentCount: commentCount ?? this.commentCount,
       shareCount: shareCount,
+      viewCount: viewCount,
       durationSeconds: durationSeconds,
       isLiked: isLiked,
       isBookmarked: isBookmarked,
@@ -154,6 +158,7 @@ class Post {
       'like_count': likeCount,
       'comment_count': commentCount,
       'share_count': shareCount,
+      'view_count': viewCount,
       'duration_seconds': durationSeconds,
       'is_liked': isLiked,
       'is_bookmarked': isBookmarked,

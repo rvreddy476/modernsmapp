@@ -128,12 +128,13 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 
 // ─── Graph reads (app DB) ────────────────────────────────────
 
-// GetFriendIDs returns all friend user IDs for a given user.
+// GetFriendIDs returns all friend user IDs for a given user, read from the
+// canonical graph-service connections table in the app database.
 func (s *Store) GetFriendIDs(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
-	rows, err := s.identityDB.Query(ctx, `
-		SELECT CASE WHEN requester_id = $1 THEN addressee_id ELSE requester_id END AS friend_id
-		FROM profile.friendships
-		WHERE (requester_id = $1 OR addressee_id = $1) AND status = 'accepted'
+	rows, err := s.appDB.Query(ctx, `
+		SELECT CASE WHEN user_a = $1 THEN user_b ELSE user_a END AS connection_id
+		FROM connections
+		WHERE user_a = $1 OR user_b = $1
 	`, userID)
 	if err != nil {
 		return nil, err
@@ -175,9 +176,9 @@ func (s *Store) GetBlockedIDs(ctx context.Context, userID uuid.UUID) ([]uuid.UUI
 // GetPendingRequestIDs returns user IDs with pending friend requests (sent or received).
 func (s *Store) GetPendingRequestIDs(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
 	rows, err := s.appDB.Query(ctx, `
-		SELECT receiver_id FROM friend_requests WHERE sender_id = $1 AND status = 'pending'
+		SELECT receiver_id FROM connection_requests WHERE sender_id = $1 AND status = 'pending'
 		UNION
-		SELECT sender_id FROM friend_requests WHERE receiver_id = $1 AND status = 'pending'
+		SELECT sender_id FROM connection_requests WHERE receiver_id = $1 AND status = 'pending'
 	`, userID)
 	if err != nil {
 		return nil, err
@@ -219,13 +220,13 @@ func (s *Store) GetFriendsOfFriends(ctx context.Context, userID uuid.UUID, exclu
 	q := `
 	WITH my_friends AS (
 		SELECT CASE WHEN user_a = $1 THEN user_b ELSE user_a END AS friend_id
-		FROM friends WHERE user_a = $1 OR user_b = $1
+		FROM connections WHERE user_a = $1 OR user_b = $1
 	),
 	fof AS (
 		SELECT
 			CASE WHEN f.user_a = mf.friend_id THEN f.user_b ELSE f.user_a END AS candidate_id,
 			mf.friend_id AS via_friend
-		FROM friends f
+		FROM connections f
 		JOIN my_friends mf ON (f.user_a = mf.friend_id OR f.user_b = mf.friend_id)
 		WHERE CASE WHEN f.user_a = mf.friend_id THEN f.user_b ELSE f.user_a END != $1
 	)
@@ -287,9 +288,9 @@ func (s *Store) GetPopularUsers(ctx context.Context, limit int) ([]uuid.UUID, er
 func (s *Store) GetAllUsersWithFriends(ctx context.Context) ([]uuid.UUID, error) {
 	rows, err := s.appDB.Query(ctx, `
 		SELECT DISTINCT user_id FROM (
-			SELECT user_a AS user_id FROM friends
+			SELECT user_a AS user_id FROM connections
 			UNION
-			SELECT user_b AS user_id FROM friends
+			SELECT user_b AS user_id FROM connections
 		) t
 	`)
 	if err != nil {
@@ -751,25 +752,25 @@ func (s *Store) GetTriadicClosureCandidates(ctx context.Context, viewerID uuid.U
 	q := `
 	WITH my_friends AS (
 		SELECT CASE WHEN user_a = $1 THEN user_b ELSE user_a END AS fid
-		FROM friends WHERE user_a = $1 OR user_b = $1
+		FROM connections WHERE user_a = $1 OR user_b = $1
 	),
 	triads AS (
 		SELECT mf1.fid AS b, mf2.fid AS c
 		FROM my_friends mf1
 		JOIN my_friends mf2 ON mf1.fid < mf2.fid
 		WHERE EXISTS (
-			SELECT 1 FROM friends
+			SELECT 1 FROM connections
 			WHERE (user_a = LEAST(mf1.fid, mf2.fid) AND user_b = GREATEST(mf1.fid, mf2.fid))
 		)
 	),
 	candidates AS (
 		SELECT CASE WHEN f.user_a = t.b THEN f.user_b ELSE f.user_a END AS d_id, t.b, t.c
 		FROM triads t
-		JOIN friends f ON (f.user_a = t.b OR f.user_b = t.b)
+		JOIN connections f ON (f.user_a = t.b OR f.user_b = t.b)
 		WHERE CASE WHEN f.user_a = t.b THEN f.user_b ELSE f.user_a END != $1
 		  AND CASE WHEN f.user_a = t.b THEN f.user_b ELSE f.user_a END != t.c
 		  AND EXISTS (
-			SELECT 1 FROM friends
+			SELECT 1 FROM connections
 			WHERE (user_a = LEAST(CASE WHEN f.user_a = t.b THEN f.user_b ELSE f.user_a END, t.c)
 			   AND user_b = GREATEST(CASE WHEN f.user_a = t.b THEN f.user_b ELSE f.user_a END, t.c))
 		  )
@@ -809,7 +810,7 @@ func (s *Store) GetMutualFollowNonFriends(ctx context.Context, viewerID uuid.UUI
 		WHERE f1.follower_id = $1
 		  AND f1.followee_id != ALL($2::uuid[])
 		  AND NOT EXISTS (
-			SELECT 1 FROM friends
+			SELECT 1 FROM connections
 			WHERE (user_a = LEAST($1, f1.followee_id) AND user_b = GREATEST($1, f1.followee_id))
 		  )
 	`, viewerID, excludeIDs)
@@ -835,7 +836,7 @@ func (s *Store) GetSocialProofCandidates(ctx context.Context, viewerID uuid.UUID
 	q := `
 	WITH my_friends AS (
 		SELECT CASE WHEN user_a = $1 THEN user_b ELSE user_a END AS fid
-		FROM friends WHERE user_a = $1 OR user_b = $1
+		FROM connections WHERE user_a = $1 OR user_b = $1
 	)
 	SELECT f.followee_id, COUNT(DISTINCT mf.fid)::int AS friend_count
 	FROM follows f
@@ -942,7 +943,7 @@ func (s *Store) GetBlockCountByFriends(ctx context.Context, viewerID, candidateI
 		SELECT COUNT(*)::int FROM blocks b
 		JOIN (
 			SELECT CASE WHEN user_a = $1 THEN user_b ELSE user_a END AS fid
-			FROM friends WHERE user_a = $1 OR user_b = $1
+			FROM connections WHERE user_a = $1 OR user_b = $1
 		) mf ON b.blocker_id = mf.fid
 		WHERE b.blocked_id = $2
 	`, viewerID, candidateID).Scan(&count)
@@ -959,7 +960,7 @@ func (s *Store) GetBlockCountByFriendsBatch(ctx context.Context, viewerID uuid.U
 		FROM blocks b
 		JOIN (
 			SELECT CASE WHEN user_a = $1 THEN user_b ELSE user_a END AS fid
-			FROM friends WHERE user_a = $1 OR user_b = $1
+			FROM connections WHERE user_a = $1 OR user_b = $1
 		) mf ON b.blocker_id = mf.fid
 		WHERE b.blocked_id = ANY($2)
 		GROUP BY b.blocked_id
@@ -1000,11 +1001,11 @@ func (s *Store) GetMutualFriendIDs(ctx context.Context, viewerID, candidateID uu
 	rows, err := s.appDB.Query(ctx, `
 		SELECT vf.fid FROM (
 			SELECT CASE WHEN user_a = $1 THEN user_b ELSE user_a END AS fid
-			FROM friends WHERE user_a = $1 OR user_b = $1
+			FROM connections WHERE user_a = $1 OR user_b = $1
 		) vf
 		JOIN (
 			SELECT CASE WHEN user_a = $2 THEN user_b ELSE user_a END AS fid
-			FROM friends WHERE user_a = $2 OR user_b = $2
+			FROM connections WHERE user_a = $2 OR user_b = $2
 		) cf ON vf.fid = cf.fid
 		LIMIT $3
 	`, viewerID, candidateID, limit)

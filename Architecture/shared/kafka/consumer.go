@@ -103,6 +103,12 @@ func (c *Consumer) Start(ctx context.Context) {
 	)
 	logger.Info("starting kafka consumer")
 
+	// MS6: publish consumer lag every 10s so dashboards can alert
+	// when a slow handler is falling behind production. Stats() is
+	// cheap (in-memory counters maintained by kafka-go); we only
+	// read Lag + skip the rest. Goroutine exits when ctx cancels.
+	go c.reportLag(ctx)
+
 	for {
 		msg, err := c.reader.FetchMessage(ctx)
 		if err != nil {
@@ -276,6 +282,32 @@ func (c *Consumer) sendToDLQRaw(ctx context.Context, logger *slog.Logger, msg ka
 func (c *Consumer) commitMessage(ctx context.Context, logger *slog.Logger, msg kafkago.Message) {
 	if err := c.reader.CommitMessages(ctx, msg); err != nil {
 		logger.Error("commit error", "error", err, "offset", msg.Offset)
+	}
+}
+
+// reportLag emits the consumer's lag (messages behind the partition
+// head) as the kafka_consumer_lag gauge every 10s. kafka-go's
+// Reader.Stats() returns lag as part of its in-memory counters; we
+// read once per tick + publish per-partition. Falls silent if the
+// metrics handle is nil (test paths).
+func (c *Consumer) reportLag(ctx context.Context) {
+	if c.metrics == nil || c.metrics.ConsumerLag == nil {
+		return
+	}
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			stats := c.reader.Stats()
+			// kafka-go aggregates lag across the partitions assigned
+			// to this reader; we surface it on the partition="all"
+			// label rather than per-partition because per-partition
+			// lag isn't broken out by the library.
+			c.metrics.ConsumerLag.WithLabelValues(c.cfg.Topic, "all", c.cfg.GroupID).Set(float64(stats.Lag))
+		}
 	}
 }
 

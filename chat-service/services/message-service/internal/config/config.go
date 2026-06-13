@@ -15,13 +15,22 @@ type Config struct {
 	KafkaBrokers         []string
 	KafkaTopic           string
 	JWTSecret            string
+	// C7 — kid + previous-secret rotation knobs.
+	JWTKID               string
+	JWTSecretPrevious    string
+	JWTKIDPrevious       string
 	UserServiceURL       string
+	GraphServiceURL      string
 	InternalServiceKey   string
 	TrustedProxies       []string
 	OutboxPollInterval   time.Duration
 	CacheTTL             time.Duration
 	IdentityKafkaTopic   string
 	IdentityKafkaGroupID string
+	SocialKafkaTopic     string
+	SocialKafkaGroupID   string
+	DatingKafkaTopic     string
+	DatingKafkaGroupID   string
 }
 
 func Load() *Config {
@@ -34,13 +43,25 @@ func Load() *Config {
 		KafkaBrokers:         splitAndClean(getEnv("KAFKA_BROKERS", "localhost:9092")),
 		KafkaTopic:           getEnv("KAFKA_TOPIC", "chat.events.v1"),
 		JWTSecret:            getEnv("JWT_SECRET", ""),
+		JWTKID:               getEnv("JWT_KID", "v1"),
+		JWTSecretPrevious:    getEnv("JWT_SECRET_PREVIOUS", ""),
+		JWTKIDPrevious:       getEnv("JWT_KID_PREVIOUS", ""),
 		UserServiceURL:       getEnv("USER_SERVICE_URL", "http://user-service:8082"),
+		GraphServiceURL:      getEnv("GRAPH_SERVICE_URL", "http://graph-service:8083"),
 		InternalServiceKey:   getEnv("INTERNAL_SERVICE_KEY", ""),
 		TrustedProxies:       splitAndClean(getEnv("TRUSTED_PROXIES", "")),
 		OutboxPollInterval:   getEnvDuration("OUTBOX_POLL_INTERVAL", 1*time.Second),
 		CacheTTL:             getEnvDuration("CACHE_TTL", 5*time.Minute),
 		IdentityKafkaTopic:   getEnv("IDENTITY_KAFKA_TOPIC", "identity.events.v1"),
 		IdentityKafkaGroupID: getEnv("IDENTITY_KAFKA_GROUP_ID", "chat-service-identity"),
+		SocialKafkaTopic:     getEnv("SOCIAL_KAFKA_TOPIC", "social.events.v1"),
+		SocialKafkaGroupID:   getEnv("SOCIAL_KAFKA_GROUP_ID", "chat-service-social"),
+		// P0-3/9: dating-events consumer. The dating-service publishes
+		// match.closed + match.expired to dating-events; chat-service
+		// flips the matching conversation's closed_at so the send-path
+		// gate refuses subsequent messages.
+		DatingKafkaTopic:   getEnv("DATING_KAFKA_TOPIC", "dating-events"),
+		DatingKafkaGroupID: getEnv("DATING_KAFKA_GROUP_ID", "chat-service-dating"),
 	}
 }
 

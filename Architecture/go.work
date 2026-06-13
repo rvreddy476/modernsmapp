@@ -16,17 +16,15 @@ use (
 	./services/graph-service
 	./services/group-service
 	./services/live-service
+	./services/live-service-v2
 	./services/media-service
 	./services/memories-service
-	./services/message-service
 	./services/monetization-service
 	./services/notification-service
-	./services/orders-service
 	./services/payments-service
 	./services/post-service
 	./services/qa-service
 	./services/search-service
-	./services/shop-service
 	./services/suggestion-service
 	./services/trust-safety-service
 	./services/user-service

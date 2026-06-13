@@ -2,7 +2,9 @@ package http
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"github.com/atpost/post-service/internal/http/middleware"
 	"github.com/atpost/post-service/internal/service"
 	"github.com/atpost/post-service/internal/store/postgres"
+	"github.com/atpost/post-service/internal/streamhub"
 	"github.com/atpost/shared/api"
 	sharedmiddleware "github.com/atpost/shared/middleware"
 	"github.com/gin-gonic/gin"
@@ -21,11 +24,21 @@ import (
 type Handler struct {
 	svc         *service.Service
 	rdb         *redis.Client
+	hub         *streamhub.Hub
 	internalKey string
 }
 
 func New(svc *service.Service, rdb *redis.Client) *Handler {
 	return &Handler{svc: svc, rdb: rdb}
+}
+
+// WithStreamHub installs the shared Redis-pubsub fan-out hub. Both
+// SSE handlers (hashtag per-tag stream, trending stream) attach to
+// it instead of opening a Redis SUB per HTTP connection. Falling back
+// gracefully — if no hub is set the old per-connection path runs.
+func (h *Handler) WithStreamHub(hub *streamhub.Hub) *Handler {
+	h.hub = hub
+	return h
 }
 
 // WithInternalKey sets the internal service key used to authenticate
@@ -117,6 +130,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// hashtag endpoint lives under /v1/hashtags/trending to keep it in
 	// post-service where the data lives.
 	r.GET("/v1/hashtags/trending", h.GetTrendingHashtagsFeed)
+	// Live top-N stream — debounced 30 s pushes from
+	// internal/trending.Publisher; implementation in trending_stream.go.
+	r.GET("/v1/hashtags/trending/stream", h.StreamTrendingHashtags)
 	r.GET("/v1/posts/trending", h.GetTrendingPosts)
 	// Spec §7.6: 30 req/min per user, burst small. ~0.5 req/sec sustained.
 	hashtagSearchLimit := sharedmiddleware.RateLimit(sharedmiddleware.RateLimitConfig{
@@ -125,6 +141,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	})
 	r.GET("/v1/hashtags/search", hashtagSearchLimit, h.SearchHashtags)
 	r.GET("/v1/hashtags/:tag/posts", h.GetPostsByHashtag)
+	// Real-time hashtag-feed push. Holds an SSE connection open and
+	// forwards every new post that includes :tag (via Redis pub/sub
+	// channel `hashtag:<tag>:new_post`). Implementation lives in
+	// hashtag_stream.go.
+	r.GET("/v1/hashtags/:tag/stream", h.StreamHashtagPosts)
 
 	// Video creator tools
 	videos := r.Group("/v1/videos")
@@ -197,6 +218,15 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	r.POST("/v1/videos/:videoId/progress", h.SaveWatchProgress)
 	r.GET("/v1/videos/continue-watching", h.GetContinueWatching)
 	r.DELETE("/v1/videos/:videoId/progress", h.DeleteWatchProgress)
+
+	// In-video product tags (affiliate overlays). See
+	// internal/http/product_tags_handler.go for the contract.
+	r.POST("/v1/posts/:postId/product-tags", h.CreateProductTag)
+	r.GET("/v1/posts/:postId/product-tags", h.ListProductTagsByPost)
+	r.DELETE("/v1/posts/:postId/product-tags/:tagId", h.DeleteProductTag)
+	r.POST("/v1/posts/:postId/product-tags/:tagId/impression", h.RecordProductTagImpression)
+	r.POST("/v1/posts/:postId/product-tags/:tagId/click", h.RecordProductTagClick)
+	r.GET("/v1/creators/:creatorId/product-tags", h.ListProductTagsByCreator)
 }
 
 type CreatePollRequest struct {
@@ -232,7 +262,10 @@ type CreatePostRequest struct {
 	ShareToPostbook bool               `json:"share_to_postbook"`
 	// Reel metadata
 	Title             string   `json:"title"`
-	Tags              []string `json:"tags"`
+	// M5: cap tags array to bound payload memory. 20 tags × 50 chars
+	// is the upper bound for legitimate use cases (most reels carry
+	// 3-5 tags); larger arrays are either spam or accidents.
+	Tags              []string `json:"tags" binding:"max=20,dive,max=50"`
 	Category          string   `json:"category"`
 	Language          string   `json:"language"`
 	SEOTitle          string   `json:"seo_title"`
@@ -378,7 +411,14 @@ func (h *Handler) CreatePost(c *gin.Context) {
 	// persisted and a missing audio reference is recoverable from the UI.
 	if req.AudioTrackID != nil && *req.AudioTrackID != "" {
 		if audioID, parseErr := uuid.Parse(*req.AudioTrackID); parseErr == nil {
-			_ = h.svc.AttachAudioToPost(c.Request.Context(), p.ID, audioID)
+			// M10: pass authorID so the service enforces the private-
+			// track ownership check. Failure is logged at slog.Warn
+			// (a private-track refusal shouldn't bring down the
+			// post; the post is already persisted).
+			if err := h.svc.AttachAudioToPost(c.Request.Context(), authorID, p.ID, audioID); err != nil {
+				slog.Warn("create-post: attach audio failed",
+					"post_id", p.ID, "audio_id", audioID, "err", err)
+			}
 		}
 	}
 
@@ -508,7 +548,14 @@ func (h *Handler) GetPostsByAuthor(c *gin.Context) {
 		limit = l
 	}
 
-	posts, nextCursor, err := h.svc.GetPostsByAuthor(c.Request.Context(), authorID, contentType, limit, cursor)
+	var viewerID *uuid.UUID
+	if v := c.GetHeader("X-User-Id"); v != "" {
+		if id, err := uuid.Parse(v); err == nil {
+			viewerID = &id
+		}
+	}
+
+	posts, nextCursor, err := h.svc.GetPostsByAuthor(c.Request.Context(), authorID, contentType, limit, cursor, viewerID)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -627,13 +674,8 @@ func (h *Handler) AddComment(c *gin.Context) {
 		return
 	}
 
-	// Check if comments are disabled on this post
-	post, _ := h.svc.GetPost(c.Request.Context(), postID, nil)
-	if post != nil && post.NoComments {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "COMMENTS_DISABLED", "Comments are disabled on this post", nil)
-		return
-	}
-
+	// NoComments check is now inside the service (audit H2 — no
+	// more handler-level GetPost just to read engagement flags).
 	var req CommentRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
@@ -642,11 +684,16 @@ func (h *Handler) AddComment(c *gin.Context) {
 
 	comment, err := h.svc.CreateCommentPG(c.Request.Context(), postID, userID, req.Text)
 	if err != nil {
-		if err.Error() == "RATE_LIMITED" {
+		switch {
+		case err.Error() == "RATE_LIMITED":
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many comments, please slow down", nil)
-			return
+		case errors.Is(err, service.ErrCommentsDisabled):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "COMMENTS_DISABLED", "Comments are disabled on this post", nil)
+		case errors.Is(err, service.ErrPostNotFound), errors.Is(err, service.ErrPostNotVisible):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "POST_NOT_FOUND", "post not found", nil)
+		default:
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -949,18 +996,16 @@ func (h *Handler) ToggleLike(c *gin.Context) {
 		return
 	}
 
-	// Check if likes are disabled on this post
-	post, _ := h.svc.GetPost(c.Request.Context(), postID, nil)
-	if post != nil && post.NoLikes {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "LIKES_DISABLED", "Likes are disabled on this post", nil)
-		return
-	}
-
+	// NoLikes check is now inside the service (audit H2).
 	result, err := h.svc.ToggleLike(c.Request.Context(), postID, userID)
 	if err != nil {
-		switch err.Error() {
-		case "RATE_LIMITED":
+		switch {
+		case err.Error() == "RATE_LIMITED":
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many like toggles, please slow down", nil)
+		case errors.Is(err, service.ErrLikesDisabled):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "LIKES_DISABLED", "Likes are disabled on this post", nil)
+		case errors.Is(err, service.ErrPostNotFound), errors.Is(err, service.ErrPostNotVisible):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "POST_NOT_FOUND", "post not found", nil)
 		default:
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
@@ -1482,11 +1527,17 @@ func (h *Handler) ToggleReaction(c *gin.Context) {
 
 	result, err := h.svc.ToggleReaction(c.Request.Context(), postID, userID, req.ReactionType)
 	if err != nil {
-		switch err.Error() {
-		case "INVALID_REACTION_TYPE":
+		switch {
+		case err.Error() == "INVALID_REACTION_TYPE":
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REACTION_TYPE", "Valid types: like, love, haha, wow, sad, angry", nil)
-		case "RATE_LIMITED":
+		case err.Error() == "RATE_LIMITED":
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many reactions, please slow down", nil)
+		case errors.Is(err, service.ErrPostNotFound), errors.Is(err, service.ErrPostNotVisible):
+			// Collapse "not found" + "not visible" into the same
+			// response so the engagement endpoint doesn't disclose
+			// the existence of a restricted post to a non-allowed
+			// viewer. 404 + generic message.
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "POST_NOT_FOUND", "post not found", nil)
 		default:
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}

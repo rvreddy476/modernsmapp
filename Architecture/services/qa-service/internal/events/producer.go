@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/atpost/shared/events"
@@ -140,6 +141,11 @@ func (p *Producer) PublishAnswerReported(ctx context.Context, reportID, answerID
 	})
 }
 
+// publish serializes the envelope synchronously and writes to Kafka
+// asynchronously. Audit HQ1: every Publish* method previously blocked
+// the request on broker ACK (50-200 ms x several hot-path call sites
+// in CreateQuestion / CreateAnswer / SelectBestAnswer). Downstream
+// consumers tolerate at-least-once + duplicates.
 func (p *Producer) publish(ctx context.Context, eventType string, actorID *uuid.UUID, payload any) error {
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -155,10 +161,19 @@ func (p *Producer) publish(ctx context.Context, eventType string, actorID *uuid.
 	if err != nil {
 		return fmt.Errorf("failed to marshal envelope: %w", err)
 	}
-	return p.writer.WriteMessages(ctx, kafka.Message{
+	msg := kafka.Message{
 		Key:   []byte(envelope.EventID),
 		Value: envelopeBytes,
-	})
+	}
+	go func() {
+		writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := p.writer.WriteMessages(writeCtx, msg); err != nil {
+			slog.Warn("qa-events: async Kafka publish failed",
+				"event_type", eventType, "event_id", envelope.EventID, "err", err)
+		}
+	}()
+	return nil
 }
 
 func (p *Producer) Close() error {

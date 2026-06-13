@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -191,6 +192,10 @@ func (s *Service) Block(ctx context.Context, userID, targetID uuid.UUID) error {
 	if err := s.store.BlockUser(ctx, userID, targetID); err != nil {
 		return err
 	}
+	// Phase 1 §3: viewer's own deck may already include the just-
+	// blocked candidate — drop it so the next pulse refresh re-runs
+	// the candidate query (which already filters mutual blocks).
+	s.InvalidatePulseCache(ctx, userID)
 	// Propagate to graph-service so the graph layer also stops surfacing
 	// the user. Best-effort: log on failure, do not fail the user request.
 	if base := os.Getenv("GRAPH_SERVICE_URL"); base != "" {
@@ -212,7 +217,7 @@ func (s *Service) Block(ctx context.Context, userID, targetID uuid.UUID) error {
 			if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
 				req.Header.Set("X-Internal-Key", key)
 			}
-			resp, err := http.DefaultClient.Do(req)
+			resp, err := s.graphHTTPClient.Do(req)
 			if err != nil {
 				slog.Warn("graph block propagation failed", "error", err)
 				return
@@ -226,6 +231,56 @@ func (s *Service) Block(ctx context.Context, userID, targetID uuid.UUID) error {
 	if s.producer != nil {
 		if perr := s.producer.PublishBlockCreated(ctx, userID, targetID); perr != nil {
 			slog.Error("publish block.created failed; row persisted", "user_id", userID, "error", perr)
+		}
+		// Phase 1 — chat-service listens for dating.user.blocked to
+		// sever any existing dating_match conversation between the
+		// pair. Persist already succeeded; failure here is logged.
+		if perr := s.producer.PublishUserBlocked(ctx, userID, targetID); perr != nil {
+			slog.Error("publish user.blocked failed; row persisted", "user_id", userID, "error", perr)
+		}
+	}
+	return nil
+}
+
+// AcknowledgePanic stamps acknowledged_at + acknowledged_by on a
+// safety_events row of kind='panic' and emits
+// dating.safety.panic.acknowledged so the affected user's notification
+// arm fires "support has reviewed your alert". Idempotent at the
+// store layer — a second ack returns the row with acked=false and the
+// service does not re-emit.
+//
+// adminID is the gateway-injected actor (may be uuid.Nil). The audit
+// row in dating_admin_audit is left to the caller / handler.
+func (s *Service) AcknowledgePanic(ctx context.Context, panicID, adminID uuid.UUID) error {
+	if panicID == uuid.Nil {
+		return fmt.Errorf("invalid: panic_id required")
+	}
+	event, acked, err := s.store.AcknowledgePanic(ctx, panicID, adminID)
+	if err != nil {
+		// Already-acked is a soft success: the row exists, the
+		// event has already been emitted (or will be replayed by
+		// the original caller's path), and we don't bounce the
+		// admin click. Re-surface other errors.
+		if errors.Is(err, store.ErrPanicAlreadyAcked) {
+			return nil
+		}
+		return err
+	}
+	if !acked {
+		// Defensive: store contract returns (row, false, ErrPanicAlreadyAcked)
+		// on replay. If we ever see (row, false, nil) treat the same.
+		return nil
+	}
+	if s.producer != nil {
+		ackBy := ""
+		if adminID != uuid.Nil {
+			ackBy = adminID.String()
+		}
+		if perr := s.producer.PublishSafetyPanicAcknowledged(ctx, event.UserID, ackBy); perr != nil {
+			// Persist already succeeded; surface to slog but don't
+			// fail the admin click. Convention follows the rest of the
+			// safety code path.
+			slog.Error("publish safety.panic.acknowledged failed; row persisted", "panic_id", panicID, "user_id", event.UserID, "error", perr)
 		}
 	}
 	return nil

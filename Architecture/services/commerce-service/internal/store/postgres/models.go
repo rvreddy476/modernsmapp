@@ -9,9 +9,10 @@ import (
 
 // Sentinel errors
 var (
-	ErrAlreadySubmitted = errors.New("seller application already submitted")
+	ErrAlreadySubmitted  = errors.New("seller application already submitted")
 	ErrSellerNotApproved = errors.New("seller account not yet approved")
 	ErrProductNotDraft   = errors.New("product is not in draft status")
+	ErrProductNotFound   = errors.New("product not found")
 )
 
 // ─── Seller ──────────────────────────────────────────────────
@@ -156,11 +157,18 @@ type Product struct {
 	RejectionReason      *string    `db:"rejection_reason" json:"rejection_reason,omitempty"`
 	PrimaryImageMediaID  *uuid.UUID `db:"primary_image_media_id" json:"primary_image_media_id,omitempty"`
 	WeightGrams          *int       `db:"weight_grams" json:"weight_grams,omitempty"`
+	LengthCm             *float64   `db:"length_cm" json:"length_cm,omitempty"`
+	WidthCm              *float64   `db:"width_cm" json:"width_cm,omitempty"`
+	HeightCm             *float64   `db:"height_cm" json:"height_cm,omitempty"`
 	CountryOfOrigin      *string    `db:"country_of_origin" json:"country_of_origin,omitempty"`
+	BrandName            *string    `db:"brand_name" json:"brand_name,omitempty"`
+	ManufacturerName     *string    `db:"manufacturer_name" json:"manufacturer_name,omitempty"`
 	WarrantyInfo         *string    `db:"warranty_info" json:"warranty_info,omitempty"`
 	ReturnPolicyType     string     `db:"return_policy_type" json:"return_policy_type,omitempty"`
 	ReturnPolicyDays     int        `db:"return_policy_days" json:"return_policy_days,omitempty"`
 	HSNCode              *string    `db:"hsn_code" json:"hsn_code,omitempty"`
+	VideoMediaID         *uuid.UUID `db:"video_media_id" json:"video_media_id,omitempty"`
+	SearchKeywords       []string   `db:"search_keywords" json:"search_keywords,omitempty"`
 	MetaTitle            *string    `db:"meta_title" json:"meta_title,omitempty"`
 	MetaDescription      *string    `db:"meta_description" json:"meta_description,omitempty"`
 	AvgRating            float64    `db:"avg_rating" json:"avg_rating,omitempty"`
@@ -172,6 +180,38 @@ type Product struct {
 	CreatedAt            time.Time  `db:"created_at" json:"created_at,omitempty"`
 	UpdatedAt            time.Time  `db:"updated_at" json:"updated_at,omitempty"`
 	PublishedAt          *time.Time `db:"published_at" json:"published_at,omitempty"`
+
+	// Phase F1 — list-view enrichment. Populated by ListProducts via
+	// LATERAL subqueries against product_variants so mobile/web can
+	// render the catalog grid + add-to-cart without an N+1 detail
+	// fetch. Nil on the detail endpoint (use the wrapped variants
+	// array there instead).
+	DefaultVariantID *uuid.UUID `json:"default_variant_id,omitempty"`
+	MinSellingPrice  *float64   `json:"min_selling_price,omitempty"`
+	MinMRP           *float64   `json:"min_mrp,omitempty"`
+	TotalStock       *int       `json:"total_stock,omitempty"`
+}
+
+// ProductMedia is one image / video / size-chart / infographic in a
+// product's gallery. media_id refers to a media-service-owned asset.
+type ProductMedia struct {
+	ID        uuid.UUID `db:"id" json:"id,omitempty"`
+	ProductID uuid.UUID `db:"product_id" json:"product_id,omitempty"`
+	MediaID   uuid.UUID `db:"media_id" json:"media_id,omitempty"`
+	MediaType string    `db:"media_type" json:"media_type,omitempty"`
+	SortOrder int       `db:"sort_order" json:"sort_order"`
+	CreatedAt time.Time `db:"created_at" json:"created_at,omitempty"`
+}
+
+// ProductAttribute is one free-form spec row (name / value / unit) in the
+// product's structured-specifications block — e.g. {"RAM", "8", "GB"}.
+type ProductAttribute struct {
+	ID        uuid.UUID `db:"id" json:"id,omitempty"`
+	ProductID uuid.UUID `db:"product_id" json:"product_id,omitempty"`
+	Name      string    `db:"name" json:"name"`
+	Value     string    `db:"value" json:"value"`
+	Unit      *string   `db:"unit" json:"unit,omitempty"`
+	SortOrder int       `db:"sort_order" json:"sort_order"`
 }
 
 // ─── Product Variant ─────────────────────────────────────────
@@ -261,8 +301,20 @@ type Order struct {
 	CancellationReason      *string    `db:"cancellation_reason" json:"cancellation_reason,omitempty"`
 	CancelledBy             *string    `db:"cancelled_by" json:"cancelled_by,omitempty"`
 	IdempotencyKey          *string    `db:"idempotency_key" json:"idempotency_key,omitempty"`
-	CreatedAt               time.Time  `db:"created_at" json:"created_at,omitempty"`
-	UpdatedAt               time.Time  `db:"updated_at" json:"updated_at,omitempty"`
+	// ─── Phase 5 — B2B context (nullable on retail orders) ─────
+	OrganizationID         *uuid.UUID `db:"organization_id" json:"organization_id,omitempty"`
+	PONumber               *string    `db:"po_number" json:"po_number,omitempty"`
+	CostCenter             *string    `db:"cost_center" json:"cost_center,omitempty"`
+	BillingAddressSnapshot []byte     `db:"billing_address_snapshot" json:"billing_address_snapshot,omitempty"`
+	InvoiceEmail           *string    `db:"invoice_email" json:"invoice_email,omitempty"`
+	ApprovalStatus         *string    `db:"approval_status" json:"approval_status,omitempty"`
+	ApprovedByUserID       *uuid.UUID `db:"approved_by_user_id" json:"approved_by_user_id,omitempty"`
+	ApprovedAt             *time.Time `db:"approved_at" json:"approved_at,omitempty"`
+	ApprovalNotes          *string    `db:"approval_notes" json:"approval_notes,omitempty"`
+	CreditTermsDays        int        `db:"credit_terms_days" json:"credit_terms_days,omitempty"`
+	PaymentDueDate         *time.Time `db:"payment_due_date" json:"payment_due_date,omitempty"`
+	CreatedAt              time.Time  `db:"created_at" json:"created_at,omitempty"`
+	UpdatedAt              time.Time  `db:"updated_at" json:"updated_at,omitempty"`
 }
 
 type OrderItem struct {
@@ -352,6 +404,9 @@ type Review struct {
 	IsVerifiedPurchase  bool      `db:"is_verified_purchase" json:"is_verified_purchase,omitempty"`
 	IsPublished         bool      `db:"is_published" json:"is_published,omitempty"`
 	HelpfulCount        int       `db:"helpful_count" json:"helpful_count,omitempty"`
+	ModerationStatus    string    `db:"moderation_status" json:"moderation_status,omitempty"`
+	SellerResponse      *string   `db:"seller_response" json:"seller_response,omitempty"`
+	SellerRespondedAt   *time.Time `db:"seller_responded_at" json:"seller_responded_at,omitempty"`
 	CreatedAt           time.Time `db:"created_at" json:"created_at,omitempty"`
 }
 
@@ -483,4 +538,47 @@ type PayoutTransaction struct {
 	FailureReason    *string    `db:"failure_reason" json:"failure_reason,omitempty"`
 	InitiatedAt      time.Time  `db:"initiated_at" json:"initiated_at,omitempty"`
 	CompletedAt      *time.Time `db:"completed_at" json:"completed_at,omitempty"`
+}
+
+// ─── Phase 5 — B2B / Organizations ───────────────────────────
+
+type Organization struct {
+	ID                 uuid.UUID  `db:"id" json:"id"`
+	Name               string     `db:"name" json:"name"`
+	LegalName          *string    `db:"legal_name" json:"legal_name,omitempty"`
+	GSTIN              *string    `db:"gstin" json:"gstin,omitempty"`
+	PAN                *string    `db:"pan" json:"pan,omitempty"`
+	BillingEmail       *string    `db:"billing_email" json:"billing_email,omitempty"`
+	BillingPhone       *string    `db:"billing_phone" json:"billing_phone,omitempty"`
+	BillingAddressID   *uuid.UUID `db:"billing_address_id" json:"billing_address_id,omitempty"`
+	ApprovalThreshold  *float64   `db:"approval_threshold" json:"approval_threshold,omitempty"`
+	CreditTermsDays    int        `db:"credit_terms_days" json:"credit_terms_days"`
+	CreditLimit        *float64   `db:"credit_limit" json:"credit_limit,omitempty"`
+	Status             string     `db:"status" json:"status"`
+	CreatedByUserID    *uuid.UUID `db:"created_by_user_id" json:"created_by_user_id,omitempty"`
+	CreatedAt          time.Time  `db:"created_at" json:"created_at"`
+	UpdatedAt          time.Time  `db:"updated_at" json:"updated_at"`
+}
+
+type OrganizationMember struct {
+	ID             uuid.UUID  `db:"id" json:"id"`
+	OrganizationID uuid.UUID  `db:"organization_id" json:"organization_id"`
+	UserID         uuid.UUID  `db:"user_id" json:"user_id"`
+	Role           string     `db:"role" json:"role"`
+	Status         string     `db:"status" json:"status"`
+	InvitedEmail   *string    `db:"invited_email" json:"invited_email,omitempty"`
+	InvitedAt      time.Time  `db:"invited_at" json:"invited_at"`
+	JoinedAt       *time.Time `db:"joined_at" json:"joined_at,omitempty"`
+}
+
+type OrganizationInvite struct {
+	ID             uuid.UUID  `db:"id" json:"id"`
+	OrganizationID uuid.UUID  `db:"organization_id" json:"organization_id"`
+	Email          string     `db:"email" json:"email"`
+	Role           string     `db:"role" json:"role"`
+	Token          string     `db:"token" json:"token,omitempty"`
+	InvitedBy      uuid.UUID  `db:"invited_by" json:"invited_by"`
+	ExpiresAt      time.Time  `db:"expires_at" json:"expires_at"`
+	AcceptedAt     *time.Time `db:"accepted_at" json:"accepted_at,omitempty"`
+	CreatedAt      time.Time  `db:"created_at" json:"created_at"`
 }

@@ -221,6 +221,7 @@ func (s *Service) CreateGroup(ctx context.Context, actorID uuid.UUID, req Create
 		CommentPermission: commentPermission,
 		MemberListVisible: memberListVisible,
 		LinkSharing:       linkSharing,
+		IsMature:          req.IsMature,
 	}
 
 	if err := s.store.CreateGroup(ctx, g); err != nil {
@@ -275,6 +276,7 @@ type CreateGroupParams struct {
 	CommentPermission string
 	MemberListVisible *bool
 	LinkSharing       *bool
+	IsMature          bool
 }
 
 var validGroupTypes = map[string]bool{
@@ -573,20 +575,14 @@ func (s *Service) JoinGroup(ctx context.Context, actorID, groupID uuid.UUID) (st
 		return "", fmt.Errorf("forbidden: you are banned from this group")
 	}
 
-	// Enforce max members
-	if g.MaxMembers > 0 {
-		count, err := s.store.GetActiveMemberCount(ctx, groupID)
-		if err != nil {
-			return "", err
-		}
-		if count >= int64(g.MaxMembers) {
-			return "", fmt.Errorf("group has reached its maximum member limit")
-		}
-	}
+	// Audit HG6: the max-members cap is enforced atomically inside the
+	// store's AddMemberWithMax under a row-level lock, so two
+	// concurrent joins can no longer both pass a stale precheck and
+	// push the group over its limit.
 
 	switch g.JoinMode {
 	case "open":
-		if err := s.store.AddMember(ctx, groupID, actorID, "member"); err != nil {
+		if err := s.store.AddMemberWithMax(ctx, groupID, actorID, "member", g.MaxMembers); err != nil {
 			return "", err
 		}
 		if g.ChatConversationID != nil {
@@ -969,6 +965,14 @@ func (s *Service) AcceptInvite(ctx context.Context, actorID uuid.UUID, inviteID 
 	}
 	if inv.Status != "pending" {
 		return fmt.Errorf("invite is no longer pending")
+	}
+	// Audit CG3: invites carry an ExpiresAt set at creation (~7 days)
+	// but the previous code never checked it — a leaked or shared
+	// invite link replayed years later still worked. Reject expired
+	// invites and bump the status so the row is closed out.
+	if inv.ExpiresAt != nil && time.Now().After(*inv.ExpiresAt) {
+		_ = s.store.UpdateInviteStatus(ctx, inviteID, "expired")
+		return fmt.Errorf("invite expired")
 	}
 
 	if err := s.store.UpdateInviteStatus(ctx, inviteID, "accepted"); err != nil {
@@ -1459,7 +1463,7 @@ func (s *Service) UnbanMember(ctx context.Context, actorID, groupID, targetID uu
 }
 
 // GetGroupMedia returns media posts for a group.
-func (s *Service) GetGroupMedia(ctx context.Context, actorID, groupID uuid.UUID, limit, offset int) ([]store.GroupPost, error) {
+func (s *Service) GetGroupMedia(ctx context.Context, actorID, groupID uuid.UUID, limit, offset int) ([]store.GroupMediaItem, error) {
 	g, err := s.store.GetGroupByID(ctx, groupID)
 	if err != nil {
 		return nil, err
@@ -2229,4 +2233,68 @@ func (s *Service) RSVPGroupEvent(ctx context.Context, actorID, groupID, eventID 
 		return fmt.Errorf("RSVP is disabled for this event")
 	}
 	return s.store.RSVPGroupEvent(ctx, eventID, actorID.String(), status)
+}
+
+// GetMyGroupsFeed returns the aggregated reverse-chronological feed of
+// published posts across all groups the actor belongs to. Access control is
+// the membership join itself — only groups the actor is a member of
+// contribute posts.
+func (s *Service) GetMyGroupsFeed(ctx context.Context, actorID uuid.UUID, limit, offset int) ([]store.GroupPostV2, error) {
+	return s.store.ListMyGroupsFeed(ctx, actorID, limit, offset)
+}
+
+// ListMyInvites returns the actor's pending group invites with group display
+// fields attached.
+func (s *Service) ListMyInvites(ctx context.Context, actorID uuid.UUID) ([]store.GroupInviteDetail, error) {
+	return s.store.ListInvitesForUserDetailed(ctx, actorID)
+}
+
+// DiscoveredGroup is a discover result with human-readable reasons the
+// client can render under the card ("2 friends are in this space", ...).
+type DiscoveredGroup struct {
+	store.Group
+	FriendsInGroup int      `json:"friends_in_group"`
+	Reasons        []string `json:"reasons"`
+}
+
+// DiscoverGroupsForUser ranks joinable public + request-to-join spaces for
+// the viewer (friends inside > category affinity > same area > popularity)
+// and attaches the reasons behind each suggestion. Falls back to plain
+// popularity ordering naturally when the viewer has no friends or spaces
+// yet (all personalization terms score zero).
+func (s *Service) DiscoverGroupsForUser(ctx context.Context, actorID uuid.UUID, limit, offset int, groupType string) ([]DiscoveredGroup, error) {
+	if groupType != "" {
+		if err := ValidateGroupType(groupType); err != nil {
+			return nil, err
+		}
+	}
+	scored, err := s.store.DiscoverGroupsForUser(ctx, actorID, groupType, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]DiscoveredGroup, 0, len(scored))
+	for _, d := range scored {
+		var reasons []string
+		switch {
+		case d.FriendsInGroup == 1:
+			reasons = append(reasons, "1 friend is in this space")
+		case d.FriendsInGroup > 1:
+			reasons = append(reasons, fmt.Sprintf("%d friends are in this space", d.FriendsInGroup))
+		}
+		if d.CategoryMatch && d.Category != "" {
+			reasons = append(reasons, "Matches your interest in "+d.Category)
+		}
+		if d.LocationMatch && d.Location != "" {
+			reasons = append(reasons, "Active in "+d.Location)
+		}
+		if len(reasons) == 0 {
+			if d.MemberCount >= 10 {
+				reasons = append(reasons, "Popular on VChat")
+			} else {
+				reasons = append(reasons, "New space")
+			}
+		}
+		out = append(out, DiscoveredGroup{Group: d.Group, FriendsInGroup: d.FriendsInGroup, Reasons: reasons})
+	}
+	return out, nil
 }

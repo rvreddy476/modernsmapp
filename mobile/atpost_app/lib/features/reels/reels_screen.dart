@@ -1,14 +1,21 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:atpost_app/core/config/environment.dart';
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/models/post.dart';
+import 'package:atpost_app/data/repositories/analytics_repository.dart';
 import 'package:atpost_app/data/repositories/feed_repository.dart';
+import 'package:atpost_app/app/router.dart';
 import 'package:atpost_app/data/repositories/post_repository.dart';
 import 'package:atpost_app/data/repositories/user_repository.dart';
+import 'package:atpost_app/features/shell/shell_providers.dart';
+import 'package:atpost_app/features/shell/shell_scaffold.dart';
 import 'package:atpost_app/providers/data_saver_provider.dart';
 import 'package:atpost_app/shared/widgets/caption_toggle.dart';
+import 'package:atpost_app/features/reels/product_tag_composer_button.dart';
+import 'package:atpost_app/shared/widgets/product_tag_overlay.dart';
 import 'package:atpost_app/shared/widgets/video_player_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -24,7 +31,7 @@ class ReelsScreen extends ConsumerStatefulWidget {
   ConsumerState<ReelsScreen> createState() => _ReelsScreenState();
 }
 
-class _ReelsScreenState extends ConsumerState<ReelsScreen> {
+class _ReelsScreenState extends ConsumerState<ReelsScreen> with RouteAware {
   static const List<List<Color>> _palette = [
     [Color(0xFF1D102D), Color(0xFF090913)],
     [Color(0xFF20140D), Color(0xFF0D111B)],
@@ -42,6 +49,11 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> {
   bool _loadingInitial = true;
   bool _loadingMore = false;
   bool _muted = false;
+  // Set on the first build where this screen is the active shell tab
+  // (or always, when entered via the fullscreen /reels route). Prevents
+  // the cold-start network fetch + video controller spin-up while the
+  // user is parked on Home in the IndexedStack super-shell.
+  bool _initialLoadKicked = false;
   // Captions toggle state, keyed by post.id. Captions are off by
   // default per recon §D.5 ("No subtitle/caption toggle in PostTube
   // watch player"). The CaptionToggle widget hides itself entirely
@@ -62,20 +74,108 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> {
   bool _hasMoreFromApi = true;
   String? _error;
 
+  // View tracking — the reel the viewer is currently dwelling on, plus the
+  // set of reels already counted this session so the loop-feed recycling
+  // (_appendLoopBatch) never re-fires a view for the same reel.
+  _ReelViewWatch? _activeView;
+  final Set<String> _viewedReelIds = <String>{};
+
+  // True while another route (e.g. /reels/editor, /reels/caption,
+  // /comments/:id) sits on top of the host route. RouteAware flips
+  // this from didPushNext / didPopNext so the player gates correctly
+  // even when shellTabProvider is still on Reels.
+  bool _coveredByPushedRoute = false;
+  RouteObserver<ModalRoute<void>>? _routeObserver;
+
   @override
   void initState() {
     super.initState();
     _pageController = PageController();
     _pageController.addListener(_maybeLoadMoreOnScroll);
-    _loadInitial();
+    // Fullscreen route (/reels) always kicks off immediately. Inside
+    // the shell IndexedStack, defer the fetch + player spin-up until
+    // build() observes the user actually selecting the Reels tab.
+    if (widget.fullscreenRoute) {
+      _initialLoadKicked = true;
+      _loadInitial();
+    }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final observer = ref.read(routeObserverProvider);
+    if (_routeObserver != observer) {
+      _routeObserver?.unsubscribe(this);
+      final route = ModalRoute.of(context);
+      if (route is ModalRoute<void>) {
+        observer.subscribe(this, route);
+        _routeObserver = observer;
+      }
+    }
+  }
+
+  @override
+  void didPushNext() {
+    if (mounted) setState(() => _coveredByPushedRoute = true);
+  }
+
+  @override
+  void didPopNext() {
+    if (mounted) setState(() => _coveredByPushedRoute = false);
   }
 
   @override
   void dispose() {
+    _flushActiveView();
+    _routeObserver?.unsubscribe(this);
     _pageController
       ..removeListener(_maybeLoadMoreOnScroll)
       ..dispose();
     super.dispose();
+  }
+
+  // Begin a dwell timer for [post]. The view fires when the viewer
+  // scrolls away (or the screen is disposed) via _flushActiveView.
+  void _startView(Post post) {
+    _activeView = _ReelViewWatch(post: post, startedAt: DateTime.now());
+  }
+
+  // Emit a play_end view event for whichever reel the viewer just left.
+  void _flushActiveView() {
+    final watch = _activeView;
+    _activeView = null;
+    if (watch == null) return;
+
+    final post = watch.post;
+    // Loop guard: a reel recycled by _appendLoopBatch must not re-count.
+    // (analytics-service also dedups per session+content — this just
+    // avoids a pointless network call.)
+    if (post.id.isEmpty || _viewedReelIds.contains(post.id)) return;
+
+    final watchedMs = DateTime.now().difference(watch.startedAt).inMilliseconds;
+    if (watchedMs <= 1000) return;
+
+    _viewedReelIds.add(post.id);
+    unawaited(
+      ref.read(analyticsRepositoryProvider).recordVideoView(
+        contentId: post.id,
+        creatorId: post.authorId,
+        contentType: post.contentType == 'video' ? 'long_video' : 'reel',
+        watchedMs: watchedMs,
+        durationMs: (post.durationSeconds ?? 30) * 1000,
+        surface: 'reels_feed',
+      ),
+    );
+  }
+
+  // PageView reached a new reel: count the one just left, start the new.
+  void _onPageChanged(int index) {
+    _flushActiveView();
+    if (index >= 0 && index < _reels.length) {
+      _startView(_reels[index]);
+    }
+    _loadMore();
   }
 
   Future<void> _loadInitial() async {
@@ -102,6 +202,12 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> {
         _hasMoreFromApi =
             page.nextCursor != null && page.nextCursor!.isNotEmpty;
       });
+
+      // PageView opens on index 0 without firing onPageChanged — start
+      // the dwell timer for the first reel here.
+      if (_reels.isNotEmpty) {
+        _startView(_reels.first);
+      }
 
       if (_reels.isNotEmpty && !_hasMoreFromApi) {
         _appendLoopBatch();
@@ -362,6 +468,36 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // When mounted inside the shell IndexedStack, this widget is built
+    // even while the user is parked on Home. Treat the screen as
+    // inactive in that case — render a placeholder, skip the fetch,
+    // and (further down) skip the VideoPlayerWidget so no audio plays
+    // in the background.
+    //
+    // _coveredByPushedRoute also flips this off while a fullscreen
+    // route sits on top (/reels/editor, /reels/caption, /comments/:id,
+    // …). Without it, tapping the Create FAB while parked on the
+    // Reels tab would leave the underlying reel autoplaying audio
+    // behind the composer.
+    final isActive =
+        !_coveredByPushedRoute &&
+        (widget.fullscreenRoute ||
+            ref.watch(shellTabProvider) == ShellTabIndex.reels);
+
+    if (isActive && !_initialLoadKicked) {
+      _initialLoadKicked = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _loadInitial();
+      });
+    }
+
+    if (!_initialLoadKicked) {
+      // Cold placeholder — never been activated. No spinner: the user
+      // hasn't asked for Reels yet, so a loading indicator would be a
+      // lie about background work.
+      return const Scaffold(backgroundColor: AppColors.bgPrimary);
+    }
+
     if (_loadingInitial) {
       return const Scaffold(
         backgroundColor: AppColors.bgPrimary,
@@ -424,7 +560,7 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> {
             itemCount: _reels.length,
             // data-saver: PageView precaches just current + next; nothing
             // further to do here without a custom delegate.
-            onPageChanged: (_) => _loadMore(),
+            onPageChanged: _onPageChanged,
             itemBuilder: (context, index) {
               final post = _reels[index];
               final engagement = _ensureEngagement(post);
@@ -439,6 +575,7 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> {
                   engagement: engagement,
                   colors: colors,
                   fullscreenRoute: widget.fullscreenRoute,
+                  isActive: isActive,
                   muted: _muted,
                   captionsEnabled: _captionsEnabled(post.id),
                   dataSaver: dataSaver,
@@ -485,6 +622,7 @@ class _ReelPage extends StatefulWidget {
     required this.engagement,
     required this.colors,
     required this.fullscreenRoute,
+    required this.isActive,
     required this.muted,
     required this.captionsEnabled,
     required this.dataSaver,
@@ -505,6 +643,12 @@ class _ReelPage extends StatefulWidget {
   final _ReelEngagement engagement;
   final List<Color> colors;
   final bool fullscreenRoute;
+  // True when this reel page should actually run video. False when the
+  // shell IndexedStack is rendering Reels off-screen (user on Home /
+  // Wallet / Explore) — we still build the page tree to keep scroll
+  // and engagement state, but skip the VideoPlayerWidget so no audio
+  // bleeds out of the inactive tab.
+  final bool isActive;
   final bool muted;
   // Captions overlay state for this single reel. Captions are
   // recon-driven additions; the toggle widget hides itself when
@@ -537,6 +681,9 @@ class _ReelPage extends StatefulWidget {
 
 class _ReelPageState extends State<_ReelPage> {
   final GlobalKey<VideoPlayerWidgetState> _playerKey = GlobalKey();
+  // Playhead fed to ProductTagOverlay so it knows which tags are
+  // currently in-window. Throttled to 10Hz by VideoPlayerWidget.
+  int _positionMs = 0;
 
   String get _title {
     final text = widget.post.content.trim();
@@ -553,7 +700,7 @@ class _ReelPageState extends State<_ReelPage> {
   }
 
   String get _tags {
-    if (widget.post.tags.isEmpty) return '#reels #atpost';
+    if (widget.post.tags.isEmpty) return '#reels #vchat';
     return widget.post.tags.take(4).map((tag) => '#$tag').join(' ');
   }
 
@@ -578,7 +725,11 @@ class _ReelPageState extends State<_ReelPage> {
   @override
   Widget build(BuildContext context) {
     final hasVideo = _videoUrl.isNotEmpty;
-    final shouldAutoplay = !widget.dataSaver || _userTappedPlay;
+    // `isActive=false` means we're rendered off-screen inside the
+    // shell IndexedStack — never autoplay, never even mount the
+    // VideoPlayerWidget (handled below by ANDing into `shouldAutoplay`).
+    final shouldAutoplay =
+        widget.isActive && (!widget.dataSaver || _userTappedPlay);
 
     // Gradient background placeholder (used behind video or as fallback).
     final gradientBg = DecoratedBox(
@@ -606,9 +757,38 @@ class _ReelPageState extends State<_ReelPage> {
                   looping: true,
                   showControls: false,
                   placeholder: gradientBg,
+                  onPositionUpdate: (ms) {
+                    if (!mounted) return;
+                    setState(() => _positionMs = ms);
+                  },
                 )
               : gradientBg,
         ),
+        // In-video product-tag overlay. Renders nothing when the post
+        // has no tags (the FutureProvider returns []). The whole layer
+        // is layered between the player and the chrome/CTA controls
+        // below so taps on empty space still hit the player's
+        // tap-to-pause GestureDetector.
+        if (hasVideo)
+          Positioned.fill(
+            child: ProductTagOverlay(
+              postId: widget.post.id,
+              positionMs: _positionMs,
+            ),
+          ),
+        // Author-gated "Tag products" CTA. Pinned upper-left so it
+        // doesn't collide with the right-side action rail (like /
+        // comment / share / save) or the bottom captions strip. The
+        // widget renders nothing for non-authors.
+        if (hasVideo)
+          Positioned(
+            top: MediaQuery.of(context).padding.top + 56,
+            left: 12,
+            child: ProductTagComposerButton(
+              postId: widget.post.id,
+              postAuthorId: widget.post.authorId,
+            ),
+          ),
         if (hasVideo && !shouldAutoplay)
           Positioned.fill(
             child: GestureDetector(
@@ -1033,6 +1213,15 @@ class _BottomInfo extends StatelessWidget {
       ],
     );
   }
+}
+
+// Tracks the reel currently on screen and when the viewer landed on it,
+// so _flushActiveView can compute watched-ms when they scroll away.
+class _ReelViewWatch {
+  _ReelViewWatch({required this.post, required this.startedAt});
+
+  final Post post;
+  final DateTime startedAt;
 }
 
 class _ReelEngagement {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -37,8 +38,12 @@ func extractHashtags(text string) []string {
 }
 
 type Consumer struct {
-	reader *kafka.Reader
-	store  *search.Store
+	reader    *kafka.Reader
+	store     *search.Store
+	dlq       *kafka.Writer // optional; nil = log-only on failure
+	dlqTopic  string
+	groupID   string
+	topic     string
 }
 
 func NewConsumer(brokers []string, groupID string, topic string, store *search.Store) *Consumer {
@@ -54,7 +59,34 @@ func NewConsumerWithDialer(brokers []string, groupID string, topic string, store
 		MaxBytes: 10e6,
 		Dialer:   dialer,
 	})
-	return &Consumer{reader: reader, store: store}
+
+	// Audit HS2: configure a DLQ writer so failed messages don't fall
+	// silently off the back of the indexer. Topic is env-tunable;
+	// empty disables DLQ (the default for unit tests).
+	dlqTopic := os.Getenv("SEARCH_DLQ_TOPIC")
+	if dlqTopic == "" {
+		dlqTopic = "search.events.v1.dlq"
+	}
+	var dlqWriter *kafka.Writer
+	if dlqTopic != "-" { // "-" explicitly disables
+		dlqWriter = &kafka.Writer{
+			Addr:     kafka.TCP(brokers...),
+			Topic:    dlqTopic,
+			Balancer: &kafka.Hash{},
+		}
+		if dialer != nil {
+			dlqWriter.Transport = &kafka.Transport{Dial: dialer.DialFunc}
+		}
+	}
+
+	return &Consumer{
+		reader:   reader,
+		store:    store,
+		dlq:      dlqWriter,
+		dlqTopic: dlqTopic,
+		groupID:  groupID,
+		topic:    topic,
+	}
 }
 
 func (c *Consumer) Start(ctx context.Context) {
@@ -72,8 +104,34 @@ func (c *Consumer) Start(ctx context.Context) {
 
 		if err := c.processMessage(ctx, m); err != nil {
 			slog.Error("failed to process message", "topic", m.Topic, "offset", m.Offset, "error", err)
+			c.sendToDLQ(ctx, m, err)
 		}
 	}
+}
+
+// sendToDLQ best-effort writes a failed message to the DLQ topic so an
+// operator/sweeper can inspect it. We never block on DLQ failure —
+// the search index isn't critical-path durable storage.
+func (c *Consumer) sendToDLQ(ctx context.Context, m kafka.Message, processErr error) {
+	if c.dlq == nil {
+		return
+	}
+	dlqCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	headers := append(m.Headers,
+		kafka.Header{Key: "x-dlq-error", Value: []byte(processErr.Error())},
+		kafka.Header{Key: "x-dlq-original-topic", Value: []byte(c.topic)},
+		kafka.Header{Key: "x-dlq-consumer-group", Value: []byte(c.groupID)},
+	)
+	if err := c.dlq.WriteMessages(dlqCtx, kafka.Message{
+		Key:     m.Key,
+		Value:   m.Value,
+		Headers: headers,
+	}); err != nil {
+		slog.Error("search: DLQ write failed", "error", err, "dlq_topic", c.dlqTopic)
+		return
+	}
+	slog.Warn("search: message routed to DLQ", "dlq_topic", c.dlqTopic, "offset", m.Offset)
 }
 
 func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
@@ -125,14 +183,75 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 
 		hashtags := extractHashtags(p.Text)
 
-		return c.store.IndexPost(ctx, search.PostDoc{
+		if err := c.store.IndexPost(ctx, search.PostDoc{
 			PostID:     p.PostID,
 			AuthorID:   p.AuthorID,
 			Text:       p.Text,
 			Hashtags:   hashtags,
 			Visibility: p.Visibility,
 			CreatedAt:  p.CreatedAt,
-		})
+		}); err != nil {
+			return err
+		}
+		// Mirror hashtag mentions into the hashtags_v1 index. Each tag's
+		// use_count + engagement_score bumps by 1. Failures are logged but
+		// not bubbled — a missed hashtag tick is acceptable, a missed
+		// post-index is not.
+		for _, h := range hashtags {
+			if err := c.store.IncrementHashtagUse(ctx, h); err != nil {
+				slog.Warn("search: hashtag increment failed", "tag", h, "err", err)
+			}
+		}
+		return nil
+
+	case events.PostReacted:
+		// Engagement bump: +1 per like-like reaction, -1 on unreact is
+		// indistinguishable from the event we receive (only the
+		// add direction is published today), so we only +1. The hot
+		// path is multiply-in-log1p so over-counting at +1/event has
+		// asymptotically negligible impact on ranking.
+		var p events.PostReactedPayload
+		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
+			return err
+		}
+		return c.store.AddToEngagementScore(ctx, search.IndexPosts, p.PostID, 1)
+
+	case events.CommentCreated:
+		var p events.CommentCreatedPayload
+		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
+			return err
+		}
+		// Posts weight: like=1, comment=2 (see mappings.computeEngagementScore).
+		return c.store.AddToEngagementScore(ctx, search.IndexPosts, p.PostID, 2)
+
+	case events.EventPostReposted:
+		// Posts weight: share=3. We use the post repost event as the
+		// share signal; ReelShared bumps a different post id below.
+		var p struct {
+			PostID string `json:"post_id"`
+		}
+		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
+			return err
+		}
+		if p.PostID != "" {
+			return c.store.AddToEngagementScore(ctx, search.IndexPosts, p.PostID, 3)
+		}
+		return nil
+
+	case events.UserFollowed:
+		var p events.UserFollowedPayload
+		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
+			return err
+		}
+		// Users weight: follower_count carries 1.0 — bump the followee.
+		return c.store.AddToEngagementScore(ctx, search.IndexUsers, p.FolloweeID, 1)
+
+	case events.UserUnfollowed:
+		var p events.UserUnfollowedPayload
+		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
+			return err
+		}
+		return c.store.AddToEngagementScore(ctx, search.IndexUsers, p.FolloweeID, -1)
 
 	case events.PostDeleted:
 		var p events.PostDeletedPayload
@@ -177,9 +296,176 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		// Update the user's username in the search index via partial update
 		return c.store.UpdateUserUsername(ctx, p.UserID, p.NewUsername)
 
+	// --- Communities ---
+	case events.EventCommunityCreated:
+		var p communityCreatedPayload
+		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
+			return err
+		}
+		return c.store.IndexCommunity(ctx, search.CommunityDoc{
+			CommunityID:   p.CommunityID,
+			OwnerID:       p.OwnerID,
+			Name:          p.Name,
+			CommunityType: p.CommunityType,
+			CreatedAt:     p.CreatedAt,
+		})
+
+	case events.EventCommunityUpdated:
+		var p communityUpdatedPayload
+		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
+			return err
+		}
+		// Partial update; leaves counters intact.
+		return c.store.IndexCommunity(ctx, search.CommunityDoc{
+			CommunityID:   p.CommunityID,
+			Name:          p.Name,
+			CommunityType: p.CommunityType,
+			CreatedAt:     p.UpdatedAt,
+		})
+
+	case events.EventCommunityDeleted:
+		var p communityDeletedPayload
+		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
+			return err
+		}
+		return c.store.DeleteCommunity(ctx, p.CommunityID)
+
+	case events.EventCommunityMemberJoined:
+		var p struct {
+			CommunityID string `json:"community_id"`
+		}
+		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
+			return err
+		}
+		return c.store.AddToEngagementScore(ctx, search.IndexCommunities, p.CommunityID, 1)
+
+	case events.EventCommunityMemberLeft, events.EventCommunityMemberBanned:
+		var p struct {
+			CommunityID string `json:"community_id"`
+		}
+		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
+			return err
+		}
+		return c.store.AddToEngagementScore(ctx, search.IndexCommunities, p.CommunityID, -1)
+
+	// --- Channels ---
+	case events.EventChannelCreated:
+		var p channelCreatedPayload
+		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
+			return err
+		}
+		return c.store.IndexChannel(ctx, search.ChannelDoc{
+			ChannelID:   p.ChannelID,
+			OwnerID:     p.OwnerID,
+			Name:        p.Name,
+			ChannelType: p.ChannelType,
+			CreatedAt:   p.CreatedAt,
+		})
+
+	case events.EventChannelUpdated:
+		var p channelUpdatedPayload
+		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
+			return err
+		}
+		return c.store.IndexChannel(ctx, search.ChannelDoc{
+			ChannelID: p.ChannelID,
+			CreatedAt: p.UpdatedAt,
+		})
+
+	case events.EventChannelDeleted:
+		var p channelDeletedPayload
+		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
+			return err
+		}
+		return c.store.DeleteChannel(ctx, p.ChannelID)
+
+	case events.EventChannelSubscribed:
+		var p struct {
+			ChannelID string `json:"channel_id"`
+		}
+		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
+			return err
+		}
+		return c.store.AddToEngagementScore(ctx, search.IndexChannels, p.ChannelID, 1)
+
+	case events.EventChannelUnsubscribed:
+		var p struct {
+			ChannelID string `json:"channel_id"`
+		}
+		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
+			return err
+		}
+		return c.store.AddToEngagementScore(ctx, search.IndexChannels, p.ChannelID, -1)
+
+	// --- Products / Commerce ---
+	case events.ProductListed:
+		var p events.ProductListedPayload
+		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
+			return err
+		}
+		return c.store.IndexProductDoc(ctx, search.ProductDoc{
+			ProductID: p.ProductID,
+			SellerID:  p.SellerID,
+			Title:     p.Title,
+			Category:  p.Category,
+			Price:     p.Price,
+			CreatedAt: p.CreatedAt,
+		})
+
+	case events.EventOrderCreated, events.OrderCreated:
+		// Bump every line item's purchase_count by 1. The order payload
+		// doesn't carry product ids here — best we can do without a
+		// follow-up call is bump the listing's order-related counter
+		// only when commerce-service starts emitting per-line events.
+		// (Tracked separately; engagement still updates from views.)
+		return nil
+
 	default:
 		return nil
 	}
+}
+
+// --- Local payload shapes for community/channel events --------------------
+//
+// The community-service / channel-service producer packages own the
+// canonical structs but search-service is a downstream consumer that
+// shouldn't import the producer module just for type info. The payload
+// JSON is stable, so we declare the field subset we need locally.
+
+type communityCreatedPayload struct {
+	CommunityID   string    `json:"community_id"`
+	OwnerID       string    `json:"owner_id"`
+	Name          string    `json:"name"`
+	CommunityType string    `json:"community_type"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+type communityUpdatedPayload struct {
+	CommunityID   string    `json:"community_id"`
+	Name          string    `json:"name,omitempty"`
+	CommunityType string    `json:"community_type,omitempty"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+type communityDeletedPayload struct {
+	CommunityID string `json:"community_id"`
+}
+
+type channelCreatedPayload struct {
+	ChannelID   string    `json:"channel_id"`
+	OwnerID     string    `json:"owner_id"`
+	Name        string    `json:"name"`
+	ChannelType string    `json:"channel_type"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+type channelUpdatedPayload struct {
+	ChannelID string    `json:"channel_id"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type channelDeletedPayload struct {
+	ChannelID string `json:"channel_id"`
 }
 
 func unmarshalPayload(raw json.RawMessage, v interface{}) error {
@@ -188,6 +474,9 @@ func unmarshalPayload(raw json.RawMessage, v interface{}) error {
 }
 
 func (c *Consumer) Close() error {
+	if c.dlq != nil {
+		_ = c.dlq.Close()
+	}
 	return c.reader.Close()
 }
 

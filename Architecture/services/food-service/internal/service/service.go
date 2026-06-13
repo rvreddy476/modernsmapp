@@ -6,14 +6,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/atpost/food-service/internal/store/blob"
 	"github.com/atpost/food-service/internal/store/postgres"
+	"github.com/atpost/shared/outbox"
+	"github.com/atpost/shared/realtime"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type Store interface {
@@ -59,6 +64,72 @@ type Store interface {
 	SetMenuItemAvailability(ctx context.Context, ownerID, itemID uuid.UUID, available bool) error
 	ListPartnerOrders(ctx context.Context, ownerID, restaurantID uuid.UUID) ([]postgres.Order, error)
 	PartnerUpdateOrderStatus(ctx context.Context, ownerID, orderID uuid.UUID, toStatus, reason, idempotencyKey string) (*postgres.Order, error)
+	ListKitchenQueue(ctx context.Context, ownerID, restaurantID uuid.UUID) ([]postgres.KitchenOrder, error)
+	AutoRejectExpiredOrders(ctx context.Context, batch int) ([]uuid.UUID, error)
+	ProposeSubstitution(ctx context.Context, ownerID uuid.UUID, in postgres.ProposeSubstitutionInput) (*postgres.Substitution, error)
+	RespondToSubstitution(ctx context.Context, customerID, subID uuid.UUID, newStatus string) (*postgres.Substitution, error)
+	ListSubstitutions(ctx context.Context, userID, orderID uuid.UUID) ([]postgres.Substitution, error)
+	ReportMenuItem(ctx context.Context, reporterID, itemID uuid.UUID, category, detail string) (*postgres.MenuItemReport, error)
+	ListPendingModeration(ctx context.Context, limit int) ([]postgres.PendingModerationItem, error)
+	ModerateMenuItem(ctx context.Context, adminID, itemID uuid.UUID, status, reason string) error
+	ListUnassignedReadyOrders(ctx context.Context, batch int) ([]uuid.UUID, error)
+	ListUnbatchedReadyOrders(ctx context.Context, batch int) ([]postgres.ReadyOrderForBatching, error)
+	ListEligibleDeliveryPartners(ctx context.Context, restaurantCity string, limit int) ([]uuid.UUID, error)
+	CreateDeliveryOffer(ctx context.Context, orderID, partnerID uuid.UUID, expiresAt time.Time) (*postgres.DeliveryOffer, error)
+	CreateBatch(ctx context.Context, restaurantID uuid.UUID, orderIDs []uuid.UUID) (*postgres.DeliveryBatch, error)
+	CreateDeliveryOfferForBatch(ctx context.Context, batchID, anchorOrderID, partnerID uuid.UUID, expiresAt time.Time) (*postgres.DeliveryOffer, error)
+	AcceptBatchOfferTx(ctx context.Context, userID, offerID uuid.UUID) (*postgres.DeliveryBatch, uuid.UUID, error)
+	GetBatchForOrder(ctx context.Context, orderID uuid.UUID) (*postgres.DeliveryBatch, error)
+	ListMyPendingDeliveryOffers(ctx context.Context, userID uuid.UUID) ([]postgres.DeliveryOffer, error)
+	AcceptDeliveryOfferTx(ctx context.Context, userID, offerID uuid.UUID) (*postgres.DeliveryOffer, error)
+	RejectDeliveryOffer(ctx context.Context, userID, offerID uuid.UUID, reason string) error
+	ExpireDeliveryOffers(ctx context.Context) (int, error)
+	EnsureDeliveryCodes(ctx context.Context, orderID uuid.UUID) (string, string, error)
+	VerifyPickupCode(ctx context.Context, ownerID, orderID uuid.UUID, code string) error
+	VerifyDeliveryCode(ctx context.Context, customerID, orderID uuid.UUID, code string) error
+	AttachProofURL(ctx context.Context, userID, orderID uuid.UUID, which, url string) error
+	CreateTicket(ctx context.Context, in postgres.CreateTicketInput) (*postgres.Ticket, error)
+	ListMyTickets(ctx context.Context, customerID uuid.UUID) ([]postgres.Ticket, error)
+	AppendTicketMessage(ctx context.Context, ticketID, authorID uuid.UUID, isAdmin bool, body string) (*postgres.TicketMessage, error)
+	GetTicketWithMessages(ctx context.Context, ticketID uuid.UUID) (*postgres.Ticket, []postgres.TicketMessage, error)
+	SetTicketStatus(ctx context.Context, ticketID uuid.UUID, status string) error
+	ListTicketsForAdmin(ctx context.Context, status string, limit int) ([]postgres.Ticket, error)
+	ListRefundsForAdmin(ctx context.Context, status string, limit int) ([]postgres.RefundRequest, error)
+	CreateRefundRequest(ctx context.Context, customerID, orderID uuid.UUID, ticketID *uuid.UUID, amount float64, reason string) (*postgres.RefundRequest, error)
+	DecideRefund(ctx context.Context, adminID, refundID uuid.UUID, status, reason string) error
+	CreateItemReview(ctx context.Context, in postgres.CreateItemReviewInput) (*postgres.ItemReview, error)
+	ListItemReviews(ctx context.Context, menuItemID uuid.UUID, limit int) ([]postgres.ItemReview, error)
+	HideItemReview(ctx context.Context, reviewID uuid.UUID) error
+	ReportRestaurantSLA(ctx context.Context, w postgres.ReportWindow) ([]postgres.RestaurantSLAReport, error)
+	ReportDeliverySLA(ctx context.Context, w postgres.ReportWindow) ([]postgres.DeliverySLAReport, error)
+	ReportPaymentRecon(ctx context.Context, w postgres.ReportWindow) ([]postgres.PaymentReconRow, error)
+	ReportRefundsCancellations(ctx context.Context, w postgres.ReportWindow) ([]postgres.RefundCancelRow, error)
+	ReportCouponAbuse(ctx context.Context, w postgres.ReportWindow, threshold int) ([]postgres.CouponAbuseRow, error)
+	ReportCompliance(ctx context.Context) ([]postgres.ComplianceReportRow, error)
+	RecordFraudScore(ctx context.Context, userID uuid.UUID, signal string, score float64, detail map[string]any) error
+	TopFraudUsers(ctx context.Context, windowHours, limit int) ([]postgres.TopFraudUsersRow, error)
+	RecentRefundsByUser(ctx context.Context, windowHours int) ([]postgres.RecentRefundsByUserRow, error)
+	RecentCustomerCancellations(ctx context.Context, windowHours int) ([]postgres.CustomerCancellationsRow, error)
+	AppendOrderMessage(ctx context.Context, orderID, authorID uuid.UUID, authorRole, body string) (*postgres.OrderMessage, error)
+	ListOrderMessages(ctx context.Context, orderID uuid.UUID) ([]postgres.OrderMessage, error)
+	MarkMessageRead(ctx context.Context, messageID, userID uuid.UUID, role string) error
+	OrderPartyMembership(ctx context.Context, orderID, userID uuid.UUID) (*postgres.OrderPartyMembership, error)
+	GenerateRestaurantSettlementFile(ctx context.Context, adminID uuid.UUID, from, to time.Time) (*postgres.SettlementFile, error)
+	GenerateDeliverySettlementFile(ctx context.Context, adminID uuid.UUID, from, to time.Time) (*postgres.SettlementFile, error)
+	ListSettlementFiles(ctx context.Context, limit int) ([]postgres.SettlementFile, error)
+	GetSettlementFileBody(ctx context.Context, fileID uuid.UUID) ([]byte, string, error)
+	GetSettlementBody(ctx context.Context, fileID uuid.UUID) (*postgres.SettlementBody, error)
+	UpdateSettlementFileURL(ctx context.Context, fileID uuid.UUID, fileURL string) error
+	GetInvoiceData(ctx context.Context, userID, orderID uuid.UUID) (*postgres.InvoiceData, error)
+	AllocateInvoiceNumber(ctx context.Context, orderID uuid.UUID, financialYear string) (string, error)
+	PredictPrepTime(ctx context.Context, restaurantID uuid.UUID) (*postgres.PrepTimePrediction, error)
+	GetLoyaltyBalance(ctx context.Context, userID uuid.UUID) (*postgres.LoyaltyBalance, error)
+	EarnPoints(ctx context.Context, userID, orderID uuid.UUID, delta int, reason string) (*postgres.LoyaltyBalance, error)
+	RedeemPoints(ctx context.Context, userID uuid.UUID, orderID *uuid.UUID, delta int, reason string) (*postgres.LoyaltyBalance, error)
+	ListLoyaltyLedger(ctx context.Context, userID uuid.UUID, limit int) ([]postgres.LoyaltyLedgerRow, error)
+	EnsureReferralCode(ctx context.Context, userID uuid.UUID) (string, error)
+	RecordReferral(ctx context.Context, refereeID uuid.UUID, code string) (*postgres.Referral, error)
+	MarkReferralRewarded(ctx context.Context, refereeID uuid.UUID, rewardPoints int) error
 	PartnerRestaurantSettlements(ctx context.Context, ownerID, restaurantID uuid.UUID) ([]map[string]any, error)
 	PartnerRestaurantSummary(ctx context.Context, ownerID, restaurantID uuid.UUID) (map[string]any, error)
 	UpsertDeliveryPartner(ctx context.Context, userID uuid.UUID, in postgres.DeliveryPartnerInput) (*postgres.DeliveryPartner, error)
@@ -105,6 +176,11 @@ type Service struct {
 	paymentsURL     string
 	internalKey     string
 	httpClient      *http.Client
+	rtPublisher     *realtime.Publisher
+	rtSigner        *realtime.TokenSigner
+	outboxQ         *outbox.Queuer
+	dbPool          *pgxpool.Pool
+	blob            *blob.Store
 }
 
 func New(store Store) *Service {
@@ -115,6 +191,94 @@ func New(store Store) *Service {
 		internalKey:     os.Getenv("INTERNAL_SERVICE_KEY"),
 		httpClient:      &http.Client{Timeout: 8 * time.Second},
 	}
+}
+
+// WithRealtime wires the realtime publisher + topic-token signer.
+// Both are optional; nil-checked at every callsite so misconfiguration
+// degrades to "no live push, polling still works."
+func (s *Service) WithRealtime(p *realtime.Publisher, signer *realtime.TokenSigner) *Service {
+	s.rtPublisher = p
+	s.rtSigner = signer
+	return s
+}
+
+// WithOutbox wires the durable outbox so domain events flow to Kafka
+// and downstream consumers (notification-service for FCM, analytics,
+// admin live boards). The pool is the same one the store uses; we
+// keep a separate handle so the service layer can enqueue without
+// going through every store method.
+func (s *Service) WithOutbox(q *outbox.Queuer, db *pgxpool.Pool) *Service {
+	s.outboxQ = q
+	s.dbPool = db
+	return s
+}
+
+// emit publishes a Kafka event via the outbox AND a Pub/Sub realtime
+// frame in one call. Both are best-effort; failures are logged at
+// WARN so a Redis or Postgres hiccup does not break the user request.
+func (s *Service) emit(ctx context.Context, topic, eventType string, data any) {
+	s.publishRealtime(ctx, topic, eventType, data)
+	if s.outboxQ == nil || s.dbPool == nil {
+		return
+	}
+	body, err := json.Marshal(data)
+	if err != nil {
+		slog.Warn("food-service: outbox marshal failed", "event", eventType, "error", err)
+		return
+	}
+	// Partition by topic so consumers can use it as the Kafka key for
+	// order-preserving fan-out (e.g. one partition per order_id).
+	if err := s.outboxQ.EnqueuePool(ctx, s.dbPool, eventType, topic, body); err != nil {
+		slog.Warn("food-service: outbox enqueue failed", "event", eventType, "error", err)
+	}
+}
+
+// publishRealtime is a best-effort fire-and-forget broadcast. Errors
+// are logged at WARN — the durable copy is the Kafka event.
+func (s *Service) publishRealtime(ctx context.Context, topic, eventType string, data any) {
+	if s.rtPublisher == nil {
+		return
+	}
+	if err := s.rtPublisher.Publish(ctx, topic, eventType, data); err != nil {
+		slog.Warn("food-service: realtime publish failed", "topic", topic, "event", eventType, "error", err)
+	}
+}
+
+// IssueRealtimeToken builds a topic-scoped token granting the user
+// access to the order/restaurant/partner topics they own. Caller is
+// responsible for X-User-Id auth.
+func (s *Service) IssueRealtimeToken(ctx context.Context, userID uuid.UUID) (string, []string, error) {
+	if s.rtSigner == nil {
+		return "", nil, errors.New("realtime: signer not configured")
+	}
+	// Topic set:
+	//   1. food.order.{order_id}       — for every order the user placed.
+	//   2. food.restaurant.{id}.orders — for every restaurant the user owns.
+	//   3. food.delivery_partner.{id}.assignments — if they're a partner.
+	topics := []string{}
+	if orders, err := s.store.ListOrders(ctx, userID); err == nil {
+		for _, o := range orders {
+			topics = append(topics, "food.order."+o.ID.String())
+		}
+	}
+	if rests, err := s.store.ListPartnerRestaurants(ctx, userID); err == nil {
+		for _, r := range rests {
+			topics = append(topics, "food.restaurant."+r.ID.String()+".orders")
+		}
+	}
+	// Always grant the delivery-partner self-assignment topic — the
+	// user is keyed by their own user_id, so the topic is self-scoped.
+	topics = append(topics, "food.delivery_partner."+userID.String()+".assignments")
+	if len(topics) == 0 {
+		// Token signer rejects empty topic list; give the caller a
+		// no-op self-topic so they at least get a connected event.
+		topics = []string{"food.user." + userID.String()}
+	}
+	tok, err := s.rtSigner.Sign(userID.String(), topics)
+	if err != nil {
+		return "", nil, err
+	}
+	return tok, topics, nil
 }
 
 type Home struct {
@@ -214,7 +378,14 @@ func (s *Service) DeleteAddress(ctx context.Context, userID, addressID uuid.UUID
 }
 
 func (s *Service) PlaceOrder(ctx context.Context, userID uuid.UUID, in postgres.PlaceOrderInput, idempotencyKey string) (*postgres.Order, error) {
-	return s.store.PlaceOrder(ctx, userID, in, idempotencyKey)
+	o, err := s.store.PlaceOrder(ctx, userID, in, idempotencyKey)
+	if err != nil {
+		return nil, err
+	}
+	s.emit(ctx, "food.order."+o.ID.String(), "food.order.placed", o)
+	s.publishRealtime(ctx, "food.restaurant."+o.RestaurantID.String()+".orders", "food.order.placed", o)
+	s.publishRealtime(ctx, "food.admin.live_orders", "food.order.placed", o)
+	return o, nil
 }
 
 func (s *Service) ListOrders(ctx context.Context, userID uuid.UUID) ([]postgres.Order, error) {
@@ -261,12 +432,56 @@ func (s *Service) CreatePaymentIntent(ctx context.Context, userID, orderID uuid.
 	return intent, nil
 }
 
-func (s *Service) ConfirmPayment(ctx context.Context, userID, orderID uuid.UUID, providerPaymentID, providerReference string) (*postgres.Order, error) {
-	details, err := s.store.WalletPaymentChargeDetails(ctx, userID, orderID)
+// ConfirmPaymentInput is the FiGo confirm-payment request body in
+// canonical Go form. Online payments require the Razorpay signature
+// triple — the backend forwards it to payments-service for HMAC
+// verification before any "paid" state is persisted. Wallet payments
+// pass through the existing internal monetization charge path; the
+// signature fields are ignored for that method.
+//
+// Idempotency: an already-CAPTURED order short-circuits to a clean
+// return (the order row is reloaded so the response is the canonical
+// post-confirm state). IdempotencyKey is reserved for cross-request
+// dedup on the same {user, order} tuple.
+type ConfirmPaymentInput struct {
+	UserID            uuid.UUID
+	OrderID           uuid.UUID
+	ProviderPaymentID string
+	ProviderReference string
+	RazorpayOrderID   string
+	RazorpayPaymentID string
+	RazorpaySignature string
+	AmountMinor       int64
+	IdempotencyKey    string
+}
+
+// ConfirmPayment is the FiGo customer-facing confirm path. P0.1 fix:
+//
+//  1. Reject ONLINE confirms missing the Razorpay signature triple.
+//  2. Call payments-service /v1/payments/intents/:id/verify (which
+//     re-checks HMAC + amount against the stored intent). The
+//     previous direct status-PATCH path is gone — the client can no
+//     longer forge a paid state by sending arbitrary provider ids.
+//  3. Idempotent: already-CAPTURED orders short-circuit cleanly.
+//  4. Cancelled / refunded orders cannot be revived because
+//     payments-service refuses to verify against an intent that
+//     isn't pending. Late webhook arrival is the canonical
+//     reconciliation path.
+func (s *Service) ConfirmPayment(ctx context.Context, in ConfirmPaymentInput) (*postgres.Order, error) {
+	details, err := s.store.WalletPaymentChargeDetails(ctx, in.UserID, in.OrderID)
 	if err != nil {
 		return nil, err
 	}
-	if details.PaymentMethod == "WALLET" && details.PaymentStatus != "CAPTURED" {
+	// Idempotent short-circuit: a duplicate confirm on an already-
+	// CAPTURED order is the most common race (mobile + webhook both
+	// fire). Re-running the wallet charge or signature verify here
+	// would double-charge or 400. Reload the order row so the
+	// response is canonical post-confirm state — no further work.
+	if details.PaymentStatus == "CAPTURED" {
+		return s.store.GetOrder(ctx, in.UserID, in.OrderID)
+	}
+	providerReference := in.ProviderReference
+	if details.PaymentMethod == "WALLET" {
 		if err := s.chargeWalletForFoodOrder(ctx, details); err != nil {
 			return nil, err
 		}
@@ -274,18 +489,29 @@ func (s *Service) ConfirmPayment(ctx context.Context, userID, orderID uuid.UUID,
 			providerReference = "monetization-wallet"
 		}
 	}
-	storeProviderPaymentID := providerPaymentID
-	if details.PaymentMethod == "ONLINE" && details.PaymentStatus != "CAPTURED" {
-		paymentDetails, err := s.store.PaymentIntegrationDetails(ctx, orderID)
+	storeProviderPaymentID := in.ProviderPaymentID
+	if details.PaymentMethod == "ONLINE" {
+		if in.RazorpayOrderID == "" || in.RazorpayPaymentID == "" || in.RazorpaySignature == "" {
+			return nil, fmt.Errorf("razorpay signature triple is required for online payments")
+		}
+		paymentDetails, err := s.store.PaymentIntegrationDetails(ctx, in.OrderID)
 		if err != nil {
 			return nil, err
 		}
-		if err := s.markPaymentsServiceIntentSucceeded(ctx, paymentDetails, userID, providerReference); err != nil {
+		if err := s.verifyPaymentsServiceIntent(ctx, paymentDetails, in); err != nil {
 			return nil, err
 		}
-		storeProviderPaymentID = paymentDetails.ProviderPaymentID
+		storeProviderPaymentID = in.RazorpayPaymentID
+		providerReference = in.RazorpayOrderID
 	}
-	return s.store.ConfirmPayment(ctx, userID, orderID, storeProviderPaymentID, providerReference)
+	o, err := s.store.ConfirmPayment(ctx, in.UserID, in.OrderID, storeProviderPaymentID, providerReference)
+	if err != nil {
+		return nil, err
+	}
+	s.emit(ctx, "food.order."+o.ID.String(), "food.order.payment_succeeded", o)
+	s.publishRealtime(ctx, "food.restaurant."+o.RestaurantID.String()+".orders", "food.order.payment_succeeded", o)
+	s.publishRealtime(ctx, "food.admin.live_orders", "food.order.payment_succeeded", o)
+	return o, nil
 }
 
 func (s *Service) chargeWalletForFoodOrder(ctx context.Context, details *postgres.WalletPaymentChargeDetails) error {
@@ -321,20 +547,32 @@ func (s *Service) chargeWalletForFoodOrder(ctx context.Context, details *postgre
 	return nil
 }
 
-func (s *Service) markPaymentsServiceIntentSucceeded(ctx context.Context, details *postgres.PaymentIntegrationDetails, actorID uuid.UUID, providerRef string) error {
+// verifyPaymentsServiceIntent is the new (P0.1) verification path.
+// Calls payments-service `/v1/payments/intents/:id/verify` which
+// re-checks the Razorpay HMAC signature against the stored intent +
+// validates the amount (when provided). Returns nil only on a 200
+// with `verified: true` — anything else fails the confirm so the
+// order never moves to paid based on client-supplied data alone.
+//
+// The legacy direct status-PATCH path is intentionally removed —
+// the old code would call PATCH /status with the client's
+// provider_ref and trust the payments-service to mark succeeded
+// without verifying the signature.
+func (s *Service) verifyPaymentsServiceIntent(ctx context.Context, details *postgres.PaymentIntegrationDetails, in ConfirmPaymentInput) error {
 	if s.paymentsURL == "" {
 		return fmt.Errorf("PAYMENTS_SERVICE_URL is required for online payments")
 	}
 	if details.ProviderPaymentID == "" {
 		return fmt.Errorf("payments-service intent reference is missing")
 	}
-	body, _ := json.Marshal(map[string]string{
-		"old_status":   "pending",
-		"new_status":   "succeeded",
-		"provider_ref": providerRef,
+	body, _ := json.Marshal(map[string]any{
+		"razorpay_order_id":   in.RazorpayOrderID,
+		"razorpay_payment_id": in.RazorpayPaymentID,
+		"razorpay_signature":  in.RazorpaySignature,
+		"amount_minor":        in.AmountMinor,
 	})
-	url := strings.TrimRight(s.paymentsURL, "/") + "/v1/payments/intents/" + details.ProviderPaymentID + "/status"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, url, bytes.NewReader(body))
+	url := strings.TrimRight(s.paymentsURL, "/") + "/v1/payments/intents/" + details.ProviderPaymentID + "/verify"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -342,36 +580,29 @@ func (s *Service) markPaymentsServiceIntentSucceeded(ctx context.Context, detail
 	if s.internalKey != "" {
 		req.Header.Set("X-Internal-Service-Key", s.internalKey)
 	}
-	req.Header.Set("X-User-Id", actorID.String())
+	req.Header.Set("X-User-Id", in.UserID.String())
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode < 400 {
-		return nil
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("payments verify rejected confirm (status %d)", resp.StatusCode)
 	}
-
-	getReq, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(s.paymentsURL, "/")+"/v1/payments/intents/"+details.ProviderPaymentID, nil)
-	if err != nil {
-		return err
-	}
-	if s.internalKey != "" {
-		getReq.Header.Set("X-Internal-Service-Key", s.internalKey)
-	}
-	getReq.Header.Set("X-User-Id", actorID.String())
-	getResp, err := s.httpClient.Do(getReq)
-	if err != nil {
-		return err
-	}
-	defer getResp.Body.Close()
 	var envelope struct {
-		Data map[string]any `json:"data"`
+		Data struct {
+			Verified    bool   `json:"verified"`
+			Status      string `json:"status"`
+			AmountMinor int64  `json:"amount_minor"`
+		} `json:"data"`
 	}
-	if getResp.StatusCode < 400 && json.NewDecoder(getResp.Body).Decode(&envelope) == nil && strings.EqualFold(stringFromMap(envelope.Data, "status"), "succeeded") {
-		return nil
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		return fmt.Errorf("payments verify response decode: %w", err)
 	}
-	return fmt.Errorf("payments status update failed with status %d", resp.StatusCode)
+	if !envelope.Data.Verified {
+		return fmt.Errorf("payments verify returned not verified (status=%s)", envelope.Data.Status)
+	}
+	return nil
 }
 
 func (s *Service) createPaymentsServiceIntent(ctx context.Context, details *postgres.WalletPaymentChargeDetails, idempotencyKey string) (map[string]any, error) {
@@ -485,7 +716,14 @@ func stringFromMap(input map[string]any, key string) string {
 }
 
 func (s *Service) CancelOrder(ctx context.Context, userID, orderID uuid.UUID, reason string) (*postgres.Order, error) {
-	return s.store.CancelOrder(ctx, userID, orderID, reason)
+	o, err := s.store.CancelOrder(ctx, userID, orderID, reason)
+	if err != nil {
+		return nil, err
+	}
+	s.emit(ctx, "food.order."+o.ID.String(), "food.order.cancelled", o)
+	s.publishRealtime(ctx, "food.restaurant."+o.RestaurantID.String()+".orders", "food.order.cancelled", o)
+	s.publishRealtime(ctx, "food.admin.live_orders", "food.order.cancelled", o)
+	return o, nil
 }
 
 func (s *Service) RateRestaurant(ctx context.Context, userID, orderID uuid.UUID, rating int, review string) (map[string]any, error) {
@@ -554,6 +792,100 @@ func (s *Service) SetMenuItemAvailability(ctx context.Context, ownerID, itemID u
 
 func (s *Service) ListPartnerOrders(ctx context.Context, ownerID, restaurantID uuid.UUID) ([]postgres.Order, error) {
 	return s.store.ListPartnerOrders(ctx, ownerID, restaurantID)
+}
+
+// ListKitchenQueue returns CONFIRMED orders awaiting partner accept,
+// sorted by SLA-breach deadline (most-urgent first). Used by the
+// partner mobile/web kitchen dashboard.
+func (s *Service) ListKitchenQueue(ctx context.Context, ownerID, restaurantID uuid.UUID) ([]postgres.KitchenOrder, error) {
+	return s.store.ListKitchenQueue(ctx, ownerID, restaurantID)
+}
+
+// ProposeSubstitution lets a partner offer a swap when an item is out
+// of stock. Emits a realtime event on the order topic so the customer
+// app pops a "choose: accept / decline" sheet.
+func (s *Service) ProposeSubstitution(ctx context.Context, ownerID uuid.UUID, in postgres.ProposeSubstitutionInput) (*postgres.Substitution, error) {
+	sub, err := s.store.ProposeSubstitution(ctx, ownerID, in)
+	if err != nil {
+		return nil, err
+	}
+	s.emit(ctx, "food.order."+sub.OrderID.String(), "food.order.substitution_proposed", sub)
+	return sub, nil
+}
+
+// RespondToSubstitution is the customer-facing approve/decline. After
+// a response we emit a follow-up event so the partner kitchen UI
+// updates immediately.
+func (s *Service) RespondToSubstitution(ctx context.Context, customerID, subID uuid.UUID, response string) (*postgres.Substitution, error) {
+	sub, err := s.store.RespondToSubstitution(ctx, customerID, subID, response)
+	if err != nil {
+		return nil, err
+	}
+	eventType := "food.order.substitution_" + response // approved / declined / cancelled
+	s.emit(ctx, "food.order."+sub.OrderID.String(), eventType, sub)
+	return sub, nil
+}
+
+// ListSubstitutions returns every substitution for an order; visible
+// to either the customer or the owning partner.
+func (s *Service) ListSubstitutions(ctx context.Context, userID, orderID uuid.UUID) ([]postgres.Substitution, error) {
+	return s.store.ListSubstitutions(ctx, userID, orderID)
+}
+
+// ReportMenuItem records a customer complaint against a menu item.
+// Once enough unresolved reports accumulate the item auto-flips to
+// `flagged` so admin reviews it. Idempotent at the store layer.
+func (s *Service) ReportMenuItem(ctx context.Context, reporterID, itemID uuid.UUID, category, detail string) (*postgres.MenuItemReport, error) {
+	return s.store.ReportMenuItem(ctx, reporterID, itemID, category, detail)
+}
+
+// ListPendingModeration returns flagged / pending_review menu items
+// for the admin moderation queue. Admin-only.
+func (s *Service) ListPendingModeration(ctx context.Context, limit int) ([]postgres.PendingModerationItem, error) {
+	return s.store.ListPendingModeration(ctx, limit)
+}
+
+// ModerateMenuItem sets the admin verdict on a flagged item. Approving
+// resolves all open reports against the item; rejecting hides it from
+// customer-facing listings.
+func (s *Service) ModerateMenuItem(ctx context.Context, adminID, itemID uuid.UUID, status, reason string) error {
+	return s.store.ModerateMenuItem(ctx, adminID, itemID, status, reason)
+}
+
+// CreateItemReview wraps the store call; only DELIVERED orders by the
+// customer are accepted (enforced in the store layer).
+func (s *Service) CreateItemReview(ctx context.Context, in postgres.CreateItemReviewInput) (*postgres.ItemReview, error) {
+	return s.store.CreateItemReview(ctx, in)
+}
+
+// ListItemReviews returns reviews for one menu item; public read.
+func (s *Service) ListItemReviews(ctx context.Context, menuItemID uuid.UUID, limit int) ([]postgres.ItemReview, error) {
+	return s.store.ListItemReviews(ctx, menuItemID, limit)
+}
+
+// HideItemReview is the admin moderation knob (hard-delete v1).
+func (s *Service) HideItemReview(ctx context.Context, reviewID uuid.UUID) error {
+	return s.store.HideItemReview(ctx, reviewID)
+}
+
+// AutoRejectSLAExpiredOrders is invoked by the background worker every
+// 15s. Transitions CONFIRMED orders past their accept_deadline_at to
+// RESTAURANT_REJECTED and fires events so notifications + refunds run
+// downstream.
+func (s *Service) AutoRejectSLAExpiredOrders(ctx context.Context) (int, error) {
+	ids, err := s.store.AutoRejectExpiredOrders(ctx, 50)
+	if err != nil {
+		return 0, err
+	}
+	for _, id := range ids {
+		// Push a minimal payload — downstream consumers re-fetch the
+		// order from food-service for the full state.
+		s.emit(ctx, "food.order."+id.String(), "food.order.restaurant_rejected", map[string]any{
+			"id":     id.String(),
+			"reason": "sla_breach",
+		})
+	}
+	return len(ids), nil
 }
 
 func (s *Service) PartnerUpdateOrderStatus(ctx context.Context, ownerID, orderID uuid.UUID, toStatus, reason, idempotencyKey string) (*postgres.Order, error) {

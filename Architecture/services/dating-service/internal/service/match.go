@@ -32,7 +32,10 @@ type MessageServiceClient interface {
 	CreateConversation(ctx context.Context, req CreateConversationRequest) (*CreateConversationResponse, error)
 }
 
-// CreateConversationRequest is the body sent to message-service.
+// CreateConversationRequest is the body sent to chat-service's
+// /v1/chat/conversations/dating-match endpoint. The participants list
+// is the matched pair; ContextID carries the dating match_id so the
+// chat side can be idempotent on retries.
 type CreateConversationRequest struct {
 	Participants []string `json:"participants"`
 	Type         string   `json:"type"`
@@ -53,12 +56,14 @@ type httpMessageClient struct {
 }
 
 // NewHTTPMessageClient wires the message-service client from env vars.
-// MESSAGE_SERVICE_URL (default http://message-service:8094) and
+// MESSAGE_SERVICE_URL (default points at the canonical chat-service
+// container on port 8092 — the Architecture message-service was archived
+// 2026-05-25 per dating/PRODUCTION_GAP_ANALYSIS.md P0-3) and
 // INTERNAL_SERVICE_KEY are honored.
 func NewHTTPMessageClient() MessageServiceClient {
 	base := os.Getenv("MESSAGE_SERVICE_URL")
 	if base == "" {
-		base = "http://message-service:8094"
+		base = "http://chat-message-service:8092"
 	}
 	return &httpMessageClient{
 		baseURL:     base,
@@ -68,11 +73,24 @@ func NewHTTPMessageClient() MessageServiceClient {
 }
 
 func (c *httpMessageClient) CreateConversation(ctx context.Context, body CreateConversationRequest) (*CreateConversationResponse, error) {
-	buf, err := json.Marshal(body)
+	// Marshal into chat-service's dating-match shape:
+	//   {user_a, user_b, match_id}
+	// Participants[0] / Participants[1] map to user_a / user_b; the
+	// chat-side store normalises ordering so either ordering is safe.
+	// ContextID carries the dating match_id for idempotency.
+	if len(body.Participants) != 2 {
+		return nil, fmt.Errorf("dating match requires exactly 2 participants, got %d", len(body.Participants))
+	}
+	dm := struct {
+		UserA   string `json:"user_a"`
+		UserB   string `json:"user_b"`
+		MatchID string `json:"match_id"`
+	}{UserA: body.Participants[0], UserB: body.Participants[1], MatchID: body.ContextID}
+	buf, err := json.Marshal(dm)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
-	url := c.baseURL + "/v1/messages/conversations"
+	url := c.baseURL + "/v1/chat/conversations/dating-match"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(buf))
 	if err != nil {
 		return nil, err
@@ -133,6 +151,21 @@ func (s *Service) FormMatch(ctx context.Context, userA, userB uuid.UUID, sparkTa
 		return nil, fmt.Errorf("invalid: cannot match a user with themselves")
 	}
 
+	// §P1-1: do not form a match if either side is restricted /
+	// suspended / pending_review. The CreateSpark gate already blocks
+	// the spark itself, but FormMatch can also be invoked by the saga
+	// reconciler retrying an older mutual-spark — at which point one
+	// of the parties may have been moderated. Skip silently for the
+	// reconciler path; surface the sentinel for direct callers. Both
+	// halves checked because a restricted recipient still has stale
+	// sparks from when they were active.
+	if err := s.requireInteractiveProfile(ctx, userA); err != nil {
+		return nil, err
+	}
+	if err := s.requireInteractiveProfile(ctx, userB); err != nil {
+		return nil, err
+	}
+
 	// If a match already exists between these two users (any status), reuse
 	// it rather than create a duplicate. Idempotency for retried mutual-Spark.
 	if existing, err := s.store.GetMatchByUsers(ctx, userA, userB); err == nil && existing != nil {
@@ -168,15 +201,20 @@ func (s *Service) FormMatch(ctx context.Context, userA, userB uuid.UUID, sparkTa
 		ContextID:    matchID.String(),
 	})
 	if mErr != nil {
-		// Compensate: hard-delete the pending match so a future retry can
-		// re-form it without dragging the orphan along.
-		if dErr := s.store.DeleteMatch(ctx, matchID); dErr != nil {
-			slog.Error("saga: compensation delete failed", "match_id", matchID, "error", dErr)
-		}
+		// P0-9: don't hard-delete the pending match. Keep it in status
+		// 'matched' with NULL conversation_id so the SagaReconciler can
+		// retry the chat-side handshake on its next tick — the
+		// chat-service endpoint is idempotent on match_id. Hard-delete
+		// here lost matches whenever chat-service was briefly down.
+		slog.Warn("saga: create conversation failed; leaving pending for reconciler",
+			"match_id", matchID, "error", mErr)
 		return nil, fmt.Errorf("create conversation: %w", mErr)
 	}
 	conversationID, perr := uuid.Parse(convResp.ConversationID)
 	if perr != nil {
+		// Bad ID from chat-service is a protocol error, not transient —
+		// reconciler retry won't fix it. Hard-delete remains the right
+		// call here.
 		if dErr := s.store.DeleteMatch(ctx, matchID); dErr != nil {
 			slog.Error("saga: compensation delete failed (bad conv id)", "error", dErr)
 		}
@@ -185,12 +223,13 @@ func (s *Service) FormMatch(ctx context.Context, userA, userB uuid.UUID, sparkTa
 
 	// Step 3: terminal — flip to active.
 	if err := s.store.MarkMatchActive(ctx, matchID, conversationID); err != nil {
-		// Best-effort compensation: delete the row. We don't try to roll
-		// back the conversation in message-service for v1; we log so ops
-		// can clean it up. (Tracked as TODO in the saga design.)
-		if dErr := s.store.DeleteMatch(ctx, matchID); dErr != nil {
-			slog.Error("saga: compensation delete failed (mark active)", "error", dErr)
-		}
+		// P0-9: don't delete here either. The chat conversation already
+		// exists keyed on match_id (idempotent); the reconciler will
+		// pick this row up by status='matched' AND conversation_id IS
+		// NULL on its next tick. It re-calls CreateConversation (no-op
+		// — returns the same id) and re-runs MarkMatchActive.
+		slog.Warn("saga: mark active failed; leaving pending for reconciler",
+			"match_id", matchID, "conversation_id", conversationID, "error", err)
 		return nil, fmt.Errorf("mark match active: %w", err)
 	}
 
@@ -306,4 +345,29 @@ func (s *Service) MarkQuietMatches(ctx context.Context) (int, error) {
 		}
 	}
 	return len(quieted), nil
+}
+
+// EmitQuietMatchNotifications fans out dating.match.quiet_notify for
+// quiet matches that haven't been notified yet. ClaimMatchesForQuietNotify
+// atomically stamps quiet_notified_at so a replica re-running on the
+// next tick sees the row as already-emitted, and FOR UPDATE SKIP
+// LOCKED keeps the cluster safe. One event per participant per match
+// (notification-service routes by user_a/user_b).
+func (s *Service) EmitQuietMatchNotifications(ctx context.Context, limit int) (int, error) {
+	if s.producer == nil {
+		return 0, nil
+	}
+	matches, err := s.store.ClaimMatchesForQuietNotify(ctx, limit)
+	if err != nil {
+		return 0, err
+	}
+	for _, m := range matches {
+		// Don't block the sweeper on a Kafka miss — the row is already
+		// stamped; a downstream nightly job (or operator replay) can
+		// catch up. We log on error per producer.go's convention.
+		if perr := s.producer.PublishMatchQuietNotify(ctx, m.ID, m.UserA, m.UserB); perr != nil {
+			slog.Warn("publish match.quiet_notify failed", "match_id", m.ID, "error", perr)
+		}
+	}
+	return len(matches), nil
 }

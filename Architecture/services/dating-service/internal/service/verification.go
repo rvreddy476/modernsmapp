@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/atpost/dating-service/internal/digilocker"
+	"github.com/atpost/dating-service/internal/store"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
@@ -242,6 +243,21 @@ func (s *Service) CompleteSelfieFlow(ctx context.Context, userID uuid.UUID, embe
 			if perr := s.producer.PublishVerificationCompleted(ctx, userID, "selfie", tier); perr != nil {
 				slog.Warn("publish verification.completed failed", "error", perr)
 			}
+		}
+		// §P1-1: selfie pass graduates pending_selfie -> active. We only
+		// drive the forward transition — restricted/suspended must not
+		// be overwritten by a re-submission. Best-effort: a failure
+		// here is logged but doesn't block the user.
+		if p, gerr := s.store.GetProfile(ctx, userID); gerr == nil && p != nil &&
+			p.ProfileStatus == store.ProfileStatusPendingSelfie {
+			if _, err := s.store.SetProfileStatus(ctx, userID, store.ProfileStatusActive); err != nil {
+				slog.Warn("profile state: graduate to active failed", "user_id", userID, "error", err)
+			}
+		}
+	} else if s.producer != nil {
+		// §P1-6 notification surface: explicit verification.rejected push.
+		if perr := s.producer.PublishVerificationRejected(ctx, userID, "selfie"); perr != nil {
+			slog.Warn("publish verification.rejected failed", "error", perr)
 		}
 	}
 	return &SelfieFlowResult{

@@ -54,7 +54,6 @@ CREATE INDEX IF NOT EXISTS idx_playlist_items_post ON playlist_items(post_id);
 
 -- Video Chapters
 CREATE TABLE IF NOT EXISTS media_chapters (
-    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     post_id       UUID NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
     chapter_index INT NOT NULL,
     title         TEXT NOT NULL,
@@ -109,7 +108,9 @@ CREATE INDEX IF NOT EXISTS idx_watch_progress_user ON watch_progress(user_id, la
 -- Membership-only videos
 ALTER TABLE posts ADD COLUMN IF NOT EXISTS access TEXT NOT NULL DEFAULT 'public'
     CHECK (access IN ('public','subscribers_only','tier_specific'));
-ALTER TABLE posts ADD COLUMN IF NOT EXISTS required_tier_id UUID REFERENCES creator_tiers(id);
+-- No FK to creator_tiers because that table lives in monetization-db
+-- (see migration 016_membership_gating.sql for the same constraint).
+ALTER TABLE posts ADD COLUMN IF NOT EXISTS required_tier_id UUID;
 
 -- Premieres
 ALTER TABLE posts ADD COLUMN IF NOT EXISTS premiere_at TIMESTAMPTZ;

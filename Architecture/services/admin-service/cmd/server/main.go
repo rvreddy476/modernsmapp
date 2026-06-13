@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/atpost/admin-service/database"
@@ -53,7 +54,7 @@ func main() {
 	}
 	slog.Info("connected to postgres")
 
-	if err := postgres.BootstrapSchema(ctx, dbPool, database.SetupSQL); err != nil {
+	if err := postgres.BootstrapSchema(ctx, dbPool, database.SetupSQL, database.Migrations); err != nil {
 		slog.Error("failed to bootstrap admin schema", "error", err)
 		os.Exit(1)
 	}
@@ -76,6 +77,11 @@ func main() {
 
 	// 6. Dependencies
 	store := postgres.New(dbPool)
+
+	// CERT-In log retention: purge audit-log rows past the retention
+	// window once a day.
+	go auditLogRetentionSweep(ctx, store)
+
 	internalKey := env("INTERNAL_SERVICE_KEY", "")
 	authURL := env("AUTH_SERVICE_URL", "http://identity-auth:8081")
 	authClient := service.NewAuthClient(authURL, internalKey)
@@ -119,6 +125,39 @@ func env(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// auditLogRetentionSweep purges audit-log rows past the CERT-In retention
+// window once a day. AUDIT_LOG_RETENTION_DAYS lengthens the window; it is
+// clamped to a 180-day minimum so the policy can be extended but never
+// shortened below the legal floor.
+func auditLogRetentionSweep(ctx context.Context, store *postgres.Store) {
+	retentionDays := 180
+	if v := os.Getenv("AUDIT_LOG_RETENTION_DAYS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > retentionDays {
+			retentionDays = n
+		}
+	}
+	sweep := func() {
+		c, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer cancel()
+		if n, err := store.PurgeAuditLogsOlderThan(c, retentionDays); err != nil {
+			slog.Error("audit log retention sweep failed", "error", err)
+		} else if n > 0 {
+			slog.Info("audit log retention sweep", "purged", n, "retention_days", retentionDays)
+		}
+	}
+	sweep() // run once on boot
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			sweep()
+		}
+	}
 }
 
 func collectDBPoolStats(ctx context.Context, pool *pgxpool.Pool, m *metrics.DBPoolMetrics) {

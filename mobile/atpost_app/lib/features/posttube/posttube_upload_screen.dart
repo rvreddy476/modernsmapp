@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:atpost_app/core/errors/error_handler.dart';
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
@@ -64,14 +67,25 @@ class _PosttubeUploadScreenState extends ConsumerState<PosttubeUploadScreen> {
     try {
       final api = ref.read(apiClientProvider);
 
-      // Executes the 3-step orchestration defined in the new ApiClient
-      final mediaId = await api.uploadMedia(
-        _videoFile!,
-        type: 'video',
-        onProgress: (sent, total) {
-          if (mounted) setState(() => _uploadProgress = sent / total);
-        },
-      );
+      void onProgress(int sent, int total) {
+        if (mounted && total > 0) setState(() => _uploadProgress = sent / total);
+      }
+
+      // Large videos take the resumable (chunked) path so a dropped
+      // connection costs one 5 MB part, not the whole upload; smaller
+      // files use the single-shot presigned PUT.
+      final fileSize = await File(_videoFile!.path).length();
+      final mediaId = fileSize >= ApiClient.resumableUploadThreshold
+          ? await api.uploadMediaResumable(
+              _videoFile!,
+              type: 'video',
+              onProgress: onProgress,
+            )
+          : await api.uploadMedia(
+              _videoFile!,
+              type: 'video',
+              onProgress: onProgress,
+            );
 
       if (mounted) setState(() => _status = 'Finalizing post...');
 
@@ -84,13 +98,21 @@ class _PosttubeUploadScreenState extends ConsumerState<PosttubeUploadScreen> {
 
       // Create the actual video post. Use canonical 'long_video' rather than
       // legacy 'video' (backend normalizes either, but this is the modern name).
-      await api.post('/v1/posts', data: {
-        'content_type': 'long_video',
-        'media_ids': [mediaId],
-        'title': _titleCtrl.text.trim(),
-        'text': fullText,
-        'visibility': 'public',
-      });
+      // Audit H7: if /v1/posts errors after the media has been uploaded,
+      // best-effort delete the orphan so storage drops immediately. The
+      // 24h server-side GC sweep catches anything this misses.
+      try {
+        await api.post('/v1/posts', data: {
+          'content_type': 'long_video',
+          'media_ids': [mediaId],
+          'title': _titleCtrl.text.trim(),
+          'text': fullText,
+          'visibility': 'public',
+        });
+      } catch (_) {
+        unawaited(api.tryDeleteMedia(mediaId));
+        rethrow;
+      }
 
       if (mounted) {
         setState(() {

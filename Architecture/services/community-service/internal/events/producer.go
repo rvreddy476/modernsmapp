@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/atpost/shared/events"
@@ -131,6 +132,19 @@ func (p *Producer) PublishSpaceQuarantined(ctx context.Context, communityID, spa
 	return p.publish(ctx, EventCommunitySpaceQuarantined, &actorID, payload)
 }
 
+// publish serializes the envelope synchronously (so the caller's
+// payload references are safe) and writes to Kafka asynchronously.
+//
+// Audit HC4: every Publish* method previously blocked the request on
+// the Kafka WriteMessages ACK (50-200 ms). At 50+ call sites the cost
+// added up. Moving the I/O off the request context means we no longer
+// fail user actions because the broker is briefly slow; we also no
+// longer tie request cancellation to whether the event lands.
+//
+// Errors are logged at WARN. The community-events topic is consumed
+// downstream by feed/notification/search, which already tolerate
+// at-least-once + duplicates via dedup; a dropped event becomes a
+// best-effort reconciliation problem rather than a user-facing failure.
 func (p *Producer) publish(ctx context.Context, eventType string, actorID *uuid.UUID, payload any) error {
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -150,10 +164,19 @@ func (p *Producer) publish(ctx context.Context, eventType string, actorID *uuid.
 		return fmt.Errorf("failed to marshal envelope: %w", err)
 	}
 
-	return p.writer.WriteMessages(ctx, kafka.Message{
+	msg := kafka.Message{
 		Key:   []byte(envelope.EventID),
 		Value: envelopeBytes,
-	})
+	}
+	go func() {
+		writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := p.writer.WriteMessages(writeCtx, msg); err != nil {
+			slog.Warn("community-events: async Kafka publish failed",
+				"event_type", eventType, "event_id", envelope.EventID, "err", err)
+		}
+	}()
+	return nil
 }
 
 func (p *Producer) Close() error {

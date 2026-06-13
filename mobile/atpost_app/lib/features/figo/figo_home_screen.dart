@@ -1,6 +1,7 @@
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_app/providers/figo_realtime_provider.dart';
 import 'package:atpost_app/services/api_client.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
@@ -29,6 +30,7 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
 
   Future<_FigoSnapshot> _load() async {
     final api = ref.read(apiClientProvider);
+    // Customer-facing data — always loaded.
     final home = await _safeLoad<_FigoHome>(() async {
       final data = _responseData((await api.get('/v1/food/home')).data);
       return _FigoHome.fromJson(data);
@@ -45,13 +47,6 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
       final data = _responseData((await api.get('/v1/food/addresses')).data);
       return _items(data).map(_FigoAddress.fromJson).toList();
     }, fallback: const []);
-    // Phase 2 §D4: the food UI no longer fetches or displays a wallet
-    // balance. The previous code was reading the creator-earnings
-    // ledger (/v1/monetization/wallet, now /creator-ledger) and
-    // labelling it "Wallet balance" — a real product bug. The AtPost
-    // consumer wallet is shipping in wallet-service in the same
-    // Phase 2 sprint; until it lands, we just show "Wallet coming soon"
-    // in the UI and hardcode the local balance to 0.
     const double walletBalance = 0;
     final tracking = await _safeLoad<_OrderTracking?>(() async {
       if (orders.isEmpty) return null;
@@ -60,65 +55,95 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
       );
       return _OrderTracking.fromJson(data);
     }, fallback: null);
-    final partnerRestaurants = await _safeLoad<List<_PartnerRestaurant>>(
-      () async {
-        final data = _responseData(
-          (await api.get('/v1/food/partner/restaurants')).data,
-        );
-        return _items(data).map(_PartnerRestaurant.fromJson).toList();
-      },
-      fallback: const [],
-    );
-    final delivery = await _safeLoad<_DeliveryWorkspace>(() async {
-      final profileData = _responseData(
-        (await api.get('/v1/food/delivery/profile')).data,
+    // P2 batching: when the tracked order is part of a multi-pickup
+    // batch, the customer banner says "delivered alongside N orders".
+    // 404 → null; we render nothing for solo orders.
+    final batch = await _safeLoad<_OrderBatch?>(() async {
+      if (orders.isEmpty) return null;
+      final data = _responseData(
+        (await api.get(
+          '/v1/food/delivery/orders/${orders.first.id}/batch',
+        )).data,
       );
-      final assignmentData = _responseData(
-        (await api.get('/v1/food/delivery/assignments/current')).data,
-      );
-      final earningsData = _responseData(
-        (await api.get('/v1/food/delivery/earnings')).data,
-      );
-      final assignment = _DeliveryAssignment.fromJson(assignmentData);
-      final trackingData = await _safeLoad<_AssignmentTracking?>(() async {
-        final data = _responseData(
-          (await api.get(
-            '/v1/food/delivery/assignments/${assignment.id}/tracking',
-          )).data,
-        );
-        return _AssignmentTracking.fromJson(data);
-      }, fallback: null);
-      return _DeliveryWorkspace(
-        profile: _DeliveryProfile.fromJson(profileData),
-        currentAssignment: assignment,
-        earnings: _DeliveryEarnings.fromJson(earningsData),
-        tracking: trackingData,
-      );
-    }, fallback: const _DeliveryWorkspace());
-    final admin = await _safeLoad<_AdminWorkspace>(() async {
-      final dashboardData = _responseData(
-        (await api.get('/v1/food/admin/dashboard')).data,
-      );
-      final ordersData = _responseData(
-        (await api.get('/v1/food/admin/orders')).data,
-      );
-      final settlementsData = _responseData(
-        (await api.get('/v1/food/admin/settlements/delivery-partners')).data,
-      );
-      final restaurantSettlementsData = _responseData(
-        (await api.get('/v1/food/admin/settlements/restaurants')).data,
-      );
-      final auditData = _responseData(
-        (await api.get('/v1/food/admin/audit-logs')).data,
-      );
-      return _AdminWorkspace(
-        dashboard: _AdminDashboard.fromJson(dashboardData),
-        orders: _items(ordersData).map(_FigoOrder.fromJson).toList(),
-        deliverySettlements: _items(settlementsData).length,
-        restaurantSettlements: _items(restaurantSettlementsData).length,
-        auditLogs: _items(auditData).length,
-      );
-    }, fallback: const _AdminWorkspace());
+      return _OrderBatch.fromJson(data, orders.first.id);
+    }, fallback: null);
+
+    // Role-gated data — only fetched when the matching workspace is
+    // open. P0.5: a customer must never hit /v1/food/admin/* or
+    // /v1/food/partner/* or /v1/food/delivery/*. Those endpoints are
+    // internal-key-gated server-side and were producing 403s under a
+    // _safeLoad swallow; worse, they were leaking the customer's
+    // X-User-Id at endpoints they have no business calling.
+    final partnerRestaurants = _role != _FigoRole.restaurant
+        ? const <_PartnerRestaurant>[]
+        : await _safeLoad<List<_PartnerRestaurant>>(
+            () async {
+              final data = _responseData(
+                (await api.get('/v1/food/partner/restaurants')).data,
+              );
+              return _items(data).map(_PartnerRestaurant.fromJson).toList();
+            },
+            fallback: const [],
+          );
+    final delivery = _role != _FigoRole.delivery
+        ? const _DeliveryWorkspace()
+        : await _safeLoad<_DeliveryWorkspace>(() async {
+            final profileData = _responseData(
+              (await api.get('/v1/food/delivery/profile')).data,
+            );
+            final assignmentData = _responseData(
+              (await api.get('/v1/food/delivery/assignments/current')).data,
+            );
+            final earningsData = _responseData(
+              (await api.get('/v1/food/delivery/earnings')).data,
+            );
+            final assignment = _DeliveryAssignment.fromJson(assignmentData);
+            final trackingData = await _safeLoad<_AssignmentTracking?>(
+              () async {
+                final data = _responseData(
+                  (await api.get(
+                    '/v1/food/delivery/assignments/${assignment.id}/tracking',
+                  )).data,
+                );
+                return _AssignmentTracking.fromJson(data);
+              },
+              fallback: null,
+            );
+            return _DeliveryWorkspace(
+              profile: _DeliveryProfile.fromJson(profileData),
+              currentAssignment: assignment,
+              earnings: _DeliveryEarnings.fromJson(earningsData),
+              tracking: trackingData,
+            );
+          }, fallback: const _DeliveryWorkspace());
+    final admin = _role != _FigoRole.admin
+        ? const _AdminWorkspace()
+        : await _safeLoad<_AdminWorkspace>(() async {
+            final dashboardData = _responseData(
+              (await api.get('/v1/food/admin/dashboard')).data,
+            );
+            final ordersData = _responseData(
+              (await api.get('/v1/food/admin/orders')).data,
+            );
+            final settlementsData = _responseData(
+              (await api.get(
+                '/v1/food/admin/settlements/delivery-partners',
+              )).data,
+            );
+            final restaurantSettlementsData = _responseData(
+              (await api.get('/v1/food/admin/settlements/restaurants')).data,
+            );
+            final auditData = _responseData(
+              (await api.get('/v1/food/admin/audit-logs')).data,
+            );
+            return _AdminWorkspace(
+              dashboard: _AdminDashboard.fromJson(dashboardData),
+              orders: _items(ordersData).map(_FigoOrder.fromJson).toList(),
+              deliverySettlements: _items(settlementsData).length,
+              restaurantSettlements: _items(restaurantSettlementsData).length,
+              auditLogs: _items(auditData).length,
+            );
+          }, fallback: const _AdminWorkspace());
     return _FigoSnapshot(
       home: home,
       cart: cart,
@@ -126,6 +151,7 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
       addresses: addresses,
       walletBalance: walletBalance,
       tracking: tracking,
+      batch: batch,
       partnerRestaurants: partnerRestaurants,
       delivery: delivery,
       admin: admin,
@@ -336,6 +362,14 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // G2: SSE push — refresh the snapshot whenever a food.order.*
+    // event lands on the realtime gateway. The REST snapshot still
+    // owns the UI's data; this listener just stops the 0-5s polling
+    // lag on status changes / substitutions / refund updates.
+    ref.listen(foodOrderPushProvider, (prev, next) {
+      next.whenData((_) => _retry());
+    });
+
     return Scaffold(
       backgroundColor: AppColors.bgPrimary,
       appBar: AppBar(
@@ -362,7 +396,15 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
                 const SizedBox(height: 18),
                 _RoleSelector(
                   selected: _role,
-                  onSelected: (role) => setState(() => _role = role),
+                  onSelected: (role) {
+                    if (_role == role) return;
+                    setState(() {
+                      _role = role;
+                      // Reload so the role-gated fetches in `_load`
+                      // actually run for the newly selected workspace.
+                      _snapshotFuture = _load();
+                    });
+                  },
                 ),
                 const SizedBox(height: 18),
                 _buildRolePanel(data),
@@ -384,6 +426,7 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
         walletBalance: data.walletBalance,
         paymentMethod: _paymentMethod,
         tracking: data.tracking,
+        batch: data.batch,
         onPaymentMethodChanged: (method) =>
             setState(() => _paymentMethod = method),
         onAddQuickItem: (restaurant) =>
@@ -493,6 +536,7 @@ class _CustomerPanel extends StatelessWidget {
     required this.walletBalance,
     required this.paymentMethod,
     required this.tracking,
+    required this.batch,
     required this.onPaymentMethodChanged,
     required this.onAddQuickItem,
     required this.onPlaceOrder,
@@ -506,6 +550,7 @@ class _CustomerPanel extends StatelessWidget {
   final double walletBalance;
   final String paymentMethod;
   final _OrderTracking? tracking;
+  final _OrderBatch? batch;
   final ValueChanged<String> onPaymentMethodChanged;
   final ValueChanged<_Restaurant> onAddQuickItem;
   final void Function(_FigoAddress address, String paymentMethod) onPlaceOrder;
@@ -548,6 +593,10 @@ class _CustomerPanel extends StatelessWidget {
         ),
         if (tracking != null) ...[
           const SizedBox(height: 18),
+          if (batch != null && batch!.total > 1) ...[
+            _BatchBanner(batch: batch!),
+            const SizedBox(height: 12),
+          ],
           _TrackingCard(tracking: tracking!),
         ],
         const SizedBox(height: 18),
@@ -881,7 +930,7 @@ class _CartCard extends StatelessWidget {
               'COD' => 'Cash payment confirms the order immediately.',
               // Phase 2 §D4: wallet is "coming soon" until wallet-service ships.
               'WALLET' =>
-                'AtPost wallet is launching in this Phase 2 sprint. Use COD or Online for now.',
+                'VChat wallet is launching in this Phase 2 sprint. Use COD or Online for now.',
               _ =>
                 'Online creates a payment intent. Complete prepaid checkout on web.',
             }, style: AppTextStyles.bodySmall),
@@ -923,6 +972,50 @@ class _CartCard extends StatelessWidget {
               ),
             ],
           ],
+        ],
+      ),
+    );
+  }
+}
+
+// _BatchBanner explains to the customer that their order is part of a
+// multi-pickup batch (P2 — same restaurant, same rider, sequential
+// drops). Renders nothing for solo orders — guard at the call site.
+class _BatchBanner extends StatelessWidget {
+  const _BatchBanner({required this.batch});
+
+  final _OrderBatch batch;
+
+  @override
+  Widget build(BuildContext context) {
+    final siblings = batch.total - 1;
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF7ED),
+        border: Border.all(color: const Color(0xFFFCD34D)),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Your order is being delivered alongside $siblings other order'
+            '${siblings == 1 ? '' : 's'} nearby',
+            style: AppTextStyles.bodySmall.copyWith(
+              fontWeight: FontWeight.w800,
+              color: const Color(0xFF92400E),
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Your stop: ${batch.stop} of ${batch.total}. The rider is '
+            'making the trip in a single bundle from the same restaurant '
+            '— your ETA reflects the sequence.',
+            style: AppTextStyles.labelTiny.copyWith(
+              color: const Color(0xFF92400E),
+            ),
+          ),
         ],
       ),
     );
@@ -1487,6 +1580,7 @@ class _FigoSnapshot {
     required this.addresses,
     required this.walletBalance,
     required this.tracking,
+    required this.batch,
     required this.partnerRestaurants,
     required this.delivery,
     required this.admin,
@@ -1498,6 +1592,7 @@ class _FigoSnapshot {
   final List<_FigoAddress> addresses;
   final double walletBalance;
   final _OrderTracking? tracking;
+  final _OrderBatch? batch;
   final List<_PartnerRestaurant> partnerRestaurants;
   final _DeliveryWorkspace delivery;
   final _AdminWorkspace admin;
@@ -1510,9 +1605,42 @@ class _FigoSnapshot {
       addresses: [],
       walletBalance: 0,
       tracking: null,
+      batch: null,
       partnerRestaurants: [],
       delivery: _DeliveryWorkspace(),
       admin: _AdminWorkspace(),
+    );
+  }
+}
+
+// _OrderBatch is rendered as the "delivered alongside N other orders"
+// banner on the tracked order. members[].sequence is the stop number
+// (1-based); the customer's own stop is captured separately so the UI
+// can render "Stop X of Y" without re-scanning.
+class _OrderBatch {
+  const _OrderBatch({
+    required this.id,
+    required this.stop,
+    required this.total,
+  });
+
+  final String id;
+  final int stop;
+  final int total;
+
+  factory _OrderBatch.fromJson(Map<String, dynamic> json, String orderId) {
+    final members = (json['members'] as List?) ?? const [];
+    int stop = 0;
+    for (final raw in members) {
+      if (raw is Map && raw['order_id']?.toString() == orderId) {
+        stop = (raw['sequence'] as num?)?.toInt() ?? 0;
+        break;
+      }
+    }
+    return _OrderBatch(
+      id: json['id']?.toString() ?? '',
+      stop: stop,
+      total: members.length,
     );
   }
 }

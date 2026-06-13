@@ -79,14 +79,25 @@ func (sl *SignalLoader) LoadSignals(ctx context.Context, viewerID uuid.UUID, can
 	mediaKey := fmt.Sprintf("user:media_prefs:%s", viewerID.String())
 	mediaCmd := pipe.HGetAll(ctx, mediaKey)
 
-	// --- 3. Post velocities: pipelined ZSCORE post:velocity:ranked postID
-	velocityCmds := make(map[string]*redis.FloatCmd, len(candidates))
+	// Collect unique post IDs (in stable order) for the per-post commands.
+	// Velocity (ZMScore on one sorted set) and CQS (MGet on per-post keys)
+	// both collapse into a single command each.
+	postIDStrs := make([]string, 0, len(candidates))
+	cqsKeys := make([]string, 0, len(candidates))
 	for _, c := range candidates {
 		pid := c.PostID.String()
-		velocityCmds[pid] = pipe.ZScore(ctx, "post:velocity:ranked", pid)
+		postIDStrs = append(postIDStrs, pid)
+		cqsKeys = append(cqsKeys, fmt.Sprintf("post:cqs:%s", pid))
 	}
 
-	// --- 4. Interaction checks: pipelined SISMEMBER post:likers:{postID} viewerID
+	// --- 3. Post velocities: ZMSCORE post:velocity:ranked pid1 pid2 ...
+	// Audit HF2: previously N pipelined ZSCORE calls — same RTT but
+	// N Redis command dispatches. ZMSCORE collapses them into one.
+	velocityCmd := pipe.ZMScore(ctx, "post:velocity:ranked", postIDStrs...)
+
+	// --- 4. Interaction checks: per-post SISMEMBER (each post has its
+	// own likers set; can't batch across sets). The pipeline still
+	// sends them all in one network round-trip.
 	interactionCmds := make(map[string]*redis.BoolCmd, len(candidates))
 	for _, c := range candidates {
 		pid := c.PostID.String()
@@ -97,11 +108,11 @@ func (sl *SignalLoader) LoadSignals(ctx context.Context, viewerID uuid.UUID, can
 	mutualKey := fmt.Sprintf("user:mutual_follows:%s", viewerID.String())
 	mutualCmd := pipe.SMembers(ctx, mutualKey)
 
-	// --- 6. Content Quality Scores: pipelined GET post:cqs:{postID}
-	cqsCmds := make(map[string]*redis.StringCmd, len(candidates))
-	for _, c := range candidates {
-		pid := c.PostID.String()
-		cqsCmds[pid] = pipe.Get(ctx, fmt.Sprintf("post:cqs:%s", pid))
+	// --- 6. Content Quality Scores: MGET of N per-post keys (one
+	// command instead of N pipelined GETs — audit HF2).
+	var cqsCmd *redis.SliceCmd
+	if len(cqsKeys) > 0 {
+		cqsCmd = pipe.MGet(ctx, cqsKeys...)
 	}
 
 	// Execute the pipeline.
@@ -141,12 +152,14 @@ func (sl *SignalLoader) LoadSignals(ctx context.Context, viewerID uuid.UUID, can
 		log.Printf("ranking/signals: media prefs fetch error: %v", err)
 	}
 
-	// --- Harvest 3: velocities
-	for pid, cmd := range velocityCmds {
-		if v, err := cmd.Result(); err == nil {
-			vs.Velocities[pid] = v
+	// --- Harvest 3: velocities (ZMSCORE returns []float64 aligned with input)
+	if scores, err := velocityCmd.Result(); err == nil {
+		for i, pid := range postIDStrs {
+			if i < len(scores) {
+				// ZMScore returns 0 for non-members; treat as 0 implicitly.
+				vs.Velocities[pid] = scores[i]
+			}
 		}
-		// redis.Nil means the member does not exist in the sorted set; treat as 0.
 	}
 
 	// --- Harvest 4: interactions (Redis primary)
@@ -190,12 +203,22 @@ func (sl *SignalLoader) LoadSignals(ctx context.Context, viewerID uuid.UUID, can
 		log.Printf("ranking/signals: mutual follows fetch error: %v", err)
 	}
 
-	// --- Harvest 6: content quality scores
-	for pid, cmd := range cqsCmds {
-		if v, err := cmd.Float64(); err == nil {
-			vs.ContentQuality[pid] = v
+	// --- Harvest 6: content quality scores (MGET — []any aligned with input)
+	if cqsCmd != nil {
+		if vals, err := cqsCmd.Result(); err == nil {
+			for i, pid := range postIDStrs {
+				if i >= len(vals) || vals[i] == nil {
+					continue
+				}
+				s, ok := vals[i].(string)
+				if !ok {
+					continue
+				}
+				if f, err := strconv.ParseFloat(s, 64); err == nil {
+					vs.ContentQuality[pid] = f
+				}
+			}
 		}
-		// redis.Nil means no CQS cached; treat as 0.
 	}
 
 	return vs, nil

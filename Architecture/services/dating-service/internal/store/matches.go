@@ -136,6 +136,44 @@ func (s *Store) DeleteMatch(ctx context.Context, matchID uuid.UUID) error {
 	return nil
 }
 
+// ListSagaPendingMatches returns up to `limit` matches that are still
+// stuck without a conversation_id — the chat-side handshake failed or
+// the dating-service crashed mid-saga. The SagaReconciler retries each
+// one on its next tick. Filters to rows older than `minAge` so the
+// reconciler doesn't race the live FormMatch path.
+//
+// P0-9 in dating/PRODUCTION_GAP_ANALYSIS.md.
+func (s *Store) ListSagaPendingMatches(ctx context.Context, minAge time.Duration, limit int) ([]*Match, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	cutoff := time.Now().Add(-minAge)
+	rows, err := s.db.Query(ctx, `
+		SELECT id, user_a, user_b, status, conversation_id, spark_target,
+		       matched_at, first_message_at, last_message_at, expires_at, closed_by
+		FROM dating_matches
+		WHERE conversation_id IS NULL
+		  AND status = 'matched'
+		  AND matched_at < $1
+		ORDER BY matched_at ASC
+		LIMIT $2
+	`, cutoff, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list saga pending matches: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]*Match, 0, limit)
+	for rows.Next() {
+		m, err := scanMatch(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 // GetMatch returns one match by id.
 func (s *Store) GetMatch(ctx context.Context, id uuid.UUID) (*Match, error) {
 	row := s.db.QueryRow(ctx, `SELECT `+matchSelectCols+` FROM dating_matches WHERE id = $1`, id)
@@ -273,6 +311,43 @@ func (s *Store) ExpireStaleMatches(ctx context.Context) ([]*Match, error) {
 	return out, rows.Err()
 }
 
+// ListMatchesQuietSince24h returns matches in 'conversing' status whose
+// last (= only, by definition of quiet) message landed more than 24h
+// ago and that haven't already been flagged as quiet-notified. The
+// Phase 1 sweeper fires one dating.match.quiet_notify per row.
+//
+// We use a Redis dedup key (dating:match_quiet_notified:{match_id})
+// rather than persisting a column to keep this opportunistic — at
+// worst the user gets the same nudge twice across a Redis flush.
+func (s *Store) ListMatchesQuietSince24h(ctx context.Context, limit int) ([]*Match, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.Query(ctx, `
+        SELECT `+matchSelectCols+`
+        FROM dating_matches
+        WHERE status IN ('matched','conversing')
+          AND first_message_at IS NOT NULL
+          AND last_message_at IS NOT NULL
+          AND first_message_at = last_message_at
+          AND last_message_at < now() - INTERVAL '24 hours'
+        ORDER BY last_message_at ASC
+        LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list matches quiet since 24h: %w", err)
+	}
+	defer rows.Close()
+	out := make([]*Match, 0, limit)
+	for rows.Next() {
+		m, err := scanMatch(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 // MarkQuietMatches transitions matches that have been idle for 14 days into
 // status='quiet'. Returns the affected matches for event emission.
 func (s *Store) MarkQuietMatches(ctx context.Context) ([]*Match, error) {
@@ -289,6 +364,45 @@ func (s *Store) MarkQuietMatches(ctx context.Context) ([]*Match, error) {
 	defer rows.Close()
 
 	out := make([]*Match, 0, 16)
+	for rows.Next() {
+		m, err := scanMatch(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// ClaimMatchesForQuietNotify atomically claims up to `limit` matches
+// that have transitioned to 'quiet' but have not yet had a
+// dating.match.quiet_notify event emitted (quiet_notified_at IS NULL).
+// Stamps quiet_notified_at = NOW() on the claimed rows so a replica
+// re-running on the next tick sees them as already-notified.
+//
+// FOR UPDATE SKIP LOCKED keeps the sweeper safe across replicas — each
+// quiet match is emitted exactly once per cluster. §Phase 1 follow-up.
+func (s *Store) ClaimMatchesForQuietNotify(ctx context.Context, limit int) ([]*Match, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	rows, err := s.db.Query(ctx, `
+        UPDATE dating_matches
+        SET quiet_notified_at = NOW()
+        WHERE id IN (
+            SELECT id FROM dating_matches
+            WHERE status = 'quiet'
+              AND quiet_notified_at IS NULL
+            ORDER BY last_message_at ASC NULLS LAST
+            LIMIT $1
+            FOR UPDATE SKIP LOCKED
+        )
+        RETURNING `+matchSelectCols, limit)
+	if err != nil {
+		return nil, fmt.Errorf("claim matches for quiet notify: %w", err)
+	}
+	defer rows.Close()
+	out := make([]*Match, 0, limit)
 	for rows.Next() {
 		m, err := scanMatch(rows)
 		if err != nil {

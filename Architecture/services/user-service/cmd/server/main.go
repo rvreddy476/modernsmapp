@@ -15,11 +15,15 @@ import (
 	"github.com/atpost/user-service/database"
 	"github.com/atpost/user-service/internal/events"
 	"github.com/atpost/user-service/internal/http"
+	"github.com/atpost/user-service/internal/identityclient"
 	"github.com/atpost/user-service/internal/presence"
+	"github.com/atpost/user-service/internal/reconcile"
 	"github.com/atpost/user-service/internal/service"
 	"github.com/atpost/user-service/internal/store"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
 func main() {
@@ -31,6 +35,8 @@ func main() {
 	pgDSN := os.Getenv("POSTGRES_DSN")
 	redisAddr := os.Getenv("REDIS_ADDR")
 	kafkaBrokers := env("KAFKA_BROKERS", "localhost:9092")
+	profileURL := env("PROFILE_SERVICE_URL", "http://identity-profile:8098")
+	internalKey := os.Getenv("INTERNAL_SERVICE_KEY")
 
 	// 3. Database
 	ctx := context.Background()
@@ -56,7 +62,7 @@ func main() {
 	}
 	slog.Info("connected to postgres")
 
-	if err := store.BootstrapSchema(ctx, dbPool, database.SetupSQL); err != nil {
+	if err := store.BootstrapSchema(ctx, dbPool, database.SetupSQL, database.Migrations); err != nil {
 		slog.Error("failed to bootstrap user schema", "error", err)
 		os.Exit(1)
 	}
@@ -162,6 +168,40 @@ func main() {
 	}
 	slog.Info("migration 005 applied")
 
+	// Migration 008 — projection reconcile checkpoint (durable cursor for the
+	// app.users ← profile.profiles reconcile job).
+	if _, err := dbPool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS projection_sync_checkpoint (
+			projection_name TEXT PRIMARY KEY,
+			last_synced_at  TIMESTAMPTZ NOT NULL,
+			last_success_at TIMESTAMPTZ,
+			last_error      TEXT,
+			updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`); err != nil {
+		slog.Warn("migration 008", "error", err)
+	}
+	slog.Info("migration 008 applied")
+
+	// Migration 009 — consumer dead-letter queue (failed Kafka events parked
+	// for inspection + replay instead of being dropped with a log line).
+	for _, stmt := range []string{
+		`CREATE TABLE IF NOT EXISTS consumer_dlq (
+			id          BIGSERIAL PRIMARY KEY,
+			topic       TEXT NOT NULL,
+			event_type  TEXT NOT NULL DEFAULT '',
+			payload     TEXT NOT NULL,
+			error       TEXT NOT NULL,
+			failed_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+			replayed_at TIMESTAMPTZ
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_consumer_dlq_unreplayed ON consumer_dlq(id) WHERE replayed_at IS NULL`,
+	} {
+		if _, err := dbPool.Exec(ctx, stmt); err != nil {
+			slog.Warn("migration 009", "error", err)
+		}
+	}
+	slog.Info("migration 009 applied")
+
 	// 5. Prometheus metrics
 	httpMetrics := metrics.NewHTTPMetrics("user-service")
 	dbMetrics := metrics.NewDBPoolMetrics("user-service", "postgres")
@@ -177,9 +217,13 @@ func main() {
 
 	// 7. Dependencies
 	userStore := store.New(dbPool)
-	userSvc := service.New(userStore, rdb)
+	identityClient := identityclient.New(profileURL, internalKey)
+	userSvc := service.New(userStore, rdb).WithIdentityClient(identityClient)
 	presenceStore := presence.New(rdb)
-	userHandler := http.New(userSvc, presenceStore)
+	userHandler := http.New(userSvc, presenceStore, userStore).WithInternalRoutes(internalKey)
+	if internalKey == "" {
+		slog.Warn("user-service: INTERNAL_SERVICE_KEY not set — /internal/* routes are unauthenticated")
+	}
 
 	// 8. Kafka Consumer
 	kafkaDialer, err := transport.KafkaDialerFromEnv()
@@ -188,8 +232,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	consumer := events.NewConsumerWithDialer([]string{kafkaBrokers}, "social.events.v1", userSvc, kafkaDialer)
+	consumer := events.NewConsumerWithDialer([]string{kafkaBrokers}, "social.events.v1", userSvc, userStore, kafkaDialer)
+	userHandler.WithDLQConsumer(consumer)
 	go consumer.Start(ctx)
+
+	// Projection reconcile — keeps app.users converged with the identity
+	// profile-service, repairing any row lost to a missed UserRegistered
+	// event. Runs a full pass on startup, then incremental every 5m.
+	go reconcile.New(userStore, identityClient).Start(ctx)
+
+	// Projection health metrics — exported at /metrics for Prometheus.
+	go collectProjectionStats(ctx, userSvc)
 
 	// Status expiry cleanup (every 5 min)
 	go func() {
@@ -210,6 +263,29 @@ func main() {
 		}
 	}()
 
+	// Page follower-count reconciliation — recompute from active follow rows
+	// to catch drift (spec §11). Runs once on startup, then every 6h.
+	go func() {
+		ticker := time.NewTicker(6 * time.Hour)
+		defer ticker.Stop()
+		run := func() {
+			if n, err := userSvc.ReconcileFollowerCounts(ctx); err != nil {
+				slog.Error("page follower reconcile error", "error", err)
+			} else if n > 0 {
+				slog.Info("page follower counts reconciled", "pages_updated", n)
+			}
+		}
+		run()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				run()
+			}
+		}
+	}()
+
 	// 9. Gin with middleware stack
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
@@ -217,6 +293,11 @@ func main() {
 	r.Use(middleware.RequestID())
 	r.Use(middleware.Logger())
 	r.Use(middleware.Metrics(httpMetrics))
+	// Belt-and-suspenders runtime canary for the relationship-separation
+	// contract. Logs (but does not mutate) responses where a follow field
+	// leaks onto a "user" payload or a friend field onto a "page" payload.
+	// See shared/middleware/entity_response_guard.go.
+	r.Use(middleware.EntityResponseGuard())
 
 	checker.RegisterRoutes(r)
 	r.GET("/metrics", metrics.Handler())
@@ -405,6 +486,59 @@ func env(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// collectProjectionStats exports app.users projection-health gauges to
+// Prometheus every minute, so drift, DLQ depth, and reconcile staleness are
+// observable and alertable (see prometheus/alerts.yml).
+func collectProjectionStats(ctx context.Context, svc *service.Service) {
+	users := promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "atpost_projection_users_total",
+		Help: "Number of rows in the local app.users projection.",
+	})
+	master := promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "atpost_projection_master_total",
+		Help: "Number of profiles in the identity master (profile-service).",
+	})
+	missing := promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "atpost_projection_missing_total",
+		Help: "Users present in the identity master but missing from app.users.",
+	})
+	dlq := promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "atpost_projection_dlq_unreplayed_total",
+		Help: "Unreplayed consumer dead-letter-queue entries.",
+	})
+	lastOK := promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "atpost_projection_reconcile_last_success_timestamp_seconds",
+		Help: "Unix time of the last successful projection reconcile run.",
+	})
+
+	sample := func() {
+		r, err := svc.ProjectionHealth(ctx)
+		if err != nil {
+			slog.Warn("projection metrics sample failed", "error", err)
+			return
+		}
+		users.Set(float64(r.ProjectionCount))
+		master.Set(float64(r.MasterCount))
+		missing.Set(float64(r.MissingCount))
+		dlq.Set(float64(r.DLQUnreplayed))
+		if r.LastSuccessAt != nil {
+			lastOK.Set(float64(r.LastSuccessAt.Unix()))
+		}
+	}
+
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	sample()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			sample()
+		}
+	}
 }
 
 func collectDBPoolStats(ctx context.Context, pool *pgxpool.Pool, m *metrics.DBPoolMetrics) {

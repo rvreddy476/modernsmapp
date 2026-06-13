@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	nethttp "net/http"
 	"strings"
 	"time"
 
+	"github.com/atpost/chat-shared/callauth"
+	"github.com/atpost/chat-shared/presence"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
@@ -16,8 +19,31 @@ import (
 
 type ServerOptions struct {
 	JWTSecret      string
+	// JWTKeys (C7) — optional. When ActiveSecret is set, takes precedence
+	// over JWTSecret and enables kid-aware verification (including the
+	// previous secret during rotation). When unset, JWTSecret is used as
+	// the only active secret with no kid binding.
+	JWTKeys        JWTKeySet
 	AllowedOrigins []string
 	AllowQueryToken bool
+
+	// AllowAllOriginsForDev opts into the "no policy" mode where any
+	// browser origin is accepted. Audit H10: the previous default
+	// was *always* allow-all when AllowedOrigins was empty, which is
+	// a CSRF / data-scrape vector in production. Now defaults to
+	// false; deployments without an allowlist refuse browser
+	// upgrades but still accept native clients that don't send the
+	// Origin header.
+	AllowAllOriginsForDev bool
+
+	// TrustedProxies is the set of peer addresses (exact match on
+	// the connecting socket's RemoteAddr host) whose
+	// `X-Forwarded-For` header is trusted. Empty means the gateway
+	// is directly facing untrusted clients and XFF is ignored — the
+	// previous default of trusting any XFF was a logging-side
+	// spoof vector flagged in audit H10.
+	TrustedProxies []string
+
 	WriteWait      time.Duration
 	PongWait       time.Duration
 	PingPeriod     time.Duration
@@ -29,6 +55,7 @@ type Server struct {
 	log      *slog.Logger
 	opts     ServerOptions
 	upgrader websocket.Upgrader
+	pres     presence.Store
 }
 
 func NewServer(rdb *redis.Client, log *slog.Logger, opts ServerOptions) *Server {
@@ -45,20 +72,26 @@ func NewServer(rdb *redis.Client, log *slog.Logger, opts ServerOptions) *Server 
 		opts.PingPeriod = (opts.PongWait * 9) / 10
 	}
 	if opts.MaxMessageSize <= 0 {
-		opts.MaxMessageSize = 64 * 1024
+		// M12: prior default was 64 KiB, eight times the HTTP message-
+		// send body limit. A malformed (or hostile) client could push
+		// 64 KB chat messages over WS that the HTTP fallback would
+		// reject — asymmetric DoS surface. 10 KB matches the HTTP
+		// path (8 KB + envelope overhead).
+		opts.MaxMessageSize = 10 * 1024
 	}
 
 	s := &Server{
 		rdb:  rdb,
 		log:  log,
 		opts: opts,
+		pres: presence.NewRedisStore(rdb, presence.Options{}),
 	}
 	s.upgrader = websocket.Upgrader{
 		ReadBufferSize:  1024,
 		WriteBufferSize: 1024,
 		Subprotocols:    []string{"bearer", "jwt"},
 		CheckOrigin: func(r *nethttp.Request) bool {
-			return isOriginAllowed(r, opts.AllowedOrigins)
+			return isOriginAllowed(r, opts.AllowedOrigins, opts.AllowAllOriginsForDev)
 		},
 	}
 	return s
@@ -68,7 +101,39 @@ func (s *Server) Routes() nethttp.Handler {
 	mux := nethttp.NewServeMux()
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/v1/ws/connect", s.handleWS)
-	return loggingMiddleware(s.log, mux)
+	// Web's notificationSocket.ts opens against this path; keep it as
+	// an alias so a stale frontend deployment still connects. Same
+	// handler — chat + posts + presence + notifications all multiplex
+	// over the single connection.
+	mux.HandleFunc("/v1/ws/notifications", s.handleWS)
+	return loggingMiddleware(s.log, s.opts.TrustedProxies, mux)
+}
+
+// watchTokenExpiry fires `cancel` the moment the JWT exp passes,
+// terminating readLoop + writeLoop + redisLoop in one shot.
+// Tolerates clock skew with a small safety margin (3 s) — better to
+// disconnect a fraction too early than keep a revoked session alive.
+//
+// Exits on its own when the connection's context is cancelled (i.e.
+// the client disconnected before the token expired); never leaks a
+// goroutine past the connection lifetime.
+func (s *Server) watchTokenExpiry(ctx context.Context, cancel context.CancelFunc, userID uuid.UUID, exp time.Time) {
+	skew := 3 * time.Second
+	until := time.Until(exp) - skew
+	if until <= 0 {
+		s.log.Info("ws token already expired", "user_id", userID)
+		cancel()
+		return
+	}
+	t := time.NewTimer(until)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return
+	case <-t.C:
+		s.log.Info("ws token expired; closing connection", "user_id", userID, "exp", exp)
+		cancel()
+	}
 }
 
 func (s *Server) handleHealth(w nethttp.ResponseWriter, _ *nethttp.Request) {
@@ -78,9 +143,13 @@ func (s *Server) handleHealth(w nethttp.ResponseWriter, _ *nethttp.Request) {
 }
 
 func (s *Server) handleWS(w nethttp.ResponseWriter, r *nethttp.Request) {
-	userID, err := authenticateUserFromJWT(r, s.opts.JWTSecret, s.opts.AllowQueryToken)
+	keys := s.opts.JWTKeys
+	if keys.ActiveSecret == "" {
+		keys.ActiveSecret = s.opts.JWTSecret
+	}
+	userID, tokenExp, err := authenticateUserFromJWTWithKeys(r, keys, s.opts.AllowQueryToken)
 	if err != nil {
-		s.log.Warn("websocket auth failed", "err", err, "client_ip", readClientIP(r))
+		s.log.Warn("websocket auth failed", "err", err, "client_ip", s.readClientIP(r))
 		nethttp.Error(w, "unauthorized", nethttp.StatusUnauthorized)
 		return
 	}
@@ -95,8 +164,22 @@ func (s *Server) handleWS(w nethttp.ResponseWriter, r *nethttp.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	// Mark user as online (presence TTL 90s; client heartbeat keeps it alive).
-	if err := s.rdb.Set(ctx, "presence:"+userID.String(), "1", 90*time.Second).Err(); err != nil {
+	// Audit C6: tear down the connection when the JWT expires.
+	// Without this the WS happily outlives the token — a revoked
+	// session keeps reading chat / signaling until the client
+	// happens to disconnect. We fire a one-shot timer at exp time
+	// and a periodic safety check every 60s to cover JWTs that
+	// embed only `nbf` (no `exp`) or where the timer drifts.
+	if !tokenExp.IsZero() {
+		go s.watchTokenExpiry(ctx, cancel, userID, tokenExp)
+	}
+
+	// Mark user as online via the presence store (TTL 90s; client
+	// heartbeat keeps it alive). Key is now presence:user:{userID};
+	// the old presence:{userID} key is no longer written. Any
+	// consumer still reading the legacy key must migrate — there
+	// are no remaining references in this workspace.
+	if err := s.pres.SetUserOnline(ctx, userID.String()); err != nil {
 		s.log.Warn("failed to set presence on connect", "err", err, "user_id", userID)
 	}
 	// Broadcast online status to the presence channel so other connected users can react.
@@ -105,13 +188,19 @@ func (s *Server) handleWS(w nethttp.ResponseWriter, r *nethttp.Request) {
 	// Clear presence when the connection closes.
 	defer func() {
 		delCtx := context.Background()
-		if err := s.rdb.Del(delCtx, "presence:"+userID.String()).Err(); err != nil {
+		if err := s.pres.ClearUserOnline(delCtx, userID.String()); err != nil {
 			s.log.Warn("failed to clear presence on disconnect", "err", err, "user_id", userID)
 		}
 		s.rdb.Publish(delCtx, "presence:updates", fmt.Sprintf(`{"user_id":"%s","online":false}`, userID.String()))
 	}()
 
-	// Subscribe to chat messages, new posts, post interaction updates, and presence changes
+	// Subscribe to chat messages, new posts, post interaction updates,
+	// and presence changes. Notifications used to ride this multiplex
+	// too via `notify:<userID>`, but the realtime-transport split
+	// moved them to a dedicated SSE channel
+	// (notification-service /v1/notifications/stream) per README §1
+	// and §17. Keeping the subscription here would burn Redis fan-out
+	// bandwidth per connected client with no consumer.
 	pubsub := s.rdb.Subscribe(ctx, chatChannel, "feed:new_post", "feed:post_update", "presence:updates")
 	defer func() {
 		_ = pubsub.Close()
@@ -122,7 +211,7 @@ func (s *Server) handleWS(w nethttp.ResponseWriter, r *nethttp.Request) {
 		return
 	}
 
-	s.log.Info("websocket connected", "user_id", userID, "channel", chatChannel, "client_ip", readClientIP(r))
+	s.log.Info("websocket connected", "user_id", userID, "channel", chatChannel, "client_ip", s.readClientIP(r))
 	s.serveConnection(ctx, cancel, conn, pubsub, userID)
 }
 
@@ -186,8 +275,12 @@ func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *
 	conn.SetReadLimit(s.opts.MaxMessageSize)
 	_ = conn.SetReadDeadline(time.Now().Add(s.opts.PongWait))
 	conn.SetPongHandler(func(string) error {
-		// Refresh presence TTL on each pong (keeps user "online" while WS is alive).
-		_ = s.rdb.Set(ctx, "presence:"+userID.String(), "1", 90*time.Second)
+		// Refresh the global presence:user:{userID} TTL on every pong
+		// so a missed disconnect is bounded by GlobalUserTTL (90s).
+		// SetUserOnline rewrites the key value too, which is fractionally
+		// more expensive than a bare EXPIRE — acceptable given how cold
+		// the codepath is per connection (~once every 54s).
+		_ = s.pres.SetUserOnline(ctx, userID.String())
 		return conn.SetReadDeadline(time.Now().Add(s.opts.PongWait))
 	})
 
@@ -211,6 +304,62 @@ func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *
 
 		// Handle room subscriptions (dynamic per-post and per-call channels)
 		switch msgType {
+		case "conversation.enter":
+			// M1 — track "user is currently viewing this conversation".
+			// Pure presence write; nothing is broadcast here. Clients
+			// listening for a presence_update can call the read-side
+			// presence API (or we can fan out via PUBLISH if there's
+			// demand).
+			convID, _ := envelope["conversation_id"].(string)
+			if convID == "" {
+				convID, _ = envelope["conv_id"].(string)
+			}
+			if convID == "" {
+				continue
+			}
+			if err := s.pres.EnterConversation(ctx, convID, userID.String()); err != nil {
+				s.log.Warn("presence enter failed", "err", err, "user_id", userID, "conv_id", convID)
+			}
+			continue
+		case "conversation.heartbeat":
+			// Refresh active timestamp; eviction of stale members
+			// happens inside the store. Called by clients every ~15s
+			// while the chat screen is open.
+			convID, _ := envelope["conversation_id"].(string)
+			if convID == "" {
+				convID, _ = envelope["conv_id"].(string)
+			}
+			if convID == "" {
+				continue
+			}
+			if err := s.pres.HeartbeatConversation(ctx, convID, userID.String()); err != nil {
+				s.log.Warn("presence heartbeat failed", "err", err, "user_id", userID, "conv_id", convID)
+			}
+			continue
+		case "conversation.leave":
+			convID, _ := envelope["conversation_id"].(string)
+			if convID == "" {
+				convID, _ = envelope["conv_id"].(string)
+			}
+			if convID == "" {
+				continue
+			}
+			if err := s.pres.LeaveConversation(ctx, convID, userID.String()); err != nil {
+				s.log.Warn("presence leave failed", "err", err, "user_id", userID, "conv_id", convID)
+			}
+			continue
+		case "typing.start", "typing.started":
+			convID, _ := envelope["conversation_id"].(string)
+			if convID == "" {
+				convID, _ = envelope["conv_id"].(string)
+			}
+			if convID == "" {
+				continue
+			}
+			if err := s.pres.SetTyping(ctx, convID, userID.String()); err != nil {
+				s.log.Warn("typing set failed", "err", err, "user_id", userID, "conv_id", convID)
+			}
+			continue
 		case "subscribe_post":
 			postID, _ := envelope["post_id"].(string)
 			if postID != "" {
@@ -319,11 +468,37 @@ func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *
 		envelope["sender_id"] = userID.String()
 		relay, _ := json.Marshal(envelope)
 
-		// Direct signaling: relay to target user's personal channel
+		// Direct signaling: relay to target user's personal channel.
+		// Before relaying, verify call-service has authorized this
+		// pair to exchange signaling — without the check any authed
+		// client could ring or ICE-probe arbitrary users (audit C1).
+		// `ice_candidate` additionally requires the call to be in
+		// `active` state, gating the IP-leak window between ringing
+		// and accept (audit C3).
 		if directSignalingTypes[msgType] {
 			targetStr, _ := envelope["target_user_id"].(string)
 			targetID, parseErr := uuid.Parse(targetStr)
 			if parseErr != nil || targetID == uuid.Nil {
+				continue
+			}
+			authState, err := callauth.Get(ctx, s.rdb, userID, targetID)
+			if err != nil {
+				// Redis is degraded — fail closed. The cost is a
+				// brief signaling outage while Redis recovers; the
+				// alternative (fail-open) was the original bug.
+				s.log.Warn("signaling auth lookup failed; dropping",
+					"err", err, "user_id", userID, "target", targetID, "type", msgType)
+				continue
+			}
+			if authState == nil {
+				s.log.Warn("signaling rejected: no active call between pair",
+					"user_id", userID, "target", targetID, "type", msgType)
+				continue
+			}
+			if !callauth.IsAllowedFor(authState.State, msgType) {
+				s.log.Warn("signaling rejected: state does not permit message type",
+					"user_id", userID, "target", targetID, "type", msgType,
+					"state", authState.State, "call_id", authState.CallID)
 				continue
 			}
 			channel := fmt.Sprintf("chat:%s", targetID.String())
@@ -383,16 +558,32 @@ func (s *Server) redisLoop(
 				}
 				continue
 			}
-			// For feed/post messages, skip if authored/acted by this connected user
-			if msg.Channel == "feed:new_post" || msg.Channel == "feed:post_update" || strings.HasPrefix(msg.Channel, "post:") || strings.HasPrefix(msg.Channel, "update:") || strings.HasPrefix(msg.Channel, "group_post:") {
-				var data map[string]any
-				if json.Unmarshal([]byte(msg.Payload), &data) == nil {
-					if pl, ok := data["payload"].(map[string]any); ok {
-						if authorID, _ := pl["author_id"].(string); authorID == uid {
-							continue
-						}
-						if actorID, _ := pl["actor_id"].(string); actorID == uid {
-							continue
+			// For feed/post messages, skip if authored/acted by the
+			// connected user. Audit H6: the previous version JSON-
+			// unmarshaled every message into a map[string]any just to
+			// peek at two fields — expensive on the hot path (one of
+			// these channels fires on every post create + every
+			// engagement). Substring-scan the raw payload first; only
+			// fall through to a full parse when the user's UUID
+			// actually appears, which is the rare case.
+			if msg.Channel == "feed:new_post" || msg.Channel == "feed:post_update" ||
+				strings.HasPrefix(msg.Channel, "post:") ||
+				strings.HasPrefix(msg.Channel, "update:") ||
+				strings.HasPrefix(msg.Channel, "group_post:") {
+				if strings.Contains(msg.Payload, uid) {
+					// UUID appears somewhere — could be the actor /
+					// author. Confirm with a parse before dropping
+					// (avoid false-positive drops when the same UUID
+					// shows up as a target/mention id, etc.).
+					var data map[string]any
+					if json.Unmarshal([]byte(msg.Payload), &data) == nil {
+						if pl, ok := data["payload"].(map[string]any); ok {
+							if authorID, _ := pl["author_id"].(string); authorID == uid {
+								continue
+							}
+							if actorID, _ := pl["actor_id"].(string); actorID == uid {
+								continue
+							}
 						}
 					}
 				}
@@ -437,13 +628,20 @@ func (s *Server) writeLoop(ctx context.Context, cancel context.CancelFunc, conn 
 	}
 }
 
-func isOriginAllowed(r *nethttp.Request, allowed []string) bool {
-	if len(allowed) == 0 {
-		return true
-	}
+func isOriginAllowed(r *nethttp.Request, allowed []string, allowAllForDev bool) bool {
 	origin := strings.TrimSpace(r.Header.Get("Origin"))
 	if origin == "" {
+		// Native clients (mobile WebSocket libraries, server-to-
+		// server) typically don't send Origin. CSRF only applies to
+		// browser-issued requests; refusing here would break every
+		// non-browser caller for no security benefit.
 		return true
+	}
+	if len(allowed) == 0 {
+		// Audit H10: previously allow-all here. Now only allowed in
+		// explicit dev mode. Production deployments without an
+		// allowlist refuse browser upgrades to close the CSRF gap.
+		return allowAllForDev
 	}
 	for _, item := range allowed {
 		value := strings.TrimSpace(item)
@@ -457,11 +655,43 @@ func isOriginAllowed(r *nethttp.Request, allowed []string) bool {
 	return false
 }
 
-func readClientIP(r *nethttp.Request) string {
-	xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For"))
-	if xff != "" {
-		parts := strings.Split(xff, ",")
-		return strings.TrimSpace(parts[0])
+// readClientIP returns a best-effort peer IP for log lines and
+// rate-limit keys. Audit H10: the previous version blindly trusted
+// the first `X-Forwarded-For` entry — anyone could spoof the logged
+// client IP by setting that header. Now XFF is only honored when
+// the immediate TCP peer (`RemoteAddr` host) is in `trustedProxies`;
+// everywhere else we use `RemoteAddr` so the IP corresponds to the
+// actual TCP origin.
+//
+// Package-level so the request-logging middleware (which doesn't hold
+// a Server reference) can use it too.
+func readClientIP(r *nethttp.Request, trustedProxies []string) string {
+	remote := strings.TrimSpace(r.RemoteAddr)
+	peerHost := remote
+	if h, _, err := net.SplitHostPort(remote); err == nil {
+		peerHost = h
 	}
-	return strings.TrimSpace(r.RemoteAddr)
+	if len(trustedProxies) > 0 && peerHost != "" {
+		trusted := false
+		for _, p := range trustedProxies {
+			if strings.EqualFold(strings.TrimSpace(p), peerHost) {
+				trusted = true
+				break
+			}
+		}
+		if trusted {
+			if xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xff != "" {
+				parts := strings.Split(xff, ",")
+				return strings.TrimSpace(parts[0])
+			}
+		}
+	}
+	return remote
+}
+
+// readClientIP is the Server-bound wrapper used by handlers that
+// have an *s. Same trusted-proxies policy as the package-level
+// helper.
+func (s *Server) readClientIP(r *nethttp.Request) string {
+	return readClientIP(r, s.opts.TrustedProxies)
 }

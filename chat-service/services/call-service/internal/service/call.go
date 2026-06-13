@@ -10,8 +10,10 @@ import (
 	"github.com/atpost/chat-call-service/internal/domain"
 	"github.com/atpost/chat-call-service/internal/sfu"
 	"github.com/atpost/chat-call-service/internal/store/postgres"
+	"github.com/atpost/chat-shared/callauth"
 	events "github.com/atpost/chat-shared/events"
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 )
 
 var (
@@ -35,6 +37,8 @@ type Service struct {
 	store       *postgres.CallStore
 	sfuProvider sfu.SFUProvider
 	rateLimiter *RateLimiter
+	policy      *CallPolicy
+	rdb         *redis.Client
 	log         *slog.Logger
 
 	signalingEndpoint     string
@@ -45,6 +49,8 @@ func New(
 	store *postgres.CallStore,
 	sfuProvider sfu.SFUProvider,
 	rateLimiter *RateLimiter,
+	policy *CallPolicy,
+	rdb *redis.Client,
 	log *slog.Logger,
 	reconnectGraceSeconds int,
 ) *Service {
@@ -55,6 +61,8 @@ func New(
 		store:                 store,
 		sfuProvider:           sfuProvider,
 		rateLimiter:           rateLimiter,
+		policy:                policy,
+		rdb:                   rdb,
 		log:                   log,
 		signalingEndpoint:     "/v1/ws/connect",
 		reconnectGraceSeconds: reconnectGraceSeconds,
@@ -95,6 +103,22 @@ func (s *Service) CreateCall(ctx context.Context, userID uuid.UUID, req CreateCa
 	if isDirect && len(req.TargetUserIDs) == 1 {
 		if err := s.rateLimiter.CheckRingAntiSpam(ctx, userID, req.TargetUserIDs[0]); err != nil {
 			return nil, err
+		}
+	}
+
+	// Audit C2: gate every direct call on the social graph before
+	// any DB row or SFU room exists. Group calls are gated by group
+	// membership elsewhere; this only covers 1:1 audio/video. Policy
+	// fails closed on graph errors — the alternative (fail-open) was
+	// the documented exploit path. nil policy means "tests / dev
+	// where the gate is intentionally disabled".
+	if isDirect && s.policy != nil {
+		for _, targetID := range req.TargetUserIDs {
+			if err := s.policy.CanCall(ctx, userID, targetID); err != nil {
+				s.log.Info("call rejected by policy",
+					"caller", userID, "target", targetID, "err", err)
+				return nil, err
+			}
 		}
 	}
 
@@ -227,6 +251,19 @@ func (s *Service) CreateCall(ctx context.Context, userID uuid.UUID, req CreateCa
 			CallType:      req.CallType,
 			CreatedAt:     now,
 		})
+
+		// Authorize the pair to exchange call-control signaling
+		// (offer/answer/ring/etc.) via ws-gateway. ICE candidates
+		// remain blocked until accept moves the state to `active` —
+		// that's the C1+C3 fix: without this Set, ws-gateway will
+		// drop any direct signaling between sender↔target as
+		// unauthenticated. Best-effort: if Redis is unreachable the
+		// call still creates, but signaling won't relay until the
+		// next state update lands.
+		if err := callauth.Set(ctx, s.rdb, userID, targetID, callID, callauth.StateRinging); err != nil {
+			s.log.Warn("callauth set ringing failed",
+				"call_id", callID, "caller", userID, "target", targetID, "err", err)
+		}
 	}
 
 	return s.buildCallResponse(ctx, callID)
@@ -390,6 +427,14 @@ func (s *Service) AcceptInvite(ctx context.Context, userID, callID, inviteID uui
 	session, _ := s.store.GetCallSession(ctx, callID)
 	if session != nil {
 		s.rateLimiter.ClearRingCounter(ctx, session.InitiatorUserID, userID)
+		// Promote the pair authorization from `ringing` to `active`.
+		// This is the gate that releases `ice_candidate` relay —
+		// before accept, ws-gateway drops ICE so the callee's
+		// private network topology doesn't leak to the caller.
+		if err := callauth.Set(ctx, s.rdb, session.InitiatorUserID, userID, callID, callauth.StateActive); err != nil {
+			s.log.Warn("callauth set active failed",
+				"call_id", callID, "caller", session.InitiatorUserID, "callee", userID, "err", err)
+		}
 	}
 
 	_ = s.store.InsertOutboxEvent(ctx, events.CallAccepted, events.CallAcceptedPayload{
@@ -537,6 +582,24 @@ func (s *Service) endCallInternal(ctx context.Context, callID uuid.UUID, endedBy
 	_ = s.store.UpdateCallState(ctx, callID, domain.CallStateEnded, &endedReason)
 	_ = s.store.MarkAllParticipantsLeft(ctx, callID)
 	_ = s.store.ExpirePendingInvitesForCall(ctx, callID)
+
+	// Tear down signaling authorization for every initiator↔participant
+	// pair. Done before SFU teardown so that even if SFU close hangs
+	// the keys don't outlive the call. Walking participants covers 1:1
+	// (one pair) and small group calls (initiator↔each invitee, which
+	// is the only direct-signaling shape supported today).
+	if participants, perr := s.store.GetParticipants(ctx, callID); perr == nil {
+		for _, p := range participants {
+			if p.UserID == session.InitiatorUserID {
+				continue
+			}
+			if cerr := callauth.Clear(ctx, s.rdb, session.InitiatorUserID, p.UserID); cerr != nil {
+				s.log.Warn("callauth clear failed",
+					"call_id", callID, "initiator", session.InitiatorUserID,
+					"participant", p.UserID, "err", cerr)
+			}
+		}
+	}
 
 	// Close SFU room
 	if session.RoomID != nil {

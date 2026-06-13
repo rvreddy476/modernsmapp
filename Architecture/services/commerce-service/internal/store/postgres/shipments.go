@@ -128,11 +128,15 @@ func (s *Store) GetShipmentByOrder(ctx context.Context, orderID uuid.UUID) (*Shi
 // items ship from their own pickup address), so callers that need full
 // fulfillment state must use this rather than GetShipmentByOrder.
 func (s *Store) ListShipmentsByOrder(ctx context.Context, orderID uuid.UUID) ([]*Shipment, error) {
+	// HP3: bounded — orders have at most one shipment per seller and the
+	// largest multi-seller carts on the platform sit around ~10 sellers,
+	// but a defensive LIMIT 100 keeps a corrupt row from streaming forever.
 	rows, err := s.db.Query(ctx, `
 		SELECT id, order_id, seller_id, courier, tracking_number, courier_order_id, label_url, tracking_url,
 		       status, eta, shipped_at, delivered_at, last_event_at, created_at, updated_at
 		FROM shipments WHERE order_id = $1
 		ORDER BY created_at ASC
+		LIMIT 100
 	`, orderID)
 	if err != nil {
 		return nil, err
@@ -208,10 +212,14 @@ func (s *Store) AppendShipmentEvent(ctx context.Context, shipmentID uuid.UUID, s
 }
 
 func (s *Store) ListShipmentEvents(ctx context.Context, shipmentID uuid.UUID) ([]*ShipmentEvent, error) {
+	// HP3: hard LIMIT 500 to bound the query. A single shipment generates
+	// at most ~20 events in practice, but a misbehaving courier webhook
+	// loop could otherwise pull unbounded rows on every detail render.
 	rows, err := s.db.Query(ctx, `
 		SELECT id, shipment_id, status, location, remark, occurred_at, created_at
 		FROM shipment_events WHERE shipment_id = $1
 		ORDER BY occurred_at DESC
+		LIMIT 500
 	`, shipmentID)
 	if err != nil {
 		return nil, err

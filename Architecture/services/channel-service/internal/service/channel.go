@@ -9,6 +9,7 @@ import (
 
 	channelevents "github.com/atpost/channel-service/internal/events"
 	"github.com/atpost/channel-service/internal/store"
+	"github.com/atpost/shared/counters"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
@@ -56,14 +57,114 @@ func isAtLeast(userRole, requiredRole string) bool {
 	return roleLevel(userRole) >= roleLevel(requiredRole)
 }
 
+// AuthError + helpers — audit CCh1-CCh4.
+// Engagement endpoints (spark/stash/echo/view) and read endpoints
+// (GetChannel, ListUpdates) previously trusted that the caller had a
+// right to see/touch the channel. They didn't check banned roles or
+// non-public channel types.
+type AuthError struct{ Reason string }
+
+func (e *AuthError) Error() string { return "channel auth: " + e.Reason }
+
+var (
+	ErrChannelNotFound     = &AuthError{Reason: "not_found"}
+	ErrChannelMemberBanned = &AuthError{Reason: "banned"}
+	ErrChannelNotSubscriber = &AuthError{Reason: "not_subscriber"}
+)
+
+// authorizeEngagement gates spark/stash/echo/view and similar actions.
+// Banned users always fail. Public channels accept anyone (Telegram-
+// style: read-only without subscribing); private/paid channels require
+// an active membership.
+func (s *Service) authorizeEngagement(ctx context.Context, channelID, userID uuid.UUID) error {
+	ch, err := s.store.GetChannelByID(ctx, channelID)
+	if err != nil {
+		return err
+	}
+	if ch == nil {
+		return ErrChannelNotFound
+	}
+	role := s.store.GetMemberRole(ctx, channelID, userID)
+	if role == "banned" {
+		return ErrChannelMemberBanned
+	}
+	switch ch.ChannelType {
+	case "private", "paid":
+		if role == "" {
+			return ErrChannelNotSubscriber
+		}
+	}
+	return nil
+}
+
+// authorizeViewer is the read-side equivalent: public channels are
+// visible to anyone, private/paid require subscription. Pass nil
+// userID for unauthenticated.
+func (s *Service) authorizeViewer(ctx context.Context, channelID uuid.UUID, userID *uuid.UUID) error {
+	ch, err := s.store.GetChannelByID(ctx, channelID)
+	if err != nil {
+		return err
+	}
+	if ch == nil {
+		return ErrChannelNotFound
+	}
+	switch ch.ChannelType {
+	case "private", "paid":
+		if userID == nil {
+			return ErrChannelNotSubscriber
+		}
+		role := s.store.GetMemberRole(ctx, channelID, *userID)
+		if role == "" || role == "banned" {
+			return ErrChannelNotSubscriber
+		}
+	}
+	return nil
+}
+
 type Service struct {
 	store    *store.Store
 	rdb      *redis.Client
 	producer *channelevents.Producer
+	// subscriberCounter shards broadcast_channels.subscriber_count across
+	// Redis so a celebrity channel with millions of subscribers doesn't
+	// pin the singleton row on every join/leave. Nil-safe — when Redis
+	// isn't configured the service falls back to the legacy per-event
+	// PG UPDATE (the hot-row path). Pattern mirrors community-service's
+	// memberCounter.
+	subscriberCounter *counters.Counter
 }
 
 func New(s *store.Store, rdb *redis.Client) *Service {
-	return &Service{store: s, rdb: rdb}
+	svc := &Service{store: s, rdb: rdb}
+	if rdb != nil {
+		svc.subscriberCounter = counters.New(rdb, counters.Config{
+			EntityKind: "channel_subscriber_count",
+			Shards:     32,
+		})
+	}
+	return svc
+}
+
+// SubscriberCounter exposes the sharded counter so cmd/server can
+// attach a flush worker. Returns nil when Redis isn't configured.
+func (s *Service) SubscriberCounter() *counters.Counter {
+	return s.subscriberCounter
+}
+
+// adjustSubscriberCount routes increments/decrements through the
+// sharded counter when available, otherwise falls back to the legacy
+// per-event PG UPDATE. Failure inside the Redis path falls back to the
+// PG path so a hiccup on the buffer layer doesn't drop the increment.
+func (s *Service) adjustSubscriberCount(ctx context.Context, channelID uuid.UUID, delta int64) error {
+	if s.subscriberCounter != nil {
+		if err := s.subscriberCounter.Inc(ctx, channelID.String(), delta); err != nil {
+			slog.Warn("sharded subscriber counter inc failed; falling back to PG",
+				"channel_id", channelID, "delta", delta, "err", err)
+			return s.store.IncrementSubscriberCount(ctx, channelID, int(delta))
+		}
+		return nil
+	}
+	return s.store.IncrementSubscriberCount(ctx, channelID, int(delta))
 }
 
 func (s *Service) SetProducer(p *channelevents.Producer) {
@@ -174,7 +275,7 @@ func (s *Service) CreateChannel(ctx context.Context, ownerID uuid.UUID, params C
 		Role:      "owner",
 		NotifyOn:  "all",
 	}
-	if err := s.store.AddMember(ctx, member); err != nil {
+	if _, err := s.store.AddMember(ctx, member); err != nil {
 		slog.Warn("failed to add owner as member", "channel_id", ch.ID, "error", err)
 	}
 
@@ -193,10 +294,61 @@ type ChannelWithMembership struct {
 	ViewerRole string `json:"viewer_role,omitempty"`
 }
 
-func (s *Service) GetChannel(ctx context.Context, channelID uuid.UUID, viewerID *uuid.UUID) (*ChannelWithMembership, error) {
+// channelMetaCacheTTL bounds how stale a cached channel record may be.
+// 60s is well within tolerance for channel metadata (name, bio, avatar)
+// while absorbing the read load on a hot channel page; no explicit
+// invalidation is needed — an edit shows within the window.
+const channelMetaCacheTTL = 60 * time.Second
+
+// cachedChannelByID is a Redis cache-aside over store.GetChannelByID. The
+// channel record is viewer-independent, so it caches cleanly; the
+// per-viewer role in GetChannel stays a live lookup.
+func (s *Service) cachedChannelByID(ctx context.Context, channelID uuid.UUID) (*store.BroadcastChannel, error) {
+	key := "channel:meta:" + channelID.String()
+	if s.rdb != nil {
+		if raw, err := s.rdb.Get(ctx, key).Bytes(); err == nil {
+			var ch store.BroadcastChannel
+			if json.Unmarshal(raw, &ch) == nil {
+				return &ch, nil
+			}
+		}
+	}
 	ch, err := s.store.GetChannelByID(ctx, channelID)
+	if err != nil || ch == nil {
+		return ch, err
+	}
+	if s.rdb != nil {
+		if data, mErr := json.Marshal(ch); mErr == nil {
+			_ = s.rdb.Set(ctx, key, data, channelMetaCacheTTL).Err()
+		}
+	}
+	return ch, nil
+}
+
+func (s *Service) GetChannel(ctx context.Context, channelID uuid.UUID, viewerID *uuid.UUID) (*ChannelWithMembership, error) {
+	ch, err := s.cachedChannelByID(ctx, channelID)
 	if err != nil {
 		return nil, err
+	}
+	if ch == nil {
+		return nil, ErrChannelNotFound
+	}
+
+	// Audit CCh3: private/paid channel metadata previously returned to
+	// every caller. Outsiders shouldn't even know the channel exists,
+	// let alone see subscriber counts and bio. Surface as "not found"
+	// to avoid confirming existence to non-subscribers.
+	switch ch.ChannelType {
+	case "private", "paid":
+		if viewerID == nil {
+			return nil, ErrChannelNotFound
+		}
+		if ch.OwnerID != *viewerID {
+			role := s.store.GetMemberRole(ctx, channelID, *viewerID)
+			if role == "" || role == "banned" {
+				return nil, ErrChannelNotFound
+			}
+		}
 	}
 
 	result := &ChannelWithMembership{BroadcastChannel: ch}
@@ -372,12 +524,18 @@ func (s *Service) Subscribe(ctx context.Context, channelID, userID uuid.UUID) er
 		Role:      "subscriber",
 		NotifyOn:  "all",
 	}
-	if err := s.store.AddMember(ctx, member); err != nil {
+	inserted, err := s.store.AddMember(ctx, member)
+	if err != nil {
 		return fmt.Errorf("failed to subscribe: %w", err)
 	}
 
-	if err := s.store.IncrementSubscriberCount(ctx, channelID, 1); err != nil {
-		slog.Warn("failed to increment subscriber count", "error", err)
+	// Audit HCh1: only bump the counter when a NEW row landed. Concurrent
+	// duplicate subscribes previously each ran the increment and drifted
+	// the counter forever.
+	if inserted {
+		if err := s.adjustSubscriberCount(ctx, channelID, 1); err != nil {
+			slog.Warn("failed to increment subscriber count", "error", err)
+		}
 	}
 
 	if s.producer != nil {
@@ -405,7 +563,7 @@ func (s *Service) Unsubscribe(ctx context.Context, channelID, userID uuid.UUID) 
 		return fmt.Errorf("failed to unsubscribe: %w", err)
 	}
 
-	if err := s.store.IncrementSubscriberCount(ctx, channelID, -1); err != nil {
+	if err := s.adjustSubscriberCount(ctx, channelID, -1); err != nil {
 		slog.Warn("failed to decrement subscriber count", "error", err)
 	}
 
@@ -516,6 +674,13 @@ func (s *Service) CreateUpdate(ctx context.Context, channelID, authorID uuid.UUI
 }
 
 func (s *Service) ListUpdates(ctx context.Context, channelID uuid.UUID, viewerID *uuid.UUID, limit, offset int) ([]store.ChannelUpdate, error) {
+	// Audit CCh2: previously returned every published update regardless
+	// of channel type — private/paid channel posts were readable by any
+	// caller. Run the read-side viewer gate before the listing.
+	if err := s.authorizeViewer(ctx, channelID, viewerID); err != nil {
+		return nil, err
+	}
+
 	statusFilter := "published"
 
 	// Admins+ can see all statuses
@@ -665,7 +830,16 @@ func (s *Service) DiscoverChannels(ctx context.Context, viewerID *uuid.UUID, lim
 
 // --- Engagement ---
 
+// Audit CCh1 + CCh4: spark/stash/echo/view previously skipped the
+// membership + banned-role check entirely — non-subscribers could
+// engage with private/paid channels, and banned users could keep
+// engaging on public channels. authorizeEngagement is the single gate
+// every engagement entry-point goes through.
+
 func (s *Service) SparkUpdate(ctx context.Context, channelID, updateID, userID uuid.UUID, isSupernova bool) error {
+	if err := s.authorizeEngagement(ctx, channelID, userID); err != nil {
+		return err
+	}
 	u, err := s.store.GetUpdate(ctx, updateID)
 	if err != nil {
 		return err
@@ -677,6 +851,9 @@ func (s *Service) SparkUpdate(ctx context.Context, channelID, updateID, userID u
 }
 
 func (s *Service) UnsparkUpdate(ctx context.Context, channelID, updateID, userID uuid.UUID) error {
+	if err := s.authorizeEngagement(ctx, channelID, userID); err != nil {
+		return err
+	}
 	u, err := s.store.GetUpdate(ctx, updateID)
 	if err != nil {
 		return err
@@ -688,6 +865,9 @@ func (s *Service) UnsparkUpdate(ctx context.Context, channelID, updateID, userID
 }
 
 func (s *Service) StashUpdate(ctx context.Context, channelID, updateID, userID uuid.UUID) error {
+	if err := s.authorizeEngagement(ctx, channelID, userID); err != nil {
+		return err
+	}
 	u, err := s.store.GetUpdate(ctx, updateID)
 	if err != nil {
 		return err
@@ -699,6 +879,9 @@ func (s *Service) StashUpdate(ctx context.Context, channelID, updateID, userID u
 }
 
 func (s *Service) UnstashUpdate(ctx context.Context, channelID, updateID, userID uuid.UUID) error {
+	if err := s.authorizeEngagement(ctx, channelID, userID); err != nil {
+		return err
+	}
 	u, err := s.store.GetUpdate(ctx, updateID)
 	if err != nil {
 		return err
@@ -710,6 +893,9 @@ func (s *Service) UnstashUpdate(ctx context.Context, channelID, updateID, userID
 }
 
 func (s *Service) EchoUpdate(ctx context.Context, channelID, updateID, userID uuid.UUID, echoType string) error {
+	if err := s.authorizeEngagement(ctx, channelID, userID); err != nil {
+		return err
+	}
 	u, err := s.store.GetUpdate(ctx, updateID)
 	if err != nil {
 		return err
@@ -747,6 +933,9 @@ func (s *Service) EchoUpdate(ctx context.Context, channelID, updateID, userID uu
 }
 
 func (s *Service) UnechoUpdate(ctx context.Context, channelID, updateID, userID uuid.UUID) error {
+	if err := s.authorizeEngagement(ctx, channelID, userID); err != nil {
+		return err
+	}
 	u, err := s.store.GetUpdate(ctx, updateID)
 	if err != nil {
 		return err
@@ -758,6 +947,9 @@ func (s *Service) UnechoUpdate(ctx context.Context, channelID, updateID, userID 
 }
 
 func (s *Service) RecordView(ctx context.Context, channelID, updateID, userID uuid.UUID) error {
+	if err := s.authorizeEngagement(ctx, channelID, userID); err != nil {
+		return err
+	}
 	u, err := s.store.GetUpdate(ctx, updateID)
 	if err != nil {
 		return err

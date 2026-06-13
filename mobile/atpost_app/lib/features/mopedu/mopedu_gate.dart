@@ -47,7 +47,7 @@ final mopeduEnabledProvider = FutureProvider<bool>((ref) async {
   final api = ref.watch(apiClientProvider);
   try {
     final response = await api.get(
-      '/v1/feature-flags/check',
+      '/v1/flags/me',
       queryParameters: {'key': 'mopedu_enabled_master'},
     );
     final body = response.data;

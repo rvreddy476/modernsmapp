@@ -3,7 +3,7 @@ ALTER TABLE posts ADD COLUMN IF NOT EXISTS ref_post_id UUID REFERENCES posts(id)
 
 -- Scheduled posts
 ALTER TABLE posts ADD COLUMN IF NOT EXISTS publish_at TIMESTAMPTZ;
-CREATE INDEX IF NOT EXISTS idx_posts_scheduled ON posts(publish_at) WHERE status = 'scheduled';
+CREATE INDEX IF NOT EXISTS idx_posts_scheduled ON posts(publish_at) WHERE publish_at IS NOT NULL;
 
 -- Supernova weight on reactions
 ALTER TABLE reactions ADD COLUMN IF NOT EXISTS weight SMALLINT NOT NULL DEFAULT 1;

@@ -1,0 +1,114 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "atpost-service.name" . }}
+  labels:
+    {{- include "atpost-service.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.hpa.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "atpost-service.selectorLabels" . | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Surge one to allow zero-downtime rolling; never take more than
+      # 25% offline at once. For 3-replica services that's ≤ 0 lost
+      # capacity (rounded down) — fine, but bump to maxUnavailable: 1
+      # for services with > 6 replicas to deploy faster.
+      maxSurge: 1
+      maxUnavailable: 25%
+  template:
+    metadata:
+      labels:
+        {{- include "atpost-service.selectorLabels" . | nindent 8 }}
+      annotations:
+        # Re-rolls the pods when the externalSecret or any envFrom
+        # secret changes. ArgoCD sets ConfigManagementPlugin or the
+        # standard ESO controller emits events; we also annotate
+        # with the image tag so rollback shows up cleanly in `kubectl
+        # rollout history`.
+        atpost.io/image-tag: {{ .Values.image.tag | quote }}
+    spec:
+      serviceAccountName: {{ include "atpost-service.serviceAccountName" . }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # Spread across AZs/nodes — avoids "all pods on one node, then
+      # node OOMs" pattern. Best-effort (ScheduleAnyway) so initial
+      # rollout doesn't block on a perfectly-balanced placement.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "atpost-service.selectorLabels" . | nindent 14 }}
+      containers:
+        - name: {{ .Values.service.name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          env:
+            # HTTP_PORT is wired from service.port so a port change is
+            # a one-line override, not a two-line one.
+            - name: HTTP_PORT
+              value: {{ .Values.service.port | quote }}
+            {{- range $k, $v := .Values.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          envFrom:
+            {{- range .Values.envFrom }}
+            - {{- toYaml . | nindent 14 }}
+            {{- end }}
+            {{- if .Values.externalSecret.enabled }}
+            # ESO mints a Secret named after the release; mount the
+            # whole thing as env vars so secretKey names map to env
+            # var names without extra wiring.
+            - secretRef:
+                name: {{ include "atpost-service.name" . }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.livenessProbe.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+            failureThreshold: {{ .Values.livenessProbe.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.readinessProbe.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
+            failureThreshold: {{ .Values.readinessProbe.failureThreshold }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            # Non-root by default — the Dockerfiles bake a `nobody`
+            # user already so no per-service tweak needed.
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # Empty-dir at /tmp because readOnlyRootFilesystem=true above
+        # would otherwise break anything that writes a temp file.
+        - name: tmp
+          emptyDir: {}

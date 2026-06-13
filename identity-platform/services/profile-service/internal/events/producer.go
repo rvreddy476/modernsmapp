@@ -28,7 +28,7 @@ func NewProducerWithDialer(brokers []string, topic string, dialer *kafka.Dialer)
 	})}
 }
 
-func (p *Producer) PublishUserProfileUpdated(ctx context.Context, userID uuid.UUID, displayName, bio string, avatarMediaID *uuid.UUID, firstName, lastName string) error {
+func (p *Producer) PublishUserProfileUpdated(ctx context.Context, userID uuid.UUID, username, displayName, bio string, avatarMediaID *uuid.UUID, firstName, lastName string) error {
 	var avatarStr *string
 	if avatarMediaID != nil {
 		s := avatarMediaID.String()
@@ -37,6 +37,7 @@ func (p *Producer) PublishUserProfileUpdated(ctx context.Context, userID uuid.UU
 
 	payload := sharedEvents.UserProfileUpdatedPayload{
 		UserID:        userID.String(),
+		Username:      username,
 		DisplayName:   displayName,
 		FirstName:     firstName,
 		LastName:      lastName,
@@ -90,38 +91,7 @@ func (p *Producer) PublishFollowDeleted(ctx context.Context, followerID, followi
 	return p.publishEvent(ctx, sharedEvents.FollowDeleted, followerID.String(), &followerID, payload)
 }
 
-// PublishFriendRequestSent emits a FriendRequestSent event.
-func (p *Producer) PublishFriendRequestSent(ctx context.Context, requesterID, addresseeID uuid.UUID) error {
-	payload := sharedEvents.FriendRequestPayload{
-		RequesterID: requesterID.String(),
-		AddresseeID: addresseeID.String(),
-		Status:      "pending",
-		Timestamp:   time.Now(),
-	}
-	return p.publishEvent(ctx, sharedEvents.FriendRequestSent, requesterID.String(), &requesterID, payload)
-}
-
-// PublishFriendRequestAccepted emits a FriendRequestAccepted event.
-func (p *Producer) PublishFriendRequestAccepted(ctx context.Context, requesterID, addresseeID uuid.UUID) error {
-	payload := sharedEvents.FriendRequestPayload{
-		RequesterID: requesterID.String(),
-		AddresseeID: addresseeID.String(),
-		Status:      "accepted",
-		Timestamp:   time.Now(),
-	}
-	return p.publishEvent(ctx, sharedEvents.FriendRequestAccepted, addresseeID.String(), &addresseeID, payload)
-}
-
-// PublishFriendRequestRejected emits a FriendRequestRejected event.
-func (p *Producer) PublishFriendRequestRejected(ctx context.Context, requesterID, addresseeID uuid.UUID) error {
-	payload := sharedEvents.FriendRequestPayload{
-		RequesterID: requesterID.String(),
-		AddresseeID: addresseeID.String(),
-		Status:      "rejected",
-		Timestamp:   time.Now(),
-	}
-	return p.publishEvent(ctx, sharedEvents.FriendRequestRejected, addresseeID.String(), &addresseeID, payload)
-}
+// Friend system retired — see graph-service connections; profile.friendships kept dormant for backfill
 
 // PublishUserBlocked emits a UserBlocked event.
 func (p *Producer) PublishUserBlocked(ctx context.Context, blockerID, blockedID uuid.UUID) error {

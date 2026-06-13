@@ -308,7 +308,9 @@ class _QuestionDetailScreenState
           Padding(
             padding: const EdgeInsets.only(bottom: 16),
             child: InkWell(
-              onTap: () => context.push('/communities/${q.community!.id}'),
+              // Communities feature disabled — the chip stays informational;
+              // the /communities route is not registered in the router.
+              onTap: null,
               child: Container(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 10,

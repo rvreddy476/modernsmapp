@@ -8,8 +8,12 @@ class EditorNotifier extends StateNotifier<EditorModel> {
   Timer? _autoSaveTimer;
 
   EditorNotifier(this._api) : super(EditorModel.empty()) {
-    // Auto-save every 10 seconds
-    _autoSaveTimer = Timer.periodic(const Duration(seconds: 10), (_) => _autoSave());
+    // Auto-save is wired to /v1/studio/sessions, which the api-gateway
+    // does not yet expose (every call returns 404, ErrorHandler logs it
+    // as CRITICAL ERROR every 10 s while the editor is open). Keep the
+    // implementation around for when the route lands, but don't drive
+    // the timer until then.
+    // _autoSaveTimer = Timer.periodic(const Duration(seconds: 10), (_) => _autoSave());
   }
 
   @override
@@ -86,6 +90,10 @@ class EditorNotifier extends StateNotifier<EditorModel> {
   void setExportedPath(String path) => state = state.copyWith(exportedPath: path);
 
   // --- Auto-save ---
+  // Re-enable the constructor's Timer.periodic above once the
+  // /v1/studio/sessions route ships on the api-gateway. The method is
+  // kept intact so the wire-up is a one-line revert.
+  // ignore: unused_element
   Future<void> _autoSave() async {
     if (state.clips.isEmpty) return;
     try {

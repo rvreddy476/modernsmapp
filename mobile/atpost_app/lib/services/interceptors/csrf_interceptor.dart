@@ -31,12 +31,30 @@ class CsrfInterceptor extends Interceptor {
 
   @override
   void onResponse(Response response, ResponseInterceptorHandler handler) {
-    // If the server returns a new CSRF token in headers, capture it
-    final serverToken = response.headers.value('X-CSRF-Token') ??
-                       response.headers.value('set-cookie')?.split(';')
-                       .firstWhere((c) => c.trim().startsWith('csrf_token='), orElse: () => '')
-                       .split('=')
-                       .last;
+    // If the server returns a new CSRF token in headers, capture it.
+    //
+    // Important: we MUST use the list accessor `headers['set-cookie']`,
+    // not `headers.value('set-cookie')`. Dio's `value()` throws
+    // `Exception: "set-cookie" header has more than one value` the
+    // moment the server returns more than one cookie (the auth
+    // endpoints set access_token + refresh_token + session in one
+    // response, so this hit on every login/register).
+    String? serverToken = response.headers.value('X-CSRF-Token');
+    if (serverToken == null) {
+      final cookies = response.headers['set-cookie'] ?? const <String>[];
+      for (final raw in cookies) {
+        // Cookie format: "csrf_token=abc; Path=/; HttpOnly". Split on
+        // ';' to isolate the name=value pair, then on '=' for value.
+        for (final part in raw.split(';')) {
+          final kv = part.trim();
+          if (kv.startsWith('csrf_token=')) {
+            serverToken = kv.substring('csrf_token='.length);
+            break;
+          }
+        }
+        if (serverToken != null) break;
+      }
+    }
 
     if (serverToken != null && serverToken.isNotEmpty) {
       _csrfToken = serverToken;

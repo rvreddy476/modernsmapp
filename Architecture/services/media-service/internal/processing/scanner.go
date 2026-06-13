@@ -1,6 +1,10 @@
 package processing
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"os"
+)
 
 // Scanner is the interface for content safety scanning.
 // In production, replace StubScanner with a real implementation
@@ -22,4 +26,26 @@ type StubScanner struct{}
 
 func (s *StubScanner) ScanImage(_ context.Context, _ []byte) (ScanResult, error) {
 	return ScanResult{IsSafe: true, Reason: "", Score: 0.0}, nil
+}
+
+// ScanVideoFrames runs each extracted frame through the scanner and
+// returns the first unsafe verdict — a single unsafe frame fails the
+// whole video. With StubScanner every frame is safe; a real Scanner
+// implementation (PhotoDNA / Rekognition / SafeSearch) makes this a
+// genuine content-safety gate.
+func ScanVideoFrames(ctx context.Context, scanner Scanner, framePaths []string) (ScanResult, error) {
+	for _, p := range framePaths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return ScanResult{}, fmt.Errorf("read frame %s: %w", p, err)
+		}
+		res, err := scanner.ScanImage(ctx, data)
+		if err != nil {
+			return ScanResult{}, err
+		}
+		if !res.IsSafe {
+			return res, nil
+		}
+	}
+	return ScanResult{IsSafe: true}, nil
 }

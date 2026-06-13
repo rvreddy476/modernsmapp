@@ -16,6 +16,7 @@ type Conversation struct {
 	Type      string     `json:"type"`
 	Title     *string    `json:"title,omitempty"`
 	CreatedBy *uuid.UUID `json:"created_by,omitempty"`
+	IsRequest bool       `json:"is_request"`
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
 }
@@ -46,8 +47,11 @@ func New(db *pgxpool.Pool) *ConversationStore {
 	return &ConversationStore{db: db}
 }
 
-// CreateDirectConversation idempotently creates a 1:1 conversation.
-func (s *ConversationStore) CreateDirectConversation(ctx context.Context, userA, userB, createdBy uuid.UUID) (uuid.UUID, error) {
+// CreateDirectConversation idempotently creates a 1:1 conversation. The
+// second return value is true only when a new conversation row was inserted
+// (false when an existing one was returned) — the DM-gating caller uses it to
+// decide whether to mark a freshly created conversation as a message request.
+func (s *ConversationStore) CreateDirectConversation(ctx context.Context, userA, userB, createdBy uuid.UUID) (uuid.UUID, bool, error) {
 	if userA.String() > userB.String() {
 		userA, userB = userB, userA
 	}
@@ -55,24 +59,24 @@ func (s *ConversationStore) CreateDirectConversation(ctx context.Context, userA,
 
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return uuid.Nil, err
+		return uuid.Nil, false, err
 	}
 	defer tx.Rollback(ctx)
 
 	// Serialize direct-conversation creation per pair to avoid duplicate rows under race.
 	lockRows, err := tx.Query(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, pairKey)
 	if err != nil {
-		return uuid.Nil, err
+		return uuid.Nil, false, err
 	}
 	lockRows.Close()
 
 	var conversationID uuid.UUID
 	err = tx.QueryRow(ctx, `SELECT conversation_id FROM chat.direct_conversation_keys WHERE user_a = $1 AND user_b = $2`, userA, userB).Scan(&conversationID)
 	if err == nil {
-		return conversationID, nil
+		return conversationID, false, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
-		return uuid.Nil, err
+		return uuid.Nil, false, err
 	}
 
 	conversationID = uuid.New()
@@ -80,23 +84,289 @@ func (s *ConversationStore) CreateDirectConversation(ctx context.Context, userA,
 
 	_, err = tx.Exec(ctx, `INSERT INTO chat.conversations (id, type, created_by, created_at, updated_at) VALUES ($1, 'direct', $2, $3, $3)`, conversationID, createdBy, now)
 	if err != nil {
-		return uuid.Nil, err
+		return uuid.Nil, false, err
 	}
 
 	_, err = tx.Exec(ctx, `INSERT INTO chat.conversation_members (conversation_id, user_id, role, joined_at) VALUES ($1, $2, 'member', $3), ($1, $4, 'member', $3)`, conversationID, userA, now, userB)
 	if err != nil {
-		return uuid.Nil, err
+		return uuid.Nil, false, err
 	}
 
 	_, err = tx.Exec(ctx, `INSERT INTO chat.direct_conversation_keys (user_a, user_b, conversation_id) VALUES ($1, $2, $3)`, userA, userB, conversationID)
 	if err != nil {
-		return uuid.Nil, err
+		return uuid.Nil, false, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return uuid.Nil, err
+		return uuid.Nil, false, err
 	}
-	return conversationID, nil
+	return conversationID, true, nil
+}
+
+// MarkConversationAsRequest flags a freshly created direct conversation as a
+// pending message request (spec §3.3).
+func (s *ConversationStore) MarkConversationAsRequest(ctx context.Context, conversationID uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `UPDATE chat.conversations SET is_request = TRUE WHERE id = $1`, conversationID)
+	return err
+}
+
+// CreateDatingMatchConversation idempotently creates a 1:1 conversation
+// tagged source_app='dating' + match_id. The matched pair bypasses the
+// usual DM-gate (which requires mutual-circle / message-request flow)
+// because the match itself is the consent signal. Idempotency keyed on
+// match_id via the partial unique index — concurrent saga retries
+// receive the same conversation_id. P0-3 in
+// dating/PRODUCTION_GAP_ANALYSIS.md.
+func (s *ConversationStore) CreateDatingMatchConversation(ctx context.Context, userA, userB, matchID uuid.UUID) (uuid.UUID, bool, error) {
+	if userA == userB {
+		return uuid.Nil, false, errors.New("dating-match conversation requires two distinct users")
+	}
+	userA, userB = normalizePair(userA, userB)
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return uuid.Nil, false, err
+	}
+	defer tx.Rollback(ctx)
+
+	// Lock on the match_id so a concurrent retry can't insert twice.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "dating-match:"+matchID.String()); err != nil {
+		return uuid.Nil, false, err
+	}
+
+	// Existing row check (the partial unique index would also reject
+	// duplicates, but we return the prior id rather than 23505).
+	var conversationID uuid.UUID
+	err = tx.QueryRow(ctx, `
+		SELECT id FROM chat.conversations
+		WHERE source_app = 'dating' AND match_id = $1
+		LIMIT 1`, matchID).Scan(&conversationID)
+	if err == nil {
+		return conversationID, false, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, false, err
+	}
+
+	conversationID = uuid.New()
+	now := time.Now()
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO chat.conversations
+		    (id, type, created_by, created_at, updated_at, source_app, match_id)
+		VALUES ($1, 'direct', $2, $3, $3, 'dating', $4)
+	`, conversationID, userA, now, matchID); err != nil {
+		return uuid.Nil, false, err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO chat.conversation_members (conversation_id, user_id, role, joined_at)
+		VALUES ($1, $2, 'member', $3), ($1, $4, 'member', $3)
+	`, conversationID, userA, now, userB); err != nil {
+		return uuid.Nil, false, err
+	}
+	// Mirror into direct_conversation_keys so a future legacy DM
+	// lookup for the same pair returns the dating conversation
+	// rather than spawning a parallel one. ON CONFLICT preserves an
+	// existing chat-side direct conversation if the pair already had
+	// one — both rows then exist (legacy DM + dating-match) and the
+	// caller picks by source_app filter.
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO chat.direct_conversation_keys (user_a, user_b, conversation_id)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (user_a, user_b) DO NOTHING
+	`, userA, userB, conversationID); err != nil {
+		return uuid.Nil, false, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return uuid.Nil, false, err
+	}
+	return conversationID, true, nil
+}
+
+// MarkConversationClosed sets closed_at on a conversation. Dating-side
+// match.closed / match.expired events trigger this so the send-path
+// gate can refuse new messages after a match ends. Idempotent — a
+// re-close preserves the original closed_at.
+func (s *ConversationStore) MarkConversationClosed(ctx context.Context, conversationID uuid.UUID) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE chat.conversations SET closed_at = COALESCE(closed_at, NOW()) WHERE id = $1`,
+		conversationID)
+	return err
+}
+
+// MarkConversationClosedByMatch closes a conversation by its dating
+// match_id rather than conversation_id. Used by the dating-event
+// consumer so the lookup is one hop instead of two.
+func (s *ConversationStore) MarkConversationClosedByMatch(ctx context.Context, matchID uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE chat.conversations
+		SET closed_at = COALESCE(closed_at, NOW())
+		WHERE source_app = 'dating' AND match_id = $1
+	`, matchID)
+	return err
+}
+
+// MarkConversationsClosedByPair closes every source_app='dating'
+// conversation that has both userA and userB as (non-left) members.
+// Used by the dating block consumer (Phase 1 §4) to sever existing
+// match chats the moment either side blocks the other — the
+// dating-event consumer handles the dating_match conversations
+// because the user could have multiple distinct matches with the
+// same person over time (rare but real after an unmatch + rematch).
+// Idempotent — re-running preserves closed_at.
+func (s *ConversationStore) MarkConversationsClosedByPair(ctx context.Context, userA, userB uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE chat.conversations c
+		SET closed_at = COALESCE(closed_at, NOW())
+		WHERE c.source_app = 'dating'
+		  AND c.closed_at IS NULL
+		  AND EXISTS (
+		      SELECT 1 FROM chat.conversation_members ma
+		      WHERE ma.conversation_id = c.id AND ma.user_id = $1 AND ma.left_at IS NULL
+		  )
+		  AND EXISTS (
+		      SELECT 1 FROM chat.conversation_members mb
+		      WHERE mb.conversation_id = c.id AND mb.user_id = $2 AND mb.left_at IS NULL
+		  )
+	`, userA, userB)
+	return err
+}
+
+// ConversationMeta holds the fields the send-path gate inspects.
+type ConversationMeta struct {
+	SourceApp string
+	MatchID   *uuid.UUID
+	ClosedAt  *time.Time
+}
+
+// GetConversationMeta returns the source_app + match_id + closed_at for
+// the conversation. Used by SendMessage to enforce dating-specific
+// authz. Returns a zero-value ConversationMeta + nil error when the row
+// is missing so callers can branch cleanly.
+func (s *ConversationStore) GetConversationMeta(ctx context.Context, conversationID uuid.UUID) (*ConversationMeta, error) {
+	var m ConversationMeta
+	err := s.db.QueryRow(ctx, `
+		SELECT source_app, match_id, closed_at
+		FROM chat.conversations
+		WHERE id = $1
+	`, conversationID).Scan(&m.SourceApp, &m.MatchID, &m.ClosedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// normalizePair orders a user pair so the smaller (string compare) is first,
+// matching the chat.direct_conversation_keys (user_a < user_b) convention.
+func normalizePair(userA, userB uuid.UUID) (uuid.UUID, uuid.UUID) {
+	if userA.String() > userB.String() {
+		return userB, userA
+	}
+	return userA, userB
+}
+
+// PromoteRequestConversationByPair auto-promotes the direct conversation
+// between two users from a pending message request to a normal conversation
+// (messaging/privacy spec §16.6). It is a no-op when the pair has no direct
+// conversation, when that conversation is not a request, or when its
+// message_requests row is not pending. Returns true when a promotion happened.
+func (s *ConversationStore) PromoteRequestConversationByPair(ctx context.Context, userA, userB uuid.UUID) (bool, error) {
+	userA, userB = normalizePair(userA, userB)
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+
+	var conversationID uuid.UUID
+	err = tx.QueryRow(ctx, `SELECT conversation_id FROM chat.direct_conversation_keys WHERE user_a = $1 AND user_b = $2`, userA, userB).Scan(&conversationID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	tag, err := tx.Exec(ctx, `
+		UPDATE chat.conversations
+		SET is_request = FALSE, request_accepted_at = NOW()
+		WHERE id = $1 AND is_request = TRUE
+	`, conversationID)
+	if err != nil {
+		return false, err
+	}
+	if tag.RowsAffected() == 0 {
+		// Not a request conversation (or already promoted) — nothing to do.
+		return false, nil
+	}
+
+	_, err = tx.Exec(ctx, `
+		UPDATE chat.message_requests
+		SET status = 'accepted', responded_at = NOW()
+		WHERE conversation_id = $1 AND status = 'pending'
+	`, conversationID)
+	if err != nil {
+		return false, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// SeverDirectConversation severs the blocker from the direct conversation it
+// shares with the blocked user (messaging/privacy spec §16.1). The blocker's
+// conversation_members.left_at is set so the conversation disappears from
+// their inbox and they can no longer send into it; any pending
+// message_requests row for that conversation is moved to 'blocked'. No-op
+// when the pair has no direct conversation. Returns true when a sever
+// happened.
+func (s *ConversationStore) SeverDirectConversation(ctx context.Context, blockerID, blockedID uuid.UUID) (bool, error) {
+	userA, userB := normalizePair(blockerID, blockedID)
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+
+	var conversationID uuid.UUID
+	err = tx.QueryRow(ctx, `SELECT conversation_id FROM chat.direct_conversation_keys WHERE user_a = $1 AND user_b = $2`, userA, userB).Scan(&conversationID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	tag, err := tx.Exec(ctx, `
+		UPDATE chat.conversation_members
+		SET left_at = NOW()
+		WHERE conversation_id = $1 AND user_id = $2 AND left_at IS NULL
+	`, conversationID, blockerID)
+	if err != nil {
+		return false, err
+	}
+
+	_, err = tx.Exec(ctx, `
+		UPDATE chat.message_requests
+		SET status = 'blocked', responded_at = NOW()
+		WHERE conversation_id = $1 AND status = 'pending'
+	`, conversationID)
+	if err != nil {
+		return false, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 // CreateGroupConversation creates a group conversation with the creator as admin.
@@ -141,9 +411,9 @@ func (s *ConversationStore) CreateGroupConversation(ctx context.Context, creator
 func (s *ConversationStore) GetConversation(ctx context.Context, conversationID uuid.UUID) (*Conversation, error) {
 	var c Conversation
 	err := s.db.QueryRow(ctx, `
-		SELECT id, type, title, created_by, created_at, updated_at
+		SELECT id, type, title, created_by, is_request, created_at, updated_at
 		FROM chat.conversations WHERE id = $1
-	`, conversationID).Scan(&c.ID, &c.Type, &c.Title, &c.CreatedBy, &c.CreatedAt, &c.UpdatedAt)
+	`, conversationID).Scan(&c.ID, &c.Type, &c.Title, &c.CreatedBy, &c.IsRequest, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -166,23 +436,25 @@ func (s *ConversationStore) ListConversationsByUser(ctx context.Context, userID 
 		limit = 100
 	}
 
+	// m.left_at IS NULL excludes conversations the user has been severed from
+	// (e.g. by a block — spec §16.1) so they no longer appear in the inbox.
 	var rows pgx.Rows
 	var err error
 	if cursorUpdatedAt != nil && cursorID != nil {
 		rows, err = s.db.Query(ctx, `
-			SELECT c.id, c.type, c.title, c.created_by, c.created_at, c.updated_at
+			SELECT c.id, c.type, c.title, c.created_by, c.is_request, c.created_at, c.updated_at
 			FROM chat.conversations c
 			JOIN chat.conversation_members m ON m.conversation_id = c.id
-			WHERE m.user_id = $1 AND (c.updated_at, c.id) < ($2, $3)
+			WHERE m.user_id = $1 AND m.left_at IS NULL AND (c.updated_at, c.id) < ($2, $3)
 			ORDER BY c.updated_at DESC, c.id DESC
 			LIMIT $4
 		`, userID, *cursorUpdatedAt, *cursorID, limit)
 	} else {
 		rows, err = s.db.Query(ctx, `
-			SELECT c.id, c.type, c.title, c.created_by, c.created_at, c.updated_at
+			SELECT c.id, c.type, c.title, c.created_by, c.is_request, c.created_at, c.updated_at
 			FROM chat.conversations c
 			JOIN chat.conversation_members m ON m.conversation_id = c.id
-			WHERE m.user_id = $1
+			WHERE m.user_id = $1 AND m.left_at IS NULL
 			ORDER BY c.updated_at DESC, c.id DESC
 			LIMIT $2
 		`, userID, limit)
@@ -195,7 +467,7 @@ func (s *ConversationStore) ListConversationsByUser(ctx context.Context, userID 
 	var out []Conversation
 	for rows.Next() {
 		var c Conversation
-		if err := rows.Scan(&c.ID, &c.Type, &c.Title, &c.CreatedBy, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.Type, &c.Title, &c.CreatedBy, &c.IsRequest, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -203,9 +475,13 @@ func (s *ConversationStore) ListConversationsByUser(ctx context.Context, userID 
 	return out, rows.Err()
 }
 
+// CheckMembership reports whether the user is an active member of the
+// conversation. A member whose left_at is set (e.g. severed by a block —
+// spec §16.1) is treated as a non-member so they can no longer read or
+// send into the conversation.
 func (s *ConversationStore) CheckMembership(ctx context.Context, conversationID, userID uuid.UUID) (bool, error) {
 	var exists bool
-	err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM chat.conversation_members WHERE conversation_id = $1 AND user_id = $2)`, conversationID, userID).Scan(&exists)
+	err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM chat.conversation_members WHERE conversation_id = $1 AND user_id = $2 AND left_at IS NULL)`, conversationID, userID).Scan(&exists)
 	return exists, err
 }
 

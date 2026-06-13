@@ -1,15 +1,20 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/atpost/shared/api"
 	"github.com/atpost/shared/httpclient"
 	sharedmiddleware "github.com/atpost/shared/middleware"
+	"github.com/atpost/user-service/internal/events"
 	"github.com/atpost/user-service/internal/presence"
 	"github.com/atpost/user-service/internal/service"
 	"github.com/atpost/user-service/internal/store"
@@ -18,20 +23,44 @@ import (
 )
 
 type Handler struct {
-	svc           *service.Service
-	graphURL      string
-	presenceStore *presence.Store
-	graphClient   *http.Client
-	internalKey   string
+	svc              *service.Service
+	store            *store.Store
+	graphURL         string
+	presenceStore    *presence.Store
+	graphClient      *http.Client
+	internalKey      string
+	internalRouteKey string
+	dlqConsumer      *events.Consumer
+	// pageAdmins is the platform-admin allowlist for page lifecycle actions
+	// (approve/reject/suspend/disable + doc review), from PAGES_ADMIN_USER_IDS.
+	pageAdmins map[string]bool
 }
 
-func New(svc *service.Service, presenceStore *presence.Store) *Handler {
+func New(svc *service.Service, presenceStore *presence.Store, st *store.Store) *Handler {
 	graphURL := os.Getenv("GRAPH_SERVICE_URL")
 	if graphURL == "" {
 		graphURL = "http://graph-service:8083"
 	}
-	h := &Handler{svc: svc, graphURL: graphURL, presenceStore: presenceStore}
+	h := &Handler{svc: svc, store: st, graphURL: graphURL, presenceStore: presenceStore}
 	h.graphClient = httpclient.NewWithBreaker(5*time.Second, "user->graph")
+	h.pageAdmins = map[string]bool{}
+	for _, id := range strings.Split(os.Getenv("PAGES_ADMIN_USER_IDS"), ",") {
+		if id = strings.TrimSpace(id); id != "" {
+			h.pageAdmins[id] = true
+		}
+	}
+	return h
+}
+
+// isPageAdmin reports whether the caller (X-User-Id) is a platform page admin.
+func (h *Handler) isPageAdmin(c *gin.Context) bool {
+	return h.pageAdmins[c.GetHeader("X-User-Id")]
+}
+
+// WithDLQConsumer wires the Kafka consumer so the /internal DLQ routes can
+// list and replay parked events.
+func (h *Handler) WithDLQConsumer(c *events.Consumer) *Handler {
+	h.dlqConsumer = c
 	return h
 }
 
@@ -40,10 +69,100 @@ func (h *Handler) WithInternalKey(key string) *Handler {
 	return h
 }
 
+// WithInternalRoutes enables the X-Internal-Service-Key gate on the
+// service-to-service /internal/* routes only — without gating the
+// gateway-facing /v1/* surface (those carry an end-user JWT, not the key).
+func (h *Handler) WithInternalRoutes(key string) *Handler {
+	h.internalRouteKey = key
+	return h
+}
+
+// EnsureUser repairs the local app.users projection for :userId on demand.
+// 200 — the row exists or was just rebuilt from profile-service.
+// 404 — the user does not exist in the identity source either.
+// 503 — the repair source is unreachable; the caller may retry or proceed.
+func (h *Handler) EnsureUser(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("userId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid user id", nil)
+		return
+	}
+	if err := h.svc.EnsureUser(c.Request.Context(), id); err != nil {
+		switch {
+		case errors.Is(err, service.ErrUserNotInIdentity):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "USER_NOT_FOUND", "user does not exist", nil)
+		default:
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable, "REPAIR_FAILED", err.Error(), nil)
+		}
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
+}
+
+// ListDLQ returns parked (failed) Kafka events. ?all=true includes already-
+// replayed entries; the default is unreplayed only.
+func (h *Handler) ListDLQ(c *gin.Context) {
+	entries, err := h.store.ListDLQ(c.Request.Context(), c.Query("all") != "true", 200)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	if entries == nil {
+		entries = []store.DLQEntry{}
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"items": entries, "count": len(entries)}, nil)
+}
+
+// ReplayDLQ re-dispatches one parked event through the consumer's handlers.
+// Handlers are idempotent, so replaying an already-applied event is safe.
+func (h *Handler) ReplayDLQ(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid dlq id", nil)
+		return
+	}
+	if h.dlqConsumer == nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable, "REPLAY_UNAVAILABLE", "replay not wired", nil)
+		return
+	}
+	if err := h.dlqConsumer.ReplayOne(c.Request.Context(), id); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "REPLAY_FAILED", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true, "id": id}, nil)
+}
+
+// ProjectionHealth reports whether the app.users projection is converged with
+// the identity master — master vs. local counts, reconcile status, DLQ depth.
+func (h *Handler) ProjectionHealth(c *gin.Context) {
+	report, err := h.svc.ProjectionHealth(c.Request.Context())
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, report, nil)
+}
+
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	if h.internalKey != "" {
 		r.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
 	}
+
+	// Service-to-service routes — gated independently of the global key so
+	// they can be locked down even while /v1/* stays gateway-facing.
+	internal := r.Group("/internal")
+	if h.internalRouteKey != "" {
+		internal.Use(sharedmiddleware.RequireInternalKey(h.internalRouteKey))
+	}
+	// Read-through projection repair: callers (e.g. graph-service) hit this
+	// before an action that depends on app.users having the row.
+	internal.POST("/users/:userId/ensure", h.EnsureUser)
+	// Dead-letter queue: inspect + replay events the consumer failed on.
+	internal.GET("/dlq", h.ListDLQ)
+	internal.POST("/dlq/:id/replay", h.ReplayDLQ)
+	// Projection health: master vs. local counts, reconcile + DLQ status.
+	internal.GET("/projection/health", h.ProjectionHealth)
+
 	v1 := r.Group("/v1/users")
 	{
 		v1.GET("/by-username/:username", h.GetUserByUsername)
@@ -79,6 +198,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 		// Presence
 		v1.POST("/me/heartbeat", h.Heartbeat)
+		v1.POST("/online/batch", h.GetOnlineStatusBatch)
 		v1.GET("/:userId/online", h.GetOnlineStatus)
 	}
 
@@ -109,16 +229,26 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	r.POST("/v1/onboarding/ensure-publisher", h.EnsurePublisher)
 
 	// Business Pages — use :id for all sub-paths (Gin requires uniform wildcard names)
-	pages := r.Group("/v1/pages")
+	pagesGrp := r.Group("/v1/pages")
 	{
-		pages.GET("", h.DiscoverPages)
-		pages.GET("/:id", h.GetBusinessPage)
-		pages.PATCH("/:id", h.UpdateBusinessPage)
-		pages.DELETE("/:id", h.DeleteBusinessPage)
-		pages.POST("/:id/follow", h.FollowPage)
-		pages.DELETE("/:id/follow", h.UnfollowPage)
-		pages.GET("/:id/reviews", h.GetPageReviews)
-		pages.POST("/:id/reviews", h.SubmitReview)
+		pagesGrp.GET("", h.DiscoverPages)
+		pagesGrp.GET("/:id", h.GetBusinessPage)
+		pagesGrp.PATCH("/:id", h.UpdateBusinessPage)
+		pagesGrp.DELETE("/:id", h.DeleteBusinessPage)
+		pagesGrp.POST("/:id/follow", h.FollowPage)
+		pagesGrp.DELETE("/:id/follow", h.UnfollowPage)
+		pagesGrp.GET("/:id/reviews", h.GetPageReviews)
+		pagesGrp.POST("/:id/reviews", h.SubmitReview)
+		// Lifecycle (owner/admin submit; platform-admin approve/reject/suspend/disable)
+		pagesGrp.POST("/:id/submit-review", h.SubmitPageForReview)
+		pagesGrp.POST("/:id/approve", h.ApprovePage)
+		pagesGrp.POST("/:id/reject", h.RejectPage)
+		pagesGrp.POST("/:id/suspend", h.SuspendPage)
+		pagesGrp.POST("/:id/disable", h.DisablePage)
+		// Verification documents
+		pagesGrp.GET("/:id/documents", h.ListPageDocuments)
+		pagesGrp.POST("/:id/documents", h.AddPageDocument)
+		pagesGrp.POST("/:id/documents/:docId/:action", h.ReviewPageDocument)
 	}
 	myPages := r.Group("/v1/users/me/pages")
 	{
@@ -350,6 +480,22 @@ func (h *Handler) UpdateMySettings(c *gin.Context) {
 
 // --- About ---
 
+// newGraphRequest builds a GET to graph-service carrying the internal service
+// key. graph-service gates every /v1/graph route behind that key — a call
+// without it returns 401, which the privacy-gate code reads as "no
+// connections" and then silently marks everyone offline. Every graph call
+// from this service MUST go through here.
+func (h *Handler) newGraphRequest(ctx context.Context, url string) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if h.internalRouteKey != "" {
+		req.Header.Set("X-Internal-Service-Key", h.internalRouteKey)
+	}
+	return req, nil
+}
+
 // resolveViewerAccess determines the viewer's access level by calling graph-service.
 func (h *Handler) resolveViewerAccess(ctx *gin.Context, ownerID uuid.UUID) service.ViewerAccess {
 	viewerIDStr := ctx.GetHeader("X-User-Id")
@@ -362,7 +508,7 @@ func (h *Handler) resolveViewerAccess(ctx *gin.Context, ownerID uuid.UUID) servi
 	}
 
 	url := fmt.Sprintf("%s/v1/graph/relationship?user_id=%s&other_id=%s", h.graphURL, viewerID, ownerID)
-	graphReq, err := http.NewRequestWithContext(ctx.Request.Context(), http.MethodGet, url, nil)
+	graphReq, err := h.newGraphRequest(ctx.Request.Context(), url)
 	if err != nil {
 		return service.ViewerAccess{}
 	}
@@ -902,7 +1048,7 @@ func (h *Handler) GetOnlineStatus(c *gin.Context) {
 		// Check mutual friendship (circle membership) via graph-service.
 		// Fail-closed: if graph-service is unreachable, treat as not in circle.
 		url := fmt.Sprintf("%s/v1/graph/relationship?user_id=%s&other_id=%s", h.graphURL, requesterID, targetID)
-		graphReq, _ := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, url, nil)
+		graphReq, _ := h.newGraphRequest(c.Request.Context(), url)
 		resp, err := h.graphClient.Do(graphReq)
 		if err == nil {
 			defer resp.Body.Close()
@@ -931,4 +1077,102 @@ func (h *Handler) GetOnlineStatus(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, map[string]bool{"online": online}, nil)
+}
+
+// GetOnlineStatusBatch returns online status for many users in a single call,
+// so a friends list does not need one request per friend. Privacy mirrors
+// GetOnlineStatus: only the requester's connections (and the requester
+// themselves) get a truthful answer; everyone else is reported offline
+// (fail-closed). The batch is capped at 100 ids.
+func (h *Handler) GetOnlineStatusBatch(c *gin.Context) {
+	requesterID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
+		return
+	}
+
+	var req struct {
+		UserIDs []string `json:"user_ids"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body", nil)
+		return
+	}
+
+	// Validate, dedupe and cap the batch.
+	const maxBatch = 100
+	targets := make([]string, 0, len(req.UserIDs))
+	seen := make(map[string]struct{}, len(req.UserIDs))
+	for _, idStr := range req.UserIDs {
+		if len(targets) >= maxBatch {
+			break
+		}
+		if _, dup := seen[idStr]; dup {
+			continue
+		}
+		if _, perr := uuid.Parse(idStr); perr != nil {
+			continue
+		}
+		seen[idStr] = struct{}{}
+		targets = append(targets, idStr)
+	}
+
+	// Default every requested user to offline.
+	result := make(map[string]bool, len(targets))
+	for _, t := range targets {
+		result[t] = false
+	}
+	if len(targets) == 0 {
+		api.JSON(c.Writer, http.StatusOK, map[string]any{"online": result}, nil)
+		return
+	}
+
+	// Privacy gate: a target is visible only if it is the requester or one of
+	// their connections. Page through the requester's FULL connection list
+	// (graph caps a page at 100) so a user with many friends is not silently
+	// truncated to the first page. On any error the set stays as-is —
+	// fail-closed, leak nothing.
+	circle := map[string]struct{}{requesterID.String(): {}}
+	for offset := 0; offset <= 5000; offset += 100 {
+		graphURL := fmt.Sprintf("%s/v1/graph/connections/%s?limit=100&offset=%d", h.graphURL, requesterID, offset)
+		graphReq, rerr := h.newGraphRequest(c.Request.Context(), graphURL)
+		if rerr != nil {
+			break
+		}
+		resp, derr := h.graphClient.Do(graphReq)
+		if derr != nil {
+			break
+		}
+		var body struct {
+			Data []string `json:"data"`
+		}
+		decErr := json.NewDecoder(resp.Body).Decode(&body)
+		resp.Body.Close()
+		if decErr != nil {
+			break
+		}
+		for _, id := range body.Data {
+			circle[id] = struct{}{}
+		}
+		if len(body.Data) < 100 {
+			break
+		}
+	}
+
+	// Resolve presence for the visible subset only — one Redis round-trip.
+	visible := make([]string, 0, len(targets))
+	for _, t := range targets {
+		if _, ok := circle[t]; ok {
+			visible = append(visible, t)
+		}
+	}
+	if len(visible) > 0 {
+		if online, oerr := h.presenceStore.AreOnline(c.Request.Context(), visible); oerr == nil {
+			for id, on := range online {
+				result[id] = on
+			}
+		}
+	}
+
+	api.JSON(c.Writer, http.StatusOK, map[string]any{"online": result}, nil)
 }

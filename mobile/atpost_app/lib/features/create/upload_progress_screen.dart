@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:atpost_app/services/api_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -62,7 +64,10 @@ class _UploadProgressScreenState extends ConsumerState<UploadProgressScreen> {
         },
       );
 
-      // Step 2: Create post
+      // Step 2: Create post. If this fails the media is uploaded but
+      // unreferenced — kick off a best-effort delete so storage drops
+      // immediately (server-side orphan GC is the fallback for the
+      // cases this delete misses: app killed, no network, etc).
       if (mounted) {
         setState(() {
           _progress = 0.70;
@@ -70,13 +75,19 @@ class _UploadProgressScreenState extends ConsumerState<UploadProgressScreen> {
         });
       }
 
-      final postRes = await api.post('/v1/posts', data: {
-        'content_type': 'flick',
-        'media_ids': [mediaId],
-        'text': widget.caption,
-        'tags': widget.hashtags,
-        'visibility': widget.visibility,
-      });
+      late final dynamic postRes;
+      try {
+        postRes = await api.post('/v1/posts', data: {
+          'content_type': 'flick',
+          'media_ids': [mediaId],
+          'text': widget.caption,
+          'tags': widget.hashtags,
+          'visibility': widget.visibility,
+        });
+      } catch (_) {
+        unawaited(api.tryDeleteMedia(mediaId));
+        rethrow;
+      }
 
       _postId =
           ((postRes.data['data'] ?? postRes.data)['id'] as String?) ?? '';

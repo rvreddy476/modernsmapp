@@ -604,6 +604,65 @@ CREATE INDEX IF NOT EXISTS idx_rider_offers_partner
 CREATE INDEX IF NOT EXISTS idx_rider_offers_expires
     ON rider_ride_offers(expires_at) WHERE status = 'sent';
 
+-- ─── C2: accept/reject reasons + no-show signals ──────────────────────
+ALTER TABLE rider_ride_offers
+    ADD COLUMN IF NOT EXISTS reject_reason VARCHAR(120);
+
+ALTER TABLE rider_rides
+    ADD COLUMN IF NOT EXISTS no_show_reported_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS no_show_by         UUID;
+
+ALTER TABLE rider_partners
+    ADD COLUMN IF NOT EXISTS reject_count_30d INTEGER NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS no_show_count_30d INTEGER NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS last_location_at  TIMESTAMPTZ;
+
+-- ─── C4: safety extensions ────────────────────────────────────────────
+--
+-- rider_masked_calls audits proxied calls so disputes can be replayed.
+-- The provider stub returns a fake DID; production wires Exotel /
+-- Knowlarity / Twilio Proxy via MASKED_CALL_PROVIDER env.
+CREATE TABLE IF NOT EXISTS rider_masked_calls (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    ride_id     UUID REFERENCES rider_rides(id) ON DELETE SET NULL,
+    caller_id   UUID NOT NULL,
+    callee_id   UUID NOT NULL,
+    proxy_did   TEXT NOT NULL,
+    started_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ended_at    TIMESTAMPTZ,
+    duration_s  INTEGER,
+    status      TEXT NOT NULL DEFAULT 'initiated'
+                CHECK (status IN ('initiated','connected','completed','failed'))
+);
+CREATE INDEX IF NOT EXISTS idx_rider_masked_calls_ride ON rider_masked_calls(ride_id, started_at DESC);
+
+-- (rider_safety_contact_alerts moved below — it references
+--  rider_safety_incidents, which is created in section 6.2.)
+
+-- ─── C5: ride/partner rating moderation + partner response ────────────
+ALTER TABLE rider_rides
+    ADD COLUMN IF NOT EXISTS rating_visibility TEXT NOT NULL DEFAULT 'public'
+        CHECK (rating_visibility IN ('public','hidden','flagged')),
+    ADD COLUMN IF NOT EXISTS rating_hidden_by  UUID,
+    ADD COLUMN IF NOT EXISTS rating_hidden_at  TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS partner_response  TEXT,
+    ADD COLUMN IF NOT EXISTS partner_responded_at TIMESTAMPTZ;
+
+CREATE INDEX IF NOT EXISTS idx_rider_rides_rating_visibility
+    ON rider_rides(rating_visibility) WHERE rating IS NOT NULL AND rating_visibility != 'public';
+
+-- ─── Wave F: per-ride chat + read receipts ────────────────────────────
+CREATE TABLE IF NOT EXISTS rider_ride_messages (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    ride_id     UUID NOT NULL REFERENCES rider_rides(id) ON DELETE CASCADE,
+    author_id   UUID NOT NULL,
+    author_role TEXT NOT NULL CHECK (author_role IN ('customer','partner','admin')),
+    body        TEXT NOT NULL,
+    read_by     JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_rider_ride_messages_ride ON rider_ride_messages(ride_id, created_at);
+
 -- Live partner locations. The hot copy lives in Redis (keyed per city geohash);
 -- this table is the durable mirror used by the cold-path matcher fallback.
 CREATE TABLE IF NOT EXISTS rider_partner_locations (
@@ -699,6 +758,21 @@ CREATE INDEX IF NOT EXISTS idx_rider_safety_customer
     ON rider_safety_incidents(customer_id);
 CREATE INDEX IF NOT EXISTS idx_rider_safety_partner
     ON rider_safety_incidents(partner_id);
+
+-- rider_safety_contact_alerts records every trusted-contact dispatch
+-- (SMS / push / call) so an admin can audit who was notified for a SOS.
+-- Lives after 6.2 because of the FK on rider_safety_incidents.
+CREATE TABLE IF NOT EXISTS rider_safety_contact_alerts (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    incident_id  UUID NOT NULL REFERENCES rider_safety_incidents(id) ON DELETE CASCADE,
+    contact_phone TEXT NOT NULL,
+    contact_name TEXT,
+    channel      TEXT NOT NULL CHECK (channel IN ('sms','push','call')),
+    result       TEXT NOT NULL CHECK (result IN ('sent','failed','queued')),
+    error        TEXT,
+    sent_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_safety_alerts_incident ON rider_safety_contact_alerts(incident_id);
 
 -- 6.3 Share-ride tokens (rider_share_tokens) ---------------------------------
 CREATE TABLE IF NOT EXISTS rider_share_tokens (
@@ -823,3 +897,44 @@ ALTER TABLE rider_partner_subscriptions
     ADD COLUMN IF NOT EXISTS renewal_attempted_at TIMESTAMPTZ;
 ALTER TABLE rider_partner_subscriptions
     ADD COLUMN IF NOT EXISTS renewal_failure_count INT NOT NULL DEFAULT 0;
+
+
+-- ============================================================
+-- P0.3 — Outbox table for durable event publishing
+--
+-- Lives in its own `rider` schema: the shared `app` DB already has a
+-- public.outbox_events owned by another service with a different shape
+-- (aggregate_type/aggregate_id/published), and two sweepers draining
+-- one table would cross-publish each other's events.
+-- ============================================================
+CREATE SCHEMA IF NOT EXISTS rider;
+CREATE TABLE IF NOT EXISTS rider.outbox_events (
+    id              BIGSERIAL PRIMARY KEY,
+    event_type      TEXT NOT NULL,
+    partition_key   TEXT NOT NULL,
+    payload         JSONB NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    published_at    TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_outbox_unpublished
+    ON rider.outbox_events (id)
+    WHERE published_at IS NULL;
+
+-- ─── G4.5: scheduled rides ────────────────────────────────────────────
+-- scheduled_for, if set, parks the ride in `scheduled` status until a
+-- worker activates it (≈ T-15 min). On activation the worker calls
+-- MatchRide so dispatch behaves like any just-booked ride.
+--
+-- The status enum is extended via ALTER TYPE ADD VALUE — Postgres 12+
+-- runs this in a single transaction; IF NOT EXISTS keeps re-runs idempotent.
+DO $$ BEGIN
+    ALTER TYPE rider_ride_status ADD VALUE IF NOT EXISTS 'scheduled';
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+ALTER TABLE rider_rides
+    ADD COLUMN IF NOT EXISTS scheduled_for      TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS scheduled_lead_min INTEGER NOT NULL DEFAULT 15,
+    ADD COLUMN IF NOT EXISTS activated_at       TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_rider_rides_scheduled
+    ON rider_rides(scheduled_for)
+    WHERE scheduled_for IS NOT NULL AND activated_at IS NULL;

@@ -15,6 +15,7 @@ import (
 	"github.com/atpost/shared/middleware"
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
+	tracepkg "github.com/atpost/shared/o11y/trace"
 	sharedserver "github.com/atpost/shared/server"
 	"github.com/atpost/shared/transport"
 	"github.com/gin-gonic/gin"
@@ -30,6 +31,14 @@ func env(key, def string) string {
 
 func main() {
 	logging.Init(logging.Config{ServiceName: "payments-service"})
+
+	// Phase F3.5 — tracing init. See commerce-service for the rationale.
+	tracerProvider, _ := tracepkg.InitTracer("payments-service", env("OTEL_EXPORTER_OTLP_ENDPOINT", "http://jaeger:4317"))
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = tracerProvider.Shutdown(shutdownCtx)
+	}()
 
 	port := env("HTTP_PORT", "8102")
 	pgDSN := os.Getenv("POSTGRES_DSN")
@@ -59,7 +68,7 @@ func main() {
 	}
 	slog.Info("connected to postgres")
 
-	if err := postgres.BootstrapSchema(ctx, dbPool, database.SetupSQL); err != nil {
+	if err := postgres.BootstrapSchema(ctx, dbPool, database.SetupSQL, database.Migrations); err != nil {
 		slog.Error("failed to bootstrap payments schema", "error", err)
 		os.Exit(1)
 	}
@@ -98,22 +107,48 @@ func main() {
 
 	store := postgres.New(dbPool)
 
-	// Select payment gateway: use Razorpay if credentials are set, otherwise stub.
+	// Select payment gateway. Audit P8: previously a missing
+	// RAZORPAY_KEY_ID silently selected the stub — production deploys
+	// that forgot the env ran with a stub that never moved real money
+	// (matches media-service H8 stub-in-prod pattern). Now require
+	// PAYMENTS_ALLOW_STUB=true to opt into the stub explicitly; if
+	// neither real creds nor the opt-in are set, refuse to start so
+	// the misconfiguration is visible at boot.
 	var gw gateway.PaymentGateway
 	if keyID := os.Getenv("RAZORPAY_KEY_ID"); keyID != "" {
 		gw = gateway.NewRazorpayGateway(keyID, os.Getenv("RAZORPAY_KEY_SECRET"))
-		slog.Info("using Razorpay payment gateway")
-	} else {
+		slog.Info("payments: using Razorpay gateway (production credentials detected)")
+	} else if os.Getenv("PAYMENTS_ALLOW_STUB") == "true" {
 		gw = &gateway.StubGateway{}
-		slog.Info("using stub payment gateway")
+		slog.Warn("payments: STUB GATEWAY ACTIVE — no real money will move. Set RAZORPAY_KEY_ID + RAZORPAY_KEY_SECRET in production and remove PAYMENTS_ALLOW_STUB.")
+	} else {
+		slog.Error("payments: RAZORPAY_KEY_ID is required in production; set PAYMENTS_ALLOW_STUB=true for dev/test")
+		os.Exit(1)
+	}
+
+	webhookSecret := os.Getenv("RAZORPAY_WEBHOOK_SECRET")
+	if webhookSecret == "" && os.Getenv("PAYMENTS_ALLOW_STUB") != "true" {
+		slog.Error("payments: RAZORPAY_WEBHOOK_SECRET is required when running with the Razorpay gateway")
+		os.Exit(1)
 	}
 
 	svc := service.NewWithDialer(store, kafkaBrokers, gw, kafkaDialer)
-	handler := nethttp.New(svc).WithWebhookSecret(os.Getenv("RAZORPAY_WEBHOOK_SECRET"))
+	handler := nethttp.New(svc).WithWebhookSecret(webhookSecret)
+	// Audit P-internal: gate /v1/payments/* behind the shared internal-
+	// service-key. /webhook is registered outside this gate inside
+	// handler.RegisterRoutes (audit P5). Empty key keeps dev unblocked
+	// behind a loud WARN, matching every other service in the platform.
+	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
+		handler.WithInternalKey(key)
+		slog.Info("payments-service: internal-service-key gate enabled")
+	} else {
+		slog.Warn("payments-service: INTERNAL_SERVICE_KEY not set — /v1/payments endpoints are unauthenticated. Do not run this configuration in production.")
+	}
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
+	r.Use(middleware.OtelTracing("payments-service"))
 	r.Use(middleware.RequestID())
 	r.Use(middleware.Logger())
 	r.Use(middleware.Metrics(httpMetrics))

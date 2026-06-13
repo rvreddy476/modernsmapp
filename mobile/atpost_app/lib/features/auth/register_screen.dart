@@ -98,13 +98,21 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
       context.go('/');
     } on DioException catch (e) {
       if (!mounted) return;
-      final message =
-          e.response?.data?['error'] as String? ??
-          e.response?.data?['message'] as String? ??
-          'Registration failed. Please try again.';
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(message)));
+      // Backend returns `{"error":{"code":"WEAK_PASSWORD","message":"..."}}`
+      // — the old `as String?` cast was silently swallowing the
+      // nested message and showing a generic fallback. Unwrap properly.
+      final body = e.response?.data;
+      final rawErr = body is Map ? body['error'] : null;
+      final message = rawErr is Map
+          ? (rawErr['message'] as String? ?? rawErr['code'] as String?)
+          : rawErr is String
+              ? rawErr
+              : (body is Map ? body['message'] as String? : null);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(message ?? 'Registration failed. Please try again.'),
+        ),
+      );
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(

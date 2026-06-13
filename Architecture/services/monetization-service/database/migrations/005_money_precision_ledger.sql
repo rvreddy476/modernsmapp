@@ -1,11 +1,23 @@
 -- Convert all DECIMAL money columns to BIGINT (paise/cents minor units)
 -- NOTE 2026-04-30: at the time this migration was authored the table was
 -- named `wallets`. It is now renamed to `creator_ledger` (see migration
--- 012). Historical migrations are kept verbatim and run before the
--- rename, so referring to the old name here is correct.
-ALTER TABLE wallets ALTER COLUMN balance TYPE BIGINT USING (balance * 100)::BIGINT;
-ALTER TABLE wallets ALTER COLUMN lifetime_earnings TYPE BIGINT USING (lifetime_earnings * 100)::BIGINT;
-ALTER TABLE wallets ALTER COLUMN pending_payout TYPE BIGINT USING (pending_payout * 100)::BIGINT;
+-- 012). On a fresh DB setup.sql already creates the final shape:
+-- `creator_ledger` (BIGINT columns) plus a compat VIEW named `wallets`,
+-- so the historical ALTERs below must only run when `wallets` is still
+-- a real table — ALTER ... SET DATA TYPE on a view fails with 42809.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = current_schema()
+        AND   table_name   = 'wallets'
+        AND   table_type   = 'BASE TABLE'
+    ) THEN
+        ALTER TABLE wallets ALTER COLUMN balance TYPE BIGINT USING (balance * 100)::BIGINT;
+        ALTER TABLE wallets ALTER COLUMN lifetime_earnings TYPE BIGINT USING (lifetime_earnings * 100)::BIGINT;
+        ALTER TABLE wallets ALTER COLUMN pending_payout TYPE BIGINT USING (pending_payout * 100)::BIGINT;
+    END IF;
+END $$;
 
 ALTER TABLE transactions ALTER COLUMN amount TYPE BIGINT USING (amount * 100)::BIGINT;
 

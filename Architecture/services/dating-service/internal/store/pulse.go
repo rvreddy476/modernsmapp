@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -39,6 +40,14 @@ type CandidateProfile struct {
 	FamilyPlansAxis   *int
 	EducationAxis     *int
 	PrimaryPhotoMedia *uuid.UUID
+	// §P1-3 privacy flags. Carried on the candidate row so the
+	// response builder can decide whether to strip last_active_at,
+	// emit a bucketed distance, or swap in the blurred-photo URL
+	// without a second per-card round-trip.
+	HideLastActive       bool
+	ApproximateLocation  bool
+	BlurPhotosUntilMatch bool
+	Incognito            bool
 }
 
 // Age returns the candidate's age in whole years, or 0 if BirthDate is nil.
@@ -118,8 +127,15 @@ const candidateSelectCols = `
     t.lifestyle_rhythm, t.conversation_style, t.faith_weight, t.family_weight,
     t.region_weight, t.family_plans_axis, t.education_axis,
     (SELECT media_id FROM dating_photos
-        WHERE user_id = p.user_id AND is_primary = true
-        LIMIT 1) AS primary_photo_media`
+        WHERE user_id = p.user_id
+          AND is_primary = true
+          -- P0-6: discovery must only surface approved photos. Without
+          -- this filter a pending/rejected primary photo could leak to
+          -- other users.
+          AND moderation_status = 'approved'
+          AND visibility = 'public'
+        LIMIT 1) AS primary_photo_media,
+    p.hide_last_active, p.approximate_location, p.blur_photos_until_match, p.incognito`
 
 // CandidateQuery encodes the hard-filter knobs from spec §9.1.
 type CandidateQuery struct {
@@ -133,6 +149,12 @@ type CandidateQuery struct {
 	ViewerLon      *float64
 	ExcludePassed  bool
 	Limit          int
+	// VerifiedOnly mirrors the viewer's §P1-3 verified_only_filter
+	// toggle. When true the WHERE clause restricts candidate
+	// trust_tier to selfie/aadhaar — phone-only trust accounts drop
+	// from the deck. Defaults to false so the existing deck shape
+	// is preserved.
+	VerifiedOnly bool
 }
 
 // FetchCandidates returns up to Limit profiles that pass the hard-filter
@@ -147,21 +169,66 @@ func (s *Store) FetchCandidates(ctx context.Context, q CandidateQuery) ([]Candid
 	args := []any{q.ViewerID}
 	where := []string{
 		`p.user_id <> $1`,
+		// §P1-1 profile-status gate: only fully-activated profiles
+		// surface in discovery. The legacy boolean filters below stay
+		// as belt-and-braces during the rollout.
+		`p.profile_status = 'active'`,
 		`p.deleted_at IS NULL`,
 		`p.paused = false`,
 		`p.visible_to_public = true`,
+		// P0-5: absolute age floor — no candidate without a verifiable
+		// birth_date AND a computed age of 18+ enters discovery,
+		// regardless of the viewer's preference window. Closes the
+		// "candidate age = 0" leak from the gap analysis.
+		`p.birth_date IS NOT NULL`,
+		`EXTRACT(YEAR FROM AGE(p.birth_date)) >= 18`,
+		// P0-6: candidate must have at least one approved photo. The
+		// SELECT in candidateSelectCols already filters the primary
+		// photo to approved-only; this EXISTS clause guarantees the
+		// candidate has one rather than relying on the LEFT-JOIN-style
+		// scalar subquery returning NULL.
+		`EXISTS (SELECT 1 FROM dating_photos ph
+		    WHERE ph.user_id = p.user_id
+		      AND ph.is_primary = true
+		      AND ph.moderation_status = 'approved'
+		      AND ph.visibility = 'public')`,
 		// Mutual block filter — neither side has blocked the other.
 		`NOT EXISTS (SELECT 1 FROM dating_blocks b
 		    WHERE (b.user_id = $1 AND b.blocked_id = p.user_id)
 		       OR (b.user_id = p.user_id AND b.blocked_id = $1))`,
+		// §P0-7 Phase A: drop candidates whose enforcement level
+		// removes them from discovery. Rows with no risk record (the
+		// vast majority before the sweeper has run) implicitly pass
+		// because LEFT JOIN'd rar.risk_level is NULL and `IS NOT
+		// DISTINCT FROM` would be over-engineering — we just check
+		// for the four restrictive levels.
+		`NOT EXISTS (SELECT 1 FROM dating_account_risk rar
+		    WHERE rar.user_id = p.user_id
+		      AND rar.risk_level IN
+		          ('hide_from_discovery','chat_hold','admin_review','suspend'))`,
+		// §P1-3: incognito candidates stay hidden UNLESS the viewer
+		// has already shown explicit prior interest by sparking
+		// them. The EXISTS check uses the same (from_user_id,
+		// to_user_id) ordering as dating_sparks so the UNIQUE
+		// index on that pair is the planner's hot path.
+		`(p.incognito = false OR EXISTS (
+		    SELECT 1 FROM dating_sparks s
+		    WHERE s.from_user_id = $1 AND s.to_user_id = p.user_id))`,
+	}
+	if q.VerifiedOnly {
+		// §P1-3 verified-only filter: viewer-side toggle. Phone-only
+		// trust is treated as "not verified" — must be selfie or
+		// aadhaar to surface. Schema doesn't declare a 'none' tier
+		// today but the IN-clause guards future drift.
+		where = append(where, `p.trust_tier IN ('selfie','aadhaar')`)
 	}
 	if q.MinAge > 0 {
 		args = append(args, q.MinAge)
-		where = append(where, fmt.Sprintf(`(p.birth_date IS NULL OR EXTRACT(YEAR FROM AGE(p.birth_date)) >= $%d)`, len(args)))
+		where = append(where, fmt.Sprintf(`EXTRACT(YEAR FROM AGE(p.birth_date)) >= $%d`, len(args)))
 	}
 	if q.MaxAge > 0 {
 		args = append(args, q.MaxAge)
-		where = append(where, fmt.Sprintf(`(p.birth_date IS NULL OR EXTRACT(YEAR FROM AGE(p.birth_date)) <= $%d)`, len(args)))
+		where = append(where, fmt.Sprintf(`EXTRACT(YEAR FROM AGE(p.birth_date)) <= $%d`, len(args)))
 	}
 	if q.GenderFilter != "" {
 		args = append(args, q.GenderFilter)
@@ -174,6 +241,35 @@ func (s *Store) FetchCandidates(ctx context.Context, q CandidateQuery) ([]Candid
 	if q.ExcludePassed {
 		where = append(where, `NOT EXISTS (SELECT 1 FROM dating_passes dp
 		    WHERE dp.user_id = $1 AND dp.candidate_id = p.user_id)`)
+	}
+
+	// P0-10 Phase A: geohash prefix prefilter. When the viewer has a
+	// location + a distance cap, compute the viewer's geohash at the
+	// precision that bounds the radius and restrict candidates to that
+	// cell + its 8 neighbours. Indexed via
+	// idx_dating_profiles_geohash_prefix; turns the matcher's hot path
+	// from a full table scan into a bounded lookup.
+	//
+	// Without a viewer location or with an unbounded radius we skip the
+	// prefilter — the Go-side haversine then still does the final
+	// distance check on the over-fetched batch.
+	if q.ViewerLat != nil && q.ViewerLon != nil && q.DistanceKmMax > 0 {
+		precision := GeohashPrefixForRadiusKm(q.DistanceKmMax)
+		if precision > 0 {
+			viewerGH := EncodeGeohash(*q.ViewerLat, *q.ViewerLon, precision)
+			if viewerGH != "" {
+				cells := GeohashNeighbours(viewerGH)
+				// Build a (LIKE 'cell1%' OR LIKE 'cell2%' ...) clause.
+				// Each cell adds one parameter to keep the planner
+				// happy with prepared-statement caching.
+				ors := make([]string, 0, len(cells))
+				for _, c := range cells {
+					args = append(args, c+"%")
+					ors = append(ors, fmt.Sprintf("p.location_geohash LIKE $%d", len(args)))
+				}
+				where = append(where, "("+strings.Join(ors, " OR ")+")")
+			}
+		}
 	}
 
 	whereClause := ""
@@ -229,6 +325,7 @@ func scanCandidate(row pgx.Row) (*CandidateProfile, error) {
 		&c.LifestyleRhythm, &c.ConversationStyle, &c.FaithWeight, &c.FamilyWeight,
 		&c.RegionWeight, &c.FamilyPlansAxis, &c.EducationAxis,
 		&c.PrimaryPhotoMedia,
+		&c.HideLastActive, &c.ApproximateLocation, &c.BlurPhotosUntilMatch, &c.Incognito,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("scan candidate: %w", err)

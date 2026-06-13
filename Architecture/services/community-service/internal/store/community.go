@@ -269,12 +269,22 @@ func (s *Store) scanCommunities(ctx context.Context, query string, args ...any) 
 
 // --- Member operations ---
 
-func (s *Store) AddMember(ctx context.Context, m *CommunityMember) error {
+// AddMember inserts the membership row. The boolean returned is true
+// iff a NEW row was added (false when the user was already a member,
+// even if role is being upgraded). Audit HC1: callers need this signal
+// so they only increment member_count on a fresh join — concurrent
+// duplicate joins previously double-counted because ON CONFLICT
+// DO UPDATE always reports RowsAffected > 0.
+func (s *Store) AddMember(ctx context.Context, m *CommunityMember) (bool, error) {
 	query := `INSERT INTO community_members (community_id, user_id, role)
 		VALUES ($1, $2, $3)
-		ON CONFLICT (community_id, user_id) DO UPDATE SET role = $3`
-	_, err := s.db.Exec(ctx, query, m.CommunityID, m.UserID, m.Role)
-	return err
+		ON CONFLICT (community_id, user_id) DO UPDATE SET role = $3
+		RETURNING (xmax = 0) AS inserted`
+	var inserted bool
+	if err := s.db.QueryRow(ctx, query, m.CommunityID, m.UserID, m.Role).Scan(&inserted); err != nil {
+		return false, err
+	}
+	return inserted, nil
 }
 
 func (s *Store) GetMember(ctx context.Context, communityID, userID uuid.UUID) (*CommunityMember, error) {
@@ -357,6 +367,17 @@ func (s *Store) CountMembers(ctx context.Context, communityID uuid.UUID) (int64,
 func (s *Store) IncrementMemberCount(ctx context.Context, communityID uuid.UUID, delta int) error {
 	query := `UPDATE communities SET member_count = member_count + $2, updated_at = NOW() WHERE id = $1`
 	_, err := s.db.Exec(ctx, query, communityID, delta)
+	return err
+}
+
+// SetMemberCount overwrites communities.member_count to the absolute
+// value. Used by the sharded-counter flush worker — Redis is the
+// realtime buffer, this UPDATE periodically materializes the sum back
+// to PG. Touches the same hot row as IncrementMemberCount but only
+// fires every ~10s per community instead of on every join.
+func (s *Store) SetMemberCount(ctx context.Context, communityID uuid.UUID, total int64) error {
+	query := `UPDATE communities SET member_count = $2, updated_at = NOW() WHERE id = $1`
+	_, err := s.db.Exec(ctx, query, communityID, total)
 	return err
 }
 

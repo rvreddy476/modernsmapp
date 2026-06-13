@@ -78,6 +78,43 @@ func (s *Store) CreateVehicleDocument(ctx context.Context, in CreateVehicleDocum
 	return scanVehicleDoc(row)
 }
 
+// CountExpiredApprovedPartnerDocs returns how many APPROVED KYC documents
+// a partner holds whose expires_at is in the past. Used by the go-online
+// compliance gate — any non-zero count blocks the partner from going
+// online until they re-upload the lapsed document.
+func (s *Store) CountExpiredApprovedPartnerDocs(ctx context.Context, partnerID uuid.UUID) (int, error) {
+	var n int
+	const q = `
+		SELECT COUNT(*)
+		FROM rider_partner_documents
+		WHERE partner_id = $1
+		  AND status = 'approved'
+		  AND expires_at IS NOT NULL
+		  AND expires_at <= NOW()`
+	if err := s.db.QueryRow(ctx, q, partnerID).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count expired partner docs: %w", err)
+	}
+	return n, nil
+}
+
+// CountExpiredApprovedVehicleDocs is the vehicle-side equivalent —
+// blocks go-online when the partner's APPROVED active vehicle has any
+// lapsed paperwork (RC, insurance, permit, PUC).
+func (s *Store) CountExpiredApprovedVehicleDocs(ctx context.Context, vehicleID uuid.UUID) (int, error) {
+	var n int
+	const q = `
+		SELECT COUNT(*)
+		FROM rider_vehicle_documents
+		WHERE vehicle_id = $1
+		  AND status = 'approved'
+		  AND expires_at IS NOT NULL
+		  AND expires_at <= NOW()`
+	if err := s.db.QueryRow(ctx, q, vehicleID).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count expired vehicle docs: %w", err)
+	}
+	return n, nil
+}
+
 // ListVehicleDocuments returns every doc the vehicle has uploaded.
 func (s *Store) ListVehicleDocuments(ctx context.Context, vehicleID uuid.UUID) ([]VehicleDocument, error) {
 	const q = `

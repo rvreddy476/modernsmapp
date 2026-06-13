@@ -948,31 +948,14 @@ FOR EACH ROW EXECUTE FUNCTION food.set_updated_at();
 -- ============================================================
 -- SUPPORT, AUDIT, IDEMPOTENCY
 -- ============================================================
-
-CREATE TABLE IF NOT EXISTS food.support_tickets (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    order_id UUID REFERENCES food.orders(id) ON DELETE SET NULL,
-    user_id UUID NOT NULL,
-    restaurant_id UUID REFERENCES food.restaurants(id) ON DELETE SET NULL,
-    delivery_partner_id UUID REFERENCES food.delivery_partners(id) ON DELETE SET NULL,
-    category VARCHAR(80) NOT NULL,
-    subject VARCHAR(200) NOT NULL,
-    description TEXT,
-    status VARCHAR(40) NOT NULL DEFAULT 'OPEN',
-    assigned_to UUID,
-    resolution TEXT,
-    resolved_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS ix_food_support_tickets_user ON food.support_tickets(user_id);
-CREATE INDEX IF NOT EXISTS ix_food_support_tickets_status ON food.support_tickets(status);
-
-DROP TRIGGER IF EXISTS trg_support_tickets_updated_at ON food.support_tickets;
-CREATE TRIGGER trg_support_tickets_updated_at
-BEFORE UPDATE ON food.support_tickets
-FOR EACH ROW EXECUTE FUNCTION food.set_updated_at();
+--
+-- NOTE: food.support_tickets is intentionally NOT defined here. An older
+-- shape lived in this block (user_id + restaurant_id + delivery_partner_id)
+-- but the application repo (internal/store/postgres/support.go) was
+-- redesigned in Wave B6 to use a leaner customer_id/detail shape. The
+-- canonical definition now lives further down this file in the B6 block —
+-- defining it here too created a duplicate-CREATE-TABLE race that left a
+-- mismatched schema in the DB and broke the customer_id index on boot.
 
 CREATE TABLE IF NOT EXISTS food.admin_audit_logs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1152,3 +1135,425 @@ ON CONFLICT (code) DO NOTHING;
 -- 8. Insert admin_audit_logs for approval, rejection, refund, settlement, and suspension actions.
 -- 9. Add PostGIS geometry columns later if location search needs high scale.
 -- 10. Add partitioning for orders/order_status_history/delivery_tracking_events when volume grows.
+
+
+-- ============================================================
+-- P0.3 — Outbox table for durable event publishing
+-- ============================================================
+-- Domain write + outbox row inside the same tx so an event cannot be
+-- silently dropped on a Kafka outage. shared/outbox.Publisher polls
+-- this table and writes to Kafka, marks rows published, and retries
+-- with backoff. The default table name `outbox_events` matches the
+-- shared publisher contract.
+CREATE TABLE IF NOT EXISTS outbox_events (
+    id              BIGSERIAL PRIMARY KEY,
+    event_type      TEXT NOT NULL,
+    partition_key   TEXT NOT NULL,
+    payload         JSONB NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    published_at    TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_outbox_unpublished
+    ON outbox_events (id)
+    WHERE published_at IS NULL;
+
+-- ─── B1: kitchen queue + SLA accept deadline ──────────────────────────
+--
+-- `sla_accept_seconds` is the per-restaurant grace window for accepting
+-- a CONFIRMED order. The default (180s = 3 min) matches industry norms;
+-- partners can tune per-restaurant from the partner dashboard.
+--
+-- `accept_deadline_at` is set on the orders table when payment is
+-- captured (status moves to CONFIRMED). The auto-reject worker scans
+-- orders with `status='CONFIRMED' AND accept_deadline_at < NOW()` and
+-- transitions them to RESTAURANT_REJECTED with reason='sla_breach'.
+ALTER TABLE food.restaurants
+    ADD COLUMN IF NOT EXISTS sla_accept_seconds INTEGER NOT NULL DEFAULT 180
+    CHECK (sla_accept_seconds BETWEEN 30 AND 1800);
+
+ALTER TABLE food.orders
+    ADD COLUMN IF NOT EXISTS accept_deadline_at TIMESTAMPTZ;
+
+CREATE INDEX IF NOT EXISTS ix_food_orders_accept_sla
+    ON food.orders(accept_deadline_at)
+    WHERE status = 'CONFIRMED' AND accept_deadline_at IS NOT NULL;
+
+-- ─── B2: stock-out log + substitution flow ────────────────────────────
+--
+-- menu_item_stockouts is an append-only audit log that records every
+-- time a partner toggles an item to unavailable (and back). The
+-- partner SLA dashboard reads it for "items unavailable longer than
+-- 24 h" detection.
+CREATE TABLE IF NOT EXISTS food.menu_item_stockouts (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    menu_item_id  UUID NOT NULL REFERENCES food.menu_items(id) ON DELETE CASCADE,
+    restaurant_id UUID NOT NULL REFERENCES food.restaurants(id) ON DELETE CASCADE,
+    is_available  BOOLEAN NOT NULL,
+    reason        VARCHAR(120),
+    changed_by    UUID,
+    changed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_food_stockouts_item ON food.menu_item_stockouts(menu_item_id, changed_at DESC);
+CREATE INDEX IF NOT EXISTS ix_food_stockouts_restaurant ON food.menu_item_stockouts(restaurant_id, changed_at DESC);
+
+-- order_substitutions captures the partner's "we don't have item X,
+-- here's Y instead" proposal + the customer's response. The status
+-- machine is `proposed → approved | declined | cancelled`. If declined
+-- the order line is removed via the cancellation flow.
+DO $$ BEGIN
+    CREATE TYPE food.substitution_status AS ENUM ('proposed','approved','declined','cancelled');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+CREATE TABLE IF NOT EXISTS food.order_substitutions (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    order_id            UUID NOT NULL REFERENCES food.orders(id) ON DELETE CASCADE,
+    original_item_id    UUID NOT NULL,
+    original_item_name  VARCHAR(200) NOT NULL,
+    suggested_item_id   UUID,
+    suggested_item_name VARCHAR(200),
+    price_diff          NUMERIC(10,2) NOT NULL DEFAULT 0,
+    note                TEXT,
+    status              food.substitution_status NOT NULL DEFAULT 'proposed',
+    proposed_by         UUID NOT NULL,
+    responded_by        UUID,
+    responded_at        TIMESTAMPTZ,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_food_substitutions_order ON food.order_substitutions(order_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS ix_food_substitutions_status ON food.order_substitutions(status);
+
+DROP TRIGGER IF EXISTS trg_food_substitutions_updated_at ON food.order_substitutions;
+CREATE TRIGGER trg_food_substitutions_updated_at
+BEFORE UPDATE ON food.order_substitutions
+FOR EACH ROW EXECUTE FUNCTION food.set_updated_at();
+
+-- ─── B3: menu moderation ──────────────────────────────────────────────
+--
+-- moderation_status governs whether a menu item is visible to
+-- customers. Default `approved` so existing items stay live; new items
+-- created by partner start `approved` too, with the admin queue
+-- reviewing reports/auto-flags asynchronously. `flagged` items remain
+-- visible but are surfaced in the admin queue; `rejected` items are
+-- hidden from customer-facing listings.
+DO $$ BEGIN
+    CREATE TYPE food.moderation_status AS ENUM ('approved','flagged','rejected','pending_review');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+ALTER TABLE food.menu_items
+    ADD COLUMN IF NOT EXISTS moderation_status food.moderation_status NOT NULL DEFAULT 'approved',
+    ADD COLUMN IF NOT EXISTS moderation_reason TEXT,
+    ADD COLUMN IF NOT EXISTS moderated_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS moderated_by UUID;
+
+CREATE INDEX IF NOT EXISTS ix_food_menu_items_moderation
+    ON food.menu_items(moderation_status)
+    WHERE moderation_status IN ('flagged','pending_review');
+
+-- menu_item_reports captures customer-side complaints (wrong photo,
+-- offensive name, allergen mismatch, …). Many reports on one item
+-- auto-flips moderation_status to `flagged` for admin review.
+CREATE TABLE IF NOT EXISTS food.menu_item_reports (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    menu_item_id UUID NOT NULL REFERENCES food.menu_items(id) ON DELETE CASCADE,
+    reporter_id  UUID NOT NULL,
+    category     VARCHAR(60) NOT NULL,
+    detail       TEXT,
+    resolved_at  TIMESTAMPTZ,
+    resolved_by  UUID,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_food_item_reports_item ON food.menu_item_reports(menu_item_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS ix_food_item_reports_pending ON food.menu_item_reports(created_at DESC) WHERE resolved_at IS NULL;
+
+-- ─── B4: delivery offer fan-out ───────────────────────────────────────
+--
+-- When an order goes DELIVERY_ASSIGNING the dispatch worker mints one
+-- food.delivery_offers row per nearby online partner. First to accept
+-- wins (a tx promotes the offer to the existing delivery_assignments
+-- row); the rest are auto-rejected. Offers expire after 25 seconds.
+DO $$ BEGIN
+    CREATE TYPE food.delivery_offer_status AS ENUM ('pending','accepted','rejected','expired','superseded');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+CREATE TABLE IF NOT EXISTS food.delivery_offers (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    order_id            UUID NOT NULL REFERENCES food.orders(id) ON DELETE CASCADE,
+    delivery_partner_id UUID NOT NULL REFERENCES food.delivery_partners(id) ON DELETE CASCADE,
+    status              food.delivery_offer_status NOT NULL DEFAULT 'pending',
+    distance_km         NUMERIC(8,2),
+    expires_at          TIMESTAMPTZ NOT NULL,
+    responded_at        TIMESTAMPTZ,
+    reject_reason       VARCHAR(120),
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(order_id, delivery_partner_id)
+);
+CREATE INDEX IF NOT EXISTS ix_food_offers_partner_pending
+    ON food.delivery_offers(delivery_partner_id, expires_at)
+    WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS ix_food_offers_order ON food.delivery_offers(order_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS ix_food_offers_expiry ON food.delivery_offers(expires_at) WHERE status = 'pending';
+
+-- ─── B5: pickup / delivery proof ──────────────────────────────────────
+--
+-- pickup_code + delivery_code already exist on food.delivery_assignments
+-- (4-6 digit OTPs). B5 adds the proof-of-pickup / proof-of-delivery
+-- image URLs (stored as MinIO object keys) and a verified flag set
+-- when the matching code is submitted.
+ALTER TABLE food.delivery_assignments
+    ADD COLUMN IF NOT EXISTS pickup_verified_at  TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS delivery_verified_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS proof_of_pickup_url   TEXT,
+    ADD COLUMN IF NOT EXISTS proof_of_delivery_url TEXT;
+
+-- ─── B6: support tickets + refund request ─────────────────────────────
+--
+-- Tickets are the customer's entry point for anything from
+-- "missing item" to "refund please" to "driver was rude". Each ticket
+-- can reference an order (most do) and is owned by one customer; the
+-- admin queue acts on tickets via SetStatus + optional approved refund.
+DO $$ BEGIN
+    CREATE TYPE food.ticket_status AS ENUM ('open','in_progress','resolved','closed','cancelled');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+DO $$ BEGIN
+    CREATE TYPE food.refund_status AS ENUM ('requested','approved','rejected','processed');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+CREATE TABLE IF NOT EXISTS food.support_tickets (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    customer_id   UUID NOT NULL,
+    order_id      UUID REFERENCES food.orders(id) ON DELETE SET NULL,
+    category      VARCHAR(60) NOT NULL,
+    subject       VARCHAR(200) NOT NULL,
+    detail        TEXT,
+    status        food.ticket_status NOT NULL DEFAULT 'open',
+    assigned_to   UUID,
+    resolved_at   TIMESTAMPTZ,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_food_tickets_customer ON food.support_tickets(customer_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS ix_food_tickets_status   ON food.support_tickets(status);
+CREATE INDEX IF NOT EXISTS ix_food_tickets_order    ON food.support_tickets(order_id) WHERE order_id IS NOT NULL;
+
+DROP TRIGGER IF EXISTS trg_food_tickets_updated_at ON food.support_tickets;
+CREATE TRIGGER trg_food_tickets_updated_at
+BEFORE UPDATE ON food.support_tickets
+FOR EACH ROW EXECUTE FUNCTION food.set_updated_at();
+
+CREATE TABLE IF NOT EXISTS food.ticket_messages (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    ticket_id   UUID NOT NULL REFERENCES food.support_tickets(id) ON DELETE CASCADE,
+    author_id   UUID NOT NULL,
+    is_admin    BOOLEAN NOT NULL DEFAULT FALSE,
+    body        TEXT NOT NULL,
+    attachments JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_food_ticket_messages_ticket ON food.ticket_messages(ticket_id, created_at);
+
+CREATE TABLE IF NOT EXISTS food.refund_requests (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    ticket_id     UUID REFERENCES food.support_tickets(id) ON DELETE CASCADE,
+    order_id      UUID NOT NULL REFERENCES food.orders(id) ON DELETE CASCADE,
+    customer_id   UUID NOT NULL,
+    amount        NUMERIC(10,2) NOT NULL CHECK (amount >= 0),
+    reason        TEXT,
+    status        food.refund_status NOT NULL DEFAULT 'requested',
+    decided_by    UUID,
+    decided_at    TIMESTAMPTZ,
+    refund_txn_id TEXT,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_food_refunds_order    ON food.refund_requests(order_id);
+CREATE INDEX IF NOT EXISTS ix_food_refunds_customer ON food.refund_requests(customer_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS ix_food_refunds_status   ON food.refund_requests(status);
+
+DROP TRIGGER IF EXISTS trg_food_refunds_updated_at ON food.refund_requests;
+CREATE TRIGGER trg_food_refunds_updated_at
+BEFORE UPDATE ON food.refund_requests
+FOR EACH ROW EXECUTE FUNCTION food.set_updated_at();
+
+-- ─── B7: item-level reviews ───────────────────────────────────────────
+--
+-- Existing restaurant_ratings + delivery_ratings cover the order-level
+-- 1-5 stars. Item-level reviews let a customer rate the specific
+-- dish; the aggregate feeds into menu_items.avg_rating + count.
+CREATE TABLE IF NOT EXISTS food.item_reviews (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    order_id      UUID NOT NULL REFERENCES food.orders(id) ON DELETE CASCADE,
+    menu_item_id  UUID NOT NULL REFERENCES food.menu_items(id) ON DELETE CASCADE,
+    customer_id   UUID NOT NULL,
+    rating        SMALLINT NOT NULL CHECK (rating BETWEEN 1 AND 5),
+    review        TEXT,
+    photo_urls    JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(order_id, menu_item_id, customer_id)
+);
+CREATE INDEX IF NOT EXISTS ix_food_item_reviews_item ON food.item_reviews(menu_item_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS ix_food_item_reviews_customer ON food.item_reviews(customer_id);
+
+-- Aggregate columns on menu_items so PDPs render the score cheaply.
+ALTER TABLE food.menu_items
+    ADD COLUMN IF NOT EXISTS avg_rating  NUMERIC(3,2),
+    ADD COLUMN IF NOT EXISTS rating_count INTEGER NOT NULL DEFAULT 0;
+
+-- ─── Wave E: fraud scores + finance settlements ───────────────────────
+--
+-- fraud_scores: rolling per-user fraud signal. The worker writes one
+-- row per (user_id, signal) and the admin queue reads aggregated.
+CREATE TABLE IF NOT EXISTS food.fraud_scores (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id     UUID NOT NULL,
+    signal      VARCHAR(60) NOT NULL,
+    score       NUMERIC(6,2) NOT NULL,
+    detail      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_food_fraud_user_signal ON food.fraud_scores(user_id, signal, computed_at DESC);
+CREATE INDEX IF NOT EXISTS ix_food_fraud_recent ON food.fraud_scores(computed_at DESC);
+
+-- settlement_files: ops-team export records (CSV in MinIO + audit row).
+CREATE TABLE IF NOT EXISTS food.settlement_files (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    period_start  DATE NOT NULL,
+    period_end    DATE NOT NULL,
+    kind          VARCHAR(32) NOT NULL CHECK (kind IN ('restaurant','delivery')),
+    file_url      TEXT NOT NULL,
+    row_count     INTEGER NOT NULL DEFAULT 0,
+    total_amount  NUMERIC(12,2) NOT NULL DEFAULT 0,
+    generated_by  UUID,
+    generated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_food_settlement_files_period ON food.settlement_files(period_start, period_end, kind);
+
+-- G4.1: settlement_files inline body. file_url stays for future MinIO
+-- offload; until then the worker stores the generated CSV inline so the
+-- download endpoint can stream it back without external storage.
+ALTER TABLE food.settlement_files
+    ADD COLUMN IF NOT EXISTS body BYTEA,
+    ALTER COLUMN file_url DROP NOT NULL,
+    ALTER COLUMN file_url SET DEFAULT '';
+
+-- ─── Wave F: per-order conversations + read receipts ──────────────────
+--
+-- order_messages is the conversation between customer, restaurant, and
+-- delivery partner for a single order. Quick + lightweight (no media
+-- in v1, just text). Admin can read every message for moderation /
+-- escalation.
+--
+-- author_role is one of customer | restaurant | delivery | admin.
+-- read_by is an array of {role,user_id,at} triples; the recipient app
+-- POSTs to /read once the message is shown.
+CREATE TABLE IF NOT EXISTS food.order_messages (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    order_id    UUID NOT NULL REFERENCES food.orders(id) ON DELETE CASCADE,
+    author_id   UUID NOT NULL,
+    author_role VARCHAR(16) NOT NULL CHECK (author_role IN ('customer','restaurant','delivery','admin')),
+    body        TEXT NOT NULL,
+    read_by     JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_food_order_messages_order ON food.order_messages(order_id, created_at);
+
+-- ─── G4.2: GST invoice fields ─────────────────────────────────────────
+-- invoice_number stable on regenerate so a re-pull of
+-- /v1/food/orders/:id/invoice returns the same document.
+ALTER TABLE food.restaurants
+    ADD COLUMN IF NOT EXISTS gstin VARCHAR(20);
+ALTER TABLE food.menu_items
+    ADD COLUMN IF NOT EXISTS hsn_code VARCHAR(20);
+ALTER TABLE food.orders
+    ADD COLUMN IF NOT EXISTS invoice_number VARCHAR(40);
+
+-- One row per fiscal year, allocated lazily at first invoice. Storing
+-- last allocated number keeps numbering deterministic across replicas
+-- without a global Postgres SEQUENCE that's hard to reset annually.
+CREATE TABLE IF NOT EXISTS food.invoice_sequences (
+    financial_year VARCHAR(10) PRIMARY KEY,
+    last_number    BIGINT NOT NULL DEFAULT 0,
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ─── G4.4: loyalty (points + tier) ────────────────────────────────────
+-- Per-user balance + append-only ledger. Earn = +N on DELIVERED order,
+-- redeem = -N on apply-at-checkout. Tier is a computed view over
+-- lifetime_earned.
+CREATE TABLE IF NOT EXISTS food.loyalty_balances (
+    user_id          UUID PRIMARY KEY,
+    points_balance   INTEGER NOT NULL DEFAULT 0,
+    lifetime_earned  INTEGER NOT NULL DEFAULT 0,
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS food.loyalty_ledger (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id     UUID NOT NULL,
+    order_id    UUID REFERENCES food.orders(id) ON DELETE SET NULL,
+    delta       INTEGER NOT NULL,   -- +earn, -redeem
+    reason      VARCHAR(60) NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_food_loyalty_ledger_user
+    ON food.loyalty_ledger(user_id, created_at DESC);
+
+-- ─── G4.6: referral tracking ──────────────────────────────────────────
+-- code is per-user, alphanumeric, unique. credits + bonus paid once
+-- the referee places their first DELIVERED order (worker decides).
+CREATE TABLE IF NOT EXISTS food.referral_codes (
+    user_id     UUID PRIMARY KEY,
+    code        VARCHAR(20) NOT NULL UNIQUE,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS food.referrals (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    referrer_id  UUID NOT NULL,
+    referee_id   UUID NOT NULL,
+    code_used    VARCHAR(20) NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'pending'
+                 CHECK (status IN ('pending','rewarded','rejected')),
+    rewarded_at  TIMESTAMPTZ,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(referee_id) -- one referrer per referee
+);
+CREATE INDEX IF NOT EXISTS ix_food_referrals_referrer
+    ON food.referrals(referrer_id, created_at DESC);
+
+-- ─── P2: delivery batching ────────────────────────────────────────────
+--
+-- A batch lets one partner pick up 2-3 orders at the same restaurant
+-- within a short time window (default 5 min) and deliver them in
+-- sequence. Each member order keeps its own delivery_assignment row
+-- (so OTPs, ratings, payouts stay per-order); batch_id links them so
+-- the worker offers + accepts the whole group atomically.
+--
+-- Sequence is the partner's pickup/drop order; lower = earlier. The
+-- dispatch worker assigns it by created_at within the batch.
+CREATE TABLE IF NOT EXISTS food.delivery_batches (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    restaurant_id UUID NOT NULL REFERENCES food.restaurants(id) ON DELETE CASCADE,
+    status        TEXT NOT NULL DEFAULT 'pending'
+                  CHECK (status IN ('pending','assigned','cancelled','completed')),
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    assigned_at   TIMESTAMPTZ,
+    completed_at  TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS ix_food_batches_status ON food.delivery_batches(status, created_at);
+CREATE INDEX IF NOT EXISTS ix_food_batches_restaurant ON food.delivery_batches(restaurant_id, created_at DESC);
+
+ALTER TABLE food.delivery_assignments
+    ADD COLUMN IF NOT EXISTS batch_id UUID REFERENCES food.delivery_batches(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS batch_sequence SMALLINT;
+CREATE INDEX IF NOT EXISTS ix_food_assignments_batch ON food.delivery_assignments(batch_id) WHERE batch_id IS NOT NULL;
+
+ALTER TABLE food.delivery_offers
+    ADD COLUMN IF NOT EXISTS batch_id UUID REFERENCES food.delivery_batches(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS ix_food_offers_batch ON food.delivery_offers(batch_id) WHERE batch_id IS NOT NULL;

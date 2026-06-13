@@ -3,14 +3,16 @@ package store
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"strings"
 
+	"github.com/atpost/shared/store/migrationrunner"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// BootstrapSchema applies the base group-service schema on startup so a fresh
-// database has the core tables before the service processes requests.
-func BootstrapSchema(ctx context.Context, db *pgxpool.Pool, schemaSQL string) error {
+// BootstrapSchema applies the base group-service schema, then runs any migration
+// files in `migrations` not yet recorded in `schema_migrations`.
+func BootstrapSchema(ctx context.Context, db *pgxpool.Pool, schemaSQL string, migrations fs.FS) error {
 	if db == nil {
 		return fmt.Errorf("db pool is nil")
 	}
@@ -19,6 +21,11 @@ func BootstrapSchema(ctx context.Context, db *pgxpool.Pool, schemaSQL string) er
 	}
 	if _, err := db.Exec(ctx, schemaSQL); err != nil {
 		return fmt.Errorf("apply group schema: %w", err)
+	}
+	if migrations != nil {
+		if err := migrationrunner.Run(ctx, db, "group-service", migrations, "migrations"); err != nil {
+			return fmt.Errorf("apply group migrations: %w", err)
+		}
 	}
 	return nil
 }

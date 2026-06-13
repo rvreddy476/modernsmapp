@@ -71,13 +71,13 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 	}
 
 	switch envelope.EventType {
-	case events.FriendRequestAccepted:
+	case events.ConnectionAccepted:
 		return c.handleFriendAccepted(ctx, envelope)
-	case events.FriendRequestSent:
+	case events.ConnectionRequested:
 		return c.handleFriendRequestSent(ctx, envelope)
-	case events.FriendRequestDeclined:
+	case events.ConnectionDeclined:
 		return c.handleFriendDeclined(ctx, envelope)
-	case events.FriendRemoved:
+	case events.ConnectionRemoved:
 		return c.handleFriendRemoved(ctx, envelope)
 	case events.UserBlocked:
 		return c.handleUserBlocked(ctx, envelope)
@@ -99,7 +99,7 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 // ─── Event Handlers ──────────────────────────────────────────
 
 func (c *Consumer) handleFriendAccepted(ctx context.Context, envelope events.EventEnvelope) error {
-	var payload events.FriendRequestAcceptedPayload
+	var payload events.ConnectionAcceptedPayload
 	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
 		return err
 	}
@@ -111,7 +111,7 @@ func (c *Consumer) handleFriendAccepted(ctx context.Context, envelope events.Eve
 }
 
 func (c *Consumer) handleFriendRequestSent(ctx context.Context, envelope events.EventEnvelope) error {
-	var payload events.FriendRequestSentPayload
+	var payload events.ConnectionRequestedPayload
 	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
 		return err
 	}
@@ -121,7 +121,7 @@ func (c *Consumer) handleFriendRequestSent(ctx context.Context, envelope events.
 }
 
 func (c *Consumer) handleFriendDeclined(ctx context.Context, envelope events.EventEnvelope) error {
-	var payload events.FriendRequestDeclinedPayload
+	var payload events.ConnectionDeclinedPayload
 	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
 		return err
 	}
@@ -147,7 +147,7 @@ func (c *Consumer) handleFriendDeclined(ctx context.Context, envelope events.Eve
 }
 
 func (c *Consumer) handleFriendRemoved(ctx context.Context, envelope events.EventEnvelope) error {
-	var payload events.FriendRemovedPayload
+	var payload events.ConnectionRemovedPayload
 	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
 		return err
 	}

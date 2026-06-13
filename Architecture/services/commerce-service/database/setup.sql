@@ -454,13 +454,16 @@ CREATE TABLE IF NOT EXISTS orders (
                             CHECK (status IN ('created','payment_pending','paid','confirmed','packed','shipped','out_for_delivery','delivered','cancelled','return_requested','return_approved','return_rejected','return_picked_up','returned','refund_pending','refunded')),
     cancellation_reason TEXT,
     cancelled_by        TEXT CHECK (cancelled_by IN ('customer','seller','system','admin')),
-    idempotency_key     TEXT UNIQUE,
+    idempotency_key     TEXT,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_orders_customer ON orders(customer_user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_orders_status   ON orders(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_orders_number   ON orders(order_number);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_customer_idempotency_key
+    ON orders(customer_user_id, idempotency_key)
+    WHERE idempotency_key IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS order_items (
     id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -779,3 +782,264 @@ BEGIN
     RETURN 'ORD-' || TO_CHAR(NOW(), 'YYYY') || '-' || LPAD(nextval('order_number_seq')::TEXT, 6, '0');
 END;
 $$ LANGUAGE plpgsql;
+
+-- ─── Idempotent schema upgrades — applied on every BootstrapSchema boot.
+-- Phase 2.4 — review moderation status + seller response.
+ALTER TABLE reviews ADD COLUMN IF NOT EXISTS moderation_status TEXT NOT NULL DEFAULT 'approved';
+ALTER TABLE reviews ADD COLUMN IF NOT EXISTS seller_response TEXT;
+ALTER TABLE reviews ADD COLUMN IF NOT EXISTS seller_responded_at TIMESTAMPTZ;
+
+-- Phase 3.4 — admin moderation needs a "request changes" terminal state
+-- distinct from rejection. The original CHECK was already implicitly
+-- broken (CreateProduct writes 'draft', ApproveProductByAdmin writes
+-- 'live') — the rewrite documents the full set the code actually uses.
+ALTER TABLE products DROP CONSTRAINT IF EXISTS products_approval_status_check;
+ALTER TABLE products ADD CONSTRAINT products_approval_status_check
+    CHECK (approval_status IN ('draft','pending','approved','rejected','flagged','changes_requested','live'));
+
+-- ─── Phase 6.1 — Fulfillment job queue ─────────────────────────
+-- Replaces `go s.fulfillPaidOrder()` with a durable retry-with-backoff
+-- worker so a service restart no longer drops in-flight side effects
+-- (invoice issuance, shipment booking, refund initiation).
+
+CREATE TABLE IF NOT EXISTS fulfillment_jobs (
+    id              BIGSERIAL PRIMARY KEY,
+    kind            TEXT NOT NULL
+                       CHECK (kind IN (
+                           'fulfill_paid_order',
+                           'process_return_approved',
+                           'bulk_import_validate',
+                           'bulk_import_execute'
+                       )),
+    payload         JSONB NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending'
+                       CHECK (status IN ('pending','processing','done','dead')),
+    attempts        INT NOT NULL DEFAULT 0,
+    next_run_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_error      TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    started_at      TIMESTAMPTZ,
+    completed_at    TIMESTAMPTZ,
+    dead_letter_at  TIMESTAMPTZ
+);
+
+-- Phase F2.3 — bulk SKU import + Phase F2.2 RFQ added two new fulfillment
+-- job kinds. Idempotent ALTER so existing deployments accept the new
+-- enum values without a manual migration. Moved AFTER the CREATE TABLE
+-- above so first-run bootstrap doesn't error on a missing relation.
+ALTER TABLE fulfillment_jobs DROP CONSTRAINT IF EXISTS fulfillment_jobs_kind_check;
+ALTER TABLE fulfillment_jobs ADD CONSTRAINT fulfillment_jobs_kind_check
+    CHECK (kind IN (
+        'fulfill_paid_order',
+        'process_return_approved',
+        'bulk_import_validate',
+        'bulk_import_execute'
+    ));
+CREATE INDEX IF NOT EXISTS idx_fulfillment_jobs_pending
+    ON fulfillment_jobs(status, next_run_at)
+    WHERE status IN ('pending','processing');
+CREATE INDEX IF NOT EXISTS idx_fulfillment_jobs_dead
+    ON fulfillment_jobs(dead_letter_at DESC)
+    WHERE status = 'dead';
+
+-- ─── Phase 6.2 — Stock reservation expiry tracking ─────────────
+-- The reservation table existed but lacked an explicit expiry-only
+-- index — the worker needs to find rows where expires_at <= NOW()
+-- cheaply, separate from the variant-scoped lookup index.
+CREATE INDEX IF NOT EXISTS idx_inventory_reservations_expiry
+    ON inventory_reservations(expires_at);
+
+-- ─── Phase F2.1 — Tiered B2B pricing ──────────────────────────
+-- Seller-defined quantity tier breaks per variant. priceCart looks up
+-- the highest min_qty band <= cart_line.quantity and uses that price
+-- instead of variant.selling_price. Non-overlapping tiers are enforced
+-- by the (variant_id, min_qty) UNIQUE constraint plus a service-layer
+-- check on max_qty.
+CREATE TABLE IF NOT EXISTS product_price_tiers (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    variant_id    UUID NOT NULL REFERENCES product_variants(id) ON DELETE CASCADE,
+    min_qty       INT  NOT NULL CHECK (min_qty >= 1),
+    max_qty       INT  CHECK (max_qty IS NULL OR max_qty >= min_qty),
+    price         NUMERIC(10,2) NOT NULL CHECK (price > 0),
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(variant_id, min_qty)
+);
+CREATE INDEX IF NOT EXISTS idx_price_tiers_variant ON product_price_tiers(variant_id);
+
+-- ─── Phase F2.2 — Request For Quote (RFQ) ─────────────────────
+-- Buyer-initiated quote requests. The seller responds with a quote
+-- (rfq_quotes) — on acceptance, AcceptRFQQuote bypasses priceCart and
+-- creates an order at the negotiated price. Personal + org buyers
+-- both supported (organization_id is nullable).
+CREATE TABLE IF NOT EXISTS rfqs (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    buyer_user_id   UUID NOT NULL,
+    -- FK to organizations(id) added via idempotent ALTER at end of file —
+    -- organizations table is defined further down in Phase 5 and the
+    -- naive `strings.Split(sql, ";")` bootstrapper applies statements
+    -- in file order, so an inline FK fails on first-run install.
+    organization_id UUID,
+    seller_id       UUID NOT NULL REFERENCES sellers(id),
+    status          TEXT NOT NULL DEFAULT 'requested'
+                       CHECK (status IN ('requested','quoted','accepted','expired','rejected','cancelled')),
+    message_text    TEXT,
+    requested_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at      TIMESTAMPTZ NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_rfqs_buyer  ON rfqs(buyer_user_id);
+CREATE INDEX IF NOT EXISTS idx_rfqs_seller ON rfqs(seller_id, status);
+CREATE INDEX IF NOT EXISTS idx_rfqs_org    ON rfqs(organization_id) WHERE organization_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS rfq_items (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    rfq_id          UUID NOT NULL REFERENCES rfqs(id) ON DELETE CASCADE,
+    variant_id      UUID NOT NULL REFERENCES product_variants(id),
+    quantity        INT  NOT NULL CHECK (quantity > 0),
+    notes           TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_rfq_items_rfq ON rfq_items(rfq_id);
+
+CREATE TABLE IF NOT EXISTS rfq_quotes (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    rfq_id          UUID NOT NULL REFERENCES rfqs(id) ON DELETE CASCADE,
+    quoted_total    NUMERIC(12,2) NOT NULL CHECK (quoted_total > 0),
+    line_prices     JSONB NOT NULL,
+    validity_days   INT NOT NULL CHECK (validity_days BETWEEN 1 AND 90),
+    quoted_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at      TIMESTAMPTZ NOT NULL,
+    accepted_at     TIMESTAMPTZ,
+    order_id        UUID REFERENCES orders(id)
+);
+CREATE INDEX IF NOT EXISTS idx_rfq_quotes_rfq ON rfq_quotes(rfq_id);
+
+-- ─── Phase F2.3 — Bulk SKU upload — already-present table ────
+-- product_import_jobs already exists from earlier work (status,
+-- total_rows, valid_rows, imported_rows, error_file_id). No new
+-- table needed — service layer fills it in.
+
+-- ─── Phase 5 — B2B / Organizations ─────────────────────────────
+-- Business customers (corporates, schools, govt) buying through the
+-- same checkout, but with org context: shared billing address, GSTIN
+-- invoice, PO number, approval workflow, credit terms.
+
+CREATE TABLE IF NOT EXISTS organizations (
+    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name                    TEXT NOT NULL,
+    legal_name              TEXT,
+    gstin                   TEXT,
+    pan                     TEXT,
+    billing_email           TEXT,
+    billing_phone           TEXT,
+    billing_address_id      UUID REFERENCES customer_addresses(id),
+    -- Approval threshold (in INR major). Orders >= threshold need an
+    -- approver. NULL means no approval gate.
+    approval_threshold      NUMERIC(12,2),
+    -- Credit terms — null/0 means prepay only.
+    credit_terms_days       INT NOT NULL DEFAULT 0
+                              CHECK (credit_terms_days >= 0 AND credit_terms_days <= 90),
+    credit_limit            NUMERIC(12,2),
+    status                  TEXT NOT NULL DEFAULT 'active'
+                              CHECK (status IN ('active','suspended','closed')),
+    created_by_user_id      UUID,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_organizations_status ON organizations(status);
+CREATE INDEX IF NOT EXISTS idx_organizations_gstin ON organizations(gstin)
+    WHERE gstin IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS organization_members (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    user_id         UUID NOT NULL,
+    -- Roles drive RBAC:
+    --   admin    — manage org settings + members
+    --   buyer    — place orders up to approval_threshold
+    --   approver — sign off on orders above threshold
+    --   finance  — view invoices + ledger only
+    role            TEXT NOT NULL
+                       CHECK (role IN ('admin','buyer','approver','finance')),
+    status          TEXT NOT NULL DEFAULT 'active'
+                       CHECK (status IN ('invited','active','removed')),
+    invited_email   TEXT,
+    invited_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    joined_at       TIMESTAMPTZ,
+    UNIQUE(organization_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_org_members_user ON organization_members(user_id);
+CREATE INDEX IF NOT EXISTS idx_org_members_org ON organization_members(organization_id);
+
+CREATE TABLE IF NOT EXISTS organization_invites (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    email           TEXT NOT NULL,
+    role            TEXT NOT NULL
+                       CHECK (role IN ('admin','buyer','approver','finance')),
+    token           TEXT NOT NULL UNIQUE,
+    invited_by      UUID NOT NULL,
+    expires_at      TIMESTAMPTZ NOT NULL,
+    accepted_at     TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_org_invites_token ON organization_invites(token);
+CREATE INDEX IF NOT EXISTS idx_org_invites_org ON organization_invites(organization_id);
+
+-- Order-level B2B context. NULL organization_id = retail order — the
+-- existing customer_user_id field continues to identify the placer.
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS organization_id UUID
+    REFERENCES organizations(id);
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS po_number TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS cost_center TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS billing_address_snapshot JSONB;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS invoice_email TEXT;
+-- Approval state machine, parallel to status. NULL = no approval required.
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS approval_status TEXT
+    CHECK (approval_status IN ('not_required','pending','approved','rejected'));
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS approved_by_user_id UUID;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS approval_notes TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS credit_terms_days INT NOT NULL DEFAULT 0;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_due_date TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_orders_organization ON orders(organization_id)
+    WHERE organization_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_orders_approval ON orders(approval_status)
+    WHERE approval_status = 'pending';
+
+-- ─── Production-launch blocker #2: CancelOrder refund tracking ─────
+--
+-- CancelOrder used to only flip status — now it kicks off a refund via
+-- payments-service for prepaid orders. We stamp the refund intent ID
+-- onto the order row so the refund consumer can flip payment_status
+-- to 'refunded' when payments-service publishes payment.refunded.
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS refund_intent_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_orders_refund_intent ON orders(refund_intent_id)
+    WHERE refund_intent_id IS NOT NULL;
+
+-- ─── Catalog scale: cursor pagination + filters ──────────────────────
+--
+-- The cursor sort is (created_at DESC, id DESC). idx_products_created
+-- already covers created_at DESC — we add a composite (created_at, id)
+-- so the tie-breaker on id doesn't require a separate sort step. The
+-- avg_rating index supports the MinRating filter (skipped when 0 — a
+-- partial index keeps it small).
+CREATE INDEX IF NOT EXISTS idx_products_created_id
+    ON products(created_at DESC, id DESC) WHERE status = 'active' AND approval_status = 'approved';
+CREATE INDEX IF NOT EXISTS idx_products_rating
+    ON products(avg_rating DESC) WHERE status = 'active' AND avg_rating > 0;
+
+-- Idempotent FK additions deferred until referenced tables exist
+-- (avoids the naive strings.Split(sql, ";") bootstrapper failing on
+-- first-run install). DO blocks let us skip cleanly when the FK is
+-- already in place.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'rfqs_organization_id_fkey'
+    ) THEN
+        ALTER TABLE rfqs
+            ADD CONSTRAINT rfqs_organization_id_fkey
+            FOREIGN KEY (organization_id) REFERENCES organizations(id);
+    END IF;
+END $$;

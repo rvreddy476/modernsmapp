@@ -199,12 +199,21 @@ func (s *Store) DeleteChannel(ctx context.Context, id uuid.UUID) error {
 
 // --- Member operations ---
 
-func (s *Store) AddMember(ctx context.Context, m *ChannelMember) error {
+// AddMember inserts a member row. Returns true iff a NEW row was
+// added (false on re-subscribe / role change). Audit HCh1: callers
+// must gate IncrementSubscriberCount on this signal — the previous
+// ON CONFLICT DO UPDATE always succeeded so the count drifted upward
+// on every duplicate subscribe.
+func (s *Store) AddMember(ctx context.Context, m *ChannelMember) (bool, error) {
 	query := `INSERT INTO channel_members (channel_id, user_id, role, notify_on, paid)
 		VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (channel_id, user_id) DO UPDATE SET role = $3, notify_on = $4`
-	_, err := s.db.Exec(ctx, query, m.ChannelID, m.UserID, m.Role, m.NotifyOn, m.Paid)
-	return err
+		ON CONFLICT (channel_id, user_id) DO UPDATE SET role = $3, notify_on = $4
+		RETURNING (xmax = 0) AS inserted`
+	var inserted bool
+	if err := s.db.QueryRow(ctx, query, m.ChannelID, m.UserID, m.Role, m.NotifyOn, m.Paid).Scan(&inserted); err != nil {
+		return false, err
+	}
+	return inserted, nil
 }
 
 func (s *Store) GetMember(ctx context.Context, channelID, userID uuid.UUID) (*ChannelMember, error) {
@@ -279,6 +288,17 @@ func (s *Store) CountSubscribers(ctx context.Context, channelID uuid.UUID) (int6
 func (s *Store) IncrementSubscriberCount(ctx context.Context, channelID uuid.UUID, delta int) error {
 	query := `UPDATE broadcast_channels SET subscriber_count = subscriber_count + $2, updated_at = NOW() WHERE id = $1`
 	_, err := s.db.Exec(ctx, query, channelID, delta)
+	return err
+}
+
+// SetSubscriberCount writes an absolute subscriber count. Used by the
+// sharded-counter flush worker: every flush interval it materializes
+// the sum across Redis shards back into broadcast_channels.subscriber_count.
+// The per-event IncrementSubscriberCount path stays for the Redis-less
+// fallback (dev loops + degraded-mode operation).
+func (s *Store) SetSubscriberCount(ctx context.Context, channelID uuid.UUID, total int64) error {
+	query := `UPDATE broadcast_channels SET subscriber_count = $2, updated_at = NOW() WHERE id = $1`
+	_, err := s.db.Exec(ctx, query, channelID, total)
 	return err
 }
 

@@ -9,13 +9,19 @@ package service
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/atpost/rider-service/internal/digilocker"
 	"github.com/atpost/rider-service/internal/events"
 	"github.com/atpost/rider-service/internal/store"
 	"github.com/atpost/rider-service/internal/wallet"
+	"github.com/atpost/shared/outbox"
+	"github.com/atpost/shared/realtime"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -27,6 +33,10 @@ type Service struct {
 	rdb              *redis.Client
 	producer         EventPublisher
 	cfg              Config
+	rtPublisher      *realtime.Publisher
+	rtSigner         *realtime.TokenSigner
+	outboxQ          *outbox.Queuer
+	dbPool           *pgxpool.Pool
 }
 
 // Config tunes service-level constants.
@@ -58,10 +68,10 @@ type EventPublisher interface {
 	PublishRideOffered(ctx context.Context, rideID, offerID, partnerID uuid.UUID, score float64, expiresAt time.Time) error
 	PublishRideOfferRejected(ctx context.Context, rideID, offerID, partnerID uuid.UUID, reason string) error
 	PublishRideOfferExpired(ctx context.Context, rideID, offerID, partnerID uuid.UUID) error
-	PublishRideAssigned(ctx context.Context, rideID, partnerID, vehicleID, offerID uuid.UUID) error
-	PublishRideArriving(ctx context.Context, rideID, partnerID uuid.UUID) error
-	PublishRideArrived(ctx context.Context, rideID, partnerID uuid.UUID) error
-	PublishRideStarted(ctx context.Context, rideID, partnerID uuid.UUID) error
+	PublishRideAssigned(ctx context.Context, rideID, customerID, partnerID, vehicleID, offerID uuid.UUID) error
+	PublishRideArriving(ctx context.Context, rideID, customerID, partnerID uuid.UUID) error
+	PublishRideArrived(ctx context.Context, rideID, customerID, partnerID uuid.UUID) error
+	PublishRideStarted(ctx context.Context, rideID, customerID, partnerID uuid.UUID) error
 	PublishRideCompleted(ctx context.Context, payload events.RideCompletedPayload) error
 	PublishRideCancelled(ctx context.Context, payload events.RideCancelledPayload) error
 	PublishRideExpired(ctx context.Context, rideID uuid.UUID) error
@@ -124,16 +134,16 @@ func (noopPublisher) PublishRideOfferRejected(_ context.Context, _, _, _ uuid.UU
 func (noopPublisher) PublishRideOfferExpired(_ context.Context, _, _, _ uuid.UUID) error {
 	return nil
 }
-func (noopPublisher) PublishRideAssigned(_ context.Context, _, _, _, _ uuid.UUID) error {
+func (noopPublisher) PublishRideAssigned(_ context.Context, _, _, _, _, _ uuid.UUID) error {
 	return nil
 }
-func (noopPublisher) PublishRideArriving(_ context.Context, _, _ uuid.UUID) error {
+func (noopPublisher) PublishRideArriving(_ context.Context, _, _, _ uuid.UUID) error {
 	return nil
 }
-func (noopPublisher) PublishRideArrived(_ context.Context, _, _ uuid.UUID) error {
+func (noopPublisher) PublishRideArrived(_ context.Context, _, _, _ uuid.UUID) error {
 	return nil
 }
-func (noopPublisher) PublishRideStarted(_ context.Context, _, _ uuid.UUID) error {
+func (noopPublisher) PublishRideStarted(_ context.Context, _, _, _ uuid.UUID) error {
 	return nil
 }
 func (noopPublisher) PublishRideCompleted(_ context.Context, _ events.RideCompletedPayload) error {
@@ -235,6 +245,82 @@ func (s *Service) SetDigiLockerClient(c digilocker.Client) { s.digilockerClient 
 
 // SetRedis injects a Redis client used for the DigiLocker PKCE state cache.
 func (s *Service) SetRedis(c *redis.Client) { s.rdb = c }
+
+// WithRealtime wires the realtime publisher + topic-token signer. Both
+// are optional; nil-checked at every callsite so misconfiguration
+// degrades to "no live push, polling still works."
+func (s *Service) WithRealtime(p *realtime.Publisher, signer *realtime.TokenSigner) *Service {
+	s.rtPublisher = p
+	s.rtSigner = signer
+	return s
+}
+
+// publishRealtime is a best-effort fire-and-forget broadcast. Errors
+// are logged at WARN — the durable copy is the Kafka event.
+func (s *Service) publishRealtime(ctx context.Context, topic, eventType string, data any) {
+	if s.rtPublisher == nil {
+		return
+	}
+	if err := s.rtPublisher.Publish(ctx, topic, eventType, data); err != nil {
+		slog.Warn("rider-service: realtime publish failed", "topic", topic, "event", eventType, "error", err)
+	}
+}
+
+// WithOutbox wires the durable outbox so domain events flow to Kafka
+// via the publisher running in main.go.
+func (s *Service) WithOutbox(q *outbox.Queuer, db *pgxpool.Pool) *Service {
+	s.outboxQ = q
+	s.dbPool = db
+	return s
+}
+
+// emit publishes a realtime frame AND queues a durable Kafka event via
+// the outbox in one call. Both are best-effort; failures are logged at
+// WARN so a Redis or Postgres hiccup does not break the user request.
+func (s *Service) emit(ctx context.Context, topic, eventType string, data any) {
+	s.publishRealtime(ctx, topic, eventType, data)
+	if s.outboxQ == nil || s.dbPool == nil {
+		return
+	}
+	body, err := json.Marshal(data)
+	if err != nil {
+		slog.Warn("rider-service: outbox marshal failed", "event", eventType, "error", err)
+		return
+	}
+	if err := s.outboxQ.EnqueuePool(ctx, s.dbPool, eventType, topic, body); err != nil {
+		slog.Warn("rider-service: outbox enqueue failed", "event", eventType, "error", err)
+	}
+}
+
+// IssueRealtimeToken builds a topic-scoped token granting the user
+// access to their ride + partner-offer topics. Caller is responsible
+// for X-User-Id auth.
+func (s *Service) IssueRealtimeToken(ctx context.Context, userID uuid.UUID) (string, []string, error) {
+	if s.rtSigner == nil {
+		return "", nil, errors.New("realtime: signer not configured")
+	}
+	topics := []string{}
+	// Customer side: every ride the user requested. We list recent
+	// rides only — a token live for 30 min covers the active ride
+	// window; longer scrollback isn't useful for realtime.
+	if rides, err := s.store.ListRidesByCustomer(ctx, userID, 20); err == nil {
+		for _, r := range rides {
+			topics = append(topics, "rider.ride."+r.ID.String())
+		}
+	}
+	// Partner side: if this user is a partner, grant their offer topic.
+	if p, err := s.store.GetPartnerByUserID(ctx, userID); err == nil && p != nil {
+		topics = append(topics, "rider.partner."+p.ID.String()+".offers")
+	}
+	if len(topics) == 0 {
+		topics = []string{"rider.user." + userID.String()}
+	}
+	tok, err := s.rtSigner.Sign(userID.String(), topics)
+	if err != nil {
+		return "", nil, err
+	}
+	return tok, topics, nil
+}
 
 // Cfg returns a copy of the active config — handy in tests.
 func (s *Service) Cfg() Config { return s.cfg }

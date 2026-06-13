@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/atpost/notification-service/internal/store/scylla"
+	"github.com/gocql/gocql"
 	"github.com/google/uuid"
 )
 
@@ -53,6 +54,10 @@ func (s *Service) ProcessNotificationEvent(ctx context.Context, event Notificati
 					"notification_id": existingNotifID,
 					"title":           aggTitle,
 					"count":           newCount,
+					// collapse_key lets a client receiving the same
+					// aggregation update merge it with already-shown
+					// toasts for the same entity.
+					"collapse_key": GetCollapseKey(event.EventType, event.TargetID, event.RecipientID),
 				},
 			})
 			if err := s.rdb.Publish(ctx, channel, payload).Err(); err != nil {
@@ -109,6 +114,13 @@ func (s *Service) ProcessNotificationEvent(ctx context.Context, event Notificati
 	}
 
 	channel := fmt.Sprintf("notify:%s", event.RecipientID)
+	// Bucket + TS UUID match the Scylla store's (partition_key,
+	// clustering_key). Pre-computed here so the SSE handler can
+	// emit a self-contained `id: <bucket>:<ts>` event ID without an
+	// extra DB round-trip, and so Last-Event-ID replay can locate
+	// the cursor in Scylla deterministically.
+	bucket := ts.Year()*100 + int(ts.Month())
+	tsUUID := gocql.UUIDFromTime(ts).String()
 	payload, _ := json.Marshal(map[string]interface{}{
 		"type": "notification",
 		"payload": map[string]interface{}{
@@ -122,6 +134,21 @@ func (s *Service) ProcessNotificationEvent(ctx context.Context, event Notificati
 			"actor_id":        event.ActorID,
 			"actor_name":      event.ActorName,
 			"created_at":      ts,
+			// target_id / target_type let collapse_key be reconstructed
+			// client-side if needed and give the UI enough context to
+			// merge toasts intelligently.
+			"target_id":   event.TargetID,
+			"target_type": event.TargetType,
+			// Pre-computed collapse_key — same algorithm push_collapse.go
+			// uses for FCM/APNs thread-id. UI uses it to merge bursts:
+			// "Ravi and 3 others liked your post" instead of three
+			// individual toasts.
+			"collapse_key": GetCollapseKey(event.EventType, event.TargetID, event.RecipientID),
+			// (bucket, ts) is the Scylla composite cursor — also the
+			// SSE event id the client persists for Last-Event-ID
+			// replay across reconnects.
+			"bucket": bucket,
+			"ts":     tsUUID,
 		},
 	})
 	if err := s.rdb.Publish(ctx, channel, payload).Err(); err != nil {
@@ -175,9 +202,27 @@ func (s *Service) sendTemplatePush(ctx context.Context, recipientID uuid.UUID, t
 		"icon":      tmpl.Icon,
 		"priority":  tmpl.Priority,
 	}
+	// Audit HS2: cap how many devices we hit per recipient and dedup
+	// per (platform, token) so an attacker can't make the service do
+	// dozens of serial FCM/APNs RTTs by registering many devices.
+	// Most users have <5 active devices; cap at 10 with a stable order
+	// (most-recently-registered first is implicit from the DB ORDER).
+	const maxDevicesPerRecipient = 10
+	seen := make(map[string]struct{}, len(tokens))
+	sent := 0
 	for _, t := range tokens {
+		if sent >= maxDevicesPerRecipient {
+			break
+		}
+		key := t.Platform + ":" + t.PushToken
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
 		if err := s.pusher.Send(ctx, t.PushToken, t.Platform, title, body, data); err != nil {
 			slog.Warn("processor: push send failed", "error", err, "platform", t.Platform)
+			continue
 		}
+		sent++
 	}
 }

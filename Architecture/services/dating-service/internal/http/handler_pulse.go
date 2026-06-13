@@ -59,6 +59,32 @@ func (h *Handler) GetPulseNebula(c *gin.Context) {
 	}
 }
 
+// ExplainPulseCandidate — GET /v1/dating/pulse/:targetUserId/explain
+//
+// §P1-2 transparency control: returns a structured, human-safe
+// list of reasons the candidate surfaced in the viewer's deck,
+// the distance (rounded + capped at viewer's max radius), and a
+// boolean for whether the candidate is currently promoted.
+//
+// Internal-key gated by the parent group; X-User-Id identifies
+// the viewer.
+func (h *Handler) ExplainPulseCandidate(c *gin.Context) {
+	viewerID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	targetID, ok := parseUUID(c, "targetUserId")
+	if !ok {
+		return
+	}
+	resp, err := h.svc.ExplainCandidate(c.Request.Context(), viewerID, targetID)
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, resp, nil)
+}
+
 // parseQueryInt is a forgiving helper — falls back to fallback on any parse
 // problem instead of erroring.
 func parseQueryInt(c *gin.Context, key string, fallback int) int {

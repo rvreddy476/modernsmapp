@@ -12,6 +12,11 @@ import (
 
 // User represents a user profile.
 type User struct {
+	// EntityType is the relationship-separation discriminator (spec §1.2).
+	// Always "user" on this struct — the field is set in scanUser so every
+	// row returned from the store is self-describing. Pages set "page" via
+	// their own struct.
+	EntityType      string     `json:"entityType"`
 	ID              uuid.UUID  `json:"id"`
 	Username        *string    `json:"username,omitempty"`
 	DisplayName     string     `json:"display_name"`
@@ -82,6 +87,7 @@ func scanUser(row pgx.Row) (*User, error) {
 		}
 		return nil, err
 	}
+	u.EntityType = "user"
 	return &u, nil
 }
 
@@ -131,6 +137,86 @@ func (s *Store) CreateUser(ctx context.Context, id uuid.UUID, displayName, first
 	}
 
 	return tx.Commit(ctx)
+}
+
+// ProjectionInput carries the identity-sourced fields used to (re)build a row
+// in the local app.users projection — by the read-through repair path and the
+// background reconcile job.
+type ProjectionInput struct {
+	ID            uuid.UUID
+	Username      *string
+	DisplayName   string
+	FirstName     *string
+	LastName      *string
+	Bio           string
+	Category      string
+	Profession    string
+	Website       string
+	Location      string
+	BadgeFlags    int
+	IsVerified    bool
+	AvatarMediaID *uuid.UUID
+	CoverMediaID  *uuid.UUID
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
+// UpsertUserProjection inserts or refreshes a user's row in app.users from an
+// identity-sourced record. It is idempotent: a re-applied or stale record only
+// updates the row when its UpdatedAt is newer than the stored one, so an
+// out-of-order event or replay never clobbers fresher data. user_settings is
+// seeded with defaults on first insert only.
+func (s *Store) UpsertUserProjection(ctx context.Context, p ProjectionInput) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO users (id, username, display_name, first_name, last_name, bio,
+			avatar_media_id, cover_media_id, category, profession, website, location,
+			badge_flags, is_verified, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+		ON CONFLICT (id) DO UPDATE SET
+			username        = EXCLUDED.username,
+			display_name    = EXCLUDED.display_name,
+			first_name      = EXCLUDED.first_name,
+			last_name       = EXCLUDED.last_name,
+			bio             = EXCLUDED.bio,
+			avatar_media_id = EXCLUDED.avatar_media_id,
+			cover_media_id  = EXCLUDED.cover_media_id,
+			category        = EXCLUDED.category,
+			profession      = EXCLUDED.profession,
+			website         = EXCLUDED.website,
+			location        = EXCLUDED.location,
+			badge_flags     = EXCLUDED.badge_flags,
+			is_verified     = EXCLUDED.is_verified,
+			updated_at      = EXCLUDED.updated_at
+		WHERE users.updated_at < EXCLUDED.updated_at
+	`, p.ID, p.Username, p.DisplayName, p.FirstName, p.LastName, p.Bio,
+		p.AvatarMediaID, p.CoverMediaID, p.Category, p.Profession, p.Website, p.Location,
+		p.BadgeFlags, p.IsVerified, p.CreatedAt, p.UpdatedAt); err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO user_settings (user_id, account_visibility, allow_messages_from, allow_comments_from, created_at, updated_at)
+		VALUES ($1, 'public', 'everyone', 'everyone', $2, $2)
+		ON CONFLICT (user_id) DO NOTHING
+	`, p.ID, p.CreatedAt); err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
+}
+
+// CountUsers returns the number of rows in app.users — used by the projection
+// health check to compare against the identity master count.
+func (s *Store) CountUsers(ctx context.Context) (int64, error) {
+	var n int64
+	err := s.db.QueryRow(ctx, `SELECT COUNT(*) FROM users`).Scan(&n)
+	return n, err
 }
 
 // GetUser returns a user profile by ID.

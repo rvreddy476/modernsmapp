@@ -88,10 +88,35 @@ func (p *Producer) publish(ctx context.Context, eventType string, actorID *uuid.
 }
 
 // PublishRaw publishes a pre-built payload to Kafka, used by the outbox relay.
+//
+// CRITICAL BUG FIX: previously this wrote the raw `payloadBytes` as the
+// Kafka message Value with no envelope wrapper. Every downstream consumer
+// (search-service, notification-service, etc.) expects an EventEnvelope
+// with `event_type` to dispatch on — without it, the switch falls
+// through to `default` and the event is silently dropped. End-user
+// symptom: a user registered through auth-service never showed up in
+// search results / notification settings / any cross-service projection,
+// because the outbox events all hit downstream consumers as unparseable
+// blobs. The non-outbox `publish` method (above) already wraps in
+// EventEnvelope; PublishRaw now does the same.
 func (p *Producer) PublishRaw(ctx context.Context, eventType string, partitionKey string, payloadBytes json.RawMessage) error {
+	envelope := events.EventEnvelope{
+		EventID:    uuid.New().String(),
+		EventType:  eventType,
+		OccurredAt: time.Now(),
+		Payload:    payloadBytes,
+	}
+	envelopeBytes, err := json.Marshal(envelope)
+	if err != nil {
+		return fmt.Errorf("failed to marshal envelope: %w", err)
+	}
+	key := partitionKey
+	if key == "" {
+		key = envelope.EventID
+	}
 	return p.writer.WriteMessages(ctx, kafka.Message{
-		Key:   []byte(partitionKey),
-		Value: payloadBytes,
+		Key:   []byte(key),
+		Value: envelopeBytes,
 	})
 }
 

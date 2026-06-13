@@ -83,6 +83,97 @@ final productReviewsProvider = FutureProvider.autoDispose
   return repo.getProductReviews(productId);
 });
 
+// ─── Seller dashboard ────────────────────────────────────────────────
+
+/// mySellerProfileProvider — caller's seller profile. null when the
+/// user hasn't onboarded as a seller yet; the dashboard renders an
+/// "onboard first" CTA in that case. autoDispose so we don't hold the
+/// profile in memory when the user leaves the seller section.
+final mySellerProfileProvider = FutureProvider.autoDispose<SellerProfile?>((ref) async {
+  final repo = ref.watch(commerceRepositoryProvider);
+  return repo.getMySellerProfile();
+});
+
+/// sellerDashboardProvider — stats for the seller home screen. Refreshed
+/// each time the screen is entered (autoDispose + watched via the
+/// invalidate call in the screen's RefreshIndicator).
+final sellerDashboardProvider = FutureProvider.autoDispose<SellerDashboardStats>((ref) async {
+  final repo = ref.watch(commerceRepositoryProvider);
+  return repo.getSellerDashboard();
+});
+
+/// mySellerProductsProvider — the seller's own catalog. autoDispose so
+/// pull-to-refresh just re-fires the family. No cursor today; if the
+/// list grows past 50 a follow-up should add pagination.
+final mySellerProductsProvider = FutureProvider.autoDispose<List<SellerProductSummary>>((ref) async {
+  final repo = ref.watch(commerceRepositoryProvider);
+  return repo.listMyProducts();
+});
+
+/// productVariantsProvider — full variant list for one product, used
+/// by the seller's variants management screen. Family on productId so
+/// each product's variants are cached independently.
+final productVariantsProvider = FutureProvider.autoDispose
+    .family<List<ProductVariantDetail>, String>((ref, productId) async {
+  final repo = ref.watch(commerceRepositoryProvider);
+  return repo.listProductVariants(productId);
+});
+
+/// sellerOrdersProvider — seller fulfillment queue, family on the
+/// stage filter (all / unshipped / in_transit / delivered / cancelled).
+final sellerOrdersProvider = FutureProvider.autoDispose
+    .family<List<SellerOrderCard>, String>((ref, stage) async {
+  final repo = ref.watch(commerceRepositoryProvider);
+  return repo.listSellerOrders(stage: stage);
+});
+
+/// sellerReturnsProvider — seller returns inbox.
+final sellerReturnsProvider = FutureProvider.autoDispose<List<SellerReturnCard>>((ref) async {
+  final repo = ref.watch(commerceRepositoryProvider);
+  return repo.listSellerReturns();
+});
+
+/// sellerEarningsProvider — delivered prepaid items payout ledger.
+final sellerEarningsProvider = FutureProvider.autoDispose<List<SellerEarning>>((ref) async {
+  final repo = ref.watch(commerceRepositoryProvider);
+  return repo.listSellerEarnings();
+});
+
+/// sellerCODRemittancesProvider — COD payout ledger. Family on status
+/// filter (empty = all).
+final sellerCODRemittancesProvider = FutureProvider.autoDispose
+    .family<List<CODRemittance>, String>((ref, status) async {
+  final repo = ref.watch(commerceRepositoryProvider);
+  return repo.listCODRemittances(status: status.isEmpty ? null : status);
+});
+
+/// bulkImportJobsProvider — seller's bulk SKU import jobs. Mobile is
+/// monitor + execute only; uploads happen on web.
+final bulkImportJobsProvider =
+    FutureProvider.autoDispose<List<BulkImportJob>>((ref) async {
+  final repo = ref.watch(commerceRepositoryProvider);
+  return repo.listBulkImportJobs();
+});
+
+// couponPreviewProvider — read-only preview of what `code` would do to
+// the current cart total. autoDispose + family so it requeries when
+// the user edits the code input, and clears when the cart screen
+// unmounts. The actual coupon application still happens at checkout.
+final couponPreviewProvider = FutureProvider.autoDispose
+    .family<CouponPreview, String>((ref, code) async {
+  if (code.trim().isEmpty) {
+    return const CouponPreview(
+      couponCode: '',
+      couponDiscount: 0,
+      subtotal: 0,
+      grandTotal: 0,
+      applied: false,
+    );
+  }
+  final repo = ref.watch(commerceRepositoryProvider);
+  return repo.previewCoupon(code.trim());
+});
+
 // ─── Cart ───────────────────────────────────────────────────────────────
 
 /// Cart state notifier. Holds an `AsyncValue<Cart>` so screens can render
@@ -179,11 +270,13 @@ final pincodeServiceabilityProvider = FutureProvider.autoDispose
 
 /// Light-weight order list for `MyOrdersScreen`. AutoDisposes when the user
 /// navigates away — the screen invalidates this provider on pull-to-refresh
-/// and after order-cancel / return-create mutations.
+/// and after order-cancel / return-create mutations. Returns the first
+/// page only; the dedicated paginated provider lives in the screen.
 final myOrdersProvider =
     FutureProvider.autoDispose<List<OrderListItem>>((ref) async {
   final repo = ref.watch(commerceRepositoryProvider);
-  return repo.getMyOrders();
+  final page = await repo.getMyOrders();
+  return page.items;
 });
 
 /// Full order detail (with items + shipments). Keyed on order id.

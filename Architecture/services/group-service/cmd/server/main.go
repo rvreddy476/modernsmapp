@@ -33,7 +33,15 @@ func main() {
 	msgURL := env("MESSAGE_SERVICE_URL", "http://chat-message-service:8092")
 	postURL := env("POST_SERVICE_URL", "http://post-service:8084")
 	userURL := env("USER_SERVICE_URL", "http://user-service:8082")
-	jwtSecret := env("JWT_SECRET", "dev_secret_change_me")
+	// Audit CG4: previously defaulted to the literal string
+	// "dev_secret_change_me" if JWT_SECRET was unset — every group
+	// deploy that forgot the env var ran with a public secret in
+	// every prod logfile. Fail loud at boot instead.
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if jwtSecret == "" {
+		slog.Error("JWT_SECRET environment variable is required")
+		os.Exit(1)
+	}
 	kafkaBrokers := strings.Split(env("KAFKA_BROKERS", "redpanda:9092"), ",")
 	kafkaTopic := env("KAFKA_TOPIC", "group-events")
 
@@ -52,7 +60,7 @@ func main() {
 	}
 	slog.Info("connected to postgres")
 
-	if err := store.BootstrapSchema(ctx, dbPool, database.SetupSQL); err != nil {
+	if err := store.BootstrapSchema(ctx, dbPool, database.SetupSQL, database.Migrations); err != nil {
 		slog.Error("failed to bootstrap group schema", "error", err)
 		os.Exit(1)
 	}
@@ -106,6 +114,17 @@ func main() {
 	slog.Info("kafka consumer started")
 
 	groupHandler := http.New(groupSvc)
+
+	// Audit CG2: gate every /v1/groups/* endpoint behind the shared
+	// internal service key. The handler supports the middleware but
+	// main.go previously never wired the env var, so direct callers
+	// could spoof X-User-Id and impersonate any user.
+	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
+		groupHandler.WithInternalKey(key)
+		slog.Info("group-service: internal-service-key gate enabled")
+	} else {
+		slog.Warn("group-service: INTERNAL_SERVICE_KEY not set — every endpoint is unauthenticated. Do not run this configuration in production.")
+	}
 
 	// 10. Gin with middleware stack
 	gin.SetMode(gin.ReleaseMode)

@@ -106,7 +106,7 @@ const postCols = `id, author_id, text, visibility, content_type, is_pinned,
 	recording_date, recording_location,
 	cover_media_id, original_audio_volume, overlay_audio_volume,
 	tier_required_id,
-	created_at, updated_at`
+	created_at, updated_at, review_status`
 
 func scanPost(row pgx.Row) (*Post, error) {
 	var p Post
@@ -123,7 +123,7 @@ func scanPost(row pgx.Row) (*Post, error) {
 		&p.RecordingDate, &p.RecordingLocation,
 		&p.CoverMediaID, &p.OriginalAudioVol, &p.OverlayAudioVol,
 		&p.TierRequiredID,
-		&p.CreatedAt, &p.UpdatedAt,
+		&p.CreatedAt, &p.UpdatedAt, &p.ReviewStatus,
 	)
 	if err != nil {
 		return nil, err
@@ -148,7 +148,7 @@ func scanPostRows(rows pgx.Rows) ([]Post, error) {
 			&p.RecordingDate, &p.RecordingLocation,
 			&p.CoverMediaID, &p.OriginalAudioVol, &p.OverlayAudioVol,
 			&p.TierRequiredID,
-			&p.CreatedAt, &p.UpdatedAt,
+			&p.CreatedAt, &p.UpdatedAt, &p.ReviewStatus,
 		); err != nil {
 			return nil, err
 		}
@@ -166,6 +166,59 @@ func (s *Store) ResolveMediaKind(ctx context.Context, mediaID uuid.UUID) string 
 		return "image"
 	}
 	return fileType
+}
+
+// MediaMetadata is the per-media row shape returned by
+// BatchGetMediaMetadata. Fields default to zero values for missing
+// rows so callers can iterate the original input order without
+// per-id error handling.
+type MediaMetadata struct {
+	Kind            string
+	DurationSeconds int
+	Width           int
+	Height          int
+}
+
+// BatchGetMediaMetadata fetches file_type + duration_seconds + width
+// + height for every media id in a single SQL trip. Replaces the
+// per-media N+1 the CreatePost path used to do via
+// ResolveMediaKind / ResolveMediaDuration / ResolveMediaDimensions —
+// audit H1 from the 2026-05-13 sweep.
+//
+// Missing rows are silently absent from the map (caller treats them
+// as the legacy default: kind="image", everything else zero).
+func (s *Store) BatchGetMediaMetadata(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]MediaMetadata, error) {
+	out := make(map[uuid.UUID]MediaMetadata, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT id,
+		       file_type,
+		       COALESCE(duration_seconds, 0),
+		       COALESCE(width, 0),
+		       COALESCE(height, 0)
+		FROM media_assets
+		WHERE id = ANY($1)
+	`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("batch media lookup: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			id   uuid.UUID
+			meta MediaMetadata
+		)
+		if err := rows.Scan(&id, &meta.Kind, &meta.DurationSeconds, &meta.Width, &meta.Height); err != nil {
+			return nil, fmt.Errorf("batch media scan: %w", err)
+		}
+		if meta.Kind == "" {
+			meta.Kind = "image"
+		}
+		out[id] = meta
+	}
+	return out, rows.Err()
 }
 
 // ResolveMediaDuration queries media_assets for the video duration in seconds.
@@ -194,6 +247,18 @@ func (s *Store) CreatePost(ctx context.Context, p *Post) error {
 	reviewStatus := p.ReviewStatus
 	if reviewStatus == "" {
 		reviewStatus = "approved"
+	}
+	// posts.hashtags / posts.mentions / posts.tags are NOT NULL DEFAULT '{}'.
+	// pgx encodes a nil Go slice as SQL NULL, which beats the default and trips
+	// the constraint. Coerce here so callers can pass either nil or [].
+	if p.Hashtags == nil {
+		p.Hashtags = []string{}
+	}
+	if p.Mentions == nil {
+		p.Mentions = []uuid.UUID{}
+	}
+	if p.Tags == nil {
+		p.Tags = []string{}
 	}
 	_, err = tx.Exec(ctx, `
 		INSERT INTO posts (id, author_id, text, visibility, content_type,
@@ -302,8 +367,10 @@ func (s *Store) GetPost(ctx context.Context, id uuid.UUID) (*Post, error) {
 	return p, nil
 }
 
-// GetPostsByAuthor returns paginated posts by author, optionally filtered by content type.
-func (s *Store) GetPostsByAuthor(ctx context.Context, authorID uuid.UUID, contentType string, limit int, cursor string) ([]Post, string, error) {
+// GetPostsByAuthor returns paginated posts by author, optionally filtered by
+// content type. When includeNonApproved is false, only approved posts are
+// returned — callers pass true only when the viewer is the author.
+func (s *Store) GetPostsByAuthor(ctx context.Context, authorID uuid.UUID, contentType string, limit int, cursor string, includeNonApproved bool) ([]Post, string, error) {
 	if limit <= 0 || limit > 50 {
 		limit = 20
 	}
@@ -314,6 +381,10 @@ func (s *Store) GetPostsByAuthor(ctx context.Context, authorID uuid.UUID, conten
 	query := `SELECT ` + postCols + `
 		FROM posts
 		WHERE author_id = $1 AND deleted_at IS NULL`
+
+	if !includeNonApproved {
+		query += ` AND review_status = 'approved'`
+	}
 
 	argIdx := 3
 	if contentType != "" && contentType != "all" {
@@ -389,7 +460,8 @@ func (s *Store) GetRecentPosts(ctx context.Context, excludeAuthor *uuid.UUID, li
 
 	query := `SELECT ` + postCols + `
 		FROM posts
-		WHERE visibility = 'public' AND deleted_at IS NULL`
+		WHERE visibility = 'public' AND deleted_at IS NULL
+			AND review_status = 'approved'`
 
 	argIdx := 2
 	if excludeAuthor != nil {
@@ -620,6 +692,21 @@ func (s *Store) GetPostAuthorID(ctx context.Context, postID uuid.UUID) (uuid.UUI
 	return authorID, err
 }
 
+// GetPostAuthorAndContentType returns the (author_id, content_type)
+// pair for a post in one query. Used by the MediaTranscodeConsumer
+// to detect whether a reclassification actually changed the value
+// (so a no-op doesn't fan out a useless event) and to populate the
+// downstream PostContentTypeChanged payload.
+func (s *Store) GetPostAuthorAndContentType(ctx context.Context, postID uuid.UUID) (uuid.UUID, string, error) {
+	var authorID uuid.UUID
+	var contentType string
+	err := s.db.QueryRow(ctx,
+		`SELECT author_id, content_type FROM posts WHERE id = $1 AND deleted_at IS NULL`,
+		postID,
+	).Scan(&authorID, &contentType)
+	return authorID, contentType, err
+}
+
 // UpdatePostCoverMedia updates the cover_media_id of a post.
 func (s *Store) UpdatePostCoverMedia(ctx context.Context, postID uuid.UUID, coverMediaID *uuid.UUID) error {
 	_, err := s.db.Exec(ctx, `UPDATE posts SET cover_media_id = $2, updated_at = NOW() WHERE id = $1`, postID, coverMediaID)
@@ -708,6 +795,21 @@ func (s *Store) GetBookmarks(ctx context.Context, userID uuid.UUID, limit int, c
 }
 
 // GetPostsByIDs returns posts matching the given IDs (excluding soft-deleted).
+// FlipReviewStatusFromPending sets review_status to newStatus only when
+// the post is currently 'pending'. The media-transcode consumer uses this
+// to finalize a video post's publish gate without clobbering a manual
+// moderator decision. Returns true when a row was updated.
+func (s *Store) FlipReviewStatusFromPending(ctx context.Context, postID uuid.UUID, newStatus string) (bool, error) {
+	tag, err := s.db.Exec(ctx, `
+		UPDATE posts SET review_status = $2, updated_at = NOW()
+		WHERE id = $1 AND review_status = 'pending'
+	`, postID, newStatus)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 func (s *Store) GetPostsByIDs(ctx context.Context, ids []uuid.UUID) ([]Post, error) {
 	if len(ids) == 0 {
 		return nil, nil

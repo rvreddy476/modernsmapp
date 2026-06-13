@@ -33,24 +33,34 @@ type CreateRideInput struct {
 	EstimatedDurationMin *float64
 	EstimatedFare        *float64
 	PaymentMethod        *string
+	// ScheduledFor — when non-nil + future, the row is inserted at
+	// status='scheduled' with scheduled_for set. The activation worker
+	// promotes it to 'requested' ≈ T-15 min before pickup.
+	ScheduledFor *time.Time
 }
 
 // CreateRide inserts a row in `requested` status. Sprint 2 fills in matching,
-// state machine, and cancellation paths.
+// state machine, and cancellation paths. G4.5 adds optional ScheduledFor to
+// park the row in `scheduled` until the activation worker takes it live.
 func (s *Store) CreateRide(ctx context.Context, in CreateRideInput) (*Ride, error) {
 	// PostGIS notes: ST_MakePoint takes (lng, lat) — that order is part of
 	// the geography contract. Cast through geography(POINT,4326) to keep the
 	// column happy.
+	status := "requested"
+	if in.ScheduledFor != nil && in.ScheduledFor.After(time.Now()) {
+		status = "scheduled"
+	}
 	const q = `
         INSERT INTO rider_rides (
             customer_user_id, city_id, vehicle_type, status,
             pickup_address, pickup_location, drop_address, drop_location,
-            estimated_distance_km, estimated_duration_min, estimated_fare, payment_method
+            estimated_distance_km, estimated_duration_min, estimated_fare, payment_method,
+            scheduled_for
         ) VALUES (
-            $1, $2, $3::rider_vehicle_type, 'requested',
+            $1, $2, $3::rider_vehicle_type, $14::rider_ride_status,
             $4, ST_SetSRID(ST_MakePoint($5, $6), 4326)::geography,
             $7, ST_SetSRID(ST_MakePoint($8, $9), 4326)::geography,
-            $10, $11, $12, $13
+            $10, $11, $12, $13, $15
         )
         RETURNING id, customer_user_id, partner_id, vehicle_id, city_id, vehicle_type, status,
                   pickup_address, ST_Y(pickup_location::geometry), ST_X(pickup_location::geometry),
@@ -62,8 +72,63 @@ func (s *Store) CreateRide(ctx context.Context, in CreateRideInput) (*Ride, erro
 		in.PickupAddress, in.PickupLng, in.PickupLat,
 		in.DropAddress, in.DropLng, in.DropLat,
 		in.EstimatedDistanceKM, in.EstimatedDurationMin, in.EstimatedFare, in.PaymentMethod,
+		status, in.ScheduledFor,
 	)
 	return scanRide(row)
+}
+
+// ListScheduledRidesDue returns scheduled rides whose
+// scheduled_for - scheduled_lead_min minutes is in the past — i.e.
+// ready for activation. SKIP LOCKED keeps concurrent workers safe.
+func (s *Store) ListScheduledRidesDue(ctx context.Context, batch int) ([]Ride, error) {
+	if batch <= 0 {
+		batch = 25
+	}
+	const q = `
+        SELECT id, customer_user_id, partner_id, vehicle_id, city_id, vehicle_type, status,
+               pickup_address, ST_Y(pickup_location::geometry), ST_X(pickup_location::geometry),
+               drop_address, ST_Y(drop_location::geometry), ST_X(drop_location::geometry),
+               estimated_distance_km, estimated_duration_min, estimated_fare, payment_method,
+               otp_expires_at, requested_at, created_at, updated_at
+        FROM rider_rides
+        WHERE status = 'scheduled'
+          AND scheduled_for IS NOT NULL
+          AND scheduled_for - (scheduled_lead_min * INTERVAL '1 minute') <= NOW()
+        ORDER BY scheduled_for
+        LIMIT $1
+        FOR UPDATE SKIP LOCKED`
+	rows, err := s.db.Query(ctx, q, batch)
+	if err != nil {
+		return nil, fmt.Errorf("list scheduled rides due: %w", err)
+	}
+	defer rows.Close()
+	var out []Ride
+	for rows.Next() {
+		r, err := scanRide(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *r)
+	}
+	return out, rows.Err()
+}
+
+// ActivateScheduledRide promotes the row from 'scheduled' to
+// 'requested' so the dispatch consumer picks it up. Idempotent —
+// returns ErrRideNotFound if the row already moved.
+func (s *Store) ActivateScheduledRide(ctx context.Context, rideID uuid.UUID) error {
+	tag, err := s.db.Exec(ctx, `
+		UPDATE rider_rides
+		SET status = 'requested', activated_at = NOW()
+		WHERE id = $1 AND status = 'scheduled'
+	`, rideID)
+	if err != nil {
+		return fmt.Errorf("activate scheduled: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrRideNotFound
+	}
+	return nil
 }
 
 // GetRide returns one ride by id.

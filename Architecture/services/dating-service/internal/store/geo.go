@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/google/uuid"
 )
@@ -65,6 +66,122 @@ func EncodeGeohash(lat, lon float64, precision int) string {
 		}
 	}
 	return string(out)
+}
+
+// GeohashNeighbours returns the 8 neighbouring geohash cells of `gh` at
+// the same precision plus `gh` itself (9 cells total). The candidate
+// query uses this to cover the radius without a haversine post-filter
+// on a too-narrow geohash prefix — a viewer on a cell boundary sees
+// candidates across the boundary.
+//
+// Returns nil for an empty / invalid input so callers can branch.
+//
+// The geohash cell-neighbour algorithm relies on a 32-character base
+// alphabet and pre-computed "borders" + "neighbours" lookup tables —
+// stdlib-only via the official RFC reference tables below. Faster than
+// re-encoding lat/lon at every offset.
+func GeohashNeighbours(gh string) []string {
+	if gh == "" {
+		return nil
+	}
+	out := make([]string, 0, 9)
+	out = append(out, gh)
+	for _, dir := range []string{"n", "s", "e", "w"} {
+		if n := geohashAdjacent(gh, dir); n != "" {
+			out = append(out, n)
+		}
+	}
+	// Corners via composition.
+	if ne := geohashAdjacent(geohashAdjacent(gh, "n"), "e"); ne != "" {
+		out = append(out, ne)
+	}
+	if nw := geohashAdjacent(geohashAdjacent(gh, "n"), "w"); nw != "" {
+		out = append(out, nw)
+	}
+	if se := geohashAdjacent(geohashAdjacent(gh, "s"), "e"); se != "" {
+		out = append(out, se)
+	}
+	if sw := geohashAdjacent(geohashAdjacent(gh, "s"), "w"); sw != "" {
+		out = append(out, sw)
+	}
+	return out
+}
+
+// geohashAdjacent implements the standard geohash cell-adjacency lookup.
+// Tables from the geohash.org reference implementation.
+func geohashAdjacent(gh, dir string) string {
+	if gh == "" {
+		return ""
+	}
+	neighbours := map[string][2]string{
+		"n": {"p0r21436x8zb9dcf5h7kjnmqesgutwvy", "bc01fg45238967deuvhjyznpkmstqrwx"},
+		"s": {"14365h7k9dcfesgujnmqp0r2twvyx8zb", "238967debc01fg45kmstqrwxuvhjyznp"},
+		"e": {"bc01fg45238967deuvhjyznpkmstqrwx", "p0r21436x8zb9dcf5h7kjnmqesgutwvy"},
+		"w": {"238967debc01fg45kmstqrwxuvhjyznp", "14365h7k9dcfesgujnmqp0r2twvyx8zb"},
+	}
+	borders := map[string][2]string{
+		"n": {"prxz", "bcfguvyz"},
+		"s": {"028b", "0145hjnp"},
+		"e": {"bcfguvyz", "prxz"},
+		"w": {"0145hjnp", "028b"},
+	}
+	last := gh[len(gh)-1]
+	parent := gh[:len(gh)-1]
+	odd := len(gh)%2 == 0 // base case: first char is "even" (lon bit first)
+	idx := 0
+	if odd {
+		idx = 1
+	}
+	if strings.ContainsRune(borders[dir][idx], rune(last)) {
+		if parent == "" {
+			return ""
+		}
+		parent = geohashAdjacent(parent, dir)
+		if parent == "" {
+			return ""
+		}
+	}
+	nextChar := strings.IndexRune(neighbours[dir][idx], rune(last))
+	if nextChar < 0 || nextChar >= len(geohashBase32) {
+		return ""
+	}
+	return parent + string(geohashBase32[nextChar])
+}
+
+// GeohashPrefixForRadiusKm returns the geohash prefix length that
+// covers a given radius (km) with reasonable bounding-box overhead.
+// Used by the discovery query to LIKE-match the candidate's geohash
+// against the viewer's prefix — index-friendly + index-bounded.
+//
+// Cell-size cheat sheet (approximate, mid-latitude):
+//
+//	prec 1 -> ~5,000 km
+//	prec 2 -> ~1,250 km
+//	prec 3 -> ~150 km
+//	prec 4 -> ~40 km
+//	prec 5 -> ~5 km
+//	prec 6 -> ~1.2 km
+//	prec 7 -> ~150 m
+//
+// For a 25 km radius we want prec 4 (~40 km) so the 9-cell neighbour
+// pattern covers the full disc with a little overflow.
+func GeohashPrefixForRadiusKm(km int) int {
+	switch {
+	case km <= 0:
+		return 0
+	case km <= 1:
+		return 6
+	case km <= 5:
+		return 5
+	case km <= 50:
+		return 4
+	case km <= 200:
+		return 3
+	case km <= 1500:
+		return 2
+	default:
+		return 1
+	}
 }
 
 // DistanceKm returns the great-circle distance between (lat1, lon1) and

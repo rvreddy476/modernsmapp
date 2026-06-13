@@ -176,8 +176,14 @@ class SettingsScreen extends ConsumerWidget {
                 _SettingTile(
                   icon: Icons.apps,
                   title: 'Mini Apps',
-                  subtitle: 'Discover apps built on AtPost',
+                  subtitle: 'Discover apps built on VChat',
                   onTap: () => context.push('/apps'),
+                ),
+                _SettingTile(
+                  icon: Icons.storefront_outlined,
+                  title: 'Seller dashboard',
+                  subtitle: 'Manage your store, products, and variants',
+                  onTap: () => context.push('/seller/dashboard'),
                 ),
               ],
             ),
@@ -197,19 +203,19 @@ class SettingsScreen extends ConsumerWidget {
                 ),
                 _SettingTile(
                   icon: Icons.info_outline,
-                  title: 'About AtPost',
+                  title: 'About VChat',
                   subtitle: 'Version and platform information',
                   onTap: () {
                     showAboutDialog(
                       context: context,
-                      applicationName: 'AtPost',
+                      applicationName: 'VChat',
                       applicationVersion: '1.0.0',
                       applicationLegalese:
-                          '(c) 2026 AtPost. All rights reserved.',
+                          '(c) 2026 VChat. All rights reserved.',
                       children: const [
                         SizedBox(height: 8),
                         Text(
-                          'AtPost is a social platform for creators and communities.',
+                          'VChat is a social platform for creators and communities.',
                         ),
                       ],
                     );

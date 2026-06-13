@@ -1,0 +1,54 @@
+# post-service overrides for the staging environment.
+#
+# The atpost-service chart owns Deployment / Service / SA / ESO /
+# HPA / PDB / ServiceMonitor / Ingress. Anything not listed here
+# inherits the chart default.
+#
+# CI rewrites image.tag on every push to main; never hand-edit it.
+# All other fields are reviewed in PR.
+
+service:
+  name: post-service
+  port: 8084
+
+image:
+  repository: 123456789012.dkr.ecr.ap-south-1.amazonaws.com/atpost/post-service
+  tag: latest # CI overrides via `--set image.tag=<sha>`
+
+replicaCount: 2 # staging is lower; HPA off
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  limits:
+    cpu: 1
+    memory: 1Gi
+
+serviceAccount:
+  irsaRoleArn: arn:aws:iam::123456789012:role/atpost-staging-post-service-irsa
+
+externalSecret:
+  enabled: true
+  remoteKey: atpost/staging/post-service
+  data:
+    - { secretKey: POSTGRES_DSN, remoteRef: postgres_dsn }
+    - { secretKey: REDIS_ADDR, remoteRef: redis_addr }
+    - { secretKey: REDIS_PASSWORD, remoteRef: redis_password }
+    - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
+    - { secretKey: SCYLLA_HOSTS, remoteRef: scylla_hosts }
+    - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
+    - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
+    - { secretKey: JWT_KID, remoteRef: jwt_kid }
+
+env:
+  ENV: staging
+  LOG_LEVEL: info
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  USER_SERVICE_URL: http://user-service.atpost.svc.cluster.local:8082
+  GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083
+  MEDIA_SERVICE_URL: http://media-service.atpost.svc.cluster.local:8087
+
+# Internal-only — api-gateway is the external surface.
+ingress:
+  enabled: false

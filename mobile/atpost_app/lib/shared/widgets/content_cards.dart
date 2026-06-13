@@ -313,15 +313,13 @@ class _PostCardState extends ConsumerState<PostCard> {
                 ),
               _buildMediaBlock(),
             ] else
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-                child: Text(
-                  'Shared a post',
-                  style: AppTextStyles.bodySmall.copyWith(
-                    color: AppColors.textSecondary,
-                  ),
-                ),
-              ),
+              // No body, no media, no poll. The repo-level filter
+              // already drops these for the home feed; this is a
+              // belt-and-suspenders no-op for any surface that might
+              // pass an empty post through (search results, bookmarks).
+              // Better to render an empty body than a misleading
+              // "Shared a post" placeholder.
+              const SizedBox.shrink(),
 
             if (post.tags.isNotEmpty)
               Padding(

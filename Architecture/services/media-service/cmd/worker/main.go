@@ -8,6 +8,7 @@ import (
 	"image"
 	_ "image/jpeg"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -24,8 +25,40 @@ import (
 	"github.com/buckket/go-blurhash"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/segmentio/kafka-go"
 )
+
+// Video-domain metrics for the transcode worker. The worker is a separate
+// process with no HTTP surface of its own, so it exposes its own /metrics
+// endpoint (see startMetricsServer).
+var (
+	transcodeTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "media_transcode_total",
+		Help: "Video transcode jobs processed, by result.",
+	}, []string{"result"})
+	transcodeDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "media_transcode_duration_seconds",
+		Help:    "Wall-clock duration of a video transcode job.",
+		Buckets: []float64{1, 5, 15, 30, 60, 120, 300, 600},
+	})
+)
+
+// startMetricsServer serves Prometheus metrics for the worker process.
+func startMetricsServer() {
+	port := os.Getenv("METRICS_PORT")
+	if port == "" {
+		port = "9091"
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
+	log.Printf("Worker metrics listening on :%s/metrics", port)
+	if err := http.ListenAndServe(":"+port, mux); err != nil {
+		log.Printf("Worker metrics server stopped: %v", err)
+	}
+}
 
 func main() {
 	// Config
@@ -72,7 +105,7 @@ func main() {
 	}
 	log.Println("Connected to Postgres")
 
-	if err := postgres.BootstrapSchema(ctx, dbPool, database.SetupSQL); err != nil {
+	if err := postgres.BootstrapSchema(ctx, dbPool, database.SetupSQL, database.Migrations); err != nil {
 		log.Fatalf("Failed to bootstrap media schema: %v\n", err)
 	}
 	log.Println("Media schema ready")
@@ -85,6 +118,10 @@ func main() {
 	log.Println("Connected to MinIO")
 
 	pgStore := postgres.New(dbPool)
+	// Content-safety scanner for video frames. StubScanner passes
+	// everything; swap in a real Scanner (PhotoDNA / Rekognition /
+	// SafeSearch) to make the moderation gate actually enforce.
+	var scanner processing.Scanner = &processing.StubScanner{}
 	kafkaDialer, err := transport.KafkaDialerFromEnv()
 	if err != nil {
 		log.Fatalf("Failed to configure Kafka dialer: %v\n", err)
@@ -110,6 +147,8 @@ func main() {
 		cancel()
 	}()
 
+	go startMetricsServer()
+
 	log.Println("Media transcode worker started, waiting for messages...")
 
 	for {
@@ -122,7 +161,7 @@ func main() {
 			break
 		}
 
-		if err := processMessage(ctx, m, pgStore, blobStore, producer); err != nil {
+		if err := processMessage(ctx, m, pgStore, blobStore, producer, scanner); err != nil {
 			log.Printf("Failed to process message: %v\n", err)
 		}
 	}
@@ -132,7 +171,7 @@ func main() {
 	log.Println("Worker stopped")
 }
 
-func processMessage(ctx context.Context, m kafka.Message, pgStore *postgres.MediaAssetStore, blobStore *blob.Store, producer *mediaEvents.Producer) error {
+func processMessage(ctx context.Context, m kafka.Message, pgStore *postgres.MediaAssetStore, blobStore *blob.Store, producer *mediaEvents.Producer, scanner processing.Scanner) error {
 	var envelope events.EventEnvelope
 	if err := json.Unmarshal(m.Value, &envelope); err != nil {
 		return fmt.Errorf("unmarshal envelope: %w", err)
@@ -154,12 +193,17 @@ func processMessage(ctx context.Context, m kafka.Message, pgStore *postgres.Medi
 
 	log.Printf("Processing video transcode for media %s", payload.MediaAssetID)
 
-	if err := transcodeVideo(ctx, mediaAssetID, payload, pgStore, blobStore); err != nil {
+	transcodeStart := time.Now()
+	if err := transcodeVideo(ctx, mediaAssetID, payload, pgStore, blobStore, scanner); err != nil {
+		transcodeTotal.WithLabelValues("failure").Inc()
+		transcodeDuration.Observe(time.Since(transcodeStart).Seconds())
 		log.Printf("Transcode failed for %s: %v", payload.MediaAssetID, err)
 		_ = pgStore.UpdateStatus(ctx, mediaAssetID, "failed")
 		_ = producer.PublishTranscodeCompleted(ctx, mediaAssetID, "failed")
 		return nil // Don't retry — mark as failed
 	}
+	transcodeTotal.WithLabelValues("success").Inc()
+	transcodeDuration.Observe(time.Since(transcodeStart).Seconds())
 
 	// Read back the URLs we wrote during transcode so the success event can
 	// carry them. Downstream consumers (post-service.video_metadata) need the
@@ -167,6 +211,7 @@ func processMessage(ctx context.Context, m kafka.Message, pgStore *postgres.Medi
 	// than the raw MP4 fallback.
 	asset, fetchErr := pgStore.GetMedia(ctx, mediaAssetID)
 	hlsURL, mp4URL, thumbURL := "", "", ""
+	modStatus := "passed"
 	if fetchErr == nil && asset != nil {
 		if asset.HLSMasterKey != "" {
 			hlsURL = "/" + strings.TrimPrefix(asset.HLSMasterKey, "/")
@@ -177,13 +222,16 @@ func processMessage(ctx context.Context, m kafka.Message, pgStore *postgres.Medi
 		if asset.ThumbnailURL != nil && *asset.ThumbnailURL != "" {
 			thumbURL = *asset.ThumbnailURL
 		}
+		if asset.ModerationStatus != "" {
+			modStatus = asset.ModerationStatus
+		}
 	}
-	_ = producer.PublishTranscodeCompletedWithURLs(ctx, mediaAssetID, "ready", hlsURL, mp4URL, thumbURL)
+	_ = producer.PublishTranscodeCompletedWithURLs(ctx, mediaAssetID, "ready", hlsURL, mp4URL, thumbURL, modStatus)
 	log.Printf("Transcode completed for media %s (hls=%t)", payload.MediaAssetID, hlsURL != "")
 	return nil
 }
 
-func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload events.MediaTranscodeRequestedPayload, pgStore *postgres.MediaAssetStore, blobStore *blob.Store) error {
+func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload events.MediaTranscodeRequestedPayload, pgStore *postgres.MediaAssetStore, blobStore *blob.Store, scanner processing.Scanner) error {
 	// 1. Download original video from MinIO
 	videoData, err := blobStore.DownloadObject(ctx, payload.StorageKey)
 	if err != nil {
@@ -396,6 +444,22 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload events.
 				}
 			}
 		}
+	}
+
+	// 10b. Content-safety scan — frame-sample the original and run each
+	// frame through the scanner. A single unsafe frame rejects the video.
+	// post-service gates the post's visibility on the verdict stored here.
+	moderationStatus := "passed"
+	if frames, frErr := processing.ExtractFrames(ctx, inputPath, tmpDir, 5); frErr != nil {
+		log.Printf("Warning: frame extraction for scan failed for %s: %v", payload.MediaAssetID, frErr)
+	} else if res, scanErr := processing.ScanVideoFrames(ctx, scanner, frames); scanErr != nil {
+		log.Printf("Warning: content scan failed for %s: %v", payload.MediaAssetID, scanErr)
+	} else if !res.IsSafe {
+		moderationStatus = "rejected"
+		log.Printf("Content scan REJECTED media %s: %s", payload.MediaAssetID, res.Reason)
+	}
+	if err := pgStore.UpdateMediaModerationStatus(ctx, mediaAssetID, moderationStatus); err != nil {
+		log.Printf("Warning: failed to store moderation status for %s: %v", payload.MediaAssetID, err)
 	}
 
 	// 11. Set status to ready

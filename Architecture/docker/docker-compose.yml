@@ -122,6 +122,21 @@ services:
           cpus: '0.25'
           memory: 256M
 
+  # Phase F3 — Jaeger all-in-one for local W3C trace inspection.
+  # OTLP receivers: 4317 (gRPC) and 4318 (HTTP). The trace package
+  # auto-maps :4318 → :4317 so existing OTEL_EXPORTER_OTLP_ENDPOINT
+  # values keep working. Open http://localhost:16686 to view traces.
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: atpost_jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4317:4317"     # OTLP gRPC receiver
+      - "4318:4318"     # OTLP HTTP receiver
+    restart: unless-stopped
+
   redpanda:
     image: redpandadata/redpanda:latest
     command:
@@ -260,10 +275,9 @@ services:
       GROUP_SERVICE_URL: http://group-service:8090
       ADMIN_SERVICE_URL: http://admin-service:8096
       PROFILE_SERVICE_URL: http://identity-profile:8098
-      ORDERS_SERVICE_URL: http://orders-service:8101
       PAYMENTS_SERVICE_URL: http://payments-service:8102
-      SHOP_SERVICE_URL: http://shop-service:8105
       LIVE_SERVICE_URL: http://live-service:8103
+      LIVE_V2_SERVICE_URL: http://live-service-v2:8117
       MEMORIES_SERVICE_URL: http://memories-service:8104
       CHANNEL_SERVICE_URL: http://channel-service:8106
       COMMUNITY_SERVICE_URL: http://community-service:8107
@@ -331,6 +345,14 @@ services:
       POSTGRES_DSN: *identity_postgres_dsn
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
+      # JWT_SECRET must match auth-service; otherwise tokens validate at
+      # the gateway but get rejected here → 401 → UI clears session →
+      # "Authorization Required" on /settings/profile even after a fresh
+      # login.
+      JWT_SECRET: ${JWT_SECRET:-local_dev_jwt_change_me}
+      # Gates /v1/users/* (incl. the privacy-settings endpoint the graph
+      # permission resolver reads). The api-gateway injects this key.
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
     ports:
       - "8110:8110"
     depends_on:
@@ -386,6 +408,9 @@ services:
       POSTGRES_DSN: *app_postgres_dsn
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      PROFILE_SERVICE_URL: http://identity-profile:8098
+      PAGES_ADMIN_USER_IDS: ${PAGES_ADMIN_USER_IDS:-c52b44aa-c75f-4843-98fa-2225041a5e00}
     ports:
       - "8082:8082"
     depends_on:
@@ -415,6 +440,10 @@ services:
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      # Permission resolver reads privacy settings from the identity user-service.
+      USER_SERVICE_URL: http://identity-user:8110
+      # Read-through projection repair targets the app.users-owning user-service.
+      APP_USER_SERVICE_URL: http://user-service:8082
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
     ports:
       - "8083:8083"
@@ -446,6 +475,10 @@ services:
       KAFKA_BROKERS: redpanda:9092
       MESSAGE_SERVICE_URL: http://chat-message-service:8092
       POST_SERVICE_URL: http://post-service:8084
+      # Audit CG4: group-service now refuses boot when JWT_SECRET is
+      # unset (previously defaulted to the literal "dev_secret_change_me").
+      JWT_SECRET: ${JWT_SECRET:-local_dev_jwt_change_me}
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
     ports:
       - "8090:8090"
     depends_on:
@@ -476,6 +509,12 @@ services:
       USER_SERVICE_URL: http://identity-user:8110
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
+      # Migration runner baseline knob — leave default ("false") so new migration
+      # files added to database/migrations/ get applied on next boot. Set to
+      # "true" only when adopting the runner against an existing DB whose
+      # migrations were applied out-of-band; the first such boot marks them
+      # as applied without executing. (One-shot, see migrationrunner package.)
+      SCHEMA_MIGRATIONS_BASELINE: ${SCHEMA_MIGRATIONS_BASELINE:-false}
     ports:
       - "8084:8084"
     depends_on:
@@ -508,6 +547,8 @@ services:
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
       GRAPH_SERVICE_URL: http://graph-service:8083
+      # Reads tc_close_friends_posts to gate close-friends ("trusted") fanout.
+      USER_SERVICE_URL: http://identity-user:8110
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
     ports:
@@ -641,6 +682,13 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
     ports:
       - "8088:8088"
+    volumes:
+      # Mount the Firebase service-account JSON as a read-only file.
+      # main.go's FCM wiring detects path-shaped FCM_SERVICE_ACCOUNT_KEY
+      # values and reads the file at startup. The host file is in
+      # .secrets/ which is gitignored. Missing on the host = container
+      # mount fails to start, which is the safe behavior.
+      - ../../.secrets/firebase-cleestudio-2b06d.json:/run/secrets/firebase-key.json:ro
     depends_on:
       scylla-init:
         condition: service_completed_successfully
@@ -670,6 +718,9 @@ services:
       KAFKA_BROKERS: redpanda:9092
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
+      # Source of truth for the users_v1 reindex / startup auto-heal.
+      PROFILE_SERVICE_URL: http://identity-profile:8098
+      IDENTITY_KAFKA_TOPIC: identity.events.v1
     ports:
       - "8089:8089"
     depends_on:
@@ -912,12 +963,12 @@ services:
       dockerfile: services/feature-flag-service/Dockerfile
     environment:
       <<: [*redis_client_env, *kafka_client_env]
-      HTTP_PORT: "8095"
+      HTTP_PORT: "8117"
       POSTGRES_DSN: *app_postgres_dsn
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
     ports:
-      - "8095:8095"
+      - "8117:8117"
     depends_on:
       postgres:
         condition: service_healthy
@@ -960,32 +1011,9 @@ services:
 
   # ─── Commerce Services (v2.1) ────────────────────────────────
 
-  orders-service:
-    build:
-      context: ..
-      dockerfile: services/orders-service/Dockerfile
-    environment:
-      <<: *kafka_client_env
-      HTTP_PORT: "8101"
-      POSTGRES_DSN: *commerce_postgres_dsn
-      KAFKA_BROKERS: redpanda:9092
-      PAYMENTS_SERVICE_URL: http://payments-service:8102
-      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
-    ports:
-      - "8101:8101"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redpanda:
-        condition: service_started
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
-        reservations:
-          cpus: '0.25'
-          memory: 256M
+  # Phase F1.4 — orders-service retired. /v1/commerce/orders in
+  # commerce-service is the single source of truth; the gateway no
+  # longer proxies /v1/orders. Source removed from go.work.
 
   payments-service:
     build:
@@ -996,9 +1024,14 @@ services:
       HTTP_PORT: "8102"
       POSTGRES_DSN: *commerce_postgres_dsn
       KAFKA_BROKERS: redpanda:9092
-      # Razorpay credentials — omit to use StubGateway in dev
+      # Razorpay credentials — omit to use StubGateway in dev.
+      # Audit P8: payments-service refuses boot when RAZORPAY_KEY_ID
+      # is empty unless PAYMENTS_ALLOW_STUB=true. Default true here so
+      # local docker compose comes up; prod overrides with real creds.
       RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
       RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
+      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-}
+      PAYMENTS_ALLOW_STUB: ${PAYMENTS_ALLOW_STUB:-true}
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
     ports:
       - "8102:8102"
@@ -1048,30 +1081,8 @@ services:
           cpus: '0.25'
           memory: 256M
 
-  shop-service:
-    build:
-      context: ..
-      dockerfile: services/shop-service/Dockerfile
-    environment:
-      <<: *kafka_client_env
-      HTTP_PORT: "8105"
-      POSTGRES_DSN: *commerce_postgres_dsn
-      KAFKA_BROKERS: redpanda:9092
-    ports:
-      - "8105:8105"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redpanda:
-        condition: service_started
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
-        reservations:
-          cpus: '0.25'
-          memory: 256M
+  # Phase F1.4 — shop-service retired. Catalog, cart, checkout, and
+  # payouts all live under /v1/commerce/* in commerce-service.
 
   commerce-service:
     build:
@@ -1084,6 +1095,15 @@ services:
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      # Courier integration. COURIER_PROVIDER=stub auto-confirms shipments
+      # locally without booking; =shiprocket calls the real Shiprocket API
+      # (production endpoint apiv2.shiprocket.in — no sandbox available).
+      COURIER_PROVIDER: ${COURIER_PROVIDER:-stub}
+      SHIPROCKET_EMAIL: ${SHIPROCKET_EMAIL:-}
+      SHIPROCKET_PASSWORD: ${SHIPROCKET_PASSWORD:-}
+      SHIPROCKET_PICKUP_LOCATION_ID: ${SHIPROCKET_PICKUP_LOCATION_ID:-}
+      SHIPROCKET_WEBHOOK_TOKEN: ${SHIPROCKET_WEBHOOK_TOKEN:-}
+      SHIPROCKET_WEBHOOK_HMAC: ${SHIPROCKET_WEBHOOK_HMAC:-}
     ports:
       - "8109:8109"
     depends_on:
@@ -1268,6 +1288,47 @@ services:
         condition: service_completed_successfully
       mediamtx:
         condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+  live-service-v2:
+    build:
+      context: ..
+      dockerfile: services/live-service-v2/Dockerfile
+    environment:
+      <<: [*redis_client_env, *kafka_client_env]
+      HTTP_PORT: "8117"
+      POSTGRES_DSN: *app_postgres_dsn
+      REDIS_ADDR: redis:6379
+      KAFKA_BROKERS: redpanda:9092
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-}
+      GRAPH_SERVICE_URL: http://graph-service:8083
+      LIVEKIT_URL: ${LIVEKIT_URL:-}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-}
+      LIVEKIT_WEBHOOK_SECRET: ${LIVEKIT_WEBHOOK_SECRET:-}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-}
+      MINIO_BUCKET_LIVE_RECORDINGS: ${MINIO_BUCKET_LIVE_RECORDINGS:-live-recordings}
+      LIVE_RECORDING_PUBLIC_BASE_URL: ${LIVE_RECORDING_PUBLIC_BASE_URL:-http://localhost:9001}
+    ports:
+      - "8117:8117"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      redpanda:
+        condition: service_started
+      redpanda-init:
+        condition: service_completed_successfully
     deploy:
       resources:
         limits:

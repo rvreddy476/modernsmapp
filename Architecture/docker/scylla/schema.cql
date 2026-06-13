@@ -22,6 +22,27 @@ CREATE TABLE IF NOT EXISTS social_feed.author_timeline_by_author (
     PRIMARY KEY ((author_id, bucket), ts)
 ) WITH CLUSTERING ORDER BY (ts DESC);
 
+-- HF4: reverse index for UpdatePostContentType. The fan-out tables
+-- partition on (user_id, bucket) and (author_id, bucket); finding all
+-- rows for a given post_id used to need ALLOW FILTERING, which scans
+-- the whole table. This index lets us look up the precise set of
+-- (user_id|author_id, bucket, ts) triples to rewrite — partition lookup
+-- via the (post_id) key, no scan.
+--
+-- timeline_kind = 'home' for home_timeline_by_user rows, 'author' for
+-- author_timeline_by_author rows. owner_id is user_id or author_id
+-- accordingly. We write to this table inside AddToHomeTimeline +
+-- AddToAuthorTimeline so it stays in sync; the back-populate worker
+-- in cmd/backfill walks existing timelines once per deploy.
+CREATE TABLE IF NOT EXISTS social_feed.timeline_index_by_post (
+    post_id       uuid,
+    timeline_kind text,
+    owner_id      uuid,
+    bucket        int,
+    ts            timeuuid,
+    PRIMARY KEY ((post_id), timeline_kind, owner_id, bucket, ts)
+);
+
 -- User-post interactions for ranking penalty (source of truth behind Redis cache)
 -- 7-day TTL matches the interaction penalty relevance window.
 CREATE TABLE IF NOT EXISTS social_feed.user_post_interactions (

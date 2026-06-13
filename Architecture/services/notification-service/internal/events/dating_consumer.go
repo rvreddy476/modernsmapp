@@ -87,6 +87,33 @@ func (c *Consumer) handleDatingEvent(ctx context.Context, envelope events.EventE
 		return true, c.handleDatingMatchFirstMessage(ctx, envelope.Payload)
 	case events.EventDatingMatchExpired:
 		return true, c.handleDatingMatchExpired(ctx, envelope.Payload)
+	// Phase 1 (§P1-6) — additional dating notification events.
+	case events.EventDatingVouchRequested:
+		return true, c.handleDatingVouchRequested(ctx, envelope.Payload)
+	case events.EventDatingVouchAccepted:
+		return true, c.handleDatingVouchAccepted(ctx, envelope.Payload)
+	case events.EventDatingMatchQuietNotify:
+		return true, c.handleDatingMatchQuietNotify(ctx, envelope.Payload)
+	case events.EventDatingSafeMeetReminder:
+		return true, c.handleDatingSafeMeetReminder(ctx, envelope.Payload)
+	case events.EventDatingSafeMeetMissedCheckIn:
+		return true, c.handleDatingSafeMeetMissedCheckIn(ctx, envelope.Payload)
+	case events.EventDatingSafetyPanicAcknowledged:
+		return true, c.handleDatingSafetyPanicAcknowledged(ctx, envelope.Payload)
+	case events.EventDatingReportStatusUpdated:
+		return true, c.handleDatingReportStatusUpdated(ctx, envelope.Payload)
+	case events.EventDatingVerificationCompleted:
+		return true, c.handleDatingVerificationCompleted(ctx, envelope.Payload)
+	case events.EventDatingVerificationRejected:
+		return true, c.handleDatingVerificationRejected(ctx, envelope.Payload)
+	case events.EventDatingPhotoModerationRejected:
+		return true, c.handleDatingPhotoModerationRejected(ctx, envelope.Payload)
+	case events.EventDatingPremiumPaymentFailure:
+		return true, c.handleDatingPremiumPaymentFailure(ctx, envelope.Payload)
+	case events.EventDatingDataExportReady:
+		return true, c.handleDatingDataExportReady(ctx, envelope.Payload)
+	case events.EventChatDatingMessageNew:
+		return true, c.handleChatDatingMessageNew(ctx, envelope.Payload)
 	case events.EventDatingMatchFormed,
 		events.EventDatingMatchClosed,
 		events.EventDatingMatchQuiet,
@@ -96,7 +123,26 @@ func (c *Consumer) handleDatingEvent(ctx context.Context, envelope events.EventE
 		events.EventDatingProfileCreated,
 		events.EventDatingProfileUpdated,
 		events.EventDatingProfilePaused,
-		events.EventDatingProfileDeleted:
+		events.EventDatingProfileDeleted,
+		events.EventDatingVouchDeclined,
+		events.EventDatingVouchRevoked,
+		events.EventDatingUserBlocked,
+		events.EventDatingVerificationSubmitted,
+		events.EventDatingSafetyPanic,
+		events.EventDatingSafetyLocationShared,
+		events.EventDatingSafetyMeetScheduled,
+		events.EventDatingSafetyMeetCheckin,
+		events.EventDatingSafetyMeetNoShow,
+		events.EventDatingReportCreated,
+		events.EventDatingBlockCreated,
+		events.EventDatingPremiumSubscribed,
+		events.EventDatingPremiumExpired,
+		events.EventDatingProfilePurged,
+		events.EventDatingTelemetryNorthStar,
+		events.EventDatingModerationLayer1Result,
+		events.EventDatingModerationLayer2Requested,
+		events.EventDatingModerationLayer2Result,
+		events.EventDatingDataExportRequested:
 		// Known-but-not-pushed; claim the event so the default branch
 		// doesn't log a warning.
 		return true, nil
@@ -213,4 +259,297 @@ func (c *Consumer) handleDatingMatchExpired(ctx context.Context, raw json.RawMes
 		slog.Warn("dating: expired notify a failed", "user", a, "error", err)
 	}
 	return c.service.CreateNotification(ctx, b, a, "dating.match.expired", "dating_match", matchID, deepLink, e.ExpiredAt)
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1 §P1-6 — additional dating notification handlers.
+//
+// Each handler decodes the dating-service producer payload (defined in
+// services/dating-service/internal/events/producer.go) and routes a
+// single CreateNotification call to the appropriate recipient.
+// ---------------------------------------------------------------------------
+
+type datingVouchRequestedPayload struct {
+	VouchID   string    `json:"vouch_id"`
+	VoucherID string    `json:"voucher_id"`
+	VoucheeID string    `json:"vouchee_id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func (c *Consumer) handleDatingVouchRequested(ctx context.Context, raw json.RawMessage) error {
+	var e datingVouchRequestedPayload
+	if err := unmarshalPayload(raw, &e); err != nil {
+		return err
+	}
+	vouchee, err := uuid.Parse(e.VoucheeID)
+	if err != nil {
+		return err
+	}
+	voucher, _ := uuid.Parse(e.VoucherID)
+	vouchID, _ := uuid.Parse(e.VouchID)
+	deepLink := fmt.Sprintf("/dating/vouches?incoming=%s", e.VouchID)
+	return c.service.CreateNotification(ctx, vouchee, voucher, "dating.vouch.requested", "dating_vouch", vouchID, deepLink, e.CreatedAt)
+}
+
+type datingVouchAcceptedPayload struct {
+	VouchID   string    `json:"vouch_id"`
+	VoucherID string    `json:"voucher_id"`
+	VoucheeID string    `json:"vouchee_id"`
+	DecidedAt time.Time `json:"decided_at"`
+}
+
+func (c *Consumer) handleDatingVouchAccepted(ctx context.Context, raw json.RawMessage) error {
+	var e datingVouchAcceptedPayload
+	if err := unmarshalPayload(raw, &e); err != nil {
+		return err
+	}
+	voucher, err := uuid.Parse(e.VoucherID)
+	if err != nil {
+		return err
+	}
+	vouchee, _ := uuid.Parse(e.VoucheeID)
+	vouchID, _ := uuid.Parse(e.VouchID)
+	deepLink := fmt.Sprintf("/dating/vouches?id=%s", e.VouchID)
+	return c.service.CreateNotification(ctx, voucher, vouchee, "dating.vouch.accepted", "dating_vouch", vouchID, deepLink, e.DecidedAt)
+}
+
+type datingMatchQuietNotifyPayload struct {
+	MatchID    string    `json:"match_id"`
+	UserA      string    `json:"user_a"`
+	UserB      string    `json:"user_b"`
+	DetectedAt time.Time `json:"detected_at"`
+}
+
+func (c *Consumer) handleDatingMatchQuietNotify(ctx context.Context, raw json.RawMessage) error {
+	var e datingMatchQuietNotifyPayload
+	if err := unmarshalPayload(raw, &e); err != nil {
+		return err
+	}
+	a, errA := uuid.Parse(e.UserA)
+	b, errB := uuid.Parse(e.UserB)
+	if errA != nil || errB != nil {
+		return fmt.Errorf("invalid user ids in match.quiet_notify: a=%v b=%v", errA, errB)
+	}
+	matchID, _ := uuid.Parse(e.MatchID)
+	deepLink := fmt.Sprintf("/dating/matches/%s", e.MatchID)
+	if err := c.service.CreateNotification(ctx, a, b, "dating.match.quiet", "dating_match", matchID, deepLink, e.DetectedAt); err != nil {
+		slog.Warn("dating: quiet notify a failed", "user", a, "error", err)
+	}
+	return c.service.CreateNotification(ctx, b, a, "dating.match.quiet", "dating_match", matchID, deepLink, e.DetectedAt)
+}
+
+type datingSafeMeetReminderPayload struct {
+	MeetID      string    `json:"meet_id"`
+	UserID      string    `json:"user_id"`
+	WithUserID  string    `json:"with_user_id"`
+	ScheduledAt time.Time `json:"scheduled_at"`
+	FiredAt     time.Time `json:"fired_at"`
+}
+
+func (c *Consumer) handleDatingSafeMeetReminder(ctx context.Context, raw json.RawMessage) error {
+	var e datingSafeMeetReminderPayload
+	if err := unmarshalPayload(raw, &e); err != nil {
+		return err
+	}
+	user, err := uuid.Parse(e.UserID)
+	if err != nil {
+		return err
+	}
+	withUser, _ := uuid.Parse(e.WithUserID)
+	meetID, _ := uuid.Parse(e.MeetID)
+	deepLink := fmt.Sprintf("/dating/safety/meets/%s", e.MeetID)
+	return c.service.CreateNotification(ctx, user, withUser, "dating.safe_meet.reminder", "dating_meet", meetID, deepLink, e.FiredAt)
+}
+
+type datingSafeMeetMissedPayload struct {
+	MeetID            string    `json:"meet_id"`
+	UserID            string    `json:"user_id"`
+	WithUserID        string    `json:"with_user_id"`
+	ExpectedCheckInAt time.Time `json:"expected_check_in_at"`
+	DetectedAt        time.Time `json:"detected_at"`
+}
+
+func (c *Consumer) handleDatingSafeMeetMissedCheckIn(ctx context.Context, raw json.RawMessage) error {
+	var e datingSafeMeetMissedPayload
+	if err := unmarshalPayload(raw, &e); err != nil {
+		return err
+	}
+	user, err := uuid.Parse(e.UserID)
+	if err != nil {
+		return err
+	}
+	withUser, _ := uuid.Parse(e.WithUserID)
+	meetID, _ := uuid.Parse(e.MeetID)
+	deepLink := fmt.Sprintf("/dating/safety/meets/%s/check-in", e.MeetID)
+	return c.service.CreateNotification(ctx, user, withUser, "dating.safe_meet.missed_check_in", "dating_meet", meetID, deepLink, e.DetectedAt)
+}
+
+type datingSafetyPanicAckPayload struct {
+	UserID         string    `json:"user_id"`
+	AcknowledgedAt time.Time `json:"acknowledged_at"`
+}
+
+func (c *Consumer) handleDatingSafetyPanicAcknowledged(ctx context.Context, raw json.RawMessage) error {
+	var e datingSafetyPanicAckPayload
+	if err := unmarshalPayload(raw, &e); err != nil {
+		return err
+	}
+	user, err := uuid.Parse(e.UserID)
+	if err != nil {
+		return err
+	}
+	// Silent confirmation: deep-link to the safety center but no PII
+	// about who reviewed the alert.
+	deepLink := "/dating/safety/center"
+	return c.service.CreateNotification(ctx, user, user, "dating.safety.panic.acknowledged", "dating_safety", user, deepLink, e.AcknowledgedAt)
+}
+
+type datingReportStatusUpdatedPayload struct {
+	ReportID   string    `json:"report_id"`
+	ReporterID string    `json:"reporter_id"`
+	Status     string    `json:"status"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+func (c *Consumer) handleDatingReportStatusUpdated(ctx context.Context, raw json.RawMessage) error {
+	var e datingReportStatusUpdatedPayload
+	if err := unmarshalPayload(raw, &e); err != nil {
+		return err
+	}
+	reporter, err := uuid.Parse(e.ReporterID)
+	if err != nil {
+		return err
+	}
+	reportID, _ := uuid.Parse(e.ReportID)
+	deepLink := fmt.Sprintf("/dating/safety/reports/%s", e.ReportID)
+	return c.service.CreateNotification(ctx, reporter, reporter, "dating.report.status_updated", "dating_report", reportID, deepLink, e.UpdatedAt)
+}
+
+type datingVerificationCompletedPayload struct {
+	UserID      string    `json:"user_id"`
+	Kind        string    `json:"kind"`
+	TrustTier   string    `json:"trust_tier"`
+	CompletedAt time.Time `json:"completed_at"`
+}
+
+func (c *Consumer) handleDatingVerificationCompleted(ctx context.Context, raw json.RawMessage) error {
+	var e datingVerificationCompletedPayload
+	if err := unmarshalPayload(raw, &e); err != nil {
+		return err
+	}
+	user, err := uuid.Parse(e.UserID)
+	if err != nil {
+		return err
+	}
+	deepLink := "/dating/profile/verification"
+	return c.service.CreateNotification(ctx, user, user, "dating.verification.completed", "dating_verification", user, deepLink, e.CompletedAt)
+}
+
+type datingVerificationRejectedPayload struct {
+	UserID     string    `json:"user_id"`
+	Kind       string    `json:"kind"`
+	RejectedAt time.Time `json:"rejected_at"`
+}
+
+func (c *Consumer) handleDatingVerificationRejected(ctx context.Context, raw json.RawMessage) error {
+	var e datingVerificationRejectedPayload
+	if err := unmarshalPayload(raw, &e); err != nil {
+		return err
+	}
+	user, err := uuid.Parse(e.UserID)
+	if err != nil {
+		return err
+	}
+	deepLink := "/dating/profile/verification"
+	return c.service.CreateNotification(ctx, user, user, "dating.verification.rejected", "dating_verification", user, deepLink, e.RejectedAt)
+}
+
+type datingPhotoRejectedPayload struct {
+	UserID     string    `json:"user_id"`
+	PhotoID    string    `json:"photo_id,omitempty"`
+	Reason     string    `json:"reason,omitempty"`
+	RejectedAt time.Time `json:"rejected_at"`
+}
+
+func (c *Consumer) handleDatingPhotoModerationRejected(ctx context.Context, raw json.RawMessage) error {
+	var e datingPhotoRejectedPayload
+	if err := unmarshalPayload(raw, &e); err != nil {
+		return err
+	}
+	user, err := uuid.Parse(e.UserID)
+	if err != nil {
+		return err
+	}
+	deepLink := "/dating/profile/photos"
+	entity := user
+	if e.PhotoID != "" {
+		if pid, err := uuid.Parse(e.PhotoID); err == nil {
+			entity = pid
+		}
+	}
+	return c.service.CreateNotification(ctx, user, user, "dating.photo.rejected", "dating_photo", entity, deepLink, e.RejectedAt)
+}
+
+type datingPremiumPaymentFailurePayload struct {
+	UserID     string    `json:"user_id"`
+	PlanID     string    `json:"plan_id,omitempty"`
+	Reason     string    `json:"reason,omitempty"`
+	OccurredAt time.Time `json:"occurred_at"`
+}
+
+func (c *Consumer) handleDatingPremiumPaymentFailure(ctx context.Context, raw json.RawMessage) error {
+	var e datingPremiumPaymentFailurePayload
+	if err := unmarshalPayload(raw, &e); err != nil {
+		return err
+	}
+	user, err := uuid.Parse(e.UserID)
+	if err != nil {
+		return err
+	}
+	deepLink := "/dating/premium"
+	return c.service.CreateNotification(ctx, user, user, "dating.premium.payment_failure", "dating_premium", user, deepLink, e.OccurredAt)
+}
+
+type datingDataExportReadyPayload struct {
+	ExportID    string    `json:"export_id"`
+	UserID      string    `json:"user_id"`
+	CompletedAt time.Time `json:"completed_at"`
+}
+
+func (c *Consumer) handleDatingDataExportReady(ctx context.Context, raw json.RawMessage) error {
+	var e datingDataExportReadyPayload
+	if err := unmarshalPayload(raw, &e); err != nil {
+		return err
+	}
+	user, err := uuid.Parse(e.UserID)
+	if err != nil {
+		return err
+	}
+	exportID, _ := uuid.Parse(e.ExportID)
+	deepLink := fmt.Sprintf("/dating/data-exports/%s", e.ExportID)
+	return c.service.CreateNotification(ctx, user, user, "dating.data_export.ready", "dating_data_export", exportID, deepLink, e.CompletedAt)
+}
+
+type chatDatingMessageNewPayload struct {
+	ConversationID string    `json:"conversation_id"`
+	MatchID        string    `json:"match_id"`
+	SenderID       string    `json:"sender_id"`
+	RecipientID    string    `json:"recipient_id"`
+	MessagePreview string    `json:"message_preview,omitempty"`
+	SentAt         time.Time `json:"sent_at"`
+}
+
+func (c *Consumer) handleChatDatingMessageNew(ctx context.Context, raw json.RawMessage) error {
+	var e chatDatingMessageNewPayload
+	if err := unmarshalPayload(raw, &e); err != nil {
+		return err
+	}
+	recipient, err := uuid.Parse(e.RecipientID)
+	if err != nil {
+		return err
+	}
+	sender, _ := uuid.Parse(e.SenderID)
+	matchID, _ := uuid.Parse(e.MatchID)
+	deepLink := fmt.Sprintf("/dating/matches/%s", e.MatchID)
+	return c.service.CreateNotification(ctx, recipient, sender, "dating.match.new_message", "dating_match", matchID, deepLink, e.SentAt)
 }

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -17,6 +18,9 @@ type stubProfileService struct{}
 
 func (s *stubProfileService) ListProfiles(ctx context.Context, limit, offset int) ([]store.Profile, int64, error) {
 	return nil, 0, nil
+}
+func (s *stubProfileService) ListProfilesChangedSince(ctx context.Context, since time.Time, limit int) ([]store.Profile, error) {
+	return nil, nil
 }
 func (s *stubProfileService) GetProfile(ctx context.Context, userID uuid.UUID) (*store.Profile, error) {
 	return nil, nil
@@ -72,35 +76,24 @@ func (s *stubProfileService) FollowUser(ctx context.Context, followerID, followi
 func (s *stubProfileService) UnfollowUser(ctx context.Context, followerID, followingID uuid.UUID) error {
 	return nil
 }
-func (s *stubProfileService) SendFriendRequest(ctx context.Context, requesterID, addresseeID uuid.UUID) (*store.Friendship, error) {
-	return nil, nil
-}
-func (s *stubProfileService) RespondToFriendRequest(ctx context.Context, userID, friendshipID uuid.UUID, accept bool) (*store.Friendship, error) {
-	return nil, nil
-}
+// Friend system retired — see graph-service connections; profile.friendships kept dormant for backfill
 func (s *stubProfileService) ListFollowers(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.FollowerEntry, int64, error) {
 	return nil, 0, nil
 }
 func (s *stubProfileService) ListFollowing(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.FollowerEntry, int64, error) {
 	return nil, 0, nil
 }
-func (s *stubProfileService) ListFriends(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.FriendEntry, int64, error) {
-	return nil, 0, nil
+func (s *stubProfileService) ListFollowersCursor(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]store.FollowerEntry, string, error) {
+	return nil, "", nil
 }
-func (s *stubProfileService) ListFriendRequests(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.FriendRequestEntry, int64, error) {
-	return nil, 0, nil
+func (s *stubProfileService) ListFollowingCursor(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]store.FollowerEntry, string, error) {
+	return nil, "", nil
 }
-func (s *stubProfileService) ListSentFriendRequests(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.FriendRequestEntry, int64, error) {
-	return nil, 0, nil
+func (s *stubProfileService) ListBlocksCursor(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]store.Block, string, error) {
+	return nil, "", nil
 }
 func (s *stubProfileService) ListBlocks(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.Block, int64, error) {
 	return nil, 0, nil
-}
-func (s *stubProfileService) CancelFriendRequest(ctx context.Context, requesterID, friendshipID uuid.UUID) error {
-	return nil
-}
-func (s *stubProfileService) RemoveFriend(ctx context.Context, userID, friendID uuid.UUID) error {
-	return nil
 }
 func (s *stubProfileService) BlockUser(ctx context.Context, blockerID, blockedID uuid.UUID) error {
 	return nil
@@ -133,6 +126,12 @@ func (s *stubProfileService) ResolveHandle(ctx context.Context, oldUsername stri
 	return nil, nil, nil
 }
 func (s *stubProfileService) GetHandleHistory(ctx context.Context, userID uuid.UUID, limit, offset int) ([]store.HandleHistoryEntry, error) {
+	return nil, nil
+}
+func (s *stubProfileService) GetProfileStats(ctx context.Context, userID uuid.UUID) (*store.ProfileStats, error) {
+	return nil, nil
+}
+func (s *stubProfileService) RecalculateProfileStats(ctx context.Context, userID uuid.UUID) (*store.ProfileStats, error) {
 	return nil, nil
 }
 

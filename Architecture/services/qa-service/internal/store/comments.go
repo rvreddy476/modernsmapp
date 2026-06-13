@@ -32,13 +32,32 @@ func (s *Store) CreateComment(ctx context.Context, answerID, authorID uuid.UUID,
 	return c, nil
 }
 
-func (s *Store) UpdateComment(ctx context.Context, commentID uuid.UUID, body string) (*AnswerComment, error) {
+// GetComment returns the comment row used by the handler for the
+// author-ownership check (audit CQ5).
+func (s *Store) GetComment(ctx context.Context, commentID uuid.UUID) (*AnswerComment, error) {
 	c := &AnswerComment{}
 	err := s.db.QueryRow(ctx, `
-		UPDATE answer_comments SET body = $2, updated_at = now()
-		WHERE id = $1 AND deleted_at IS NULL
+		SELECT id, answer_id, author_id, body, vote_score, created_at, updated_at
+		FROM answer_comments WHERE id = $1 AND deleted_at IS NULL`,
+		commentID,
+	).Scan(&c.ID, &c.AnswerID, &c.AuthorID, &c.Body, &c.VoteScore, &c.CreatedAt, &c.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+// UpdateComment now requires the actor be the comment author. The
+// service layer pre-validates ownership; this gate is also encoded in
+// the SQL so that any future caller that forgets the service check
+// still fails closed.
+func (s *Store) UpdateComment(ctx context.Context, commentID, authorID uuid.UUID, body string) (*AnswerComment, error) {
+	c := &AnswerComment{}
+	err := s.db.QueryRow(ctx, `
+		UPDATE answer_comments SET body = $3, updated_at = now()
+		WHERE id = $1 AND author_id = $2 AND deleted_at IS NULL
 		RETURNING id, answer_id, author_id, body, vote_score, created_at, updated_at`,
-		commentID, body,
+		commentID, authorID, body,
 	).Scan(&c.ID, &c.AnswerID, &c.AuthorID, &c.Body, &c.VoteScore, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("update comment: %w", err)
@@ -46,9 +65,12 @@ func (s *Store) UpdateComment(ctx context.Context, commentID uuid.UUID, body str
 	return c, nil
 }
 
-func (s *Store) DeleteComment(ctx context.Context, commentID uuid.UUID) error {
+// DeleteComment now requires the actor be the comment author.
+func (s *Store) DeleteComment(ctx context.Context, commentID, authorID uuid.UUID) error {
 	var answerID uuid.UUID
-	err := s.db.QueryRow(ctx, `SELECT answer_id FROM answer_comments WHERE id = $1`, commentID).Scan(&answerID)
+	err := s.db.QueryRow(ctx,
+		`SELECT answer_id FROM answer_comments WHERE id = $1 AND author_id = $2 AND deleted_at IS NULL`,
+		commentID, authorID).Scan(&answerID)
 	if err != nil {
 		return err
 	}
@@ -57,7 +79,7 @@ func (s *Store) DeleteComment(ctx context.Context, commentID uuid.UUID) error {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	_, _ = tx.Exec(ctx, `UPDATE answer_comments SET deleted_at = now() WHERE id = $1`, commentID)
+	_, _ = tx.Exec(ctx, `UPDATE answer_comments SET deleted_at = now() WHERE id = $1 AND author_id = $2`, commentID, authorID)
 	_, _ = tx.Exec(ctx, `UPDATE answers SET comment_count = GREATEST(comment_count - 1, 0) WHERE id = $1`, answerID)
 	return tx.Commit(ctx)
 }

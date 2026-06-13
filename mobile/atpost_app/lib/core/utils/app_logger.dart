@@ -42,7 +42,25 @@ class AppLogger {
       level: _levelToInt(level),
     );
 
-    if (level == 'ERROR') {
+    // In debug builds, also surface every level via debugPrint so the
+    // line shows up in `adb logcat` (the I/flutter channel). dev.log
+    // alone only reaches the attached Dart VM service. ERROR keeps the
+    // 🚨 marker; the rest get a compact prefix so they're grep-able.
+    if (kDebugMode) {
+      switch (level) {
+        case 'ERROR':
+          debugPrint('🚨 CRITICAL ERROR: $fullMessage');
+          if (error != null) debugPrint('   ↳ cause: $error');
+          if (stackTrace != null) debugPrint('   ↳ stack: $stackTrace');
+        case 'WARN':
+          debugPrint('⚠️  $fullMessage');
+          if (error != null) debugPrint('   ↳ cause: $error');
+        case 'INFO':
+          debugPrint('ℹ️  $fullMessage');
+        case 'DEBUG':
+          debugPrint('·  $fullMessage');
+      }
+    } else if (level == 'ERROR') {
       // In a real production app, you might send this to Sentry/Firebase Crashlytics here.
       debugPrint('🚨 CRITICAL ERROR: $fullMessage');
     }

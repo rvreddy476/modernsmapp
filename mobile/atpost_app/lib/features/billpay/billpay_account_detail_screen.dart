@@ -606,7 +606,7 @@ class _SettingsBlockState extends ConsumerState<_SettingsBlock> {
           backgroundColor: AppColors.bgTertiary,
           title: Text('Autopay is a Premium feature', style: AppTextStyles.h2),
           content: Text(
-            'Upgrade to AtPost Premium to pay bills automatically when they '
+            'Upgrade to VChat Premium to pay bills automatically when they '
             'arrive. You can cancel any time.',
             style: AppTextStyles.bodySmall,
           ),

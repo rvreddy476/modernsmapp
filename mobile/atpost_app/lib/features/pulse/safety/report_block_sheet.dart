@@ -67,6 +67,12 @@ class _ReportSheetState extends ConsumerState<ReportSheet> {
   }
 
   Future<void> _send() async {
+    // P1-4: capture the messenger + navigator NOW so we can still talk to
+    // them after the sheet pops (popping the sheet's BuildContext above
+    // ScaffoldMessenger.of() risks "Looking up a deactivated widget"
+    // warnings on debug builds).
+    final messenger = ScaffoldMessenger.of(context);
+    final navigator = Navigator.of(context);
     setState(() => _busy = true);
     try {
       final repo = ref.read(pulseRepositoryProvider);
@@ -83,16 +89,27 @@ class _ReportSheetState extends ConsumerState<ReportSheet> {
       // Sprint 5 telemetry: only the bucket, never the details body.
       ref.read(pulseTelemetryProvider).safetyReport(targetKind: 'user');
       if (!mounted) return;
-      Navigator.of(context).pop();
-      ScaffoldMessenger.of(context).showSnackBar(
+      navigator.pop();
+      messenger.showSnackBar(
         const SnackBar(
-            content: Text('Report sent. Trust & Safety will review.')),
+          content: Text('Report sent. Trust & Safety will review.'),
+        ),
       );
     } catch (_) {
       if (!mounted) return;
       setState(() => _busy = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not send report.')),
+      // P1-4: surface a retry the user can tap so the report flow isn't a
+      // one-shot dead-end on a flaky network.
+      messenger.showSnackBar(
+        SnackBar(
+          content: const Text('Could not send report.'),
+          action: SnackBarAction(
+            label: 'Retry',
+            onPressed: () {
+              if (mounted) _send();
+            },
+          ),
+        ),
       );
     }
   }
@@ -186,18 +203,81 @@ class _ReportSheetState extends ConsumerState<ReportSheet> {
 }
 
 /// Block confirmation. Returns `true` when the user blocked.
+///
+/// P1-4 wiring: real backend call (`POST /v1/dating/safety/block`), a
+/// disabled-while-loading state on the Block button so duplicate taps
+/// can't fire two requests, a success snackbar on completion, and a
+/// retry-able snackbar on failure.
 Future<bool> showBlockDialog(
   BuildContext context,
   WidgetRef ref, {
   required String targetUserId,
   String? targetName,
 }) async {
+  // Capture the messenger before any awaits so the success/error toast
+  // doesn't fall through a deactivated context.
+  final messenger = ScaffoldMessenger.of(context);
+
   final ok = await showDialog<bool>(
     context: context,
-    builder: (ctx) => AlertDialog(
+    barrierDismissible: false,
+    builder: (ctx) => _BlockConfirmDialog(targetName: targetName),
+  );
+  if (ok != true) return false;
+
+  Future<bool> attempt() async {
+    try {
+      await ref.read(pulseRepositoryProvider).blockUser(targetUserId);
+      messenger.showSnackBar(
+        const SnackBar(content: Text('User blocked.')),
+      );
+      return true;
+    } catch (_) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: const Text('Could not block right now.'),
+          action: SnackBarAction(
+            label: 'Retry',
+            onPressed: () {
+              // Fire-and-forget — we don't need to await here; the
+              // caller has already returned.
+              attempt();
+            },
+          ),
+        ),
+      );
+      return false;
+    }
+  }
+
+  return attempt();
+}
+
+/// Stateful confirm dialog so the Block button can show a spinner +
+/// disable itself while the request is in flight. The dialog stays open
+/// during the call and pops `true` on success — the caller then shows
+/// its own snackbar. On error it pops `false` and lets the caller surface
+/// the retry snackbar.
+class _BlockConfirmDialog extends ConsumerStatefulWidget {
+  const _BlockConfirmDialog({required this.targetName});
+  final String? targetName;
+
+  @override
+  ConsumerState<_BlockConfirmDialog> createState() =>
+      _BlockConfirmDialogState();
+}
+
+class _BlockConfirmDialogState extends ConsumerState<_BlockConfirmDialog> {
+  bool _busy = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
       backgroundColor: AppColors.bgSecondary,
-      title: Text('Block ${targetName ?? 'this profile'}?',
-          style: AppTextStyles.h2),
+      title: Text(
+        'Block ${widget.targetName ?? 'this profile'}?',
+        style: AppTextStyles.h2,
+      ),
       content: Text(
         'They won\'t be able to see you on Pulse, message you, or appear '
         'in your matches. You can unblock from Settings later.',
@@ -205,31 +285,33 @@ Future<bool> showBlockDialog(
       ),
       actions: [
         TextButton(
-          onPressed: () => Navigator.of(ctx).pop(false),
+          onPressed: _busy ? null : () => Navigator.of(context).pop(false),
           child: const Text('Cancel'),
         ),
         FilledButton(
-          onPressed: () => Navigator.of(ctx).pop(true),
+          onPressed: _busy
+              ? null
+              : () {
+                  // Confirm intent — actual call happens in the caller
+                  // (so the retry snackbar can drive it on failure
+                  // without re-opening the dialog).
+                  setState(() => _busy = true);
+                  Navigator.of(context).pop(true);
+                },
           style: FilledButton.styleFrom(
               backgroundColor: AppColors.statusError),
-          child: const Text('Block'),
+          child: _busy
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.white,
+                  ),
+                )
+              : const Text('Block'),
         ),
       ],
-    ),
-  );
-  if (ok != true) return false;
-  try {
-    await ref.read(pulseRepositoryProvider).blockUser(targetUserId);
-    if (!context.mounted) return true;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('User blocked.')),
     );
-    return true;
-  } catch (_) {
-    if (!context.mounted) return false;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Could not block right now.')),
-    );
-    return false;
   }
 }

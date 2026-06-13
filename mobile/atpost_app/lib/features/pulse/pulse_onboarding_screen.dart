@@ -126,7 +126,7 @@ class _PulseOnboardingScreenState
         if (!mounted) return;
         setState(() {
           _error =
-              'Could not connect Pulse to your AtPost account. Please try again.';
+              'Could not connect Pulse to your VChat account. Please try again.';
           _bootstrapping = false;
         });
         return;
@@ -569,7 +569,7 @@ class _PulseOnboardingScreenState
               const CircularProgressIndicator(color: AppColors.postbookPrimary),
               const SizedBox(height: 14),
               Text(
-                'Connecting Pulse to your AtPost account...',
+                'Connecting Pulse to your VChat account...',
                 style: AppTextStyles.bodySmall,
               ),
             ],

@@ -39,7 +39,7 @@ func (p *Producer) PublishTranscodeRequested(ctx context.Context, mediaAssetID u
 }
 
 func (p *Producer) PublishTranscodeCompleted(ctx context.Context, mediaAssetID uuid.UUID, processingStatus string) error {
-	return p.PublishTranscodeCompletedWithURLs(ctx, mediaAssetID, processingStatus, "", "", "")
+	return p.PublishTranscodeCompletedWithURLs(ctx, mediaAssetID, processingStatus, "", "", "", "")
 }
 
 // PublishTranscodeCompletedWithURLs is the richer variant used on success —
@@ -51,7 +51,7 @@ func (p *Producer) PublishTranscodeCompletedWithURLs(
 	ctx context.Context,
 	mediaAssetID uuid.UUID,
 	processingStatus string,
-	hlsMasterURL, mp4URL, thumbnailURL string,
+	hlsMasterURL, mp4URL, thumbnailURL, moderationStatus string,
 ) error {
 	payload := events.MediaTranscodeCompletedPayload{
 		MediaAssetID:     mediaAssetID.String(),
@@ -59,6 +59,7 @@ func (p *Producer) PublishTranscodeCompletedWithURLs(
 		HLSMasterURL:     hlsMasterURL,
 		MP4URL:           mp4URL,
 		ThumbnailURL:     thumbnailURL,
+		ModerationStatus: moderationStatus,
 	}
 	return p.publish(ctx, events.MediaTranscodeCompleted, nil, payload)
 }

@@ -56,6 +56,27 @@ class _PartnerDashboardScreenState
   Widget build(BuildContext context) {
     // Listen for incoming offers and pop the request modal once the first
     // pending offer arrives.
+    // C1: push path — SSE listener fires the modal within ~100ms of
+    // the offer landing on the gateway. The polling listener below
+    // stays as the REST snapshot / reconnect-recovery path.
+    ref.listen<AsyncValue<RideOffer>>(incomingOfferPushProvider, (prev, next) {
+      next.whenData((offer) {
+        if (_modalOpen || offer.id.isEmpty || offer.status != 'pending') {
+          return;
+        }
+        _modalOpen = true;
+        ref
+            .read(mopeduTelemetryProvider)
+            .mopeduPartnerOfferReceived(vehicleType: offer.vehicleType);
+        Navigator.of(context, rootNavigator: true)
+            .push(MaterialPageRoute(
+              fullscreenDialog: true,
+              builder: (_) => RideRequestModal(offer: offer),
+            ))
+            .whenComplete(() => _modalOpen = false);
+      });
+    });
+
     ref.listen<AsyncValue<List<RideOffer>>>(incomingOffersProvider,
         (prev, next) {
       next.whenData((offers) {
@@ -79,7 +100,6 @@ class _PartnerDashboardScreenState
         );
         if (first.id.isEmpty) return;
         _modalOpen = true;
-        // Telemetry: vehicle type only.
         ref
             .read(mopeduTelemetryProvider)
             .mopeduPartnerOfferReceived(vehicleType: first.vehicleType);

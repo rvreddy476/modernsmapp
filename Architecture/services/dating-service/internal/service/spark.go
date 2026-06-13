@@ -31,6 +31,45 @@ func (s *Service) CreateSpark(ctx context.Context, fromUserID, toUserID uuid.UUI
 		return nil, nil, fmt.Errorf("invalid: cannot spark yourself")
 	}
 
+	// §P0-7 Phase A risk gate. Runs BEFORE requireAdult so a flagged
+	// account never accidentally reveals "we'd let you spark if you
+	// were 18". chat_hold / admin_review / suspend → ErrRiskBlocked
+	// (403). require_recheck → ErrRiskRecheck (400). reduce_reach
+	// and allow proceed (reduce_reach decays discovery rank, not the
+	// spark itself).
+	switch level, rerr := s.GetUserRiskLevel(ctx, fromUserID); {
+	case rerr != nil:
+		// Best-effort: don't fail the spark when the risk lookup
+		// itself errors — that would turn a Postgres blip into a
+		// platform-wide spark outage. Log and continue.
+		slog.Warn("spark risk lookup failed", "from_user_id", fromUserID, "error", rerr)
+	case level == store.RiskLevelChatHold,
+		level == store.RiskLevelAdminReview,
+		level == store.RiskLevelSuspend:
+		return nil, nil, ErrRiskBlocked
+	case level == store.RiskLevelRequireRecheck:
+		return nil, nil, ErrRiskRecheck
+	}
+
+	// P0-5: the actor sending a spark must themselves be a verified
+	// adult. The candidate-side age gate lives in the discovery query,
+	// but a spark to a known userID bypasses discovery — so gate it
+	// here too. Returns ErrUnderage with a clean 4xx mapping.
+	if err := s.requireAdult(ctx, fromUserID); err != nil {
+		return nil, nil, err
+	}
+
+	// §P1-1 profile-status gate. Restricted/suspended/pending-review
+	// profiles cannot create new sparks. The discovery query already
+	// hides them from inbound surfaces; this gate closes the
+	// known-target-id loophole. The risk gate above catches
+	// risk_level=admin_review for risk-scored accounts; this gate
+	// covers admin-driven restrict / suspend / pending_review even
+	// when no risk row exists yet.
+	if err := s.requireInteractiveProfile(ctx, fromUserID); err != nil {
+		return nil, nil, err
+	}
+
 	// Lightweight existence check on the target. We don't crash if the
 	// target profile is missing in test setups; just return invalid so the
 	// caller (handler) maps to 400.

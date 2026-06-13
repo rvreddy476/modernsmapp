@@ -13,7 +13,30 @@ const (
 	MemberAdded         = "MemberAdded"
 	MemberRemoved       = "MemberRemoved"
 	ReactionToggled     = "ReactionToggled"
+
+	// Message-request lifecycle (messaging/privacy spec v2 §7.2).
+	MessageRequestCreated  = "MessageRequestCreated"
+	MessageRequestAccepted = "MessageRequestAccepted"
+	MessageRequestIgnored  = "MessageRequestIgnored"
+
+	// Dating-specific outbox event — emitted on every send into a
+	// source_app='dating' conversation. notification-service consumes it
+	// to drive push for offline recipients. Phase 1 §1 in
+	// dating/PRODUCTION_GAP_ANALYSIS.md.
+	ChatDatingMessageNew = "chat.dating.message.new"
 )
+
+// ChatDatingMessageNewPayload carries the minimum context needed for
+// push: who's the recipient, what's the preview, where to deep-link.
+// Mirrors the shape published on the chat-events Kafka topic.
+type ChatDatingMessageNewPayload struct {
+	ConversationID string    `json:"conversation_id"`
+	MatchID        string    `json:"match_id"`
+	SenderID       string    `json:"sender_id"`
+	RecipientID    string    `json:"recipient_id"`
+	MessagePreview string    `json:"message_preview,omitempty"`
+	SentAt         time.Time `json:"sent_at"`
+}
 
 // Event type constants for call-service domain events.
 const (
@@ -54,7 +77,10 @@ type MessageCreatedPayload struct {
 	ConversationID string    `json:"conversation_id"`
 	SenderID       string    `json:"sender_id"`
 	Type           string    `json:"type"`
-	CreatedAt      time.Time `json:"created_at"`
+	// RecipientIDs lists every conversation member except the sender so that
+	// notification-service can fan out without re-querying chat-service.
+	RecipientIDs []string  `json:"recipient_ids"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 type MessageDeletedPayload struct {
@@ -85,6 +111,16 @@ type ReactionToggledPayload struct {
 	UserID         string    `json:"user_id"`
 	Emoji          string    `json:"emoji"`
 	Added          bool      `json:"added"`
+	OccurredAt     time.Time `json:"occurred_at"`
+}
+
+// MessageRequestPayload carries the message-request lifecycle events
+// (created / accepted / ignored). Consumers: notify, trust-safety.
+type MessageRequestPayload struct {
+	ConversationID string    `json:"conversation_id"`
+	SenderID       string    `json:"sender_id"`
+	ReceiverID     string    `json:"receiver_id"`
+	Preview        string    `json:"preview,omitempty"`
 	OccurredAt     time.Time `json:"occurred_at"`
 }
 

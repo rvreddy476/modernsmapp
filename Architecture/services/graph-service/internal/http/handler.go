@@ -1,9 +1,13 @@
 package http
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
+	"github.com/atpost/graph-service/internal/permission"
 	"github.com/atpost/graph-service/internal/service"
 	"github.com/atpost/graph-service/internal/store"
 	"github.com/atpost/shared/api"
@@ -39,10 +43,16 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.POST("/follow", h.Follow)
 		v1.POST("/unfollow", h.Unfollow)
 		v1.POST("/block", h.Block)
+		v1.DELETE("/block", h.Unblock)
 		v1.GET("/relationship", h.GetRelationship)
 		v1.GET("/counts/:userId", h.GetCounts)
 		v1.GET("/followers/:userId", h.GetFollowers)
 		v1.GET("/following/:userId", h.GetFollowing)
+		// GetFollowingIDs is a slim variant used by search-service to
+		// drive author-affinity in function_score ranking. Returns up
+		// to 500 IDs in one shot, no pagination overhead, no privacy
+		// gate (it's internal-key gated at the engine level).
+		v1.GET("/:userId/following-ids", h.GetFollowingIDs)
 		v1.GET("/mutuals", h.GetMutualFollowers)
 
 		// Mute
@@ -53,13 +63,18 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// Batch relationship lookup
 		v1.POST("/relationships/batch", h.GetRelationshipBatch)
 
-		// Friends
-		v1.POST("/friend-request", h.SendFriendRequest)
-		v1.POST("/friend-request/accept", h.AcceptFriendRequest)
-		v1.POST("/friend-request/reject", h.RejectFriendRequest)
-		v1.DELETE("/friend", h.RemoveFriend)
-		v1.GET("/friends/:userId", h.GetFriends)
-		v1.GET("/friend-requests", h.GetPendingRequests)
+		// Connections (formerly "friends" — spec §3.2/§19)
+		v1.POST("/connection-request", h.SendConnectionRequest)
+		v1.POST("/connection-request/accept", h.AcceptConnectionRequest)
+		v1.POST("/connection-request/decline", h.DeclineConnectionRequest)
+		v1.POST("/connection-request/cancel", h.CancelConnectionRequest)
+		v1.POST("/connection-request/filter", h.FilterConnectionRequest)
+		v1.POST("/connection-request/unfilter", h.UnfilterConnectionRequest)
+		v1.DELETE("/connection", h.RemoveConnection)
+		v1.GET("/connections/:userId", h.GetConnections)
+		v1.GET("/connection-requests", h.GetPendingConnectionRequests)
+		v1.GET("/connection-requests/filtered", h.GetFilteredConnectionRequests)
+		v1.GET("/connection-requests/sent", h.GetSentConnectionRequests)
 
 		// Close Friends
 		cfGroup := v1.Group("/close-friends")
@@ -89,6 +104,94 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		favsGroup.POST("/:userId", h.AddFavorite)
 		favsGroup.DELETE("/:userId", h.RemoveFavorite)
 	}
+
+	// Permission check API (spec §9.8). Single source of truth for
+	// "can actor do X to target" — used by clients to render buttons
+	// and by other services (chat) to gate actions.
+	perm := r.Group("/v1/permissions")
+	{
+		perm.GET("/check", h.CheckPermission)
+		perm.POST("/check-batch", h.CheckPermissionBatch)
+	}
+}
+
+// permissionTTLSeconds is the freshness budget callers may cache a decision
+// for — it matches the privacy-settings cache TTL (spec §6.2).
+const permissionTTLSeconds = 60
+
+// CheckPermission resolves one actor→target tuple for the requested actions.
+// The actor is the X-User-Id caller; target_user_id and a comma-separated
+// actions list come from the query string.
+func (h *Handler) CheckPermission(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	targetID, err := uuid.Parse(c.Query("target_user_id"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid target_user_id", nil)
+		return
+	}
+	actions := permission.ParseActions(strings.Split(c.Query("actions"), ","))
+	if len(actions) == 0 {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "no valid actions requested", nil)
+		return
+	}
+
+	decisions, err := h.svc.ResolvePermissions(c.Request.Context(), actorID, targetID, actions)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{
+		"target_user_id": targetID,
+		"decisions":      decisions,
+		"computed_at":    time.Now().UTC(),
+		"ttl_seconds":    permissionTTLSeconds,
+	}, nil)
+}
+
+// CheckPermissionBatch resolves up to 50 targets for the X-User-Id actor.
+func (h *Handler) CheckPermissionBatch(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		TargetUserIDs []string `json:"target_user_ids"`
+		Actions       []string `json:"actions"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
+		return
+	}
+	actions := permission.ParseActions(req.Actions)
+	if len(actions) == 0 {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "no valid actions requested", nil)
+		return
+	}
+	if len(req.TargetUserIDs) > 50 {
+		req.TargetUserIDs = req.TargetUserIDs[:50]
+	}
+
+	results := make(map[string]map[permission.Action]permission.Decision, len(req.TargetUserIDs))
+	for _, raw := range req.TargetUserIDs {
+		targetID, err := uuid.Parse(raw)
+		if err != nil {
+			continue
+		}
+		decisions, err := h.svc.ResolvePermissions(c.Request.Context(), actorID, targetID, actions)
+		if err != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+			return
+		}
+		results[raw] = decisions
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{
+		"results":     results,
+		"computed_at": time.Now().UTC(),
+		"ttl_seconds": permissionTTLSeconds,
+	}, nil)
 }
 
 // getUserID extracts and parses the authenticated user ID from the X-User-Id header.
@@ -140,6 +243,17 @@ func parsePaginatedUserID(c *gin.Context) (uuid.UUID, int, int, bool) {
 	if o, err := strconv.Atoi(c.DefaultQuery("offset", "0")); err == nil && o >= 0 {
 		offset = o
 	}
+	// Audit HG2: bound offset to keep PostgreSQL's worst-case scan
+	// cost finite. A user with 10M followers asked for page 100k by a
+	// runaway client would scan ~2M rows per request. Real UIs don't
+	// scroll past a few thousand entries; a true millions-scale browser
+	// needs the cursor path, tracked separately.
+	const maxOffset = 10000
+	if offset > maxOffset {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "OFFSET_TOO_LARGE",
+			"offset exceeds maximum; use cursor pagination for deep scrolls", nil)
+		return uuid.Nil, 0, 0, false
+	}
 	return userID, limit, offset, true
 }
 
@@ -149,6 +263,14 @@ func (h *Handler) Follow(c *gin.Context) {
 		return
 	}
 	if err := h.svc.Follow(c.Request.Context(), followerID, followeeID); err != nil {
+		if errors.Is(err, service.ErrRateLimited) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", err.Error(), nil)
+			return
+		}
+		if errors.Is(err, service.ErrWrongEntityType) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "WRONG_ENTITY_TYPE", "follow is only valid against a page", nil)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
@@ -161,6 +283,10 @@ func (h *Handler) Unfollow(c *gin.Context) {
 		return
 	}
 	if err := h.svc.Unfollow(c.Request.Context(), followerID, followeeID); err != nil {
+		if errors.Is(err, service.ErrWrongEntityType) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "WRONG_ENTITY_TYPE", "unfollow is only valid against a page", nil)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
@@ -217,6 +343,30 @@ func (h *Handler) GetFollowers(c *gin.Context) {
 	if !ok {
 		return
 	}
+	// Audit HG4: hide follower/following lists from users the owner has
+	// blocked (matches the Twitter-style "blocked users can't see your
+	// connections" rule). The owner themselves and the API gateway
+	// always pass — internal callers don't send X-User-Id.
+	if !h.callerAllowedToReadConnections(c, userID) {
+		api.JSON(c.Writer, http.StatusOK, []uuid.UUID{}, nil)
+		return
+	}
+	// HG2: prefer cursor pagination when supplied. Cursor is O(log n)
+	// even on celebrities with millions of followers; offset is kept
+	// for admin tools that need a stable index.
+	if cursor := c.Query("cursor"); cursor != "" || c.Query("paginate") == "cursor" {
+		edges, next, err := h.svc.GetFollowersCursor(c.Request.Context(), userID, limit, cursor)
+		if err != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+			return
+		}
+		ids := make([]uuid.UUID, 0, len(edges))
+		for _, e := range edges {
+			ids = append(ids, e.UserID)
+		}
+		api.JSON(c.Writer, http.StatusOK, gin.H{"items": ids, "next_cursor": next}, nil)
+		return
+	}
 	ids, err := h.svc.GetFollowers(c.Request.Context(), userID, limit, offset)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
@@ -233,6 +383,23 @@ func (h *Handler) GetFollowing(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if !h.callerAllowedToReadConnections(c, userID) {
+		api.JSON(c.Writer, http.StatusOK, []uuid.UUID{}, nil)
+		return
+	}
+	if cursor := c.Query("cursor"); cursor != "" || c.Query("paginate") == "cursor" {
+		edges, next, err := h.svc.GetFollowingCursor(c.Request.Context(), userID, limit, cursor)
+		if err != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+			return
+		}
+		ids := make([]uuid.UUID, 0, len(edges))
+		for _, e := range edges {
+			ids = append(ids, e.UserID)
+		}
+		api.JSON(c.Writer, http.StatusOK, gin.H{"items": ids, "next_cursor": next}, nil)
+		return
+	}
 	ids, err := h.svc.GetFollowing(c.Request.Context(), userID, limit, offset)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
@@ -242,6 +409,57 @@ func (h *Handler) GetFollowing(c *gin.Context) {
 		ids = []uuid.UUID{}
 	}
 	api.JSON(c.Writer, http.StatusOK, ids, nil)
+}
+
+// GetFollowingIDs handles GET /v1/graph/:userId/following-ids?limit=500.
+// Internal endpoint used by search-service (and any future personalization
+// layer) to fetch the follow graph slice that drives author-affinity
+// boosts. Cap is 500 so the resulting OpenSearch `terms` array stays
+// bounded.
+func (h *Handler) GetFollowingIDs(c *gin.Context) {
+	userID, err := uuid.Parse(c.Param("userId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid userId", nil)
+		return
+	}
+	limit := 500
+	if l := c.Query("limit"); l != "" {
+		if v, err := strconv.Atoi(l); err == nil && v > 0 && v <= 500 {
+			limit = v
+		}
+	}
+	ids, err := h.svc.GetFollowingIDs(c.Request.Context(), userID, limit)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	if ids == nil {
+		ids = []uuid.UUID{}
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"items": ids, "count": len(ids)}, nil)
+}
+
+// callerAllowedToReadConnections returns false when the X-User-Id
+// caller is non-empty, distinct from the owner whose connections are
+// being viewed, and present in the owner's blocked set. Missing /
+// invalid X-User-Id (internal callers, unauthenticated) and self-views
+// always pass — the block rule only suppresses the blocked user's view.
+func (h *Handler) callerAllowedToReadConnections(c *gin.Context, ownerID uuid.UUID) bool {
+	rawCaller := c.GetHeader("X-User-Id")
+	if rawCaller == "" {
+		return true
+	}
+	callerID, err := uuid.Parse(rawCaller)
+	if err != nil || callerID == ownerID {
+		return true
+	}
+	blocked, err := h.svc.IsBlockedBy(c.Request.Context(), ownerID, callerID)
+	if err != nil {
+		// Fail open on graph-store errors — surfacing a 500 here would
+		// break the entire profile screen for healthy callers.
+		return true
+	}
+	return !blocked
 }
 
 func (h *Handler) GetMutualFollowers(c *gin.Context) {
@@ -272,21 +490,54 @@ func (h *Handler) GetMutualFollowers(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, ids, nil)
 }
 
-// --- Friends ---
+// --- Connections ---
 
-func (h *Handler) SendFriendRequest(c *gin.Context) {
-	senderID, receiverID, ok := parseAuthAndBody(c)
-	if !ok {
+// parseConnectionTarget extracts the authenticated user ID from the header
+// and the counterparty user ID from a {"user_id": ...} JSON body.
+func parseConnectionTarget(c *gin.Context) (uuid.UUID, uuid.UUID, bool) {
+	return parseAuthAndBody(c)
+}
+
+func (h *Handler) SendConnectionRequest(c *gin.Context) {
+	senderID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
-	if err := h.svc.SendFriendRequest(c.Request.Context(), senderID, receiverID); err != nil {
+	var req struct {
+		UserID  string `json:"user_id" binding:"required"`
+		Source  string `json:"source"`
+		Message string `json:"message"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
+		return
+	}
+	receiverID, err := uuid.Parse(req.UserID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid target user ID", nil)
+		return
+	}
+	if len(req.Message) > 280 {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "MESSAGE_TOO_LONG", "connection request message exceeds 280 chars", nil)
+		return
+	}
+	if err := h.svc.SendConnectionRequest(c.Request.Context(), senderID, receiverID, req.Source, req.Message); err != nil {
+		if errors.Is(err, service.ErrRateLimited) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", err.Error(), nil)
+			return
+		}
+		if errors.Is(err, service.ErrWrongEntityType) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "WRONG_ENTITY_TYPE", "friend request is only valid against a user", nil)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "request_sent"}, nil)
 }
 
-func (h *Handler) AcceptFriendRequest(c *gin.Context) {
+func (h *Handler) AcceptConnectionRequest(c *gin.Context) {
 	receiverID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
@@ -302,14 +553,14 @@ func (h *Handler) AcceptFriendRequest(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid sender user ID", nil)
 		return
 	}
-	if err := h.svc.AcceptFriendRequest(c.Request.Context(), senderID, receiverID); err != nil {
+	if err := h.svc.AcceptConnectionRequest(c.Request.Context(), senderID, receiverID); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "accepted"}, nil)
 }
 
-func (h *Handler) RejectFriendRequest(c *gin.Context) {
+func (h *Handler) DeclineConnectionRequest(c *gin.Context) {
 	receiverID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
@@ -325,31 +576,45 @@ func (h *Handler) RejectFriendRequest(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid sender user ID", nil)
 		return
 	}
-	if err := h.svc.RejectFriendRequest(c.Request.Context(), senderID, receiverID); err != nil {
+	if err := h.svc.DeclineConnectionRequest(c.Request.Context(), senderID, receiverID); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "rejected"}, nil)
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "declined"}, nil)
 }
 
-func (h *Handler) RemoveFriend(c *gin.Context) {
-	actorID, targetID, ok := parseAuthAndBody(c)
+// CancelConnectionRequest lets the sender withdraw their own pending request.
+// X-User-Id is the sender; the body's user_id is the receiver.
+func (h *Handler) CancelConnectionRequest(c *gin.Context) {
+	senderID, receiverID, ok := parseConnectionTarget(c)
 	if !ok {
 		return
 	}
-	if err := h.svc.RemoveFriend(c.Request.Context(), actorID, targetID); err != nil {
+	if err := h.svc.CancelConnectionRequest(c.Request.Context(), senderID, receiverID); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "cancelled"}, nil)
+}
+
+func (h *Handler) RemoveConnection(c *gin.Context) {
+	actorID, targetID, ok := parseConnectionTarget(c)
+	if !ok {
+		return
+	}
+	if err := h.svc.RemoveConnection(c.Request.Context(), actorID, targetID); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "removed"}, nil)
 }
 
-func (h *Handler) GetFriends(c *gin.Context) {
+func (h *Handler) GetConnections(c *gin.Context) {
 	userID, limit, offset, ok := parsePaginatedUserID(c)
 	if !ok {
 		return
 	}
-	ids, err := h.svc.GetFriends(c.Request.Context(), userID, limit, offset)
+	ids, err := h.svc.GetConnections(c.Request.Context(), userID, limit, offset)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -360,21 +625,114 @@ func (h *Handler) GetFriends(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, ids, nil)
 }
 
-func (h *Handler) GetPendingRequests(c *gin.Context) {
+func (h *Handler) GetPendingConnectionRequests(c *gin.Context) {
 	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
-	reqs, err := h.svc.GetPendingRequests(c.Request.Context(), userID)
+	reqs, err := h.svc.GetPendingConnectionRequests(c.Request.Context(), userID)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if reqs == nil {
-		reqs = []store.FriendRequest{}
+		reqs = []store.ConnectionRequest{}
 	}
 	api.JSON(c.Writer, http.StatusOK, reqs, nil)
+}
+
+// GetSentConnectionRequests lists the X-User-Id caller's outgoing pending
+// connection requests (spec §9.2).
+func (h *Handler) GetSentConnectionRequests(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
+		return
+	}
+	reqs, err := h.svc.GetSentConnectionRequests(c.Request.Context(), userID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	if reqs == nil {
+		reqs = []store.ConnectionRequest{}
+	}
+	api.JSON(c.Writer, http.StatusOK, reqs, nil)
+}
+
+// GetFilteredConnectionRequests lists the X-User-Id caller's auto-filtered
+// (hidden) pending connection requests (P1.4).
+func (h *Handler) GetFilteredConnectionRequests(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	reqs, err := h.svc.GetFilteredConnectionRequests(c.Request.Context(), userID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	if reqs == nil {
+		reqs = []store.ConnectionRequest{}
+	}
+	api.JSON(c.Writer, http.StatusOK, reqs, nil)
+}
+
+// UnfilterConnectionRequest moves an auto-filtered request back into the
+// caller's visible inbox. X-User-Id is the recipient; body user_id is the
+// sender (P1.4).
+func (h *Handler) UnfilterConnectionRequest(c *gin.Context) {
+	receiverID, senderID, ok := parseAuthAndBody(c)
+	if !ok {
+		return
+	}
+	if err := h.svc.UnfilterConnectionRequest(c.Request.Context(), senderID, receiverID); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]bool{"ok": true}, nil)
+}
+
+// FilterConnectionRequest marks a pending request as auto-filtered. INTERNAL —
+// called by trust-safety-service after abuse scoring (P1.4).
+func (h *Handler) FilterConnectionRequest(c *gin.Context) {
+	var req struct {
+		SenderID   string `json:"sender_id" binding:"required"`
+		ReceiverID string `json:"receiver_id" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
+		return
+	}
+	senderID, err := uuid.Parse(req.SenderID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid sender ID", nil)
+		return
+	}
+	receiverID, err := uuid.Parse(req.ReceiverID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid receiver ID", nil)
+		return
+	}
+	if err := h.svc.SetRequestFiltered(c.Request.Context(), senderID, receiverID); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]bool{"ok": true}, nil)
+}
+
+// Unblock removes a block (X-User-Id is the blocker, body user_id the blocked).
+func (h *Handler) Unblock(c *gin.Context) {
+	blockerID, blockedID, ok := parseAuthAndBody(c)
+	if !ok {
+		return
+	}
+	if err := h.svc.Unblock(c.Request.Context(), blockerID, blockedID); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "unblocked"}, nil)
 }
 
 // --- Mutes ---
@@ -473,7 +831,22 @@ func (h *Handler) AddCloseFriend(c *gin.Context) {
 		return
 	}
 	if err := h.svc.AddCloseFriend(c.Request.Context(), userID, friendID); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		switch {
+		case errors.Is(err, service.ErrRateLimited):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many Trusted Circle changes. Try again later.", nil)
+		case errors.Is(err, service.ErrCannotAddSelf):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "CANNOT_ADD_SELF", err.Error(), nil)
+		case errors.Is(err, service.ErrNotAFriend):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "NOT_A_FRIEND", err.Error(), nil)
+		case errors.Is(err, service.ErrCircleCapReached):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "CIRCLE_CAP_REACHED", err.Error(), nil)
+		case errors.Is(err, service.ErrAlreadyMember):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "ALREADY_MEMBER", err.Error(), nil)
+		case errors.Is(err, service.ErrUserUnavailable):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "USER_UNAVAILABLE", err.Error(), nil)
+		default:
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		}
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)

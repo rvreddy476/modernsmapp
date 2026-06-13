@@ -43,15 +43,41 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
     try {
       final auth = ref.read(authServiceProvider);
-      final success = await auth.login(email, password);
+      final result = await auth.login(email, password);
 
       if (!mounted) return;
 
-      if (success) {
+      if (result.success) {
         context.go('/');
+      } else if (result.requiresStepUp) {
+        // A13 anomaly enforcement. Hand the pending token + allowed
+        // methods to the dedicated screen; user proves they're really
+        // themselves via email-OTP or 2FA, then we land at /.
+        final methods = result.stepUpMethods.join(',');
+        context.push(
+          '/auth/step-up?token=${Uri.encodeQueryComponent(result.pendingToken ?? '')}'
+          '&methods=${Uri.encodeQueryComponent(methods)}',
+        );
+      } else if (result.requires2fa) {
+        // Existing 2FA path. The dedicated screen isn't shipped on
+        // mobile yet (pre-existing gap), so surface a clear message
+        // until the parity screen lands.
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Two-factor authentication is required. Please sign in on the web for now.',
+            ),
+          ),
+        );
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Login failed. Check credentials and try again.')),
+          SnackBar(
+            content: Text(
+              result.error?.isNotEmpty == true
+                  ? 'Login failed: ${result.error}'
+                  : 'Login failed. Check credentials and try again.',
+            ),
+          ),
         );
       }
     } catch (e) {

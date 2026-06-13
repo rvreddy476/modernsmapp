@@ -51,10 +51,18 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
       context.push('/verify-otp?id=${Uri.encodeComponent(identifier)}&mode=reset');
     } on DioException catch (e) {
       if (!mounted) return;
-      final message = e.response?.data?['error'] as String? ??
-          e.response?.data?['message'] as String? ??
-          'Failed to send reset code. Please try again.';
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+      final body = e.response?.data;
+      final rawErr = body is Map ? body['error'] : null;
+      final message = rawErr is Map
+          ? (rawErr['message'] as String? ?? rawErr['code'] as String?)
+          : rawErr is String
+              ? rawErr
+              : (body is Map ? body['message'] as String? : null);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(message ?? 'Failed to send reset code. Please try again.'),
+        ),
+      );
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(

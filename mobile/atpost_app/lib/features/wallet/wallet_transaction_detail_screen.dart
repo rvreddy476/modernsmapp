@@ -145,7 +145,7 @@ class _Body extends StatelessWidget {
                   ),
                 if (txn.bankTxnRef != null)
                   _DetailRow(label: 'Bank ref', value: txn.bankTxnRef!),
-                _DetailRow(label: 'AtPost ID', value: txn.id),
+                _DetailRow(label: 'VChat ID', value: txn.id),
                 if (txn.failureReason != null)
                   _DetailRow(
                     label: 'Failure',
@@ -200,7 +200,7 @@ class _Body extends StatelessWidget {
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(
                   content: Text(
-                    'Reports are routed to AtPost Support. Logging this one.',
+                    'Reports are routed to VChat Support. Logging this one.',
                   ),
                 ),
               );

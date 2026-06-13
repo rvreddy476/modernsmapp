@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 // Contact is the subset of a user's identity commerce needs to send emails.
@@ -26,10 +27,16 @@ type Client struct {
 }
 
 func New(baseURL, internalKey string) *Client {
+	// Phase F3.2 — otelhttp.NewTransport auto-injects W3C traceparent
+	// onto every outbound request and emits an HTTP client span that
+	// nests under the caller's server span. One-line wiring per client.
 	return &Client{
 		baseURL:     baseURL,
 		internalKey: internalKey,
-		http:        &http.Client{Timeout: 5 * time.Second},
+		http: &http.Client{
+			Timeout:   5 * time.Second,
+			Transport: otelhttp.NewTransport(http.DefaultTransport),
+		},
 	}
 }
 

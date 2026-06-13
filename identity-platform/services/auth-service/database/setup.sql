@@ -45,7 +45,9 @@ CREATE INDEX IF NOT EXISTS idx_otp_phone_purpose ON auth.otp_codes(phone, purpos
 
 CREATE TABLE IF NOT EXISTS auth.sessions (
     session_id UUID PRIMARY KEY,
-    user_id UUID NOT NULL REFERENCES auth.users(user_id),
+    -- UH6: cascade so the GDPR grace-period hard purge of auth.users
+    -- doesn't strand session rows that block the DELETE.
+    user_id UUID NOT NULL REFERENCES auth.users(user_id) ON DELETE CASCADE,
     refresh_token_hash TEXT NOT NULL,
     device_id TEXT,
     platform TEXT,
@@ -90,7 +92,7 @@ CREATE TABLE IF NOT EXISTS auth.recovery_codes (
 CREATE INDEX IF NOT EXISTS idx_recovery_codes_user_id ON auth.recovery_codes(user_id);
 
 CREATE TABLE IF NOT EXISTS usr.users (
-    id UUID PRIMARY KEY REFERENCES auth.users(user_id),
+    id UUID PRIMARY KEY REFERENCES auth.users(user_id) ON DELETE CASCADE,
     status TEXT NOT NULL DEFAULT 'active',
     is_verified BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -98,7 +100,7 @@ CREATE TABLE IF NOT EXISTS usr.users (
 );
 
 CREATE TABLE IF NOT EXISTS usr.user_settings (
-    user_id UUID PRIMARY KEY REFERENCES usr.users(id),
+    user_id UUID PRIMARY KEY REFERENCES usr.users(id) ON DELETE CASCADE,
     account_visibility TEXT NOT NULL DEFAULT 'public',
     allow_messages_from TEXT NOT NULL DEFAULT 'everyone',
     allow_comments_from TEXT NOT NULL DEFAULT 'everyone',
@@ -107,7 +109,7 @@ CREATE TABLE IF NOT EXISTS usr.user_settings (
 );
 
 CREATE TABLE IF NOT EXISTS profile.profiles (
-    user_id UUID PRIMARY KEY REFERENCES auth.users(user_id),
+    user_id UUID PRIMARY KEY REFERENCES auth.users(user_id) ON DELETE CASCADE,
     username TEXT,
     display_name TEXT NOT NULL,
     first_name TEXT DEFAULT '',
@@ -127,3 +129,90 @@ CREATE TABLE IF NOT EXISTS profile.profiles (
 );
 CREATE INDEX IF NOT EXISTS idx_profiles_display_name ON profile.profiles(display_name);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_profiles_username ON profile.profiles(username) WHERE username IS NOT NULL;
+
+-- profile-service's profiles.go selects 30+ columns that weren't in the
+-- original CREATE TABLE. Adding them inline so the bootstrap doesn't
+-- rely on migrations running first.
+ALTER TABLE profile.profiles
+    ADD COLUMN IF NOT EXISTS preferred_name      TEXT,
+    ADD COLUMN IF NOT EXISTS pronouns            TEXT,
+    ADD COLUMN IF NOT EXISTS is_verified         BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS verification_level  TEXT    NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS status_text         TEXT    NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS status_emoji        TEXT    NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS status_expires_at   TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS profile_theme_color TEXT    NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS intro_media_url     TEXT    NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS intro_media_type    TEXT    NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS cta_label           TEXT    NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS cta_url             TEXT    NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS member_since_badge  BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS timezone            TEXT    NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS follower_count      INT     NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS following_count     INT     NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS friend_count        INT     NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS post_count          INT     NOT NULL DEFAULT 0;
+
+-- profile-service inbox dedup table — referenced by inbox_events
+-- consumer dedup check. Schema matches consumer.go's queries
+-- (composite key on consumer_name + event_id so multiple services
+-- could share the table later).
+CREATE TABLE IF NOT EXISTS profile.inbox_events (
+    consumer_name TEXT NOT NULL,
+    event_id      TEXT NOT NULL,
+    processed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (consumer_name, event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_profile_inbox_events_processed_at
+    ON profile.inbox_events(processed_at);
+
+-- TOTP secret encryption at rest. New writes go to
+-- two_factor_secret_encrypted (AES-256-GCM, nonce-prefixed) — legacy
+-- plaintext two_factor_secret stays during the cutover so old rows
+-- still verify. The reader prefers the encrypted column when set.
+-- See identity-shared/crypto/secret_box.go for the cipher.
+ALTER TABLE auth.users
+    ADD COLUMN IF NOT EXISTS two_factor_secret_encrypted BYTEA;
+
+-- A13: login anomaly audit trail. Each row is one detection event —
+-- new IP, new device, impossible travel, etc. Industry-standard audit
+-- log so ops can review patterns + the user can see "where you've
+-- signed in from" in security settings. resolved_at flips when the
+-- user confirms the login was theirs (acknowledged in-app).
+CREATE TABLE IF NOT EXISTS auth.login_anomalies (
+    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id        UUID NOT NULL REFERENCES auth.users(user_id) ON DELETE CASCADE,
+    anomaly_type   TEXT NOT NULL
+                   CHECK (anomaly_type IN ('new_ip','new_device','new_country','impossible_travel','many_failed','password_reset_used','session_revoked')),
+    ip             TEXT,
+    user_agent     TEXT,
+    device_id      TEXT,
+    country_code   TEXT,
+    metadata       JSONB NOT NULL DEFAULT '{}'::jsonb,
+    risk_score     SMALLINT NOT NULL DEFAULT 0
+                   CHECK (risk_score BETWEEN 0 AND 100),
+    challenged     BOOLEAN NOT NULL DEFAULT FALSE,
+    acknowledged_at TIMESTAMPTZ,
+    occurred_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_login_anomalies_user_time ON auth.login_anomalies(user_id, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_login_anomalies_unacked ON auth.login_anomalies(user_id, occurred_at DESC)
+    WHERE acknowledged_at IS NULL;
+
+-- A15: refresh-token IP/UA fingerprint bind. Refresh tokens stolen via
+-- XSS / device theft are the #1 silent-takeover vector once the
+-- access token has expired. We persist the IP/UA at session creation
+-- (already in auth.sessions) and on each refresh we check that the
+-- caller's IP isn't impossible-travel + UA hasn't drastically changed.
+-- The fingerprint columns already exist on auth.sessions — we just need
+-- a `family_id` to track sibling rotations + an `anomaly_flagged`
+-- bit so a flagged refresh can short-circuit.
+ALTER TABLE auth.sessions
+    ADD COLUMN IF NOT EXISTS family_id UUID,
+    ADD COLUMN IF NOT EXISTS anomaly_flagged BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS last_refresh_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS last_refresh_ip TEXT;
+-- Backfill family_id = session_id for existing rows so each pre-A15
+-- session is its own "family" — first rotation forks new IDs.
+UPDATE auth.sessions SET family_id = session_id WHERE family_id IS NULL;
+CREATE INDEX IF NOT EXISTS idx_sessions_family ON auth.sessions(family_id) WHERE family_id IS NOT NULL;

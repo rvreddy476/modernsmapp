@@ -3,22 +3,169 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/atpost/user-service/internal/handle"
+	"github.com/atpost/user-service/internal/identityclient"
 	"github.com/atpost/user-service/internal/store"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
 type Service struct {
-	store *store.Store
-	rdb   *redis.Client
+	store    *store.Store
+	rdb      *redis.Client
+	identity *identityclient.Client
 }
 
 func New(s *store.Store, rdb *redis.Client) *Service {
 	return &Service{store: s, rdb: rdb}
+}
+
+// WithIdentityClient wires the profile-service client used to repair the
+// local app.users projection from the identity source of truth.
+func (s *Service) WithIdentityClient(c *identityclient.Client) *Service {
+	s.identity = c
+	return s
+}
+
+// ErrUserNotInIdentity means the user has no row in the local projection AND
+// profile-service has no such user — i.e. the user genuinely does not exist.
+var ErrUserNotInIdentity = errors.New("user not found in identity source")
+
+// EnsureUser guarantees the user has a row in the local app.users projection.
+// If the row is missing — because a UserRegistered Kafka event was lost — it
+// repairs the projection on-demand from profile-service. This read-through
+// fallback keeps cross-service flows (e.g. graph close-friends, whose FK
+// references app.users) from failing on a stale projection.
+//
+// Returns nil when the row exists or was just repaired; ErrUserNotInIdentity
+// when the user does not exist anywhere; a transport error otherwise.
+func (s *Service) EnsureUser(ctx context.Context, id uuid.UUID) error {
+	u, err := s.store.GetUser(ctx, id)
+	if err != nil {
+		return err
+	}
+	if u != nil {
+		return nil // already projected — fast path
+	}
+	if s.identity == nil {
+		return ErrUserNotInIdentity // no repair source wired
+	}
+	p, err := s.identity.GetProfile(ctx, id)
+	if err != nil {
+		return err // transport failure — caller decides whether to proceed
+	}
+	if p == nil {
+		return ErrUserNotInIdentity
+	}
+	if err := s.store.UpsertUserProjection(ctx, ProjectionInputFromProfile(p)); err != nil {
+		return err
+	}
+	// Best-effort: a repaired user should also have a handle + default channel.
+	// Non-fatal — the projection row already exists, which is what unblocks callers.
+	if _, perr := s.store.EnsurePublisher(ctx, id, handle.Generate); perr != nil {
+		fmt.Printf("warn: ensure-publisher for repaired user %s failed: %v\n", id, perr)
+	}
+	return nil
+}
+
+// ProjectionInputFromProfile maps an identity profile to the projection upsert
+// payload, guaranteeing a non-empty display_name (the column is NOT NULL).
+// Shared by the read-through repair (EnsureUser) and the reconcile job.
+func ProjectionInputFromProfile(p *identityclient.Profile) store.ProjectionInput {
+	display := strings.TrimSpace(p.DisplayName)
+	if display == "" {
+		display = strings.TrimSpace(deref(p.FirstName) + " " + deref(p.LastName))
+	}
+	if display == "" {
+		display = "User " + p.UserID.String()[:8]
+	}
+	category := p.Category
+	if category == "" {
+		category = "personal"
+	}
+	return store.ProjectionInput{
+		ID:            p.UserID,
+		Username:      p.Username,
+		DisplayName:   display,
+		FirstName:     p.FirstName,
+		LastName:      p.LastName,
+		Bio:           p.Bio,
+		Category:      category,
+		Profession:    p.Profession,
+		Website:       p.Website,
+		Location:      p.Location,
+		BadgeFlags:    p.BadgeFlags,
+		IsVerified:    p.IsVerified,
+		AvatarMediaID: p.AvatarMediaID,
+		CoverMediaID:  p.CoverMediaID,
+		CreatedAt:     p.CreatedAt,
+		UpdatedAt:     p.UpdatedAt,
+	}
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+// ProjectionHealthReport summarises whether the app.users projection is
+// converged with the identity master.
+type ProjectionHealthReport struct {
+	MasterCount     int64      `json:"master_count"`
+	ProjectionCount int64      `json:"projection_count"`
+	MissingCount    int64      `json:"missing_count"`
+	DLQUnreplayed   int        `json:"dlq_unreplayed"`
+	LastSyncedAt    *time.Time `json:"last_synced_at,omitempty"`
+	LastSuccessAt   *time.Time `json:"last_success_at,omitempty"`
+	LastError       *string    `json:"last_reconcile_error,omitempty"`
+	Status          string     `json:"status"` // healthy | degraded | unknown
+}
+
+// ProjectionHealth reports the convergence of app.users with the identity
+// master — backing the /internal/projection/health endpoint and metrics.
+func (s *Service) ProjectionHealth(ctx context.Context) (*ProjectionHealthReport, error) {
+	r := &ProjectionHealthReport{Status: "healthy"}
+
+	localCount, err := s.store.CountUsers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	r.ProjectionCount = localCount
+
+	if dlq, err := s.store.CountDLQ(ctx); err == nil {
+		r.DLQUnreplayed = dlq
+	}
+
+	if cp, err := s.store.GetCheckpoint(ctx, store.CheckpointAppUsers); err == nil && cp != nil {
+		r.LastSyncedAt = &cp.LastSyncedAt
+		r.LastSuccessAt = cp.LastSuccessAt
+		r.LastError = cp.LastError
+	}
+
+	if s.identity != nil {
+		if master, err := s.identity.CountProfiles(ctx); err == nil {
+			r.MasterCount = master
+			if master > localCount {
+				r.MissingCount = master - localCount
+			}
+		} else {
+			r.Status = "unknown" // cannot reach the master to compare
+		}
+	} else {
+		r.Status = "unknown"
+	}
+
+	if r.MissingCount > 0 || r.DLQUnreplayed > 0 || r.LastError != nil {
+		r.Status = "degraded"
+	}
+	return r, nil
 }
 
 // SoftDeleteUser marks the app-level user record as deleted.
@@ -296,14 +443,59 @@ func (s *Service) DiscoverPages(ctx context.Context, category, search string, li
 	return s.store.DiscoverPages(ctx, category, search, limit, offset)
 }
 
-// FollowPage follows a business page.
-func (s *Service) FollowPage(ctx context.Context, pageID, userID uuid.UUID) error {
+// FollowPage follows a business page; returns the new follower count.
+func (s *Service) FollowPage(ctx context.Context, pageID, userID uuid.UUID) (int, error) {
 	return s.store.FollowPage(ctx, pageID, userID)
 }
 
-// UnfollowPage unfollows a business page.
-func (s *Service) UnfollowPage(ctx context.Context, pageID, userID uuid.UUID) error {
+// UnfollowPage unfollows a business page; returns the resulting follower count.
+func (s *Service) UnfollowPage(ctx context.Context, pageID, userID uuid.UUID) (int, error) {
 	return s.store.UnfollowPage(ctx, pageID, userID)
+}
+
+// UpdatePageStatus performs a lifecycle transition (caller checks legality/authz).
+func (s *Service) UpdatePageStatus(ctx context.Context, pageID, actorID uuid.UUID, to, reason string) error {
+	return s.store.UpdatePageStatus(ctx, pageID, to, actorID, reason)
+}
+
+// CountActivePagesOwned returns the count of non-disabled pages a user owns.
+func (s *Service) CountActivePagesOwned(ctx context.Context, userID uuid.UUID) (int, error) {
+	return s.store.CountActivePagesOwned(ctx, userID)
+}
+
+// ReconcileFollowerCounts recomputes page follower counts from active rows.
+func (s *Service) ReconcileFollowerCounts(ctx context.Context) (int64, error) {
+	return s.store.ReconcileFollowerCounts(ctx)
+}
+
+// GetPageRole returns a user's active role on a page ("" if none).
+func (s *Service) GetPageRole(ctx context.Context, pageID, userID uuid.UUID) (string, error) {
+	return s.store.GetPageRole(ctx, pageID, userID)
+}
+
+// IsPageOwnerOrAdmin reports whether the user holds owner/admin on the page.
+func (s *Service) IsPageOwnerOrAdmin(ctx context.Context, pageID, userID uuid.UUID) (bool, error) {
+	return s.store.IsPageOwnerOrAdmin(ctx, pageID, userID)
+}
+
+// AddPageDocument inserts a pending verification document.
+func (s *Service) AddPageDocument(ctx context.Context, d *store.PageDocument) error {
+	return s.store.AddPageDocument(ctx, d)
+}
+
+// ListPageDocuments lists a page's verification documents.
+func (s *Service) ListPageDocuments(ctx context.Context, pageID uuid.UUID) ([]store.PageDocument, error) {
+	return s.store.ListPageDocuments(ctx, pageID)
+}
+
+// UploadedDocTypes returns the set of uploaded doc types (pending|approved).
+func (s *Service) UploadedDocTypes(ctx context.Context, pageID uuid.UUID) (map[string]bool, error) {
+	return s.store.UploadedDocTypes(ctx, pageID)
+}
+
+// SetPageDocStatus reviews a single document.
+func (s *Service) SetPageDocStatus(ctx context.Context, docID, reviewerID uuid.UUID, status, reason string) error {
+	return s.store.SetPageDocStatus(ctx, docID, reviewerID, status, reason)
 }
 
 // UpdateBusinessPage updates a business page.

@@ -35,12 +35,14 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	{
 		v1.POST("", h.CreateGroup)
 		v1.GET("/my", h.GetMyGroups)
+		v1.GET("/feed", h.GetMyGroupsFeed)
 		v1.GET("/discover", h.DiscoverGroups)
 		v1.GET("/search", h.SearchGroups)
 		v1.POST("/handle/check", h.CheckHandle)
 		v1.GET("/by-handle/:handle", h.GetGroupByHandle)
 
 		// Invite actions (before :groupId to avoid conflict)
+		v1.GET("/invites/my", h.ListMyInvites)
 		v1.POST("/invites/:inviteId/accept", h.AcceptInvite)
 		v1.POST("/invites/:inviteId/reject", h.RejectInvite)
 
@@ -158,6 +160,7 @@ type CreateGroupRequest struct {
 	CommentPermission string          `json:"comment_permission"`
 	MemberListVisible *bool           `json:"member_list_visible"`
 	LinkSharing       *bool           `json:"link_sharing"`
+	IsMature          bool            `json:"is_mature"`
 }
 
 type UpdateGroupRequest struct {
@@ -294,6 +297,7 @@ func (h *Handler) CreateGroup(c *gin.Context) {
 		CommentPermission: req.CommentPermission,
 		MemberListVisible: req.MemberListVisible,
 		LinkSharing:       req.LinkSharing,
+		IsMature:          req.IsMature,
 	}
 
 	group, err := h.svc.CreateGroup(c.Request.Context(), actorID, params)
@@ -852,16 +856,20 @@ func (h *Handler) GetMyGroups(c *gin.Context) {
 }
 
 func (h *Handler) DiscoverGroups(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
 	limit, offset := parsePagination(c)
 	groupType := c.Query("type")
 
-	groups, err := h.svc.DiscoverGroups(c.Request.Context(), limit, offset, groupType)
+	groups, err := h.svc.DiscoverGroupsForUser(c.Request.Context(), actorID, limit, offset, groupType)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	if groups == nil {
-		groups = []store.Group{}
+		groups = []service.DiscoveredGroup{}
 	}
 	api.JSON(c.Writer, http.StatusOK, groups, nil)
 }
@@ -1204,7 +1212,7 @@ func (h *Handler) GetGroupMedia(c *gin.Context) {
 		return
 	}
 	if posts == nil {
-		posts = []store.GroupPost{}
+		posts = []store.GroupMediaItem{}
 	}
 	api.JSON(c.Writer, http.StatusOK, posts, nil)
 }
@@ -1969,4 +1977,35 @@ func (h *Handler) RSVPGroupEvent(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
+}
+
+// GetMyGroupsFeed returns the aggregated feed across every group the caller
+// has joined — newest first, paginated with limit/offset.
+func (h *Handler) GetMyGroupsFeed(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	limit, offset := parsePagination(c)
+	posts, err := h.svc.GetMyGroupsFeed(c.Request.Context(), actorID, limit, offset)
+	if err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, posts, nil)
+}
+
+// ListMyInvites returns the caller's pending group invites enriched with
+// group display fields.
+func (h *Handler) ListMyInvites(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	invites, err := h.svc.ListMyInvites(c.Request.Context(), actorID)
+	if err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, invites, nil)
 }

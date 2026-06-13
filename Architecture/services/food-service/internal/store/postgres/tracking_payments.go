@@ -311,9 +311,19 @@ func (s *Store) ConfirmPayment(ctx context.Context, userID, orderID uuid.UUID, p
 	`, orderID, status, providerPaymentID, providerReference, raw); err != nil {
 		return nil, err
 	}
+	// B1: stamp accept_deadline_at on CONFIRMED. Reads the per-restaurant
+	// sla_accept_seconds from food.restaurants (default 180s). The
+	// auto-reject worker uses this column to find breached orders.
 	if _, err := tx.Exec(ctx, `
 		UPDATE food.orders
-		SET status = 'CONFIRMED', payment_status = $3::food.payment_status
+		SET status = 'CONFIRMED',
+			payment_status = $3::food.payment_status,
+			accept_deadline_at = NOW() + (
+				COALESCE(
+					(SELECT sla_accept_seconds FROM food.restaurants WHERE id = food.orders.restaurant_id),
+					180
+				) * INTERVAL '1 second'
+			)
 		WHERE id = $1 AND user_id = $2
 	`, orderID, userID, status); err != nil {
 		return nil, err

@@ -4,43 +4,55 @@ import 'package:atpost_app/data/models/shop.dart';
 import 'package:atpost_app/data/repositories/shop_repository.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-/// State for the Marketplace system.
+/// Phase F1.3 — variant-aware shop state.
+///
+/// Internal `cart` is the server-authoritative Cart envelope (subtotal,
+/// tax, shipping, grand_total all come from the backend). The legacy
+/// `cartItems` getter is preserved for callers that haven't migrated.
 class ShopState {
   final List<Product> products;
-  final List<CartItem> cartItems;
-  final String selectedCategory;
+  final Cart cart;
+  final String selectedCategoryId; // commerce-service uses category UUID
   final String searchQuery;
   final bool isLoading;
 
   const ShopState({
     this.products = const [],
-    this.cartItems = const [],
-    this.selectedCategory = 'All',
+    this.cart = const Cart(id: '', items: []),
+    this.selectedCategoryId = '',
     this.searchQuery = '',
     this.isLoading = false,
   });
 
-  double get cartTotal => cartItems.fold(0, (sum, item) => sum + ((item.product?.price ?? 0) * item.quantity));
-  int get cartCount => cartItems.length;
+  // Backward-compatible accessors used by shop_screen + cart UI.
+  List<CartItem> get cartItems => cart.items;
+  double get cartTotal => cart.grandTotal > 0 ? cart.grandTotal : cart.subtotal;
+  int get cartCount => cart.itemCount;
+
+  /// Display-only category label for the chips row. The provider only
+  /// forwards UUID-shaped values to the backend (legacy string labels
+  /// like "Electronics" are treated as "no filter" until the chips row
+  /// is migrated to load category UUIDs from /v1/commerce/categories).
+  String get selectedCategory =>
+      selectedCategoryId.isEmpty ? 'All' : selectedCategoryId;
 
   ShopState copyWith({
     List<Product>? products,
-    List<CartItem>? cartItems,
-    String? selectedCategory,
+    Cart? cart,
+    String? selectedCategoryId,
     String? searchQuery,
     bool? isLoading,
   }) {
     return ShopState(
       products: products ?? this.products,
-      cartItems: cartItems ?? this.cartItems,
-      selectedCategory: selectedCategory ?? this.selectedCategory,
+      cart: cart ?? this.cart,
+      selectedCategoryId: selectedCategoryId ?? this.selectedCategoryId,
       searchQuery: searchQuery ?? this.searchQuery,
       isLoading: isLoading ?? this.isLoading,
     );
   }
 }
 
-/// Production-ready Shop Notifier with optimistic cart updates.
 class ShopNotifier extends StateNotifier<AsyncValue<ShopState>> {
   final ShopRepository _repo;
 
@@ -52,13 +64,12 @@ class ShopNotifier extends StateNotifier<AsyncValue<ShopState>> {
     state = const AsyncValue.loading();
     try {
       final results = await Future.wait([
-        ErrorHandler.retry(() => _repo.getProducts(category: 'All')),
+        ErrorHandler.retry(() => _repo.getProducts()),
         ErrorHandler.retry(() => _repo.getCart()),
       ]);
-
       state = AsyncValue.data(ShopState(
         products: (results[0] as ShopPage).items,
-        cartItems: results[1] as List<CartItem>,
+        cart: results[1] as Cart,
       ));
     } catch (e, st) {
       state = AsyncValue.error(e, st);
@@ -68,10 +79,22 @@ class ShopNotifier extends StateNotifier<AsyncValue<ShopState>> {
   Future<void> setCategory(String category) async {
     final currentState = state.value;
     if (currentState == null) return;
-
-    state = AsyncValue.data(currentState.copyWith(selectedCategory: category, isLoading: true));
+    // Only forward UUID-shaped categories to the backend; legacy string
+    // labels ("All", "Electronics") are treated as "no filter" until the
+    // chips row is migrated to load category UUIDs from
+    // /v1/commerce/categories.
+    final isUuid = RegExp(
+      r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
+    ).hasMatch(category);
+    final categoryId = isUuid ? category : '';
+    state = AsyncValue.data(currentState.copyWith(
+      selectedCategoryId: categoryId,
+      isLoading: true,
+    ));
     try {
-      final page = await ErrorHandler.retry(() => _repo.getProducts(category: category));
+      final page = await ErrorHandler.retry(
+        () => _repo.getProducts(categoryId: categoryId.isEmpty ? null : categoryId),
+      );
       state = AsyncValue.data(state.value!.copyWith(products: page.items, isLoading: false));
     } catch (e, st) {
       state = AsyncValue.data(state.value!.copyWith(isLoading: false));
@@ -85,58 +108,62 @@ class ShopNotifier extends StateNotifier<AsyncValue<ShopState>> {
     state = AsyncValue.data(currentState.copyWith(searchQuery: query));
   }
 
-  /// Optimistically adds an item to the cart.
-  Future<void> addToCart(Product product) async {
+  /// Adds a product's default variant to the cart. commerce-service is
+  /// the source of truth for cart totals, so after the add we refetch
+  /// the cart rather than building a local diff (eliminates the
+  /// price-drift class of bug we saw on web before Phase 1.1).
+  ///
+  /// Returns false if the product has no default variant (legacy data
+  /// or a draft/archived listing) — the screen can show a "see options"
+  /// CTA instead of a silent failure.
+  Future<bool> addToCart(Product product) async {
     final currentState = state.value;
-    if (currentState == null) return;
-
-    // Check if already in cart
-    final existingIndex = currentState.cartItems.indexWhere((item) => item.productId == product.id);
-    final newItems = List<CartItem>.from(currentState.cartItems);
-
-    if (existingIndex != -1) {
-      final item = newItems[existingIndex];
-      newItems[existingIndex] = CartItem(productId: item.productId, quantity: item.quantity + 1, product: item.product);
-    } else {
-      newItems.add(CartItem(productId: product.id, quantity: 1, product: product));
+    if (currentState == null) return false;
+    final variantId = product.defaultVariantId;
+    if (variantId == null || variantId.isEmpty) {
+      return false;
     }
-
-    // 1. Optimistic update
-    state = AsyncValue.data(currentState.copyWith(cartItems: newItems));
-
-    // 2. API call
     try {
-      await _repo.addToCart(product.id);
+      await _repo.addToCart(variantId: variantId, productId: product.id);
+      final updated = await _repo.getCart();
+      state = AsyncValue.data(currentState.copyWith(cart: updated));
+      return true;
     } catch (e, st) {
-      // 3. Rollback
-      state = AsyncValue.data(currentState);
       ErrorHandler.handle(e, st, context: 'ShopNotifier.addToCart');
+      return false;
     }
   }
 
-  Future<void> removeFromCart(String productId) async {
+  Future<void> removeFromCart(String variantId) async {
     final currentState = state.value;
     if (currentState == null) return;
-
-    final newItems = currentState.cartItems.where((item) => item.productId != productId).toList();
-
-    // 1. Optimistic update
-    state = AsyncValue.data(currentState.copyWith(cartItems: newItems));
-
-    // 2. API call
     try {
-      await _repo.removeFromCart(productId);
+      await _repo.removeFromCart(variantId);
+      final updated = await _repo.getCart();
+      state = AsyncValue.data(currentState.copyWith(cart: updated));
     } catch (e, st) {
-      // 3. Rollback
-      state = AsyncValue.data(currentState);
       ErrorHandler.handle(e, st, context: 'ShopNotifier.removeFromCart');
     }
   }
 
-  Future<Order?> checkout() async {
+  /// Checkout requires an address + payment method. shop_screen should
+  /// drive the user to a checkout sheet that collects both before
+  /// calling this. The legacy parameterless variant has been removed —
+  /// callers that try it will get a compile error.
+  Future<Order?> checkout({
+    required String addressId,
+    required String paymentMethod,
+    String? couponCode,
+    String? idempotencyKey,
+  }) async {
     try {
-      final order = await _repo.checkout();
-      refresh(); // Reload everything after checkout
+      final order = await _repo.checkout(
+        addressId: addressId,
+        paymentMethod: paymentMethod,
+        couponCode: couponCode,
+        idempotencyKey: idempotencyKey,
+      );
+      refresh();
       return order;
     } catch (e, st) {
       ErrorHandler.handle(e, st, context: 'ShopNotifier.checkout');
@@ -145,7 +172,8 @@ class ShopNotifier extends StateNotifier<AsyncValue<ShopState>> {
   }
 }
 
-final shopProvider = StateNotifierProvider.autoDispose<ShopNotifier, AsyncValue<ShopState>>((ref) {
+final shopProvider =
+    StateNotifierProvider.autoDispose<ShopNotifier, AsyncValue<ShopState>>((ref) {
   return ShopNotifier(ref.watch(shopRepositoryProvider));
 });
 
@@ -158,6 +186,7 @@ final filteredProductsProvider = Provider.autoDispose<List<Product>>((ref) {
   if (query.isEmpty) return shopState.products;
 
   return shopState.products.where((p) {
-    return p.title.toLowerCase().contains(query) || p.description.toLowerCase().contains(query);
+    return p.title.toLowerCase().contains(query) ||
+        p.description.toLowerCase().contains(query);
   }).toList();
 });

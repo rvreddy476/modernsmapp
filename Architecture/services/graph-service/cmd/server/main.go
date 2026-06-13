@@ -7,10 +7,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/graph-service/database"
 	"github.com/atpost/graph-service/internal/events"
 	graphHttp "github.com/atpost/graph-service/internal/http"
+	"github.com/atpost/graph-service/internal/reconcile"
 	"github.com/atpost/graph-service/internal/service"
 	"github.com/atpost/graph-service/internal/store"
+	"github.com/atpost/graph-service/internal/userclient"
+	"github.com/atpost/shared/counters"
 	"github.com/atpost/shared/health"
 	"github.com/atpost/shared/middleware"
 	"github.com/atpost/shared/o11y/logging"
@@ -18,6 +22,7 @@ import (
 	"github.com/atpost/shared/server"
 	"github.com/atpost/shared/transport"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -30,6 +35,9 @@ func main() {
 	pgDSN := os.Getenv("POSTGRES_DSN")
 	redisAddr := os.Getenv("REDIS_ADDR")
 	kafkaBrokers := env("KAFKA_BROKERS", "redpanda:9092")
+	userServiceURL := env("USER_SERVICE_URL", "http://identity-user:8110")
+	appUserURL := env("APP_USER_SERVICE_URL", "http://user-service:8082")
+	internalKey := os.Getenv("INTERNAL_SERVICE_KEY")
 
 	// 3. Database
 	ctx := context.Background()
@@ -54,6 +62,12 @@ func main() {
 		os.Exit(1)
 	}
 	slog.Info("connected to postgres")
+
+	if err := store.BootstrapSchema(ctx, dbPool, database.SetupSQL, database.Migrations); err != nil {
+		slog.Error("failed to bootstrap graph schema", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("graph schema ready")
 
 	// 4. Redis
 	rdb, err := transport.NewRedisClientFromEnv(redisAddr)
@@ -94,7 +108,61 @@ func main() {
 	// 8. Dependencies
 	graphStore := store.New(dbPool)
 	graphSvc := service.New(graphStore, rdb, producer)
+	// Wire the permission resolver's privacy-settings source (spec §9.8).
+	graphSvc.WithPermissionSource(userServiceURL, internalKey)
+	// Wire read-through repair of the app.users projection for close-friends.
+	graphSvc.WithUserEnsurer(userclient.New(appUserURL, internalKey))
 	graphHandler := graphHttp.New(graphSvc)
+
+	// Expire stale connection requests hourly (spec §8.3).
+	go reconcile.NewConnectionRequestSweeper(graphStore).Start(ctx)
+
+	// Reconcile drift in denormalized follower/following counts every
+	// hour. The CountReconciler was previously defined but never
+	// started — without it, any missed counter event silently leaves
+	// users' follower_count off-by-N forever.
+	go reconcile.NewCountReconciler(dbPool).Start(ctx)
+
+	// Sharded-counter flush workers: drain Redis follower/following
+	// deltas every 10s and materialise the sum into counts.<col>.
+	// Removes per-follow contention on the singleton counts row — a
+	// 10M-follower celebrity used to serialise every join on this one
+	// row. The hourly CountReconciler above stays as the drift safety
+	// net.
+	if mc := graphSvc.FollowerCounter(); mc != nil {
+		flush := func(ctx context.Context, userIDStr string, total int64) error {
+			id, err := uuid.Parse(userIDStr)
+			if err != nil {
+				return err
+			}
+			return graphStore.SetCountColumn(ctx, id, "follower_count", total)
+		}
+		go counters.NewWorker(mc, flush, counters.WorkerOptions{}).Start(ctx)
+		slog.Info("graph-service follower-count sharded flush worker started")
+	}
+	if mc := graphSvc.FollowingCounter(); mc != nil {
+		flush := func(ctx context.Context, userIDStr string, total int64) error {
+			id, err := uuid.Parse(userIDStr)
+			if err != nil {
+				return err
+			}
+			return graphStore.SetCountColumn(ctx, id, "following_count", total)
+		}
+		go counters.NewWorker(mc, flush, counters.WorkerOptions{}).Start(ctx)
+		slog.Info("graph-service following-count sharded flush worker started")
+	}
+
+	// Audit CG2: gate every /v1/graph route behind the shared internal
+	// service key. The handler already supports the middleware, but
+	// previously main.go never wired the env var so the gate was a
+	// no-op and every endpoint was open. Empty key keeps the dev
+	// loop unblocked but emits a loud startup warning.
+	if internalKey != "" {
+		graphHandler.WithInternalKey(internalKey)
+		slog.Info("graph-service: internal-service-key gate enabled")
+	} else {
+		slog.Warn("graph-service: INTERNAL_SERVICE_KEY not set — every /v1/graph endpoint is unauthenticated. Do not run this configuration in production.")
+	}
 
 	// 9. Gin with middleware stack
 	gin.SetMode(gin.ReleaseMode)

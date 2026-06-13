@@ -44,6 +44,18 @@ func GetCollapseKey(eventType, targetID, recipientID string) string {
 	case "community.invite", "community.join_approved":
 		return fmt.Sprintf("community:%s:admin", targetID)
 
+	// Direct messages collapse per conversation — multiple messages in
+	// one DM thread replace each other into a single device notification.
+	// targetID is the conversation ID.
+	case "dm":
+		return fmt.Sprintf("dm:%s", targetID)
+
+	// Message requests collapse per recipient — every pending request
+	// (regardless of which conversation it belongs to) folds into one
+	// quiet "you have message requests" notification.
+	case "message_request":
+		return fmt.Sprintf("message_request_batch:%s", recipientID)
+
 	// Followers collapse per recipient — "5 people followed you".
 	case "user.followed":
 		return fmt.Sprintf("follow:%s", recipientID)

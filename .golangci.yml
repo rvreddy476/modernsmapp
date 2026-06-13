@@ -1,0 +1,40 @@
+# Modest first cut — turn on the cheap correctness checks, leave style
+# enforcement off until the team has had time to clean up known noise.
+# Bump severity over time.
+
+run:
+  timeout: 10m
+  tests: true
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - typecheck
+    - unused
+    - gosec
+    - misspell
+
+linters-settings:
+  gosec:
+    excludes:
+      # G104 (unhandled errors) — too noisy; errcheck owns that.
+      - G104
+      # G115 (integer overflow conversion) — false-positives on legit
+      # uint→int casts after bounds check.
+      - G115
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - gosec
+    - path: vendor/
+      linters:
+        - typecheck
+        - gosec
+        - staticcheck

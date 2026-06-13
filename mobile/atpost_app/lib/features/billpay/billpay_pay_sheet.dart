@@ -336,7 +336,7 @@ class _PaySheetState extends ConsumerState<_PaySheet> {
           method: 'wallet',
           selected: _paymentMethod == 'wallet',
           icon: Icons.account_balance_wallet_outlined,
-          title: 'AtPost Wallet',
+          title: 'VChat Wallet',
           subtitle: balance.maybeWhen(
             data: (b) => 'Balance: ${formatRupees(b.availablePaise)}',
             loading: () => 'Loading balance...',

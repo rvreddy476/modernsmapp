@@ -59,6 +59,8 @@ abstract class RealtimeEvent {
         return PostCommentedEvent(payload: payload);
       case 'user.followed':
         return UserFollowedEvent(payload: payload);
+      case 'notification':
+        return NotificationEvent(payload: payload);
       default:
         if (eventType.startsWith('call_')) {
           return CallSignalEvent(eventType: eventType, payload: payload);
@@ -283,6 +285,69 @@ class UserFollowedEvent extends RealtimeEvent {
   String get followedId =>
       payload['followed_id'] as String? ?? payload['user_id'] as String? ?? '';
   int? get followerCount => payload['follower_count'] as int?;
+}
+
+/// In-app push delivered over the same WS multiplex (notification-service
+/// publishes to `notify:<userID>`; ws-gateway relays). Payload shape
+/// matches what's persisted in the notifications table — enough to
+/// render a toast + increment the bell badge without a refetch.
+class NotificationEvent extends RealtimeEvent {
+  NotificationEvent({required super.payload})
+    : super(eventType: 'notification');
+
+  String get notificationId => payload['notification_id'] as String? ?? '';
+  /// Domain event type — `PostReacted`, `CommentCreated`, `UserFollowed`,
+  /// `UserMentioned`, etc. Maps to the icon + routing on tap.
+  String get sourceEventType => payload['event_type'] as String? ?? '';
+  String get title => payload['title'] as String? ?? '';
+  String get body => payload['body'] as String? ?? '';
+  String get icon => payload['icon'] as String? ?? '';
+  String get priority => payload['priority'] as String? ?? '';
+  /// Deep link for tap navigation (e.g. `/post/<id>`, `/profile/<id>`).
+  String? get deepLink {
+    final v = payload['deep_link'];
+    if (v is String && v.isNotEmpty) return v;
+    return null;
+  }
+  String? get actorId {
+    final v = payload['actor_id'];
+    return v is String && v.isNotEmpty ? v : null;
+  }
+  String? get actorName {
+    final v = payload['actor_name'];
+    return v is String && v.isNotEmpty ? v : null;
+  }
+  DateTime get createdAt =>
+      DateTime.tryParse(payload['created_at'] as String? ?? '')?.toLocal() ??
+      DateTime.now();
+
+  /// Pre-computed collapse key — same algorithm push_collapse.go uses
+  /// for FCM/APNs thread-id. Toasts with matching keys merge into one
+  /// surface ("Ravi and 3 others liked your post") instead of stacking.
+  /// Empty when the backend chose not to collapse this event type
+  /// (mentions, security alerts, urgent broadcasts).
+  String get collapseKey => payload['collapse_key'] as String? ?? '';
+
+  String get targetId => payload['target_id'] as String? ?? '';
+  String get targetType => payload['target_type'] as String? ?? '';
+
+  /// Scylla composite cursor — paired with [ts] forms the Last-Event-ID
+  /// the client persists across reconnects.
+  int get bucket {
+    final v = payload['bucket'];
+    if (v is int) return v;
+    if (v is num) return v.toInt();
+    return 0;
+  }
+
+  String get ts => payload['ts'] as String? ?? '';
+
+  /// Encoded "bucket:ts" — the value to send back as Last-Event-ID
+  /// on SSE reconnect. Empty when either component is missing.
+  String get eventId {
+    if (bucket == 0 || ts.isEmpty) return '';
+    return '$bucket:$ts';
+  }
 }
 
 class UnknownEvent extends RealtimeEvent {

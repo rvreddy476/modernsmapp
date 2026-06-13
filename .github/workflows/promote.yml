@@ -1,0 +1,149 @@
+# Promote staging → prod for one or more services.
+#
+# Manually dispatched only — promotion is a deliberate human action.
+# Reads image.tag from deploy/services/<svc>/values-staging.yaml,
+# writes that same SHA into values-prod.yaml on a new branch, opens a
+# PR against release/prod for review.
+#
+# The image already exists in ECR (the build-push workflow tagged it
+# :<sha> at build time), so promotion is purely a values-file edit.
+# No rebuild. No re-test. The SHA promoted to prod is bit-identical to
+# what staging is running.
+
+name: promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      services:
+        description: "Comma-separated services to promote (or 'all')"
+        required: true
+        default: ""
+      reason:
+        description: "Short reason for the promotion (lands in PR body)"
+        required: true
+        default: ""
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate inputs
+        run: |
+          if [[ -z "${{ github.event.inputs.services }}" ]]; then
+            echo "::error ::services input required"
+            exit 1
+          fi
+          if [[ -z "${{ github.event.inputs.reason }}" ]]; then
+            echo "::error ::reason input required (lands in the PR body)"
+            exit 1
+          fi
+
+      - name: Resolve service list
+        id: list
+        run: |
+          if [[ "${{ github.event.inputs.services }}" == "all" ]]; then
+            ALL=$(ls -d deploy/services/*/ | xargs -I{} basename {} | sort -u | paste -sd, -)
+            echo "services=$ALL" >> "$GITHUB_OUTPUT"
+          else
+            echo "services=${{ github.event.inputs.services }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure git
+        run: |
+          git config user.name "atpost-ci"
+          git config user.email "ci@atpost.io"
+
+      - name: Create promotion branch
+        id: branch
+        run: |
+          BRANCH="promote/$(date -u +%Y%m%d-%H%M%S)"
+          # Start from release/prod so we're only ahead by the values
+          # bump, not by anything else that's been merged to main.
+          git fetch origin release/prod
+          git checkout -b "$BRANCH" origin/release/prod
+          echo "name=$BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: Promote tags
+        env:
+          SERVICES: ${{ steps.list.outputs.services }}
+        id: promote
+        run: |
+          IFS=, read -ra SVCS <<< "$SERVICES"
+          PROMOTED=()
+          for svc in "${SVCS[@]}"; do
+            staging="deploy/services/$svc/values-staging.yaml"
+            prod="deploy/services/$svc/values-prod.yaml"
+            if [[ ! -f "$staging" || ! -f "$prod" ]]; then
+              echo "::warning ::$svc missing values files — skipping"
+              continue
+            fi
+            # Pull the staging tag. The CI workflow always writes it
+            # as `tag: "<sha>"` (quoted, single space).
+            staging_tag=$(awk '/^[[:space:]]*tag:[[:space:]]*/{
+              gsub(/^[[:space:]]*tag:[[:space:]]*/, ""); gsub(/"/, ""); print; exit }' "$staging")
+            prod_tag=$(awk '/^[[:space:]]*tag:[[:space:]]*/{
+              gsub(/^[[:space:]]*tag:[[:space:]]*/, ""); gsub(/"/, ""); print; exit }' "$prod")
+            if [[ "$staging_tag" == "$prod_tag" ]]; then
+              echo "::notice ::$svc already at $staging_tag in prod"
+              continue
+            fi
+            sed -i -E "s|^([[:space:]]*tag:[[:space:]]*).*$|\1\"$staging_tag\"|" "$prod"
+            git add "$prod"
+            PROMOTED+=("$svc:$prod_tag→$staging_tag")
+          done
+          if [[ ${#PROMOTED[@]} -eq 0 ]]; then
+            echo "::notice ::Nothing to promote — exit clean."
+            echo "promoted=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          printf 'promoted=%s\n' "${PROMOTED[*]}" >> "$GITHUB_OUTPUT"
+          git commit -m "chore(deploy): promote ${#PROMOTED[@]} service(s) to prod"
+          git push origin "${{ steps.branch.outputs.name }}"
+
+      - name: Open promotion PR
+        if: ${{ steps.promote.outputs.promoted != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PROMOTED: ${{ steps.promote.outputs.promoted }}
+          REASON: ${{ github.event.inputs.reason }}
+        run: |
+          # PROMOTED is space-separated tokens of form svc:oldtag→newtag.
+          {
+            echo "## Promotion"
+            echo
+            echo "**Reason:** $REASON"
+            echo
+            echo "**Triggered by:** @${{ github.actor }}"
+            echo
+            echo "### Services"
+            echo
+            for tok in $PROMOTED; do
+              svc=${tok%%:*}
+              versions=${tok#*:}
+              echo "- \`$svc\`: $versions"
+            done
+            echo
+            echo "### Verify before merge"
+            echo
+            echo "- [ ] Staging has been running these tags for the soak window."
+            echo "- [ ] ArgoCD shows \`staging-<svc>\` healthy."
+            echo "- [ ] No open prod incidents."
+            echo
+            echo "Merging this PR triggers ArgoCD to start syncing prod (manual"
+            echo "sync — \`automated.prune: false\` on the prod ApplicationSet)."
+          } > /tmp/pr-body.md
+
+          gh pr create \
+            --base release/prod \
+            --head "${{ steps.branch.outputs.name }}" \
+            --title "promote: $(echo "$PROMOTED" | wc -w | tr -d ' ') service(s) → prod" \
+            --body-file /tmp/pr-body.md

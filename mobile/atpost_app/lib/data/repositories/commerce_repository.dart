@@ -32,10 +32,17 @@ class CommerceRepository {
         .toList(growable: false);
   }
 
-  /// Lists products with optional category / search / seller filters. The
-  /// backend uses offset pagination today (`limit`, `offset`); we accept a
-  /// `cursor` (= stringified offset) so callers can keep a forward-only
-  /// pagination idiom that's stable when the backend swaps to keyset.
+  /// Lists products with optional category / search / seller filters.
+  /// Cursor pagination — the backend keyset query stays O(log n)
+  /// regardless of page depth, so an infinite-scroll session is
+  /// cheap even at celebrity catalog sizes. Pass `cursor: null` for
+  /// page one; pass the previous response's `nextCursor` for each
+  /// subsequent page.
+  ///
+  /// Seller-scoped browse still uses the legacy offset endpoint
+  /// (`/sellers/:id/products`) for now — there's no cursor surface
+  /// on that path. We stringify offset into the cursor so callers
+  /// don't need a separate idiom.
   Future<ProductPage> listProducts({
     String? categoryId,
     String? q,
@@ -43,10 +50,9 @@ class CommerceRepository {
     int limit = 20,
     String? cursor,
   }) async {
-    final offset = int.tryParse(cursor ?? '') ?? 0;
-
     // Seller-scoped browse uses a different endpoint.
     if (sellerId != null && sellerId.isNotEmpty) {
+      final offset = int.tryParse(cursor ?? '') ?? 0;
       final res = await _api.get(
         '/v1/commerce/sellers/$sellerId/products',
         queryParameters: {'limit': limit, 'offset': offset},
@@ -64,11 +70,18 @@ class CommerceRepository {
       );
     }
 
-    final params = <String, dynamic>{'limit': limit, 'offset': offset};
+    final params = <String, dynamic>{'limit': limit};
     if (categoryId != null && categoryId.isNotEmpty) {
       params['category'] = categoryId;
     }
     if (q != null && q.isNotEmpty) params['q'] = q;
+    // Cursor mode: empty/null cursor on first page hints
+    // paginate=cursor to the backend so it returns a next_cursor.
+    if (cursor != null && cursor.isNotEmpty) {
+      params['cursor'] = cursor;
+    } else {
+      params['paginate'] = 'cursor';
+    }
 
     final res = await _api.get('/v1/commerce/products', queryParameters: params);
     final data = res.data['data'];
@@ -81,7 +94,7 @@ class CommerceRepository {
         items: items,
         total: items.length,
         limit: limit,
-        offset: offset,
+        offset: 0,
       );
     }
     return ProductPage.fromJson(Map<String, dynamic>.from(data as Map));
@@ -121,6 +134,19 @@ class CommerceRepository {
     final data = res.data['data'];
     if (data == null) return Cart.empty();
     return Cart.fromJson(Map<String, dynamic>.from(data as Map));
+  }
+
+  /// previewCoupon returns the discount + new totals if `code` were
+  /// applied to the current cart. Pure preview — no DB write. The
+  /// actual application happens at checkout. Backend endpoint:
+  /// GET /v1/commerce/cart/coupon-preview?code=XYZ.
+  Future<CouponPreview> previewCoupon(String code) async {
+    final res = await _api.get(
+      '/v1/commerce/cart/coupon-preview',
+      queryParameters: {'code': code},
+    );
+    final data = Map<String, dynamic>.from(res.data['data'] as Map);
+    return CouponPreview.fromJson(data);
   }
 
   /// Adds a variant to the cart. `productId` is unused on the wire — backend
@@ -226,6 +252,14 @@ class CommerceRepository {
     required String paymentMethod,
     String? couponCode,
     String? idempotencyKey,
+    // Phase F4 mobile — optional B2B context. organizationId routes
+    // the order through the Phase 5 approval / credit-terms paths;
+    // PO / cost-center / invoice-email are stamped on the order for
+    // finance reconciliation downstream.
+    String? organizationId,
+    String? poNumber,
+    String? costCenter,
+    String? invoiceEmail,
   }) async {
     final res = await _api.post(
       '/v1/commerce/orders/checkout',
@@ -235,6 +269,13 @@ class CommerceRepository {
         if (couponCode != null && couponCode.isNotEmpty)
           'coupon_code': couponCode,
         if (idempotencyKey != null) 'idempotency_key': idempotencyKey,
+        if (organizationId != null && organizationId.isNotEmpty)
+          'organization_id': organizationId,
+        if (poNumber != null && poNumber.isNotEmpty) 'po_number': poNumber,
+        if (costCenter != null && costCenter.isNotEmpty)
+          'cost_center': costCenter,
+        if (invoiceEmail != null && invoiceEmail.isNotEmpty)
+          'invoice_email': invoiceEmail,
       },
     );
     return Order.fromJson(Map<String, dynamic>.from(res.data['data'] as Map));
@@ -248,22 +289,57 @@ class CommerceRepository {
     return Order.fromJson(Map<String, dynamic>.from(res.data['data'] as Map));
   }
 
-  /// Confirms a successful Razorpay payment with commerce-service. The
-  /// Kafka consumer is the resilient backup if the user closes the app
-  /// before this fires (matches the web behaviour).
+  /// Creates a payments-service intent for the order. Returns the intent
+  /// id (used by Razorpay verification) and the provider_ref (the Razorpay
+  /// gateway order id the SDK consumes). Phase 1.4.
+  Future<({String intentId, String providerRef, double amount})>
+  createPaymentIntent({
+    required String orderId,
+    required double amount,
+    String method = 'razorpay',
+  }) async {
+    final res = await _api.post(
+      '/v1/payments/intents',
+      data: {
+        'payee_id': orderId,
+        'reference_type': 'order',
+        'reference_id': orderId,
+        'amount': amount,
+        'currency': 'INR',
+        'method': method,
+      },
+    );
+    final data = Map<String, dynamic>.from(res.data['data'] as Map);
+    return (
+      intentId: (data['id'] ?? '').toString(),
+      providerRef: (data['provider_ref'] ?? '').toString(),
+      amount: (data['amount'] as num?)?.toDouble() ?? amount,
+    );
+  }
+
+  /// Confirms a successful Razorpay payment with commerce-service using the
+  /// Phase-0.1 secure body shape. The backend forwards the signature triple
+  /// to payments-service for HMAC verification before marking the order
+  /// paid; the Kafka payment.succeeded consumer remains the resilient
+  /// backup path if the app dies before this returns.
   Future<void> confirmOrderPayment(
     String orderId, {
+    required String paymentIntentId,
     required String razorpayOrderId,
     required String razorpayPaymentId,
     required String razorpaySignature,
+    required int amountMinor,
+    String gateway = 'razorpay',
   }) async {
     await _api.post(
       '/v1/commerce/orders/$orderId/payment/confirm',
       data: {
-        'payment_id': razorpayPaymentId,
-        'gateway': 'razorpay',
-        'gateway_order_id': razorpayOrderId,
-        'signature': razorpaySignature,
+        'payment_intent_id': paymentIntentId,
+        'razorpay_order_id': razorpayOrderId,
+        'razorpay_payment_id': razorpayPaymentId,
+        'razorpay_signature': razorpaySignature,
+        'amount_minor': amountMinor,
+        'gateway': gateway,
       },
     );
   }
@@ -327,26 +403,35 @@ class CommerceRepository {
   // ─── Orders list (Sprint 2) ───────────────────────────────────────
 
   /// Page of light-weight order summaries for the "My orders" screen.
-  /// Backend route: `GET /v1/commerce/orders?limit=&offset=`. The brief
-  /// asks for cursor pagination; we accept a stringified offset so callers
-  /// can switch to a real keyset cursor without churn.
-  Future<List<OrderListItem>> getMyOrders({
+  /// Backend route: `GET /v1/commerce/orders?limit=&cursor=`. Phase 2.1
+  /// switched the customer order list to keyset cursors — the previous
+  /// offset path triggered a full-table COUNT(*) on every page. The
+  /// response now also carries item/seller counts + the first item's
+  /// product so the customer order-list screen can render rich cards.
+  ///
+  /// Returns the page + the opaque next-page cursor (empty on last page).
+  Future<({List<OrderListItem> items, String nextCursor})> getMyOrders({
     int limit = 20,
     String? cursor,
   }) async {
-    final offset = int.tryParse(cursor ?? '') ?? 0;
     final res = await _api.get(
       '/v1/commerce/orders',
-      queryParameters: {'limit': limit, 'offset': offset},
+      queryParameters: {
+        'limit': limit,
+        if (cursor != null && cursor.isNotEmpty) 'cursor': cursor,
+      },
     );
     final data = res.data['data'];
     final raw = data is List
         ? data
         : (data is Map ? (data['items'] as List? ?? const []) : const []);
-    return raw
+    final items = raw
         .whereType<Map>()
         .map((m) => OrderListItem.fromJson(Map<String, dynamic>.from(m)))
         .toList(growable: false);
+    final meta = res.data['meta'];
+    final next = (meta is Map ? meta['next_cursor'] : null)?.toString() ?? '';
+    return (items: items, nextCursor: next);
   }
 
   // ─── Shipment / live tracking (Sprint 2) ──────────────────────────
@@ -370,11 +455,11 @@ class CommerceRepository {
 
   // ─── Returns (Sprint 2) ───────────────────────────────────────────
 
-  /// Submits a return request. Backend `POST /v1/commerce/orders/:id/returns`
-  /// accepts a single `{order_item_id, seller_id, reason_code}` shape today
-  /// (see `handler.go#createReturnReq`); the brief asks for multi-item, so
-  /// we fan out one POST per item and return the first request created. If
-  /// any single call fails the whole batch errors out.
+  /// Submits a multi-item return in a single backend call. Phase 2.3
+  /// replaced the N-call fan-out with a bulk `{items:[...]}` endpoint —
+  /// the previous loop here lost atomicity (partial successes were
+  /// invisible to the caller). Returns the first return request created
+  /// (mirrors the prior contract); the others are persisted server-side.
   Future<ReturnRequest> requestReturn({
     required String orderId,
     required List<ReturnItem> items,
@@ -385,25 +470,39 @@ class CommerceRepository {
     if (items.isEmpty) {
       throw ArgumentError('requestReturn requires at least one item');
     }
-    ReturnRequest? first;
-    for (final item in items) {
-      final res = await _api.post(
-        '/v1/commerce/orders/$orderId/returns',
-        data: {
-          'order_item_id': item.orderItemId,
-          'seller_id': sellerId,
-          'reason_code': item.reason.wireValue,
-          'quantity': item.qty,
-          'pickup_address_id': pickupAddressId,
-          if (reasonDescription != null && reasonDescription.isNotEmpty)
-            'reason_description': reasonDescription,
-        },
-      );
-      final body = Map<String, dynamic>.from(res.data['data'] as Map);
-      final ret = ReturnRequest.fromJson(body);
-      first ??= ret;
+    final res = await _api.post(
+      '/v1/commerce/orders/$orderId/returns',
+      data: {
+        'pickup_address_id': pickupAddressId,
+        'items': [
+          for (final item in items)
+            {
+              'order_item_id': item.orderItemId,
+              'seller_id': sellerId,
+              'reason_code': item.reason.wireValue,
+              'quantity': item.qty,
+              if (reasonDescription != null && reasonDescription.isNotEmpty)
+                'reason_description': reasonDescription,
+            },
+        ],
+      },
+    );
+    final body = res.data['data'];
+    // Backend may answer with `{items:[...]}` (multi-item path) or a bare
+    // single item when only one was requested — handle both.
+    if (body is Map && body['items'] is List) {
+      final list = body['items'] as List;
+      if (list.isEmpty) throw StateError('empty return response');
+      return ReturnRequest.fromJson(Map<String, dynamic>.from(list.first as Map));
     }
-    return first!;
+    return ReturnRequest.fromJson(Map<String, dynamic>.from(body as Map));
+  }
+
+  /// Fetches a single return — Phase 2.2 detail endpoint. Replaces the
+  /// previous "list /me/returns and find the one I want" workaround.
+  Future<ReturnRequest> getReturn(String returnId) async {
+    final res = await _api.get('/v1/commerce/returns/$returnId');
+    return ReturnRequest.fromJson(Map<String, dynamic>.from(res.data['data'] as Map));
   }
 
   /// Backend route: `GET /v1/commerce/me/returns`.
@@ -641,6 +740,208 @@ class CommerceRepository {
     return raw
         .whereType<Map>()
         .map((m) => Product.fromJson(Map<String, dynamic>.from(m)))
+        .toList(growable: false);
+  }
+
+  // ─── Seller surfaces ────────────────────────────────────────────────
+
+  /// Fetches the caller's seller profile. Returns null when the user
+  /// hasn't completed onboarding — the dashboard screen renders an
+  /// onboarding-required state in that case.
+  Future<SellerProfile?> getMySellerProfile() async {
+    try {
+      final res = await _api.get('/v1/commerce/sellers/me');
+      final data = res.data['data'];
+      if (data == null) return null;
+      return SellerProfile.fromJson(Map<String, dynamic>.from(data as Map));
+    } catch (_) {
+      // 404 from the server means "no seller account yet" — that's the
+      // expected path for an unboarded user; treat as null.
+      return null;
+    }
+  }
+
+  /// Seller dashboard stats. The backend computes these per request so
+  /// no caching is needed client-side; the auto-refresh on screen
+  /// re-enter is sufficient.
+  Future<SellerDashboardStats> getSellerDashboard() async {
+    final res = await _api.get('/v1/commerce/dashboard');
+    final data = res.data['data'];
+    return SellerDashboardStats.fromJson(Map<String, dynamic>.from(data as Map));
+  }
+
+  /// Lists the seller's own products. Backend: GET
+  /// /v1/commerce/sellers/:sellerId/products. We hydrate the seller's
+  /// own ID via getMySellerProfile rather than making the caller pass
+  /// it through every UI hop.
+  Future<List<SellerProductSummary>> listMyProducts({int limit = 50, int offset = 0}) async {
+    final profile = await getMySellerProfile();
+    if (profile == null) return const [];
+    final res = await _api.get(
+      '/v1/commerce/sellers/${profile.id}/products',
+      queryParameters: {'limit': limit, 'offset': offset},
+    );
+    final raw = (res.data['data'] as List?) ?? const [];
+    return raw
+        .whereType<Map>()
+        .map((m) => SellerProductSummary.fromJson(Map<String, dynamic>.from(m)))
+        .toList(growable: false);
+  }
+
+  /// Submits a draft product for review. Backend:
+  /// POST /v1/commerce/products/:id/submit.
+  Future<void> submitProductForReview(String productId) async {
+    await _api.post('/v1/commerce/products/$productId/submit');
+  }
+
+  // ─── Variant CRUD (seller) ─────────────────────────────────────────
+
+  Future<List<ProductVariantDetail>> listProductVariants(String productId) async {
+    final res = await _api.get('/v1/commerce/products/$productId/variants');
+    final raw = (res.data['data']?['items'] as List?) ?? const [];
+    return raw
+        .whereType<Map>()
+        .map((m) => ProductVariantDetail.fromJson(Map<String, dynamic>.from(m)))
+        .toList(growable: false);
+  }
+
+  Future<ProductVariantDetail> addProductVariant(
+    String productId,
+    CreateVariantInput input,
+  ) async {
+    final res = await _api.post(
+      '/v1/commerce/products/$productId/variants',
+      data: input.toJson(),
+    );
+    return ProductVariantDetail.fromJson(
+      Map<String, dynamic>.from(res.data['data'] as Map),
+    );
+  }
+
+  /// updateProductVariant sends a sparse PATCH — only the fields in
+  /// `patch` are written server-side. SKU is intentionally not
+  /// updatable (bulk-import merge key); attempting to set it is a
+  /// no-op at the store layer.
+  Future<ProductVariantDetail> updateProductVariant(
+    String variantId,
+    Map<String, dynamic> patch,
+  ) async {
+    final res = await _api.patch(
+      '/v1/commerce/variants/$variantId',
+      data: patch,
+    );
+    return ProductVariantDetail.fromJson(
+      Map<String, dynamic>.from(res.data['data'] as Map),
+    );
+  }
+
+  /// archiveProductVariant flips a variant to status='archived'. Soft
+  /// delete — existing orders + cart_items keep resolving the variant
+  /// by ID; customers just can't add new units.
+  Future<void> archiveProductVariant(String variantId) async {
+    await _api.delete('/v1/commerce/variants/$variantId');
+  }
+
+  // ─── Seller orders / returns / earnings ────────────────────────────
+
+  /// Seller-facing order fulfillment list. Each card carries the
+  /// seller's items, their shipment (if booked), and the order's
+  /// status — enough to render a fulfillment queue without a second
+  /// detail fetch.
+  Future<List<SellerOrderCard>> listSellerOrders({
+    String stage = 'all',
+    int limit = 20,
+    int offset = 0,
+  }) async {
+    final res = await _api.get(
+      '/v1/commerce/seller/fulfillment',
+      queryParameters: {'stage': stage, 'limit': limit, 'offset': offset},
+    );
+    final raw = (res.data['data']?['orders'] as List?) ?? const [];
+    return raw
+        .whereType<Map>()
+        .map((m) => SellerOrderCard.fromJson(Map<String, dynamic>.from(m)))
+        .toList(growable: false);
+  }
+
+  /// Seller returns inbox.
+  Future<List<SellerReturnCard>> listSellerReturns({
+    int limit = 20,
+    int offset = 0,
+  }) async {
+    final res = await _api.get(
+      '/v1/commerce/seller/returns',
+      queryParameters: {'limit': limit, 'offset': offset},
+    );
+    final raw = (res.data['data'] as List?) ?? const [];
+    return raw
+        .whereType<Map>()
+        .map((m) => SellerReturnCard.fromJson(Map<String, dynamic>.from(m)))
+        .toList(growable: false);
+  }
+
+  /// Seller earnings ledger — prepaid (non-COD) delivered items with
+  /// gross / commission / fee / TDS / net broken out. COD lives in
+  /// /seller/cod-remittances.
+  Future<List<SellerEarning>> listSellerEarnings({
+    int limit = 50,
+    int offset = 0,
+  }) async {
+    final res = await _api.get(
+      '/v1/commerce/seller/earnings',
+      queryParameters: {'limit': limit, 'offset': offset},
+    );
+    final raw = (res.data['data']?['earnings'] as List?) ?? const [];
+    return raw
+        .whereType<Map>()
+        .map((m) => SellerEarning.fromJson(Map<String, dynamic>.from(m)))
+        .toList(growable: false);
+  }
+
+  // ─── Bulk import (read + execute; upload stays web-only) ─────────
+
+  /// Lists the seller's bulk import jobs newest-first. Mobile shows
+  /// jobs created via the web flow so a seller can monitor + finalize
+  /// from their phone; new uploads require the desktop file picker.
+  Future<List<BulkImportJob>> listBulkImportJobs() async {
+    final res = await _api.get('/v1/commerce/seller/bulk-import');
+    final raw = (res.data['data']?['items'] as List?) ?? const [];
+    return raw
+        .whereType<Map>()
+        .map((m) => BulkImportJob.fromJson(Map<String, dynamic>.from(m)))
+        .toList(growable: false);
+  }
+
+  Future<BulkImportJob> getBulkImportJob(String jobId) async {
+    final res = await _api.get('/v1/commerce/seller/bulk-import/$jobId');
+    final data = res.data['data'];
+    return BulkImportJob.fromJson(Map<String, dynamic>.from(data as Map));
+  }
+
+  /// Triggers the worker to upsert validated rows. Idempotent at the
+  /// backend; calling after the job is already executed returns the
+  /// existing row count rather than re-importing.
+  Future<void> executeBulkImport(String jobId) async {
+    await _api.post('/v1/commerce/seller/bulk-import/$jobId/execute');
+  }
+
+  /// COD remittance ledger — one row per COD shipment whose cash the
+  /// courier has collected. Status pending → settled when Ops pays out.
+  Future<List<CODRemittance>> listCODRemittances({
+    String? status,
+    int limit = 20,
+    int offset = 0,
+  }) async {
+    final params = <String, dynamic>{'limit': limit, 'offset': offset};
+    if (status != null && status.isNotEmpty) params['status'] = status;
+    final res = await _api.get(
+      '/v1/commerce/seller/cod-remittances',
+      queryParameters: params,
+    );
+    final raw = (res.data['data']?['items'] as List?) ?? const [];
+    return raw
+        .whereType<Map>()
+        .map((m) => CODRemittance.fromJson(Map<String, dynamic>.from(m)))
         .toList(growable: false);
   }
 }

@@ -143,3 +143,172 @@ func (s *Store) ListGroupReports(ctx context.Context, groupID uuid.UUID) ([]map[
 
 // suppress unused import
 var _ = json.RawMessage{}
+
+// GroupInviteDetail is a pending invite enriched with the target group's
+// display fields so clients can render an invite card without extra lookups.
+type GroupInviteDetail struct {
+	GroupInvite
+	GroupName          string     `json:"group_name"`
+	GroupAvatarMediaID *uuid.UUID `json:"group_avatar_media_id,omitempty"`
+	GroupMemberCount   int64      `json:"group_member_count"`
+}
+
+// ListInvitesForUserDetailed returns the user's pending invites joined with
+// the group name/avatar/member count.
+func (s *Store) ListInvitesForUserDetailed(ctx context.Context, userID uuid.UUID) ([]GroupInviteDetail, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT i.id, i.group_id, i.inviter_id, i.invitee_id, i.status, i.created_at, i.updated_at, i.expires_at,
+		       g.name, g.avatar_media_id, g.member_count
+		FROM group_invites i
+		JOIN groups g ON g.id = i.group_id
+		WHERE i.invitee_id = $1 AND i.status = 'pending' AND g.is_archived = FALSE
+		ORDER BY i.created_at DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var invites []GroupInviteDetail
+	for rows.Next() {
+		var inv GroupInviteDetail
+		if err := rows.Scan(&inv.ID, &inv.GroupID, &inv.InviterID, &inv.InviteeID, &inv.Status,
+			&inv.CreatedAt, &inv.UpdatedAt, &inv.ExpiresAt,
+			&inv.GroupName, &inv.GroupAvatarMediaID, &inv.GroupMemberCount); err != nil {
+			return nil, err
+		}
+		invites = append(invites, inv)
+	}
+	return invites, rows.Err()
+}
+
+// ListMyGroupsFeed returns published posts across every group the user is a
+// member of, newest first — powers the aggregated MySpace "Your feed".
+func (s *Store) ListMyGroupsFeed(ctx context.Context, userID uuid.UUID, limit, offset int) ([]GroupPostV2, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT p.id, p.group_id, p.channel_id, p.author_id, p.content_type, p.title, p.body, p.body_html,
+		       p.type_payload, p.attachments, p.needs_approval, p.is_pinned, p.is_announcement, p.status,
+		       p.spark_count, p.comment_count, p.echo_count, p.view_count, p.created_at, p.updated_at
+		FROM group_posts p
+		JOIN group_members m ON m.group_id = p.group_id AND m.user_id = $1
+		WHERE p.status = 'published'
+		ORDER BY p.created_at DESC
+		LIMIT $2 OFFSET $3`, userID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var posts []GroupPostV2
+	for rows.Next() {
+		var p GroupPostV2
+		if err := rows.Scan(&p.ID, &p.GroupID, &p.ChannelID, &p.AuthorID, &p.ContentType,
+			&p.Title, &p.Body, &p.BodyHTML, &p.TypePayload, &p.Attachments,
+			&p.NeedsApproval, &p.IsPinned, &p.IsAnnouncement, &p.Status,
+			&p.SparkCount, &p.CommentCount, &p.EchoCount, &p.ViewCount,
+			&p.CreatedAt, &p.UpdatedAt); err != nil {
+			return nil, err
+		}
+		if p.TypePayload == nil {
+			p.TypePayload = json.RawMessage(`{}`)
+		}
+		if p.Attachments == nil {
+			p.Attachments = json.RawMessage(`[]`)
+		}
+		posts = append(posts, p)
+	}
+	return posts, rows.Err()
+}
+
+// DiscoverScoredGroup is a Group plus the personalization signals used to
+// rank it for a specific viewer.
+type DiscoverScoredGroup struct {
+	Group
+	FriendsInGroup int  `json:"friends_in_group"`
+	CategoryMatch  bool `json:"category_match"`
+	LocationMatch  bool `json:"location_match"`
+	Score          int  `json:"score"`
+}
+
+// DiscoverGroupsForUser returns joinable spaces ranked for this viewer.
+// Signals, strongest first:
+//   - friends already inside (graph `connections` lives in the same app DB)
+//   - category affinity — categories of spaces the viewer already belongs to
+//   - location affinity — locations of the viewer's current spaces
+//   - popularity (log member_count) and a small new-space boost
+//
+// Public and request-to-join ("restricted") spaces are eligible; hidden
+// ('private') spaces never surface. Spaces the viewer already belongs to are
+// excluded.
+func (s *Store) DiscoverGroupsForUser(ctx context.Context, userID uuid.UUID, groupType string, limit, offset int) ([]DiscoverScoredGroup, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	rows, err := s.db.Query(ctx, `
+		WITH my_groups AS (
+			SELECT group_id FROM group_members WHERE user_id = $1
+		),
+		my_cats AS (
+			SELECT DISTINCT g.category FROM groups g
+			JOIN my_groups mg ON mg.group_id = g.id
+			WHERE COALESCE(g.category, '') <> ''
+		),
+		my_locs AS (
+			SELECT DISTINCT lower(trim(g.location)) AS loc FROM groups g
+			JOIN my_groups mg ON mg.group_id = g.id
+			WHERE COALESCE(g.location, '') <> ''
+		),
+		friends AS (
+			SELECT user_b AS fid FROM connections WHERE user_a = $1
+			UNION
+			SELECT user_a FROM connections WHERE user_b = $1
+		)
+		SELECT `+groupColumns+`,
+			COALESCE(f.friend_count, 0) AS friend_count,
+			(COALESCE(g.category, '') <> '' AND g.category IN (SELECT category FROM my_cats)) AS category_match,
+			(COALESCE(g.location, '') <> '' AND lower(trim(g.location)) IN (SELECT loc FROM my_locs)) AS location_match,
+			(
+				LEAST(COALESCE(f.friend_count, 0), 5) * 50
+				+ CASE WHEN COALESCE(g.category, '') <> '' AND g.category IN (SELECT category FROM my_cats) THEN 35 ELSE 0 END
+				+ CASE WHEN COALESCE(g.location, '') <> '' AND lower(trim(g.location)) IN (SELECT loc FROM my_locs) THEN 30 ELSE 0 END
+				+ LEAST((ln(g.member_count + 1) * 6)::int, 24)
+				+ CASE WHEN g.created_at > NOW() - INTERVAL '30 days' THEN 8 ELSE 0 END
+			)::int AS score
+		FROM groups g
+		LEFT JOIN LATERAL (
+			SELECT count(*) AS friend_count
+			FROM group_members gm
+			JOIN friends fr ON fr.fid = gm.user_id
+			WHERE gm.group_id = g.id
+		) f ON true
+		WHERE g.status = 'active'
+		  AND g.privacy_level IN ('public', 'restricted')
+		  AND g.id NOT IN (SELECT group_id FROM my_groups)
+		  AND ($4 = '' OR g.group_type = $4)
+		ORDER BY score DESC, g.member_count DESC, g.created_at DESC
+		LIMIT $2 OFFSET $3`,
+		userID, limit, offset, groupType)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []DiscoverScoredGroup
+	for rows.Next() {
+		var d DiscoverScoredGroup
+		if err := rows.Scan(
+			&d.ID, &d.Name, &d.Description, &d.AvatarMediaID, &d.CoverMediaID, &d.CreatorID,
+			&d.Visibility, &d.IsArchived, &d.ChatConversationID, &d.MemberCount, &d.PostCount,
+			&d.CreatedAt, &d.UpdatedAt, &d.Handle, &d.Category, &d.PrivacyLevel, &d.JoinMode,
+			&d.WhoCanPost, &d.WhoCanInvite, &d.Location, &d.Language, &d.Status, &d.DeletedAt, &d.PendingRequestCount,
+			&d.GroupType, &d.MaxMembers, &d.JoinQuestions, &d.TopicTags, &d.CommentPermission, &d.MemberListVisible, &d.LinkSharing, &d.IsMature,
+			&d.FriendsInGroup, &d.CategoryMatch, &d.LocationMatch, &d.Score,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}

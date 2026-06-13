@@ -42,9 +42,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/restaurants/:restaurantId", h.GetRestaurant)
 		v1.GET("/restaurants/:restaurantId/menu", h.GetMenu)
 		v1.GET("/search", h.Search)
+		v1.GET("/menu-items/:itemId/reviews", h.ListItemReviews)
+		v1.GET("/restaurants/:restaurantId/prep-time", h.GetRestaurantPrepTime)
 
 		user := v1.Group("", h.requireAuthenticated())
 		{
+			user.GET("/me/capabilities", h.GetCapabilities)
+			user.POST("/realtime/token", h.IssueRealtimeToken)
 			user.POST("/cart/items", h.AddCartItem)
 			user.GET("/cart", h.GetCart)
 			user.PATCH("/cart/items/:cartItemId", h.UpdateCartItem)
@@ -64,6 +68,24 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			user.POST("/orders/:orderId/payments/intents", h.CreatePaymentIntent)
 			user.POST("/orders/:orderId/payments/confirm", h.ConfirmPayment)
 			user.POST("/orders/:orderId/cancel", h.CancelOrder)
+			user.GET("/orders/:orderId/substitutions", h.ListSubstitutions)
+			user.POST("/orders/:orderId/substitutions/:subId/respond", h.RespondSubstitution)
+			user.POST("/menu-items/:itemId/report", h.ReportMenuItem)
+			user.POST("/orders/:orderId/verify-delivery", h.CustomerVerifyDeliveryOTP)
+			user.POST("/support/tickets", h.CreateTicket)
+			user.GET("/support/tickets/me", h.ListMyTickets)
+			user.GET("/support/tickets/:ticketId", h.GetTicket)
+			user.POST("/support/tickets/:ticketId/messages", h.AppendTicketMessage)
+			user.POST("/refunds", h.CreateRefundRequest)
+			user.POST("/menu-items/:itemId/reviews", h.CreateItemReview)
+			user.GET("/orders/:orderId/invoice", h.CustomerGetInvoice)
+			user.GET("/me/loyalty", h.GetMyLoyalty)
+			user.POST("/me/loyalty/redeem", h.RedeemLoyalty)
+			user.GET("/me/referral", h.GetMyReferralCode)
+			user.POST("/me/referral/apply", h.ApplyReferralCode)
+			user.GET("/orders/:orderId/messages", h.ListOrderMessages)
+			user.POST("/orders/:orderId/messages", h.PostOrderMessage)
+			user.POST("/orders/:orderId/messages/:msgId/read", h.MarkOrderMessageRead)
 			user.POST("/orders/:orderId/ratings/restaurant", h.RateRestaurant)
 			user.POST("/orders/:orderId/ratings/delivery", h.RateDelivery)
 		}
@@ -85,12 +107,27 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			partner.DELETE("/menu/items/:itemId", h.DeleteMenuItem)
 			partner.PATCH("/menu/items/:itemId/availability", h.SetMenuItemAvailability)
 			partner.GET("/restaurants/:restaurantId/orders", h.ListPartnerOrders)
+			partner.GET("/restaurants/:restaurantId/kitchen-queue", h.ListKitchenQueue)
+			partner.POST("/orders/:orderId/substitutions", h.PartnerProposeSubstitution)
+			partner.POST("/orders/:orderId/verify-pickup", h.PartnerVerifyPickupOTP)
 			partner.GET("/restaurants/:restaurantId/settlements", h.PartnerRestaurantSettlements)
 			partner.GET("/restaurants/:restaurantId/reports/summary", h.PartnerRestaurantSummary)
 			partner.POST("/orders/:orderId/accept", h.PartnerAcceptOrder)
 			partner.POST("/orders/:orderId/reject", h.PartnerRejectOrder)
 			partner.POST("/orders/:orderId/mark-preparing", h.PartnerMarkPreparing)
 			partner.POST("/orders/:orderId/mark-ready", h.PartnerMarkReady)
+		}
+
+		deliveryOffers := v1.Group("/delivery/offers", h.requireAuthenticated())
+		{
+			deliveryOffers.GET("/me", h.ListMyDeliveryOffers)
+			deliveryOffers.POST("/:offerId/accept", h.AcceptDeliveryOffer)
+			deliveryOffers.POST("/:offerId/reject", h.RejectDeliveryOffer)
+		}
+		deliveryProof := v1.Group("/delivery/orders", h.requireAuthenticated())
+		{
+			deliveryProof.POST("/:orderId/proof", h.PartnerAttachProof)
+			deliveryProof.GET("/:orderId/batch", h.GetBatchForOrder)
 		}
 
 		delivery := v1.Group("/delivery", h.requireAuthenticated())
@@ -117,6 +154,23 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		admin := v1.Group("/admin", h.requireAdminScope())
 		{
 			admin.GET("/dashboard", h.AdminDashboard)
+			admin.GET("/moderation/queue", h.AdminListPendingModeration)
+			admin.POST("/moderation/menu-items/:itemId", h.AdminModerateMenuItem)
+			admin.GET("/support/tickets", h.AdminListTickets)
+			admin.POST("/support/tickets/:ticketId/status", h.AdminSetTicketStatus)
+			admin.GET("/refunds", h.AdminListRefunds)
+			admin.POST("/refunds/:refundId/decide", h.AdminDecideRefund)
+			admin.DELETE("/item-reviews/:reviewId", h.AdminHideItemReview)
+			admin.GET("/reports/restaurant-sla", h.AdminRestaurantSLAReport)
+			admin.GET("/reports/delivery-sla", h.AdminDeliverySLAReport)
+			admin.GET("/reports/payment-recon", h.AdminPaymentReconReport)
+			admin.GET("/reports/refunds", h.AdminRefundsReport)
+			admin.GET("/reports/coupon-abuse", h.AdminCouponAbuseReport)
+			admin.GET("/reports/compliance", h.AdminComplianceReport)
+			admin.GET("/fraud/top", h.AdminTopFraudUsers)
+			admin.POST("/settlements/files", h.AdminGenerateSettlementFile)
+			admin.GET("/settlements/files", h.AdminListSettlementFiles)
+			admin.GET("/settlements/files/:id/download", h.AdminDownloadSettlementFile)
 			admin.GET("/restaurants/pending", h.AdminPendingRestaurants)
 			admin.POST("/restaurants/:restaurantId/approve", h.AdminApproveRestaurant)
 			admin.POST("/restaurants/:restaurantId/reject", h.AdminRejectRestaurant)
@@ -605,6 +659,13 @@ func (h *Handler) CreatePaymentIntent(c *gin.Context) {
 	api.JSONWithContext(c.Request.Context(), c.Writer, http.StatusCreated, intent)
 }
 
+// ConfirmPayment finalises an online/wallet FiGo payment.
+//
+// P0.1 — every online (Razorpay) confirm MUST carry the Razorpay
+// signature triple so the backend can hand it to payments-service for
+// HMAC verification + amount check. Wallet confirms pass through the
+// existing internal-charge path. Idempotency-Key header makes a
+// duplicate confirm a no-op.
 func (h *Handler) ConfirmPayment(c *gin.Context) {
 	userID, ok := h.currentUserID(c)
 	if !ok {
@@ -615,11 +676,29 @@ func (h *Handler) ConfirmPayment(c *gin.Context) {
 		return
 	}
 	var body struct {
+		// Legacy fields — kept for wallet flow; the online path no
+		// longer trusts these to mark anything succeeded.
 		ProviderPaymentID string `json:"provider_payment_id"`
 		ProviderReference string `json:"provider_reference"`
+		// Razorpay signature triple — required for ONLINE method.
+		RazorpayOrderID   string `json:"razorpay_order_id"`
+		RazorpayPaymentID string `json:"razorpay_payment_id"`
+		RazorpaySignature string `json:"razorpay_signature"`
+		AmountMinor       int64  `json:"amount_minor"`
 	}
 	_ = c.ShouldBindJSON(&body)
-	order, err := h.svc.ConfirmPayment(c.Request.Context(), userID, orderID, body.ProviderPaymentID, body.ProviderReference)
+	idemKey := c.GetHeader("Idempotency-Key")
+	order, err := h.svc.ConfirmPayment(c.Request.Context(), service.ConfirmPaymentInput{
+		UserID:            userID,
+		OrderID:           orderID,
+		ProviderPaymentID: body.ProviderPaymentID,
+		ProviderReference: body.ProviderReference,
+		RazorpayOrderID:   body.RazorpayOrderID,
+		RazorpayPaymentID: body.RazorpayPaymentID,
+		RazorpaySignature: body.RazorpaySignature,
+		AmountMinor:       body.AmountMinor,
+		IdempotencyKey:    idemKey,
+	})
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "FOOD_PAYMENT_CONFIRM_FAILED", err.Error(), nil)
 		return

@@ -8,8 +8,13 @@ import (
 	"time"
 
 	"github.com/atpost/search-service/internal/events"
+	"github.com/atpost/search-service/internal/graphclient"
 	"github.com/atpost/search-service/internal/http"
+	"github.com/atpost/search-service/internal/reindex"
+	"github.com/atpost/search-service/database"
+	"github.com/atpost/search-service/internal/store/postgres"
 	"github.com/atpost/search-service/internal/store/search"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/atpost/shared/health"
 	"github.com/atpost/shared/middleware"
 	"github.com/atpost/shared/o11y/logging"
@@ -57,18 +62,32 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 5. Kafka Consumer
-	consumer := events.NewConsumerWithDialer(
-		strings.Split(kafkaBrokers, ","),
-		"search-service-group",
-		"social.events.v1",
-		searchStore,
-		kafkaDialer,
-	)
+	// 5. Kafka Consumers — search-service indexes events from BOTH the
+	// social events topic (post/feed/graph publish here) AND the
+	// identity events topic (auth-service publishes UserRegistered /
+	// UserProfileUpdated / HandleChanged here). Without the identity
+	// consumer the users_v1 OpenSearch index stays empty no matter how
+	// many people register, because identity events never traverse the
+	// social topic. Same dual-consumer pattern chat-service uses for
+	// its KAFKA_TOPIC + IDENTITY_KAFKA_TOPIC config.
+	socialTopic := env("KAFKA_TOPIC", "social.events.v1")
+	identityTopic := env("IDENTITY_KAFKA_TOPIC", "identity.events.v1")
+	brokerList := strings.Split(kafkaBrokers, ",")
+
 	consumerCtx, consumerCancel := context.WithCancel(ctx)
 	defer consumerCancel()
-	go consumer.Start(consumerCtx)
-	slog.Info("started kafka consumer")
+
+	socialConsumer := events.NewConsumerWithDialer(
+		brokerList, "search-service-group", socialTopic, searchStore, kafkaDialer,
+	)
+	go socialConsumer.Start(consumerCtx)
+	slog.Info("started kafka consumer", "topic", socialTopic, "group", "search-service-group")
+
+	identityConsumer := events.NewConsumerWithDialer(
+		brokerList, "search-service-identity-group", identityTopic, searchStore, kafkaDialer,
+	)
+	go identityConsumer.Start(consumerCtx)
+	slog.Info("started kafka consumer", "topic", identityTopic, "group", "search-service-identity-group")
 
 	// 6. Prometheus metrics
 	httpMetrics := metrics.NewHTTPMetrics("search-service")
@@ -80,7 +99,50 @@ func main() {
 	}))
 
 	// 8. HTTP Handlers
-	handler := http.New(searchStore, rdb)
+	profileServiceURL := env("PROFILE_SERVICE_URL", "http://identity-profile:8098")
+	graphServiceURL := env("GRAPH_SERVICE_URL", "http://graph-service:8083")
+	internalKey := os.Getenv("INTERNAL_SERVICE_KEY")
+	handler := http.New(searchStore, rdb).WithReindexSource(profileServiceURL)
+	if internalKey != "" {
+		handler.WithInternalKey(internalKey)
+		slog.Info("search-service: internal-service-key gate enabled")
+	} else {
+		slog.Warn("search-service: INTERNAL_SERVICE_KEY not set — endpoints, including the admin reindex, are unauthenticated. Do not run this in production.")
+	}
+
+	// Graph-service client — drives author-affinity in function_score
+	// ranking. Optional; if GRAPH_SERVICE_URL is empty or graph-service
+	// is unreachable, search degrades to engagement × recency.
+	gc := graphclient.New(graphServiceURL, internalKey, rdb)
+	handler.WithGraphClient(gc)
+	slog.Info("search-service: graph client wired", "url", graphServiceURL)
+
+	// Postgres analytics store (search_queries + search_clicks) +
+	// extras store (saved searches + history). Both optional.
+	if dsn := os.Getenv("POSTGRES_DSN"); dsn != "" {
+		pgPool, err := pgxpool.New(ctx, dsn)
+		if err != nil {
+			slog.Warn("search-service: postgres pool init failed; analytics + extras disabled", "err", err)
+		} else if err := pgPool.Ping(ctx); err != nil {
+			slog.Warn("search-service: postgres ping failed; analytics + extras disabled", "err", err)
+			pgPool.Close()
+		} else {
+			if err := postgres.BootstrapSchema(ctx, pgPool, database.SetupSQL, database.Migrations); err != nil {
+				slog.Warn("search-service: schema bootstrap failed; analytics + extras may misbehave", "err", err)
+			} else {
+				slog.Info("search-service: schema ready")
+			}
+			handler.WithAnalyticsStore(postgres.NewAnalyticsStore(pgPool))
+			handler.WithExtrasStore(postgres.NewExtrasStore(pgPool))
+			slog.Info("search-service: analytics + extras stores wired")
+		}
+	}
+
+	// Startup auto-heal: if users_v1 is empty (wiped index / fresh
+	// OpenSearch volume / events lost beyond Kafka retention), rebuild
+	// it from profile-service rather than waiting for users to
+	// re-register. A populated index is left alone.
+	reindex.AutoHealUsersOnStartup(ctx, nil, profileServiceURL, internalKey, searchStore, slog.Default())
 
 	// 9. Gin with middleware stack
 	gin.SetMode(gin.ReleaseMode)

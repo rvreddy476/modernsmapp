@@ -67,7 +67,7 @@ class GroupsListScreen extends ConsumerWidget {
             onPressed: () => context.pop(),
           ),
           const SizedBox(width: 12),
-          Text('Groups', style: AppTextStyles.h1),
+          Text('MySpace', style: AppTextStyles.h1),
           const Spacer(),
           GestureDetector(
             onTap: () => context.push('/groups/create'),

@@ -61,7 +61,7 @@ func main() {
 	}
 	slog.Info("connected to postgres")
 
-	if err := postgres.BootstrapSchema(ctx, dbPool, database.SetupSQL); err != nil {
+	if err := postgres.BootstrapSchema(ctx, dbPool, database.SetupSQL, database.Migrations); err != nil {
 		slog.Error("failed to bootstrap feed schema", "error", err)
 		os.Exit(1)
 	}
@@ -143,7 +143,18 @@ func main() {
 	go velocityTracker.Start(ctx)
 	slog.Info("velocity tracker started")
 
-	feedHandler := http.New(feedSvc)
+	feedHandler := http.New(feedSvc).WithRedis(rdb)
+
+	// Audit CF2: gate every /v1/feed route behind the shared internal
+	// service key. The handler supports the middleware but main.go
+	// previously never wired the env var, leaving every endpoint
+	// callable directly without going through the API gateway.
+	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
+		feedHandler.WithInternalKey(key)
+		slog.Info("feed-service: internal-service-key gate enabled")
+	} else {
+		slog.Warn("feed-service: INTERNAL_SERVICE_KEY not set — every /v1/feed endpoint is unauthenticated. Do not run this configuration in production.")
+	}
 
 	// 11. Kafka Consumer (now also handles PostReacted and CommentCreated)
 	consumer := events.NewConsumerWithDialer(
@@ -167,6 +178,21 @@ func main() {
 	)
 	go channelConsumer.Start(ctx)
 	defer channelConsumer.Close()
+
+	// 11c. QA events live on a dedicated topic — reuse the main consumer
+	// type so QA question fan-out hits the same processMessage switch.
+	qaTopic := env("KAFKA_QA_TOPIC", "qa-events")
+	qaConsumer := events.NewConsumerWithDialer(
+		[]string{kafkaBrokers},
+		"feed-service-qa-group",
+		qaTopic,
+		feedSvc,
+		rdb,
+		timelineStore,
+		kafkaDialer,
+	)
+	go qaConsumer.Start(ctx)
+	defer qaConsumer.Close()
 
 	// 12. Gin with middleware stack
 	gin.SetMode(gin.ReleaseMode)

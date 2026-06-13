@@ -90,10 +90,24 @@ class FeedRepository {
           .map((e) => Post.fromJson(e as Map<String, dynamic>))
           .toList();
 
+      // Defensive filter: feed-service falls back to returning bare
+      // FeedItem rows (just post_id + author_id + created_at) when the
+      // hydration call to post-service fails. Those parse here as Posts
+      // with empty content + empty media + null poll. Rather than show
+      // "Shared a post" placeholders on every row, drop them — the user
+      // sees a smaller (but real) feed and the bug surfaces in monitoring
+      // (post-service reachability) instead of as silent garbage.
+      final hydratable = rawPosts.where((p) {
+        final hasBody = p.content.trim().isNotEmpty;
+        final hasMedia = p.mediaIds.isNotEmpty;
+        final hasPoll = p.poll != null;
+        return hasBody || hasMedia || hasPoll;
+      }).toList();
+
       // Hydrate author display name + avatar from /v1/profiles/batch.
       // /v1/feed/home only returns author_id; without this every post shows
       // "Anonymous" with the placeholder avatar.
-      final posts = await _hydrateAuthors(rawPosts);
+      final posts = await _hydrateAuthors(hydratable);
 
       final meta = response.data['meta'] as Map<String, dynamic>?;
       final nextCursor = meta?['next_cursor'] as String?;

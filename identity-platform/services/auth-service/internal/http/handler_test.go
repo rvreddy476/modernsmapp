@@ -89,10 +89,16 @@ func (s *stubAuthService) Verify2FA(_ context.Context, _ uuid.UUID, _, _ string)
 func (s *stubAuthService) GetOAuthRedirectURL(_ context.Context, _ string) (string, error) {
 	return "", nil
 }
-func (s *stubAuthService) HandleOAuthCallback(_ context.Context, _, _, _ string) (*service.AuthResponse, error) {
+func (s *stubAuthService) HandleOAuthCallback(_ context.Context, _, _, _ string) (*service.OAuthCallbackResult, error) {
 	return nil, nil
 }
-func (s *stubAuthService) HandleOAuthToken(_ context.Context, _, _ string) (*service.AuthResponse, error) {
+func (s *stubAuthService) HandleOAuthToken(_ context.Context, _, _ string) (*service.OAuthCallbackResult, error) {
+	return nil, nil
+}
+func (s *stubAuthService) CompleteOAuthSignup(_ context.Context, _, _ string) error {
+	return nil
+}
+func (s *stubAuthService) VerifyOAuthSignup(_ context.Context, _, _, _, _, _, _ string) (*service.AuthResponse, error) {
 	return nil, nil
 }
 
@@ -117,10 +123,23 @@ func (s *stubAuthService) TrustDevice(_ context.Context, _ uuid.UUID, _ string, 
 	return nil
 }
 func (s *stubAuthService) RemoveTrustedDevice(_ context.Context, _, _ uuid.UUID) error { return nil }
+func (s *stubAuthService) ListMyAnomalies(_ context.Context, _ uuid.UUID, _ int) ([]store.LoginAnomaly, error) {
+	return nil, nil
+}
+func (s *stubAuthService) AcknowledgeMyAnomaly(_ context.Context, _, _ uuid.UUID) error { return nil }
+func (s *stubAuthService) ResolveAnomalyStepUpEmail(_ context.Context, _, _ string) (*service.AuthResponse, error) {
+	return nil, nil
+}
+func (s *stubAuthService) ResolveAnomalyStepUp2FA(_ context.Context, _, _ string) (*service.AuthResponse, error) {
+	return nil, nil
+}
 
 // GDPR stub
 func (s *stubAuthService) ExportUserData(_ context.Context, _ string) (*service.DataExport, error) {
 	return &service.DataExport{}, nil
+}
+func (s *stubAuthService) GetUserContact(_ context.Context, _ uuid.UUID) (*store.User, error) {
+	return &store.User{}, nil
 }
 func (s *stubAuthService) IssueMiniAppSession(_ context.Context, appID, userID uuid.UUID, grantedPermissions []string) (*service.MiniAppSessionResponse, error) {
 	if s.issueMiniAppFn != nil {

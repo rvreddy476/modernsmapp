@@ -1,0 +1,20 @@
+{{- if .Values.serviceMonitor.enabled -}}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "atpost-service.name" . }}
+  labels:
+    {{- include "atpost-service.labels" . | nindent 4 }}
+    # The kube-prometheus-stack default selector. If the cluster's
+    # monitoring stack uses a different release label, override here
+    # in per-service values.
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      {{- include "atpost-service.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      path: {{ .Values.serviceMonitor.path }}
+      interval: {{ .Values.serviceMonitor.interval }}
+{{- end }}

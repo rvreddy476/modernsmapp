@@ -1,7 +1,11 @@
 package http
 
 import (
+	"context"
+	"fmt"
+	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/atpost/notification-service/internal/service"
 	"github.com/atpost/shared/api"
@@ -11,10 +15,24 @@ import (
 
 // BulkUnread handles POST /v1/unread/bulk — returns unread counts for multiple contexts
 // using a single Redis pipeline.
+//
+// MS1: per-user rate limit (60 req/min). The 200-ID cap is per-request,
+// but without a per-user gate a single client can hammer the endpoint
+// (60 req/sec × 200 IDs = 12k Redis pipeline ops/sec from one user).
 func (h *Handler) BulkUnread(c *gin.Context) {
 	userIDStr := c.GetHeader("X-User-Id")
 	if _, err := uuid.Parse(userIDStr); err != nil {
+		// MS8: log parse failures (without echoing the bad value to
+		// avoid log poisoning) so forensics can spot scanners spraying
+		// the endpoint with junk IDs.
+		slog.Warn("bulk-unread: invalid X-User-Id", "ip", c.ClientIP())
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
+		return
+	}
+	if !h.allowBulkUnread(c.Request.Context(), userIDStr) {
+		c.Header("Retry-After", "60")
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED",
+			"bulk-unread request rate exceeded", nil)
 		return
 	}
 
@@ -68,4 +86,27 @@ func (h *Handler) ReadMarker(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "ok"}, nil)
+}
+
+// allowBulkUnread enforces 60 req/min/user on the bulk-unread surface.
+// Redis sliding window (same pattern as feed MF5 + autocomplete HS3).
+// Fail-CLOSED on Redis error because this endpoint isn't security-
+// critical but does drive significant Redis pipeline load on every
+// call; dropping a few requests during a Redis outage is correct
+// behavior here.
+func (h *Handler) allowBulkUnread(ctx context.Context, userID string) bool {
+	if h.rdb == nil {
+		return true
+	}
+	tctx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer cancel()
+	key := fmt.Sprintf("notif_bulk_unread_rl:%s", userID)
+	pipe := h.rdb.Pipeline()
+	incr := pipe.Incr(tctx, key)
+	pipe.Expire(tctx, key, time.Minute)
+	if _, err := pipe.Exec(tctx); err != nil {
+		slog.Warn("bulk-unread rate limit: redis error", "err", err)
+		return false
+	}
+	return incr.Val() <= 60
 }

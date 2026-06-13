@@ -126,6 +126,19 @@ class _CommerceOrderDetailScreenState
                   _SuccessBanner(),
                 if (widget.justPlaced)
                   const SizedBox(height: AppSpacing.l),
+                // Phase F4 mobile — B2B-specific banners. Awaiting-
+                // approval orders need explicit messaging so the buyer
+                // doesn't think their payment failed; credit orders
+                // need the due-date front-and-centre so finance pays
+                // on time.
+                if (order.awaitingApproval)
+                  _AwaitingApprovalBanner(),
+                if (order.awaitingApproval)
+                  const SizedBox(height: AppSpacing.l),
+                if (order.isCreditOrder)
+                  _CreditTermsBanner(order: order),
+                if (order.isCreditOrder)
+                  const SizedBox(height: AppSpacing.l),
                 _HeaderCard(order: order),
                 const SizedBox(height: AppSpacing.l),
                 _StatusTimelineCard(order: order),
@@ -1036,5 +1049,100 @@ class _Card extends StatelessWidget {
         children: children,
       ),
     );
+  }
+}
+
+// Phase F4 mobile — B2B awaiting-approval banner. Tells the buyer the
+// order is parked until an org approver signs off; no gateway hop.
+class _AwaitingApprovalBanner extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(AppSpacing.l),
+      decoration: BoxDecoration(
+        color: AppColors.statusWarning.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(AppSpacing.radiusMedium),
+        border: Border.all(color: AppColors.statusWarning),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.gavel_outlined, color: AppColors.statusWarning),
+          const SizedBox(width: AppSpacing.l),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Awaiting approval',
+                  style: AppTextStyles.h3,
+                ),
+                const SizedBox(height: AppSpacing.xs),
+                Text(
+                  'An approver on your organization needs to sign off before payment + fulfillment kick in. You\'ll be notified when they do.',
+                  style: AppTextStyles.bodySmall,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// Phase F4 mobile — credit-terms banner. The order is confirmed but
+// payment is deferred to the due date stamped by the backend.
+class _CreditTermsBanner extends StatelessWidget {
+  const _CreditTermsBanner({required this.order});
+
+  final Order order;
+
+  @override
+  Widget build(BuildContext context) {
+    final due = order.paymentDueDate;
+    final dueLabel = due == null
+        ? 'Net ${order.creditTermsDays ?? 0} days'
+        : 'Due ${_fmtDate(due)} (Net ${order.creditTermsDays ?? 0})';
+    return Container(
+      padding: const EdgeInsets.all(AppSpacing.l),
+      decoration: BoxDecoration(
+        color: AppColors.postbookPrimary.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(AppSpacing.radiusMedium),
+        border: Border.all(color: AppColors.postbookPrimary),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.receipt_long_outlined,
+              color: AppColors.postbookPrimary),
+          const SizedBox(width: AppSpacing.l),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Pay on invoice', style: AppTextStyles.h3),
+                const SizedBox(height: AppSpacing.xs),
+                Text(
+                  dueLabel,
+                  style: AppTextStyles.bodySmall.copyWith(
+                    color: AppColors.postbookPrimary,
+                  ),
+                ),
+                if (order.poNumber != null && order.poNumber!.isNotEmpty)
+                  Text(
+                    'PO ${order.poNumber}',
+                    style: AppTextStyles.bodySmall,
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static String _fmtDate(DateTime d) {
+    final mm = d.month.toString().padLeft(2, '0');
+    final dd = d.day.toString().padLeft(2, '0');
+    return '$dd/$mm/${d.year}';
   }
 }

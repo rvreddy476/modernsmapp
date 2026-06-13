@@ -2,8 +2,11 @@
 package http
 
 import (
+	"encoding/csv"
+	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/atpost/commerce-service/internal/service"
 	"github.com/atpost/commerce-service/internal/store/postgres"
@@ -32,11 +35,32 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 	v1 := r.Group("/v1/commerce")
 
+	// ── Affiliate redirect (public; viewer click target) ─────
+	// Lands the viewer on the canonical product page with the
+	// affiliate code in the query string. See
+	// internal/service/affiliate_redirect.go for the resolver.
+	v1.GET("/affiliate/:linkId", h.AffiliateRedirect)
+
 	// ── Catalog ──────────────────────────────────────────────
 	v1.GET("/categories", h.ListCategories)
 	v1.GET("/products", h.ListProducts)
 	v1.GET("/products/:productId", h.GetProduct)
+	v1.GET("/products/:productId/preview", h.GetProductPreview)
 	v1.POST("/products", h.CreateProduct)
+	v1.GET("/products/:productId/media", h.ListProductMedia)
+	v1.POST("/products/:productId/media", h.AddProductMedia)
+	v1.GET("/products/:productId/attributes", h.GetProductAttributes)
+	v1.PUT("/products/:productId/attributes", h.SetProductAttributes)
+	// Variant CRUD for existing products (commerce TODO H#5). The
+	// initial variant set is created with the product; this lets a
+	// seller add/edit/archive variants after launch.
+	v1.GET("/products/:productId/variants", h.ListProductVariants)
+	v1.POST("/products/:productId/variants", h.AddProductVariant)
+	v1.PATCH("/variants/:variantId", h.UpdateProductVariant)
+	v1.DELETE("/variants/:variantId", h.ArchiveProductVariant)
+	// Phase F2.1 — variant tier pricing.
+	v1.GET("/variants/:variantId/price-tiers", h.GetPriceTiers)
+	v1.PUT("/variants/:variantId/price-tiers", h.SetPriceTiers)
 	v1.GET("/products/:productId/reviews", h.GetProductReviews)
 	v1.POST("/products/:productId/reviews", h.CreateReview)
 
@@ -45,13 +69,19 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	v1.GET("/sellers/me", h.GetMySellerProfile)
 	v1.GET("/sellers/:sellerId/products", h.ListSellerProducts)
 	v1.GET("/seller/orders", h.ListMySellerOrders)
+	v1.GET("/seller/orders/:orderId", h.GetSellerOrderDetail)
+	v1.GET("/seller/fulfillment", h.ListSellerFulfillment)
 
 	// ── Cart ─────────────────────────────────────────────────
 	v1.GET("/cart", h.GetCart)
+	v1.GET("/cart/coupon-preview", h.PreviewCouponDiscount)
 	v1.POST("/cart/items", h.AddToCart)
+	v1.PATCH("/cart/items/by-variant/:variantId", h.UpdateCartItem)
 	v1.DELETE("/cart/items/:variantId", h.RemoveFromCart)
 
 	// ── Orders ───────────────────────────────────────────────
+	v1.POST("/checkout/quote", h.CheckoutQuote)
+	v1.GET("/serviceability", h.CheckServiceability)
 	v1.POST("/orders/checkout", h.Checkout)
 	v1.GET("/orders", h.ListOrders)
 	v1.GET("/orders/:orderId", h.GetOrder)
@@ -63,6 +93,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	v1.POST("/orders/:orderId/returns", h.CreateReturn)
 	v1.POST("/returns/:returnId/approve", h.ApproveReturn)
 	v1.POST("/returns/:returnId/reject", h.RejectReturn)
+	v1.GET("/returns/:returnId", h.GetReturn)
+	v1.GET("/returns/:returnId/refund-preview", h.PreviewReturnRefund)
+	v1.GET("/seller/returns", h.ListSellerReturnsInbox)
+	v1.POST("/reviews/:reviewId/seller-response", h.SellerRespondToReview)
 
 	// ── Addresses ────────────────────────────────────────────
 	v1.GET("/addresses", h.ListAddresses)
@@ -79,9 +113,20 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 	// ── COD remittances (seller-facing) ──────────────────────
 	v1.GET("/seller/cod-remittances", h.ListMyCODRemittances)
+	v1.GET("/seller/earnings", h.ListSellerEarnings)
+	v1.GET("/seller/earnings.csv", h.ExportSellerEarningsCSV)
 
 	// ── Shipments + Invoices ─────────────────────────────────
 	h.RegisterShipmentRoutes(v1)
+
+	// ── Phase 5 — B2B / Organizations ─────────────────────────
+	h.RegisterOrganizationRoutes(v1)
+
+	// ── Phase F2.2 — RFQ (Request For Quote) ──────────────────
+	h.RegisterRFQRoutes(v1)
+
+	// ── Phase F2.3 — bulk SKU upload ──────────────────────────
+	h.RegisterBulkImportRoutes(v1)
 }
 
 // ─── helpers ─────────────────────────────────────────────────────
@@ -134,19 +179,33 @@ func (h *Handler) GetProduct(c *gin.Context) {
 }
 
 type createProductReq struct {
-	CategoryID       *uuid.UUID         `json:"category_id"`
-	TaxClassID       *uuid.UUID         `json:"tax_class_id"`
-	Title            string             `json:"title" binding:"required"`
-	ShortTitle       *string            `json:"short_title"`
-	Description      *string            `json:"description"`
-	ShortDescription *string            `json:"short_description"`
-	ProductType      string             `json:"product_type"`
-	Condition        string             `json:"condition"`
-	ReturnPolicyType string             `json:"return_policy_type"`
-	ReturnPolicyDays int                `json:"return_policy_days"`
-	HSNCode          *string            `json:"hsn_code"`
-	WeightGrams      *int               `json:"weight_grams"`
-	Variants         []createVariantReq `json:"variants" binding:"required,min=1"`
+	CategoryID       *uuid.UUID `json:"category_id"`
+	BrandID          *uuid.UUID `json:"brand_id"`
+	TaxClassID       *uuid.UUID `json:"tax_class_id"`
+	Title            string     `json:"title" binding:"required"`
+	ShortTitle       *string    `json:"short_title"`
+	Description      *string    `json:"description"`
+	ShortDescription *string    `json:"short_description"`
+	BrandName        *string    `json:"brand_name"`
+	ManufacturerName *string    `json:"manufacturer_name"`
+	ProductType      string     `json:"product_type"`
+	Condition        string     `json:"condition"`
+	ReturnPolicyType string     `json:"return_policy_type"`
+	ReturnPolicyDays int        `json:"return_policy_days"`
+	HSNCode          *string    `json:"hsn_code"`
+	// Logistics + legal-metrology (Phase 3.1 — schema has the columns).
+	PrimaryImageMediaID *uuid.UUID         `json:"primary_image_media_id"`
+	VideoMediaID        *uuid.UUID         `json:"video_media_id"`
+	WeightGrams         *int               `json:"weight_grams"`
+	LengthCm            *float64           `json:"length_cm"`
+	WidthCm             *float64           `json:"width_cm"`
+	HeightCm            *float64           `json:"height_cm"`
+	CountryOfOrigin     *string            `json:"country_of_origin"`
+	WarrantyInfo        *string            `json:"warranty_info"`
+	SearchKeywords      []string           `json:"search_keywords"`
+	MetaTitle           *string            `json:"meta_title"`
+	MetaDescription     *string            `json:"meta_description"`
+	Variants            []createVariantReq `json:"variants" binding:"required,min=1"`
 }
 
 type createVariantReq struct {
@@ -198,26 +257,342 @@ func (h *Handler) CreateProduct(c *gin.Context) {
 	}
 
 	p, err := h.svc.CreateProduct(c.Request.Context(), service.CreateProductInput{
-		SellerID:         seller.ID,
-		CategoryID:       req.CategoryID,
-		TaxClassID:       req.TaxClassID,
-		Title:            req.Title,
-		ShortTitle:       req.ShortTitle,
-		Description:      req.Description,
-		ShortDescription: req.ShortDescription,
-		ProductType:      req.ProductType,
-		Condition:        req.Condition,
-		ReturnPolicyType: req.ReturnPolicyType,
-		ReturnPolicyDays: req.ReturnPolicyDays,
-		HSNCode:          req.HSNCode,
-		WeightGrams:      req.WeightGrams,
-		Variants:         variants,
+		SellerID:            seller.ID,
+		CategoryID:          req.CategoryID,
+		BrandID:             req.BrandID,
+		TaxClassID:          req.TaxClassID,
+		Title:               req.Title,
+		ShortTitle:          req.ShortTitle,
+		Description:         req.Description,
+		ShortDescription:    req.ShortDescription,
+		BrandName:           req.BrandName,
+		ManufacturerName:    req.ManufacturerName,
+		ProductType:         req.ProductType,
+		Condition:           req.Condition,
+		ReturnPolicyType:    req.ReturnPolicyType,
+		ReturnPolicyDays:    req.ReturnPolicyDays,
+		HSNCode:             req.HSNCode,
+		PrimaryImageMediaID: req.PrimaryImageMediaID,
+		VideoMediaID:        req.VideoMediaID,
+		WeightGrams:         req.WeightGrams,
+		LengthCm:            req.LengthCm,
+		WidthCm:             req.WidthCm,
+		HeightCm:            req.HeightCm,
+		CountryOfOrigin:     req.CountryOfOrigin,
+		WarrantyInfo:        req.WarrantyInfo,
+		SearchKeywords:      req.SearchKeywords,
+		MetaTitle:           req.MetaTitle,
+		MetaDescription:     req.MetaDescription,
+		Variants:            variants,
 	})
 	if err != nil {
 		handleErr(c, err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, p, nil)
+}
+
+// ─── Product Media + Attributes (Phase 3.1) ──────────────────
+
+type addProductMediaReq struct {
+	MediaID   uuid.UUID `json:"media_id" binding:"required"`
+	MediaType string    `json:"media_type"`
+	SortOrder int       `json:"sort_order"`
+}
+
+// AddProductMedia POST /v1/commerce/products/:productId/media — seller
+// only. Attaches an already-uploaded media asset to the product gallery.
+func (h *Handler) AddProductMedia(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	productID, ok := parseUUID(c, "productId")
+	if !ok {
+		return
+	}
+	var req addProductMediaReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	out, err := h.svc.AddProductMedia(c.Request.Context(), productID, userID, req.MediaID, req.MediaType, req.SortOrder)
+	if err != nil {
+		if errors.Is(err, service.ErrNotOrderOwner) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "not your product", nil)
+			return
+		}
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "ADD_MEDIA_FAILED", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"media": out}, nil)
+}
+
+// ListProductMedia GET /v1/commerce/products/:productId/media — public.
+func (h *Handler) ListProductMedia(c *gin.Context) {
+	productID, ok := parseUUID(c, "productId")
+	if !ok {
+		return
+	}
+	out, err := h.svc.ListProductMedia(c.Request.Context(), productID)
+	if err != nil {
+		handleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"media": out}, nil)
+}
+
+type setProductAttrsReq struct {
+	Attributes []productAttrPayload `json:"attributes"`
+}
+
+type productAttrPayload struct {
+	Name  string  `json:"name" binding:"required"`
+	Value string  `json:"value" binding:"required"`
+	Unit  *string `json:"unit"`
+}
+
+// SetProductAttributes PUT /v1/commerce/products/:productId/attributes —
+// seller only. Replaces the product's structured spec block in one call.
+func (h *Handler) SetProductAttributes(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	productID, ok := parseUUID(c, "productId")
+	if !ok {
+		return
+	}
+	var req setProductAttrsReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	attrs := make([]postgres.ProductAttribute, 0, len(req.Attributes))
+	for _, a := range req.Attributes {
+		attrs = append(attrs, postgres.ProductAttribute{
+			Name: a.Name, Value: a.Value, Unit: a.Unit,
+		})
+	}
+	out, err := h.svc.SetProductAttributes(c.Request.Context(), productID, userID, attrs)
+	if err != nil {
+		if errors.Is(err, service.ErrNotOrderOwner) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "not your product", nil)
+			return
+		}
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "SET_ATTRS_FAILED", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"attributes": out}, nil)
+}
+
+// GetProductAttributes GET /v1/commerce/products/:productId/attributes — public.
+func (h *Handler) GetProductAttributes(c *gin.Context) {
+	productID, ok := parseUUID(c, "productId")
+	if !ok {
+		return
+	}
+	out, err := h.svc.GetProductAttributes(c.Request.Context(), productID)
+	if err != nil {
+		handleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"attributes": out}, nil)
+}
+
+// ─── Variant CRUD handlers (commerce TODO H#5) ───────────────
+
+// ListProductVariants — GET /v1/commerce/products/:productId/variants
+// Public read; returns every variant (including archived) ordered by
+// created_at. Sellers use this to manage their variants; customers see
+// only active ones via the product detail endpoint.
+func (h *Handler) ListProductVariants(c *gin.Context) {
+	productID, err := uuid.Parse(c.Param("productId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PRODUCT_ID", err.Error(), nil)
+		return
+	}
+	variants, err := h.svc.ListProductVariants(c.Request.Context(), productID)
+	if err != nil {
+		handleErr(c, err)
+		return
+	}
+	if variants == nil {
+		variants = []*postgres.ProductVariant{}
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"items": variants}, nil)
+}
+
+type addVariantReq struct {
+	SKU          string   `json:"sku" binding:"required"`
+	Barcode      *string  `json:"barcode"`
+	Option1Name  *string  `json:"option_1_name"`
+	Option1Value *string  `json:"option_1_value"`
+	Option2Name  *string  `json:"option_2_name"`
+	Option2Value *string  `json:"option_2_value"`
+	Option3Name  *string  `json:"option_3_name"`
+	Option3Value *string  `json:"option_3_value"`
+	MRP          float64  `json:"mrp" binding:"required"`
+	SellingPrice float64  `json:"selling_price" binding:"required"`
+	CostPrice    *float64 `json:"cost_price"`
+	CurrencyCode string   `json:"currency_code"`
+	WeightGrams  *int     `json:"weight_grams"`
+}
+
+// AddProductVariant — POST /v1/commerce/products/:productId/variants
+// Seller adds a new variant to an existing product. Idempotent on
+// (sku, seller_id) via DB UNIQUE; a re-post returns the existing row.
+func (h *Handler) AddProductVariant(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	productID, err := uuid.Parse(c.Param("productId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PRODUCT_ID", err.Error(), nil)
+		return
+	}
+	var req addVariantReq
+	if err := c.BindJSON(&req); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	v := &postgres.ProductVariant{
+		SKU:          req.SKU,
+		Barcode:      req.Barcode,
+		Option1Name:  req.Option1Name,
+		Option1Value: req.Option1Value,
+		Option2Name:  req.Option2Name,
+		Option2Value: req.Option2Value,
+		Option3Name:  req.Option3Name,
+		Option3Value: req.Option3Value,
+		MRP:          req.MRP,
+		SellingPrice: req.SellingPrice,
+		CostPrice:    req.CostPrice,
+		CurrencyCode: req.CurrencyCode,
+		WeightGrams:  req.WeightGrams,
+	}
+	out, err := h.svc.AddProductVariant(c.Request.Context(), userID, productID, v)
+	if err != nil {
+		handleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusCreated, out, nil)
+}
+
+// UpdateProductVariant — PATCH /v1/commerce/variants/:variantId
+// Sparse update — only fields in the JSON body are written. Seller
+// ownership is verified against the parent product.
+func (h *Handler) UpdateProductVariant(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	variantID, err := uuid.Parse(c.Param("variantId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_VARIANT_ID", err.Error(), nil)
+		return
+	}
+	var raw map[string]any
+	if err := c.BindJSON(&raw); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	out, err := h.svc.UpdateProductVariant(c.Request.Context(), userID, variantID, raw)
+	if err != nil {
+		handleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, out, nil)
+}
+
+// ArchiveProductVariant — DELETE /v1/commerce/variants/:variantId
+// Soft delete (status='archived'). Existing orders + carts referencing
+// the variant keep resolving; the customer just can't add new ones.
+func (h *Handler) ArchiveProductVariant(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	variantID, err := uuid.Parse(c.Param("variantId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_VARIANT_ID", err.Error(), nil)
+		return
+	}
+	if err := h.svc.ArchiveProductVariant(c.Request.Context(), userID, variantID); err != nil {
+		handleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"variant_id": variantID, "status": "archived"}, nil)
+}
+
+// ─── Phase F2.1 — variant tier pricing handlers ──────────────
+
+type priceTierReq struct {
+	Tiers []struct {
+		MinQty int     `json:"min_qty" binding:"required"`
+		MaxQty *int    `json:"max_qty"`
+		Price  float64 `json:"price" binding:"required"`
+	} `json:"tiers"`
+}
+
+// SetPriceTiers PUT /v1/commerce/variants/:variantId/price-tiers —
+// seller manages the qty discount ladder for one variant. Empty
+// `tiers` clears the ladder (variant returns to flat selling_price).
+func (h *Handler) SetPriceTiers(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	variantID, ok := parseUUID(c, "variantId")
+	if !ok {
+		return
+	}
+	seller, err := h.svc.GetSellerProfile(c.Request.Context(), userID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil)
+		return
+	}
+	var req priceTierReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	tiers := make([]service.PriceTierInput, 0, len(req.Tiers))
+	for _, t := range req.Tiers {
+		tiers = append(tiers, service.PriceTierInput{MinQty: t.MinQty, MaxQty: t.MaxQty, Price: t.Price})
+	}
+	out, err := h.svc.SetPriceTiers(c.Request.Context(), seller.ID, service.SetPriceTiersInput{
+		VariantID: variantID, Tiers: tiers,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrTierOverlap), errors.Is(err, service.ErrTierInvalidBand):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_TIERS", err.Error(), nil)
+			return
+		case errors.Is(err, service.ErrTierNotSeller):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NOT_OWNER", err.Error(), nil)
+			return
+		}
+		handleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"tiers": out}, nil)
+}
+
+// GetPriceTiers GET /v1/commerce/variants/:variantId/price-tiers —
+// public read so the PDP can render the discount ladder to buyers.
+func (h *Handler) GetPriceTiers(c *gin.Context) {
+	variantID, ok := parseUUID(c, "variantId")
+	if !ok {
+		return
+	}
+	out, err := h.svc.GetPriceTiers(c.Request.Context(), variantID)
+	if err != nil {
+		handleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"tiers": out}, nil)
 }
 
 func (h *Handler) GetProductReviews(c *gin.Context) {
@@ -259,18 +634,26 @@ func (h *Handler) CreateReview(c *gin.Context) {
 		return
 	}
 	r := &postgres.Review{
-		ProductID:          productID,
-		SellerID:           req.SellerID,
-		ReviewerID:         userID,
-		OrderItemID:        req.OrderItemID,
-		Rating:             req.Rating,
-		Title:              req.Title,
-		Body:               req.Body,
-		IsVerifiedPurchase: true,
-		IsPublished:        true,
+		ProductID:   productID,
+		SellerID:    req.SellerID,
+		ReviewerID:  userID,
+		OrderItemID: req.OrderItemID,
+		Rating:      req.Rating,
+		Title:       req.Title,
+		Body:        req.Body,
+		// IsVerifiedPurchase is set by the service layer after it
+		// validates the order item; callers may no longer self-declare it.
+		IsPublished: true,
 	}
 	if err := h.svc.CreateReview(c.Request.Context(), r); err != nil {
-		handleErr(c, err)
+		switch {
+		case errors.Is(err, service.ErrReviewOrderItemInvalid):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "REVIEW_NOT_ELIGIBLE", err.Error(), nil)
+		case errors.Is(err, service.ErrReviewItemNotDelivered):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "REVIEW_ITEM_NOT_DELIVERED", err.Error(), nil)
+		default:
+			handleErr(c, err)
+		}
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, r, nil)
@@ -336,6 +719,36 @@ func (h *Handler) GetMySellerProfile(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, seller, nil)
 }
 
+// AdminSettleCODRemittance marks a pending COD remittance as settled.
+// Used by Ops after the seller has been paid out for cash the courier
+// collected on their behalf. Optional `payout_batch_id` lets the row
+// be associated with the payout batch that actually carried the funds.
+//
+//   POST /v1/commerce/internal/cod-remittances/:remittanceId/settle
+//     body: { "payout_batch_id": "<uuid?>" }
+func (h *Handler) AdminSettleCODRemittance(c *gin.Context) {
+	remittanceID, err := uuid.Parse(c.Param("remittanceId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REMITTANCE_ID", err.Error(), nil)
+		return
+	}
+	var body struct {
+		PayoutBatchID string `json:"payout_batch_id"`
+	}
+	_ = c.BindJSON(&body)
+	var payoutBatchID uuid.UUID
+	if body.PayoutBatchID != "" {
+		if id, err := uuid.Parse(body.PayoutBatchID); err == nil {
+			payoutBatchID = id
+		}
+	}
+	if err := h.svc.SettleCODRemittance(c.Request.Context(), remittanceID, payoutBatchID); err != nil {
+		handleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"remittance_id": remittanceID, "status": "settled"}, nil)
+}
+
 // ListMyCODRemittances returns the seller's COD remittance ledger. Each row
 // is one COD shipment whose cash has either been collected by the courier
 // (status=pending) or transferred to the seller (status=settled).
@@ -392,6 +805,65 @@ func (h *Handler) ListMySellerOrders(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, orders, nil)
 }
 
+// ListSellerFulfillment GET /v1/commerce/seller/fulfillment — Phase 4.2.
+// Returns the seller's fulfillment queue with item-level + shipment state in
+// a single payload. The `stage` query parameter filters into dashboard tabs:
+// unshipped / in_transit / delivered / cancelled (default: all).
+func (h *Handler) ListSellerFulfillment(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	seller, err := h.svc.GetSellerProfile(c.Request.Context(), userID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil)
+		return
+	}
+	stage := c.DefaultQuery("stage", "all")
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	cards, err := h.svc.ListSellerFulfillment(c.Request.Context(), seller.ID, stage, limit, offset)
+	if err != nil {
+		handleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"orders": cards, "stage": stage}, nil)
+}
+
+// GetSellerOrderDetail GET /v1/commerce/seller/orders/:orderId — Phase 4.2.
+// Returns one order from the seller's perspective (their items + their
+// shipment + delivery snapshot). Forbidden if the seller has no items in
+// the order.
+func (h *Handler) GetSellerOrderDetail(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	orderID, ok := parseUUID(c, "orderId")
+	if !ok {
+		return
+	}
+	seller, err := h.svc.GetSellerProfile(c.Request.Context(), userID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil)
+		return
+	}
+	card, err := h.svc.GetSellerOrderDetail(c.Request.Context(), seller.ID, orderID)
+	if err != nil {
+		if errors.Is(err, service.ErrOrderNotFound) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "order not found", nil)
+			return
+		}
+		if errors.Is(err, service.ErrNotOrderOwner) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "no items for this seller", nil)
+			return
+		}
+		handleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, card, nil)
+}
+
 func (h *Handler) ListSellerProducts(c *gin.Context) {
 	sellerID, ok := parseUUID(c, "sellerId")
 	if !ok {
@@ -409,18 +881,29 @@ func (h *Handler) ListSellerProducts(c *gin.Context) {
 }
 
 // ListProducts is the customer-facing global product browse endpoint.
-//   GET /v1/commerce/products?category={uuid}&q={text}&limit=20&offset=0
+//   GET /v1/commerce/products
+//     ?category={uuid}     optional
+//     &q={text}            optional title search
+//     &min_price={num}     optional inclusive lower bound
+//     &max_price={num}     optional inclusive upper bound
+//     &min_rating={1..5}   optional
+//     &seller={uuid}       optional storefront filter
+//     &in_stock=true       optional, restrict to variants with stock
+//     &limit={1..100}      default 20
+//     &cursor={opaque}     keyset cursor (preferred); omit on first page
+//     &offset={int}        legacy offset; ignored when cursor is set
 //
-// Returns published + approved products only. category and q are optional.
-// Response: { items: [...], total: int, limit: int, offset: int }
+// Cursor-paged response: { items: [...], next_cursor: "..." }.
+// next_cursor is empty when there are no more pages. Cursor pagination
+// stays O(1) at any catalog depth — required for billions-of-users scale.
+//
+// When neither cursor nor offset is supplied, returns the first page
+// cursor-paginated. Legacy offset is kept for admin grids that need a
+// total count.
 func (h *Handler) ListProducts(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
-	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 	if limit <= 0 || limit > 100 {
 		limit = 20
-	}
-	if offset < 0 {
-		offset = 0
 	}
 
 	var categoryID *uuid.UUID
@@ -432,21 +915,65 @@ func (h *Handler) ListProducts(c *gin.Context) {
 		}
 		categoryID = &id
 	}
-	query := c.Query("q")
+	var sellerID *uuid.UUID
+	if sel := c.Query("seller"); sel != "" {
+		id, err := uuid.Parse(sel)
+		if err != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_SELLER", "seller must be a UUID", nil)
+			return
+		}
+		sellerID = &id
+	}
+	minPrice, _ := strconv.ParseFloat(c.Query("min_price"), 64)
+	maxPrice, _ := strconv.ParseFloat(c.Query("max_price"), 64)
+	minRating, _ := strconv.ParseFloat(c.Query("min_rating"), 64)
+	inStock := strings.EqualFold(c.Query("in_stock"), "true")
+	cursor := c.Query("cursor")
 
-	products, total, err := h.svc.ListProducts(c.Request.Context(), categoryID, query, limit, offset)
+	// Legacy offset path — still supported for admin grids that need
+	// a total count. New clients should drop the offset param and
+	// follow next_cursor.
+	if cursor == "" && c.Query("offset") != "" {
+		offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+		if offset < 0 {
+			offset = 0
+		}
+		products, total, err := h.svc.ListProducts(c.Request.Context(), categoryID, c.Query("q"), limit, offset)
+		if err != nil {
+			handleErr(c, err)
+			return
+		}
+		if products == nil {
+			products = []*postgres.Product{}
+		}
+		api.JSON(c.Writer, http.StatusOK, gin.H{
+			"items":  products,
+			"total":  total,
+			"limit":  limit,
+			"offset": offset,
+		}, nil)
+		return
+	}
+
+	result, err := h.svc.ListProductsFiltered(c.Request.Context(), postgres.ProductFilter{
+		CategoryID:  categoryID,
+		Query:       c.Query("q"),
+		MinPrice:    minPrice,
+		MaxPrice:    maxPrice,
+		MinRating:   minRating,
+		SellerID:    sellerID,
+		InStockOnly: inStock,
+		Limit:       limit,
+		Cursor:      cursor,
+	})
 	if err != nil {
 		handleErr(c, err)
 		return
 	}
-	if products == nil {
-		products = []*postgres.Product{}
-	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{
-		"items":  products,
-		"total":  total,
-		"limit":  limit,
-		"offset": offset,
+		"items":       result.Items,
+		"next_cursor": result.NextCursor,
+		"limit":       limit,
 	}, nil)
 }
 
@@ -503,6 +1030,46 @@ func (h *Handler) RemoveFromCart(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+// updateCartItemReq is the body for PATCH /cart/items/by-variant/:variantId
+// — Phase 1.2. Quantity 0 deletes the line; otherwise it is the absolute
+// new quantity (atomic upsert with stock check, not a delta).
+type updateCartItemReq struct {
+	Quantity int `json:"quantity"`
+}
+
+// UpdateCartItem PATCH /v1/commerce/cart/items/by-variant/:variantId.
+// Returns the updated cart summary so the client renders immediately
+// without a separate GET.
+func (h *Handler) UpdateCartItem(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	variantID, ok := parseUUID(c, "variantId")
+	if !ok {
+		return
+	}
+	var req updateCartItemReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	if req.Quantity < 0 {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", "quantity must be >= 0", nil)
+		return
+	}
+	if err := h.svc.UpdateCartItem(c.Request.Context(), userID, variantID, req.Quantity); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "UPDATE_CART_FAILED", err.Error(), nil)
+		return
+	}
+	summary, err := h.svc.GetCart(c.Request.Context(), userID)
+	if err != nil {
+		handleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, summary, nil)
+}
+
 // ─── Order handlers ──────────────────────────────────────────────
 
 type checkoutReq struct {
@@ -511,6 +1078,122 @@ type checkoutReq struct {
 	CouponCode     string    `json:"coupon_code"`
 	GiftMessage    *string   `json:"gift_message"`
 	IdempotencyKey string    `json:"idempotency_key"`
+
+	// Phase 5 — optional B2B context.
+	OrganizationID *uuid.UUID `json:"organization_id"`
+	PONumber       *string    `json:"po_number"`
+	CostCenter     *string    `json:"cost_center"`
+	InvoiceEmail   *string    `json:"invoice_email"`
+}
+
+// quoteReq mirrors checkoutReq minus the persistence-only fields. Mobile
+// and web call this BEFORE "Place order" so the customer sees server-
+// authoritative totals; the client never recomputes pricing locally.
+type quoteReq struct {
+	AddressID     uuid.UUID `json:"address_id" binding:"required"`
+	PaymentMethod string    `json:"payment_method" binding:"required"`
+	CouponCode    string    `json:"coupon_code"`
+}
+
+// CheckServiceability GET /v1/commerce/serviceability — Phase 1.3.
+// Customer-facing pincode + COD + ETA check used by the product detail
+// page and checkout to replace the mobile pincode heuristic.
+//
+//	?pincode=560001&product_id=<uuid>[&variant_id=<uuid>][&seller_id=<uuid>][&payment_method=prepaid|cod]
+func (h *Handler) CheckServiceability(c *gin.Context) {
+	if _, ok := getUserID(c); !ok {
+		return
+	}
+	pincode := c.Query("pincode")
+	productIDStr := c.Query("product_id")
+	if pincode == "" || productIDStr == "" {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_QUERY", "pincode and product_id are required", nil)
+		return
+	}
+	productID, err := uuid.Parse(productIDStr)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_QUERY", "invalid product_id", nil)
+		return
+	}
+	in := service.ServiceabilityInput{
+		Pincode:       pincode,
+		ProductID:     productID,
+		PaymentMethod: c.DefaultQuery("payment_method", "prepaid"),
+	}
+	if v := c.Query("variant_id"); v != "" {
+		if id, err := uuid.Parse(v); err == nil {
+			in.VariantID = id
+		}
+	}
+	if v := c.Query("seller_id"); v != "" {
+		if id, err := uuid.Parse(v); err == nil {
+			in.SellerID = id
+		}
+	}
+	res, err := h.svc.CheckServiceability(c.Request.Context(), in)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "SERVICEABILITY_FAILED", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, res, nil)
+}
+
+// PreviewCouponDiscount GET /v1/commerce/cart/coupon-preview?code=XYZ
+// Lightweight endpoint the cart screen calls when the user types a
+// coupon code. Returns the priced cart preview with the coupon
+// applied so the UI can show "−₹X" without forcing the user through
+// the full checkout-quote flow (which also needs address + payment
+// method). Pure preview: no DB writes.
+//
+// commerce TODO M#1 — Coupon preview in cart.
+func (h *Handler) PreviewCouponDiscount(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	code := strings.TrimSpace(c.Query("code"))
+	q, err := h.svc.Quote(c.Request.Context(), service.QuoteInput{
+		UserID:     userID,
+		CouponCode: code,
+	})
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "PREVIEW_FAILED", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{
+		"coupon_code":     code,
+		"coupon_discount": q.CouponDiscount,
+		"subtotal":        q.Subtotal,
+		"grand_total":     q.GrandTotal,
+		"applied":         q.CouponDiscount > 0,
+	}, nil)
+}
+
+// CheckoutQuote POST /v1/commerce/checkout/quote — Phase 1.1.
+// Returns the same pricing the immediately-following Checkout call will
+// produce, including per-line breakdown, unavailable items, and (Phase
+// 1.3) serviceability + COD eligibility.
+func (h *Handler) CheckoutQuote(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	var req quoteReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	q, err := h.svc.Quote(c.Request.Context(), service.QuoteInput{
+		UserID:        userID,
+		AddressID:     req.AddressID,
+		PaymentMethod: req.PaymentMethod,
+		CouponCode:    req.CouponCode,
+	})
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "QUOTE_FAILED", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, q, nil)
 }
 
 func (h *Handler) Checkout(c *gin.Context) {
@@ -523,13 +1206,23 @@ func (h *Handler) Checkout(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
+	// H4 — accept idempotency from the standard header too; body field stays
+	// for clients that can't set headers. Header wins when both are set.
+	idemp := req.IdempotencyKey
+	if hk := c.GetHeader("Idempotency-Key"); hk != "" {
+		idemp = hk
+	}
 	order, err := h.svc.Checkout(c.Request.Context(), service.CheckoutInput{
 		UserID:         userID,
 		AddressID:      req.AddressID,
 		PaymentMethod:  req.PaymentMethod,
 		CouponCode:     req.CouponCode,
 		GiftMessage:    req.GiftMessage,
-		IdempotencyKey: req.IdempotencyKey,
+		IdempotencyKey: idemp,
+		OrganizationID: req.OrganizationID,
+		PONumber:       req.PONumber,
+		CostCenter:     req.CostCenter,
+		InvoiceEmail:   req.InvoiceEmail,
 	})
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "CHECKOUT_FAILED", err.Error(), nil)
@@ -538,20 +1231,25 @@ func (h *Handler) Checkout(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusCreated, order, nil)
 }
 
+// ListOrders GET /v1/commerce/orders — Phase 2.1.
+// Returns rich order cards (item count, seller count, first item) with
+// keyset pagination. next_cursor lives on the meta envelope; clients
+// thread it back as ?cursor=... on the next page. The legacy ?offset=
+// query param is accepted but ignored — keyset is the only path now,
+// since offset over orders required a table-scanning COUNT(*) per page.
 func (h *Handler) ListOrders(c *gin.Context) {
 	userID, ok := getUserID(c)
 	if !ok {
 		return
 	}
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
-	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
-
-	orders, err := h.svc.ListOrders(c.Request.Context(), userID, limit, offset)
+	cursor := c.Query("cursor")
+	res, err := h.svc.ListOrderCards(c.Request.Context(), userID, limit, cursor)
 	if err != nil {
-		handleErr(c, err)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "LIST_ORDERS_FAILED", err.Error(), nil)
 		return
 	}
-	api.JSON(c.Writer, http.StatusOK, orders, nil)
+	api.JSON(c.Writer, http.StatusOK, res.Items, &api.Meta{NextCursor: res.NextCursor})
 }
 
 func (h *Handler) GetOrder(c *gin.Context) {
@@ -611,12 +1309,24 @@ func (h *Handler) CancelOrder(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+// confirmPaymentReq is the customer-facing Razorpay confirmation body.
+// PaymentIntentID is the commerce-side payments-service intent id; the
+// three razorpay_* fields are what Razorpay returns on successful checkout
+// and are forwarded to payments-service for HMAC verification.
 type confirmPaymentReq struct {
-	PaymentID string `json:"payment_id" binding:"required"`
-	Gateway   string `json:"gateway" binding:"required"`
+	PaymentIntentID   uuid.UUID `json:"payment_intent_id" binding:"required"`
+	RazorpayOrderID   string    `json:"razorpay_order_id" binding:"required"`
+	RazorpayPaymentID string    `json:"razorpay_payment_id" binding:"required"`
+	RazorpaySignature string    `json:"razorpay_signature" binding:"required"`
+	AmountMinor       int64     `json:"amount_minor,omitempty"`
+	Gateway           string    `json:"gateway,omitempty"`
 }
 
 func (h *Handler) ConfirmPayment(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
 	orderID, ok := parseUUID(c, "orderId")
 	if !ok {
 		return
@@ -626,8 +1336,33 @@ func (h *Handler) ConfirmPayment(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
-	if err := h.svc.ConfirmPayment(c.Request.Context(), orderID, req.PaymentID, req.Gateway); err != nil {
-		handleErr(c, err)
+	err := h.svc.ConfirmPayment(c.Request.Context(), orderID, userID, service.ConfirmPaymentInput{
+		PaymentIntentID:   req.PaymentIntentID,
+		RazorpayOrderID:   req.RazorpayOrderID,
+		RazorpayPaymentID: req.RazorpayPaymentID,
+		RazorpaySignature: req.RazorpaySignature,
+		AmountMinor:       req.AmountMinor,
+		Gateway:           req.Gateway,
+	})
+	if err != nil {
+		// Map domain errors to specific HTTP codes — the old generic
+		// handleErr swallowed wrong-user / wrong-state into 500, which
+		// hid bugs and made misuse hard to debug.
+		switch {
+		case errors.Is(err, service.ErrOrderNotFound):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "ORDER_NOT_FOUND", err.Error(), nil)
+		case errors.Is(err, service.ErrNotOrderOwner):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
+		case errors.Is(err, service.ErrOrderNotPaymentPending):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "ORDER_NOT_PAYMENT_PENDING", err.Error(), nil)
+		case errors.Is(err, service.ErrPaymentVerifyFailed),
+			errors.Is(err, service.ErrPaymentAmountMismatch):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "PAYMENT_VERIFY_FAILED", err.Error(), nil)
+		case errors.Is(err, service.ErrStubGatewayInProd):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "STUB_GATEWAY_NOT_ALLOWED", err.Error(), nil)
+		default:
+			handleErr(c, err)
+		}
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -635,11 +1370,26 @@ func (h *Handler) ConfirmPayment(c *gin.Context) {
 
 // ─── Return handlers ─────────────────────────────────────────────
 
-type createReturnReq struct {
+// createReturnItem is one line of the multi-item return body (Phase 2.3).
+type createReturnItem struct {
 	OrderItemID       uuid.UUID `json:"order_item_id" binding:"required"`
 	SellerID          uuid.UUID `json:"seller_id" binding:"required"`
 	ReasonCode        string    `json:"reason_code" binding:"required"`
 	ReasonDescription *string   `json:"reason_description"`
+}
+
+// createReturnReq accepts both the multi-item shape `{items:[...]}` and
+// the legacy single-item top-level shape — Phase 2.3 lets the mobile app
+// fold its current N-call fan-out into a single request without breaking
+// the existing single-item callers.
+type createReturnReq struct {
+	Items           []createReturnItem `json:"items"`
+	PickupAddressID *uuid.UUID         `json:"pickup_address_id"`
+	// Legacy single-item top-level fields:
+	OrderItemID       *uuid.UUID `json:"order_item_id"`
+	SellerID          *uuid.UUID `json:"seller_id"`
+	ReasonCode        string     `json:"reason_code"`
+	ReasonDescription *string    `json:"reason_description"`
 }
 
 func (h *Handler) CreateReturn(c *gin.Context) {
@@ -656,19 +1406,114 @@ func (h *Handler) CreateReturn(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
-	ret, err := h.svc.CreateReturnRequest(c.Request.Context(), service.CreateReturnInput{
-		OrderID:           orderID,
-		OrderItemID:       req.OrderItemID,
-		CustomerUserID:    userID,
-		SellerID:          req.SellerID,
-		ReasonCode:        req.ReasonCode,
-		ReasonDescription: req.ReasonDescription,
-	})
-	if err != nil {
+
+	var items []service.BulkReturnItemInput
+	multiItem := len(req.Items) > 0
+	if multiItem {
+		items = make([]service.BulkReturnItemInput, 0, len(req.Items))
+		for _, it := range req.Items {
+			items = append(items, service.BulkReturnItemInput{
+				OrderItemID:       it.OrderItemID,
+				SellerID:          it.SellerID,
+				ReasonCode:        it.ReasonCode,
+				ReasonDescription: it.ReasonDescription,
+			})
+		}
+	} else if req.OrderItemID != nil && req.SellerID != nil {
+		items = []service.BulkReturnItemInput{{
+			OrderItemID:       *req.OrderItemID,
+			SellerID:          *req.SellerID,
+			ReasonCode:        req.ReasonCode,
+			ReasonDescription: req.ReasonDescription,
+		}}
+	} else {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY",
+			"either items[] or order_item_id+seller_id is required", nil)
+		return
+	}
+
+	out, err := h.svc.CreateReturnRequestBulk(c.Request.Context(), orderID, userID, items)
+	if err != nil && len(out) == 0 {
 		handleErr(c, err)
 		return
 	}
-	api.JSON(c.Writer, http.StatusCreated, ret, nil)
+	// Single-item legacy callers get the un-wrapped response. Multi-item
+	// callers always get `{items:[...]}` so partial-success is observable.
+	if !multiItem && len(out) == 1 {
+		api.JSON(c.Writer, http.StatusCreated, out[0], nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusCreated, gin.H{"items": out}, nil)
+}
+
+// sellerResponseReq is the body for POST /reviews/:reviewId/seller-response.
+type sellerResponseReq struct {
+	Response string `json:"response" binding:"required"`
+}
+
+// SellerRespondToReview lets the seller of a product attach a public
+// response to a customer review — Phase 2.4. Only that seller may post.
+//
+//	POST /v1/commerce/reviews/:reviewId/seller-response
+func (h *Handler) SellerRespondToReview(c *gin.Context) {
+	actorID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	reviewID, ok := parseUUID(c, "reviewId")
+	if !ok {
+		return
+	}
+	var req sellerResponseReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	if strings.TrimSpace(req.Response) == "" {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", "response cannot be empty", nil)
+		return
+	}
+	r, err := h.svc.AddSellerResponseToReview(c.Request.Context(), reviewID, actorID, req.Response)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrReviewNotFound):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
+		case errors.Is(err, service.ErrNotReviewSeller):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
+		default:
+			handleErr(c, err)
+		}
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, r, nil)
+}
+
+// GetReturn GET /v1/commerce/returns/:returnId — Phase 2.2.
+// Customer or seller of the return only; mobile was previously listing
+// /me/returns and filtering client-side because this endpoint didn't
+// exist.
+func (h *Handler) GetReturn(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	returnID, ok := parseUUID(c, "returnId")
+	if !ok {
+		return
+	}
+	r, err := h.svc.GetReturnRequest(c.Request.Context(), returnID, userID)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrReturnNotFound):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
+		case errors.Is(err, service.ErrNotReturnParty):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
+		default:
+			handleErr(c, err)
+		}
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, r, nil)
 }
 
 // ApproveReturn is called by the seller (or admin) to approve a customer's
@@ -686,6 +1531,10 @@ func (h *Handler) ApproveReturn(c *gin.Context) {
 	}
 	out, err := h.svc.ApproveReturn(c.Request.Context(), returnID, actorID)
 	if err != nil {
+		if errors.Is(err, service.ErrNotReturnSeller) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "APPROVE_FAILED", err.Error(), nil)
 		return
 	}
@@ -715,10 +1564,134 @@ func (h *Handler) RejectReturn(c *gin.Context) {
 	}
 	out, err := h.svc.RejectReturn(c.Request.Context(), returnID, actorID, req.Reason)
 	if err != nil {
+		if errors.Is(err, service.ErrNotReturnSeller) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "REJECT_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, out, nil)
+}
+
+// ListSellerEarnings GET /v1/commerce/seller/earnings — Phase 4.4.
+// Returns delivered prepaid (non-COD) order items with gross / commission
+// / fee / TDS / net broken out. COD earnings live in /seller/cod-remittances.
+func (h *Handler) ListSellerEarnings(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	seller, err := h.svc.GetSellerProfile(c.Request.Context(), userID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil)
+		return
+	}
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	earnings, err := h.svc.ListSellerEarnings(c.Request.Context(), seller.ID, limit, offset)
+	if err != nil {
+		handleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"earnings": earnings}, nil)
+}
+
+// ExportSellerEarningsCSV GET /v1/commerce/seller/earnings.csv — Phase 4.4.
+// CSV download for accountants. Same data as the JSON endpoint, paginated
+// large window (500 rows) — bigger statements should be batched offline.
+func (h *Handler) ExportSellerEarningsCSV(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	seller, err := h.svc.GetSellerProfile(c.Request.Context(), userID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil)
+		return
+	}
+	earnings, err := h.svc.ListSellerEarnings(c.Request.Context(), seller.ID, 500, 0)
+	if err != nil {
+		handleErr(c, err)
+		return
+	}
+	c.Writer.Header().Set("Content-Type", "text/csv")
+	c.Writer.Header().Set("Content-Disposition", "attachment; filename=\"earnings.csv\"")
+	w := csv.NewWriter(c.Writer)
+	_ = w.Write([]string{"delivered_at", "order_number", "order_item_id", "product", "sku", "qty",
+		"gross", "commission", "platform_fee", "tds", "net", "payment_method", "status"})
+	for _, e := range earnings {
+		delivered := ""
+		if e.DeliveredAt != nil {
+			delivered = e.DeliveredAt.Format("2006-01-02")
+		}
+		paymentMethod := ""
+		if e.PaymentMethod != nil {
+			paymentMethod = *e.PaymentMethod
+		}
+		_ = w.Write([]string{
+			delivered, e.OrderNumber, e.OrderItemID.String(), e.ProductTitle, e.SKU,
+			strconv.Itoa(e.Quantity),
+			strconv.FormatFloat(e.GrossAmount, 'f', 2, 64),
+			strconv.FormatFloat(e.CommissionAmount, 'f', 2, 64),
+			strconv.FormatFloat(e.PlatformFee, 'f', 2, 64),
+			strconv.FormatFloat(e.TDSAmount, 'f', 2, 64),
+			strconv.FormatFloat(e.NetAmount, 'f', 2, 64),
+			paymentMethod, e.Status,
+		})
+	}
+	w.Flush()
+}
+
+// ListSellerReturnsInbox GET /v1/commerce/seller/returns — Phase 4.3.
+// Returns the seller's returns inbox with order + item joined inline.
+// Optional ?status= filters to requested / approved / rejected / refunded.
+func (h *Handler) ListSellerReturnsInbox(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	seller, err := h.svc.GetSellerProfile(c.Request.Context(), userID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NO_SELLER", "seller account not found", nil)
+		return
+	}
+	status := c.Query("status")
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	cards, err := h.svc.ListSellerReturns(c.Request.Context(), seller.ID, status, limit, offset)
+	if err != nil {
+		handleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"returns": cards, "status": status}, nil)
+}
+
+// PreviewReturnRefund GET /v1/commerce/returns/:returnId/refund-preview —
+// Phase 4.3. Customer or seller can call; refuses other actors.
+func (h *Handler) PreviewReturnRefund(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	returnID, ok := parseUUID(c, "returnId")
+	if !ok {
+		return
+	}
+	amount, err := h.svc.PreviewReturnRefund(c.Request.Context(), returnID, userID)
+	if err != nil {
+		if errors.Is(err, service.ErrReturnNotFound) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "return not found", nil)
+			return
+		}
+		if errors.Is(err, service.ErrNotReturnParty) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "not a party to this return", nil)
+			return
+		}
+		handleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"refund_amount": amount}, nil)
 }
 
 // ─── Address handlers ────────────────────────────────────────────

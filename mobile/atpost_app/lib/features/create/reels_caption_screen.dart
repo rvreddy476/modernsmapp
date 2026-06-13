@@ -1,3 +1,8 @@
+import 'dart:async';
+
+import 'package:atpost_app/features/create/widgets/trending_hashtag_strip.dart';
+import 'package:atpost_app/features/hashtag_feed/data/hashtag_repository.dart';
+import 'package:atpost_app/features/hashtag_feed/models/hashtag_model.dart';
 import 'package:atpost_app/providers/editor_provider.dart';
 import 'package:atpost_app/providers/feed_provider.dart';
 import 'package:atpost_app/services/api_client.dart';
@@ -29,16 +34,62 @@ class _ReelsCaptionScreenState extends ConsumerState<ReelsCaptionScreen> {
   // backend; the picker shows local time to the creator.
   DateTime? _scheduleAt;
 
-  static const _suggestedTags = [
-    '#reels', '#viral', '#fyp', '#trending', '#explore',
-    '#video', '#creator', '#atpost',
-  ];
+  // Debounced prefix-match against /v1/hashtags/search that drives
+  // the dropdown the moment the user types ≥2 chars into _hashtagCtrl.
+  // The trending strip below the input is owned by the shared
+  // TrendingHashtagStrip widget — no local state needed for it.
+  List<HashtagModel> _suggestions = const <HashtagModel>[];
+  bool _searching = false;
+  Timer? _searchDebounce;
+  String _activeQuery = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _hashtagCtrl.addListener(_handleHashtagInputChange);
+  }
 
   @override
   void dispose() {
+    _searchDebounce?.cancel();
+    _hashtagCtrl.removeListener(_handleHashtagInputChange);
     _captionCtrl.dispose();
     _hashtagCtrl.dispose();
     super.dispose();
+  }
+
+  void _handleHashtagInputChange() {
+    final raw = _hashtagCtrl.text.trim().replaceAll('#', '');
+    _searchDebounce?.cancel();
+    if (raw.length < 2) {
+      if (_suggestions.isNotEmpty || _searching) {
+        setState(() {
+          _suggestions = const <HashtagModel>[];
+          _searching = false;
+        });
+      }
+      return;
+    }
+    setState(() => _searching = true);
+    _activeQuery = raw;
+    _searchDebounce = Timer(const Duration(milliseconds: 220), () async {
+      try {
+        final tags = await ref
+            .read(hashtagRepositoryProvider)
+            .search(raw, limit: 8);
+        if (!mounted || _activeQuery != raw) return;
+        setState(() {
+          _suggestions = tags;
+          _searching = false;
+        });
+      } catch (_) {
+        if (!mounted) return;
+        setState(() {
+          _suggestions = const <HashtagModel>[];
+          _searching = false;
+        });
+      }
+    });
   }
 
   void _addHashtag(String tag) {
@@ -270,27 +321,97 @@ class _ReelsCaptionScreenState extends ConsumerState<ReelsCaptionScreen> {
           ],
         ),
         const SizedBox(height: 10),
-        // Suggested tags
-        Wrap(
-          spacing: 6,
-          runSpacing: 4,
-          children: _suggestedTags.where((t) => !_hashtags.contains(t)).map((tag) {
-            return GestureDetector(
-              onTap: () => _addHashtag(tag),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                decoration: BoxDecoration(
-                  color: Colors.white10,
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: Colors.white12),
-                ),
-                child: Text(tag, style: const TextStyle(color: Colors.white54, fontSize: 11)),
-              ),
-            );
-          }).toList(),
-        ),
+        // Real-time autocomplete: shown only while the user is typing
+        // ≥2 chars into _hashtagCtrl. The dropdown lists prefix matches
+        // from /v1/hashtags/search with post counts, so users converge
+        // on canonical tags instead of forking #football / #footy /
+        // #footballfans.
+        if (_searching || _suggestions.isNotEmpty) ...[
+          _buildSearchSuggestions(),
+          const SizedBox(height: 10),
+        ],
+        // Trending / fallback chip strip — always visible when the
+        // search dropdown isn't. Chips already added to _hashtags are
+        // filtered out so the user can't pick the same tag twice.
+        _buildTrendingStrip(),
       ],
     );
+  }
+
+  Widget _buildSearchSuggestions() {
+    if (_searching) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+        child: SizedBox(
+          height: 16,
+          width: 16,
+          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white54),
+        ),
+      );
+    }
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white10,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.white12),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        children: _suggestions.map((tag) {
+          final display = tag.displayName.isNotEmpty
+              ? tag.displayName
+              : tag.normalizedName;
+          return InkWell(
+            onTap: () => _addHashtag(display),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              child: Row(
+                children: [
+                  Text(
+                    '#',
+                    style: TextStyle(
+                      color: tag.isTrending ? _brandRed : Colors.white54,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      display,
+                      style: const TextStyle(color: Colors.white, fontSize: 13),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  Text(
+                    tag.isTrending ? '🔥 ${_formatCount(tag.postCount)}' : _formatCount(tag.postCount),
+                    style: const TextStyle(color: Colors.white38, fontSize: 11),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }).toList(),
+      ),
+    );
+  }
+
+  Widget _buildTrendingStrip() {
+    // Delegate to the shared TrendingHashtagStrip so the post + reels
+    // composers stay visually identical. Hashtags already in the chip
+    // list are excluded so users can't double-pick.
+    return TrendingHashtagStrip(
+      onTagSelected: _addHashtag,
+      excluded: _hashtags.map((t) => t.toLowerCase()).toSet(),
+      label: 'Trending',
+    );
+  }
+
+  String _formatCount(int n) {
+    if (n >= 1000000) return '${(n / 1000000).toStringAsFixed(1)}M';
+    if (n >= 1000) return '${(n / 1000).toStringAsFixed(1)}K';
+    return '$n';
   }
 
   Widget _buildAudienceSelector() {

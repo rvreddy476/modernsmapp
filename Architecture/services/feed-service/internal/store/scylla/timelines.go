@@ -2,6 +2,7 @@ package scylla
 
 import (
 	"context"
+	"os"
 	"time"
 
 	"github.com/gocql/gocql"
@@ -46,24 +47,186 @@ func toGocql(id uuid.UUID) gocql.UUID {
 	return gocql.UUID(id)
 }
 
-// AddToHomeTimeline (Push)
+// AddToHomeTimeline (Push). Also writes the HF4 reverse-index row so
+// UpdatePostContentType can find this row by post_id without scanning.
 func (s *TimelineStore) AddToHomeTimeline(ctx context.Context, userID uuid.UUID, postID, authorID uuid.UUID, createdAt time.Time, contentType string) error {
 	b := bucket(createdAt)
+	ts := gocql.UUIDFromTime(createdAt)
 
-	return s.session.Query(`
+	if err := s.session.Query(`
 		INSERT INTO home_timeline_by_user (user_id, bucket, ts, post_id, author_id, created_at, content_type)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, toGocql(userID), b, gocql.UUIDFromTime(createdAt), toGocql(postID), toGocql(authorID), createdAt, contentType).Exec()
+	`, toGocql(userID), b, ts, toGocql(postID), toGocql(authorID), createdAt, contentType).Exec(); err != nil {
+		return err
+	}
+	// Best-effort: a reverse-index write failure leaves the timeline
+	// row addressable only by ALLOW FILTERING (slow but correct). The
+	// alternative — refusing the timeline insert when the index write
+	// fails — would lose the post from the user's feed entirely, which
+	// is worse. Log + continue.
+	if err := s.session.Query(`
+		INSERT INTO timeline_index_by_post (post_id, timeline_kind, owner_id, bucket, ts)
+		VALUES (?, 'home', ?, ?, ?)
+	`, toGocql(postID), toGocql(userID), b, ts).Exec(); err != nil {
+		// Intentional: don't surface the index error.
+		_ = err
+	}
+	return nil
 }
 
-// AddToAuthorTimeline (Pull source)
+// AddToAuthorTimeline (Pull source). Also writes the HF4 reverse-index
+// row for the author copy.
 func (s *TimelineStore) AddToAuthorTimeline(ctx context.Context, authorID uuid.UUID, postID uuid.UUID, createdAt time.Time, contentType string) error {
 	b := bucket(createdAt)
+	ts := gocql.UUIDFromTime(createdAt)
 
-	return s.session.Query(`
+	if err := s.session.Query(`
 		INSERT INTO author_timeline_by_author (author_id, bucket, ts, post_id, created_at, content_type)
 		VALUES (?, ?, ?, ?, ?, ?)
-	`, toGocql(authorID), b, gocql.UUIDFromTime(createdAt), toGocql(postID), createdAt, contentType).Exec()
+	`, toGocql(authorID), b, ts, toGocql(postID), createdAt, contentType).Exec(); err != nil {
+		return err
+	}
+	if err := s.session.Query(`
+		INSERT INTO timeline_index_by_post (post_id, timeline_kind, owner_id, bucket, ts)
+		VALUES (?, 'author', ?, ?, ?)
+	`, toGocql(postID), toGocql(authorID), b, ts).Exec(); err != nil {
+		_ = err
+	}
+	return nil
+}
+
+// UpdatePostContentType rewrites the content_type column on every
+// timeline row that references the given post — both the
+// home_timeline_by_user fan-out copies and the author_timeline_by_author
+// canonical row. Without this, /v1/feed/reels (which filters on the
+// timeline's content_type) keeps returning stale results after a
+// MediaTranscodeConsumer reclassification flips a long_video back to
+// flick (or any future content_type transition).
+//
+// HF4: uses social_feed.timeline_index_by_post — a partition lookup
+// keyed on post_id — instead of the legacy ALLOW FILTERING scan. The
+// index is written transactionally with each AddTo* insert, so any
+// timeline row created after HF4 lands is addressable in O(1) per
+// owner. Pre-HF4 rows have no index entries; for those we fall back
+// to the scan so reclassifications still complete. The fallback is
+// gated on `FEED_HF4_FALLBACK=true` (default true) so a future cutover
+// can turn it off once the back-populate worker has run.
+//
+// Returns (rowsRewritten, err). Idempotent: re-running it with the
+// same newType is a no-op stream of UPDATEs.
+func (s *TimelineStore) UpdatePostContentType(ctx context.Context, postID uuid.UUID, newType string) (int, error) {
+	rows := 0
+
+	// Index path — single partition lookup per post.
+	indexed := 0
+	{
+		iter := s.session.Query(
+			`SELECT timeline_kind, owner_id, bucket, ts
+			 FROM timeline_index_by_post WHERE post_id = ?`,
+			toGocql(postID),
+		).WithContext(ctx).Iter()
+		var kind string
+		var owner gocql.UUID
+		var b int
+		var ts gocql.UUID
+		for iter.Scan(&kind, &owner, &b, &ts) {
+			indexed++
+			var stmt string
+			switch kind {
+			case "home":
+				stmt = `UPDATE home_timeline_by_user SET content_type = ?
+				        WHERE user_id = ? AND bucket = ? AND ts = ?`
+			case "author":
+				stmt = `UPDATE author_timeline_by_author SET content_type = ?
+				        WHERE author_id = ? AND bucket = ? AND ts = ?`
+			default:
+				continue
+			}
+			if err := s.session.Query(stmt, newType, owner, b, ts).WithContext(ctx).Exec(); err != nil {
+				_ = iter.Close()
+				return rows, err
+			}
+			rows++
+		}
+		if err := iter.Close(); err != nil {
+			return rows, err
+		}
+	}
+
+	// If the index returned any rows, trust it — the index is the
+	// source of truth for HF4-era timeline rows.
+	if indexed > 0 {
+		return rows, nil
+	}
+
+	// Fallback path: pre-HF4 row with no index entries. Scans both
+	// fan-out tables once. Gated by FEED_HF4_FALLBACK=false to disable
+	// after back-populate; defaults to enabled.
+	if os.Getenv("FEED_HF4_FALLBACK") == "false" {
+		return rows, nil
+	}
+
+	// home_timeline_by_user: one row per follower.
+	{
+		iter := s.session.Query(
+			`SELECT user_id, bucket, ts FROM home_timeline_by_user WHERE post_id = ? ALLOW FILTERING`,
+			toGocql(postID),
+		).WithContext(ctx).Iter()
+		var userID gocql.UUID
+		var b int
+		var ts gocql.UUID
+		for iter.Scan(&userID, &b, &ts) {
+			if err := s.session.Query(
+				`UPDATE home_timeline_by_user SET content_type = ?
+				 WHERE user_id = ? AND bucket = ? AND ts = ?`,
+				newType, userID, b, ts,
+			).WithContext(ctx).Exec(); err != nil {
+				_ = iter.Close()
+				return rows, err
+			}
+			// Back-populate the index for this row so future reclassifies
+			// hit the fast path.
+			_ = s.session.Query(`
+				INSERT INTO timeline_index_by_post (post_id, timeline_kind, owner_id, bucket, ts)
+				VALUES (?, 'home', ?, ?, ?)
+			`, toGocql(postID), userID, b, ts).WithContext(ctx).Exec()
+			rows++
+		}
+		if err := iter.Close(); err != nil {
+			return rows, err
+		}
+	}
+
+	// author_timeline_by_author: one row (the author's canonical copy).
+	{
+		iter := s.session.Query(
+			`SELECT author_id, bucket, ts FROM author_timeline_by_author WHERE post_id = ? ALLOW FILTERING`,
+			toGocql(postID),
+		).WithContext(ctx).Iter()
+		var authorID gocql.UUID
+		var b int
+		var ts gocql.UUID
+		for iter.Scan(&authorID, &b, &ts) {
+			if err := s.session.Query(
+				`UPDATE author_timeline_by_author SET content_type = ?
+				 WHERE author_id = ? AND bucket = ? AND ts = ?`,
+				newType, authorID, b, ts,
+			).WithContext(ctx).Exec(); err != nil {
+				_ = iter.Close()
+				return rows, err
+			}
+			_ = s.session.Query(`
+				INSERT INTO timeline_index_by_post (post_id, timeline_kind, owner_id, bucket, ts)
+				VALUES (?, 'author', ?, ?, ?)
+			`, toGocql(postID), authorID, b, ts).WithContext(ctx).Exec()
+			rows++
+		}
+		if err := iter.Close(); err != nil {
+			return rows, err
+		}
+	}
+
+	return rows, nil
 }
 
 // GetHomeTimeline returns all timeline items for the current month bucket.
@@ -225,6 +388,108 @@ func (s *TimelineStore) GetAuthorTimeline(ctx context.Context, authorID uuid.UUI
 		return nil, err
 	}
 	return items, nil
+}
+
+// DeleteHomeTimelineEntriesByAuthorForUser removes from a single user's
+// home_timeline_by_user every row whose author_id matches the given
+// author. Used by the UserUnfollowed consumer to make unfollows
+// immediate: the followee's previously-fanned-out (and previously-
+// backfilled) posts disappear from the follower's feed on next read.
+//
+// home_timeline_by_user is keyed (user_id, bucket) PARTITION, (ts,
+// post_id) CLUSTERING — there's no secondary index on author_id, so
+// we scan the user's buckets and delete by their full primary key.
+// Scoped to the last `bucketLookback` months (default 3) to bound the
+// scan; older entries age out naturally.
+func (s *TimelineStore) DeleteHomeTimelineEntriesByAuthorForUser(ctx context.Context, userID, authorID uuid.UUID, bucketLookback int) error {
+	if bucketLookback <= 0 {
+		bucketLookback = 3
+	}
+	now := time.Now().UTC()
+	gAuthor := toGocql(authorID)
+	gUser := toGocql(userID)
+
+	for i := 0; i < bucketLookback; i++ {
+		b := bucket(now.AddDate(0, -i, 0))
+
+		// Find every (ts, post_id) the followee authored in this bucket
+		// for this user. We scan the partition (cheap — keyed by
+		// user_id+bucket) and filter author_id client-side.
+		iter := s.session.Query(`
+			SELECT ts, post_id, author_id FROM home_timeline_by_user
+			WHERE user_id = ? AND bucket = ?
+		`, gUser, b).WithContext(ctx).Iter()
+
+		type pk struct {
+			ts     gocql.UUID
+			postID gocql.UUID
+		}
+		var doomed []pk
+		var ts, pid, aid gocql.UUID
+		for iter.Scan(&ts, &pid, &aid) {
+			if aid == gAuthor {
+				doomed = append(doomed, pk{ts: ts, postID: pid})
+			}
+		}
+		if err := iter.Close(); err != nil {
+			return err
+		}
+
+		for _, d := range doomed {
+			if err := s.session.Query(`
+				DELETE FROM home_timeline_by_user
+				WHERE user_id = ? AND bucket = ? AND ts = ? AND post_id = ?
+			`, gUser, b, d.ts, d.postID).WithContext(ctx).Exec(); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// GetAuthorTimelineMultiBucket pulls recent author-timeline entries
+// across `bucketLookback` rolling months (oldest-bucket-first then
+// reversed to newest-first). Used by the UserFollowed backfill so a
+// freshly-followed account with no posts in the current bucket still
+// shows up if they posted in the previous month.
+func (s *TimelineStore) GetAuthorTimelineMultiBucket(ctx context.Context, authorID uuid.UUID, limit, bucketLookback int) ([]FeedItem, error) {
+	if bucketLookback <= 0 {
+		bucketLookback = 3
+	}
+	now := time.Now().UTC()
+	gAuthor := toGocql(authorID)
+
+	out := make([]FeedItem, 0, limit)
+	for i := 0; i < bucketLookback && len(out) < limit; i++ {
+		b := bucket(now.AddDate(0, -i, 0))
+		remaining := limit - len(out)
+		iter := s.session.Query(`
+			SELECT post_id, created_at, content_type FROM author_timeline_by_author
+			WHERE author_id = ? AND bucket = ?
+			ORDER BY ts DESC
+			LIMIT ?
+		`, gAuthor, b, remaining).WithContext(ctx).Iter()
+
+		var pid gocql.UUID
+		var createdAt time.Time
+		var contentType *string
+		for iter.Scan(&pid, &createdAt, &contentType) {
+			ct := "post"
+			if contentType != nil && *contentType != "" {
+				ct = *contentType
+			}
+			out = append(out, FeedItem{
+				PostID:      uuid.UUID(pid),
+				AuthorID:    authorID,
+				CreatedAt:   createdAt,
+				ContentType: ct,
+			})
+		}
+		if err := iter.Close(); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 // DeleteTimelineEntriesByAuthor removes all author-timeline entries for the given

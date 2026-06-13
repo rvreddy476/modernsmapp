@@ -29,7 +29,9 @@ bool _isVideoFile(String path) {
   return false;
 }
 
-enum PostVisibility { public, followers, private }
+/// Post audience. The enum name is sent verbatim as the `visibility`
+/// value to post-service (e.g. `trusted` → close-friends-only).
+enum PostVisibility { public, followers, trusted, private }
 
 class CreationState {
   final PostType type;
@@ -45,6 +47,13 @@ class CreationState {
   final bool isGeneratingAi;
   final double uploadProgress;
   final String? error;
+  /// Optional solid background for text-only posts (matches web composer).
+  /// Sent as `rich_text.background` + a derived `text_color`.
+  final String? backgroundColor;
+  final bool backgroundIsDark;
+  /// Per-option errors keyed by option index. Cleared on edit.
+  final Map<int, String> pollOptionErrors;
+  final String? pollQuestionError;
 
   const CreationState({
     this.type = PostType.text,
@@ -60,6 +69,10 @@ class CreationState {
     this.isGeneratingAi = false,
     this.uploadProgress = 0,
     this.error,
+    this.backgroundColor,
+    this.backgroundIsDark = false,
+    this.pollOptionErrors = const {},
+    this.pollQuestionError,
   });
 
   CreationState copyWith({
@@ -76,6 +89,12 @@ class CreationState {
     bool? isGeneratingAi,
     double? uploadProgress,
     String? error,
+    String? backgroundColor,
+    bool clearBackground = false,
+    bool? backgroundIsDark,
+    Map<int, String>? pollOptionErrors,
+    String? pollQuestionError,
+    bool clearPollQuestionError = false,
   }) {
     return CreationState(
       type: type ?? this.type,
@@ -91,6 +110,10 @@ class CreationState {
       isGeneratingAi: isGeneratingAi ?? this.isGeneratingAi,
       uploadProgress: uploadProgress ?? this.uploadProgress,
       error: error,
+      backgroundColor: clearBackground ? null : (backgroundColor ?? this.backgroundColor),
+      backgroundIsDark: clearBackground ? false : (backgroundIsDark ?? this.backgroundIsDark),
+      pollOptionErrors: pollOptionErrors ?? this.pollOptionErrors,
+      pollQuestionError: clearPollQuestionError ? null : (pollQuestionError ?? this.pollQuestionError),
     );
   }
 }
@@ -138,6 +161,115 @@ class CreationNotifier extends StateNotifier<CreationState> {
   void setAllowsMultipleVotes(bool value) =>
       state = state.copyWith(allowsMultipleVotes: value);
 
+  /// Background colour for text-only posts. `null` = no background.
+  /// `isDark` flips the rendered text colour to white for contrast.
+  void setBackground(String? hex, {bool isDark = false}) {
+    if (hex == null) {
+      state = state.copyWith(clearBackground: true);
+    } else {
+      state = state.copyWith(backgroundColor: hex, backgroundIsDark: isDark);
+    }
+  }
+
+  /// Normalize a raw hashtag string:
+  ///   "  #Design ! " → "design".
+  static String _normalizeTag(String raw) {
+    final stripped = raw.trim().replaceFirst(RegExp(r'^#+'), '');
+    return stripped.replaceAll(RegExp(r'[^\p{L}\p{N}_]', unicode: true), '').toLowerCase();
+  }
+
+  /// Accept user input with or without #, split on whitespace/commas,
+  /// dedupe, lowercase. Caps at 30 tags total.
+  void addTags(String input) {
+    final parts = input
+        .split(RegExp(r'[\s,]+'))
+        .map(_normalizeTag)
+        .where((t) => t.isNotEmpty)
+        .toList();
+    if (parts.isEmpty) return;
+    final seen = state.tags.toSet();
+    final next = List<String>.from(state.tags);
+    for (final t in parts) {
+      if (!seen.contains(t)) {
+        next.add(t);
+        seen.add(t);
+        if (next.length >= 30) break;
+      }
+    }
+    state = state.copyWith(tags: next);
+  }
+
+  void removeTag(String tag) {
+    state = state.copyWith(tags: state.tags.where((t) => t != tag).toList());
+  }
+
+  /// Validates a poll before allowing submit. Returns true if valid,
+  /// false otherwise (with errors set on state).
+  /// - text.trim() is the question, must be non-empty.
+  /// - at least 2 non-empty, non-duplicate options required.
+  bool _validatePoll() {
+    if (state.type != PostType.poll) return true;
+    final optionErrors = <int, String>{};
+    final trimmed = state.pollOptions.map((o) => o.trim()).toList();
+    final firstIndexFor = <String, int>{};
+    for (var i = 0; i < trimmed.length; i++) {
+      final t = trimmed[i];
+      if (t.isEmpty) {
+        optionErrors[i] = 'Please enter this option.';
+      } else {
+        final lower = t.toLowerCase();
+        if (firstIndexFor.containsKey(lower)) {
+          optionErrors[i] = 'Duplicate option — please change or remove.';
+          optionErrors[firstIndexFor[lower]!] =
+              'Duplicate option — please change or remove.';
+        } else {
+          firstIndexFor[lower] = i;
+        }
+      }
+    }
+    final validCount = trimmed.where((t) => t.isNotEmpty && optionErrors[trimmed.indexOf(t)] == null).length;
+    final hasQuestion = state.text.trim().isNotEmpty;
+
+    final missingQuestion = !hasQuestion;
+    final missingOptions = validCount < 2;
+
+    if (!missingQuestion && !missingOptions && optionErrors.isEmpty) {
+      state = state.copyWith(
+        pollOptionErrors: const {},
+        clearPollQuestionError: true,
+        error: null,
+      );
+      return true;
+    }
+
+    String banner;
+    if (missingQuestion && missingOptions) {
+      banner = 'Please provide the poll question and at least two poll options.';
+    } else if (missingQuestion) {
+      banner = 'Please enter poll question.';
+    } else if (missingOptions) {
+      banner = 'Please provide at least two poll options.';
+    } else {
+      banner = 'Please fix the highlighted poll fields.';
+    }
+    state = state.copyWith(
+      pollOptionErrors: optionErrors,
+      pollQuestionError: missingQuestion ? 'Please enter poll question.' : null,
+      clearPollQuestionError: !missingQuestion,
+      error: banner,
+    );
+    return false;
+  }
+
+  void clearPollErrors() {
+    if (state.pollOptionErrors.isEmpty && state.pollQuestionError == null) return;
+    state = state.copyWith(
+      pollOptionErrors: const {},
+      clearPollQuestionError: true,
+      error: null,
+    );
+  }
+
   /// AI content enhancement (The "Sparkle" feature)
   Future<void> enhanceWithAi() async {
     if (state.text.isEmpty || state.isGeneratingAi) return;
@@ -171,6 +303,9 @@ class CreationNotifier extends StateNotifier<CreationState> {
   Future<bool> submit() async {
     if (state.isSubmitting) return false;
 
+    // Frontend validation gate — never let an invalid poll reach the backend.
+    if (!_validatePoll()) return false;
+
     state = state.copyWith(isSubmitting: true, uploadProgress: 0, error: null);
 
     try {
@@ -199,14 +334,34 @@ class CreationNotifier extends StateNotifier<CreationState> {
       Map<String, dynamic>? pollPayload;
       if (state.type == PostType.poll) {
         pollPayload = {
-          'options': state.pollOptions.where((opt) => opt.isNotEmpty).toList(),
+          'question': state.text.trim(),
+          'options': state.pollOptions
+              .map((o) => o.trim())
+              .where((opt) => opt.isNotEmpty)
+              .toList(),
           'allows_multiple': state.allowsMultipleVotes,
           'duration_hours': 24,
         };
       }
 
+      // Backend extracts hashtags from the post body via regex.
+      // Append chip-entered tags to the wire text so they land in
+      // posts.hashtags[]. The user's composing surface stays clean.
+      final tagSuffix = state.tags.isEmpty
+          ? ''
+          : ' ${state.tags.map((t) => '#$t').join(' ')}';
+      final wireText = (state.text.trim() + tagSuffix).trim();
+
+      Map<String, dynamic>? richText;
+      if (state.backgroundColor != null && state.files.isEmpty && state.type != PostType.poll) {
+        richText = {
+          'background': state.backgroundColor,
+          'text_color': state.backgroundIsDark ? '#ffffff' : '#111111',
+        };
+      }
+
       await _postRepo.createPost(
-        text: state.text,
+        text: wireText,
         contentType: postTypeToContentType(state.type),
         visibility: state.visibility.name,
         mediaIds: mediaIds.isEmpty ? null : mediaIds,
@@ -214,6 +369,7 @@ class CreationNotifier extends StateNotifier<CreationState> {
         feeling: state.mood,
         locationName: state.location,
         poll: pollPayload,
+        richText: richText,
       );
 
       reset();

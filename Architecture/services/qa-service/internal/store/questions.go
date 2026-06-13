@@ -794,7 +794,13 @@ func generateSlug(title string, id uuid.UUID) string {
 	if len(slug) > 80 {
 		slug = slug[:80]
 	}
-	short := id.String()[:8]
+	// 8 hex chars = 32 bits → birthday collision at ~65k IDs. At
+	// platform scale (millions of questions) collisions become real;
+	// bump to 12 chars (48 bits → ~16M before 50% collision risk)
+	// without bloating URL length materially. The full UUID stays the
+	// canonical identifier (questions.id), so the slug suffix is just
+	// for URL uniqueness + readability.
+	short := strings.ReplaceAll(id.String(), "-", "")[:12]
 	return slug + "-" + short
 }
 

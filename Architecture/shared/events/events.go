@@ -14,8 +14,9 @@ const (
 	UserRegistered = "UserRegistered" // payload: UserRegisteredPayload
 	UserLoggedIn   = "UserLoggedIn"   // payload: UserLoggedInPayload
 
-	PostCreated    = "PostCreated"    // payload: PostCreatedPayload
-	PostDeleted    = "PostDeleted"    // payload: PostDeletedPayload
+	PostCreated              = "PostCreated"              // payload: PostCreatedPayload
+	PostDeleted              = "PostDeleted"              // payload: PostDeletedPayload
+	PostContentTypeChanged   = "PostContentTypeChanged"   // payload: PostContentTypeChangedPayload
 	UserFollowed   = "UserFollowed"   // payload: UserFollowedPayload
 	UserUnfollowed = "UserUnfollowed" // payload: UserUnfollowedPayload
 
@@ -30,11 +31,23 @@ const (
 	MediaTranscodeRequested = "MediaTranscodeRequested" // payload: MediaTranscodeRequestedPayload
 	MediaTranscodeCompleted = "MediaTranscodeCompleted" // payload: MediaTranscodeCompletedPayload
 
-	FriendRequestSent     = "FriendRequestSent"     // payload: FriendRequestSentPayload
-	FriendRequestAccepted = "FriendRequestAccepted" // payload: FriendRequestAcceptedPayload
-	FriendRequestDeclined = "FriendRequestDeclined" // payload: FriendRequestDeclinedPayload
-	FriendRemoved         = "FriendRemoved"         // payload: FriendRemovedPayload
-	UserBlocked           = "UserBlocked"           // payload: UserBlockedPayload
+	// Connection lifecycle (messaging/privacy spec v2 §7.1 — the canonical
+	// backend term is "connection", formerly "friend").
+	ConnectionRequested        = "ConnectionRequested"        // payload: ConnectionRequestedPayload
+	ConnectionAccepted         = "ConnectionAccepted"         // payload: ConnectionAcceptedPayload
+	ConnectionDeclined         = "ConnectionDeclined"         // payload: ConnectionDeclinedPayload
+	ConnectionRequestCancelled = "ConnectionRequestCancelled" // payload: ConnectionRequestCancelledPayload
+	ConnectionRemoved          = "ConnectionRemoved"          // payload: ConnectionRemovedPayload
+	UserBlocked                = "UserBlocked"                // payload: UserBlockedPayload
+	UserUnblocked              = "UserUnblocked"              // payload: UserUnblockedPayload
+
+	// Close-friends ("Trusted Circle") membership — friends-sheets spec §3.1.
+	CloseFriendAdded   = "CloseFriendAdded"   // payload: CloseFriendChangedPayload
+	CloseFriendRemoved = "CloseFriendRemoved" // payload: CloseFriendChangedPayload
+
+	// Connection-request auto-filter — friends-sheets spec §5.1, §9.2.
+	// Emitted by trust-safety after it moves a request to the filtered queue.
+	ConnectionRequestFiltered = "ConnectionRequestFiltered" // payload: ConnectionRequestFilteredPayload
 
 	GroupCreated       = "GroupCreated"       // payload: GroupCreatedPayload
 	GroupMemberJoined  = "GroupMemberJoined"  // payload: GroupMemberJoinedPayload
@@ -82,9 +95,14 @@ const (
 	OrderCreated       = "OrderCreated"       // payload: OrderCreatedPayload
 	OrderStatusUpdated = "OrderStatusUpdated" // payload: OrderStatusUpdatedPayload
 
-	// Live Streaming
+	// Live Streaming (v1 — RTMP/OBS; live-service)
 	LiveStarted = "LiveStarted" // payload: LiveStartedPayload
 	LiveEnded   = "LiveEnded"   // payload: LiveEndedPayload
+
+	// Live Streaming v2 (LiveKit SFU; live-service-v2)
+	LiveStreamStarted  = "live.stream.started"   // payload: LiveStreamStartedPayload
+	LiveStreamEnded    = "live.stream.ended"     // payload: LiveStreamEndedPayload
+	LiveStreamVODReady = "live.stream.vod_ready" // payload: LiveStreamVODReadyPayload
 )
 
 // v2.1 new event types
@@ -294,6 +312,22 @@ const (
 	EventDatingProfilePurged       = "dating.profile.purged"
 	EventDatingTelemetryNorthStar  = "dating.telemetry.north_star"
 
+	// Phase 1 (§17, P1-6) — additional dating notification events. See
+	// dating/PRODUCTION_GAP_ANALYSIS.md.
+	EventDatingMatchQuietNotify          = "dating.match.quiet_notify"
+	EventDatingSafeMeetReminder          = "dating.safe_meet.reminder"
+	EventDatingSafeMeetMissedCheckIn     = "dating.safe_meet.missed_check_in"
+	EventDatingSafetyPanicAcknowledged   = "dating.safety.panic.acknowledged"
+	EventDatingReportStatusUpdated       = "dating.report.status_updated"
+	EventDatingVerificationRejected      = "dating.verification.rejected"
+	EventDatingPhotoModerationRejected   = "dating.photo.moderation_rejected"
+	EventDatingPremiumPaymentFailure     = "dating.premium.payment_failure"
+	EventDatingUserBlocked               = "dating.user.blocked"
+	// Phase 1 — chat-side. Emitted by chat-service when a dating_match
+	// conversation receives a message. Notification-service consumes it
+	// to drive push when recipient isn't WS-connected.
+	EventChatDatingMessageNew = "chat.dating.message.new"
+
 	// Wallet (consumer wallet — BC of PPI). See services/wallet-service.
 	EventWalletTopUpStarted    = "wallet.topup.started"
 	EventWalletTopUpSucceeded  = "wallet.topup.succeeded"
@@ -455,6 +489,25 @@ type PostDeletedPayload struct {
 	DeletedAt time.Time `json:"deleted_at"`
 }
 
+// PostContentTypeChangedPayload is published by post-service when a
+// reclassification flips a post between flick / long_video (or any
+// other content_type transition). feed-service consumes this and
+// updates the matching rows in social_feed.home_timeline_by_user
+// and social_feed.author_timeline_by_author so the timeline-side
+// content_type column doesn't drift from the source-of-truth in
+// posts.content_type.
+//
+// Most commonly fires after MediaTranscodeCompleted lands real
+// duration + dimensions on a video that was created with the
+// safe-fallback content_type before transcode.
+type PostContentTypeChangedPayload struct {
+	PostID       string    `json:"post_id"`
+	AuthorID     string    `json:"author_id"`
+	OldType      string    `json:"old_type"`
+	NewType      string    `json:"new_type"`
+	ChangedAt    time.Time `json:"changed_at"`
+}
+
 type UserDeletionRequestedPayload struct {
 	UserID      string    `json:"user_id"`
 	RequestedAt time.Time `json:"requested_at"`
@@ -536,27 +589,37 @@ type MediaTranscodeCompletedPayload struct {
 	HLSMasterURL string `json:"hls_master_url,omitempty"`
 	MP4URL       string `json:"mp4_url,omitempty"`
 	ThumbnailURL string `json:"thumbnail_url,omitempty"`
+
+	// ModerationStatus is the transcode worker's frame-scan verdict
+	// ("passed" / "rejected"); empty on the failed-transcode path.
+	ModerationStatus string `json:"moderation_status,omitempty"`
 }
 
-type FriendRequestSentPayload struct {
+type ConnectionRequestedPayload struct {
 	SenderID   string    `json:"sender_id"`
 	ReceiverID string    `json:"receiver_id"`
 	CreatedAt  time.Time `json:"created_at"`
 }
 
-type FriendRequestAcceptedPayload struct {
+type ConnectionAcceptedPayload struct {
 	SenderID   string    `json:"sender_id"`
 	ReceiverID string    `json:"receiver_id"`
 	AcceptedAt time.Time `json:"accepted_at"`
 }
 
-type FriendRequestDeclinedPayload struct {
+type ConnectionDeclinedPayload struct {
 	SenderID   string    `json:"sender_id"`
 	ReceiverID string    `json:"receiver_id"`
 	DeclinedAt time.Time `json:"declined_at"`
 }
 
-type FriendRemovedPayload struct {
+type ConnectionRequestCancelledPayload struct {
+	SenderID    string    `json:"sender_id"`
+	ReceiverID  string    `json:"receiver_id"`
+	CancelledAt time.Time `json:"cancelled_at"`
+}
+
+type ConnectionRemovedPayload struct {
 	UserA     string    `json:"user_a"`
 	UserB     string    `json:"user_b"`
 	RemovedBy string    `json:"removed_by"`
@@ -567,6 +630,29 @@ type UserBlockedPayload struct {
 	BlockerID string    `json:"blocker_id"`
 	BlockedID string    `json:"blocked_id"`
 	BlockedAt time.Time `json:"blocked_at"`
+}
+
+type UserUnblockedPayload struct {
+	BlockerID   string    `json:"blocker_id"`
+	BlockedID   string    `json:"blocked_id"`
+	UnblockedAt time.Time `json:"unblocked_at"`
+}
+
+// CloseFriendChangedPayload is emitted on CloseFriendAdded / CloseFriendRemoved.
+// feed-service consumes it to refresh the author's close-friends audience cache.
+type CloseFriendChangedPayload struct {
+	OwnerID    string    `json:"owner_id"`
+	MemberID   string    `json:"member_id"`
+	OccurredAt time.Time `json:"occurred_at"`
+}
+
+// ConnectionRequestFilteredPayload is emitted by trust-safety when a connection
+// request is auto-filtered into the recipient's hidden queue (spec §9.2).
+type ConnectionRequestFilteredPayload struct {
+	SenderID   string    `json:"sender_id"`
+	ReceiverID string    `json:"receiver_id"`
+	Reason     string    `json:"reason"`
+	FilteredAt time.Time `json:"filtered_at"`
 }
 
 type GroupCreatedPayload struct {
@@ -858,6 +944,35 @@ type LiveEndedPayload struct {
 	PeakViewers  int       `json:"peak_viewers"`
 	TotalViewers int       `json:"total_viewers"`
 	EndedAt      time.Time `json:"ended_at"`
+}
+
+// --- Live Streaming v2 (LiveKit) Payloads ---
+//
+// Emitted by live-service-v2 (LiveKit SFU + Egress recording). The
+// canonical key path is dot-namespaced ("live.stream.started") so the
+// notification/feed consumers can route via prefix without colliding
+// with the v1 RTMP "LiveStarted" message.
+
+type LiveStreamStartedPayload struct {
+	StreamID   string    `json:"stream_id"`
+	CreatorID  string    `json:"creator_id"`
+	Title      string    `json:"title"`
+	Visibility string    `json:"visibility"` // public | followers | paid
+	StartedAt  time.Time `json:"started_at"`
+}
+
+type LiveStreamEndedPayload struct {
+	StreamID    string    `json:"stream_id"`
+	CreatorID   string    `json:"creator_id"`
+	EndedAt     time.Time `json:"ended_at"`
+	ViewerPeak  int       `json:"viewer_peak"`
+}
+
+type LiveStreamVODReadyPayload struct {
+	StreamID     string `json:"stream_id"`
+	CreatorID    string `json:"creator_id"`
+	RecordingURL string `json:"recording_url"`
+	DurationSec  int    `json:"duration_sec"`
 }
 
 // --- Security Payloads ---

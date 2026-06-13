@@ -28,6 +28,7 @@ type MediaAsset struct {
 	StorageBucket    string         `json:"storage_bucket"`
 	StorageKey       string         `json:"storage_key"`
 	ProcessingStatus string         `json:"processing_status"`
+	ModerationStatus string         `json:"moderation_status"`
 	Width            *int           `json:"width,omitempty"`
 	Height           *int           `json:"height,omitempty"`
 	DurationSeconds  *int           `json:"duration_seconds,omitempty"`
@@ -80,6 +81,15 @@ func (s *MediaAssetStore) UpdateMediaMeta(ctx context.Context, id uuid.UUID, wid
 	return err
 }
 
+// UpdateMediaModerationStatus sets the content-moderation verdict
+// ('passed' or 'rejected') the transcode worker's frame scan produced.
+func (s *MediaAssetStore) UpdateMediaModerationStatus(ctx context.Context, id uuid.UUID, status string) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE media_assets SET moderation_status = $1, updated_at = NOW() WHERE id = $2
+	`, status, id)
+	return err
+}
+
 // UpdateMediaOrientation sets the is_vertical flag for a media asset.
 func (s *MediaAssetStore) UpdateMediaOrientation(ctx context.Context, id uuid.UUID, isVertical bool) error {
 	_, err := s.db.Exec(ctx, `
@@ -92,12 +102,12 @@ func (s *MediaAssetStore) UpdateMediaOrientation(ctx context.Context, id uuid.UU
 func (s *MediaAssetStore) GetMedia(ctx context.Context, id uuid.UUID) (*MediaAsset, error) {
 	var m MediaAsset
 	err := s.db.QueryRow(ctx, `
-		SELECT id, uploader_id, file_type, media_subtype, mime_type, file_size_bytes, storage_bucket, storage_key, processing_status,
+		SELECT id, uploader_id, file_type, media_subtype, mime_type, file_size_bytes, storage_bucket, storage_key, processing_status, COALESCE(moderation_status, 'pending'),
 		       width, height, duration_seconds, blurhash, alt_text, original_url, cdn_url, thumbnail_url,
 		       COALESCE(hls_master_key, ''), is_vertical, created_at, updated_at
 		FROM media_assets WHERE id = $1
 	`, id).Scan(
-		&m.ID, &m.UploaderID, &m.FileType, &m.MediaSubtype, &m.MimeType, &m.FileSizeBytes, &m.StorageBucket, &m.StorageKey, &m.ProcessingStatus,
+		&m.ID, &m.UploaderID, &m.FileType, &m.MediaSubtype, &m.MimeType, &m.FileSizeBytes, &m.StorageBucket, &m.StorageKey, &m.ProcessingStatus, &m.ModerationStatus,
 		&m.Width, &m.Height, &m.DurationSeconds, &m.Blurhash, &m.AltText, &m.OriginalURL, &m.CdnURL, &m.ThumbnailURL,
 		&m.HLSMasterKey, &m.IsVertical, &m.CreatedAt, &m.UpdatedAt,
 	)
@@ -184,7 +194,7 @@ func (s *MediaAssetStore) GetMediaBatch(ctx context.Context, ids []uuid.UUID) ([
 	}
 
 	rows, err := s.db.Query(ctx, `
-		SELECT id, uploader_id, file_type, media_subtype, mime_type, file_size_bytes, storage_bucket, storage_key, processing_status,
+		SELECT id, uploader_id, file_type, media_subtype, mime_type, file_size_bytes, storage_bucket, storage_key, processing_status, COALESCE(moderation_status, 'pending'),
 		       width, height, duration_seconds, blurhash, alt_text, original_url, cdn_url, thumbnail_url,
 		       COALESCE(hls_master_key, ''), is_vertical, created_at, updated_at
 		FROM media_assets WHERE id = ANY($1)
@@ -199,7 +209,7 @@ func (s *MediaAssetStore) GetMediaBatch(ctx context.Context, ids []uuid.UUID) ([
 	for rows.Next() {
 		var m MediaAsset
 		if err := rows.Scan(
-			&m.ID, &m.UploaderID, &m.FileType, &m.MediaSubtype, &m.MimeType, &m.FileSizeBytes, &m.StorageBucket, &m.StorageKey, &m.ProcessingStatus,
+			&m.ID, &m.UploaderID, &m.FileType, &m.MediaSubtype, &m.MimeType, &m.FileSizeBytes, &m.StorageBucket, &m.StorageKey, &m.ProcessingStatus, &m.ModerationStatus,
 			&m.Width, &m.Height, &m.DurationSeconds, &m.Blurhash, &m.AltText, &m.OriginalURL, &m.CdnURL, &m.ThumbnailURL,
 			&m.HLSMasterKey, &m.IsVertical, &m.CreatedAt, &m.UpdatedAt,
 		); err != nil {
@@ -360,6 +370,41 @@ func (s *MediaAssetStore) DeleteMedia(ctx context.Context, id uuid.UUID) ([]stri
 	}
 
 	return objectKeys, nil
+}
+
+// ListOrphanedPendingUploads returns the IDs of media assets stuck
+// in `pending_upload` past the cutoff time — audit H9. The 3-step
+// upload flow has a window where a client crashes between
+// /v1/media/init and /v1/media/confirm; the row sits at
+// `pending_upload` forever with no GC. The OrphanGCWorker polls this
+// every 15 min and purges anything older than 24 h.
+//
+// Bounded by `limit` so a backlog doesn't pin the connection. Ordered
+// by created_at ASC so the oldest orphans get cleaned first.
+func (s *MediaAssetStore) ListOrphanedPendingUploads(ctx context.Context, olderThan time.Time, limit int) ([]uuid.UUID, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT id FROM media_assets
+		WHERE processing_status = 'pending_upload'
+		  AND created_at < $1
+		ORDER BY created_at ASC
+		LIMIT $2
+	`, olderThan, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list orphan pending uploads: %w", err)
+	}
+	defer rows.Close()
+	var out []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }
 
 // SoftDeleteMediaByUploader marks all media assets belonging to the given uploader

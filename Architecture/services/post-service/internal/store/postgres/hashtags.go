@@ -104,3 +104,34 @@ type TrendingHashtag struct {
 	Hashtag string `json:"hashtag"`
 	Count   int    `json:"count"`
 }
+
+// SetHashtagUseCount writes an absolute use_count for a hashtag tag.
+// Used by the sharded-counter flush worker: every flush interval it
+// materializes the sum across Redis shards back into hashtags.use_count.
+// The row is upserted because the tag may have been created by an
+// earlier post that wrote +1 through Redis without ever touching PG.
+//
+// The aggregate `hashtags` table (tag PRIMARY KEY, use_count BIGINT) is
+// distinct from `reel_hashtags` (per-reel tag membership). It's bootstrapped
+// in cmd/server main.go DDL so hashtag-using post-service deploys don't
+// need a separate migration step.
+func (s *Store) SetHashtagUseCount(ctx context.Context, tag string, total int64) error {
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO hashtags (tag, use_count, updated_at)
+		VALUES ($1, $2, NOW())
+		ON CONFLICT (tag) DO UPDATE SET use_count = EXCLUDED.use_count, updated_at = NOW()
+	`, tag, total)
+	return err
+}
+
+// IncrementHashtagUseCount is the Redis-less fallback path: bumps the
+// hashtag's use_count by one. Mirrors IncrementAudioUseCount in shape so
+// the counter-sharding wrapper can pick either path uniformly.
+func (s *Store) IncrementHashtagUseCount(ctx context.Context, tag string) error {
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO hashtags (tag, use_count, updated_at)
+		VALUES ($1, 1, NOW())
+		ON CONFLICT (tag) DO UPDATE SET use_count = hashtags.use_count + 1, updated_at = NOW()
+	`, tag)
+	return err
+}

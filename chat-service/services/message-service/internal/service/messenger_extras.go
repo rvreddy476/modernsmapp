@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/atpost/chat-message-service/internal/store/postgres"
+	sharedEvents "github.com/atpost/chat-shared/events"
 	"github.com/google/uuid"
 )
 
@@ -222,6 +223,9 @@ func (s *Service) UpdateRequestSettings(ctx context.Context, userID uuid.UUID, a
 	return s.extrasStore().UpsertMessageRequestSettings(ctx, ms)
 }
 
+// AcceptRequest accepts a pending message request. Only the recipient may
+// accept; on acceptance the conversation leaves the Requests folder and the
+// request envelope is marked accepted (spec §3.3, §9.5).
 func (s *Service) AcceptRequest(ctx context.Context, userID, convID uuid.UUID) error {
 	ok, err := s.convStore.CheckMembership(ctx, convID, userID)
 	if err != nil {
@@ -230,9 +234,31 @@ func (s *Service) AcceptRequest(ctx context.Context, userID, convID uuid.UUID) e
 	if !ok {
 		return errors.New("not a conversation member")
 	}
-	return s.extrasStore().AcceptMessageRequest(ctx, convID)
+
+	mr, err := s.convStore.GetMessageRequestByConversation(ctx, convID)
+	if err != nil {
+		return err
+	}
+	if mr != nil && mr.ReceiverID != userID {
+		return errors.New("only the recipient can accept this request")
+	}
+
+	if err := s.extrasStore().AcceptMessageRequest(ctx, convID); err != nil {
+		return err
+	}
+	if mr != nil {
+		_ = s.convStore.UpdateMessageRequestStatus(ctx, convID, "accepted")
+		_ = s.convStore.InsertOutboxEvent(ctx, sharedEvents.MessageRequestAccepted, sharedEvents.MessageRequestPayload{
+			ConversationID: convID.String(),
+			SenderID:       mr.SenderID.String(),
+			ReceiverID:     mr.ReceiverID.String(),
+			OccurredAt:     time.Now(),
+		})
+	}
+	return nil
 }
 
+// DeclineRequest ignores a pending message request (the recipient's action).
 func (s *Service) DeclineRequest(ctx context.Context, userID, convID uuid.UUID) error {
 	ok, err := s.convStore.CheckMembership(ctx, convID, userID)
 	if err != nil {
@@ -241,7 +267,28 @@ func (s *Service) DeclineRequest(ctx context.Context, userID, convID uuid.UUID) 
 	if !ok {
 		return errors.New("not a conversation member")
 	}
-	return s.extrasStore().DeclineMessageRequest(ctx, convID)
+
+	mr, err := s.convStore.GetMessageRequestByConversation(ctx, convID)
+	if err != nil {
+		return err
+	}
+	if mr != nil && mr.ReceiverID != userID {
+		return errors.New("only the recipient can decline this request")
+	}
+
+	if err := s.extrasStore().DeclineMessageRequest(ctx, convID); err != nil {
+		return err
+	}
+	if mr != nil {
+		_ = s.convStore.UpdateMessageRequestStatus(ctx, convID, "ignored")
+		_ = s.convStore.InsertOutboxEvent(ctx, sharedEvents.MessageRequestIgnored, sharedEvents.MessageRequestPayload{
+			ConversationID: convID.String(),
+			SenderID:       mr.SenderID.String(),
+			ReceiverID:     mr.ReceiverID.String(),
+			OccurredAt:     time.Now(),
+		})
+	}
+	return nil
 }
 
 func (s *Service) ListRequests(ctx context.Context, userID uuid.UUID, limit, offset int) ([]postgres.Conversation, error) {

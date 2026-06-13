@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -19,6 +20,11 @@ import (
 	"sync"
 	"time"
 
+	tracepkg "github.com/atpost/shared/o11y/trace"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 	"golang.org/x/time/rate"
 )
 
@@ -30,6 +36,16 @@ type route struct {
 
 func main() {
 	port := env("HTTP_PORT", "8080")
+
+	// Phase F3.5 — tracing init before anything else so the proxy
+	// Director can call otel.GetTextMapPropagator().Inject() below.
+	tracerProvider, _ := tracepkg.InitTracer("api-gateway", env("OTEL_EXPORTER_OTLP_ENDPOINT", "http://jaeger:4317"))
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = tracerProvider.Shutdown(shutdownCtx)
+	}()
+
 	allowedOrigins := strings.Split(env("CORS_ORIGINS", "http://localhost:3000"), ",")
 	for _, o := range allowedOrigins {
 		if strings.TrimSpace(o) == "*" {
@@ -46,6 +62,14 @@ func main() {
 	}
 	if jwtSecret == "dev_secret_change_me" {
 		slog.Warn("JWT_SECRET is set to the development default — do not use in production")
+	}
+	// C7 — accept the previous secret too during a kid rotation window.
+	// See aws_prep_sprint_2026_06.md for the rotation runbook.
+	jwtKeys := jwtKeySet{
+		activeKID:      env("JWT_KID", "v1"),
+		activeSecret:   jwtSecret,
+		previousKID:    env("JWT_KID_PREVIOUS", ""),
+		previousSecret: env("JWT_SECRET_PREVIOUS", ""),
 	}
 
 	routeDefs := []struct {
@@ -81,10 +105,16 @@ func main() {
 		{"/v1/search", env("SEARCH_SERVICE_URL", "http://search-service:8089")},
 		{"/v1/groups", env("GROUP_SERVICE_URL", "http://group-service:8090")},
 		{"/v1/reports", env("TRUST_SAFETY_SERVICE_URL", "http://trust-safety-service:8091")},
+		{"/v1/grievances", env("TRUST_SAFETY_SERVICE_URL", "http://trust-safety-service:8091")},
 		{"/v1/ws", env("WS_GATEWAY_URL", "http://ws-gateway:8093")},
 		{"/v1/calls", env("CALL_SERVICE_URL", "http://call-service:8097")},
-		{"/v1/chat", env("MESSAGE_SERVICE_URL", "http://message-service:8092")},
+		// Canonical message-service is chat-service/services/message-service.
+		// The legacy Architecture/services/message-service was archived
+		// 2026-05-25 — docker-compose builds the chat-service variant as
+		// the chat-message-service container.
+		{"/v1/chat", env("MESSAGE_SERVICE_URL", "http://chat-message-service:8092")},
 		{"/v1/analytics", env("ANALYTICS_SERVICE_URL", "http://analytics-service:8094")},
+		{"/v1/ai", env("AI_SERVICE_URL", "http://ai-service:8117")},
 		{"/v1/flags", env("FLAGS_SERVICE_URL", "http://feature-flag-service:8095")},
 		{"/v1/admin", env("ADMIN_SERVICE_URL", "http://admin-service:8096")},
 		{"/v1/apps", env("ADMIN_SERVICE_URL", "http://admin-service:8096")},
@@ -93,20 +123,37 @@ func main() {
 		{"/v1/monetization", env("MONETIZATION_SERVICE_URL", "http://monetization-service:8099")},
 		// Suggestion service
 		{"/v1/suggestions", env("SUGGESTION_SERVICE_URL", "http://suggestion-service:8100")},
-		// Orders / Bookings service (v2.1)
-		{"/v1/orders", env("ORDERS_SERVICE_URL", "http://orders-service:8101")},
-		{"/v1/bookings", env("ORDERS_SERVICE_URL", "http://orders-service:8101")},
+		// Phase F1.4 — `/v1/orders` and `/v1/shop` routes RETIRED. Both
+		// commerce-domain surfaces now live under `/v1/commerce/*` in
+		// commerce-service; mobile and web have re-pointed. The
+		// orders-service and shop-service source directories are
+		// deleted in this same PR. `/v1/bookings` is a non-commerce
+		// surface — it had nowhere to migrate to and is dropped with
+		// orders-service; if a bookings product reappears it should be
+		// its own service.
 		// Payments service (v2.1)
 		{"/v1/payments", env("PAYMENTS_SERVICE_URL", "http://payments-service:8102")},
-		// Shop / Live / Memories services
-		{"/v1/shop", env("SHOP_SERVICE_URL", "http://shop-service:8105")},
+		// Live / Memories services
 		{"/v1/live", env("LIVE_SERVICE_URL", "http://live-service:8103")},
+		// Live-v2 (LiveKit browser-native broadcast) — separate prefix to
+		// avoid colliding with v1 RTMP/OBS routes that own /v1/live.
+		{"/v1/livestream", env("LIVE_V2_SERVICE_URL", "http://live-service-v2:8117")},
 		{"/v1/memories", env("MEMORIES_SERVICE_URL", "http://memories-service:8104")},
 		// Broadcast Channels / Communities (GCC Phase 4)
 		{"/v1/broadcast-channels", env("CHANNEL_SERVICE_URL", "http://channel-service:8106")},
 		{"/v1/communities", env("COMMUNITY_SERVICE_URL", "http://community-service:8107")},
 		// Q&A service
 		{"/v1/qa", env("QA_SERVICE_URL", "http://qa-service:8108")},
+		// Dating service (Pulse) — see C:\workspace\atpost\dating\PULSE_DATING_SPEC.md
+		{"/v1/dating", env("DATING_SERVICE_URL", "http://dating-service:8112")},
+		// Food service (FiGo mini app)
+		{"/v1/food", env("FOOD_SERVICE_URL", "http://food-service:8113")},
+		// Wallet service (BC-of-PPI consumer wallet) — see services/wallet-service.
+		{"/v1/wallet", env("WALLET_SERVICE_URL", "http://wallet-service:8114")},
+		// Bill-pay service (Setu BBPS aggregator) — see services/bill-pay-service.
+		{"/v1/billpay", env("BILL_PAY_SERVICE_URL", "http://bill-pay-service:8115")},
+		// Rider service (Mopedu mini-app) — see services/rider-service.
+		{"/v1/rider", env("RIDER_SERVICE_URL", "http://rider-service:8116")},
 		// Commerce service (full e-commerce rebuild)
 		{"/v1/commerce", env("COMMERCE_SERVICE_URL", "http://commerce-service:8109")},
 	}
@@ -117,19 +164,41 @@ func main() {
 		if err != nil {
 			log.Fatalf("invalid target URL %q: %v", rd.target, err)
 		}
+		proxy := httputil.NewSingleHostReverseProxy(target)
+		// Phase F3.5 — wrap the default Director so every upstream
+		// request carries the W3C traceparent header derived from the
+		// active server span. The outer handler is wrapped in
+		// otelhttp.NewHandler below, which establishes the span; here
+		// we just propagate it forward.
+		originalDirector := proxy.Director
+		proxy.Director = func(req *http.Request) {
+			originalDirector(req)
+			otel.GetTextMapPropagator().Inject(req.Context(), propagation.HeaderCarrier(req.Header))
+		}
+		// Otel transport on the proxy gives us a client span per
+		// upstream call so Jaeger shows the gateway→upstream hop.
+		proxy.Transport = otelhttp.NewTransport(http.DefaultTransport)
 		routes = append(routes, route{
 			prefix: rd.prefix,
 			target: target,
-			proxy:  httputil.NewSingleHostReverseProxy(target),
+			proxy:  proxy,
 		})
 		log.Printf("  %s -> %s", rd.prefix, rd.target)
 	}
 
+	// Prometheus metrics endpoint. promhttp serves the default registry
+	// which all shared/o11y/metrics constructors register against, so
+	// scraping /metrics on the gateway also exposes its own HTTP-side
+	// counters once we wrap upstream calls.
+	promHandler := promhttp.Handler()
+
 	coreHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Health check
-		if r.URL.Path == "/health" || r.URL.Path == "/v1/health" {
-			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"status":"ok"}`))
+		if handleProbe(w, r, len(routes)) {
+			return
+		}
+		// Prometheus scrape endpoint.
+		if r.URL.Path == "/metrics" {
+			promHandler.ServeHTTP(w, r)
 			return
 		}
 
@@ -149,9 +218,35 @@ func main() {
 		slog.Warn("INTERNAL_SERVICE_KEY not set — internal service authentication disabled")
 	}
 
+	// H5 — Redis-backed rate limiter so per-IP / per-user limits hold
+	// across the whole gateway fleet, not just per-pod. The in-memory
+	// limiter still runs in front of this and acts as a fast-path
+	// short-circuit + the dev fallback when REDIS_ADDR isn't set.
+	rateRDB := connectRedisForRateLimit(env("REDIS_ADDR", ""))
+	var rateLimitHandler func(http.Handler) http.Handler
+	if rateRDB != nil {
+		rl := newRedisRateLimiter(rateRDB, 100, 60, time.Second)
+		rateLimitHandler = func(next http.Handler) http.Handler {
+			return rateLimitMiddleware(redisRateLimitMiddleware(rl, next))
+		}
+		slog.Info("rate limiter: redis-backed (fleet-wide) enabled")
+	} else {
+		rateLimitHandler = rateLimitMiddleware
+		slog.Info("rate limiter: in-memory only (per-pod)")
+	}
+
 	// CORS middleware is outermost so headers are present on ALL responses (including 401/429).
-	handler := corsMiddleware(allowedOrigins,
-		requestIDMiddleware(jwtExtractMiddleware(jwtSecret, rateLimitMiddleware(injectInternalKeyMiddleware(internalKey, coreHandler)))))
+	// Phase F3.5 — otelhttp wraps the chain inside CORS so a server span
+	// is opened on every request. The span name is just the method;
+	// downstream services produce the more specific route names.
+	tracedCore := otelhttp.NewHandler(
+		requestIDMiddleware(jwtExtractMiddleware(jwtKeys, rateLimitHandler(requireAdminForInternalPaths(injectInternalKeyMiddleware(internalKey, coreHandler))))),
+		"api-gateway",
+		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
+			return r.Method + " " + r.URL.Path
+		}),
+	)
+	handler := corsMiddleware(allowedOrigins, tracedCore)
 
 	// Add a recovery middleware wrapper
 	recoveryHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -182,16 +277,52 @@ func main() {
 // Requests without a Bearer token are passed through unchanged so that
 // unauthenticated (public) endpoints continue to work normally.
 // Requests with an invalid or expired token receive HTTP 401.
-func jwtExtractMiddleware(jwtSecret string, next http.Handler) http.Handler {
+// jwtKeySet — C7. Active is used for signing (auth-service only); both are
+// accepted on verify so a kid rotation has a window where prior tokens stay
+// valid. A token with no `kid` header (legacy, pre-C7) falls back to active.
+type jwtKeySet struct {
+	activeKID      string
+	activeSecret   string
+	previousKID    string
+	previousSecret string
+}
+
+func (k jwtKeySet) secretFor(kid string) (string, bool) {
+	if kid == "" || kid == k.activeKID {
+		return k.activeSecret, true
+	}
+	if k.previousSecret != "" && kid == k.previousKID {
+		return k.previousSecret, true
+	}
+	return "", false
+}
+
+func jwtExtractMiddleware(keys jwtKeySet, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		authHeader := r.Header.Get("Authorization")
-		if !strings.HasPrefix(authHeader, "Bearer ") {
-			// No token present — pass through for public endpoints.
+		// Resolve JWT from one of (in priority order):
+		//   1. Authorization: Bearer header   — mobile + REST callers
+		//   2. access_token cookie            — browser EventSource
+		//      (and anywhere XHR can't set Authorization)
+		//   3. access_token / token query     — explicit ?token=foo
+		//      override; kept for legacy WebSocket clients that pass
+		//      auth in the query string.
+		// Falling through with no token leaves the request
+		// unauthenticated; downstream handlers may 401 if they care.
+		var token string
+		if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
+			token = strings.TrimPrefix(authHeader, "Bearer ")
+		} else if c, err := r.Cookie("access_token"); err == nil && c.Value != "" {
+			token = c.Value
+		} else if q := r.URL.Query().Get("access_token"); q != "" {
+			token = q
+		} else if q := r.URL.Query().Get("token"); q != "" {
+			token = q
+		}
+		if token == "" {
 			next.ServeHTTP(w, r)
 			return
 		}
-		token := strings.TrimPrefix(authHeader, "Bearer ")
-		userID, scopes, deviceID, err := verifyJWT(token, jwtSecret)
+		userID, scopes, deviceID, err := verifyJWT(token, keys)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
@@ -212,12 +343,35 @@ func jwtExtractMiddleware(jwtSecret string, next http.Handler) http.Handler {
 	})
 }
 
-// verifyJWT validates an HS256 JWT against secret, checks expiry, and returns
-// the user ID, scopes, and device ID from the claims.
-func verifyJWT(tokenStr, secret string) (userID, scopes, deviceID string, err error) {
+// verifyJWT validates an HS256 JWT against the configured key set, checks
+// expiry, and returns the user ID, scopes, and device ID from the claims.
+// C7: the `kid` header selects the secret so a rotation window can accept
+// both old and new signatures simultaneously.
+func verifyJWT(tokenStr string, keys jwtKeySet) (userID, scopes, deviceID string, err error) {
 	parts := strings.Split(tokenStr, ".")
 	if len(parts) != 3 {
 		return "", "", "", &jwtError{"malformed token"}
+	}
+
+	// Pick the secret by `kid` (C7). Tokens without a `kid` fall back to
+	// the active secret so legacy tokens minted before C7 still verify.
+	headerRaw, hdrErr := base64.RawURLEncoding.DecodeString(parts[0])
+	if hdrErr != nil {
+		return "", "", "", &jwtError{"invalid header encoding"}
+	}
+	var header struct {
+		Alg string `json:"alg"`
+		Kid string `json:"kid"`
+	}
+	if jsonErr := json.Unmarshal(headerRaw, &header); jsonErr != nil {
+		return "", "", "", &jwtError{"invalid header JSON"}
+	}
+	if header.Alg != "HS256" {
+		return "", "", "", &jwtError{"unsupported jwt algorithm"}
+	}
+	secret, ok := keys.secretFor(header.Kid)
+	if !ok {
+		return "", "", "", &jwtError{"unknown kid"}
 	}
 
 	// Verify HMAC-SHA256 signature.
@@ -377,6 +531,52 @@ func injectInternalKeyMiddleware(secret string, next http.Handler) http.Handler 
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// requireAdminForInternalPaths is the gate the gateway sits in front of
+// any `/v1/<domain>/internal/*` route. These paths exist for admin /
+// moderator surfaces (admin queues, payout settlement, etc.) and are
+// authenticated by the downstream service on the X-Internal-Service-Key
+// header that the gateway injects. Without an explicit scope check
+// here, the internal-key injection would effectively turn every
+// internal endpoint into a public one — any logged-in user could hit it
+// and the downstream would accept because the gateway vouched.
+//
+// Policy: scopes claim on the JWT must contain "admin" or "moderator".
+// Tokens minted by the regular login flow don't include these scopes;
+// admin-service issues them only after a verified role lookup. Missing
+// or absent scope → 403.
+//
+// commerce TODO Blocker #3.
+func requireAdminForInternalPaths(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/internal/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		scopes := r.Header.Get("X-Scopes")
+		if !scopeAllows(scopes, "admin") && !scopeAllows(scopes, "moderator") && !scopeAllows(scopes, "superadmin") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":{"code":"FORBIDDEN","message":"admin scope required for internal endpoints"}}`))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// scopeAllows checks whether a space-separated scopes list contains
+// the named scope. Empty list → never allowed.
+func scopeAllows(scopes, want string) bool {
+	if scopes == "" {
+		return false
+	}
+	for _, s := range strings.Split(scopes, " ") {
+		if s == want {
+			return true
+		}
+	}
+	return false
 }
 
 // requestIDMiddleware ensures every request has an X-Request-Id header for

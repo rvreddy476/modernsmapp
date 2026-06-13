@@ -135,10 +135,22 @@ func (s *Store) DeleteStory(ctx context.Context, storyID, authorID uuid.UUID) er
 }
 
 // IncrementStoryViewCount atomically increments the view count.
+// Kept as the Redis-nil fallback for adjustStoryViewCount in the
+// service layer; production traffic flows through the sharded counter.
 func (s *Store) IncrementStoryViewCount(ctx context.Context, storyID uuid.UUID) error {
 	_, err := s.db.Exec(ctx, `
 		UPDATE stories SET view_count = view_count + 1 WHERE id = $1
 	`, storyID)
+	return err
+}
+
+// SetStoryViewCount overwrites stories.view_count to the absolute sum
+// from the sharded Redis counter. Called by the flush worker every
+// ~10s per dirty story.
+func (s *Store) SetStoryViewCount(ctx context.Context, storyID uuid.UUID, total int64) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE stories SET view_count = $2 WHERE id = $1
+	`, storyID, total)
 	return err
 }
 

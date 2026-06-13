@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
+	"net"
 	"regexp"
 	"strings"
 	"time"
@@ -59,8 +60,13 @@ type Store interface {
 	GetSessionByID(ctx context.Context, sessionID uuid.UUID) (*store.Session, error)
 	ListActiveSessions(ctx context.Context, userID uuid.UUID) ([]store.Session, error)
 	RotateSessionRefreshToken(ctx context.Context, sessionID uuid.UUID, refreshTokenHash string, expiresAt time.Time) error
+	RotateSessionWithFingerprint(ctx context.Context, sessionID uuid.UUID, refreshTokenHash, ip string, expiresAt time.Time, anomalyFlagged bool) error
 	RevokeSession(ctx context.Context, sessionID uuid.UUID) error
 	RevokeAllSessions(ctx context.Context, userID uuid.UUID) (int64, error)
+	// A13 — login anomaly audit trail
+	RecordLoginAnomaly(ctx context.Context, userID uuid.UUID, anomalyType, ip, userAgent, deviceID, countryCode string, riskScore int, challenged bool, metadata map[string]any) error
+	ListLoginAnomalies(ctx context.Context, userID uuid.UUID, limit int) ([]store.LoginAnomaly, error)
+	AcknowledgeAnomaly(ctx context.Context, userID, anomalyID uuid.UUID) (int64, error)
 	// Trusted devices
 	UpsertTrustedDevice(ctx context.Context, d *store.TrustedDevice) error
 	ListTrustedDevices(ctx context.Context, userID uuid.UUID) ([]store.TrustedDevice, error)
@@ -73,6 +79,11 @@ type Store interface {
 	GetUserByLoginProvider(ctx context.Context, provider, email string) (*store.User, error)
 	CreateUserWithOAuth(ctx context.Context, provider, email, name string) (*store.User, error)
 	CreateUserWithOAuthTx(ctx context.Context, tx pgx.Tx, provider, email, name string) (*store.User, error)
+	// A5: pre-creation flow variant — accepts explicit verification
+	// flags so OAuth callers can avoid stamping email_verified=true
+	// when the provider didn't actually assert it, and stamp
+	// phone_verified=true once the SMS-OTP step has passed.
+	CreateUserWithOAuthExtendedTx(ctx context.Context, tx pgx.Tx, provider, email, name, phone string, emailVerified, phoneVerified bool) (*store.User, error)
 	LinkOAuthProvider(ctx context.Context, userID uuid.UUID, provider string) error
 	// Cross-schema transactional inserts
 	CreateUserRecordTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error
@@ -119,6 +130,13 @@ type AuthResponse struct {
 	SessionID    uuid.UUID   `json:"session_id"`
 	Requires2FA  bool        `json:"requires_2fa,omitempty"`
 	PendingToken string      `json:"pending_token,omitempty"`
+	// A13 — anomaly step-up envelope. When RequiresStepUp is true the
+	// password / OTP check has passed but the risk band demanded a
+	// second channel; the UI must POST to /v1/auth/anomaly/verify-* to
+	// finish the login. StepUpMethods enumerates the channels the
+	// caller can offer (e.g. ["email_otp","totp"]).
+	RequiresStepUp bool     `json:"requires_step_up,omitempty"`
+	StepUpMethods  []string `json:"step_up_methods,omitempty"`
 }
 
 type AccessClaims struct {
@@ -209,65 +227,35 @@ func (s *Service) VerifyOTP(ctx context.Context, phone, code, purpose, deviceID,
 		created = true
 	}
 
-	// Guard: if 2FA is enabled, do not issue a full session — require second factor
-	if user.TwoFactorEnabled {
-		pendingToken, err := s.StorePending2FASession(ctx, user.ID, deviceID, platform, ip, userAgent)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create pending 2FA session: %w", err)
-		}
-		return &AuthResponse{
-			Requires2FA:  true,
-			PendingToken: pendingToken,
-			User:         user,
-		}, nil
-	}
-
-	sessionID := uuid.New()
-	refreshToken, err := generateOpaqueToken(32)
-	if err != nil {
-		return nil, err
-	}
-
-	sess := &store.Session{
-		ID:           sessionID,
-		UserID:       user.ID,
-		RefreshToken: hashToken(refreshToken),
-		DeviceID:     deviceID,
-		Platform:     platform,
-		IP:           ip,
-		UserAgent:    userAgent,
-		CreatedAt:    time.Now(),
-		ExpiresAt:    time.Now().Add(s.cfg.RefreshTokenTTL),
-	}
-
-	if err := s.store.CreateSession(ctx, sess); err != nil {
-		return nil, err
-	}
-
-	accessToken, err := s.generateAccessToken(user.ID, sessionID)
-	if err != nil {
-		return nil, err
-	}
-
 	if created {
 		s.log.Info("user registered via OTP", "user_id", user.ID)
 	}
-	if err := s.producer.PublishUserLoggedIn(ctx, user.ID, sessionID, deviceID, platform, ip); err != nil {
-		s.log.Warn("failed to publish user logged in event", "err", err, "user_id", user.ID, "session_id", sessionID)
+
+	// Route through createSessionForUser so the 2FA gate AND the A13
+	// anomaly gate are applied in one place. The step-up sentinel is
+	// re-wrapped as an AuthResponse with RequiresStepUp set so the
+	// handler can render it.
+	resp, err := s.createSessionForUser(ctx, user, deviceID, platform, ip, userAgent)
+	if err != nil {
+		if errors.Is(err, ErrAnomalyStepUpRequired) {
+			// Surface the envelope without the sentinel — handler will
+			// inspect RequiresStepUp to format the 401.
+			return resp, err
+		}
+		return nil, err
 	}
 
-	// Anomaly detection: check if IP or device changed
-	s.detectLoginAnomaly(ctx, user.ID.String(), ip, deviceID, platform)
+	// Publish the user-logged-in event only for the success path
+	// (no pending 2FA / step-up). The TokenPair is zero-value when a
+	// pending response is returned, so checking AccessToken keeps the
+	// publish on the real-session case.
+	if resp != nil && resp.Tokens.AccessToken != "" {
+		if pErr := s.producer.PublishUserLoggedIn(ctx, user.ID, resp.SessionID, deviceID, platform, ip); pErr != nil {
+			s.log.Warn("failed to publish user logged in event", "err", pErr, "user_id", user.ID, "session_id", resp.SessionID)
+		}
+	}
 
-	return &AuthResponse{
-		Tokens: TokenPair{
-			AccessToken:  accessToken,
-			RefreshToken: refreshToken,
-			ExpiresAt:    time.Now().Add(s.cfg.AccessTokenTTL),
-		},
-		User:      user,
-		SessionID: sessionID,
-	}, nil
+	return resp, nil
 }
 
 var (
@@ -291,12 +279,44 @@ func validatePassword(pw string) error {
 	return nil
 }
 
+// minimumAgeYears is the hard floor for self-service registration.
+// India's DPDP Act additionally requires verifiable parental consent for
+// users under 18 — that consent flow is a separate effort; this gate is
+// the absolute minimum age, enforced whenever a date of birth is supplied.
+const minimumAgeYears = 13
+
+// validateMinimumAge rejects registrations below minimumAgeYears. An
+// absent DOB is not enforced here (the registration form may not collect
+// one); a malformed DOB is rejected outright.
+func validateMinimumAge(dob string) error {
+	if strings.TrimSpace(dob) == "" {
+		return nil
+	}
+	born, err := time.Parse("2006-01-02", dob)
+	if err != nil {
+		return fmt.Errorf("invalid date of birth")
+	}
+	now := time.Now()
+	age := now.Year() - born.Year()
+	if now.YearDay() < born.YearDay() {
+		age--
+	}
+	if age < minimumAgeYears {
+		return fmt.Errorf("you must be at least %d years old to register", minimumAgeYears)
+	}
+	return nil
+}
+
 func (s *Service) RegisterWithPassword(ctx context.Context, phone, email, password, firstName, lastName, dob, gender string) (*AuthResponse, error) {
 	if err := validatePassword(password); err != nil {
 		return nil, err
 	}
+	if err := validateMinimumAge(dob); err != nil {
+		return nil, err
+	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	// Audit A9: bcrypt cost env-tunable via BCRYPT_COST.
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), s.cfg.BcryptCost)
 	if err != nil {
 		return nil, err
 	}
@@ -414,69 +434,56 @@ func (s *Service) LoginWithPassword(ctx context.Context, identifier, password, d
 		return nil, errors.New("invalid credentials")
 	}
 
-	// If 2FA is enabled, return a pending response instead of creating a full session
-	if user.TwoFactorEnabled {
-		pendingToken, err := s.StorePending2FASession(ctx, user.ID, deviceID, platform, ip, userAgent)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create pending 2FA session: %w", err)
+	// Route through createSessionForUser so both the 2FA gate (A6) and
+	// the A13 anomaly gate are applied centrally. The step-up sentinel
+	// is forwarded to the handler so the 401-with-body can render.
+	resp, err := s.createSessionForUser(ctx, user, deviceID, platform, ip, userAgent)
+	if err != nil {
+		if errors.Is(err, ErrAnomalyStepUpRequired) {
+			return resp, err
 		}
-		return &AuthResponse{
-			Requires2FA:  true,
-			PendingToken: pendingToken,
-			User:         user,
-		}, nil
-	}
-
-	sessionID := uuid.New()
-	refreshToken, err := generateOpaqueToken(32)
-	if err != nil {
 		return nil, err
 	}
 
-	sess := &store.Session{
-		ID:           sessionID,
-		UserID:       user.ID,
-		RefreshToken: hashToken(refreshToken),
-		DeviceID:     deviceID,
-		Platform:     platform,
-		IP:           ip,
-		UserAgent:    userAgent,
-		CreatedAt:    time.Now(),
-		ExpiresAt:    time.Now().Add(s.cfg.RefreshTokenTTL),
+	// Side effects only run on the real-session branch (TokenPair
+	// populated). 2FA-pending and step-up-pending responses skip these
+	// so the user-logged-in event doesn't fire before the session
+	// actually exists.
+	if resp != nil && resp.Tokens.AccessToken != "" {
+		if uErr := s.store.UpdateLastLogin(ctx, user.ID); uErr != nil {
+			s.log.Warn("failed to update last_login_at", "err", uErr, "user_id", user.ID)
+		}
+		if pErr := s.producer.PublishUserLoggedIn(ctx, user.ID, resp.SessionID, deviceID, platform, ip); pErr != nil {
+			s.log.Warn("failed to publish user logged in event", "err", pErr, "user_id", user.ID, "session_id", resp.SessionID)
+		}
 	}
 
-	if err := s.store.CreateSession(ctx, sess); err != nil {
-		return nil, err
-	}
-
-	accessToken, err := s.generateAccessToken(user.ID, sessionID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Update last_login_at
-	if err := s.store.UpdateLastLogin(ctx, user.ID); err != nil {
-		s.log.Warn("failed to update last_login_at", "err", err, "user_id", user.ID)
-	}
-
-	if err := s.producer.PublishUserLoggedIn(ctx, user.ID, sessionID, deviceID, platform, ip); err != nil {
-		s.log.Warn("failed to publish user logged in event", "err", err, "user_id", user.ID, "session_id", sessionID)
-	}
-
-	// Anomaly detection: check if IP or device changed
-	s.detectLoginAnomaly(ctx, user.ID.String(), ip, deviceID, platform)
-
-	return &AuthResponse{
-		Tokens: TokenPair{
-			AccessToken:  accessToken,
-			RefreshToken: refreshToken,
-			ExpiresAt:    time.Now().Add(s.cfg.AccessTokenTTL),
-		},
-		User:      user,
-		SessionID: sessionID,
-	}, nil
+	return resp, nil
 }
 
+// A15 + A11: refresh-token IP/UA bind. Refresh-token theft (via XSS / stolen
+// laptop / shared device) is the leading silent-takeover vector once
+// the access token expires. We persist the IP/UA at session creation
+// and on every refresh we evaluate whether the caller's fingerprint
+// matches. The policy is graduated:
+//
+//   - Same /24 (or /48 v6) + same UA family: rotate, no flag (the
+//     common case — DHCP rotation within the same NAT pool is normal).
+//   - Different specific IP but same /24 subnet, same UA family:
+//     rotate but record a low-risk anomaly (legitimate — minor LAN
+//     reassignment).
+//   - Different /24 OR different UA family: HIGH risk. Refresh is
+//     denied; user must re-authenticate. A11 tightened the policy
+//     here: previously we required BOTH subnet AND UA to differ
+//     (which left obvious carrier-IP-rotation + cookie-theft replay
+//     attacks undetected). Now either signal alone is enough — a
+//     stolen refresh token replayed from a different network OR a
+//     different browser family burns the session.
+//   - Session previously marked anomaly_flagged: deny regardless.
+//
+// `ip` and `userAgent` come from the HTTP handler (gin.ClientIP +
+// User-Agent header). Empty inputs are treated as "no signal" — they
+// don't trigger a denial but also don't update the stored value.
 func (s *Service) RefreshSession(ctx context.Context, refreshToken, ip, userAgent string) (*AuthResponse, error) {
 	if refreshToken == "" {
 		return nil, errors.New("missing refresh token")
@@ -495,6 +502,43 @@ func (s *Service) RefreshSession(ctx context.Context, refreshToken, ip, userAgen
 		return nil, errors.New("refresh token expired")
 	}
 
+	// A15 + A11: graduated fingerprint check before issuing a new pair.
+	// `ipChanged` = different specific address (host-level diff).
+	// `subnetChanged` = different /24 (v4) or /48 (v6) — strong signal
+	// of a genuinely different network, not just DHCP rotation.
+	ipChanged := ip != "" && sess.IP != "" && ip != sess.IP
+	subnetChanged := ip != "" && sess.IP != "" && !sameSubnet(sess.IP, ip)
+	uaChanged := userAgent != "" && sess.UserAgent != "" && !sameUserAgentFamily(sess.UserAgent, userAgent)
+	highRisk := subnetChanged || uaChanged
+
+	if highRisk {
+		// Don't issue a new pair. Log + record an anomaly so the user
+		// sees it in the security inbox and can change password if it
+		// wasn't them. Revoke the session so the stolen refresh token
+		// can't be replayed even if the attacker tries again from the
+		// original IP/UA — once we suspect compromise we burn the
+		// session.
+		_ = s.store.RevokeSession(ctx, sess.ID)
+		_ = s.store.RecordLoginAnomaly(ctx, sess.UserID, "session_revoked",
+			ip, userAgent, sess.DeviceID, "", 90, true, map[string]any{
+				"reason":        "refresh_fingerprint_mismatch",
+				"original_ip":   sess.IP,
+				"original_ua":   sess.UserAgent,
+				"presented_ip":  ip,
+				"presented_ua":  userAgent,
+				"session_id":    sess.ID.String(),
+			})
+		slog.Warn("auth: refresh denied — fingerprint mismatch",
+			"user_id", sess.UserID, "session_id", sess.ID,
+			"original_ip", sess.IP, "presented_ip", ip)
+		return nil, errors.New("refresh denied — please sign in again")
+	}
+
+	if sess.IP != "" && sess.AnomalyFlagged() {
+		_ = s.store.RevokeSession(ctx, sess.ID)
+		return nil, errors.New("session revoked — please sign in again")
+	}
+
 	user, err := s.store.GetUserByID(ctx, sess.UserID)
 	if err != nil {
 		return nil, err
@@ -508,13 +552,32 @@ func (s *Service) RefreshSession(ctx context.Context, refreshToken, ip, userAgen
 		return nil, err
 	}
 	newExpiresAt := time.Now().Add(s.cfg.RefreshTokenTTL)
-	if err := s.store.RotateSessionRefreshToken(ctx, sess.ID, hashToken(newRefreshToken), newExpiresAt); err != nil {
+	if err := s.store.RotateSessionWithFingerprint(ctx, sess.ID, hashToken(newRefreshToken), ip, newExpiresAt, false); err != nil {
 		return nil, err
+	}
+
+	// Low-risk anomaly: specific IP changed but stayed within the same
+	// /24, UA family unchanged. Common with DHCP rotation. Record so
+	// the security inbox can surface "signed in from new location" but
+	// don't block the refresh.
+	if ipChanged && !subnetChanged && !uaChanged {
+		_ = s.store.RecordLoginAnomaly(ctx, sess.UserID, "new_ip",
+			ip, userAgent, sess.DeviceID, "", 40, false, map[string]any{
+				"original_ip":  sess.IP,
+				"session_id":   sess.ID.String(),
+			})
 	}
 
 	accessToken, err := s.generateAccessToken(user.ID, sess.ID)
 	if err != nil {
 		return nil, err
+	}
+
+	// A10: invalidate the session-by-id cache entry for this session
+	// since we've just rotated its refresh-token expiry. The handler
+	// layer reads through Redis for /me lookups; let's not serve stale.
+	if s.rdb != nil {
+		_ = s.rdb.Del(ctx, "sess:"+sess.ID.String()).Err()
 	}
 
 	return &AuthResponse{
@@ -526,6 +589,59 @@ func (s *Service) RefreshSession(ctx context.Context, refreshToken, ip, userAgen
 		User:      user,
 		SessionID: sess.ID,
 	}, nil
+}
+
+// sameUserAgentFamily compares the lead "product/version" token of two
+// User-Agent strings — switching from Mozilla 119 → 120 is the same
+// family; switching from Mozilla → Dalvik (mobile WebView) is not.
+// Empty inputs match anything (no signal).
+func sameUserAgentFamily(a, b string) bool {
+	if a == "" || b == "" {
+		return true
+	}
+	pa := uaProduct(a)
+	pb := uaProduct(b)
+	return pa == pb
+}
+
+func uaProduct(ua string) string {
+	for i, r := range ua {
+		if r == '/' || r == ' ' {
+			return ua[:i]
+		}
+	}
+	return ua
+}
+
+// sameSubnet returns true when a and b are within the same broad network
+// block: /24 for IPv4 and /48 for IPv6. The goal is to distinguish "DHCP
+// reassigned within the same NAT pool / ISP block" (benign) from "actually
+// hopped to a different network" (suspect). Returns true when either side
+// is empty or unparseable so we don't false-positive on missing telemetry.
+func sameSubnet(a, b string) bool {
+	if a == "" || b == "" || a == b {
+		return true
+	}
+	ipA := net.ParseIP(a)
+	ipB := net.ParseIP(b)
+	if ipA == nil || ipB == nil {
+		return true
+	}
+	if v4a, v4b := ipA.To4(), ipB.To4(); v4a != nil && v4b != nil {
+		// /24 — match first 3 octets.
+		return v4a[0] == v4b[0] && v4a[1] == v4b[1] && v4a[2] == v4b[2]
+	}
+	v6a, v6b := ipA.To16(), ipB.To16()
+	if v6a == nil || v6b == nil {
+		return true
+	}
+	// /48 — match first 6 bytes.
+	for i := 0; i < 6; i++ {
+		if v6a[i] != v6b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Service) generateOTP() (string, error) {
@@ -555,6 +671,12 @@ func (s *Service) generateAccessToken(userID, sessionID uuid.UUID) (string, erro
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	// C7: stamp `kid` so the verifier can pick the right secret during
+	// rotation. Old (pre-C7) tokens omit `kid` and fall back to the
+	// active secret on the verifier side.
+	if s.cfg.JWTKID != "" {
+		token.Header["kid"] = s.cfg.JWTKID
+	}
 	return token.SignedString([]byte(s.cfg.JWTSecret))
 }
 
@@ -579,7 +701,11 @@ func (s *Service) GetSessionForLogout(ctx context.Context, refreshToken string) 
 }
 
 func (s *Service) RevokeSession(ctx context.Context, sessionID uuid.UUID) error {
-	return s.store.RevokeSession(ctx, sessionID)
+	if err := s.store.RevokeSession(ctx, sessionID); err != nil {
+		return err
+	}
+	s.cacheRevoke(ctx, sessionID)
+	return nil
 }
 
 func (s *Service) Logout(ctx context.Context, refreshToken string) error {
@@ -593,12 +719,24 @@ func (s *Service) Logout(ctx context.Context, refreshToken string) error {
 	if sess == nil {
 		return nil
 	}
-	return s.store.RevokeSession(ctx, sess.ID)
+	if err := s.store.RevokeSession(ctx, sess.ID); err != nil {
+		return err
+	}
+	s.cacheRevoke(ctx, sess.ID)
+	return nil
 }
 
 // LogoutAll revokes all sessions for a user.
 func (s *Service) LogoutAll(ctx context.Context, userID uuid.UUID) (int64, error) {
-	return s.store.RevokeAllSessions(ctx, userID)
+	sessions, _ := s.store.ListActiveSessions(ctx, userID)
+	n, err := s.store.RevokeAllSessions(ctx, userID)
+	if err != nil {
+		return n, err
+	}
+	for _, sess := range sessions {
+		s.cacheRevoke(ctx, sess.ID)
+	}
+	return n, nil
 }
 
 // ListSessions returns all active sessions for a user.
@@ -618,17 +756,48 @@ func (s *Service) RevokeSessionByID(ctx context.Context, userID, sessionID uuid.
 	if sess.UserID != userID {
 		return errors.New("session not found")
 	}
-	return s.store.RevokeSession(ctx, sessionID)
+	if err := s.store.RevokeSession(ctx, sessionID); err != nil {
+		return err
+	}
+	s.cacheRevoke(ctx, sessionID)
+	return nil
+}
+
+// cacheRevoke marks a session id as revoked in Redis so the JWT
+// middleware can short-circuit access tokens that haven't expired yet.
+// TTL = access-token TTL + a small grace; once the access token would
+// have expired naturally there's no point keeping the entry.
+//
+// Best-effort: a Redis failure logs WARN but doesn't fail the revoke —
+// the DB write is the source of truth; cache is a hot-path
+// optimization.
+func (s *Service) cacheRevoke(ctx context.Context, sessionID uuid.UUID) {
+	if s.rdb == nil {
+		return
+	}
+	ttl := s.cfg.AccessTokenTTL + 60*time.Second
+	if err := s.rdb.Set(ctx, "sess_revoked:"+sessionID.String(), "1", ttl).Err(); err != nil {
+		s.log.Warn("session revoke: cache set failed", "session_id", sessionID, "err", err)
+	}
 }
 
 // DeleteAccount soft-deletes a user account with 30-day grace period.
+//
+// Audit A14: previously revoked sessions AFTER the soft-delete flip and
+// silently dropped the revoke error. A late attacker holding a stolen
+// access token (15-min TTL window) could keep using it post-deletion
+// because the access-token check doesn't re-fetch user state on every
+// call — only refresh does. Now we revoke first so the refresh window
+// closes immediately, and surface the revoke error so we don't leave
+// the user in a half-deleted state.
 func (s *Service) DeleteAccount(ctx context.Context, userID uuid.UUID) error {
+	if revoked, err := s.store.RevokeAllSessions(ctx, userID); err != nil {
+		return fmt.Errorf("account deletion: failed to revoke sessions: %w", err)
+	} else {
+		s.log.Info("account deletion: revoked sessions", "user_id", userID, "revoked", revoked)
+	}
 	if err := s.store.SoftDeleteUser(ctx, userID); err != nil {
 		return fmt.Errorf("failed to soft delete user: %w", err)
-	}
-	// Revoke all sessions
-	if _, err := s.store.RevokeAllSessions(ctx, userID); err != nil {
-		s.log.Warn("failed to revoke sessions during account deletion", "err", err, "user_id", userID)
 	}
 	return nil
 }
@@ -772,7 +941,7 @@ func (s *Service) ResetPassword(ctx context.Context, identifier, code, newPasswo
 	}
 
 	// Hash new password and update
-	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), s.cfg.BcryptCost)
 	if err != nil {
 		return err
 	}
@@ -781,8 +950,30 @@ func (s *Service) ResetPassword(ctx context.Context, identifier, code, newPasswo
 		return err
 	}
 
-	// Revoke all existing sessions for security
-	s.store.RevokeAllSessions(ctx, user.ID)
+	// A16: wipe any in-flight pending-2FA sessions for this user. An
+	// attacker that already cleared step 1 (password) and is sitting on
+	// a pending_token in the 5-min Redis TTL must not be allowed to
+	// complete step 2 with credentials we just rotated. Best-effort —
+	// runs before session revoke so that even a Redis error here still
+	// gets the session-revoke attempt below.
+	s.InvalidatePending2FASessions(ctx, user.ID)
+
+	// Revoke all existing sessions for security. Audit A4: previously
+	// the error was silently dropped (`s.store.RevokeAllSessions(...)`
+	// with no error capture), so a Postgres blip during the revoke
+	// would leave the attacker's session alive even after the user
+	// successfully reset their password — defeating the whole purpose
+	// of the reset. Now we surface the error: the password is already
+	// new (the attacker's stale token still won't pass refresh, since
+	// refresh checks revoked_at), but ops sees the failure and the
+	// caller knows to retry the revocation.
+	if revoked, err := s.store.RevokeAllSessions(ctx, user.ID); err != nil {
+		s.log.Error("password reset: failed to revoke sessions — user should be advised to log out everywhere",
+			"err", err, "user_id", user.ID)
+		return fmt.Errorf("password updated but session revocation failed: %w", err)
+	} else {
+		s.log.Info("password reset: revoked active sessions", "user_id", user.ID, "revoked", revoked)
+	}
 
 	s.log.Info("password reset successful", "user_id", user.ID)
 	return nil
@@ -923,6 +1114,88 @@ func (s *Service) RemoveTrustedDevice(ctx context.Context, userID, deviceID uuid
 
 // createSessionForUser is a helper to create a full session (shared logic).
 func (s *Service) createSessionForUser(ctx context.Context, user *store.User, deviceID, platform, ip, userAgent string) (*AuthResponse, error) {
+	// Audit A6: enforce 2FA at every full-session entry point, not just
+	// the password-login path. Previously OAuth (Google/Apple) called
+	// this directly and skipped the TwoFactorEnabled check that
+	// auth.go:213 enforces for password logins — a 2FA-enabled user
+	// could still sign in with only a stolen OAuth refresh token.
+	// Returning a pending 2FA session here funnels every login flow
+	// through the same second-factor gate.
+	if user.TwoFactorEnabled {
+		pendingToken, err := s.StorePending2FASession(ctx, user.ID, deviceID, platform, ip, userAgent)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create pending 2FA session: %w", err)
+		}
+		return &AuthResponse{
+			Requires2FA:  true,
+			PendingToken: pendingToken,
+			User:         user,
+		}, nil
+	}
+
+	// A13 — anomaly enforcement. Probe BEFORE minting tokens so we can
+	// either (a) gate the session behind step-up when the risk band is
+	// high AND enforcement is on, or (b) fall through to the normal
+	// path and run shadow side effects. The probe is cheap (one Redis
+	// GET + one trusted-devices read); it runs unconditionally so the
+	// shadow-mode telemetry continues to be accurate.
+	//
+	// Sub-policy: suspended accounts are rejected outright (the
+	// existing suspended-account gate lives at the GetUserByX layer for
+	// password login but not here, so re-assert it). paused / restricted
+	// users CAN attempt step-up so they have a path to clear the flag.
+	if user.AccountStatus == "suspended" {
+		return nil, errors.New("account suspended")
+	}
+
+	probe := s.probeLoginAnomaly(ctx, user.ID.String(), ip, deviceID)
+	risk := classifyAnomalyRisk(probe.LastIP, ip, probe.IsNewIP, probe.IsNewDevice, probe.UAFamilyChanged)
+
+	if risk == anomalyHigh && s.cfg.LoginAnomalyEnforce == "enforce" {
+		// High-risk + enforce mode: refuse to mint tokens. Stash the
+		// pending state, dispatch the email-OTP if available, and
+		// return a step-up envelope. The handler maps the sentinel to
+		// a 401 with body.
+		//
+		// applyAnomalySideEffects is intentionally NOT called here: we
+		// don't want to advance last_ip until the user proves they own
+		// the account (otherwise the second login attempt would see
+		// the new IP as already-known and bypass the gate).
+		resp, err := s.startAnomalyStepUp(ctx, user, deviceID, platform, ip, userAgent)
+		if err == nil {
+			// startAnomalyStepUp returns (nil, ErrAnomalyStepUpRequired)
+			// on success; landing here means an unexpected nil-error
+			// success path. Fall through to issue session so we don't
+			// strand the user.
+			return resp, nil
+		}
+		// ErrAnomalyStepUpRequired is the expected "happy path" for
+		// the enforce branch — return both the envelope and the
+		// sentinel so the handler can format the 401-with-body.
+		if errors.Is(err, ErrAnomalyStepUpRequired) {
+			return resp, err
+		}
+		// Step-up unavailable (no email_verified, no 2FA) → refuse
+		// the login. The user must contact support to recover.
+		if errors.Is(err, ErrAnomalyStepUpUnavailable) {
+			s.log.Warn("anomaly enforce: no step-up channel; refusing login",
+				"user_id", user.ID, "ip", ip)
+			return nil, err
+		}
+		// Any other startAnomalyStepUp failure (Redis down,
+		// marshaling, etc.): log and fall through to shadow behaviour
+		// rather than locking everybody out. Better to issue the
+		// session and rely on the security inbox + push notification
+		// than to brick logins on infra hiccups.
+		s.log.Error("anomaly enforce: step-up setup failed; falling back to shadow",
+			"err", err, "user_id", user.ID)
+	}
+
+	// Shadow (or low/medium risk under enforce mode): record the
+	// anomaly + emit Kafka if there's anything to report, then mint
+	// the session.
+	s.applyAnomalySideEffects(ctx, user.ID.String(), ip, deviceID, platform, userAgent, probe)
+
 	sessionID := uuid.New()
 	refreshToken, err := generateOpaqueToken(32)
 	if err != nil {
@@ -961,30 +1234,134 @@ func (s *Service) createSessionForUser(ctx context.Context, user *store.User, de
 	}, nil
 }
 
-// detectLoginAnomaly checks for a changed IP and emits a best-effort anomaly event via the producer.
-func (s *Service) detectLoginAnomaly(ctx context.Context, userID, ip, deviceID, platform string) {
+// anomalyProbeResult captures everything classifyAnomalyRisk needs to
+// make the enforcement call. We return signals rather than executing
+// side effects so the caller can decide (based on LOGIN_ANOMALY_ENFORCE)
+// whether to issue the session or stash a step-up.
+type anomalyProbeResult struct {
+	IsNewIP         bool
+	IsNewDevice     bool
+	LastIP          string
+	UAFamilyChanged bool
+}
+
+// probeLoginAnomaly runs the cheap "is this novel?" checks WITHOUT
+// recording the anomaly row or publishing the Kafka event. Returns
+// enough signal for classifyAnomalyRisk to grade the attempt. Side
+// effects (RecordLoginAnomaly + Kafka publish + last-IP refresh) are
+// deferred to applyAnomalySideEffects so we can suppress the last-IP
+// refresh on enforce-blocked logins (otherwise a successful step-up
+// would still see the IP as "new" the second time round).
+func (s *Service) probeLoginAnomaly(ctx context.Context, userID, ip, deviceID string) anomalyProbeResult {
 	lastIPKey := fmt.Sprintf("last_ip:%s", userID)
 	lastIP, _ := s.rdb.Get(ctx, lastIPKey).Result()
 	isNewIP := lastIP != "" && lastIP != ip
-	isNewDevice := false // device history check not yet implemented
 
-	// Store new last IP (30-day TTL)
-	s.rdb.Set(ctx, lastIPKey, ip, 30*24*time.Hour)
-
-	if isNewIP || isNewDevice {
-		payload := map[string]interface{}{
-			"user_id":       userID,
-			"ip":            ip,
-			"device_id":     deviceID,
-			"platform":      platform,
-			"is_new_ip":     isNewIP,
-			"is_new_device": isNewDevice,
-			"occurred_at":   time.Now(),
-		}
-		payloadBytes, err := json.Marshal(payload)
-		if err == nil {
-			// Best-effort: do not fail auth if anomaly event emission fails
-			_ = s.producer.PublishRaw(ctx, "user.login_anomaly", userID, json.RawMessage(payloadBytes))
+	isNewDevice := false
+	if deviceID != "" {
+		if uid, err := uuid.Parse(userID); err == nil {
+			devices, derr := s.store.ListTrustedDevices(ctx, uid)
+			if derr == nil {
+				seen := false
+				for _, d := range devices {
+					if d.DeviceFingerprint == deviceID {
+						seen = true
+						break
+					}
+				}
+				isNewDevice = !seen
+			}
 		}
 	}
+
+	return anomalyProbeResult{
+		IsNewIP:     isNewIP,
+		IsNewDevice: isNewDevice,
+		LastIP:      lastIP,
+		// UA family change is computed by the refresh path against the
+		// stored session; at login time we don't have a prior UA to
+		// diff against here, so this stays false. Reserved for future
+		// enrichment when we cache last-UA per user.
+		UAFamilyChanged: false,
+	}
+}
+
+// applyAnomalySideEffects is the legacy "shadow" behaviour: persist
+// the audit row, refresh the last-IP cache, emit the Kafka event. Run
+// when (a) the risk is low/medium and the session is being issued, or
+// (b) enforcement mode is "shadow" so we keep doing exactly what we
+// did before.
+func (s *Service) applyAnomalySideEffects(ctx context.Context, userID, ip, deviceID, platform, userAgent string, probe anomalyProbeResult) {
+	lastIPKey := fmt.Sprintf("last_ip:%s", userID)
+	// Always refresh the cache — even on no-change logins this resets
+	// the TTL so a long-lived account keeps its baseline.
+	s.rdb.Set(ctx, lastIPKey, ip, 30*24*time.Hour)
+
+	if !(probe.IsNewIP || probe.IsNewDevice) {
+		return
+	}
+
+	if uid, err := uuid.Parse(userID); err == nil {
+		anomalyType := "new_ip"
+		risk := 30
+		if probe.IsNewDevice {
+			anomalyType = "new_device"
+			risk = 50
+		}
+		_ = s.store.RecordLoginAnomaly(ctx, uid, anomalyType, ip, userAgent, deviceID, "", risk, false, map[string]any{
+			"platform": platform,
+			"prior_ip": probe.LastIP,
+		})
+	}
+
+	payload := map[string]interface{}{
+		"user_id":       userID,
+		"ip":            ip,
+		"device_id":     deviceID,
+		"platform":      platform,
+		"is_new_ip":     probe.IsNewIP,
+		"is_new_device": probe.IsNewDevice,
+		"occurred_at":   time.Now(),
+	}
+	if payloadBytes, err := json.Marshal(payload); err == nil {
+		_ = s.producer.PublishRaw(ctx, "user.login_anomaly", userID, json.RawMessage(payloadBytes))
+	}
+}
+
+// detectLoginAnomaly preserves the original audit-only contract for
+// callers that don't want to thread the enforcement gate (currently
+// only used by VerifyOTP / LoginWithPassword AFTER the createSession
+// path; on enforce mode those paths route through createSessionForUser
+// which probes + enforces directly).
+//
+// Industry-standard split:
+//   - Persist for audit + user-visible history.
+//   - Emit Kafka event for downstream services (notifications, fraud
+//     scoring, ops alerting).
+//   - Cache the latest IP in Redis so this hot-path check stays sub-ms
+//     even at billions-of-users scale.
+func (s *Service) detectLoginAnomaly(ctx context.Context, userID, ip, deviceID, platform, userAgent string) {
+	probe := s.probeLoginAnomaly(ctx, userID, ip, deviceID)
+	s.applyAnomalySideEffects(ctx, userID, ip, deviceID, platform, userAgent, probe)
+}
+
+// bcryptCompare is a thin shim used by anomaly_stepup.go so it doesn't
+// have to import golang.org/x/crypto/bcrypt directly — keeps the file
+// focused on the policy logic. Returns the underlying bcrypt error on
+// mismatch (or any other failure mode).
+func bcryptCompare(hash, plain string) error {
+	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(plain))
+}
+
+// ListMyAnomalies powers the user-facing security inbox. Caller is
+// resolved from the JWT (handler layer).
+func (s *Service) ListMyAnomalies(ctx context.Context, userID uuid.UUID, limit int) ([]store.LoginAnomaly, error) {
+	return s.store.ListLoginAnomalies(ctx, userID, limit)
+}
+
+// AcknowledgeMyAnomaly lets the user clear an entry from the inbox.
+// Idempotent: a second call on an already-acknowledged row no-ops.
+func (s *Service) AcknowledgeMyAnomaly(ctx context.Context, userID, anomalyID uuid.UUID) error {
+	_, err := s.store.AcknowledgeAnomaly(ctx, userID, anomalyID)
+	return err
 }

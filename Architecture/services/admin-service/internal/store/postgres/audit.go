@@ -116,6 +116,20 @@ func (s *Store) GetDashboardStats(ctx context.Context) (*DashboardStats, error) 
 	return stats, nil
 }
 
+// PurgeAuditLogsOlderThan deletes audit-log rows older than retentionDays
+// and returns how many were removed. CERT-In requires security logs be
+// retained for at least 180 days; the retention window is operator-tunable
+// (AUDIT_LOG_RETENTION_DAYS) and the caller must not set it below 180.
+func (s *Store) PurgeAuditLogsOlderThan(ctx context.Context, retentionDays int) (int64, error) {
+	tag, err := s.db.Exec(ctx,
+		`DELETE FROM admin.audit_log WHERE created_at < NOW() - make_interval(days => $1)`,
+		retentionDays)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
 func (s *Store) LogAction(ctx context.Context, actor, action, entityType, entityID string, payload interface{}) error {
 	pBytes, _ := json.Marshal(payload)
 

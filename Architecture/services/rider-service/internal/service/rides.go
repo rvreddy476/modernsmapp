@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/atpost/rider-service/internal/store"
 	"github.com/google/uuid"
@@ -27,6 +28,10 @@ type CreateRideRequest struct {
 	CityID         *uuid.UUID
 	PaymentMethod  string
 	IdempotencyKey string
+	// ScheduledFor, if non-nil and in the future, parks the ride in
+	// `scheduled` status until the activation worker promotes it to
+	// `requested` ≈ T-15 min. nil = immediate booking (default).
+	ScheduledFor *time.Time
 }
 
 // CreateRide creates a `requested`-status ride row. Sprint 2 fills in the
@@ -102,6 +107,7 @@ func (s *Service) CreateRide(ctx context.Context, customerID uuid.UUID, req Crea
 		EstimatedDurationMin: durMin,
 		EstimatedFare:        fareINR,
 		PaymentMethod:        &method,
+		ScheduledFor:         req.ScheduledFor,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create ride: %w", err)
@@ -110,8 +116,16 @@ func (s *Service) CreateRide(ctx context.Context, customerID uuid.UUID, req Crea
 	if ride.CityID != nil {
 		cityID = ride.CityID.String()
 	}
-	if perr := s.producer.PublishRideRequested(ctx, ride.ID, customerID, ride.VehicleType, cityID); perr != nil {
-		slog.Warn("rider: publish ride.requested failed", "ride_id", ride.ID, "error", perr)
+	// G4.5: scheduled rides don't dispatch yet — the activation worker
+	// promotes them and publishes ride.requested at T-15 min.
+	if ride.Status == "scheduled" {
+		s.emit(ctx, "rider.ride."+ride.ID.String(), "rider.ride.scheduled", ride)
+	} else {
+		if perr := s.producer.PublishRideRequested(ctx, ride.ID, customerID, ride.VehicleType, cityID); perr != nil {
+			slog.Warn("rider: publish ride.requested failed", "ride_id", ride.ID, "error", perr)
+		}
+		s.emit(ctx, "rider.ride."+ride.ID.String(), "rider.ride.requested", ride)
+		s.publishRealtime(ctx, "rider.admin.live_rides", "rider.ride.requested", ride)
 	}
 	if body, merr := json.Marshal(ride); merr == nil {
 		_ = s.store.RecordIdempotency(ctx, req.IdempotencyKey, customerID, CreateRideOperation, &ride.ID, body)

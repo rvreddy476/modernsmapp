@@ -128,22 +128,24 @@ class ChatRepository {
     );
   }
 
-  /// Resolve presence for a list of users.
-  /// The backend currently exposes a single-user online-status endpoint,
-  /// so the repository fans that out and returns a map for provider consumers.
+  /// Resolve presence for a list of users in a single batch request.
+  /// Synchronized with POST /v1/users/online/batch (capped at 100 ids).
   Future<Map<String, bool>> getPresence(List<String> userIds) async {
     if (userIds.isEmpty) return const <String, bool>{};
 
-    final entries = await Future.wait(
-      userIds.map((userId) async {
-        final response = await _api.get('/v1/users/$userId/online');
-        final data = response.data['data'] ?? response.data;
-        final online = data is Map ? data['online'] == true : false;
-        return MapEntry(userId, online);
-      }),
+    final response = await _api.post(
+      '/v1/users/online/batch',
+      data: {'user_ids': userIds.take(100).toList()},
     );
-
-    return {for (final entry in entries) entry.key: entry.value};
+    final data = response.data['data'] ?? response.data;
+    final online = data is Map ? data['online'] : null;
+    if (online is Map) {
+      return {
+        for (final entry in online.entries)
+          entry.key.toString(): entry.value == true,
+      };
+    }
+    return const <String, bool>{};
   }
 
   /// Archive or unarchive a conversation.
@@ -152,6 +154,38 @@ class ChatRepository {
     await _api.patch(
       '/v1/chat/conversations/$conversationId/archive',
       data: {'is_archived': archived},
+    );
+  }
+
+  /// List pending message-request conversations (spec §3.3).
+  /// Synchronized with GET /v1/chat/requests
+  Future<List<Conversation>> getMessageRequests({
+    int limit = 20,
+    int offset = 0,
+  }) async {
+    final response = await _api.get(
+      '/v1/chat/requests',
+      queryParameters: {'limit': limit, 'offset': offset},
+    );
+    final items = (response.data['data'] as List<dynamic>?) ?? [];
+    return items
+        .map((item) => Conversation.fromJson(item as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// Accept a pending message request, promoting it to a normal conversation.
+  /// Synchronized with POST /v1/chat/conversations/{conversationId}/requests/accept
+  Future<void> acceptMessageRequest(String conversationId) async {
+    await _api.post(
+      '/v1/chat/conversations/$conversationId/requests/accept',
+    );
+  }
+
+  /// Decline a pending message request.
+  /// Synchronized with POST /v1/chat/conversations/{conversationId}/requests/decline
+  Future<void> declineMessageRequest(String conversationId) async {
+    await _api.post(
+      '/v1/chat/conversations/$conversationId/requests/decline',
     );
   }
 

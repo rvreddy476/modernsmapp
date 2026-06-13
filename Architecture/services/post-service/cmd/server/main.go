@@ -13,9 +13,13 @@ import (
 	"github.com/atpost/post-service/internal/engagement/consumers"
 	postEvents "github.com/atpost/post-service/internal/events"
 	"github.com/atpost/post-service/internal/http"
+	"github.com/atpost/post-service/internal/reconcile"
 	"github.com/atpost/post-service/internal/service"
 	"github.com/atpost/post-service/internal/store/postgres"
 	"github.com/atpost/post-service/internal/store/scylla"
+	"github.com/atpost/post-service/internal/streamhub"
+	"github.com/atpost/post-service/internal/trending"
+	"github.com/atpost/shared/counters"
 	"github.com/atpost/shared/health"
 	"github.com/atpost/shared/middleware"
 	"github.com/atpost/shared/o11y/logging"
@@ -24,6 +28,7 @@ import (
 	"github.com/atpost/shared/transport"
 	"github.com/gin-gonic/gin"
 	"github.com/gocql/gocql"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -62,7 +67,7 @@ func main() {
 	}
 	slog.Info("connected to postgres")
 
-	if err := postgres.BootstrapSchema(ctx, dbPool, database.SetupSQL); err != nil {
+	if err := postgres.BootstrapSchema(ctx, dbPool, database.SetupSQL, database.Migrations); err != nil {
 		slog.Error("failed to bootstrap post schema", "error", err)
 		os.Exit(1)
 	}
@@ -153,8 +158,115 @@ func main() {
 	scyllaConsumer := consumers.NewScyllaLikeConsumer(scyllaSession, rdb)
 	go scyllaConsumer.Start(consumerCtx, brokers, engTopic, kafkaDialer)
 
-	pgCounterConsumer := consumers.NewPGCounterConsumer(dbPool, rdb)
+	// PG counter consumer: increments post_engagement_counts via the
+	// sharded Redis counters (likes/comments/shares/bookmarks) instead
+	// of the legacy per-event UPDATE that pinned celebrity-post rows
+	// under lock contention. Pass nil for any counter handle to keep
+	// that column on the legacy UPDATE path (Redis-less dev loops).
+	pgCounterConsumer := consumers.NewPGCounterConsumer(
+		dbPool, pgStore, rdb,
+		postSvc.LikeCounter(),
+		postSvc.CommentCounter(),
+		postSvc.ShareCounter(),
+		postSvc.BookmarkCounter(),
+	)
 	go pgCounterConsumer.Start(consumerCtx, brokers, engTopic, kafkaDialer)
+
+	// Sharded-counter flush workers — one per engagement column. Each
+	// drains its Redis dirty-set every 10s and materializes the shard
+	// sum into post_engagement_counts.<col>. The hourly reconciler
+	// (NewEngagementReconciler below) is the safety net for any drift
+	// the worker misses.
+	if mc := postSvc.LikeCounter(); mc != nil {
+		flush := func(ctx context.Context, postIDStr string, total int64) error {
+			id, err := uuid.Parse(postIDStr)
+			if err != nil {
+				return err
+			}
+			return pgStore.SetEngagementCount(ctx, id, "like_count", total)
+		}
+		go counters.NewWorker(mc, flush, counters.WorkerOptions{}).Start(consumerCtx)
+	}
+	if mc := postSvc.CommentCounter(); mc != nil {
+		flush := func(ctx context.Context, postIDStr string, total int64) error {
+			id, err := uuid.Parse(postIDStr)
+			if err != nil {
+				return err
+			}
+			return pgStore.SetEngagementCount(ctx, id, "comment_count", total)
+		}
+		go counters.NewWorker(mc, flush, counters.WorkerOptions{}).Start(consumerCtx)
+	}
+	if mc := postSvc.ShareCounter(); mc != nil {
+		flush := func(ctx context.Context, postIDStr string, total int64) error {
+			id, err := uuid.Parse(postIDStr)
+			if err != nil {
+				return err
+			}
+			return pgStore.SetEngagementCount(ctx, id, "share_count", total)
+		}
+		go counters.NewWorker(mc, flush, counters.WorkerOptions{}).Start(consumerCtx)
+	}
+	if mc := postSvc.BookmarkCounter(); mc != nil {
+		flush := func(ctx context.Context, postIDStr string, total int64) error {
+			id, err := uuid.Parse(postIDStr)
+			if err != nil {
+				return err
+			}
+			return pgStore.SetEngagementCount(ctx, id, "bookmark_count", total)
+		}
+		go counters.NewWorker(mc, flush, counters.WorkerOptions{}).Start(consumerCtx)
+	}
+	if mc := postSvc.RepostCounter(); mc != nil {
+		flush := func(ctx context.Context, postIDStr string, total int64) error {
+			id, err := uuid.Parse(postIDStr)
+			if err != nil {
+				return err
+			}
+			return pgStore.SetEngagementCount(ctx, id, "repost_count", total)
+		}
+		go counters.NewWorker(mc, flush, counters.WorkerOptions{}).Start(consumerCtx)
+	}
+	slog.Info("post-service engagement-count sharded flush workers started")
+
+	// Counter-sharding rollout (aggregate use-counts): hashtags.use_count
+	// and audio_tracks.use_count. Each replaces a per-PostCreated /
+	// per-AttachAudioToPost UPDATE on a singleton aggregate row — at
+	// trending-tag / trending-audio scale this row was the bottleneck.
+	// The flush workers materialize the Redis shard sum into PG every
+	// 10s. Hashtag entity ID is the lowercased tag string (no `#`),
+	// audio entity ID is the audio_tracks UUID.
+	if hc := postSvc.HashtagCounter(); hc != nil {
+		flush := func(ctx context.Context, tag string, total int64) error {
+			return pgStore.SetHashtagUseCount(ctx, tag, total)
+		}
+		go counters.NewWorker(hc, flush, counters.WorkerOptions{}).Start(consumerCtx)
+		slog.Info("post-service hashtag use-count sharded flush worker started")
+	}
+	if ac := postSvc.AudioCounter(); ac != nil {
+		flush := func(ctx context.Context, audioIDStr string, total int64) error {
+			id, err := uuid.Parse(audioIDStr)
+			if err != nil {
+				return err
+			}
+			return pgStore.SetAudioUseCount(ctx, id, total)
+		}
+		go counters.NewWorker(ac, flush, counters.WorkerOptions{}).Start(consumerCtx)
+		slog.Info("post-service audio use-count sharded flush worker started")
+	}
+	// stories.view_count flush worker — at viral scale (1M+ views/24h
+	// on one story) every viewer was hitting the same UPDATE row.
+	if svc := postSvc.StoryViewCounter(); svc != nil {
+		flush := func(ctx context.Context, storyIDStr string, total int64) error {
+			id, err := uuid.Parse(storyIDStr)
+			if err != nil {
+				return err
+			}
+			return pgStore.SetStoryViewCount(ctx, id, total)
+		}
+		go counters.NewWorker(svc, flush, counters.WorkerOptions{}).Start(consumerCtx)
+		slog.Info("post-service story view-count sharded flush worker started")
+	}
 
 	wsBroadcaster := consumers.NewWSBroadcasterConsumer(rdb)
 	go wsBroadcaster.Start(consumerCtx, brokers, engTopic, kafkaDialer)
@@ -162,15 +274,37 @@ func main() {
 	reelAnalytics := consumers.NewReelAnalyticsConsumer(dbPool, rdb)
 	go reelAnalytics.Start(consumerCtx, brokers, engTopic)
 
+	// Single Prometheus metrics handle shared by every Kafka consumer in
+	// this service. Two `NewKafkaConsumerMetrics("post-service")` calls
+	// trip a `duplicate metrics collector registration` panic — promauto
+	// hates two collectors with the same fully-qualified name.
+	consumerMetrics := metrics.NewKafkaConsumerMetrics("post-service")
+
 	// Media transcode consumer: listens to media-service's `media.events`
 	// topic and updates video_metadata.playback_url with the HLS master URL
 	// once transcoding finishes. Without this the watch screen always falls
 	// back to the raw MP4 even though HLS variants exist on storage.
-	mediaTranscodeMetrics := metrics.NewKafkaConsumerMetrics("post-service")
-	mediaTranscodeConsumer := mediaConsumers.NewMediaTranscodeConsumer(pgStore, brokers, rdb, mediaTranscodeMetrics)
+	mediaTranscodeConsumer := mediaConsumers.
+		NewMediaTranscodeConsumer(pgStore, brokers, rdb, consumerMetrics).
+		WithProducer(legacyProducer) // fan PostContentTypeChanged out to feed-service
 	go mediaTranscodeConsumer.Start(consumerCtx)
 
-	slog.Info("engagement consumers + media transcode consumer started")
+	// Tier 1a phase 2: invalidate the local entitlement cache the
+	// moment monetization-service publishes a subscribe/unsubscribe
+	// event. Without this, the TTL (60s) is the floor on how fast a
+	// new subscription unlocks gated content.
+	entitlementConsumer := mediaConsumers.NewEntitlementChangedConsumer(postSvc, brokers, rdb, consumerMetrics)
+	go entitlementConsumer.Start(consumerCtx)
+
+	slog.Info("engagement consumers + media + entitlement consumers started")
+
+	// Real-time trending leaderboard. Single goroutine per replica;
+	// only the leader-locked instance actually publishes, so adding
+	// more replicas doesn't multiply the work. Subscribers attach via
+	// the SSE handler in internal/http/trending_stream.go.
+	trendingPub := trending.New(rdb, slog.Default())
+	trendingPub.Start(consumerCtx)
+	slog.Info("trending publisher started")
 
 	// 11. Reconciliation worker (every 5 min)
 	reconciler := engagement.NewReconciler(rdb, scyllaSession, dbPool)
@@ -215,7 +349,15 @@ func main() {
 	slog.Info("reconciler, outbox, and cleanup workers started")
 
 	// 12. HTTP Server
-	postHandler := http.New(postSvc, rdb)
+	// Shared SSE fan-out hub: one Redis SUB per channel, in-memory
+	// broadcast to all attached HTTP listeners. Without this, the
+	// /v1/hashtags/:tag/stream + /v1/hashtags/trending/stream
+	// handlers would each open a Redis SUB per connected client —
+	// 50k clients = 50k Redis subs per instance. With the hub it's
+	// O(distinct channels) instead. See internal/streamhub.
+	sseHub := streamhub.New(rdb, slog.Default())
+
+	postHandler := http.New(postSvc, rdb).WithStreamHub(sseHub)
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
@@ -236,6 +378,11 @@ func main() {
 	postHandler.RegisterMyUploadsRoutes(r)
 	postHandler.RegisterAudioRoutes(r)
 	postHandler.RegisterRepostRoutes(r)
+
+	// 12a. Engagement counter reconciler (every hour). Existed unused;
+	// without it any missed PG-counter consumer event silently leaves
+	// post comment counts off-by-N forever.
+	go reconcile.NewEngagementReconciler(dbPool).Start(consumerCtx)
 
 	// 12b. Scheduled draft publish worker (every 60 seconds)
 	go func() {
@@ -323,6 +470,18 @@ func ensureSchema(ctx context.Context, db *pgxpool.Pool) {
 		`CREATE INDEX IF NOT EXISTS idx_comments_post ON comments (post_id, created_at DESC) WHERE is_deleted = FALSE`,
 		`CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments (parent_id, created_at ASC) WHERE parent_id IS NOT NULL AND is_deleted = FALSE`,
 		`CREATE INDEX IF NOT EXISTS idx_comments_author ON comments (author_id, created_at DESC) WHERE is_deleted = FALSE`,
+		// dislike_count was added to the CREATE TABLE above after the
+		// schema first shipped, so any DB that bootstrapped before this
+		// commit is missing the column and every GET /comments hits
+		// "column dislike_count does not exist". Additive ALTER mirrors
+		// the pattern used for moderation_status / flagged_count below.
+		`ALTER TABLE comments ADD COLUMN IF NOT EXISTS dislike_count INTEGER NOT NULL DEFAULT 0`,
+		// Tier 2b: comment moderation queue
+		`ALTER TABLE comments ADD COLUMN IF NOT EXISTS moderation_status TEXT NOT NULL DEFAULT 'visible'
+			CHECK (moderation_status IN ('visible','hidden','removed','review'))`,
+		`ALTER TABLE comments ADD COLUMN IF NOT EXISTS flagged_count INTEGER NOT NULL DEFAULT 0`,
+		`CREATE INDEX IF NOT EXISTS idx_comments_moderation_status ON comments (moderation_status, created_at DESC) WHERE moderation_status IN ('hidden','removed','review')`,
+		`CREATE INDEX IF NOT EXISTS idx_comments_flagged ON comments (flagged_count DESC, created_at DESC) WHERE flagged_count > 0`,
 		`CREATE TABLE IF NOT EXISTS post_engagement_counts (
 			post_id         UUID PRIMARY KEY REFERENCES posts(id),
 			like_count      INTEGER NOT NULL DEFAULT 0,
@@ -659,6 +818,26 @@ func ensureSchema(ctx context.Context, db *pgxpool.Pool) {
 		}
 	}
 
+	// Aggregate hashtags table (counter-sharding rollout). Distinct from
+	// reel_hashtags (per-reel membership) — this row is the canonical
+	// authoritative use_count materialized by the flush worker. Keyed by
+	// lowercased tag string. `IF NOT EXISTS` so re-runs after upgrade
+	// stay idempotent. The flush worker UPSERTs via SetHashtagUseCount.
+	hashtagsDDL := []string{
+		`CREATE TABLE IF NOT EXISTS hashtags (
+			tag        TEXT PRIMARY KEY,
+			use_count  BIGINT NOT NULL DEFAULT 0,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_hashtags_use_count ON hashtags(use_count DESC)`,
+	}
+	for _, stmt := range hashtagsDDL {
+		if _, err := db.Exec(ctx, stmt); err != nil {
+			slog.Warn("hashtags aggregate schema", "error", err)
+		}
+	}
+
 	// Trigger: keep post_engagement_counts.reports_count in sync with
 	// content_reports rows. Idempotent — CREATE OR REPLACE / DROP IF EXISTS.
 	db.Exec(ctx, `
@@ -742,6 +921,12 @@ func ensureSchema(ctx context.Context, db *pgxpool.Pool) {
 		`CREATE INDEX IF NOT EXISTS idx_audio_trending ON audio_tracks(is_trending, use_count DESC) WHERE is_trending = true`,
 		`CREATE INDEX IF NOT EXISTS idx_audio_post ON audio_tracks(original_post_id)`,
 		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS audio_track_id UUID REFERENCES audio_tracks(id)`,
+		// M10: ownership columns. is_public defaults TRUE so existing
+		// rows keep their permissive behavior; private tracks require
+		// is_public=false + creator_user_id to be set explicitly.
+		`ALTER TABLE audio_tracks ADD COLUMN IF NOT EXISTS is_public BOOLEAN NOT NULL DEFAULT TRUE`,
+		`ALTER TABLE audio_tracks ADD COLUMN IF NOT EXISTS creator_user_id UUID`,
+		`CREATE INDEX IF NOT EXISTS idx_audio_creator ON audio_tracks(creator_user_id) WHERE creator_user_id IS NOT NULL`,
 	}
 	for _, stmt := range audioTracksDDL {
 		if _, err := db.Exec(ctx, stmt); err != nil {

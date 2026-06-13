@@ -42,6 +42,23 @@ func (p *Producer) PublishPostCreated(ctx context.Context, postID, authorID uuid
 	return p.publish(ctx, events.PostCreated, &authorID, payload)
 }
 
+// PublishPostContentTypeChanged is fired by the MediaTranscodeConsumer
+// after a post is reclassified (typically long_video → flick once
+// transcode reveals the real duration + dimensions). feed-service
+// consumes this and rewrites the matching content_type column on
+// home_timeline_by_user + author_timeline_by_author so feed queries
+// that filter on content_type don't return stale results.
+func (p *Producer) PublishPostContentTypeChanged(ctx context.Context, postID, authorID uuid.UUID, oldType, newType string) error {
+	payload := events.PostContentTypeChangedPayload{
+		PostID:    postID.String(),
+		AuthorID:  authorID.String(),
+		OldType:   oldType,
+		NewType:   newType,
+		ChangedAt: time.Now(),
+	}
+	return p.publish(ctx, events.PostContentTypeChanged, &authorID, payload)
+}
+
 func (p *Producer) PublishPostReacted(ctx context.Context, postID, postAuthorID, reactorID uuid.UUID, reactType string) error {
 	payload := events.PostReactedPayload{
 		PostID:       postID.String(),
@@ -126,8 +143,18 @@ func (p *Producer) publish(ctx context.Context, eventType string, actorID *uuid.
 		return fmt.Errorf("failed to marshal envelope: %w", err)
 	}
 
+	// Partition key: prefer actorID so all events for the same user
+	// land on the same partition and stay ordered (PostCreated →
+	// PostUpdated → PostDeleted are processed in order by feed-service).
+	// Falls back to EventID for actorless events. Previously every
+	// event used a fresh EventID, randomising partitions and breaking
+	// per-user ordering guarantees consumers relied on.
+	key := []byte(envelope.EventID)
+	if actorStr != nil {
+		key = []byte(*actorStr)
+	}
 	return p.writer.WriteMessages(ctx, kafka.Message{
-		Key:   []byte(envelope.EventID),
+		Key:   key,
 		Value: envelopeBytes,
 	})
 }

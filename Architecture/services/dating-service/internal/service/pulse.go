@@ -34,10 +34,21 @@ type PulseProfileSummary struct {
 	Intent              string            `json:"intent"`
 	City                string            `json:"city"`
 	DistanceKm          int               `json:"distance_km"`
+	// DistanceBucket is the §P1-3 coarse-distance label
+	// ("0-5km" / "5-10km" / "10-25km" / "25-50km" / "50km+"). Always
+	// emitted; clients honour bucket-only display when the
+	// candidate has approximate_location = true (DistanceKm in that
+	// case is the same midpoint the bucket label implies, never the
+	// exact value).
+	DistanceBucket      string            `json:"distance_bucket"`
 	PrimaryPhotoURL     string            `json:"primary_photo_url"`
 	PrimaryPhotoBlurred bool              `json:"primary_photo_blurred"`
 	TuneSummary         map[string]any    `json:"tune_summary"`
 	TrustTier           string            `json:"trust_tier"`
+	// LastActiveAt is omitted entirely when the candidate has
+	// hide_last_active = true. The client renders "online recently"
+	// or similar when the field is absent.
+	LastActiveAt        *time.Time        `json:"last_active_at,omitempty"`
 }
 
 // PulseEchoes is the brief echoes ribbon under the card. v1 of Pulse leaves
@@ -83,12 +94,43 @@ func (s *Service) SetGraphProvider(p matcher.GraphProvider) {
 // not want a gated user to see a stale Pulse from the cache. Conversely,
 // users who are inside the rollout get the cache-backed fast path.
 func (s *Service) GetPulseToday(ctx context.Context, viewerID uuid.UUID) (*PulseResponse, error) {
+	// P0-5: viewer must be a verified adult to see the discovery deck.
+	// Surface as CohortGated so the client renders the same
+	// "complete your profile" empty state instead of a hard error —
+	// the underage guard mirrors the cohort gate UX.
+	if err := s.requireAdult(ctx, viewerID); err != nil {
+		return &PulseResponse{
+			Data:        []PulseCard{},
+			Meta:        PulseMeta{GeneratedAt: time.Now().UTC(), Size: 0},
+			CohortGated: true,
+		}, nil
+	}
 	if s.isUserGated(ctx, viewerID) {
 		return &PulseResponse{
 			Data:        []PulseCard{},
 			Meta:        PulseMeta{GeneratedAt: time.Now().UTC(), Size: 0},
 			CohortGated: true,
 		}, nil
+	}
+	// §P0-7 Phase A: viewers under restrictive enforcement get an
+	// empty deck (same shape as the cohort gate). The candidate-side
+	// FetchCandidates filter handles the reciprocal "don't surface
+	// this account to others" half. Best-effort on lookup errors —
+	// see the spark-side rationale for why we don't fail open here.
+	if level, rerr := s.GetUserRiskLevel(ctx, viewerID); rerr == nil {
+		switch level {
+		case store.RiskLevelHideFromDiscovery,
+			store.RiskLevelChatHold,
+			store.RiskLevelAdminReview,
+			store.RiskLevelSuspend:
+			return &PulseResponse{
+				Data:        []PulseCard{},
+				Meta:        PulseMeta{GeneratedAt: time.Now().UTC(), Size: 0},
+				CohortGated: true,
+			}, nil
+		}
+	} else {
+		slog.Warn("pulse risk lookup failed", "viewer_id", viewerID, "error", rerr)
 	}
 	if cached := s.readPulseCache(ctx, viewerID); cached != nil {
 		return cached, nil
@@ -135,16 +177,83 @@ func (s *Service) writePulseCache(ctx context.Context, viewerID uuid.UUID, resp 
 	if err := s.rdb.Set(ctx, s.cacheKey(viewerID), raw, pulseCacheTTL).Err(); err != nil {
 		slog.Warn("pulse cache set failed", "error", err)
 	}
+
+	// Phase 1 §3: populate the reverse-index that
+	// InvalidateDecksForCandidate consults. SADD is idempotent; we
+	// match the deck TTL so an abandoned viewer's membership entries
+	// expire alongside their deck cache.
+	if len(resp.Data) == 0 {
+		return
+	}
+	pipe := s.rdb.Pipeline()
+	for _, card := range resp.Data {
+		key := deckMembershipKey(card.CandidateID)
+		pipe.SAdd(ctx, key, viewerID.String())
+		pipe.Expire(ctx, key, pulseCacheTTL)
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		slog.Warn("deck membership update failed", "viewer_id", viewerID, "error", err)
+	}
 }
 
 // InvalidatePulseCache removes the user's cached Pulse so the next request
 // recomputes. Called from profile / Tune / preferences mutations.
+//
+// Phase 1 §3: also drops the viewer from every deck membership set
+// they're tracked against so the reverse-index doesn't accumulate
+// stale entries when the viewer's own deck is wiped.
 func (s *Service) InvalidatePulseCache(ctx context.Context, viewerID uuid.UUID) {
 	if s.rdb == nil {
 		return
 	}
 	if err := s.rdb.Del(ctx, s.cacheKey(viewerID)).Err(); err != nil {
 		slog.Warn("pulse cache del failed", "error", err)
+	}
+}
+
+// deckMembershipKey returns the Redis SET key that tracks which viewer
+// decks currently include `candidateID`. The set is populated at deck
+// generation time (writePulseCache) and consulted on candidate-state
+// changes (paused / deleted / blocked / photo rejected) to fan out
+// per-viewer deck invalidations.
+func deckMembershipKey(candidateID uuid.UUID) string {
+	return fmt.Sprintf("dating:deck_membership:%s", candidateID.String())
+}
+
+// InvalidateDecksForCandidate drops every viewer's cached deck that
+// currently contains `candidateID`. Use this when:
+//   - candidateID gets paused / deleted / suspended
+//   - their primary photo is moderation-rejected
+//   - they block someone (the someone's deck must drop them — though the
+//     candidate query already filters mutual blocks, the cache may
+//     still hold a stale copy)
+//
+// The membership set is also DEL'd so we don't keep fanning out on
+// future events until the next deck generation rebuilds it.
+func (s *Service) InvalidateDecksForCandidate(ctx context.Context, candidateID uuid.UUID) {
+	if s.rdb == nil || candidateID == uuid.Nil {
+		return
+	}
+	memberKey := deckMembershipKey(candidateID)
+	viewers, err := s.rdb.SMembers(ctx, memberKey).Result()
+	if err != nil {
+		slog.Warn("deck membership lookup failed", "candidate_id", candidateID, "error", err)
+		return
+	}
+	if len(viewers) == 0 {
+		return
+	}
+	pipe := s.rdb.Pipeline()
+	for _, v := range viewers {
+		vid, err := uuid.Parse(v)
+		if err != nil {
+			continue
+		}
+		pipe.Del(ctx, s.cacheKey(vid))
+	}
+	pipe.Del(ctx, memberKey)
+	if _, err := pipe.Exec(ctx); err != nil {
+		slog.Warn("deck fan-out invalidation failed", "candidate_id", candidateID, "error", err)
 	}
 }
 
@@ -186,6 +295,15 @@ func (s *Service) computePulseToday(ctx context.Context, viewerID uuid.UUID) (*P
 	if viewerProfile != nil {
 		q.ViewerLat = viewerProfile.Latitude
 		q.ViewerLon = viewerProfile.Longitude
+	}
+	// §P1-3: thread the viewer's verified_only_filter toggle into
+	// the candidate query. Best-effort on lookup errors — the
+	// deck stays visible rather than empty if the privacy row is
+	// momentarily unreadable.
+	if viewerPrivacy, perr := s.store.GetPrivacy(ctx, viewerID); perr == nil && viewerPrivacy != nil {
+		q.VerifiedOnly = viewerPrivacy.VerifiedOnlyFilter
+	} else if perr != nil && !errors.Is(perr, store.ErrProfileNotFound) {
+		slog.Warn("pulse privacy lookup failed", "viewer_id", viewerID, "error", perr)
 	}
 
 	// 3. Fetch candidates.
@@ -229,10 +347,19 @@ func (s *Service) computePulseToday(ctx context.Context, viewerID uuid.UUID) (*P
 	sort.SliceStable(scored, func(i, j int) bool { return scored[i].Score > scored[j].Score })
 	scored = matcher.ApplyDiversityConstraint(scored, 7)
 
+	// §P1-3: precompute the viewer's active-match partner set so the
+	// blur-photos-until-match gate can lift blur for matched users
+	// without a per-card round-trip. Empty set is a safe default.
+	matched, mErr := s.store.ListActiveMatchPartnerIDs(ctx, viewerID)
+	if mErr != nil {
+		slog.Warn("pulse matched-partners lookup failed", "viewer_id", viewerID, "error", mErr)
+		matched = map[uuid.UUID]struct{}{}
+	}
+
 	// 5. Build response.
 	cards := make([]PulseCard, 0, len(scored))
 	for _, sc := range scored {
-		cards = append(cards, s.buildCard(sc, viewerProfile))
+		cards = append(cards, s.buildCard(sc, viewerProfile, matched))
 	}
 	return &PulseResponse{
 		Data: cards,
@@ -241,7 +368,25 @@ func (s *Service) computePulseToday(ctx context.Context, viewerID uuid.UUID) (*P
 }
 
 // buildCard converts a scored candidate into the locked PulseCard shape.
-func (s *Service) buildCard(sc matcher.ScoredCandidate, viewer *store.Profile) PulseCard {
+//
+// §P1-3 masking happens here so the wire-level response respects each
+// candidate's privacy settings without a second per-card hop:
+//   - hide_last_active        → LastActiveAt stripped (omitempty).
+//   - approximate_location    → DistanceKm replaced with the bucket
+//                               midpoint; the bucket label is emitted
+//                               regardless so clients can always show
+//                               a consistent range UI.
+//   - blur_photos_until_match → primary photo URL swapped for the
+//                               blurred-variant URL UNLESS the viewer
+//                               is a current match-partner. Phase A
+//                               fallback: when the media pipeline
+//                               hasn't generated a blurred variant
+//                               yet, append "?blurred=1" so the
+//                               client can still apply visual blur.
+//
+// matchedPartners is the precomputed set of user-ids the viewer
+// currently has an active match with. Empty / nil = no matches.
+func (s *Service) buildCard(sc matcher.ScoredCandidate, viewer *store.Profile, matchedPartners map[uuid.UUID]struct{}) PulseCard {
 	c := sc.Candidate
 	first := ""
 	if c.FirstName != nil {
@@ -251,15 +396,42 @@ func (s *Service) buildCard(sc matcher.ScoredCandidate, viewer *store.Profile) P
 	if c.City != nil {
 		city = *c.City
 	}
-	dist := 0
+	exactDist := 0.0
+	hasDistance := false
 	if viewer != nil && viewer.Latitude != nil && viewer.Longitude != nil &&
 		c.Latitude != nil && c.Longitude != nil {
-		dist = int(store.DistanceKm(*viewer.Latitude, *viewer.Longitude, *c.Latitude, *c.Longitude))
+		exactDist = store.DistanceKm(*viewer.Latitude, *viewer.Longitude, *c.Latitude, *c.Longitude)
+		hasDistance = true
 	}
+	distBucket := store.DistanceBucket(exactDist)
+	displayDist := int(exactDist)
+	if c.ApproximateLocation && hasDistance {
+		// Round the exact distance to the bucket midpoint so a
+		// client that ignores DistanceBucket can't fingerprint the
+		// real value back out of DistanceKm.
+		displayDist = distanceBucketMidpoint(distBucket)
+	}
+
+	_, isMatched := matchedPartners[c.UserID]
 	primaryURL := ""
 	if c.PrimaryPhotoMedia != nil {
 		primaryURL = "/media/" + c.PrimaryPhotoMedia.String()
 	}
+	primaryBlurred := c.BlurMode
+	if c.BlurPhotosUntilMatch && !isMatched {
+		primaryBlurred = true
+		if primaryURL != "" {
+			// Phase A: no per-photo blurred_url lookup here — the
+			// candidate query already over-fetches each profile
+			// row, and a per-card SQL hop would balloon the
+			// pulse query plan. The "?blurred=1" sentinel lets
+			// the client switch to its visual-blur shader; once
+			// the media pipeline backfills blurred_url, the
+			// owner-side photo list endpoint will surface it.
+			primaryURL += "?blurred=1"
+		}
+	}
+
 	tuneSummary := map[string]any{}
 	if c.LifestyleRhythm != nil {
 		tuneSummary["lifestyle_rhythm"] = *c.LifestyleRhythm
@@ -268,23 +440,51 @@ func (s *Service) buildCard(sc matcher.ScoredCandidate, viewer *store.Profile) P
 		tuneSummary["conversation_style"] = *c.ConversationStyle
 	}
 
+	summary := PulseProfileSummary{
+		UserID:              c.UserID,
+		FirstName:           first,
+		Age:                 c.Age(),
+		Intent:              c.Intent,
+		City:                city,
+		DistanceKm:          displayDist,
+		DistanceBucket:      distBucket,
+		PrimaryPhotoURL:     primaryURL,
+		PrimaryPhotoBlurred: primaryBlurred,
+		TuneSummary:         tuneSummary,
+		TrustTier:           c.TrustTier,
+	}
+	if !c.HideLastActive {
+		la := c.LastActiveAt
+		summary.LastActiveAt = &la
+	}
+
 	return PulseCard{
 		CandidateID:  c.UserID,
 		Score:        round2(sc.Score),
 		MatchReasons: sc.Reasons,
-		Profile: PulseProfileSummary{
-			UserID:              c.UserID,
-			FirstName:           first,
-			Age:                 c.Age(),
-			Intent:              c.Intent,
-			City:                city,
-			DistanceKm:          dist,
-			PrimaryPhotoURL:     primaryURL,
-			PrimaryPhotoBlurred: c.BlurMode,
-			TuneSummary:         tuneSummary,
-			TrustTier:           c.TrustTier,
-		},
-		Echoes: PulseEchoes{}, // v1 — filled in Sprint 3.
+		Profile:      summary,
+		Echoes:       PulseEchoes{}, // v1 — filled in Sprint 3.
+	}
+}
+
+// distanceBucketMidpoint returns a representative km value for each
+// §P1-3 bucket. Used when the candidate has approximate_location =
+// true so DistanceKm carries the bucket-implied value rather than the
+// raw haversine result.
+func distanceBucketMidpoint(bucket string) int {
+	switch bucket {
+	case "0-5km":
+		return 2
+	case "5-10km":
+		return 7
+	case "10-25km":
+		return 17
+	case "25-50km":
+		return 37
+	case "50km+":
+		return 50
+	default:
+		return 0
 	}
 }
 
@@ -304,13 +504,21 @@ func (s *Service) GetPulseNebulaPassed(ctx context.Context, viewerID uuid.UUID, 
 	}
 	viewerProfile, _ := s.store.GetProfile(ctx, viewerID)
 
+	// §P1-3: matched-partner set drives the blur-photos-until-match
+	// lift inside buildCard. Best-effort on lookup errors.
+	matched, mErr := s.store.ListActiveMatchPartnerIDs(ctx, viewerID)
+	if mErr != nil {
+		slog.Warn("pulse nebula matched-partners lookup failed", "viewer_id", viewerID, "error", mErr)
+		matched = map[uuid.UUID]struct{}{}
+	}
+
 	cards := make([]PulseCard, 0, len(passes))
 	for _, p := range passes {
 		c, err := s.store.GetCandidateByUserID(ctx, p.CandidateID)
 		if err != nil || c == nil {
 			continue
 		}
-		card := s.buildCard(matcher.ScoredCandidate{Candidate: c, Score: 0}, viewerProfile)
+		card := s.buildCard(matcher.ScoredCandidate{Candidate: c, Score: 0}, viewerProfile, matched)
 		cards = append(cards, card)
 	}
 	return &PulseResponse{

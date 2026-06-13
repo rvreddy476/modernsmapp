@@ -40,17 +40,27 @@ func (h *Handler) WithWebhookSecret(secret string) *Handler {
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
-	if h.internalKey != "" {
-		r.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
-	}
+	// Audit P5: /webhook must NOT live behind the internal-service-key
+	// gate — Razorpay's webhook delivery has no way to send that header,
+	// so a configuration with both internalKey and webhookSecret set
+	// (the production target) would lock Razorpay out and break every
+	// payment status update. The webhook is authenticated solely by
+	// its HMAC-SHA256 X-Razorpay-Signature; that check happens inside
+	// HandleWebhook itself. Register the webhook route on the bare
+	// engine before applying the internal-key middleware to /v1/payments.
+	r.POST("/v1/payments/webhook", h.HandleWebhook)
+
 	v1 := r.Group("/v1/payments")
+	if h.internalKey != "" {
+		v1.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
+	}
 	{
 		v1.POST("/intents", h.InitiatePayment)
 		v1.GET("/intents/:id", h.GetIntent)
 		v1.PATCH("/intents/:id/status", h.UpdateStatus)
+		v1.POST("/intents/:id/verify", h.VerifyIntent) // Phase 0.1b — synchronous signature verify for commerce-service
 		v1.POST("/intents/:id/refund", h.InitiateRefund)
 		v1.GET("/intents", h.ListByReference)
-		v1.POST("/webhook", h.HandleWebhook)
 		v1.POST("/holds/:intentId/release", h.ReleaseHold)
 	}
 }
@@ -75,17 +85,27 @@ func (h *Handler) InitiatePayment(c *gin.Context) {
 	if !ok {
 		return
 	}
+	// Audit P7-deep: `amount` (rupees-major float) is the legacy entry
+	// point; new callers should send `amount_minor` (paise-minor int64).
+	// When both are set, amount_minor wins. The `binding:"required"` is
+	// gone — at least one must be > 0; the service layer enforces the
+	// non-negative check after resolution.
 	var body struct {
 		PayeeID        string  `json:"payee_id" binding:"required"`
 		ReferenceType  string  `json:"reference_type" binding:"required"`
 		ReferenceID    string  `json:"reference_id" binding:"required"`
-		Amount         float64 `json:"amount" binding:"required"`
+		Amount         float64 `json:"amount,omitempty"`
+		AmountMinor    int64   `json:"amount_minor,omitempty"`
 		Currency       string  `json:"currency"`
 		Method         string  `json:"method" binding:"required"`
 		IdempotencyKey string  `json:"idempotency_key"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	if body.Amount <= 0 && body.AmountMinor <= 0 {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", "amount or amount_minor must be positive", nil)
 		return
 	}
 	if body.IdempotencyKey == "" {
@@ -100,6 +120,7 @@ func (h *Handler) InitiatePayment(c *gin.Context) {
 		ReferenceType:  body.ReferenceType,
 		ReferenceID:    refID,
 		Amount:         body.Amount,
+		AmountMinor:    body.AmountMinor,
 		Currency:       body.Currency,
 		Method:         body.Method,
 		IdempotencyKey: body.IdempotencyKey,
@@ -170,15 +191,49 @@ func (h *Handler) InitiateRefund(c *gin.Context) {
 		return
 	}
 	var body struct {
-		Reason string `json:"reason"`
+		Reason      string `json:"reason"`
+		AmountMinor int64  `json:"amount_minor"`
 	}
 	c.ShouldBindJSON(&body) //nolint:errcheck
-	intent, err := h.svc.InitiateRefund(c.Request.Context(), id, userID, body.Reason)
+	// Audit P6 + P7: amount_minor is paise-minor int64. 0 means "full
+	// refund of the remaining refundable balance"; >0 means partial.
+	// Validation (sign + cap) lives in the service.
+	intent, err := h.svc.InitiateRefund(c.Request.Context(), id, userID, body.AmountMinor, body.Reason)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "REFUND_FAILED", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, intent, nil)
+}
+
+// VerifyIntent POST /v1/payments/intents/:id/verify — Phase 0.1b.
+// Internal-only (gated by the X-Internal-Service-Key middleware that wraps
+// the /v1/payments group) so commerce-service can synchronously verify a
+// Razorpay signature + amount and confirm the customer's order without
+// waiting for webhook delivery. Returns 400 on signature / amount / order
+// mismatch so the caller can refuse to mark the order paid.
+func (h *Handler) VerifyIntent(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid intent id", nil)
+		return
+	}
+	var body struct {
+		RazorpayOrderID   string `json:"razorpay_order_id" binding:"required"`
+		RazorpayPaymentID string `json:"razorpay_payment_id" binding:"required"`
+		RazorpaySignature string `json:"razorpay_signature" binding:"required"`
+		AmountMinor       int64  `json:"amount_minor,omitempty"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	result, err := h.svc.VerifyIntent(c.Request.Context(), id, body.RazorpayOrderID, body.RazorpayPaymentID, body.RazorpaySignature, body.AmountMinor)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "VERIFY_FAILED", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, result, nil)
 }
 
 // ListByReference GET /v1/payments/intents?ref_type=order&ref_id=uuid
@@ -230,6 +285,7 @@ func (h *Handler) HandleWebhook(c *gin.Context) {
 
 	var event struct {
 		Event   string          `json:"event"`
+		EventID string          `json:"id"`
 		Payload json.RawMessage `json:"payload"`
 	}
 	if err := json.Unmarshal(body, &event); err != nil {
@@ -237,7 +293,11 @@ func (h *Handler) HandleWebhook(c *gin.Context) {
 		return
 	}
 
-	// Parse payment entity
+	// Parse payment + refund entities. Razorpay puts the refund under
+	// `payload.refund.entity` and the originating payment under
+	// `payload.payment.entity`. For refund.processed we need both — the
+	// refund's id + amount drive ApplyWebhookRefund, the payment's
+	// order_id locates the intent.
 	var payloadData struct {
 		Payment struct {
 			Entity struct {
@@ -245,19 +305,51 @@ func (h *Handler) HandleWebhook(c *gin.Context) {
 				OrderID string `json:"order_id"`
 			} `json:"entity"`
 		} `json:"payment"`
+		Refund struct {
+			Entity struct {
+				ID          string `json:"id"`
+				PaymentID   string `json:"payment_id"`
+				Amount      int64  `json:"amount"`
+				Status      string `json:"status"`
+			} `json:"entity"`
+		} `json:"refund"`
 	}
 	json.Unmarshal(event.Payload, &payloadData) //nolint:errcheck
 
 	paymentID := payloadData.Payment.Entity.ID
 	orderID := payloadData.Payment.Entity.OrderID
 
+	// Audit P3: dedup by Razorpay event_id. A duplicate retry returns
+	// 200 without re-running side effects. The check fails open (treats
+	// as new) if event_id is empty or Redis/Postgres is briefly down;
+	// the state-machine in UpdateStatusByProviderRef (audit P2) is the
+	// second line of defense.
+	fresh, err := h.svc.MarkWebhookSeen(c.Request.Context(), event.EventID, event.Event, orderID)
+	if err != nil {
+		slog.Warn("razorpay webhook dedup check failed; processing anyway", "err", err)
+	}
+	if !fresh {
+		c.Status(http.StatusOK)
+		return
+	}
+
 	switch event.Event {
 	case "payment.captured":
 		h.svc.UpdateStatusByProviderRef(c.Request.Context(), orderID, "succeeded", paymentID)
 	case "payment.failed":
 		h.svc.UpdateStatusByProviderRef(c.Request.Context(), orderID, "failed", paymentID)
-	case "refund.processed":
-		h.svc.UpdateStatusByProviderRef(c.Request.Context(), orderID, "refunded", paymentID)
+	case "refund.processed", "refund.created":
+		// Partial-refund-aware settlement (P6/P7 follow-up).
+		// payment_intents.provider_ref stores the Razorpay order_id, so
+		// the lookup key is orderID (extracted from payload.payment.entity
+		// in the same envelope Razorpay always includes for refund
+		// events). amount is in paise per Razorpay's API.
+		h.svc.ApplyWebhookRefund(
+			c.Request.Context(),
+			orderID,
+			payloadData.Refund.Entity.ID,
+			payloadData.Refund.Entity.Amount,
+		)
 	}
 	c.Status(http.StatusOK)
 }

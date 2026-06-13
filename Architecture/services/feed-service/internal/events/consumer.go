@@ -101,9 +101,151 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 	case events.EventQAQuestionDeleted, events.EventQAQuestionClosed:
 		return c.handleQAQuestionRemoved(ctx, envelope)
 
+	case events.PostContentTypeChanged:
+		return c.handlePostContentTypeChanged(ctx, envelope)
+
+	case events.UserFollowed:
+		return c.handleUserFollowed(ctx, envelope)
+
+	case events.UserUnfollowed:
+		return c.handleUserUnfollowed(ctx, envelope)
+
 	default:
 		return nil
 	}
+}
+
+// handleUserFollowed backfills the follower's home timeline with the
+// followee's recent posts so a freshly-followed account becomes
+// visible immediately. Without this, only posts created AFTER the
+// follow landed (via PostCreated fan-out on write) ever reached the
+// follower, which surfaced as "I followed X but my feed is empty."
+//
+// We pull up to backfillLimit rows from author_timeline_by_author
+// across the last bucketLookback months and write each into
+// home_timeline_by_user. Idempotent: AddToHomeTimeline upserts on
+// (user_id, bucket, ts, post_id) so an unfollow → refollow cycle is
+// safe.
+func (c *Consumer) handleUserFollowed(ctx context.Context, envelope events.EventEnvelope) error {
+	if c.timelineStore == nil {
+		return nil
+	}
+
+	const backfillLimit = 50
+	const bucketLookback = 3
+
+	var p events.UserFollowedPayload
+	payloadBytes, _ := json.Marshal(envelope.Payload)
+	if err := json.Unmarshal(payloadBytes, &p); err != nil {
+		return err
+	}
+
+	followerID, err := uuid.Parse(p.FollowerID)
+	if err != nil {
+		return fmt.Errorf("parse follower_id: %w", err)
+	}
+	followeeID, err := uuid.Parse(p.FolloweeID)
+	if err != nil {
+		return fmt.Errorf("parse followee_id: %w", err)
+	}
+
+	// Audit HF6: celebs use the pull model (FanoutPost short-circuits
+	// for them — feed.go:467), so a backfill into the new follower's
+	// timeline would diverge from the read path: nothing else lands
+	// there until the next celeb post is fetched on-read. Skip the
+	// inline backfill and let the read-time hydrator surface celeb
+	// content. Also avoids a thundering-herd of backfills when many
+	// follows arrive for a single celeb in a short window.
+	if c.service != nil {
+		if isCeleb, _ := c.service.IsCelebAuthor(ctx, followeeID); isCeleb {
+			log.Printf("[feed] UserFollowed backfill skipped — followee=%s is celeb (pull model)", followeeID)
+			return nil
+		}
+	}
+
+	items, err := c.timelineStore.GetAuthorTimelineMultiBucket(ctx, followeeID, backfillLimit, bucketLookback)
+	if err != nil {
+		return fmt.Errorf("read author timeline for backfill: %w", err)
+	}
+	if len(items) == 0 {
+		log.Printf("[feed] UserFollowed: nothing to backfill (follower=%s followee=%s)", followerID, followeeID)
+		return nil
+	}
+
+	var failures int
+	for _, it := range items {
+		if err := c.timelineStore.AddToHomeTimeline(ctx, followerID, it.PostID, followeeID, it.CreatedAt, it.ContentType); err != nil {
+			failures++
+			log.Printf("[feed] UserFollowed backfill: AddToHomeTimeline failed post=%s err=%v", it.PostID, err)
+		}
+	}
+	log.Printf("[feed] UserFollowed backfill: follower=%s followee=%s injected=%d failed=%d", followerID, followeeID, len(items)-failures, failures)
+	return nil
+}
+
+// handleUserUnfollowed purges every row from the follower's
+// home_timeline_by_user where author_id == followee, so an unfollow
+// reflects immediately in the feed (both the fan-out-on-write rows and
+// the backfilled rows from the matching UserFollowed event go away).
+// Scoped to the last 3 buckets — older entries age out naturally.
+func (c *Consumer) handleUserUnfollowed(ctx context.Context, envelope events.EventEnvelope) error {
+	if c.timelineStore == nil {
+		return nil
+	}
+
+	const bucketLookback = 3
+
+	var p events.UserUnfollowedPayload
+	payloadBytes, _ := json.Marshal(envelope.Payload)
+	if err := json.Unmarshal(payloadBytes, &p); err != nil {
+		return err
+	}
+
+	followerID, err := uuid.Parse(p.FollowerID)
+	if err != nil {
+		return fmt.Errorf("parse follower_id: %w", err)
+	}
+	followeeID, err := uuid.Parse(p.FolloweeID)
+	if err != nil {
+		return fmt.Errorf("parse followee_id: %w", err)
+	}
+
+	if err := c.timelineStore.DeleteHomeTimelineEntriesByAuthorForUser(ctx, followerID, followeeID, bucketLookback); err != nil {
+		return fmt.Errorf("purge home timeline on unfollow: %w", err)
+	}
+	log.Printf("[feed] UserUnfollowed: purged follower=%s entries from followee=%s", followerID, followeeID)
+	return nil
+}
+
+// handlePostContentTypeChanged rewrites the content_type column on
+// every Scylla timeline row that references the post. Fired by
+// post-service's MediaTranscodeConsumer after a reclassification
+// flips a post (most commonly long_video → flick once transcode
+// reveals the real duration + dimensions).
+//
+// Without this, /v1/feed/reels and /v1/feed/videos keep returning
+// stale results — the timeline rows carry their own content_type
+// copy that gets written at fan-out time and never updated again.
+func (c *Consumer) handlePostContentTypeChanged(ctx context.Context, envelope events.EventEnvelope) error {
+	if c.timelineStore == nil {
+		return nil
+	}
+	var p events.PostContentTypeChangedPayload
+	payloadBytes, _ := json.Marshal(envelope.Payload)
+	if err := json.Unmarshal(payloadBytes, &p); err != nil {
+		return err
+	}
+	postID, err := uuid.Parse(p.PostID)
+	if err != nil {
+		return fmt.Errorf("PostContentTypeChanged: bad post_id %q: %w", p.PostID, err)
+	}
+	rows, err := c.timelineStore.UpdatePostContentType(ctx, postID, p.NewType)
+	if err != nil {
+		return fmt.Errorf("PostContentTypeChanged: update timeline rows: %w", err)
+	}
+	log.Printf("PostContentTypeChanged: post=%s %s → %s, rewrote %d timeline rows",
+		p.PostID, p.OldType, p.NewType, rows)
+	return nil
 }
 
 // handleQAQuestionCreated fans out a new Q&A question into followers' home
@@ -176,7 +318,7 @@ func (c *Consumer) handlePostCreated(ctx context.Context, envelope events.EventE
 	}
 
 	fmt.Printf("Processing PostCreated: %s by %s type=%s\n", event.PostID, event.AuthorID, contentType)
-	return c.service.FanoutPost(ctx, postID, authorID, event.CreatedAt, contentType)
+	return c.service.FanoutPost(ctx, postID, authorID, event.CreatedAt, contentType, event.Visibility)
 }
 
 func (c *Consumer) handlePostReacted(ctx context.Context, envelope events.EventEnvelope) error {

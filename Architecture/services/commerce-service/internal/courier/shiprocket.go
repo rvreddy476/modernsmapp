@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 // ShiprocketCourier implements Provider over Shiprocket's REST API.
@@ -32,11 +34,16 @@ type ShiprocketCourier struct {
 }
 
 func NewShiprocket(email, password string) *ShiprocketCourier {
+	// Phase F3.2 — otelhttp wraps the courier's transport so Shiprocket
+	// call latency lands in Jaeger as a child of the shipment span.
 	return &ShiprocketCourier{
 		email:    email,
 		password: password,
 		base:     "https://apiv2.shiprocket.in/v1/external",
-		http:     &http.Client{Timeout: 20 * time.Second},
+		http: &http.Client{
+			Timeout:   20 * time.Second,
+			Transport: otelhttp.NewTransport(http.DefaultTransport),
+		},
 	}
 }
 
@@ -265,4 +272,28 @@ func (c *ShiprocketCourier) ParseWebhook(_ context.Context, payload []byte) ([]T
 		})
 	}
 	return updates, nil
+}
+
+// CheckServiceability — Phase 1.3 placeholder. Shiprocket exposes
+// /courier/serviceability/ with the pickup_postcode + delivery_postcode +
+// weight + cod (0/1) query params; wiring it is straightforward but
+// touches the auth-token cache and a non-trivial response shape. Until
+// that lands the adapter returns the same permissive default as the stub
+// so checkout flows still work in environments configured with
+// COURIER_PROVIDER=shiprocket but no serviceability cache.
+func (c *ShiprocketCourier) CheckServiceability(_ context.Context, req ServiceabilityRequest) (*ServiceabilityResult, error) {
+	if !validIndianPincode(req.PickupPincode) || !validIndianPincode(req.DropPincode) {
+		return &ServiceabilityResult{
+			Serviceable: false,
+			Courier:     "shiprocket",
+			Reason:      "invalid pincode",
+		}, nil
+	}
+	return &ServiceabilityResult{
+		Serviceable:   true,
+		CODSupported:  true,
+		EstimatedDays: 4,
+		EstimatedETA:  time.Now().AddDate(0, 0, 4),
+		Courier:       "shiprocket",
+	}, nil
 }

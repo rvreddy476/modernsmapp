@@ -28,6 +28,11 @@ type PaymentsConsumer struct {
 
 // paymentEventPayload mirrors the JSON-marshalled PaymentIntent that
 // payments-service publishes inside its EventEnvelope.Payload.
+//
+// Audit P7-deep: AmountMinor (paise-minor int64) is the source of
+// truth; Amount (rupees-major float64) is kept for the one-release
+// deprecation window. Consumer logic that needs to compare or sum
+// values must use AmountMinor.
 type paymentEventPayload struct {
 	ID            string  `json:"id"`
 	PayerID       string  `json:"payer_id"`
@@ -35,6 +40,7 @@ type paymentEventPayload struct {
 	ReferenceType string  `json:"reference_type"`
 	ReferenceID   string  `json:"reference_id"`
 	Amount        float64 `json:"amount"`
+	AmountMinor   int64   `json:"amount_minor"`
 	Method        string  `json:"method"`
 	Status        string  `json:"status"`
 	ProviderRef   string  `json:"provider_ref,omitempty"`
@@ -71,7 +77,7 @@ func (c *PaymentsConsumer) Close() error {
 func (c *PaymentsConsumer) handle(ctx context.Context, env *events.EventEnvelope) error {
 	// Only react to payment lifecycle events.
 	switch env.EventType {
-	case events.EventPaymentSucceeded, events.EventPaymentFailed:
+	case events.EventPaymentSucceeded, events.EventPaymentFailed, events.EventPaymentRefunded:
 	default:
 		return nil
 	}
@@ -81,6 +87,24 @@ func (c *PaymentsConsumer) handle(ctx context.Context, env *events.EventEnvelope
 		// Malformed payload — log + drop. Don't return error or the consumer
 		// will retry forever and eventually DLQ a message that won't parse.
 		slog.Warn("payments consumer: bad payload", "event_type", env.EventType, "error", err)
+		return nil
+	}
+
+	// Refunds are keyed off intent_id (set via SetReturnRefund at
+	// approve time + Order.refund_intent_id at CancelOrder time), not
+	// the order reference — payments-service may emit refund events
+	// for refunds initiated against arbitrary intents. Handle the
+	// refund branch up-front so we don't bail on the order-ref check.
+	if env.EventType == events.EventPaymentRefunded {
+		intentID := p.ID
+		if intentID == "" {
+			slog.Warn("payments consumer: refund event missing intent id")
+			return nil
+		}
+		if err := c.svc.ApplyRefundEvent(ctx, intentID); err != nil {
+			return fmt.Errorf("apply refund for intent %s: %w", intentID, err)
+		}
+		slog.Info("payments consumer: applied refund", "intent_id", intentID)
 		return nil
 	}
 
@@ -98,9 +122,12 @@ func (c *PaymentsConsumer) handle(ctx context.Context, env *events.EventEnvelope
 
 	switch env.EventType {
 	case events.EventPaymentSucceeded:
-		// ConfirmPayment is idempotent — UpdatePaymentStatus is a row-level
-		// update, and DeductStock + invoice + shipment fan out from there.
-		if err := c.svc.ConfirmPayment(ctx, orderID, p.ProviderRef, "razorpay"); err != nil {
+		// payment.succeeded is published only after payments-service has
+		// already HMAC-verified the Razorpay webhook upstream, so this
+		// is the system-trusted entry. ApplyVerifiedPaymentEvent is
+		// idempotent — UpdatePaymentStatus is row-level, and DeductStock
+		// + invoice + shipment fan out from there.
+		if err := c.svc.ApplyVerifiedPaymentEvent(ctx, orderID, p.ProviderRef); err != nil {
 			return fmt.Errorf("confirm payment for order %s: %w", orderID, err)
 		}
 		slog.Info("payments consumer: confirmed order",

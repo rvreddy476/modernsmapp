@@ -5,10 +5,21 @@ import 'package:atpost_app/features/channels/channels_list_screen.dart';
 import 'package:atpost_app/features/channels/channel_detail_screen.dart';
 import 'package:atpost_app/features/channels/create_channel_screen.dart';
 import 'package:atpost_app/features/commerce/address_book_screen.dart';
+import 'package:atpost_app/features/commerce/affiliate_redirect_screen.dart';
 import 'package:atpost_app/features/commerce/address_form_screen.dart';
 import 'package:atpost_app/features/commerce/cart_screen.dart';
+import 'package:atpost_app/features/seller/seller_bulk_import_screen.dart';
+import 'package:atpost_app/features/seller/seller_dashboard_screen.dart';
+import 'package:atpost_app/features/seller/seller_earnings_screen.dart';
+import 'package:atpost_app/features/seller/seller_orders_screen.dart';
+import 'package:atpost_app/features/seller/seller_products_screen.dart';
+import 'package:atpost_app/features/seller/seller_returns_screen.dart';
+import 'package:atpost_app/features/seller/seller_variants_screen.dart';
 import 'package:atpost_app/features/commerce/checkout_screen.dart';
 import 'package:atpost_app/features/commerce/commerce_home_screen.dart';
+import 'package:atpost_app/features/commerce/rfq/rfq_detail_screen.dart';
+import 'package:atpost_app/features/commerce/rfq/rfq_list_screen.dart';
+import 'package:atpost_app/features/commerce/rfq/rfq_new_screen.dart';
 import 'package:atpost_app/features/commerce/commerce_order_detail_screen.dart';
 import 'package:atpost_app/features/commerce/my_orders_screen.dart';
 import 'package:atpost_app/features/commerce/my_returns_screen.dart';
@@ -19,10 +30,12 @@ import 'package:atpost_app/features/commerce/return_request_screen.dart';
 import 'package:atpost_app/features/commerce/search_screen.dart';
 import 'package:atpost_app/features/commerce/wishlist_screen.dart';
 import 'package:atpost_app/features/commerce/write_review_screen.dart';
-import 'package:atpost_app/features/communities/communities_list_screen.dart';
-import 'package:atpost_app/features/communities/community_detail_screen.dart';
-import 'package:atpost_app/features/communities/community_space_screen.dart';
-import 'package:atpost_app/features/communities/create_community_screen.dart';
+// Communities feature disabled — consolidated into Groups ("MySpace").
+// Screens kept on disk; no routes reference them.
+// import 'package:atpost_app/features/communities/communities_list_screen.dart';
+// import 'package:atpost_app/features/communities/community_detail_screen.dart';
+// import 'package:atpost_app/features/communities/community_space_screen.dart';
+// import 'package:atpost_app/features/communities/create_community_screen.dart';
 import 'package:atpost_app/features/auth/forgot_password_screen.dart';
 import 'package:atpost_app/features/billpay/billpay_account_detail_screen.dart';
 import 'package:atpost_app/features/billpay/billpay_add_account_screen.dart';
@@ -39,6 +52,7 @@ import 'package:atpost_app/features/posttube/posttube_upload_screen.dart';
 import 'package:atpost_app/features/posttube/subscriptions_screen.dart';
 import 'package:atpost_app/features/posttube/trending_screen.dart';
 import 'package:atpost_app/features/posttube/watch_history_screen.dart';
+import 'package:atpost_app/features/auth/anomaly_stepup_screen.dart';
 import 'package:atpost_app/features/auth/login_screen.dart';
 import 'package:atpost_app/features/auth/otp_verify_screen.dart';
 import 'package:atpost_app/features/auth/register_screen.dart';
@@ -49,12 +63,16 @@ import 'package:atpost_app/features/create/reels_caption_screen.dart';
 import 'package:atpost_app/features/create/reels_editor_screen.dart';
 import 'package:atpost_app/features/discover/discover_screen.dart';
 import 'package:atpost_app/features/figo/figo_home_screen.dart';
+import 'package:atpost_app/features/figo/figo_rewards_screen.dart';
 import 'package:atpost_app/features/groups/group_admin_screen.dart';
 import 'package:atpost_app/features/hashtag/hashtag_screen.dart';
 import 'package:atpost_app/features/groups/group_detail_screen.dart';
 import 'package:atpost_app/features/groups/group_post_composer_screen.dart';
 import 'package:atpost_app/features/groups/groups_list_screen.dart';
 import 'package:atpost_app/features/groups/create_group_screen.dart';
+import 'package:atpost_app/features/pages/pages_list_screen.dart';
+import 'package:atpost_app/features/pages/page_detail_screen.dart';
+import 'package:atpost_app/features/pages/create_page_screen.dart';
 import 'package:atpost_app/features/monetization/creator_analytics_screen.dart';
 import 'package:atpost_app/features/monetization/monetization_dashboard_screen.dart';
 import 'package:atpost_app/features/monetization/payouts_screen.dart';
@@ -68,9 +86,16 @@ import 'package:atpost_app/features/stories/create_story_screen.dart';
 import 'package:atpost_app/features/stories/story_viewer_screen.dart';
 import 'package:atpost_app/features/chat/chat_detail_screen.dart';
 import 'package:atpost_app/features/chat/chat_list_screen.dart';
+import 'package:atpost_app/features/chat/message_requests_screen.dart';
 import 'package:atpost_app/features/calls/call_screen.dart';
 import 'package:atpost_app/features/live/live_screen.dart';
 import 'package:atpost_app/features/live/broadcast_screen.dart';
+// Live streaming v2 (LiveKit / live-service-v2). Routed under /live/v2/*
+// so the legacy v1 screens stay reachable during the gateway cutover.
+import 'package:atpost_app/features/live/live_list_screen.dart';
+import 'package:atpost_app/features/live/live_viewer_screen.dart';
+import 'package:atpost_app/features/live/go_live_screen.dart';
+import 'package:atpost_app/features/live/live_broadcaster_screen.dart';
 import 'package:atpost_app/features/memories/memories_screen.dart';
 import 'package:atpost_app/features/memories/slambook_detail_screen.dart';
 import 'package:atpost_app/features/memories/slambook_share_screen.dart';
@@ -158,17 +183,44 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 /// Auth routes that don't require login.
-const _publicPaths = {'/login', '/register', '/forgot-password', '/verify-otp'};
+const _publicPaths = {
+  '/login',
+  '/register',
+  '/forgot-password',
+  '/verify-otp',
+  '/auth/step-up', // A13 anomaly gate — user not yet authenticated.
+};
 
 /// Public path prefixes — the share token is dynamic so we can't match
 /// the exact path. Every recipient of a Mopedu share-ride link is
 /// expected to land here with no AtPost session at all.
-const _publicPathPrefixes = <String>['/mopedu/share/'];
+///
+/// `/live/v2/` covers the anonymous viewer surface for live-streaming v2
+/// (`/live/v2/:streamId`) so a recipient of a stream link can land on
+/// the viewer without being bounced to /login. The form route
+/// `/live/v2/new` is also under this prefix but the backend still
+/// rejects anonymous create-stream calls, so the broadcaster flow
+/// stays gated. The "subscribe to watch" panel handles the
+/// paid-stream case for unauthenticated viewers.
+const _publicPathPrefixes = <String>['/mopedu/share/', '/live/v2/'];
 
 bool _isPublicPath(String path) {
   if (_publicPaths.contains(path)) return true;
   for (final prefix in _publicPathPrefixes) {
-    if (path.startsWith(prefix)) return true;
+    if (path.startsWith(prefix)) {
+      // `/live/v2/` covers anonymous viewing of any live stream but
+      // the broadcaster surface (`/live/v2/new`, `/live/v2/:id/broadcast`)
+      // must stay behind auth — broadcasting requires a session and the
+      // create-stream endpoint rejects anonymous callers anyway. Excluding
+      // these here ensures an anonymous user typing /live/v2/new gets the
+      // /login redirect instead of an unhelpful 401 from the backend.
+      if (prefix == '/live/v2/') {
+        if (path == '/live/v2/new' || path.endsWith('/broadcast')) {
+          continue;
+        }
+      }
+      return true;
+    }
   }
   return false;
 }
@@ -190,8 +242,55 @@ class _AuthRouterRefresh extends ChangeNotifier {
 
   late final StreamSubscription<AuthState> _subscription;
 
+  // Phase W1 — tracks in-flight redirect deadlines so dispose() can
+  // cancel them. flutter_test's "no Timer pending" assertion fires
+  // when secure-storage reads stall past test teardown; explicit
+  // tracking gives us a clean cancel hook.
+  final Set<Timer> _redirectDeadlines = <Timer>{};
+
+  /// Awaits `future` with a hard cap of `timeout`. The underlying
+  /// Timer is registered with this refresh listener so dispose() can
+  /// cancel it even if the future never resolves. Returns when either
+  /// the future completes or the deadline fires.
+  Future<void> awaitWithDeadline(Future<void> future, Duration timeout) {
+    final completer = Completer<void>();
+    late final Timer timer;
+    void cleanup() {
+      _redirectDeadlines.remove(timer);
+      timer.cancel();
+    }
+
+    timer = Timer(timeout, () {
+      if (!completer.isCompleted) {
+        cleanup();
+        completer.completeError(
+          TimeoutException('redirect deadline', timeout),
+        );
+      }
+    });
+    _redirectDeadlines.add(timer);
+
+    future.then((_) {
+      if (!completer.isCompleted) {
+        cleanup();
+        completer.complete();
+      }
+    }).catchError((Object e) {
+      if (!completer.isCompleted) {
+        cleanup();
+        completer.completeError(e);
+      }
+    });
+
+    return completer.future;
+  }
+
   @override
   void dispose() {
+    for (final t in _redirectDeadlines) {
+      t.cancel();
+    }
+    _redirectDeadlines.clear();
     _subscription.cancel();
     super.dispose();
   }
@@ -213,19 +312,35 @@ class _CallRouteObserver extends ConsumerWidget {
   }
 }
 
+/// Shared RouteObserver. Subscribers (e.g. ReelsScreen) use it via the
+/// RouteAware mixin to find out when a fullscreen route gets pushed
+/// on top of the shell so they can pause expensive work like video
+/// playback.
+final routeObserverProvider = Provider<RouteObserver<ModalRoute<void>>>(
+  (_) => RouteObserver<ModalRoute<void>>(),
+);
+
 final appRouterProvider = Provider<GoRouter>((ref) {
   final authService = ref.watch(authServiceProvider);
   final refresh = _AuthRouterRefresh(authService.stateStream);
   ref.onDispose(refresh.dispose);
+  final routeObserver = ref.watch(routeObserverProvider);
 
   return GoRouter(
     initialLocation: '/splash',
     refreshListenable: refresh,
+    observers: [routeObserver],
     redirect: (context, state) async {
       final path = state.uri.path;
 
       try {
-        await authService.sessionReady.timeout(const Duration(seconds: 3));
+        // Phase W1 — manual deadline via refresh listener so the Timer
+        // is cancellable when the test framework disposes us. The
+        // previous `.timeout(3s)` leaked a Timer past teardown.
+        await refresh.awaitWithDeadline(
+          authService.sessionReady,
+          const Duration(seconds: 3),
+        );
       } catch (_) {
         AppLogger.warn('Router: Session restoration timed out', tag: 'Router');
       }
@@ -259,20 +374,26 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           // tab provider on first build so deep links land on the right
           // surface.
           GoRoute(
-            path: '/search',
+            path: '/friends-tab',
             builder: (_, _) =>
-                const ShellScaffold(initialTab: ShellTabIndex.search),
+                const ShellScaffold(initialTab: ShellTabIndex.friends),
           ),
           GoRoute(
-            path: '/inbox',
+            path: '/reels-tab',
             builder: (_, _) =>
-                const ShellScaffold(initialTab: ShellTabIndex.inbox),
+                const ShellScaffold(initialTab: ShellTabIndex.reels),
           ),
           GoRoute(
-            path: '/me',
+            path: '/explore',
             builder: (_, _) =>
-                const ShellScaffold(initialTab: ShellTabIndex.me),
+                const ShellScaffold(initialTab: ShellTabIndex.explore),
           ),
+          // Legacy redirects: /search and /me are no longer tabs (search
+          // lives in the home top-bar; profile is reached via avatar tap →
+          // /profile/{id}). /inbox folded into /notifications.
+          GoRoute(path: '/search', redirect: (_, _) => '/'),
+          GoRoute(path: '/inbox', redirect: (_, _) => '/notifications'),
+          GoRoute(path: '/me', redirect: (_, _) => '/'),
           GoRoute(
             path: '/login',
             builder: (context, state) => const LoginScreen(),
@@ -292,9 +413,26 @@ final appRouterProvider = Provider<GoRouter>((ref) {
               mode: state.uri.queryParameters['mode'] ?? 'login',
             ),
           ),
+          // A13 anomaly step-up. Reached when login returns
+          // requires_step_up; carries the one-shot pending_token plus
+          // the methods the server allows for this account.
+          GoRoute(
+            path: '/auth/step-up',
+            builder: (context, state) => AnomalyStepUpScreen(
+              pendingToken: state.uri.queryParameters['token'] ?? '',
+              methods: (state.uri.queryParameters['methods'] ?? '')
+                  .split(',')
+                  .where((s) => s.isNotEmpty)
+                  .toList(),
+            ),
+          ),
           GoRoute(
             path: '/chat',
             builder: (context, state) => const ChatListScreen(),
+          ),
+          GoRoute(
+            path: '/chat/requests',
+            builder: (context, state) => const MessageRequestsScreen(),
           ),
           GoRoute(
             path: '/chat/:conversationId',
@@ -306,6 +444,21 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: '/call',
             builder: (context, state) => const CallScreen(),
+          ),
+          // Follow-Only Public Pages
+          GoRoute(
+            path: '/pages',
+            builder: (context, state) => const PagesListScreen(),
+          ),
+          GoRoute(
+            path: '/pages/create',
+            builder: (context, state) => const CreatePageScreen(),
+          ),
+          GoRoute(
+            path: '/page/:handle',
+            builder: (context, state) => PageDetailScreen(
+              handle: state.pathParameters['handle'] ?? '',
+            ),
           ),
           GoRoute(
             path: '/posttube',
@@ -375,6 +528,16 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: '/commerce/cart',
             builder: (_, _) => const CartScreen(),
+          ),
+          // In-video affiliate redirect. Mirrors the public web URL
+          // /v1/commerce/affiliate/:linkId; the screen calls the
+          // server endpoint with redirects disabled, captures
+          // ?via= into AffiliateAttribution, then routes onward.
+          GoRoute(
+            path: '/commerce/affiliate/:linkId',
+            builder: (context, state) => AffiliateRedirectScreen(
+              linkId: state.pathParameters['linkId']!,
+            ),
           ),
           GoRoute(
             path: '/commerce/checkout',
@@ -446,9 +609,70 @@ final appRouterProvider = Provider<GoRouter>((ref) {
               initialQuery: state.uri.queryParameters['q'],
             ),
           ),
+          // Seller surface — dashboard + product management. The "My
+          // orders" tile reuses the existing customer order list
+          // (sellers see their orders as a buyer would view them, with
+          // the upcoming fulfillment actions following in a later
+          // slice).
+          GoRoute(
+            path: '/seller/dashboard',
+            builder: (_, _) => const SellerDashboardScreen(),
+          ),
+          GoRoute(
+            path: '/seller/products',
+            builder: (_, _) => const SellerProductsScreen(),
+          ),
+          GoRoute(
+            path: '/seller/products/:id/variants',
+            builder: (context, state) => SellerVariantsScreen(
+              productId: state.pathParameters['id']!,
+            ),
+          ),
+          GoRoute(
+            path: '/seller/orders',
+            builder: (_, _) => const SellerOrdersScreen(),
+          ),
+          GoRoute(
+            path: '/seller/returns',
+            builder: (_, _) => const SellerReturnsScreen(),
+          ),
+          GoRoute(
+            path: '/seller/earnings',
+            builder: (_, _) => const SellerEarningsScreen(),
+          ),
+          GoRoute(
+            path: '/seller/bulk-import',
+            builder: (_, _) => const SellerBulkImportScreen(),
+          ),
+          // Phase F4 mobile — RFQ buyer flow.
+          GoRoute(
+            path: '/rfq',
+            builder: (_, _) => const RFQListScreen(),
+          ),
+          GoRoute(
+            path: '/rfq/new',
+            builder: (context, state) {
+              final sellerId = state.uri.queryParameters['seller_id'] ?? '';
+              final variantId = state.uri.queryParameters['variant_id'] ?? '';
+              return RFQNewScreen(
+                sellerId: sellerId,
+                variantId: variantId,
+              );
+            },
+          ),
+          GoRoute(
+            path: '/rfq/:id',
+            builder: (context, state) => RFQDetailScreen(
+              rfqId: state.pathParameters['id']!,
+            ),
+          ),
           GoRoute(
             path: '/figo',
             builder: (context, state) => const FigoHomeScreen(),
+          ),
+          GoRoute(
+            path: '/figo/rewards',
+            builder: (context, state) => const FigoRewardsScreen(),
           ),
           // Phase 2 Sprint 1 — consumer wallet (BC of partner-bank PPI).
           GoRoute(
@@ -720,6 +944,27 @@ final appRouterProvider = Provider<GoRouter>((ref) {
               title: state.uri.queryParameters['title'] ?? 'Live Stream',
             ),
           ),
+          // Live streaming v2 (LiveKit / live-service-v2).
+          GoRoute(
+            path: '/live/v2',
+            builder: (_, _) => const LiveListScreen(),
+          ),
+          GoRoute(
+            path: '/live/v2/new',
+            builder: (_, _) => const GoLiveScreen(),
+          ),
+          GoRoute(
+            path: '/live/v2/:streamId',
+            builder: (context, state) => LiveViewerScreen(
+              streamId: state.pathParameters['streamId']!,
+            ),
+          ),
+          GoRoute(
+            path: '/live/v2/:streamId/broadcast',
+            builder: (context, state) => LiveBroadcasterScreen(
+              streamId: state.pathParameters['streamId']!,
+            ),
+          ),
           GoRoute(
             path: '/profile/:userId',
             builder: (context, state) => ProfileDetailScreen(
@@ -927,6 +1172,162 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             path: '/stories/:userId',
             builder: (context, state) =>
                 StoryViewerScreen(userId: state.pathParameters['userId']!),
+          ),
+          // ── Restored routes ───────────────────────────────────────────
+          // The module-wiring commit (eba4a40) rewrote this file and
+          // accidentally dropped the whole pre-existing block below
+          // (bookmarks/discover/hashtag/search/channels/groups/
+          // monetization/orders/qa/upload/posttube). Restored verbatim
+          // from the last commit that had them (e5796fb), minus the
+          // four /communities routes — that feature is disabled.
+          GoRoute(
+            path: '/bookmarks',
+            builder: (context, state) => const BookmarksScreen(),
+          ),
+          GoRoute(
+            path: '/discover',
+            builder: (context, state) => const DiscoverScreen(),
+          ),
+          GoRoute(
+            path: '/hashtag/:tag',
+            builder: (context, state) => HashtagScreen(
+              tag: state.pathParameters['tag'] ?? '',
+            ),
+          ),
+          GoRoute(
+            path: '/search/results',
+            builder: (context, state) => SearchResultsScreen(
+              query: state.uri.queryParameters['q'] ?? '',
+            ),
+          ),
+          GoRoute(
+            path: '/channels',
+            builder: (context, state) => const ChannelsListScreen(),
+          ),
+          GoRoute(
+            path: '/channels/create',
+            builder: (context, state) => const CreateChannelScreen(),
+          ),
+          GoRoute(
+            path: '/channels/:channelId',
+            builder: (context, state) => ChannelDetailScreen(
+              channelId: state.pathParameters['channelId']!,
+            ),
+          ),
+          GoRoute(
+            path: '/groups',
+            builder: (context, state) => const GroupsListScreen(),
+          ),
+          GoRoute(
+            path: '/groups/create',
+            builder: (context, state) => const CreateGroupScreen(),
+          ),
+          GoRoute(
+            path: '/groups/:groupId',
+            builder: (context, state) =>
+                GroupDetailScreen(groupId: state.pathParameters['groupId']!),
+          ),
+          GoRoute(
+            path: '/groups/:groupId/post',
+            builder: (context, state) => GroupPostComposerScreen(
+              groupId: state.pathParameters['groupId']!,
+            ),
+          ),
+          GoRoute(
+            path: '/groups/:groupId/admin',
+            builder: (context, state) =>
+                GroupAdminScreen(groupId: state.pathParameters['groupId']!),
+          ),
+          GoRoute(
+            path: '/monetization',
+            builder: (context, state) => const MonetizationDashboardScreen(),
+          ),
+          GoRoute(
+            path: '/monetization/tiers',
+            builder: (context, state) => const SubscriptionTiersScreen(),
+          ),
+          GoRoute(
+            path: '/monetization/payouts',
+            builder: (context, state) => const PayoutsScreen(),
+          ),
+          GoRoute(
+            path: '/monetization/analytics',
+            builder: (context, state) => const CreatorAnalyticsScreen(),
+          ),
+          GoRoute(
+            path: '/orders',
+            builder: (context, state) => const OrdersScreen(),
+          ),
+          GoRoute(
+            path: '/orders/:orderId',
+            builder: (context, state) =>
+                OrderDetailScreen(orderId: state.pathParameters['orderId']!),
+          ),
+          GoRoute(
+            path: '/qa',
+            builder: (context, state) => const QAFeedScreen(),
+          ),
+          GoRoute(
+            path: '/qa/ask',
+            builder: (context, state) => const AskQuestionScreen(),
+          ),
+          GoRoute(
+            path: '/qa/question/:questionId',
+            builder: (context, state) => QuestionDetailScreen(
+              questionId: state.pathParameters['questionId']!,
+            ),
+          ),
+          GoRoute(
+            path: '/qa/search',
+            builder: (context, state) => QaSearchScreen(
+              initialQuery: state.uri.queryParameters['q'],
+              communityId: state.uri.queryParameters['community_id'],
+              topicId: state.uri.queryParameters['topic_id'],
+            ),
+          ),
+          GoRoute(
+            path: '/qa/drafts',
+            builder: (_, _) => const QaDraftsScreen(),
+          ),
+          GoRoute(
+            path: '/qa/profile/:userId',
+            builder: (context, state) => QaProfileScreen(
+              userId: state.pathParameters['userId']!,
+            ),
+          ),
+          GoRoute(
+            path: '/upload/progress',
+            builder: (context, state) {
+              final extra = state.extra as Map<String, dynamic>? ?? {};
+              return UploadProgressScreen(
+                videoPath: extra['videoPath'] as String? ?? '',
+                caption: extra['caption'] as String? ?? '',
+                hashtags: List<String>.from(extra['hashtags'] as List? ?? []),
+                visibility: extra['visibility'] as String? ?? 'public',
+              );
+            },
+          ),
+          GoRoute(
+            path: '/posttube/upload',
+            builder: (_, _) => const PosttubeUploadScreen(),
+          ),
+          GoRoute(
+            path: '/posttube/subscriptions',
+            builder: (_, _) => const PosttubeSubscriptionsScreen(),
+          ),
+          GoRoute(
+            path: '/posttube/trending',
+            builder: (_, _) => const PosttubeTrendingScreen(),
+          ),
+          GoRoute(
+            path: '/posttube/history',
+            builder: (_, _) => const WatchHistoryScreen(),
+          ),
+          GoRoute(
+            path: '/posttube/channel/:userId',
+            builder: (_, state) => PosttubeChannelScreen(
+              userId: state.pathParameters['userId'] ?? '',
+            ),
           ),
         ],
       ),

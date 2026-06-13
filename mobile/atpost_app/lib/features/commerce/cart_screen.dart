@@ -23,6 +23,10 @@ class CartScreen extends ConsumerStatefulWidget {
 
 class _CartScreenState extends ConsumerState<CartScreen> {
   final TextEditingController _couponCtrl = TextEditingController();
+  // appliedCoupon is the code the user pressed Apply on; the
+  // previewProvider watches this rather than the raw text so we don't
+  // hammer the backend on every keystroke.
+  String _appliedCoupon = '';
 
   @override
   void dispose() {
@@ -68,7 +72,16 @@ class _CartScreenState extends ConsumerState<CartScreen> {
           ),
           data: (cart) {
             if (cart.isEmpty) return _EmptyCart();
-            return _Loaded(cart: cart, couponCtrl: _couponCtrl);
+            return _Loaded(
+              cart: cart,
+              couponCtrl: _couponCtrl,
+              appliedCoupon: _appliedCoupon,
+              onApply: (code) => setState(() => _appliedCoupon = code),
+              onClear: () {
+                _couponCtrl.clear();
+                setState(() => _appliedCoupon = '');
+              },
+            );
           },
         ),
       ),
@@ -81,13 +94,28 @@ class _CartScreenState extends ConsumerState<CartScreen> {
 }
 
 class _Loaded extends ConsumerWidget {
-  const _Loaded({required this.cart, required this.couponCtrl});
+  const _Loaded({
+    required this.cart,
+    required this.couponCtrl,
+    required this.appliedCoupon,
+    required this.onApply,
+    required this.onClear,
+  });
 
   final Cart cart;
   final TextEditingController couponCtrl;
+  final String appliedCoupon;
+  final ValueChanged<String> onApply;
+  final VoidCallback onClear;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // previewAsync is null when no coupon has been pressed Apply on.
+    // The provider returns an empty/applied=false envelope for empty
+    // input so we can render a stable empty state without branching.
+    final preview = appliedCoupon.isEmpty
+        ? null
+        : ref.watch(couponPreviewProvider(appliedCoupon));
     return ListView(
       padding: const EdgeInsets.all(AppSpacing.l),
       children: [
@@ -97,9 +125,16 @@ class _Loaded extends ConsumerWidget {
             child: _CartItemRow(item: item),
           ),
         const SizedBox(height: AppSpacing.l),
-        _CouponBlock(controller: couponCtrl, applied: cart.appliedCouponCode),
+        _CouponBlock(
+          controller: couponCtrl,
+          applied: cart.appliedCouponCode,
+          appliedCoupon: appliedCoupon,
+          preview: preview,
+          onApply: onApply,
+          onClear: onClear,
+        ),
         const SizedBox(height: AppSpacing.xxl),
-        _TotalsBlock(cart: cart),
+        _TotalsBlock(cart: cart, preview: preview?.valueOrNull),
         const SizedBox(height: AppSpacing.xxl),
       ],
     );
@@ -247,16 +282,44 @@ class _QtyStepper extends StatelessWidget {
 }
 
 class _CouponBlock extends StatelessWidget {
-  const _CouponBlock({required this.controller, required this.applied});
+  const _CouponBlock({
+    required this.controller,
+    required this.applied,
+    required this.appliedCoupon,
+    required this.preview,
+    required this.onApply,
+    required this.onClear,
+  });
 
   final TextEditingController controller;
   final String? applied;
+  final String appliedCoupon;
+  final AsyncValue<CouponPreview>? preview;
+  final ValueChanged<String> onApply;
+  final VoidCallback onClear;
 
   @override
   Widget build(BuildContext context) {
-    // TODO(sprint-2): wire `POST /v1/commerce/cart/coupon` (or whatever the
-    // service exposes) to apply / remove. Until then the field is visible
-    // for layout but the apply action is a no-op snackbar.
+    final hasApplied = appliedCoupon.isNotEmpty;
+    final loading = preview?.isLoading ?? false;
+    final hasError = preview?.hasError ?? false;
+    final data = preview?.valueOrNull;
+    final accepted = data?.applied ?? false;
+
+    String? message;
+    Color? messageColor;
+    if (hasError) {
+      message = 'Coupon could not be applied.';
+      messageColor = const Color(0xFFB91C1C);
+    } else if (data != null && accepted) {
+      message =
+          'Coupon ${data.couponCode} applied — you save Rs. ${data.couponDiscount.toStringAsFixed(0)}.';
+      messageColor = const Color(0xFF047857);
+    } else if (data != null && !accepted && hasApplied) {
+      message = "This coupon doesn't apply to your current cart.";
+      messageColor = const Color(0xFF92400E);
+    }
+
     return Container(
       padding: const EdgeInsets.all(AppSpacing.l),
       decoration: BoxDecoration(
@@ -264,34 +327,57 @@ class _CouponBlock extends StatelessWidget {
         borderRadius: BorderRadius.circular(AppSpacing.radiusMedium),
         border: Border.all(color: AppColors.borderSubtle),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Icon(Icons.local_offer_outlined, color: AppColors.textTertiary),
-          const SizedBox(width: AppSpacing.m),
-          Expanded(
-            child: TextField(
-              controller: controller,
-              style: AppTextStyles.body,
-              decoration: InputDecoration(
-                hintText: applied ?? 'Coupon code',
-                hintStyle: AppTextStyles.body.copyWith(
-                  color: AppColors.textMuted,
+          Row(
+            children: [
+              const Icon(Icons.local_offer_outlined,
+                  color: AppColors.textTertiary),
+              const SizedBox(width: AppSpacing.m),
+              Expanded(
+                child: TextField(
+                  controller: controller,
+                  style: AppTextStyles.body,
+                  textCapitalization: TextCapitalization.characters,
+                  onSubmitted: (v) => onApply(v.trim()),
+                  decoration: InputDecoration(
+                    hintText: applied ?? 'Coupon code',
+                    hintStyle: AppTextStyles.body.copyWith(
+                      color: AppColors.textMuted,
+                    ),
+                    border: InputBorder.none,
+                    isDense: true,
+                  ),
                 ),
-                border: InputBorder.none,
-                isDense: true,
               ),
-            ),
-          ),
-          TextButton(
-            onPressed: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Coupon application coming in Sprint 2'),
+              if (hasApplied && controller.text.trim() == appliedCoupon)
+                TextButton(
+                  onPressed: onClear,
+                  child: const Text('Clear'),
+                )
+              else
+                TextButton(
+                  onPressed: loading
+                      ? null
+                      : () => onApply(controller.text.trim()),
+                  child: loading
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Apply'),
                 ),
-              );
-            },
-            child: const Text('Apply'),
+            ],
           ),
+          if (message != null) ...[
+            const SizedBox(height: AppSpacing.s),
+            Text(
+              message,
+              style: AppTextStyles.bodySmall.copyWith(color: messageColor),
+            ),
+          ],
         ],
       ),
     );
@@ -299,12 +385,19 @@ class _CouponBlock extends StatelessWidget {
 }
 
 class _TotalsBlock extends StatelessWidget {
-  const _TotalsBlock({required this.cart});
+  const _TotalsBlock({required this.cart, this.preview});
 
   final Cart cart;
+  final CouponPreview? preview;
 
   @override
   Widget build(BuildContext context) {
+    final extraDiscount = (preview?.applied ?? false)
+        ? preview!.couponDiscount
+        : 0.0;
+    final grandTotal = (preview?.applied ?? false)
+        ? preview!.grandTotal
+        : cart.grandTotal;
     return Container(
       padding: const EdgeInsets.all(AppSpacing.l),
       decoration: BoxDecoration(
@@ -319,8 +412,13 @@ class _TotalsBlock extends StatelessWidget {
           _TotalsRow(label: 'Shipping', value: cart.shippingTotal),
           if (cart.discountTotal > 0)
             _TotalsRow(label: 'Discount', value: -cart.discountTotal),
+          if (extraDiscount > 0)
+            _TotalsRow(
+              label: 'Coupon (${preview!.couponCode})',
+              value: -extraDiscount,
+            ),
           const Divider(height: AppSpacing.xxl, color: AppColors.borderSubtle),
-          _TotalsRow(label: 'Total', value: cart.grandTotal, bold: true),
+          _TotalsRow(label: 'Total', value: grandTotal, bold: true),
         ],
       ),
     );

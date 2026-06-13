@@ -109,11 +109,23 @@ func main() {
 	msgStore := scyllaStore.New(scyllaSession)
 	svc := service.New(convStore, msgStore, rdb, producer, logger, cfg.OutboxPollInterval)
 	svc.SetUserDirectory(cfg.UserServiceURL, cfg.InternalServiceKey)
-	handler := http.New(svc, logger)
+	svc.SetGraphService(cfg.GraphServiceURL)
+	handler := http.New(svc, logger).WithInternalServiceKey(cfg.InternalServiceKey)
 
 	// 6. Identity Event Consumer (background)
 	identityConsumer := events.NewIdentityConsumerWithDialer(cfg.KafkaBrokers, cfg.IdentityKafkaTopic, cfg.IdentityKafkaGroupID, kafkaDialer, convStore, logger)
 	go identityConsumer.Start(ctx)
+
+	// 6b. Social (graph) Event Consumer (background) — auto-promote message
+	// requests on ConnectionAccepted and block-sever on UserBlocked.
+	socialConsumer := events.NewSocialConsumerWithDialer(cfg.KafkaBrokers, cfg.SocialKafkaTopic, cfg.SocialKafkaGroupID, kafkaDialer, convStore, logger)
+	go socialConsumer.Start(ctx)
+
+	// 6c. Dating Event Consumer (background) — close conversation on
+	// match.closed / match.expired so the send-path gate refuses new
+	// messages (P0-3/P0-9 in dating/PRODUCTION_GAP_ANALYSIS.md).
+	datingConsumer := events.NewDatingConsumerWithDialer(cfg.KafkaBrokers, cfg.DatingKafkaTopic, cfg.DatingKafkaGroupID, kafkaDialer, convStore, logger)
+	go datingConsumer.Start(ctx)
 
 	// 7. Outbox Relay (background)
 	go svc.StartOutboxRelay(ctx)
@@ -127,7 +139,12 @@ func main() {
 	r.Use(http.LoggerMiddleware(logger))
 	r.Use(http.RecoveryMiddleware(logger))
 	r.Use(http.CORSMiddleware())
-	r.Use(http.AuthMiddleware(cfg.JWTSecret, logger))
+	r.Use(http.AuthMiddlewareWithKeys(http.JWTKeySet{
+		ActiveKID:      cfg.JWTKID,
+		ActiveSecret:   cfg.JWTSecret,
+		PreviousKID:    cfg.JWTKIDPrevious,
+		PreviousSecret: cfg.JWTSecretPrevious,
+	}, logger))
 
 	proxies := cfg.TrustedProxies
 	if len(proxies) == 0 {

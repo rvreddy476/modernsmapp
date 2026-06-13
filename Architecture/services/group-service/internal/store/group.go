@@ -47,6 +47,7 @@ type Group struct {
 	CommentPermission string          `json:"comment_permission"`
 	MemberListVisible bool            `json:"member_list_visible"`
 	LinkSharing       bool            `json:"link_sharing"`
+	IsMature          bool            `json:"is_mature"`
 }
 
 type GroupMember struct {
@@ -170,7 +171,7 @@ const groupColumns = `g.id, g.name, g.description, g.avatar_media_id, g.cover_me
        g.visibility, g.is_archived, g.chat_conversation_id, g.member_count, g.post_count,
        g.created_at, g.updated_at, g.handle, g.category, g.privacy_level, g.join_mode,
        g.who_can_post, g.who_can_invite, g.location, g.language, g.status, g.deleted_at, g.pending_request_count,
-       g.group_type, g.max_members, g.join_questions, g.topic_tags, g.comment_permission, g.member_list_visible, g.link_sharing`
+       g.group_type, g.max_members, g.join_questions, g.topic_tags, g.comment_permission, g.member_list_visible, g.link_sharing, g.is_mature`
 
 func scanGroup(row pgx.Row) (*Group, error) {
 	var g Group
@@ -179,7 +180,7 @@ func scanGroup(row pgx.Row) (*Group, error) {
 		&g.Visibility, &g.IsArchived, &g.ChatConversationID, &g.MemberCount, &g.PostCount,
 		&g.CreatedAt, &g.UpdatedAt, &g.Handle, &g.Category, &g.PrivacyLevel, &g.JoinMode,
 		&g.WhoCanPost, &g.WhoCanInvite, &g.Location, &g.Language, &g.Status, &g.DeletedAt, &g.PendingRequestCount,
-		&g.GroupType, &g.MaxMembers, &g.JoinQuestions, &g.TopicTags, &g.CommentPermission, &g.MemberListVisible, &g.LinkSharing,
+		&g.GroupType, &g.MaxMembers, &g.JoinQuestions, &g.TopicTags, &g.CommentPermission, &g.MemberListVisible, &g.LinkSharing, &g.IsMature,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -199,7 +200,7 @@ func scanGroups(rows pgx.Rows) ([]Group, error) {
 			&g.Visibility, &g.IsArchived, &g.ChatConversationID, &g.MemberCount, &g.PostCount,
 			&g.CreatedAt, &g.UpdatedAt, &g.Handle, &g.Category, &g.PrivacyLevel, &g.JoinMode,
 			&g.WhoCanPost, &g.WhoCanInvite, &g.Location, &g.Language, &g.Status, &g.DeletedAt, &g.PendingRequestCount,
-			&g.GroupType, &g.MaxMembers, &g.JoinQuestions, &g.TopicTags, &g.CommentPermission, &g.MemberListVisible, &g.LinkSharing,
+			&g.GroupType, &g.MaxMembers, &g.JoinQuestions, &g.TopicTags, &g.CommentPermission, &g.MemberListVisible, &g.LinkSharing, &g.IsMature,
 		); err != nil {
 			return nil, err
 		}
@@ -223,15 +224,15 @@ func (s *Store) CreateGroup(ctx context.Context, g *Group) error {
 		                    privacy_level, join_mode, who_can_post, who_can_invite,
 		                    location, language, status,
 		                    group_type, max_members, join_questions, topic_tags,
-		                    comment_permission, member_list_visible, link_sharing)
+		                    comment_permission, member_list_visible, link_sharing, is_mature)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-		        $14, $15, $16, $17, $18, $19, $20)
+		        $14, $15, $16, $17, $18, $19, $20, $21)
 		RETURNING id, member_count, post_count, is_archived, created_at, updated_at
 	`, g.Name, g.Description, g.CreatorID, g.Visibility, g.Handle, g.Category,
 		g.PrivacyLevel, g.JoinMode, g.WhoCanPost, g.WhoCanInvite,
 		g.Location, g.Language, g.Status,
 		g.GroupType, g.MaxMembers, g.JoinQuestions, g.TopicTags,
-		g.CommentPermission, g.MemberListVisible, g.LinkSharing).Scan(
+		g.CommentPermission, g.MemberListVisible, g.LinkSharing, g.IsMature).Scan(
 		&g.ID, &g.MemberCount, &g.PostCount, &g.IsArchived, &g.CreatedAt, &g.UpdatedAt,
 	)
 	if err != nil {
@@ -376,12 +377,51 @@ func (s *Store) SetChatConversationID(ctx context.Context, groupID, convID uuid.
 // --- Members ---
 
 // AddMember adds a user to a group with the given role.
+// ErrGroupFull is returned by AddMember when maxMembers > 0 and the
+// group is already at capacity. Audit HG6: previously the service
+// checked GetActiveMemberCount and then called AddMember in a separate
+// statement — two concurrent joins could both pass the check and push
+// the group over its max.
+var ErrGroupFull = fmt.Errorf("group has reached its maximum member limit")
+
 func (s *Store) AddMember(ctx context.Context, groupID, userID uuid.UUID, role string) error {
+	return s.AddMemberWithMax(ctx, groupID, userID, role, 0)
+}
+
+// AddMemberWithMax performs the membership insert atomically against
+// the active-member count. maxMembers == 0 disables the cap (matches
+// the existing schema's "0 means unlimited"). When the cap would be
+// exceeded the function returns ErrGroupFull and leaves the row alone.
+func (s *Store) AddMemberWithMax(ctx context.Context, groupID, userID uuid.UUID, role string, maxMembers int) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
+
+	if maxMembers > 0 {
+		// Lock the count for the duration of the transaction. The
+		// CTE is keyed by group_id so concurrent inserts to other
+		// groups don't block this one.
+		var active int
+		if err := tx.QueryRow(ctx, `
+			SELECT COUNT(*) FROM group_members
+			WHERE group_id = $1 AND status = 'active'
+			FOR UPDATE
+		`, groupID).Scan(&active); err != nil {
+			return err
+		}
+		// If the actor is already an inactive member we'll reactivate,
+		// which doesn't change the active count — allow regardless.
+		var existingActive bool
+		_ = tx.QueryRow(ctx, `
+			SELECT status = 'active' FROM group_members
+			WHERE group_id = $1 AND user_id = $2
+		`, groupID, userID).Scan(&existingActive)
+		if !existingActive && active >= maxMembers {
+			return ErrGroupFull
+		}
+	}
 
 	cmdTag, err := tx.Exec(ctx, `
 		INSERT INTO group_members (group_id, user_id, role, status)
@@ -1130,18 +1170,30 @@ func (s *Store) DecrementPendingRequestCount(ctx context.Context, groupID uuid.U
 	return err
 }
 
-// ListGroupMedia returns media posts (image, video, flick) for a group.
-func (s *Store) ListGroupMedia(ctx context.Context, groupID uuid.UUID, limit, offset int) ([]GroupPost, error) {
+// GroupMediaItem is one media-bearing post: attachments holds the media
+// IDs the client renders via /v1/media/{id}/serve.
+type GroupMediaItem struct {
+	PostID      uuid.UUID       `json:"post_id"`
+	AuthorID    string          `json:"author_id"`
+	ContentType string          `json:"content_type"`
+	Attachments json.RawMessage `json:"attachments"`
+	CreatedAt   time.Time       `json:"created_at"`
+}
+
+// ListGroupMedia returns posts that carry attachments. Space posts live
+// in the v2 group_posts table (attachments JSONB of media IDs) — the
+// previous implementation joined the legacy posts table and therefore
+// never matched anything.
+func (s *Store) ListGroupMedia(ctx context.Context, groupID uuid.UUID, limit, offset int) ([]GroupMediaItem, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 30
 	}
 	rows, err := s.db.Query(ctx, `
-		SELECT gp.group_id, gp.post_id, gp.author_id, gp.created_at
-		FROM group_posts gp
-		JOIN posts p ON p.id = gp.post_id
-		WHERE gp.group_id = $1 AND p.content_type IN ('image', 'video', 'flick')
-		  AND p.status = 'published'
-		ORDER BY gp.created_at DESC
+		SELECT id, author_id, content_type, attachments, created_at
+		FROM group_posts
+		WHERE group_id = $1 AND status = 'published'
+		  AND attachments IS NOT NULL AND jsonb_array_length(attachments) > 0
+		ORDER BY created_at DESC
 		LIMIT $2 OFFSET $3
 	`, groupID, limit, offset)
 	if err != nil {
@@ -1149,15 +1201,18 @@ func (s *Store) ListGroupMedia(ctx context.Context, groupID uuid.UUID, limit, of
 	}
 	defer rows.Close()
 
-	var posts []GroupPost
+	var items []GroupMediaItem
 	for rows.Next() {
-		var p GroupPost
-		if err := rows.Scan(&p.GroupID, &p.PostID, &p.AuthorID, &p.CreatedAt); err != nil {
+		var it GroupMediaItem
+		if err := rows.Scan(&it.PostID, &it.AuthorID, &it.ContentType, &it.Attachments, &it.CreatedAt); err != nil {
 			return nil, err
 		}
-		posts = append(posts, p)
+		if it.Attachments == nil {
+			it.Attachments = json.RawMessage(`[]`)
+		}
+		items = append(items, it)
 	}
-	return posts, rows.Err()
+	return items, rows.Err()
 }
 
 // ═══════════════════════════════════════════════════════════

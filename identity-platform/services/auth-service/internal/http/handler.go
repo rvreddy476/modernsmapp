@@ -51,8 +51,11 @@ type AuthService interface {
 	Verify2FA(ctx context.Context, userID uuid.UUID, code, pendingToken string) (*service.AuthResponse, error)
 	// OAuth
 	GetOAuthRedirectURL(ctx context.Context, provider string) (string, error)
-	HandleOAuthCallback(ctx context.Context, provider, code, state string) (*service.AuthResponse, error)
-	HandleOAuthToken(ctx context.Context, provider, accessToken string) (*service.AuthResponse, error)
+	HandleOAuthCallback(ctx context.Context, provider, code, state string) (*service.OAuthCallbackResult, error)
+	HandleOAuthToken(ctx context.Context, provider, accessToken string) (*service.OAuthCallbackResult, error)
+	// A5: OAuth pre-creation OTP-signup flow.
+	CompleteOAuthSignup(ctx context.Context, pendingToken, phone string) error
+	VerifyOAuthSignup(ctx context.Context, pendingToken, otp, deviceID, platform, ip, userAgent string) (*service.AuthResponse, error)
 	// Password reset
 	ForgotPassword(ctx context.Context, identifier string) error
 	ResetPassword(ctx context.Context, identifier, code, newPassword string) error
@@ -65,6 +68,15 @@ type AuthService interface {
 	ListTrustedDevices(ctx context.Context, userID uuid.UUID) ([]store.TrustedDevice, error)
 	TrustDevice(ctx context.Context, userID uuid.UUID, fingerprint string, deviceName *string) error
 	RemoveTrustedDevice(ctx context.Context, userID, deviceID uuid.UUID) error
+	// A13 — login anomaly inbox
+	ListMyAnomalies(ctx context.Context, userID uuid.UUID, limit int) ([]store.LoginAnomaly, error)
+	AcknowledgeMyAnomaly(ctx context.Context, userID, anomalyID uuid.UUID) error
+	// A13 — anomaly step-up (graduated enforcement at login). Both
+	// resolve methods consume a pending_token issued during login and
+	// either mint the session (on success) or return one of the
+	// service.ErrAnomaly* sentinels.
+	ResolveAnomalyStepUpEmail(ctx context.Context, pendingToken, code string) (*service.AuthResponse, error)
+	ResolveAnomalyStepUp2FA(ctx context.Context, pendingToken, code string) (*service.AuthResponse, error)
 	// GDPR
 	ExportUserData(ctx context.Context, userID string) (*service.DataExport, error)
 	// Internal lookup
@@ -87,24 +99,55 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 		// Public routes
 		v1.POST("/request-otp", middleware.OTPRateLimit(h.rdb), h.RequestOTP)
 		v1.POST("/verify-otp", middleware.LoginRateLimit(h.rdb), h.VerifyOTP)
-		v1.POST("/register", h.Register)
+		// H2 (arch review): /register is direct password signup. Without a
+		// limit an attacker can spam-create accounts to exhaust handle/email
+		// namespace or burn captcha quotas. Reuse the login limiter (10/IP
+		// /15min, 5/identifier/15min) — same abuse surface.
+		v1.POST("/register", middleware.LoginRateLimit(h.rdb), h.Register)
 		v1.POST("/login", middleware.LoginRateLimit(h.rdb), h.Login)
-		v1.POST("/refresh", h.Refresh)
+		// H2: refresh-token flood is unlikely (long opaque tokens) but a
+		// stolen refresh could DoS the service before fingerprint mismatch
+		// burns the session. IP-only cap is cheap defence in depth.
+		v1.POST("/refresh", middleware.LoginRateLimit(h.rdb), h.Refresh)
 		v1.POST("/logout", h.Logout)
 		v1.GET("/health", h.Health)
 
-		// 2FA public route (called after login returns requires_2fa)
-		v1.POST("/2fa/verify", h.Verify2FA)
+		// 2FA public route (called after login returns requires_2fa).
+		// H2: was unprotected — a 6-digit TOTP code is 10^6 attempts.
+		// LoginRateLimit (5/identifier/15min + 10/IP/15min) makes
+		// online brute force infeasible.
+		v1.POST("/2fa/verify", middleware.LoginRateLimit(h.rdb), h.Verify2FA)
+
+		// A13 — anomaly step-up. Public (the user is mid-login and
+		// doesn't have a session yet). Both endpoints consume a
+		// pending_token issued by Login/VerifyOTP when the risk band
+		// is high AND LOGIN_ANOMALY_ENFORCE=enforce. The /verify-email
+		// path is gated by the password-reset rate limiter (same
+		// abuse surface — email-OTP burn). The /verify-2fa path
+		// piggy-backs on the login limiter.
+		v1.POST("/anomaly/verify-email", middleware.PasswordResetRateLimit(h.rdb), h.AnomalyVerifyEmail)
+		v1.POST("/anomaly/verify-2fa", middleware.LoginRateLimit(h.rdb), h.AnomalyVerify2FA)
 
 		// OAuth routes (public)
 		v1.GET("/oauth/:provider", h.OAuthRedirect)
 		v1.GET("/oauth/:provider/callback", h.OAuthCallback)
 		v1.POST("/oauth/:provider/token", h.OAuthToken)
+		// A5: OAuth pre-creation OTP-signup flow — used when the
+		// provider didn't assert email_verified. complete-signup
+		// sends the OTP to the supplied phone; verify-signup
+		// finalises the account creation once the OTP matches.
+		// Reuse the OTP rate-limiter so this can't be abused for
+		// SMS-flood billing attacks.
+		v1.POST("/oauth/complete-signup", middleware.OTPRateLimit(h.rdb), h.OAuthCompleteSignup)
+		v1.POST("/oauth/verify-signup", middleware.LoginRateLimit(h.rdb), h.OAuthVerifySignup)
 		v1.GET("/.well-known/jwks.json", h.MiniAppJWKS)
 
 		// Password reset (public)
-		v1.POST("/forgot-password", h.ForgotPassword)
-		v1.POST("/reset-password", h.ResetPassword)
+		// Audit A12: rate-limit both endpoints so an attacker can't spam
+		// SMS/email resets and lock the victim out via provider abuse.
+		// Reset tokens themselves remain server-issued and short-lived.
+		v1.POST("/forgot-password", middleware.PasswordResetRateLimit(h.rdb), h.ForgotPassword)
+		v1.POST("/reset-password", middleware.PasswordResetRateLimit(h.rdb), h.ResetPassword)
 
 		// Token introspection — auth only (no CSRF; safe GET used by server-side proxies)
 		v1.GET("/me", authMW, h.Me)
@@ -131,6 +174,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 			protected.GET("/trusted-devices", h.ListTrustedDevices)
 			protected.DELETE("/trusted-devices/:id", h.RemoveTrustedDevice)
 			protected.POST("/trust-device", h.TrustDevice)
+
+			// A13 — login anomaly security inbox
+			protected.GET("/security/anomalies", h.ListMyAnomalies)
+			protected.POST("/security/anomalies/:id/ack", h.AcknowledgeMyAnomaly)
 
 			// GDPR data portability
 			protected.GET("/data-export", h.ExportUserData)
@@ -287,8 +334,26 @@ func (h *Handler) VerifyOTP(c *gin.Context) {
 
 	resp, err := h.svc.VerifyOTP(c.Request.Context(), req.Phone, req.OTP, req.Purpose, req.DeviceID, req.Platform, c.ClientIP(), c.Request.UserAgent())
 	if err != nil {
+		// A13 — anomaly step-up envelope on a successful OTP that
+		// landed in a novel device/network. Same shape as the Login
+		// handler above.
+		if errors.Is(err, service.ErrAnomalyStepUpRequired) && resp != nil {
+			api.JSON(c.Writer, http.StatusOK, resp, nil)
+			return
+		}
+		if errors.Is(err, service.ErrAnomalyStepUpUnavailable) {
+			api.Error(c.Writer, http.StatusUnauthorized, "STEP_UP_UNAVAILABLE",
+				"This sign-in looks unusual and your account has no recovery channel set up. Please contact support.", nil, nil)
+			return
+		}
 		h.log.Warn("otp verification failed", "err", err, "phone", maskPhone(req.Phone), "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusUnauthorized, "AUTH_FAILED", "Authentication failed", nil, nil)
+		return
+	}
+
+	// If 2FA or step-up is required, return pending envelope without cookies.
+	if resp.Requires2FA || resp.RequiresStepUp {
+		api.JSON(c.Writer, http.StatusOK, resp, nil)
 		return
 	}
 
@@ -374,6 +439,25 @@ func (h *Handler) Login(c *gin.Context) {
 
 	resp, err := h.svc.LoginWithPassword(c.Request.Context(), identifier, req.Password, req.DeviceID, req.Platform, c.ClientIP(), c.Request.UserAgent())
 	if err != nil {
+		// A13 — anomaly step-up required. The service has already
+		// stashed the pending session + dispatched the email-OTP if
+		// applicable. Render a 200 with the step-up envelope so the
+		// UI can pivot without falling into the generic "auth failed"
+		// banner. We deliberately don't use 401 here because the
+		// password DID match — the request is now in a "halt for
+		// second channel" state, semantically closer to 2FA than a
+		// rejection.
+		if errors.Is(err, service.ErrAnomalyStepUpRequired) && resp != nil {
+			api.JSON(c.Writer, http.StatusOK, resp, nil)
+			return
+		}
+		if errors.Is(err, service.ErrAnomalyStepUpUnavailable) {
+			h.log.Warn("login refused: no anomaly step-up channel",
+				"identifier", maskIdentifier(identifier), "request_id", RequestIDFromContext(c))
+			api.Error(c.Writer, http.StatusUnauthorized, "STEP_UP_UNAVAILABLE",
+				"This sign-in looks unusual and your account has no recovery channel set up. Please contact support.", nil, nil)
+			return
+		}
 		h.log.Warn("login failed", "err", err, "identifier", maskIdentifier(identifier), "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusUnauthorized, "AUTH_FAILED", "Authentication failed", nil, nil)
 		return
@@ -506,6 +590,50 @@ func (h *Handler) RevokeSessionByID(c *gin.Context) {
 		return
 	}
 
+	api.JSON(c.Writer, http.StatusOK, gin.H{"status": "ok"}, nil)
+}
+
+// ListMyAnomalies renders the user-facing security inbox — every
+// detection (new IP, new device, refresh-fingerprint mismatch) that
+// fired against this user's account. Read-only; the inbox shows the
+// last 20 by default.
+func (h *Handler) ListMyAnomalies(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid user ID", nil, nil)
+		return
+	}
+	anomalies, err := h.svc.ListMyAnomalies(c.Request.Context(), userID, 20)
+	if err != nil {
+		h.log.Error("list anomalies failed", "err", err, "user_id", userID, "request_id", RequestIDFromContext(c))
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
+		return
+	}
+	if anomalies == nil {
+		anomalies = []store.LoginAnomaly{}
+	}
+	api.JSON(c.Writer, http.StatusOK, anomalies, nil)
+}
+
+// AcknowledgeMyAnomaly clears an inbox entry. Used by the security UI
+// after the user has reviewed an alert and confirmed it was them.
+// Idempotent: already-acknowledged rows no-op.
+func (h *Handler) AcknowledgeMyAnomaly(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid user ID", nil, nil)
+		return
+	}
+	anomalyID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "Invalid anomaly ID", nil, nil)
+		return
+	}
+	if err := h.svc.AcknowledgeMyAnomaly(c.Request.Context(), userID, anomalyID); err != nil {
+		h.log.Warn("ack anomaly failed", "err", err, "user_id", userID, "anomaly_id", anomalyID, "request_id", RequestIDFromContext(c))
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
+		return
+	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"status": "ok"}, nil)
 }
 

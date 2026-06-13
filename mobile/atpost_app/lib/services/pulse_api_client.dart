@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:atpost_app/core/config/environment.dart';
+import 'package:atpost_app/services/auth_service.dart';
 import 'package:atpost_app/services/pulse_auth_service.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -9,8 +10,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 class PulseApiClient {
   final Dio _dio;
   final PulseAuthService _auth;
+  final AuthService _mainAuth;
 
-  PulseApiClient(this._auth)
+  PulseApiClient(this._auth, this._mainAuth)
     : _dio = Dio(
         BaseOptions(
           baseUrl: Environment.pulseBaseUrl,
@@ -29,6 +31,12 @@ class PulseApiClient {
           if (token != null && token.isNotEmpty) {
             options.headers['Authorization'] = 'Bearer $token';
           }
+
+          final mainUserId = _mainAuth.userId;
+          if (mainUserId != null) {
+            options.headers['X-User-Id'] = mainUserId;
+          }
+
           handler.next(options);
         },
         onError: (error, handler) async {
@@ -120,5 +128,8 @@ class PulseApiClient {
 }
 
 final pulseApiClientProvider = Provider<PulseApiClient>((ref) {
-  return PulseApiClient(ref.watch(pulseAuthServiceProvider));
+  return PulseApiClient(
+    ref.watch(pulseAuthServiceProvider),
+    ref.watch(authServiceProvider),
+  );
 });
