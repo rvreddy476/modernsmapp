@@ -1704,8 +1704,10 @@ func (h *Handler) GetPostsByHashtag(c *gin.Context) {
 	if l, err := strconv.Atoi(c.DefaultQuery("limit", "20")); err == nil && l > 0 {
 		limit = l
 	}
+	// content_type can be repeated: ?content_type=post&content_type=flick
+	contentTypes := c.QueryArray("content_type")
 
-	posts, nextCursor, err := h.svc.GetPostsByHashtag(c.Request.Context(), tag, limit, cursor, sort)
+	posts, nextCursor, err := h.svc.GetPostsByHashtag(c.Request.Context(), tag, limit, cursor, sort, contentTypes)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return

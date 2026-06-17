@@ -29,7 +29,7 @@ func InsertOutboxEventTx(ctx context.Context, tx pgx.Tx, eventType, aggregateTyp
 	}
 
 	_, err = tx.Exec(ctx, `
-		INSERT INTO outbox_events (event_type, aggregate_type, aggregate_id, payload, created_at)
+		INSERT INTO post_outbox_events (event_type, aggregate_type, aggregate_id, payload, created_at)
 		VALUES ($1, $2, $3, $4, NOW())
 	`, eventType, aggregateType, aggregateID, payloadBytes)
 	return err
@@ -43,7 +43,7 @@ func (s *Store) InsertOutboxEvent(ctx context.Context, eventType, aggregateType 
 	}
 
 	_, err = s.db.Exec(ctx, `
-		INSERT INTO outbox_events (event_type, aggregate_type, aggregate_id, payload, created_at)
+		INSERT INTO post_outbox_events (event_type, aggregate_type, aggregate_id, payload, created_at)
 		VALUES ($1, $2, $3, $4, NOW())
 	`, eventType, aggregateType, aggregateID, payloadBytes)
 	return err
@@ -53,7 +53,7 @@ func (s *Store) InsertOutboxEvent(ctx context.Context, eventType, aggregateType 
 func (s *Store) GetUnpublishedOutboxEvents(ctx context.Context, limit int) ([]OutboxEvent, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT id, event_type, aggregate_type, aggregate_id, payload, published, published_at, created_at
-		FROM outbox_events
+		FROM post_outbox_events
 		WHERE published = FALSE
 		ORDER BY created_at ASC
 		LIMIT $1
@@ -78,7 +78,7 @@ func (s *Store) GetUnpublishedOutboxEvents(ctx context.Context, limit int) ([]Ou
 // MarkOutboxEventPublished marks an outbox event as successfully published.
 func (s *Store) MarkOutboxEventPublished(ctx context.Context, id uuid.UUID) error {
 	_, err := s.db.Exec(ctx, `
-		UPDATE outbox_events SET published = TRUE, published_at = NOW()
+		UPDATE post_outbox_events SET published = TRUE, published_at = NOW()
 		WHERE id = $1
 	`, id)
 	return err
@@ -86,9 +86,12 @@ func (s *Store) MarkOutboxEventPublished(ctx context.Context, id uuid.UUID) erro
 
 // CleanupOldOutboxEvents removes published outbox events older than the retention period.
 func (s *Store) CleanupOldOutboxEvents(ctx context.Context, retentionHours int) (int64, error) {
+	// make_interval(hours => $1) takes an int directly — avoids the
+	// ($1 || ' hours') text concatenation that errored on the int arg
+	// ("cannot encode 48 into text").
 	tag, err := s.db.Exec(ctx, `
-		DELETE FROM outbox_events
-		WHERE published = TRUE AND published_at < NOW() - ($1 || ' hours')::INTERVAL
+		DELETE FROM post_outbox_events
+		WHERE published = TRUE AND published_at < NOW() - make_interval(hours => $1)
 	`, retentionHours)
 	if err != nil {
 		return 0, err

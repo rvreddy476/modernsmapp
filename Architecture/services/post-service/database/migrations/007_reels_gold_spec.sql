@@ -1,6 +1,6 @@
 -- 007_reels_gold_spec.sql: Gold Spec production tables for Reels system
 -- Covers: reel_hashtags, reel_crosspost, slug_history, moderation_reviews,
---         outbox_events, idempotency_keys
+--         post_outbox_events, idempotency_keys
 
 -- ─── Reel Hashtags ──────────────────────────────────────────────────
 -- Normalized hashtag storage for efficient hashtag-based queries.
@@ -74,7 +74,7 @@ COMMENT ON TABLE moderation_reviews IS 'Auto-scan and human moderation review au
 
 -- ─── Outbox Events ──────────────────────────────────────────────────
 -- Transactional outbox pattern for reliable Kafka event publishing.
-CREATE TABLE IF NOT EXISTS outbox_events (
+CREATE TABLE IF NOT EXISTS post_outbox_events (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     event_type      TEXT NOT NULL,
     aggregate_type  TEXT NOT NULL,          -- 'reel', 'post', 'draft'
@@ -85,10 +85,10 @@ CREATE TABLE IF NOT EXISTS outbox_events (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_outbox_unpublished ON outbox_events(created_at ASC) WHERE published = FALSE;
-CREATE INDEX IF NOT EXISTS idx_outbox_aggregate ON outbox_events(aggregate_type, aggregate_id);
+CREATE INDEX IF NOT EXISTS idx_outbox_unpublished ON post_outbox_events(created_at ASC) WHERE published = FALSE;
+CREATE INDEX IF NOT EXISTS idx_outbox_aggregate ON post_outbox_events(aggregate_type, aggregate_id);
 
-COMMENT ON TABLE outbox_events IS 'Transactional outbox for reliable event publishing to Kafka';
+COMMENT ON TABLE post_outbox_events IS 'Transactional outbox for reliable event publishing to Kafka';
 
 -- ─── Idempotency Keys ──────────────────────────────────────────────
 -- Prevents duplicate operations (e.g., double-publish, double-crosspost).

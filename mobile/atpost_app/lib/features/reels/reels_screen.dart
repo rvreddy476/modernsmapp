@@ -161,7 +161,9 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> with RouteAware {
       ref.read(analyticsRepositoryProvider).recordVideoView(
         contentId: post.id,
         creatorId: post.authorId,
-        contentType: post.contentType == 'video' ? 'long_video' : 'reel',
+        // Canonical short type is 'flick' (matches post content_type, RPM rates &
+        // creator-fund settlement). 'reel' records a view but never earns.
+        contentType: post.contentType == 'video' ? 'long_video' : 'flick',
         watchedMs: watchedMs,
         durationMs: (post.durationSeconds ?? 30) * 1000,
         surface: 'reels_feed',
@@ -351,47 +353,111 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> with RouteAware {
     }
   }
 
-  Future<void> _toggleDislike(Post post) async {
-    final engagement = _ensureEngagement(post);
-    final prevLiked = engagement.liked;
-    final prevDisliked = engagement.disliked;
-    final prevLikeCount = engagement.likeCount;
-    final prevDislikeCount = engagement.dislikeCount;
-
-    final shouldEnableDislike = !engagement.disliked;
-
-    setState(() {
-      if (engagement.disliked) {
-        engagement.disliked = false;
-        engagement.dislikeCount = math.max(0, engagement.dislikeCount - 1);
-      } else {
-        engagement.disliked = true;
-        engagement.dislikeCount += 1;
-        if (engagement.liked) {
-          engagement.liked = false;
-          engagement.likeCount = math.max(0, engagement.likeCount - 1);
-        }
-      }
-    });
-
-    if (!shouldEnableDislike) {
-      return;
-    }
-
+  // Report flow → POST /v1/reports (trust-safety). entity_type must be one of
+  // user/post/comment, so reels report as 'post'.
+  Future<void> _reportPost(Post post) async {
+    const reasons = <String, String>{
+      'spam': 'Spam or misleading',
+      'harassment': 'Harassment or bullying',
+      'hate_speech': 'Hate speech',
+      'violence': 'Violence or dangerous acts',
+      'nudity': 'Nudity or sexual content',
+      'misinformation': 'Misinformation',
+      'other': 'Something else',
+    };
+    final reason = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: const Color(0xFF1B1B1F),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetCtx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 16, 20, 8),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text('Report this video',
+                    style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+              ),
+            ),
+            for (final entry in reasons.entries)
+              ListTile(
+                title: Text(entry.value, style: const TextStyle(color: Colors.white, fontSize: 15)),
+                onTap: () => Navigator.of(sheetCtx).pop(entry.key),
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (reason == null) return;
     try {
-      await ref.read(postRepositoryProvider).toggleReaction(post.id, emoji: '👎');
+      await ref.read(postRepositoryProvider).submitReport(
+            targetType: 'post',
+            targetId: post.id,
+            reason: reason,
+          );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Report submitted — thanks for keeping the community safe.')),
+      );
     } catch (_) {
       if (!mounted) return;
-      setState(() {
-        engagement.liked = prevLiked;
-        engagement.disliked = prevDisliked;
-        engagement.likeCount = prevLikeCount;
-        engagement.dislikeCount = prevDislikeCount;
-      });
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not update dislike.')),
+        const SnackBar(content: Text('Could not submit report. Please try again.')),
       );
     }
+  }
+
+  // Web-parity "more options" sheet (replaces the old Dislike action).
+  Future<void> _showMoreOptions(Post post) async {
+    void toast(String msg) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+    }
+
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF1B1B1F),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetCtx) {
+        Widget item(IconData icon, String label, VoidCallback onTap) => ListTile(
+              leading: Icon(icon, color: Colors.white70),
+              title: Text(label, style: const TextStyle(color: Colors.white, fontSize: 15)),
+              onTap: () {
+                Navigator.of(sheetCtx).pop();
+                onTap();
+              },
+            );
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(height: 8),
+              Container(width: 40, height: 4, decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(2))),
+              const SizedBox(height: 8),
+              item(Icons.notes_rounded, 'Description', () {
+                final desc = post.content.trim();
+                toast(desc.isEmpty ? 'No description for this video.' : desc);
+              }),
+              item(Icons.playlist_add_rounded, 'Save to playlist', () { _toggleSave(post); toast('Saved to your playlist.'); }),
+              item(Icons.closed_caption_rounded, 'Captions', () { _toggleCaptionsFor(post.id); }),
+              item(Icons.settings_rounded, 'Quality', () => toast('Quality is set to Auto.')),
+              item(Icons.do_not_disturb_on_outlined, 'Not interested', () => toast("Got it — we'll show you fewer like this.")),
+              item(Icons.cancel_outlined, "Don't recommend this channel", () => toast("Got it — we'll recommend this channel less.")),
+              item(Icons.flag_outlined, 'Report', () => _reportPost(post)),
+              item(Icons.feedback_outlined, 'Send feedback', () => toast('Thanks — your feedback helps us improve.')),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   // Per-author follow state, keyed by post.authorId. Lifted out of the
@@ -583,7 +649,7 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> with RouteAware {
                   onToggleMute: () => setState(() => _muted = !_muted),
                   onToggleCaptions: () => _toggleCaptionsFor(post.id),
                   onLike: () => _toggleLike(post),
-                  onDislike: () => _toggleDislike(post),
+                  onMore: () => _showMoreOptions(post),
                   onComment: () => _openComments(post),
                   onShare: () => _shareReel(post),
                   onSave: () => _toggleSave(post),
@@ -630,7 +696,7 @@ class _ReelPage extends StatefulWidget {
     required this.onToggleMute,
     required this.onToggleCaptions,
     required this.onLike,
-    required this.onDislike,
+    required this.onMore,
     required this.onComment,
     required this.onShare,
     required this.onSave,
@@ -664,7 +730,7 @@ class _ReelPage extends StatefulWidget {
   final VoidCallback onToggleMute;
   final VoidCallback onToggleCaptions;
   final VoidCallback onLike;
-  final VoidCallback onDislike;
+  final VoidCallback onMore;
   final VoidCallback onComment;
   final VoidCallback onShare;
   final VoidCallback onSave;
@@ -927,17 +993,15 @@ class _ReelPageState extends State<_ReelPage> {
           bottom: widget.fullscreenRoute ? 132 : 214,
           child: _ActionRail(
             liked: widget.engagement.liked,
-            disliked: widget.engagement.disliked,
             saved: widget.engagement.saved,
             likes: widget.countLabel(widget.engagement.likeCount),
-            dislikes: widget.countLabel(widget.engagement.dislikeCount),
             comments: widget.countLabel(widget.engagement.commentCount),
             shares: widget.countLabel(widget.engagement.shareCount),
             onLike: widget.onLike,
-            onDislike: widget.onDislike,
             onComment: widget.onComment,
             onShare: widget.onShare,
             onSave: widget.onSave,
+            onMore: widget.onMore,
           ),
         ),
         // Bottom info.
@@ -986,49 +1050,39 @@ class _OverlayIconButton extends StatelessWidget {
 class _ActionRail extends StatelessWidget {
   const _ActionRail({
     required this.liked,
-    required this.disliked,
     required this.saved,
     required this.likes,
-    required this.dislikes,
     required this.comments,
     required this.shares,
     required this.onLike,
-    required this.onDislike,
     required this.onComment,
     required this.onShare,
     required this.onSave,
+    required this.onMore,
   });
 
   final bool liked;
-  final bool disliked;
   final bool saved;
   final String likes;
-  final String dislikes;
   final String comments;
   final String shares;
   final VoidCallback onLike;
-  final VoidCallback onDislike;
   final VoidCallback onComment;
   final VoidCallback onShare;
   final VoidCallback onSave;
+  final VoidCallback onMore;
 
   @override
   Widget build(BuildContext context) {
     return Column(
       children: [
+        // Love only — filled red heart + glow when loved ("I Loved It").
         _RailButton(
           icon: liked ? Icons.favorite_rounded : Icons.favorite_border_rounded,
-          label: likes,
+          label: liked ? 'Loved' : likes,
           iconColor: liked ? AppColors.postgramPrimary : Colors.white,
           glow: liked,
           onTap: onLike,
-        ),
-        const SizedBox(height: 12),
-        _RailButton(
-          icon: disliked ? Icons.thumb_down_rounded : Icons.thumb_down_outlined,
-          label: dislikes,
-          iconColor: disliked ? AppColors.postbookPrimary : Colors.white,
-          onTap: onDislike,
         ),
         const SizedBox(height: 12),
         _RailButton(
@@ -1044,6 +1098,12 @@ class _ActionRail extends StatelessWidget {
           label: 'Save',
           iconColor: saved ? AppColors.posttubePrimary : Colors.white,
           onTap: onSave,
+        ),
+        const SizedBox(height: 12),
+        _RailButton(
+          icon: Icons.more_horiz_rounded,
+          label: 'More',
+          onTap: onMore,
         ),
       ],
     );

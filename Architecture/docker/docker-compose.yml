@@ -316,9 +316,12 @@ services:
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
       JWT_SECRET: ${JWT_SECRET:-local_dev_jwt_change_me}
-      RATE_LIMIT_ENABLED: "true"
+      RATE_LIMIT_ENABLED: "false"
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
+      # Dev: tokens never expire — no more surprise logouts
+      ACCESS_TOKEN_TTL: "8760h"
+      REFRESH_TOKEN_TTL: "87600h"
     ports:
       - "8081:8081"
     depends_on:
@@ -968,7 +971,7 @@ services:
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
     ports:
-      - "8117:8117"
+      - "8118:8117"
     depends_on:
       postgres:
         condition: service_healthy
@@ -1319,7 +1322,7 @@ services:
       MINIO_BUCKET_LIVE_RECORDINGS: ${MINIO_BUCKET_LIVE_RECORDINGS:-live-recordings}
       LIVE_RECORDING_PUBLIC_BASE_URL: ${LIVE_RECORDING_PUBLIC_BASE_URL:-http://localhost:9001}
     ports:
-      - "8117:8117"
+      - "8119:8117"
     depends_on:
       postgres:
         condition: service_healthy

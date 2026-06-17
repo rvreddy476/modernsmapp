@@ -312,7 +312,10 @@ func (s *Store) GetTrendingPosts(ctx context.Context, contentTypes []string, lim
 // trending score DESC). Cursor format depends on the sort mode:
 //   - recent: RFC3339Nano timestamp
 //   - top:    base64(JSON{score, post_id})
-func (s *Store) GetPostsByHashtag(ctx context.Context, hashtag string, limit int, cursor string, sort HashtagSortMode) ([]Post, string, error) {
+// GetPostsByHashtag returns posts containing a specific hashtag, paginated.
+// contentTypes filters by content_type (e.g. ["post"], ["flick"], ["long_video"]).
+// Pass nil or empty slice to return all content types.
+func (s *Store) GetPostsByHashtag(ctx context.Context, hashtag string, limit int, cursor string, sort HashtagSortMode, contentTypes []string) ([]Post, string, error) {
 	if limit <= 0 || limit > 50 {
 		limit = 20
 	}
@@ -321,24 +324,28 @@ func (s *Store) GetPostsByHashtag(ctx context.Context, hashtag string, limit int
 	}
 
 	if sort == HashtagSortTop {
-		return s.getPostsByHashtagTop(ctx, hashtag, limit, cursor)
+		return s.getPostsByHashtagTop(ctx, hashtag, limit, cursor, contentTypes)
 	}
-	return s.getPostsByHashtagRecent(ctx, hashtag, limit, cursor)
+	return s.getPostsByHashtagRecent(ctx, hashtag, limit, cursor, contentTypes)
 }
 
-func (s *Store) getPostsByHashtagRecent(ctx context.Context, hashtag string, limit int, cursor string) ([]Post, string, error) {
-	var args []interface{}
-	args = append(args, hashtag, limit+1)
+func (s *Store) getPostsByHashtagRecent(ctx context.Context, hashtag string, limit int, cursor string, contentTypes []string) ([]Post, string, error) {
+	args := []interface{}{hashtag, limit + 1}
 
 	query := `SELECT ` + postCols + `
 		FROM posts p
 		WHERE $1 = ANY(p.hashtags) AND p.deleted_at IS NULL AND p.visibility = 'public'`
 
+	if len(contentTypes) > 0 {
+		args = append(args, contentTypes)
+		query += fmt.Sprintf(` AND p.content_type = ANY($%d)`, len(args))
+	}
+
 	if cursor != "" {
 		cursorTime, err := time.Parse(time.RFC3339Nano, cursor)
 		if err == nil {
-			query += ` AND p.created_at < $3`
 			args = append(args, cursorTime)
+			query += fmt.Sprintf(` AND p.created_at < $%d`, len(args))
 		}
 	}
 
@@ -361,7 +368,6 @@ func (s *Store) getPostsByHashtagRecent(ctx context.Context, hashtag string, lim
 		posts = posts[:limit]
 	}
 
-	// Batch-fetch media
 	if len(posts) > 0 {
 		postIDs := make([]uuid.UUID, len(posts))
 		for i, p := range posts {
@@ -389,15 +395,13 @@ func (s *Store) getPostsByHashtagRecent(ctx context.Context, hashtag string, lim
 	return posts, nextCursor, nil
 }
 
-func (s *Store) getPostsByHashtagTop(ctx context.Context, hashtag string, limit int, cursor string) ([]Post, string, error) {
+func (s *Store) getPostsByHashtagTop(ctx context.Context, hashtag string, limit int, cursor string, contentTypes []string) ([]Post, string, error) {
 	args := []interface{}{hashtag, limit + 1}
 
 	prefixedCols := strings.ReplaceAll(
 		strings.ReplaceAll(postCols, "\n", " "),
 		"  ", " ",
 	)
-	// Prefix every bare column name with `p.` so the JOIN below isn't ambiguous.
-	// Cheap and contained: postCols is a static list, no user input.
 	cols := make([]string, 0)
 	for _, c := range strings.Split(prefixedCols, ",") {
 		c = strings.TrimSpace(c)
@@ -413,12 +417,17 @@ func (s *Store) getPostsByHashtagTop(ctx context.Context, hashtag string, limit 
 		LEFT JOIN post_engagement_counts c ON c.post_id = p.id
 		WHERE $1 = ANY(p.hashtags) AND p.deleted_at IS NULL AND p.visibility = 'public'`
 
+	if len(contentTypes) > 0 {
+		args = append(args, contentTypes)
+		query += fmt.Sprintf(` AND p.content_type = ANY($%d)`, len(args))
+	}
+
 	if cursor != "" {
 		if cur, err := decodeHashtagTopCursor(cursor); err == nil {
 			postUUID, err2 := uuid.Parse(cur.PostID)
 			if err2 == nil {
-				query += ` AND (` + hashtagTopScoreExpr + `, p.id) < ($3, $4)`
 				args = append(args, cur.Score, postUUID)
+				query += fmt.Sprintf(` AND (`+hashtagTopScoreExpr+`, p.id) < ($%d, $%d)`, len(args)-1, len(args))
 			}
 		}
 	}
@@ -467,6 +476,28 @@ func (s *Store) getPostsByHashtagTop(ctx context.Context, hashtag string, limit 
 	}
 
 	return posts, nextCursor, nil
+}
+
+// GetBlockedHashtags returns which of the given tags are marked is_blocked=true.
+// Used in CreatePost to filter out blocked hashtags before saving.
+func (s *Store) GetBlockedHashtags(ctx context.Context, tags []string) ([]string, error) {
+	if len(tags) == 0 {
+		return nil, nil
+	}
+	rows, err := s.db.Query(ctx, `SELECT tag FROM hashtags WHERE tag = ANY($1) AND is_blocked = TRUE`, tags)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var blocked []string
+	for rows.Next() {
+		var t string
+		if err := rows.Scan(&t); err != nil {
+			return nil, err
+		}
+		blocked = append(blocked, t)
+	}
+	return blocked, rows.Err()
 }
 
 // HashtagSuggestion is a single result from prefix-search over posts.hashtags.

@@ -694,7 +694,7 @@ func ensureSchema(ctx context.Context, db *pgxpool.Pool) {
 		}
 	}
 
-	// Gold Spec tables (migration 007): reel_crosspost, outbox_events, idempotency_keys, etc.
+	// Gold Spec tables (migration 007): reel_crosspost, post_outbox_events, idempotency_keys, etc.
 	goldSpecDDL := []string{
 		`CREATE TABLE IF NOT EXISTS reel_hashtags (
 			reel_id     UUID NOT NULL,
@@ -742,7 +742,7 @@ func ensureSchema(ctx context.Context, db *pgxpool.Pool) {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_moderation_reviews_reel ON moderation_reviews(reel_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_moderation_reviews_decision ON moderation_reviews(decision) WHERE decision IN ('flagged', 'pending_review')`,
-		`CREATE TABLE IF NOT EXISTS outbox_events (
+		`CREATE TABLE IF NOT EXISTS post_outbox_events (
 			id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			event_type      TEXT NOT NULL,
 			aggregate_type  TEXT NOT NULL,
@@ -752,8 +752,8 @@ func ensureSchema(ctx context.Context, db *pgxpool.Pool) {
 			published_at    TIMESTAMPTZ,
 			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_outbox_unpublished ON outbox_events(created_at ASC) WHERE published = FALSE`,
-		`CREATE INDEX IF NOT EXISTS idx_outbox_aggregate ON outbox_events(aggregate_type, aggregate_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_outbox_unpublished ON post_outbox_events(created_at ASC) WHERE published = FALSE`,
+		`CREATE INDEX IF NOT EXISTS idx_outbox_aggregate ON post_outbox_events(aggregate_type, aggregate_id)`,
 		`CREATE TABLE IF NOT EXISTS idempotency_keys (
 			key             TEXT PRIMARY KEY,
 			result_status   INT NOT NULL,
@@ -825,12 +825,19 @@ func ensureSchema(ctx context.Context, db *pgxpool.Pool) {
 	// stay idempotent. The flush worker UPSERTs via SetHashtagUseCount.
 	hashtagsDDL := []string{
 		`CREATE TABLE IF NOT EXISTS hashtags (
-			tag        TEXT PRIMARY KEY,
-			use_count  BIGINT NOT NULL DEFAULT 0,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			tag            TEXT PRIMARY KEY,
+			use_count      BIGINT NOT NULL DEFAULT 0,
+			is_blocked     BOOLEAN NOT NULL DEFAULT FALSE,
+			is_sensitive   BOOLEAN NOT NULL DEFAULT FALSE,
+			blocked_reason TEXT,
+			created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_hashtags_use_count ON hashtags(use_count DESC)`,
+		`ALTER TABLE hashtags ADD COLUMN IF NOT EXISTS is_blocked   BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE hashtags ADD COLUMN IF NOT EXISTS is_sensitive BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE hashtags ADD COLUMN IF NOT EXISTS blocked_reason TEXT`,
+		`CREATE INDEX IF NOT EXISTS idx_hashtags_blocked ON hashtags(is_blocked) WHERE is_blocked = TRUE`,
 	}
 	for _, stmt := range hashtagsDDL {
 		if _, err := db.Exec(ctx, stmt); err != nil {

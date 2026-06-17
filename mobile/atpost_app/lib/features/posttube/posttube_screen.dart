@@ -70,7 +70,8 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
       ref.read(analyticsRepositoryProvider).recordVideoView(
         contentId: post.id,
         creatorId: post.authorId,
-        contentType: post.contentType == 'reel' ? 'reel' : 'long_video',
+        // Short content earns only as 'flick' (settlement ignores 'reel').
+        contentType: (post.contentType == 'reel' || post.contentType == 'flick') ? 'flick' : 'long_video',
         watchedMs: watchedMs,
         durationMs: (post.durationSeconds ?? 0) * 1000,
         surface: 'posttube_watch',

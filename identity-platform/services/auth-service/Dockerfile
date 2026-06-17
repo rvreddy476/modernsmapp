@@ -11,6 +11,5 @@ RUN go build -o /server ./cmd/server/main.go
 FROM alpine:3.19
 RUN apk add --no-cache ca-certificates
 COPY --from=builder /server /server
-COPY services/auth-service/docs/ /docs/
 WORKDIR /
 CMD ["/server"]

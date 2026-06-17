@@ -1,5 +1,7 @@
 # Resume after Ubuntu reinstall — session continuity notes
 
+> **Running the local Docker stack?**  See [`docs/docker-bringup.md`](docker-bringup.md) — one script handles everything (IPv4 fix, image pulls, sequential builds, health checks).
+
 You're formatting Windows → installing Ubuntu. This doc captures
 **where the work stopped** so the next session (fresh Claude Code
 on Ubuntu) can pick up without source-diving.
@@ -111,6 +113,12 @@ Ordered by what makes the most sense first.
 2. Clone the two repos (commands above).
 3. `gh auth login` to authenticate the GitHub CLI.
 4. `aws configure` with staging-account credentials.
+5. **Bring up the local Docker stack:**
+   ```bash
+   cd ~/code/Vchat/modernsmapp
+   bash scripts/docker-bringup.sh   # handles IPv4 fix, pulls, builds, health checks
+   ```
+   Full details: `docs/docker-bringup.md`
 
 ### Deploy track (was paused at "ready to apply terraform")
 

@@ -26,7 +26,7 @@ import (
 )
 
 var (
-	hashtagRegex = regexp.MustCompile(`#(\w{1,50})`)
+	hashtagRegex = regexp.MustCompile(`#([\p{L}\p{M}\p{N}_]{2,50})`)
 	mentionRegex = regexp.MustCompile(`@(\w{1,30})`)
 	// dbMentionRegex is the persistence-side mention pattern — 3+
 	// chars and `.` allowed (handles handles like `john.doe`).
@@ -294,6 +294,29 @@ func extractHashtags(text string) []string {
 	return tags
 }
 
+// filterBlockedHashtags removes any tags that are marked is_blocked=true in
+// the hashtags table. Fails open: if the DB check errors, all tags are kept.
+func (s *Service) filterBlockedHashtags(ctx context.Context, tags []string) []string {
+	if len(tags) == 0 {
+		return tags
+	}
+	blocked, err := s.pgStore.GetBlockedHashtags(ctx, tags)
+	if err != nil || len(blocked) == 0 {
+		return tags
+	}
+	blockedSet := make(map[string]bool, len(blocked))
+	for _, t := range blocked {
+		blockedSet[t] = true
+	}
+	out := tags[:0]
+	for _, t := range tags {
+		if !blockedSet[t] {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 // extractMentions parses @username patterns from text.
 // maxMentionsPerPost caps the number of unique @-mentions extracted
 // from a single post. Audit H3: the per-mention resolver fans out one
@@ -460,8 +483,12 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		appOrigin = "postbook"
 	}
 
-	// Extract hashtags from text
+	// Extract hashtags from text (cap at 20 per design spec)
 	hashtags := extractHashtags(input.Text)
+	if len(hashtags) > 20 {
+		hashtags = hashtags[:20]
+	}
+	hashtags = s.filterBlockedHashtags(ctx, hashtags)
 
 	// Extract @mentions from text
 	mentions := extractMentions(input.Text)
@@ -1719,6 +1746,25 @@ func (s *Service) CreateCommentPG(ctx context.Context, postID, authorID uuid.UUI
 		return nil, err
 	}
 
+	// Bump trending scores for hashtags in the comment body (max 5 per design spec).
+	// Fire-and-forget: comment hashtags influence trending but are not stored per-comment.
+	if commentTags := extractHashtags(body); len(commentTags) > 0 {
+		if len(commentTags) > 5 {
+			commentTags = commentTags[:5]
+		}
+		go func() {
+			bgCtx := context.Background()
+			today := time.Now().UTC().Format("2006-01-02")
+			key := "trending:hashtags:" + today
+			for _, tag := range commentTags {
+				if err := s.rdb.ZIncrBy(bgCtx, key, 0.5, tag).Err(); err != nil {
+					log.Printf("Warning: failed to bump comment hashtag trending for %s: %v", tag, err)
+				}
+			}
+			s.rdb.Expire(bgCtx, key, 48*time.Hour)
+		}()
+	}
+
 	// Bump the sharded post_engagement_counts.comment_count via Redis
 	// (with PG fallback inside adjustEngagementCount). The matching
 	// flush worker in cmd/server/main.go materialises the shard sum
@@ -2360,12 +2406,13 @@ func (s *Service) ListCollections(ctx context.Context, userID uuid.UUID) ([]post
 
 // GetPostsByHashtag returns posts with a specific hashtag.
 // sort accepts "top" or "recent" (default).
-func (s *Service) GetPostsByHashtag(ctx context.Context, hashtag string, limit int, cursor, sort string) ([]PostDetail, string, error) {
+// contentTypes filters by content_type (e.g. ["post"], ["flick"], ["long_video"]); nil = all.
+func (s *Service) GetPostsByHashtag(ctx context.Context, hashtag string, limit int, cursor, sort string, contentTypes []string) ([]PostDetail, string, error) {
 	mode := postgres.HashtagSortRecent
 	if sort == "top" {
 		mode = postgres.HashtagSortTop
 	}
-	posts, nextCursor, err := s.pgStore.GetPostsByHashtag(ctx, hashtag, limit, cursor, mode)
+	posts, nextCursor, err := s.pgStore.GetPostsByHashtag(ctx, hashtag, limit, cursor, mode, contentTypes)
 	if err != nil {
 		return nil, "", err
 	}
