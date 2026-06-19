@@ -268,6 +268,7 @@ services:
       SEARCH_SERVICE_URL: http://search-service:8089
       MONETIZATION_SERVICE_URL: http://monetization-service:8099
       TRUST_SAFETY_SERVICE_URL: http://trust-safety-service:8091
+      REVIEWER_SERVICE_URL: http://reviewer-service:8120
       MESSAGE_SERVICE_URL: http://chat-message-service:8092
       ANALYTICS_SERVICE_URL: http://analytics-service:8094
       AI_SERVICE_URL: http://ai-service:8117
@@ -510,6 +511,7 @@ services:
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
       USER_SERVICE_URL: http://identity-user:8110
+      REVIEWER_SERVICE_URL: http://reviewer-service:8120
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
       # Migration runner baseline knob — leave default ("false") so new migration
@@ -759,6 +761,31 @@ services:
         condition: service_healthy
       redpanda:
         condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+  reviewer-service:
+    build:
+      context: ..
+      dockerfile: services/reviewer-service/Dockerfile
+    environment:
+      HTTP_PORT: "8120"
+      POSTGRES_DSN: *app_postgres_dsn
+      GRAPH_SERVICE_URL: http://graph-service:8083
+      MONETIZATION_SERVICE_URL: http://monetization-service:8099
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      REVIEWER_CREDIT_ENABLED: "false"
+    ports:
+      - "8120:8120"
+    depends_on:
+      postgres:
+        condition: service_healthy
     deploy:
       resources:
         limits:

@@ -120,6 +120,7 @@ func main() {
 	postSvc := service.New(pgStore, scyllaInteractionStore, rdb)
 	postSvc.SetGraphServiceURL(env("GRAPH_SERVICE_URL", "http://graph-service:8083"))
 	postSvc.SetMonetizationServiceURL(env("MONETIZATION_SERVICE_URL", "http://monetization-service:8099"))
+	postSvc.SetReviewerServiceURL(env("REVIEWER_SERVICE_URL", "http://reviewer-service:8120"))
 	postSvc.SetInternalServiceKey(os.Getenv("INTERNAL_SERVICE_KEY"))
 
 	// 7. Kafka producers
@@ -501,6 +502,21 @@ func ensureSchema(ctx context.Context, db *pgxpool.Pool) {
 		// Tier 3c: membership gating. NULL tier_required_id = public.
 		`ALTER TABLE posts ADD COLUMN IF NOT EXISTS tier_required_id UUID`,
 		`CREATE INDEX IF NOT EXISTS idx_posts_tier_required ON posts (tier_required_id) WHERE tier_required_id IS NOT NULL`,
+
+		// Product feedback (distinct from trust-safety reports). See
+		// migrations/022_app_feedback.sql — duplicated here for live DBs that
+		// only run setup.sql/migrations on a fresh bootstrap (schema-drift).
+		`CREATE TABLE IF NOT EXISTS app_feedback (
+			id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			user_id        UUID NOT NULL,
+			feedback_type  TEXT NOT NULL DEFAULT 'other'
+				CHECK (feedback_type IN ('bug','feature','performance','content','ui','other')),
+			post_id        UUID,
+			message        TEXT NOT NULL CHECK (char_length(message) BETWEEN 1 AND 5000),
+			context        TEXT,
+			created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_app_feedback_user ON app_feedback (user_id, created_at DESC)`,
 	}
 
 	for _, stmt := range ddl {

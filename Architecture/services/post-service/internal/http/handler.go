@@ -205,6 +205,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	}
 	r.GET("/v1/creators/:creatorId/playlists", h.ListCreatorPlaylists)
 
+	// Product feedback (distinct from trust-safety reports).
+	r.POST("/v1/feedback", h.SubmitFeedback)
+
 	// Chapters / end screens / cards
 	r.POST("/v1/posts/:postId/chapters", h.SaveChapters)
 	r.GET("/v1/posts/:postId/chapters", h.GetChapters)

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -51,19 +52,20 @@ var (
 )
 
 type Service struct {
-	pgStore         *postgres.Store
-	scyllaStore     *scylla.InteractionStore
-	scyllaSession   *gocql.Session
-	rdb             *redis.Client
-	producer        *postEvents.Producer // legacy producer, optional
-	engProducer     *engagement.Producer // new engagement event producer
-	rateLimiter     *engagement.RateLimiter
-	spam            *spam.Detector
-	userServiceURL          string
-	graphServiceURL         string
-	monetizationServiceURL  string
-	internalServiceKey      string
-	httpClient              *http.Client
+	pgStore                *postgres.Store
+	scyllaStore            *scylla.InteractionStore
+	scyllaSession          *gocql.Session
+	rdb                    *redis.Client
+	producer               *postEvents.Producer // legacy producer, optional
+	engProducer            *engagement.Producer // new engagement event producer
+	rateLimiter            *engagement.RateLimiter
+	spam                   *spam.Detector
+	userServiceURL         string
+	graphServiceURL        string
+	monetizationServiceURL string
+	reviewerServiceURL     string
+	internalServiceKey     string
+	httpClient             *http.Client
 
 	// Sharded post_engagement_counts counters. Each replaces a hot-row
 	// UPDATE on post_engagement_counts.<col> = <col> + 1 — at celebrity-
@@ -201,6 +203,52 @@ func (s *Service) SetMonetizationServiceURL(url string) {
 // when calling other services. Empty means no header set.
 func (s *Service) SetInternalServiceKey(key string) {
 	s.internalServiceKey = key
+}
+
+// SetReviewerServiceURL configures the reviewer-service base URL used to
+// enqueue flagged video content for human review. Empty disables enqueue.
+func (s *Service) SetReviewerServiceURL(url string) {
+	s.reviewerServiceURL = url
+}
+
+// enqueueForReview best-effort notifies reviewer-service that a piece of video
+// content needs human review (review_status='flagged'). Fire-and-forget: never
+// blocks or fails the post-create/transcode path. No-op when the URL is unset
+// or the content isn't video.
+func (s *Service) enqueueForReview(p *postgres.Post) {
+	if s.reviewerServiceURL == "" || !isVideoContentType(p.ContentType) {
+		return
+	}
+	langs := []string{}
+	if p.Language != "" {
+		langs = []string{p.Language}
+	}
+	body, _ := json.Marshal(map[string]any{
+		"content_id":      p.ID.String(),
+		"creator_id":      p.AuthorID.String(),
+		"content_type":    p.ContentType,
+		"languages":       langs,
+		"content_seconds": 0, // duration may not be known yet; reviewer caps anyway
+	})
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+			s.reviewerServiceURL+"/v1/reviewer/internal/enqueue", bytes.NewReader(body))
+		if err != nil {
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if s.internalServiceKey != "" {
+			req.Header.Set("X-Internal-Service-Key", s.internalServiceKey)
+		}
+		resp, err := s.httpClient.Do(req)
+		if err != nil {
+			slog.Warn("reviewer enqueue failed (best-effort)", "post", p.ID, "err", err)
+			return
+		}
+		_ = resp.Body.Close()
+	}()
 }
 
 // SetProducer sets the legacy Kafka producer for engagement events.
@@ -705,6 +753,11 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	// terminal verdict when it finalizes the gate.
 	if isVideoContentType(p.ContentType) && reviewStatus != "pending" {
 		s.RecordVideoModeration(ctx, p.ID, reviewStatus, spamResult.Score)
+	}
+
+	// Route flagged video content to the human-review queue (best-effort).
+	if reviewStatus == "flagged" {
+		s.enqueueForReview(p)
 	}
 
 	// Persist @mentions to post_mentions table

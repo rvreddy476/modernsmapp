@@ -24,6 +24,7 @@ use (
 	./services/payments-service
 	./services/post-service
 	./services/qa-service
+	./services/reviewer-service
 	./services/search-service
 	./services/suggestion-service
 	./services/trust-safety-service
