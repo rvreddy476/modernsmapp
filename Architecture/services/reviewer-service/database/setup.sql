@@ -53,7 +53,9 @@ CREATE TABLE IF NOT EXISTS reviewer.review_assignments (
     expires_at      TIMESTAMPTZ NOT NULL,
     decided_at      TIMESTAMPTZ,
     CONSTRAINT assignments_status_chk CHECK (status IN ('assigned','in_progress','completed','expired','reassigned')),
-    CONSTRAINT assignments_decision_chk CHECK (decision IS NULL OR decision IN ('approve','reject','flag_unsafe'))
+    -- Reviewer decisions: a reviewer either APPROVEs (publish) or ESCALATEs to a
+    -- super-admin with comments. (reject/flag_unsafe kept for backward compat.)
+    CONSTRAINT assignments_decision_chk CHECK (decision IS NULL OR decision IN ('approve','escalate','reject','flag_unsafe'))
 );
 
 -- Enforce a single active PRIMARY reviewer per content. Scoped to kind='primary'
@@ -89,6 +91,29 @@ CREATE TABLE IF NOT EXISTS reviewer.reviewer_ledger (
 );
 CREATE INDEX IF NOT EXISTS idx_reviewer_ledger_reviewer
     ON reviewer.reviewer_ledger (reviewer_id, period DESC);
+
+-- Escalations: when a reviewer can't approve, they escalate to a super-admin
+-- with comments. The super-admin decides reject | request_edits | approve.
+CREATE TABLE IF NOT EXISTS reviewer.escalations (
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    content_id        UUID NOT NULL,
+    creator_id        UUID NOT NULL,
+    reviewer_id       UUID NOT NULL REFERENCES reviewer.reviewers(id),
+    assignment_id     UUID REFERENCES reviewer.review_assignments(id),
+    reviewer_comments TEXT NOT NULL DEFAULT '',
+    status            TEXT NOT NULL DEFAULT 'open',  -- open | resolved
+    admin_decision    TEXT,                          -- reject | request_edits | approve
+    admin_notes       TEXT,                          -- what to remove / why
+    resolved_by       UUID,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    resolved_at       TIMESTAMPTZ,
+    CONSTRAINT escalations_status_chk CHECK (status IN ('open','resolved')),
+    CONSTRAINT escalations_decision_chk CHECK (admin_decision IS NULL OR admin_decision IN ('reject','request_edits','approve'))
+);
+CREATE INDEX IF NOT EXISTS idx_escalations_open
+    ON reviewer.escalations (created_at) WHERE status = 'open';
+CREATE INDEX IF NOT EXISTS idx_escalations_creator
+    ON reviewer.escalations (creator_id, created_at DESC);
 
 -- Phase 3 integrity: every audit/shadow mismatch, behavioural anomaly, and
 -- ring-detection hit is recorded here. Drives clawbacks + auto-suspension.

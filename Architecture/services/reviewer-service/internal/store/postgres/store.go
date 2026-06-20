@@ -265,7 +265,7 @@ func (s *Store) AssignmentsToGrade(ctx context.Context, maturity time.Duration, 
 		SELECT id, content_id, reviewer_id, decision
 		FROM reviewer.review_assignments
 		WHERE status = 'completed' AND graded = false AND kind = 'primary'
-		  AND decision IN ('approve','reject')
+		  AND decision = 'approve'
 		  AND decided_at < now() - $1::interval
 		ORDER BY decided_at ASC
 		LIMIT $2`, maturity.String(), limit)

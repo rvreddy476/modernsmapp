@@ -223,6 +223,31 @@ func (s *Service) AutoResolveFlagged(ctx context.Context, postID uuid.UUID, stat
 	return ok, err
 }
 
+// Resubmit lets the creator send an edited post (in 'needs_changes' after a
+// super-admin requested edits) back into human review. Owner-gated; re-enqueues
+// to reviewer-service so the loop continues.
+func (s *Service) Resubmit(ctx context.Context, postID, actorID uuid.UUID) (bool, error) {
+	owner, err := s.IsPostAuthor(ctx, postID, actorID)
+	if err != nil {
+		return false, err
+	}
+	if !owner {
+		return false, fmt.Errorf("forbidden: not the author")
+	}
+	changed, err := s.pgStore.ResubmitFromNeedsChanges(ctx, postID)
+	if err != nil || !changed {
+		return false, err
+	}
+	if s.rdb != nil {
+		_ = s.rdb.Del(ctx, "post:body:"+postID.String()).Err()
+	}
+	// Re-enqueue for human review (fresh content → let the pre-filter/human decide).
+	if posts, err := s.pgStore.GetPostsByIDs(ctx, []uuid.UUID{postID}); err == nil && len(posts) > 0 {
+		s.enqueueForReview(&posts[0], 0)
+	}
+	return true, nil
+}
+
 // PromoteStaged finalizes a test-audience rollout by moving a STAGED post to a
 // new visibility (typically 'public'). Used by the reviewer promotion worker.
 func (s *Service) PromoteStaged(ctx context.Context, postID uuid.UUID, visibility string) (bool, error) {

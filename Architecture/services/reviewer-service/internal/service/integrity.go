@@ -127,21 +127,15 @@ func (s *Service) onPrimaryDecided(a *postgres.Assignment, decision string) {
 	if !s.integrity.Enabled {
 		return
 	}
-	var kind string
-	switch decision {
-	case "approve":
-		if rand.Float64() >= s.integrity.AuditRate {
-			return
-		}
-		kind = "audit"
-	case "reject":
-		if rand.Float64() >= s.integrity.ShadowRate {
-			return
-		}
-		kind = "shadow"
-	default:
-		return // flag_unsafe is routed to trust-safety, not double-reviewed here
+	// Only approvals get a silent second (audit) review — they're the decisions
+	// that publish. Escalations already get a second pair of eyes (the admin).
+	if decision != "approve" {
+		return
 	}
+	if rand.Float64() >= s.integrity.AuditRate {
+		return
+	}
+	kind := "audit"
 
 	contentID, creatorID, primaryReviewer := a.ContentID, a.CreatorID, a.ReviewerID
 	contentSeconds := a.ContentSeconds
@@ -182,15 +176,10 @@ func (s *Service) onSecondaryDecided(a *postgres.Assignment, secondaryDecision s
 			return
 		}
 		var flagType string
-		switch kind {
-		case "audit": // primary approved → mismatch if the auditor would block
-			if secondaryDecision == "reject" || secondaryDecision == "flag_unsafe" {
-				flagType = "audit_mismatch"
-			}
-		case "shadow": // primary rejected → mismatch if the shadow would approve
-			if secondaryDecision == "approve" {
-				flagType = "shadow_mismatch"
-			}
+		// Audit: the primary approved. Mismatch if the auditor would NOT approve
+		// (i.e. they escalated) — the primary may have wrongly published it.
+		if kind == "audit" && secondaryDecision != "approve" {
+			flagType = "audit_mismatch"
 		}
 		if flagType == "" {
 			return // the two reviewers agreed — nothing to do

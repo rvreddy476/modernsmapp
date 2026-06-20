@@ -825,6 +825,19 @@ func (s *Store) SetReviewStatusFromFlagged(ctx context.Context, postID uuid.UUID
 	return tag.RowsAffected() > 0, nil
 }
 
+// ResubmitFromNeedsChanges flips a NEEDS_CHANGES post back to 'flagged' so it
+// re-enters human review (the creator edited per the super-admin's notes).
+func (s *Store) ResubmitFromNeedsChanges(ctx context.Context, postID uuid.UUID) (bool, error) {
+	tag, err := s.db.Exec(ctx, `
+		UPDATE posts SET review_status = 'flagged', updated_at = NOW()
+		WHERE id = $1 AND review_status = 'needs_changes'
+	`, postID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 // SetVisibilityFromStaged promotes a STAGED post to a new visibility (e.g.
 // 'public'). Scoped to visibility='staged' so the reviewer promotion worker can
 // only finalize the test-audience rollout, never change other visibilities.

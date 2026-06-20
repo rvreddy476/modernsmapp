@@ -80,6 +80,27 @@ func (h *Handler) SetReviewStatusInternal(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, gin.H{"changed": changed, "status": req.Status}, nil)
 }
 
+// Resubmit — POST /v1/posts/:postId/resubmit. Creator sends an edited post (in
+// 'needs_changes') back into human review. Owner-gated.
+func (h *Handler) Resubmit(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
+		return
+	}
+	postID, err := uuid.Parse(c.Param("postId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
+		return
+	}
+	changed, err := h.svc.Resubmit(c.Request.Context(), postID, userID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"resubmitted": changed}, nil)
+}
+
 type setVisibilityRequest struct {
 	PostID     string `json:"post_id" binding:"required"`
 	Visibility string `json:"visibility" binding:"required"` // typically "public"

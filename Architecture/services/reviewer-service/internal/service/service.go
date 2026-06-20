@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/atpost/reviewer-service/internal/clients"
@@ -175,26 +176,28 @@ func (s *Service) Heartbeat(ctx context.Context, userID, assignmentID uuid.UUID,
 	return s.store.Heartbeat(ctx, assignmentID, r.ID, addSeconds)
 }
 
-// Decide records the verdict, completes the assignment, accrues capped base pay
-// (durable, local), and best-effort credits the monetization ledger. flag_unsafe
-// is recorded here; routing to trust-safety's pipeline is wired in Phase 3.
-func (s *Service) Decide(ctx context.Context, userID, assignmentID uuid.UUID, decision, reason string) (*postgres.Assignment, error) {
+// Decide records the reviewer's verdict. A reviewer either APPROVEs (the post is
+// published — review_status flipped to approved) or ESCALATEs with comments to a
+// super-admin. Either way the assignment completes and capped base pay accrues.
+func (s *Service) Decide(ctx context.Context, userID, assignmentID uuid.UUID, decision, comments string) (*postgres.Assignment, error) {
 	switch decision {
-	case "approve", "reject", "flag_unsafe":
+	case "approve", "escalate":
 	default:
 		return nil, ErrInvalidInput
+	}
+	if decision == "escalate" && strings.TrimSpace(comments) == "" {
+		return nil, ErrInvalidInput // escalation must explain why
 	}
 	r, err := s.store.GetReviewerByUser(ctx, userID)
 	if err != nil {
 		return nil, ErrNotReviewer
 	}
-	a, err := s.store.Decide(ctx, assignmentID, r.ID, decision, reason)
+	a, err := s.store.Decide(ctx, assignmentID, r.ID, decision, comments)
 	if err != nil {
 		return nil, err
 	}
 
-	// Base pay accrual is durable + idempotent (local ledger). The monetization
-	// credit is best-effort now; Phase 2 settlement reconciles accruals → payout.
+	// Base pay accrual is durable + idempotent (local ledger).
 	if s.basePayPaise > 0 {
 		if err := s.store.MarkBasePaid(ctx, a.ID, r.ID, s.basePayPaise); err != nil {
 			slog.Error("accrue base pay failed", "assignment", a.ID, "err", err)
@@ -206,15 +209,65 @@ func (s *Service) Decide(ctx context.Context, userID, assignmentID uuid.UUID, de
 		}
 	}
 
-	// Phase 3 integrity hooks (run before the creator id is blinded below).
-	if a.Kind == "primary" {
-		s.onPrimaryDecided(a, decision)
-	} else {
-		s.onSecondaryDecided(a, decision)
+	switch decision {
+	case "approve":
+		// Publish: flip flagged → approved. (Secondary/audit assignments don't
+		// publish — they only cross-check the primary, handled below.)
+		if a.Kind == "primary" {
+			if err := s.clients.SetPostReviewStatus(ctx, a.ContentID, "approved"); err != nil {
+				slog.Warn("publish-on-approve failed", "content", a.ContentID, "err", err)
+			}
+			s.onPrimaryDecided(a, decision)
+		} else {
+			s.onSecondaryDecided(a, decision)
+		}
+	case "escalate":
+		// Hand off to the super-admin queue; the post stays flagged (hidden).
+		if err := s.store.CreateEscalation(ctx, a.ContentID, a.CreatorID, r.ID, a.ID, comments); err != nil {
+			slog.Error("create escalation failed", "content", a.ContentID, "err", err)
+		}
+		if a.Kind != "primary" {
+			s.onSecondaryDecided(a, decision)
+		}
 	}
 
 	a.CreatorID = uuid.Nil // keep creator hidden in the response
 	return a, nil
+}
+
+// ListEscalations returns the open super-admin queue.
+func (s *Service) ListEscalations(ctx context.Context, limit int) ([]postgres.Escalation, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	return s.store.ListOpenEscalations(ctx, limit)
+}
+
+// ResolveEscalation applies the super-admin decision and flips the post's
+// review_status: reject→rejected, request_edits→needs_changes, approve→approved.
+func (s *Service) ResolveEscalation(ctx context.Context, escalationID, adminID uuid.UUID, decision, notes string) (*postgres.Escalation, error) {
+	target, ok := map[string]string{
+		"reject":        "rejected",
+		"request_edits": "needs_changes",
+		"approve":       "approved",
+	}[decision]
+	if !ok {
+		return nil, ErrInvalidInput
+	}
+	esc, err := s.store.ResolveEscalation(ctx, escalationID, adminID, decision, notes)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.clients.SetPostReviewStatus(ctx, esc.ContentID, target); err != nil {
+		slog.Warn("escalation post-status flip failed", "content", esc.ContentID, "target", target, "err", err)
+	}
+	return esc, nil
+}
+
+// CreatorFeedback returns the latest escalation outcome for a creator's own
+// content (the "needs changes" comments the creator must act on).
+func (s *Service) CreatorFeedback(ctx context.Context, creatorID, contentID uuid.UUID) (*postgres.Escalation, error) {
+	return s.store.LatestEscalationForContent(ctx, creatorID, contentID)
 }
 
 // RunExpirySweeper periodically expires overdue assignments and re-queues them.

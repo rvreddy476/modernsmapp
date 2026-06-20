@@ -82,6 +82,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/:postId/comments/around/:commentId", h.ListCommentsAround)
 		v1.POST("/:postId/bookmark", h.ToggleBookmark)
 		v1.DELETE("/:postId/bookmark", h.RemoveBookmark)
+		v1.POST("/:postId/resubmit", h.Resubmit)
 		v1.GET("/:postId/poll", h.GetPoll)
 		v1.POST("/:postId/vote", h.CastVote)
 

@@ -3,6 +3,7 @@ package http
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/atpost/reviewer-service/internal/service"
 	"github.com/atpost/reviewer-service/internal/store/postgres"
@@ -26,10 +27,27 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		g.GET("/assignments/next", h.NextAssignment)
 		g.POST("/assignments/:id/heartbeat", h.Heartbeat)
 		g.POST("/assignments/:id/decision", h.Decide)
+		// Creator-facing: the latest review feedback for the creator's own content
+		// (the "needs changes" comments to act on).
+		g.GET("/content/:contentId/feedback", h.CreatorFeedback)
+		// Super-admin escalation queue (scope-guarded in the handlers).
+		g.GET("/admin/escalations", h.ListEscalations)
+		g.POST("/admin/escalations/:id/decision", h.ResolveEscalation)
 		// Service-internal: post-service (or an admin tool) enqueues content
 		// that needs human review (review_status='flagged'/ambiguous).
 		g.POST("/internal/enqueue", h.Enqueue)
 	}
+}
+
+// isAdmin reports whether the caller carries an admin/superadmin scope (set by
+// the gateway from the JWT). Used to guard the super-admin escalation queue.
+func isAdmin(c *gin.Context) bool {
+	for _, s := range strings.Fields(c.GetHeader("X-Scopes")) {
+		if s == "admin" || s == "superadmin" {
+			return true
+		}
+	}
+	return false
 }
 
 func userID(c *gin.Context) (uuid.UUID, bool) {
@@ -141,8 +159,8 @@ func (h *Handler) Heartbeat(c *gin.Context) {
 }
 
 type decideRequest struct {
-	Decision string `json:"decision" binding:"required"`
-	Reason   string `json:"reason"`
+	Decision string `json:"decision" binding:"required"` // approve | escalate
+	Comments string `json:"comments"`                    // required when escalating
 }
 
 func (h *Handler) Decide(c *gin.Context) {
@@ -160,16 +178,90 @@ func (h *Handler) Decide(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
-	a, err := h.svc.Decide(c.Request.Context(), uid, assignmentID, req.Decision, req.Reason)
+	a, err := h.svc.Decide(c.Request.Context(), uid, assignmentID, req.Decision, req.Comments)
 	if err != nil {
 		if errors.Is(err, service.ErrInvalidInput) {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid decision", nil)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "decision must be approve, or escalate with comments", nil)
 			return
 		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, a, nil)
+}
+
+// CreatorFeedback — GET /v1/reviewer/content/:contentId/feedback. Returns the
+// latest escalation outcome for the caller's own content (404 if none).
+func (h *Handler) CreatorFeedback(c *gin.Context) {
+	uid, ok := userID(c)
+	if !ok {
+		return
+	}
+	contentID, err := uuid.Parse(c.Param("contentId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid content ID", nil)
+		return
+	}
+	esc, err := h.svc.CreatorFeedback(c.Request.Context(), uid, contentID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "No review feedback", nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, esc, nil)
+}
+
+// ListEscalations — GET /v1/reviewer/admin/escalations (super-admin only).
+func (h *Handler) ListEscalations(c *gin.Context) {
+	if !isAdmin(c) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Super-admin scope required", nil)
+		return
+	}
+	items, err := h.svc.ListEscalations(c.Request.Context(), 50)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	if items == nil {
+		items = []postgres.Escalation{}
+	}
+	api.JSON(c.Writer, http.StatusOK, items, nil)
+}
+
+type resolveEscalationRequest struct {
+	Decision string `json:"decision" binding:"required"` // reject | request_edits | approve
+	Notes    string `json:"notes"`
+}
+
+// ResolveEscalation — POST /v1/reviewer/admin/escalations/:id/decision (super-admin).
+func (h *Handler) ResolveEscalation(c *gin.Context) {
+	uid, ok := userID(c)
+	if !ok {
+		return
+	}
+	if !isAdmin(c) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Super-admin scope required", nil)
+		return
+	}
+	escalationID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid escalation ID", nil)
+		return
+	}
+	var req resolveEscalationRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
+		return
+	}
+	esc, err := h.svc.ResolveEscalation(c.Request.Context(), escalationID, uid, req.Decision, req.Notes)
+	if err != nil {
+		if errors.Is(err, service.ErrInvalidInput) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "decision must be reject, request_edits, or approve", nil)
+			return
+		}
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, esc, nil)
 }
 
 type enqueueRequest struct {
