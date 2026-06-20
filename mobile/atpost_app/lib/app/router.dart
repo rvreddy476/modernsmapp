@@ -80,6 +80,10 @@ import 'package:atpost_app/features/monetization/subscription_tiers_screen.dart'
 import 'package:atpost_app/features/orders/order_detail_screen.dart';
 import 'package:atpost_app/features/orders/orders_screen.dart';
 import 'package:atpost_app/features/search/search_results_screen.dart';
+import 'package:atpost_app/features/shell/search_tab.dart';
+import 'package:atpost_app/features/search/video_search_screen.dart';
+import 'package:atpost_app/features/reviewer/reviewer_console_screen.dart';
+import 'package:atpost_app/features/reviewer/needs_changes_screen.dart';
 import 'package:atpost_app/features/services/service_slug_router.dart';
 import 'package:atpost_app/features/services/services_screen.dart';
 import 'package:atpost_app/features/stories/create_story_screen.dart';
@@ -481,11 +485,11 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           // for 30 days while clients on older builds finish rolling forward.
           GoRoute(
             path: '/flicks/editor',
-            redirect: (_, __) => '/reels/editor',
+            redirect: (_, _) => '/reels/editor',
           ),
           GoRoute(
             path: '/flicks/caption',
-            redirect: (_, __) => '/reels/caption',
+            redirect: (_, _) => '/reels/caption',
           ),
           GoRoute(
             path: '/create',
@@ -1199,6 +1203,23 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             builder: (context, state) => SearchResultsScreen(
               query: state.uri.queryParameters['q'] ?? '',
             ),
+          ),
+          GoRoute(
+            path: '/search/explore',
+            builder: (context, state) => const SearchTab(),
+          ),
+          GoRoute(
+            path: '/search/videos',
+            builder: (context, state) => const VideoSearchScreen(),
+          ),
+          GoRoute(
+            path: '/reviewer',
+            builder: (context, state) => const ReviewerConsoleScreen(),
+          ),
+          GoRoute(
+            path: '/reviewer/feedback/:contentId',
+            builder: (context, state) =>
+                NeedsChangesScreen(contentId: state.pathParameters['contentId']!),
           ),
           GoRoute(
             path: '/channels',
