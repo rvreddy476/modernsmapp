@@ -17,14 +17,16 @@ type Clients struct {
 	http            *http.Client
 	graphURL        string
 	monetizationURL string
+	postURL         string
 	internalKey     string
 }
 
-func New(graphURL, monetizationURL, internalKey string) *Clients {
+func New(graphURL, monetizationURL, postURL, internalKey string) *Clients {
 	return &Clients{
 		http:            &http.Client{Timeout: 4 * time.Second},
 		graphURL:        graphURL,
 		monetizationURL: monetizationURL,
+		postURL:         postURL,
 		internalKey:     internalKey,
 	}
 }
@@ -86,6 +88,50 @@ func (c *Clients) CreditReviewer(ctx context.Context, userID uuid.UUID, amountPa
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("monetization credit status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// SetPostReviewStatus flips a flagged post to a terminal review_status via
+// post-service's internal endpoint (used by the ML pre-filter's auto decisions).
+func (c *Clients) SetPostReviewStatus(ctx context.Context, postID uuid.UUID, status string) error {
+	body, _ := json.Marshal(map[string]any{
+		"post_id": postID.String(),
+		"status":  status,
+	})
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.postURL+"/v1/posts/internal/review-status", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Internal-Service-Key", c.internalKey)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("post review-status update status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// SetPostVisibility promotes a staged post to a new visibility (Phase 4b
+// promotion worker) via post-service's internal endpoint.
+func (c *Clients) SetPostVisibility(ctx context.Context, postID uuid.UUID, visibility string) error {
+	body, _ := json.Marshal(map[string]any{
+		"post_id":    postID.String(),
+		"visibility": visibility,
+	})
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.postURL+"/v1/posts/internal/visibility", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Internal-Service-Key", c.internalKey)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("post visibility update status %d", resp.StatusCode)
 	}
 	return nil
 }

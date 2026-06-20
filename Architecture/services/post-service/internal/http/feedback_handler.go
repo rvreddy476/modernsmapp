@@ -48,3 +48,62 @@ func (h *Handler) SubmitFeedback(c *gin.Context) {
 	}
 	api.JSON(c.Writer, http.StatusCreated, f, nil)
 }
+
+type setReviewStatusRequest struct {
+	PostID string `json:"post_id" binding:"required"`
+	Status string `json:"status" binding:"required"` // approved | rejected
+}
+
+// SetReviewStatusInternal — POST /v1/posts/internal/review-status. Lets
+// reviewer-service's ML pre-filter auto-resolve a FLAGGED post. Service-to-service
+// only (gateway blocks /internal/ from non-admins). Scoped to flagged rows.
+func (h *Handler) SetReviewStatusInternal(c *gin.Context) {
+	var req setReviewStatusRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
+		return
+	}
+	if req.Status != "approved" && req.Status != "rejected" {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "status must be approved or rejected", nil)
+		return
+	}
+	postID, err := uuid.Parse(req.PostID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post_id", nil)
+		return
+	}
+	changed, err := h.svc.AutoResolveFlagged(c.Request.Context(), postID, req.Status)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"changed": changed, "status": req.Status}, nil)
+}
+
+type setVisibilityRequest struct {
+	PostID     string `json:"post_id" binding:"required"`
+	Visibility string `json:"visibility" binding:"required"` // typically "public"
+}
+
+// SetVisibilityInternal — POST /v1/posts/internal/visibility. Lets the
+// reviewer-service promotion worker move a STAGED post to its full visibility.
+// Service-to-service only (gateway blocks /internal/ from non-admins); scoped to
+// staged rows.
+func (h *Handler) SetVisibilityInternal(c *gin.Context) {
+	var req setVisibilityRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
+		return
+	}
+	postID, err := uuid.Parse(req.PostID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post_id", nil)
+		return
+	}
+	changed, err := h.svc.PromoteStaged(c.Request.Context(), postID, req.Visibility)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"changed": changed, "visibility": req.Visibility}, nil)
+}

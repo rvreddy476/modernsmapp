@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/atpost/reviewer-service/internal/clients"
+	"github.com/atpost/reviewer-service/internal/prefilter"
 	"github.com/atpost/reviewer-service/internal/store/postgres"
 	"github.com/google/uuid"
 )
@@ -35,6 +36,17 @@ type Service struct {
 	grading GradingConfig
 	// integrity holds the Phase 3 audit/anomaly/ring config (see integrity.go).
 	integrity IntegrityConfig
+	// prefilter is the Phase 4 ML pre-filter; nil disables it (all flagged
+	// content goes to humans). See SetPrefilter.
+	prefilter prefilter.Classifier
+	// promotion is the Phase 4b staged→public promotion config (see integrity.go).
+	promotion PromotionConfig
+}
+
+// SetPrefilter installs the Phase 4 pre-filter classifier. Nil keeps the
+// pre-Phase-4 behaviour (every flagged item is queued for a human).
+func (s *Service) SetPrefilter(c prefilter.Classifier) {
+	s.prefilter = c
 }
 
 func New(store *postgres.Store, c *clients.Clients, basePayPaise int64, rotationCapK int, ttl time.Duration, creditLedger bool) *Service {
@@ -67,6 +79,40 @@ func (s *Service) Enqueue(ctx context.Context, q postgres.QueueItem) error {
 	if q.ContentID == uuid.Nil || q.CreatorID == uuid.Nil {
 		return ErrInvalidInput
 	}
+
+	// Phase 4 ML pre-filter: only the ambiguous middle reaches a human.
+	if s.prefilter != nil {
+		res, err := s.prefilter.Classify(ctx, prefilter.Input{
+			ContentID:      q.ContentID,
+			CreatorID:      q.CreatorID,
+			ContentType:    q.ContentType,
+			SpamScore:      q.SpamScore,
+			ContentSeconds: q.ContentSeconds,
+		})
+		if err == nil {
+			switch res.Decision {
+			case prefilter.AutoReject:
+				// Leave the post flagged (already hidden); make it terminal.
+				if err := s.clients.SetPostReviewStatus(ctx, q.ContentID, "rejected"); err != nil {
+					slog.Warn("prefilter auto-reject flip failed (left flagged)", "content", q.ContentID, "err", err)
+				}
+				slog.Info("prefilter auto-rejected", "content", q.ContentID, "conf", res.Confidence)
+				return nil
+			case prefilter.AutoApprove:
+				// Approving REQUIRES flipping review_status, else good content
+				// stays hidden. If the flip fails, fall through to a human.
+				if err := s.clients.SetPostReviewStatus(ctx, q.ContentID, "approved"); err != nil {
+					slog.Warn("prefilter auto-approve flip failed; routing to human", "content", q.ContentID, "err", err)
+					break
+				}
+				slog.Info("prefilter auto-approved", "content", q.ContentID, "conf", res.Confidence)
+				return nil
+			}
+		} else {
+			slog.Warn("prefilter classify failed; routing to human", "content", q.ContentID, "err", err)
+		}
+	}
+
 	return s.store.Enqueue(ctx, q)
 }
 

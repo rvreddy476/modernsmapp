@@ -41,6 +41,33 @@ type PenaltyParams struct {
 	SuspendThreshold int // flags in the last 30d that trigger auto-suspension
 }
 
+// PromotableContent returns content that a human APPROVED and whose graded
+// engagement percentile is healthy — ready to promote from 'staged' to full
+// distribution (Phase 4b). post-service no-ops if the post isn't actually staged.
+func (s *Store) PromotableContent(ctx context.Context, minPctile float64, limit int) ([]uuid.UUID, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT a.content_id
+		FROM reviewer.review_assignments a
+		JOIN reviewer.content_review_outcome o ON o.content_id = a.content_id
+		WHERE a.kind = 'primary' AND a.decision = 'approve' AND a.graded = true
+		  AND o.engagement_pctile >= $1
+		ORDER BY o.finalized_at DESC
+		LIMIT $2`, minPctile, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // PrimaryDecisionForContent returns the completed primary review for content.
 func (s *Store) PrimaryDecisionForContent(ctx context.Context, contentID uuid.UUID) (*PrimaryDecision, error) {
 	var d PrimaryDecision

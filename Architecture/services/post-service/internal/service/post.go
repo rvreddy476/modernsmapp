@@ -211,11 +211,33 @@ func (s *Service) SetReviewerServiceURL(url string) {
 	s.reviewerServiceURL = url
 }
 
+// AutoResolveFlagged sets a FLAGGED post to a terminal review_status
+// (approved|rejected). Used by reviewer-service's ML pre-filter to clear
+// content without a human. Scoped to flagged rows so it can't override a
+// human/pending verdict. Busts the cached post body on success.
+func (s *Service) AutoResolveFlagged(ctx context.Context, postID uuid.UUID, status string) (bool, error) {
+	ok, err := s.pgStore.SetReviewStatusFromFlagged(ctx, postID, status)
+	if err == nil && ok && s.rdb != nil {
+		_ = s.rdb.Del(ctx, "post:body:"+postID.String()).Err()
+	}
+	return ok, err
+}
+
+// PromoteStaged finalizes a test-audience rollout by moving a STAGED post to a
+// new visibility (typically 'public'). Used by the reviewer promotion worker.
+func (s *Service) PromoteStaged(ctx context.Context, postID uuid.UUID, visibility string) (bool, error) {
+	ok, err := s.pgStore.SetVisibilityFromStaged(ctx, postID, visibility)
+	if err == nil && ok && s.rdb != nil {
+		_ = s.rdb.Del(ctx, "post:body:"+postID.String()).Err()
+	}
+	return ok, err
+}
+
 // enqueueForReview best-effort notifies reviewer-service that a piece of video
 // content needs human review (review_status='flagged'). Fire-and-forget: never
 // blocks or fails the post-create/transcode path. No-op when the URL is unset
 // or the content isn't video.
-func (s *Service) enqueueForReview(p *postgres.Post) {
+func (s *Service) enqueueForReview(p *postgres.Post, spamScore float64) {
 	if s.reviewerServiceURL == "" || !isVideoContentType(p.ContentType) {
 		return
 	}
@@ -229,6 +251,7 @@ func (s *Service) enqueueForReview(p *postgres.Post) {
 		"content_type":    p.ContentType,
 		"languages":       langs,
 		"content_seconds": 0, // duration may not be known yet; reviewer caps anyway
+		"spam_score":      spamScore,
 	})
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
@@ -757,7 +780,7 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 
 	// Route flagged video content to the human-review queue (best-effort).
 	if reviewStatus == "flagged" {
-		s.enqueueForReview(p)
+		s.enqueueForReview(p, spamResult.Score)
 	}
 
 	// Persist @mentions to post_mentions table

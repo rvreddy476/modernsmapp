@@ -810,6 +810,35 @@ func (s *Store) FlipReviewStatusFromPending(ctx context.Context, postID uuid.UUI
 	return tag.RowsAffected() > 0, nil
 }
 
+// SetReviewStatusFromFlagged flips a FLAGGED post to a terminal status. Used by
+// the reviewer-service ML pre-filter to auto-resolve flagged content without a
+// human. Scoped to review_status='flagged' so it can never override a human
+// moderator's or the pending-gate's decision.
+func (s *Store) SetReviewStatusFromFlagged(ctx context.Context, postID uuid.UUID, newStatus string) (bool, error) {
+	tag, err := s.db.Exec(ctx, `
+		UPDATE posts SET review_status = $2, updated_at = NOW()
+		WHERE id = $1 AND review_status = 'flagged'
+	`, postID, newStatus)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// SetVisibilityFromStaged promotes a STAGED post to a new visibility (e.g.
+// 'public'). Scoped to visibility='staged' so the reviewer promotion worker can
+// only finalize the test-audience rollout, never change other visibilities.
+func (s *Store) SetVisibilityFromStaged(ctx context.Context, postID uuid.UUID, newVisibility string) (bool, error) {
+	tag, err := s.db.Exec(ctx, `
+		UPDATE posts SET visibility = $2, updated_at = NOW()
+		WHERE id = $1 AND visibility = 'staged'
+	`, postID, newVisibility)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 func (s *Store) GetPostsByIDs(ctx context.Context, ids []uuid.UUID) ([]Post, error) {
 	if len(ids) == 0 {
 		return nil, nil

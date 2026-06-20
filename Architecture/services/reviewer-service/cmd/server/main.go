@@ -9,6 +9,7 @@ import (
 
 	"github.com/atpost/reviewer-service/database"
 	"github.com/atpost/reviewer-service/internal/clients"
+	"github.com/atpost/reviewer-service/internal/prefilter"
 	reviewerhttp "github.com/atpost/reviewer-service/internal/http"
 	"github.com/atpost/reviewer-service/internal/service"
 	"github.com/atpost/reviewer-service/internal/store/postgres"
@@ -59,6 +60,7 @@ func main() {
 	cl := clients.New(
 		env("GRAPH_SERVICE_URL", "http://graph-service:8083"),
 		env("MONETIZATION_SERVICE_URL", "http://monetization-service:8099"),
+		env("POST_SERVICE_URL", "http://post-service:8084"),
 		internalKey,
 	)
 	store := postgres.New(dbPool)
@@ -83,11 +85,27 @@ func main() {
 		SuspendThreshold: envInt("REVIEWER_SUSPEND_THRESHOLD", 3),
 		Interval:         time.Duration(envInt("REVIEWER_INTEGRITY_INTERVAL_MIN", 10)) * time.Minute,
 	})
+	// Phase 4 ML pre-filter: auto-resolve clearly-bad / clearly-OK flagged content
+	// so only the ambiguous middle reaches a human. Heuristic baseline (spam-score
+	// bands); the Classifier interface lets a real model (ai-service) swap in later.
+	if env("REVIEWER_PREFILTER_ENABLED", "true") == "true" {
+		svc.SetPrefilter(prefilter.NewHeuristic(
+			envFloat("REVIEWER_PREFILTER_REJECT_AT", 0.9),
+			envFloat("REVIEWER_PREFILTER_APPROVE_BELOW", 0.72),
+		))
+	}
+	svc.SetPromotion(service.PromotionConfig{
+		Enabled:    env("REVIEWER_PROMOTE_ENABLED", "false") == "true",
+		MinPctile:  envFloat("REVIEWER_PROMOTE_MIN_PCTILE", 0.5),
+		Interval:   time.Duration(envInt("REVIEWER_PROMOTE_INTERVAL_MIN", 10)) * time.Minute,
+		BatchLimit: envInt("REVIEWER_PROMOTE_BATCH", 100),
+	})
 	handler := reviewerhttp.New(svc)
 
 	go svc.RunExpirySweeper(ctx)
 	go svc.RunGradingWorker(ctx)
 	go svc.RunIntegrityWorker(ctx)
+	go svc.RunPromotionWorker(ctx)
 
 	checker := health.New("reviewer-service")
 	checker.Register("postgres", health.PingCheck(dbPool))

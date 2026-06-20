@@ -68,6 +68,59 @@ func (s *Service) SetIntegrity(cfg IntegrityConfig) {
 	s.integrity = cfg.withDefaults()
 }
 
+// PromotionConfig (Phase 4b) governs promoting staged test-audience content to
+// full distribution once a human approved it AND its engagement is healthy.
+type PromotionConfig struct {
+	Enabled    bool
+	MinPctile  float64
+	Interval   time.Duration
+	BatchLimit int
+}
+
+func (s *Service) SetPromotion(cfg PromotionConfig) {
+	if cfg.MinPctile <= 0 {
+		cfg.MinPctile = 0.5
+	}
+	if cfg.Interval <= 0 {
+		cfg.Interval = 10 * time.Minute
+	}
+	if cfg.BatchLimit <= 0 {
+		cfg.BatchLimit = 100
+	}
+	s.promotion = cfg
+}
+
+// RunPromotionWorker promotes approved + healthily-engaged staged content to
+// 'public' via post-service (which no-ops unless the post is actually staged).
+func (s *Service) RunPromotionWorker(ctx context.Context) {
+	if !s.promotion.Enabled {
+		slog.Info("reviewer promotion worker disabled")
+		return
+	}
+	ticker := time.NewTicker(s.promotion.Interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			ids, err := s.store.PromotableContent(ctx, s.promotion.MinPctile, s.promotion.BatchLimit)
+			if err != nil {
+				slog.Warn("promotable lookup failed", "err", err)
+				continue
+			}
+			for _, id := range ids {
+				if err := s.clients.SetPostVisibility(ctx, id, "public"); err != nil {
+					slog.Warn("promote staged->public failed", "content", id, "err", err)
+				}
+			}
+			if len(ids) > 0 {
+				slog.Info("promoted staged content", "count", len(ids))
+			}
+		}
+	}
+}
+
 // onPrimaryDecided samples a primary decision and, when selected, spins up a
 // blind second review by a different, unrelated reviewer. Fire-and-forget.
 func (s *Service) onPrimaryDecided(a *postgres.Assignment, decision string) {

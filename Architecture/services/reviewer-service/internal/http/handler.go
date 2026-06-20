@@ -178,6 +178,7 @@ type enqueueRequest struct {
 	ContentType    string   `json:"content_type"`
 	Languages      []string `json:"languages"`
 	ContentSeconds int      `json:"content_seconds"`
+	SpamScore      float64  `json:"spam_score"`
 }
 
 func (h *Handler) Enqueue(c *gin.Context) {
@@ -198,6 +199,7 @@ func (h *Handler) Enqueue(c *gin.Context) {
 		ContentType:    req.ContentType,
 		Languages:      req.Languages,
 		ContentSeconds: req.ContentSeconds,
+		SpamScore:      req.SpamScore,
 	})
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)

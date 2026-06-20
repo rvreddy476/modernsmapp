@@ -39,6 +39,8 @@ type QueueItem struct {
 	ContentType    string    `json:"content_type"`
 	Languages      []string  `json:"languages"`
 	ContentSeconds int       `json:"content_seconds"`
+	// SpamScore is a transient pre-filter signal (not persisted in review_queue).
+	SpamScore float64 `json:"spam_score"`
 }
 
 type Assignment struct {

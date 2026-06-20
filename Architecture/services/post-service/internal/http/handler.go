@@ -95,6 +95,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/:postId/tune/me", h.GetTune)
 	}
 
+	// Internal: reviewer-service ML pre-filter auto-resolves flagged content.
+	// Gateway blocks /internal/ from non-admins; direct service calls carry the key.
+	r.POST("/v1/posts/internal/review-status", h.SetReviewStatusInternal)
+	r.POST("/v1/posts/internal/visibility", h.SetVisibilityInternal)
+
 	// Events
 	r.POST("/v1/events", h.CreateEvent)
 	r.GET("/v1/events/:eventId", h.GetEvent)
