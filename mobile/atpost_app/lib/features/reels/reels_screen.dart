@@ -12,10 +12,12 @@ import 'package:atpost_app/data/repositories/post_repository.dart';
 import 'package:atpost_app/data/repositories/user_repository.dart';
 import 'package:atpost_app/features/shell/shell_providers.dart';
 import 'package:atpost_app/features/shell/shell_scaffold.dart';
+import 'package:atpost_app/providers/autoplay_provider.dart';
 import 'package:atpost_app/providers/data_saver_provider.dart';
 import 'package:atpost_app/shared/widgets/caption_toggle.dart';
 import 'package:atpost_app/features/reels/product_tag_composer_button.dart';
 import 'package:atpost_app/shared/widgets/product_tag_overlay.dart';
+import 'package:atpost_app/shared/widgets/video_more_sheet.dart';
 import 'package:atpost_app/shared/widgets/video_player_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -412,52 +414,32 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> with RouteAware {
     }
   }
 
-  // Web-parity "more options" sheet (replaces the old Dislike action).
+  // Unified video "More" sheet (shared across Reels / PostTube / feed).
   Future<void> _showMoreOptions(Post post) async {
-    void toast(String msg) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-    }
-
-    await showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: const Color(0xFF1B1B1F),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (sheetCtx) {
-        Widget item(IconData icon, String label, VoidCallback onTap) => ListTile(
-              leading: Icon(icon, color: Colors.white70),
-              title: Text(label, style: const TextStyle(color: Colors.white, fontSize: 15)),
-              onTap: () {
-                Navigator.of(sheetCtx).pop();
-                onTap();
-              },
-            );
-        return SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const SizedBox(height: 8),
-              Container(width: 40, height: 4, decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(2))),
-              const SizedBox(height: 8),
-              item(Icons.notes_rounded, 'Description', () {
-                final desc = post.content.trim();
-                toast(desc.isEmpty ? 'No description for this video.' : desc);
-              }),
-              item(Icons.playlist_add_rounded, 'Save to playlist', () { _toggleSave(post); toast('Saved to your playlist.'); }),
-              item(Icons.closed_caption_rounded, 'Captions', () { _toggleCaptionsFor(post.id); }),
-              item(Icons.settings_rounded, 'Quality', () => toast('Quality is set to Auto.')),
-              item(Icons.do_not_disturb_on_outlined, 'Not interested', () => toast("Got it — we'll show you fewer like this.")),
-              item(Icons.cancel_outlined, "Don't recommend this channel", () => toast("Got it — we'll recommend this channel less.")),
-              item(Icons.flag_outlined, 'Report', () => _reportPost(post)),
-              item(Icons.feedback_outlined, 'Send feedback', () => toast('Thanks — your feedback helps us improve.')),
-              const SizedBox(height: 8),
-            ],
-          ),
-        );
-      },
+    await showVideoMoreSheet(
+      context,
+      post: post,
+      surface: 'reels',
+      isSaved: _ensureEngagement(post).saved,
+      captionsAvailable: post.mediaIds.isNotEmpty,
+      captionsEnabled: _captionsEnabled(post.id),
+      onToggleSave: () => _toggleSave(post),
+      onToggleCaptions: () => _toggleCaptionsFor(post.id),
+      onShare: () => _shareReel(post),
+      onReport: () => _reportPost(post),
+      onNotInterested: () => _removeReel(post),
     );
+  }
+
+  // "Not interested" — drop the reel from the current list so it disappears
+  // immediately (the network see_less signal is sent by the sheet).
+  void _removeReel(Post post) {
+    final idx = _reels.indexWhere((p) => p.id == post.id);
+    if (idx < 0) return;
+    setState(() {
+      _reels.removeAt(idx);
+      _engagementByPostId.remove(post.id);
+    });
   }
 
   // Per-author follow state, keyed by post.authorId. Lifted out of the
@@ -615,6 +597,16 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> with RouteAware {
     // (no prefetch / pre-render of the next reel), and per-page video
     // autoplay is suppressed at the player layer.
     final dataSaver = ref.watch(effectiveDataSaverProvider);
+    final autoplay = ref.watch(autoplayProvider);
+
+    // Dynamic padding for professional layout that respects bottom navigation
+    // bar and system notches (iPhone etc).
+    // The shell hosts Reels inside a body that already sits ABOVE the bottom
+    // nav bar (no `extendBody`), so reserving nav height here again floated the
+    // caption/rail and left an empty band at the bottom. Just clear the system
+    // gesture inset (only non-zero on the standalone fullscreen route).
+    final bottomPadding = MediaQuery.of(context).padding.bottom;
+    final totalBottomGap = bottomPadding;
 
     return Scaffold(
       backgroundColor: AppColors.bgPrimary,
@@ -645,6 +637,8 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> with RouteAware {
                   muted: _muted,
                   captionsEnabled: _captionsEnabled(post.id),
                   dataSaver: dataSaver,
+                  autoplay: autoplay,
+                  bottomGap: totalBottomGap,
                   onBack: () => context.pop(),
                   onToggleMute: () => setState(() => _muted = !_muted),
                   onToggleCaptions: () => _toggleCaptionsFor(post.id),
@@ -664,7 +658,7 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> with RouteAware {
             Positioned(
               left: 0,
               right: 0,
-              bottom: widget.fullscreenRoute ? 18 : 100,
+              bottom: totalBottomGap + 12,
               child: const Center(
                 child: SizedBox(
                   width: 24,
@@ -692,6 +686,8 @@ class _ReelPage extends StatefulWidget {
     required this.muted,
     required this.captionsEnabled,
     required this.dataSaver,
+    required this.autoplay,
+    required this.bottomGap,
     required this.onBack,
     required this.onToggleMute,
     required this.onToggleCaptions,
@@ -726,6 +722,13 @@ class _ReelPage extends StatefulWidget {
   // does not autoplay, the URL is biased toward the lowest rendition
   // (`?quality=240p`), and we never auto-download caption tracks.
   final bool dataSaver;
+
+  /// User's autoplay preference (persisted). When false, reels wait for a tap.
+  final bool autoplay;
+
+  /// Computed offset to avoid overlap with bottom navigation or notches.
+  final double bottomGap;
+
   final VoidCallback onBack;
   final VoidCallback onToggleMute;
   final VoidCallback onToggleCaptions;
@@ -780,7 +783,7 @@ class _ReelPageState extends State<_ReelPage> {
     // `quality=` hint; for HLS manifests the player picks the matching
     // variant automatically.
     final separator = base.contains('?') ? '&' : '?';
-    return '${base}${separator}quality=240p';
+    return '$base${separator}quality=240p';
   }
 
   // When data-saver is on, autoplay is suppressed and we render a
@@ -794,8 +797,8 @@ class _ReelPageState extends State<_ReelPage> {
     // `isActive=false` means we're rendered off-screen inside the
     // shell IndexedStack — never autoplay, never even mount the
     // VideoPlayerWidget (handled below by ANDing into `shouldAutoplay`).
-    final shouldAutoplay =
-        widget.isActive && (!widget.dataSaver || _userTappedPlay);
+    final shouldAutoplay = widget.isActive &&
+        ((widget.autoplay && !widget.dataSaver) || _userTappedPlay);
 
     // Gradient background placeholder (used behind video or as fallback).
     final gradientBg = DecoratedBox(
@@ -822,6 +825,7 @@ class _ReelPageState extends State<_ReelPage> {
                   autoPlay: true,
                   looping: true,
                   showControls: false,
+                  muted: widget.muted,
                   placeholder: gradientBg,
                   onPositionUpdate: (ms) {
                     if (!mounted) return;
@@ -978,6 +982,11 @@ class _ReelPageState extends State<_ReelPage> {
                   const SizedBox(width: 8),
                 ],
                 _OverlayIconButton(
+                  icon: Icons.search_rounded,
+                  onTap: () => context.push('/search/videos'),
+                ),
+                const SizedBox(width: 8),
+                _OverlayIconButton(
                   icon: widget.muted
                       ? Icons.volume_off_outlined
                       : Icons.volume_up_outlined,
@@ -990,7 +999,7 @@ class _ReelPageState extends State<_ReelPage> {
         // Engagement rail.
         Positioned(
           right: 12,
-          bottom: widget.fullscreenRoute ? 132 : 214,
+          bottom: widget.bottomGap + 110,
           child: _ActionRail(
             liked: widget.engagement.liked,
             saved: widget.engagement.saved,
@@ -1008,9 +1017,10 @@ class _ReelPageState extends State<_ReelPage> {
         Positioned(
           left: 12,
           right: 78,
-          bottom: widget.fullscreenRoute ? 24 : 98,
+          bottom: widget.bottomGap + 12,
           child: _BottomInfo(
             authorHandle: _authorHandle,
+            avatarUrl: widget.post.authorAvatar,
             title: _title,
             tags: _tags,
             mediaCount: widget.post.mediaIds.length,
@@ -1076,34 +1086,54 @@ class _ActionRail extends StatelessWidget {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        // Love only — filled red heart + glow when loved ("I Loved It").
+        // Single "Love" reaction — replaces the old Like + Dislike pair.
         _RailButton(
           icon: liked ? Icons.favorite_rounded : Icons.favorite_border_rounded,
-          label: liked ? 'Loved' : likes,
-          iconColor: liked ? AppColors.postgramPrimary : Colors.white,
+          label: likes,
+          iconColor: liked ? const Color(0xFFFF2D55) : Colors.white,
           glow: liked,
           onTap: onLike,
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 18),
         _RailButton(
-          icon: Icons.chat_bubble_outline_rounded,
+          icon: Icons.mode_comment_outlined,
           label: comments,
           onTap: onComment,
         ),
-        const SizedBox(height: 12),
-        _RailButton(icon: Icons.share_outlined, label: shares, onTap: onShare),
-        const SizedBox(height: 12),
+        const SizedBox(height: 18),
+        _RailButton(
+          icon: Icons.reply_rounded,
+          label: 'Share',
+          onTap: onShare,
+        ),
+        const SizedBox(height: 18),
         _RailButton(
           icon: saved ? Icons.bookmark_rounded : Icons.bookmark_border_rounded,
           label: 'Save',
-          iconColor: saved ? AppColors.posttubePrimary : Colors.white,
+          iconColor: saved ? AppColors.postgramPrimary : Colors.white,
           onTap: onSave,
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 18),
         _RailButton(
           icon: Icons.more_horiz_rounded,
           label: 'More',
           onTap: onMore,
+        ),
+        const SizedBox(height: 18),
+        // Spinning-disc style music chip at the bottom of the rail.
+        Container(
+          width: 42,
+          height: 42,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [Color(0xFF3A3A3C), Color(0xFF1C1C1E)],
+            ),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.7), width: 2),
+          ),
+          child: const Icon(Icons.music_note_rounded, color: Colors.white, size: 18),
         ),
       ],
     );
@@ -1131,32 +1161,136 @@ class _RailButton extends StatelessWidget {
       onTap: onTap,
       child: Column(
         children: [
-          Container(
-            width: 44,
-            height: 44,
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.12),
-              shape: BoxShape.circle,
-              border: Border.all(color: Colors.white.withValues(alpha: 0.16)),
-              boxShadow: glow
-                  ? const [
-                      BoxShadow(
-                        color: Color(0x66FF3366),
-                        blurRadius: 16,
-                        spreadRadius: 1,
-                      ),
-                    ]
-                  : const [],
-            ),
-            child: Icon(icon, color: iconColor, size: 22),
+          Icon(
+            icon,
+            color: iconColor,
+            size: 30,
+            shadows: glow
+                ? [const Shadow(color: Color(0xAAFF2D55), blurRadius: 16)]
+                : null,
           ),
           const SizedBox(height: 4),
           Text(
             label,
-            style: AppTextStyles.labelSmall.copyWith(color: Colors.white),
+            style: AppTextStyles.labelSmall.copyWith(
+              color: Colors.white,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              shadows: [
+                const Shadow(
+                  color: Colors.black54,
+                  offset: Offset(0, 1),
+                  blurRadius: 2,
+                ),
+              ],
+            ),
           ),
         ],
       ),
+    );
+  }
+}
+
+class _SubscribeButton extends StatelessWidget {
+  const _SubscribeButton({required this.isFollowing, required this.onTap});
+
+  final bool isFollowing;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        decoration: BoxDecoration(
+          gradient: isFollowing
+              ? null
+              : const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [Color(0xFFFF6B35), Color(0xFFC850C0)],
+                ),
+          color: isFollowing ? Colors.white.withValues(alpha: 0.14) : null,
+          borderRadius: BorderRadius.circular(999),
+          border: isFollowing
+              ? Border.all(color: Colors.white.withValues(alpha: 0.5))
+              : null,
+          boxShadow: isFollowing
+              ? null
+              : [
+                  BoxShadow(
+                    color: const Color(0xFFC850C0).withValues(alpha: 0.45),
+                    blurRadius: 12,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              isFollowing ? Icons.check_rounded : Icons.add_rounded,
+              color: Colors.white,
+              size: 16,
+            ),
+            const SizedBox(width: 5),
+            Text(
+              isFollowing ? 'Following' : 'Subscribe',
+              style: AppTextStyles.labelSmall.copyWith(
+                color: Colors.white,
+                fontWeight: FontWeight.w800,
+                fontSize: 13,
+                letterSpacing: 0.2,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ReelAvatar extends StatelessWidget {
+  const _ReelAvatar({required this.url, required this.handle});
+
+  final String? url;
+  final String handle;
+
+  @override
+  Widget build(BuildContext context) {
+    final initial = handle.replaceAll('@', '').trim();
+    final letter = initial.isNotEmpty ? initial[0].toUpperCase() : '?';
+    final hasUrl = url != null && url!.trim().isNotEmpty;
+    return Container(
+      width: 38,
+      height: 38,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        border: Border.all(color: Colors.white, width: 1.5),
+        gradient: hasUrl
+            ? null
+            : const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Color(0xFF7C3AED), Color(0xFFDB2777)],
+              ),
+        image: hasUrl
+            ? DecorationImage(image: NetworkImage(url!), fit: BoxFit.cover)
+            : null,
+      ),
+      alignment: Alignment.center,
+      child: hasUrl
+          ? null
+          : Text(
+              letter,
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.w700,
+                fontSize: 16,
+              ),
+            ),
     );
   }
 }
@@ -1167,17 +1301,16 @@ class _BottomInfo extends StatelessWidget {
     required this.title,
     required this.tags,
     required this.mediaCount,
+    this.avatarUrl,
     this.isFollowing = false,
     this.onFollow,
   });
 
   final String authorHandle;
+  final String? avatarUrl;
   final String title;
   final String tags;
   final int mediaCount;
-  // Follow button is suppressed when onFollow is null (e.g. on the user's
-  // own reels). isFollowing toggles between filled "Follow" and outlined
-  // "Following" states with optimistic updates handled by the parent.
   final bool isFollowing;
   final VoidCallback? onFollow;
 
@@ -1189,86 +1322,75 @@ class _BottomInfo extends StatelessWidget {
       children: [
         Row(
           children: [
-            Container(
-              width: 38,
-              height: 38,
-              decoration: BoxDecoration(
-                gradient: AppColors.postbookGradient,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Center(
-                child: Text(
-                  authorHandle
-                      .replaceFirst('@', '')
-                      .substring(0, 1)
-                      .toUpperCase(),
-                  style: AppTextStyles.h3.copyWith(color: Colors.white),
-                ),
-              ),
-            ),
+            // Author avatar — real image when available, initials fallback.
+            _ReelAvatar(url: avatarUrl, handle: authorHandle),
             const SizedBox(width: 8),
-            Expanded(
+            // Author Name
+            Flexible(
               child: Text(
                 authorHandle,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: AppTextStyles.h3.copyWith(color: Colors.white),
+                style: AppTextStyles.h3.copyWith(
+                  color: Colors.white,
+                  fontSize: 15,
+                  shadows: [
+                    const Shadow(
+                      color: Colors.black54,
+                      offset: Offset(0, 1),
+                      blurRadius: 2,
+                    ),
+                  ],
+                ),
               ),
             ),
             if (onFollow != null) ...[
-              const SizedBox(width: 8),
-              GestureDetector(
-                onTap: onFollow,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 6,
-                  ),
-                  decoration: BoxDecoration(
-                    color: isFollowing
-                        ? Colors.white.withValues(alpha: 0.12)
-                        : Colors.white,
-                    borderRadius: BorderRadius.circular(999),
-                    border: Border.all(
-                      color: isFollowing
-                          ? Colors.white.withValues(alpha: 0.4)
-                          : Colors.white,
-                    ),
-                  ),
-                  child: Text(
-                    isFollowing ? 'Following' : 'Follow',
-                    style: AppTextStyles.labelSmall.copyWith(
-                      color: isFollowing ? Colors.white : Colors.black,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ),
-              ),
+              const SizedBox(width: 12),
+              _SubscribeButton(isFollowing: isFollowing, onTap: onFollow!),
             ],
           ],
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 12),
+        // Video Description
         Text(
           title,
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
-          style: AppTextStyles.body.copyWith(color: Colors.white),
-        ),
-        const SizedBox(height: 5),
-        Text(
-          tags,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: AppTextStyles.labelSmall.copyWith(
-            color: Colors.white.withValues(alpha: 0.78),
+          style: AppTextStyles.body.copyWith(
+            color: Colors.white,
+            fontSize: 14,
+            height: 1.3,
+            shadows: [
+              const Shadow(
+                color: Colors.black54,
+                offset: Offset(0, 1),
+                blurRadius: 2,
+              ),
+            ],
           ),
         ),
-        const SizedBox(height: 6),
-        Text(
-          '$mediaCount media item(s) in this reel',
-          style: AppTextStyles.monoSmall.copyWith(
-            color: Colors.white.withValues(alpha: 0.7),
-          ),
+        const SizedBox(height: 10),
+        // Sound Info style
+        Row(
+          children: [
+            const Icon(
+              Icons.music_note_rounded,
+              color: Colors.white,
+              size: 16,
+            ),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                'Original Sound - $authorHandle',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: AppTextStyles.labelSmall.copyWith(
+                  color: Colors.white,
+                  fontSize: 13,
+                ),
+              ),
+            ),
+          ],
         ),
       ],
     );

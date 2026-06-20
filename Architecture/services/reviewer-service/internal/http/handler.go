@@ -23,6 +23,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	{
 		g.POST("/opt-in", h.OptIn)
 		g.GET("/me", h.Me)
+		g.GET("/me/stats", h.MyDashboard)
 		g.POST("/online", h.SetOnline)
 		g.GET("/assignments/next", h.NextAssignment)
 		g.POST("/assignments/:id/heartbeat", h.Heartbeat)
@@ -31,6 +32,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// (the "needs changes" comments to act on).
 		g.GET("/content/:contentId/feedback", h.CreatorFeedback)
 		// Super-admin escalation queue (scope-guarded in the handlers).
+		g.GET("/admin/stats", h.AdminStats)
 		g.GET("/admin/escalations", h.ListEscalations)
 		g.POST("/admin/escalations/:id/decision", h.ResolveEscalation)
 		// Service-internal: post-service (or an admin tool) enqueues content
@@ -90,6 +92,31 @@ func (h *Handler) Me(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, r, nil)
+}
+
+// MyDashboard — GET /v1/reviewer/me/stats. Reviewer console summary (reviewer is
+// null if the user hasn't opted in yet).
+func (h *Handler) MyDashboard(c *gin.Context) {
+	uid, ok := userID(c)
+	if !ok {
+		return
+	}
+	stats, err := h.svc.MyDashboard(c.Request.Context(), uid)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, stats, nil)
+}
+
+// AdminStats — GET /v1/reviewer/admin/stats (super-admin overview).
+func (h *Handler) AdminStats(c *gin.Context) {
+	if !isAdmin(c) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Super-admin scope required", nil)
+		return
+	}
+	open, queue := h.svc.AdminDashboard(c.Request.Context())
+	api.JSON(c.Writer, http.StatusOK, gin.H{"open_escalations": open, "queue_depth": queue}, nil)
 }
 
 type onlineRequest struct {

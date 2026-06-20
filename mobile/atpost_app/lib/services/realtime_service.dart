@@ -29,6 +29,9 @@ class RealtimeService {
   final AuthService _auth;
   static const _tag = 'RealtimeService';
 
+  /// Prevents multiple simultaneous connection attempts.
+  Future<void>? _connectFuture;
+
   RealtimeService(this._auth) {
     _stateController.add(_state);
   }
@@ -41,9 +44,14 @@ class RealtimeService {
   Future<void> connect() async {
     if (_state == ConnectionState.connected ||
         _state == ConnectionState.connecting) {
-      return;
+      return _connectFuture;
     }
 
+    _connectFuture = _connectInternal();
+    return _connectFuture;
+  }
+
+  Future<void> _connectInternal() async {
     final token = _auth.token;
     if (token == null || token.isEmpty) {
       AppLogger.warn(
@@ -81,6 +89,8 @@ class RealtimeService {
         stackTrace: stackTrace,
       );
       _handleDisconnect(error: error);
+    } finally {
+      _connectFuture = null;
     }
   }
 

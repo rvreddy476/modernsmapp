@@ -60,7 +60,7 @@ class ShopRepository {
     await _api.post('/v1/commerce/cart/items', data: {
       'variant_id': variantId,
       'quantity': quantity,
-      if (productId != null) 'product_id': productId,
+      'product_id': ?productId,
     });
   }
 
@@ -100,12 +100,12 @@ class ShopRepository {
       'address_id': addressId,
       'payment_method': paymentMethod,
       if (couponCode != null && couponCode.isNotEmpty) 'coupon_code': couponCode,
-      if (giftMessage != null) 'gift_message': giftMessage,
-      if (idempotencyKey != null) 'idempotency_key': idempotencyKey,
-      if (organizationId != null) 'organization_id': organizationId,
-      if (poNumber != null) 'po_number': poNumber,
-      if (costCenter != null) 'cost_center': costCenter,
-      if (invoiceEmail != null) 'invoice_email': invoiceEmail,
+      'gift_message': ?giftMessage,
+      'idempotency_key': ?idempotencyKey,
+      'organization_id': ?organizationId,
+      'po_number': ?poNumber,
+      'cost_center': ?costCenter,
+      'invoice_email': ?invoiceEmail,
     });
     return Order.fromJson(response.data['data'] as Map<String, dynamic>);
   }

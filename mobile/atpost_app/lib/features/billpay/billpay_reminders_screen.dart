@@ -179,7 +179,7 @@ class _BillPayRemindersScreenState
                 AppSpacing.xxxxl + 56,
               ),
               itemCount: items.length,
-              separatorBuilder: (_, __) =>
+              separatorBuilder: (_, _) =>
                   const SizedBox(height: AppSpacing.l),
               itemBuilder: (_, i) {
                 final r = items[i];
@@ -363,7 +363,7 @@ class _AddReminderSheetState extends ConsumerState<_AddReminderSheet> {
           Text('Biller', style: AppTextStyles.label),
           const SizedBox(height: AppSpacing.s),
           DropdownButtonFormField<String>(
-            value: _selectedAccountId,
+            initialValue: _selectedAccountId,
             dropdownColor: AppColors.bgTertiary,
             isExpanded: true,
             decoration: InputDecoration(

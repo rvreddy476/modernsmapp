@@ -693,7 +693,7 @@ class _SettingsBlockState extends ConsumerState<_SettingsBlock> {
           SwitchListTile(
             value: widget.account.autopayEnabled,
             onChanged: _toggleAutopay,
-            activeColor: AppColors.postbookPrimary,
+            activeThumbColor: AppColors.postbookPrimary,
             secondary: const Icon(
               Icons.autorenew_rounded,
               color: AppColors.textPrimary,
@@ -713,7 +713,7 @@ class _SettingsBlockState extends ConsumerState<_SettingsBlock> {
           SwitchListTile(
             value: widget.account.isDefault,
             onChanged: _toggleDefault,
-            activeColor: AppColors.postbookPrimary,
+            activeThumbColor: AppColors.postbookPrimary,
             secondary: const Icon(
               Icons.star_outline_rounded,
               color: AppColors.textPrimary,

@@ -46,7 +46,7 @@ class TrustedContact {
         'id': id,
         'name': name,
         'phone': phone,
-        if (relationship != null) 'relationship': relationship!,
+        'relationship': ?relationship,
       };
 
   factory TrustedContact.fromMap(Map<String, dynamic> raw) {

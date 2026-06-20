@@ -78,7 +78,7 @@ class B2BRepository {
       '/v1/commerce/rfqs',
       data: {
         'seller_id': sellerId,
-        if (organizationId != null) 'organization_id': organizationId,
+        'organization_id': ?organizationId,
         if (message != null && message.isNotEmpty) 'message': message,
         'items': [
           for (final it in items)

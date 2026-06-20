@@ -7,6 +7,7 @@ import 'package:atpost_app/providers/chat_provider.dart';
 import 'package:atpost_app/providers/presence_provider.dart';
 import 'package:atpost_app/services/auth_service.dart';
 import 'package:atpost_app/services/call_service.dart';
+import 'package:atpost_app/services/realtime_service.dart' as rt;
 import 'package:atpost_app/shared/widgets/glass_icon_button.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -25,7 +26,6 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
   final TextEditingController _composerController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   bool _attachmentOpen = false;
-  int _lastMessageCount = 0;
 
   @override
   void initState() {
@@ -85,19 +85,31 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
     final chatNotifier = ref.read(
       chatMessagesProvider(widget.conversationId).notifier,
     );
+
+    // Listen for new messages and auto-scroll to bottom.
+    ref.listen(chatMessagesProvider(widget.conversationId), (previous, next) {
+      if (next.messages.length > (previous?.messages.length ?? 0)) {
+        // Only scroll if we were already at the bottom or if it's our own message.
+        final wasAtBottom = !_scrollController.hasClients ||
+            _scrollController.position.pixels >=
+                _scrollController.position.maxScrollExtent - 100;
+        final isMine = next.messages.isNotEmpty &&
+            next.messages.last.senderId == ref.read(authServiceProvider).userId;
+
+        if (wasAtBottom || isMine) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) {
+              _scrollToBottom(animated: previous?.messages.isNotEmpty ?? false);
+            }
+          });
+        }
+      }
+    });
+
     final currentUserId = ref.watch(authServiceProvider).userId;
     final conversationAsync = ref.watch(
       chatConversationProvider(widget.conversationId),
     );
-
-    if (chatState.messages.length != _lastMessageCount) {
-      _lastMessageCount = chatState.messages.length;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          _scrollToBottom(animated: chatState.messages.length > 1);
-        }
-      });
-    }
 
     final conversation = conversationAsync.valueOrNull;
     final title =
@@ -246,6 +258,30 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
   }
 
   Widget _buildRealtimeNotice() {
+    final connectionState = ref.watch(rt.realtimeServiceProvider.select((s) => s.state));
+
+    if (connectionState == rt.ConnectionState.connected) {
+      return const SizedBox.shrink();
+    }
+
+    String message = '';
+    Color color = Colors.grey;
+
+    switch (connectionState) {
+      case rt.ConnectionState.connecting:
+        message = 'Connecting to realtime gateway...';
+        color = AppColors.textMuted;
+      case rt.ConnectionState.reconnecting:
+        message = 'Connection lost. Reconnecting...';
+        color = Colors.orangeAccent;
+      case rt.ConnectionState.disconnected:
+        message = 'Realtime messaging offline';
+        color = Colors.redAccent;
+      case rt.ConnectionState.connected:
+        message = 'Connected';
+        color = AppColors.onlineGreen;
+    }
+
     return Container(
       margin: AppSpacing.pagePadding.copyWith(bottom: 10),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
@@ -254,9 +290,24 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
         borderRadius: BorderRadius.circular(999),
         border: Border.all(color: AppColors.borderSubtle),
       ),
-      child: Text(
-        'Realtime messaging active via ws-gateway',
-        style: AppTextStyles.labelSmall,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (connectionState == rt.ConnectionState.connecting ||
+              connectionState == rt.ConnectionState.reconnecting)
+            const Padding(
+              padding: EdgeInsets.only(right: 8),
+              child: SizedBox(
+                width: 12,
+                height: 12,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ),
+          Text(
+            message,
+            style: AppTextStyles.labelSmall.copyWith(color: color),
+          ),
+        ],
       ),
     );
   }

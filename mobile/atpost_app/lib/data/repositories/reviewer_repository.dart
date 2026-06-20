@@ -42,10 +42,53 @@ class ReviewFeedback {
       );
 }
 
+/// Reviewer dashboard summary.
+class ReviewerDashboard {
+  final bool isReviewer;
+  final String status;
+  final String tier;
+  final double accuracy;
+  final int reviewsCompleted;
+  final int escalated;
+  final int lifetimeEarnedPaise;
+  final int pendingQueue;
+
+  const ReviewerDashboard({
+    required this.isReviewer,
+    this.status = '',
+    this.tier = '',
+    this.accuracy = 0,
+    this.reviewsCompleted = 0,
+    this.escalated = 0,
+    this.lifetimeEarnedPaise = 0,
+    this.pendingQueue = 0,
+  });
+
+  factory ReviewerDashboard.fromJson(Map<String, dynamic> json) {
+    final r = json['reviewer'];
+    final rev = r is Map<String, dynamic> ? r : null;
+    return ReviewerDashboard(
+      isReviewer: rev != null,
+      status: (rev?['status'] ?? '').toString(),
+      tier: (rev?['tier'] ?? '').toString(),
+      accuracy: (rev?['reviewer_accuracy'] as num?)?.toDouble() ?? 0,
+      reviewsCompleted: (json['reviews_completed'] as num?)?.toInt() ?? 0,
+      escalated: (json['escalated'] as num?)?.toInt() ?? 0,
+      lifetimeEarnedPaise: (json['lifetime_earned_paise'] as num?)?.toInt() ?? 0,
+      pendingQueue: (json['pending_queue'] as num?)?.toInt() ?? 0,
+    );
+  }
+}
+
 /// Reviewer + creator-loop API (reviewer-service via the gateway).
 class ReviewerRepository {
   final ApiClient _api;
   ReviewerRepository(this._api);
+
+  Future<ReviewerDashboard> dashboard() async {
+    final res = await _api.get('/v1/reviewer/me/stats');
+    return ReviewerDashboard.fromJson(_obj(res.data) ?? const {});
+  }
 
   Future<void> optIn({List<String> languages = const ['en'], String region = ''}) async {
     await _api.post('/v1/reviewer/opt-in',

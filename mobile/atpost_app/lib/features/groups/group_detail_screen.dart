@@ -250,7 +250,7 @@ class _GroupDetailBodyState extends ConsumerState<_GroupDetailBody>
       return Image.network(
         group.coverUrl!,
         fit: BoxFit.cover,
-        errorBuilder: (_, __, ___) => _gradientCover(group),
+        errorBuilder: (_, _, _) => _gradientCover(group),
       );
     }
     return _gradientCover(group);
@@ -490,7 +490,7 @@ class _GroupAvatar extends StatelessWidget {
             ? Image.network(
                 group.avatarUrl!,
                 fit: BoxFit.cover,
-                errorBuilder: (_, __, ___) => _AvatarPlaceholder(
+                errorBuilder: (_, _, _) => _AvatarPlaceholder(
                   name: group.name,
                   colors: colors,
                   size: size,
@@ -1125,7 +1125,7 @@ class _MemberTile extends StatelessWidget {
                       child: Image.network(
                         '/v1/media/${member.avatarMediaId}/serve',
                         fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) => Text(
+                        errorBuilder: (_, _, _) => Text(
                           member.avatarInitial,
                           style: AppTextStyles.label.copyWith(
                             color: AppColors.postbookPrimary,
@@ -1272,7 +1272,7 @@ class _MediaGrid extends ConsumerWidget {
           mainAxisSpacing: 3,
         ),
         itemCount: 9,
-        itemBuilder: (_, __) => Container(
+        itemBuilder: (_, _) => Container(
           decoration: BoxDecoration(
             color: AppColors.bgCard,
             borderRadius: BorderRadius.circular(8),

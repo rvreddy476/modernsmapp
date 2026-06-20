@@ -58,10 +58,10 @@ class GroupsRepository {
         'description': description,
         'privacy': privacy,
         'is_mature': isMature,
-        if (coverMediaId != null) 'cover_media_id': coverMediaId,
-        if (avatarMediaId != null) 'avatar_media_id': avatarMediaId,
-        if (category != null) 'category': category,
-        if (handle != null) 'handle': handle,
+        'cover_media_id': ?coverMediaId,
+        'avatar_media_id': ?avatarMediaId,
+        'category': ?category,
+        'handle': ?handle,
       },
     );
     final data = response.data;
@@ -236,14 +236,14 @@ class GroupsRepository {
     String? location,
   }) async {
     final payload = <String, dynamic>{
-      if (name != null) 'name': name,
-      if (description != null) 'description': description,
-      if (privacy != null) 'privacy': privacy,
-      if (isMature != null) 'is_mature': isMature,
-      if (coverMediaId != null) 'cover_media_id': coverMediaId,
-      if (avatarMediaId != null) 'avatar_media_id': avatarMediaId,
-      if (category != null) 'category': category,
-      if (location != null) 'location': location,
+      'name': ?name,
+      'description': ?description,
+      'privacy': ?privacy,
+      'is_mature': ?isMature,
+      'cover_media_id': ?coverMediaId,
+      'avatar_media_id': ?avatarMediaId,
+      'category': ?category,
+      'location': ?location,
     };
     final response =
         await _api.patch('/v1/groups/$groupId', data: payload);

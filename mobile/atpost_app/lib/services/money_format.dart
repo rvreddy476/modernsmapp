@@ -12,12 +12,12 @@
 //   * Indian-style thousands grouping (12,34,567.89) — important for the
 //     wallet hero card on the home screen.
 
-import 'package:atpost_app/data/models/wallet.dart' as _wallet;
+import 'package:atpost_app/data/models/wallet.dart' as wallet;
 
 /// Format paise as rupees. Defers to the canonical implementation in
 /// `data/models/wallet.dart` so the code path is identical everywhere.
 String formatRupees(int paise, {bool withSymbol = true}) {
-  return _wallet.formatRupees(paise, withSymbol: withSymbol);
+  return wallet.formatRupees(paise, withSymbol: withSymbol);
 }
 
 /// Convenience: bucket an amount (paise) into the coarse band used for

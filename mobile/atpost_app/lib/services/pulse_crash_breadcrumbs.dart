@@ -79,7 +79,7 @@ class PulseBreadcrumbs {
   /// Spark target picker — open/close pair so abandonment can be measured.
   static void sparkPickerOpen({String? candidateId}) => add(
         'pulse.spark_picker.open',
-        data: {if (candidateId != null) 'candidate_id': candidateId},
+        data: {'candidate_id': ?candidateId},
       );
   static void sparkPickerClose({required bool sent}) =>
       add('pulse.spark_picker.close', data: {'sent': sent});
@@ -125,7 +125,7 @@ class PulseBreadcrumbs {
         'pulse.premium.checkout_fail',
         data: {
           'plan_id': planId,
-          if (reason != null) 'reason': reason,
+          'reason': ?reason,
         },
       );
 }

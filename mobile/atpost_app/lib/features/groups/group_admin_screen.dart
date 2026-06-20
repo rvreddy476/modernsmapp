@@ -407,7 +407,7 @@ class _DetailsPanelState extends ConsumerState<_DetailsPanel> {
                 Switch(
                   value: _isMature,
                   onChanged: (v) => setState(() => _isMature = v),
-                  activeColor: AppColors.statusError,
+                  activeThumbColor: AppColors.statusError,
                 ),
               ],
             ),

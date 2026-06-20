@@ -184,7 +184,7 @@ class CommerceRepository {
     await _api.post(
       '/v1/commerce/cart/items',
       data: {
-        if (productId != null) 'product_id': productId,
+        'product_id': ?productId,
         'variant_id': variantId,
         'quantity': qty,
       },
@@ -268,7 +268,7 @@ class CommerceRepository {
         'payment_method': paymentMethod,
         if (couponCode != null && couponCode.isNotEmpty)
           'coupon_code': couponCode,
-        if (idempotencyKey != null) 'idempotency_key': idempotencyKey,
+        'idempotency_key': ?idempotencyKey,
         if (organizationId != null && organizationId.isNotEmpty)
           'organization_id': organizationId,
         if (poNumber != null && poNumber.isNotEmpty) 'po_number': poNumber,

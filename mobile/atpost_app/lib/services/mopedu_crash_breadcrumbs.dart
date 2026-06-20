@@ -77,8 +77,8 @@ class MopeduBreadcrumbs {
   static void homeBookTapped({String? vehicleType, String? cityId}) => add(
         'mopedu.home.book_tapped',
         data: {
-          if (vehicleType != null) 'vehicle_type': vehicleType,
-          if (cityId != null) 'city_id': cityId,
+          'vehicle_type': ?vehicleType,
+          'city_id': ?cityId,
         },
       );
 
@@ -131,7 +131,7 @@ class MopeduBreadcrumbs {
         'mopedu.subscription.renew_fail',
         data: {
           'plan_id': planId,
-          if (reason != null) 'reason': reason,
+          'reason': ?reason,
         },
       );
 
@@ -140,11 +140,11 @@ class MopeduBreadcrumbs {
   static void safetyCenterOpen() => add('mopedu.safety.center_open');
   static void sosTriggered({String? rideId}) => add(
         'mopedu.safety.sos_triggered',
-        data: {if (rideId != null) 'ride_id': rideId},
+        data: {'ride_id': ?rideId},
       );
   static void sosConfirmed({String? rideId}) => add(
         'mopedu.safety.sos_confirmed',
-        data: {if (rideId != null) 'ride_id': rideId},
+        data: {'ride_id': ?rideId},
       );
 
   // ─── Gate ──────────────────────────────────────────────────────────
@@ -153,11 +153,11 @@ class MopeduBreadcrumbs {
         'mopedu.gate.blocked',
         data: {
           'reason': reason,
-          if (city != null) 'city': city,
+          'city': ?city,
         },
       );
   static void waitlistJoined({String? city}) => add(
         'mopedu.waitlist.joined',
-        data: {if (city != null) 'city': city},
+        data: {'city': ?city},
       );
 }

@@ -272,9 +272,14 @@ class Comment {
       id: (json['id'] ?? json['comment_id'] ?? '').toString(),
       postId: (json['post_id'] ?? '').toString(),
       authorId: (json['user_id'] ?? json['author_id'] ?? '').toString(),
-      authorName: (json['user_display_name'] ?? json['author_name'])
+      authorName: (json['user_display_name'] ??
+              json['author_name'] ??
+              json['username'] ??
+              json['display_name'])
           ?.toString(),
-      authorAvatar: (json['user_avatar_url'] ?? json['author_avatar'])
+      authorAvatar: (json['user_avatar_url'] ??
+              json['author_avatar'] ??
+              json['avatar_url'])
           ?.toString(),
       text: (json['text'] ?? '').toString(),
       likeCount: _toInt(json['like_count']),

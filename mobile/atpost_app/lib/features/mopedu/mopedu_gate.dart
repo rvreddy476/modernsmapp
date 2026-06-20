@@ -1,7 +1,6 @@
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
-import 'package:atpost_app/data/repositories/mopedu_repository.dart';
 import 'package:atpost_app/features/mopedu/mopedu_waitlist_screen.dart';
 import 'package:atpost_app/providers/mopedu_providers.dart';
 import 'package:atpost_app/providers/user_provider.dart';

@@ -235,6 +235,40 @@ func (s *Service) Decide(ctx context.Context, userID, assignmentID uuid.UUID, de
 	return a, nil
 }
 
+// DashboardStats is the reviewer's console summary (reviewer may be nil if the
+// user hasn't opted in yet).
+type DashboardStats struct {
+	Reviewer            *postgres.Reviewer `json:"reviewer"`
+	ReviewsCompleted    int                `json:"reviews_completed"`
+	Escalated           int                `json:"escalated"`
+	LifetimeEarnedPaise int64              `json:"lifetime_earned_paise"`
+	PendingQueue        int                `json:"pending_queue"`
+}
+
+// MyDashboard returns the reviewer's dashboard stats for the given user.
+func (s *Service) MyDashboard(ctx context.Context, userID uuid.UUID) (*DashboardStats, error) {
+	queue, _ := s.store.QueueDepth(ctx)
+	out := &DashboardStats{PendingQueue: queue}
+	r, err := s.store.GetReviewerByUser(ctx, userID)
+	if err != nil {
+		return out, nil // not a reviewer yet — reviewer stays nil
+	}
+	out.Reviewer = r
+	if st, err := s.store.StatsForReviewer(ctx, r.ID); err == nil {
+		out.ReviewsCompleted = st.ReviewsCompleted
+		out.Escalated = st.Escalated
+		out.LifetimeEarnedPaise = st.LifetimeEarnedPaise
+	}
+	return out, nil
+}
+
+// AdminDashboard returns the super-admin overview (open escalations + queue depth).
+func (s *Service) AdminDashboard(ctx context.Context) (open, queue int) {
+	open, _ = s.store.OpenEscalationCount(ctx)
+	queue, _ = s.store.QueueDepth(ctx)
+	return open, queue
+}
+
 // ListEscalations returns the open super-admin queue.
 func (s *Service) ListEscalations(ctx context.Context, limit int) ([]postgres.Escalation, error) {
 	if limit <= 0 || limit > 200 {

@@ -324,7 +324,7 @@ class _ProviderRow extends StatelessWidget {
                   if (hasExisting) ...[
                     const SizedBox(height: 2),
                     Text(
-                      'Saved · ${existing!.maskedIdentifier}',
+                      'Saved · ${existing.maskedIdentifier}',
                       style: AppTextStyles.bodySmall.copyWith(
                         color: AppColors.statusSuccess,
                       ),

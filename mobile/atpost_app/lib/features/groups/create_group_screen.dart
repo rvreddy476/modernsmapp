@@ -243,7 +243,7 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
                           Switch(
                             value: _isMature,
                             onChanged: (v) => setState(() => _isMature = v),
-                            activeColor: AppColors.statusError,
+                            activeThumbColor: AppColors.statusError,
                             trackColor: WidgetStateProperty.resolveWith(
                               (states) => states.contains(WidgetState.selected)
                                   ? AppColors.statusError.withValues(alpha: 0.3)

@@ -109,7 +109,7 @@ class FoodRewardsRepository {
       '/v1/food/me/loyalty/redeem',
       data: <String, dynamic>{
         'points': points,
-        if (orderId != null) 'order_id': orderId,
+        'order_id': ?orderId,
       },
     );
     return FoodLoyaltyBalance.fromJson(

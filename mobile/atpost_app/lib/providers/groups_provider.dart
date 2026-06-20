@@ -194,7 +194,7 @@ extension GroupExtension on Group {
       privacyLevel: privacyLevel,
       joinMode: joinMode,
       viewerRole: viewerRole,
-      isMature: this.isMature,
+      isMature: isMature,
       pendingRequestCount: pendingRequestCount,
       location: location,
       chatConversationId: chatConversationId,

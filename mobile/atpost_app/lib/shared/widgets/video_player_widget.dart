@@ -17,6 +17,7 @@ class VideoPlayerWidget extends StatefulWidget {
     this.autoPlay = true,
     this.looping = false,
     this.showControls = true,
+    this.muted = false,
     this.aspectRatio,
     this.placeholder,
     this.onTogglePlay,
@@ -27,6 +28,7 @@ class VideoPlayerWidget extends StatefulWidget {
   final bool autoPlay;
   final bool looping;
   final bool showControls;
+  final bool muted;
   final double? aspectRatio;
 
   /// Optional widget to show behind the video (e.g. gradient background).
@@ -65,6 +67,8 @@ class VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     if (oldWidget.videoUrl != widget.videoUrl) {
       _disposeControllers();
       _initializePlayer();
+    } else if (oldWidget.muted != widget.muted) {
+      _videoController?.setVolume(widget.muted ? 0 : 1.0);
     }
   }
 
@@ -89,6 +93,7 @@ class VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       if (!mounted) return;
 
       controller.setLooping(widget.looping);
+      controller.setVolume(widget.muted ? 0 : 1.0);
 
       // Throttled position emitter — fires onPositionUpdate at most
       // every 100ms (10 Hz). Fine-grained enough that a 1-second tag

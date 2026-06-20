@@ -83,6 +83,7 @@ import 'package:atpost_app/features/search/search_results_screen.dart';
 import 'package:atpost_app/features/shell/search_tab.dart';
 import 'package:atpost_app/features/search/video_search_screen.dart';
 import 'package:atpost_app/features/reviewer/reviewer_console_screen.dart';
+import 'package:atpost_app/features/reviewer/reviewer_dashboard_screen.dart';
 import 'package:atpost_app/features/reviewer/needs_changes_screen.dart';
 import 'package:atpost_app/features/services/service_slug_router.dart';
 import 'package:atpost_app/features/services/services_screen.dart';
@@ -1215,6 +1216,10 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: '/reviewer',
             builder: (context, state) => const ReviewerConsoleScreen(),
+          ),
+          GoRoute(
+            path: '/reviewer/dashboard',
+            builder: (context, state) => const ReviewerDashboardScreen(),
           ),
           GoRoute(
             path: '/reviewer/feedback/:contentId',

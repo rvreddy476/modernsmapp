@@ -113,7 +113,7 @@ class _CallScreenState extends ConsumerState<CallScreen> {
     if (info.remoteVideoTrack != null) {
       return lk.VideoTrackRenderer(
         info.remoteVideoTrack!,
-        fit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+        fit: lk.VideoViewFit.cover,
       );
     }
 
@@ -127,7 +127,7 @@ class _CallScreenState extends ConsumerState<CallScreen> {
     if (info.localVideoTrack != null) {
       return lk.VideoTrackRenderer(
         info.localVideoTrack!,
-        fit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+        fit: lk.VideoViewFit.cover,
         mirrorMode: lk.VideoViewMirrorMode.mirror,
       );
     }

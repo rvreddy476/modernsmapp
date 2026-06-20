@@ -886,7 +886,7 @@ class _GroupAvatar extends StatelessWidget {
             ? Image.network(
                 avatarUrl!,
                 fit: BoxFit.cover,
-                errorBuilder: (_, __, ___) => _AvatarFallback(initial: initial, size: size),
+                errorBuilder: (_, _, _) => _AvatarFallback(initial: initial, size: size),
               )
             : _AvatarFallback(initial: initial, size: size),
       ),
@@ -936,7 +936,7 @@ class _GroupCover extends StatelessWidget {
         child: Image.network(
           coverUrl!,
           fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) => _GradientCover(
+          errorBuilder: (_, _, _) => _GradientCover(
             gradient: gradient,
             height: height,
           ),

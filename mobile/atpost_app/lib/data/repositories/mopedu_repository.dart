@@ -586,8 +586,8 @@ class MopeduRepository {
       data: {
         'lat': lat,
         'lng': lng,
-        if (speed != null) 'speed': speed,
-        if (heading != null) 'heading': heading,
+        'speed': ?speed,
+        'heading': ?heading,
       },
     );
   }
