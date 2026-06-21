@@ -155,6 +155,15 @@ func (s *Service) NextAssignment(ctx context.Context, userID uuid.UUID) (*postgr
 			return nil, ErrKYCRequired
 		}
 	}
+	_ = s.store.SetOnline(ctx, r.ID, true)
+
+	// Resume an in-flight assignment instead of erroring at capacity, so a
+	// reviewer who reloads the console gets their current video back.
+	if cur, err := s.store.ActiveAssignmentForReviewer(ctx, r.ID); err == nil && cur != nil {
+		cur.CreatorID = uuid.Nil
+		return cur, nil
+	}
+
 	active, err := s.store.ActiveAssignmentCount(ctx, r.ID)
 	if err != nil {
 		return nil, err
@@ -162,7 +171,6 @@ func (s *Service) NextAssignment(ctx context.Context, userID uuid.UUID) (*postgr
 	if active >= r.MaxConcurrent {
 		return nil, ErrAtCapacity
 	}
-	_ = s.store.SetOnline(ctx, r.ID, true)
 
 	candidates, err := s.store.CandidateQueue(ctx, r.ID, r.Languages, s.rotationCapK, 15)
 	if err != nil {

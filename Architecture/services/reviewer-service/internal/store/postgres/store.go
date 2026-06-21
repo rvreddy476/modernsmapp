@@ -117,6 +117,27 @@ func (s *Store) Enqueue(ctx context.Context, q QueueItem) error {
 	return err
 }
 
+// ActiveAssignmentForReviewer returns the reviewer's current in-flight
+// assignment (assigned|in_progress), or nil if none — so the console can resume
+// instead of being told it's at capacity.
+func (s *Store) ActiveAssignmentForReviewer(ctx context.Context, reviewerID uuid.UUID) (*Assignment, error) {
+	var a Assignment
+	err := s.db.QueryRow(ctx, `
+		SELECT id, content_id, creator_id, reviewer_id, kind, status,
+			content_seconds, watched_seconds, assigned_at, expires_at
+		FROM reviewer.review_assignments
+		WHERE reviewer_id = $1 AND status IN ('assigned','in_progress')
+		ORDER BY assigned_at DESC LIMIT 1`, reviewerID).Scan(&a.ID, &a.ContentID, &a.CreatorID,
+		&a.ReviewerID, &a.Kind, &a.Status, &a.ContentSeconds, &a.WatchedSeconds, &a.AssignedAt, &a.ExpiresAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &a, nil
+}
+
 func (s *Store) ActiveAssignmentCount(ctx context.Context, reviewerID uuid.UUID) (int, error) {
 	var n int
 	err := s.db.QueryRow(ctx, `

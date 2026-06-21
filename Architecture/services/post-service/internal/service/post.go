@@ -798,8 +798,12 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	if reviewStatus == "approved" && isVideoContentType(p.ContentType) && videoMediaID != uuid.Nil {
 		reviewStatus = s.gateVideoReviewStatus(ctx, videoMediaID)
 	}
-	// Optional: send every (clean) video to human review, not just spam-flagged.
-	if s.reviewAllVideos && isVideoContentType(p.ContentType) && reviewStatus == "approved" {
+	// Optional: send every video to human review, not just spam-flagged. Covers
+	// 'pending' (still transcoding) too — otherwise the transcode consumer would
+	// later flip pending→approved and publish it without review. The reviewer
+	// watches the uploaded media directly.
+	if s.reviewAllVideos && isVideoContentType(p.ContentType) &&
+		(reviewStatus == "approved" || reviewStatus == "pending") {
 		reviewStatus = "flagged"
 	}
 	p.ReviewStatus = reviewStatus
