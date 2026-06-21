@@ -19,6 +19,7 @@ var (
 	ErrAtCapacity   = errors.New("at max concurrent assignments")
 	ErrNoWork       = errors.New("no eligible content")
 	ErrInvalidInput = errors.New("invalid input")
+	ErrKYCRequired  = errors.New("identity verification required")
 )
 
 type Service struct {
@@ -66,6 +67,23 @@ func (s *Service) OptIn(ctx context.Context, userID uuid.UUID, languages []strin
 
 func (s *Service) Me(ctx context.Context, userID uuid.UUID) (*postgres.Reviewer, error) {
 	return s.store.GetReviewerByUser(ctx, userID)
+}
+
+// RefreshKYC syncs the reviewer's kyc_verified flag from wallet-service
+// (identity verification). Returns the verified state. Idempotent.
+func (s *Service) RefreshKYC(ctx context.Context, userID uuid.UUID) (bool, error) {
+	r, err := s.store.GetReviewerByUser(ctx, userID)
+	if err != nil {
+		return false, ErrNotReviewer
+	}
+	verified, err := s.clients.IsKYCVerified(ctx, userID)
+	if err != nil {
+		return r.KYCVerified, err // keep last-known on transient errors
+	}
+	if verified != r.KYCVerified {
+		_ = s.store.SetKYCVerified(ctx, r.ID, verified)
+	}
+	return verified, nil
 }
 
 func (s *Service) SetOnline(ctx context.Context, userID uuid.UUID, online bool) error {
@@ -128,6 +146,14 @@ func (s *Service) NextAssignment(ctx context.Context, userID uuid.UUID) (*postgr
 	}
 	if r.Status == "suspended" {
 		return nil, ErrSuspended
+	}
+	// Identity gate: no assignments (hence no pay) until KYC is verified. Cached
+	// on the reviewer row; re-checked against wallet-service while unverified.
+	if !r.KYCVerified {
+		verified, _ := s.RefreshKYC(ctx, userID)
+		if !verified {
+			return nil, ErrKYCRequired
+		}
 	}
 	active, err := s.store.ActiveAssignmentCount(ctx, r.ID)
 	if err != nil {

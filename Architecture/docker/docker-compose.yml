@@ -780,6 +780,7 @@ services:
       GRAPH_SERVICE_URL: http://graph-service:8083
       MONETIZATION_SERVICE_URL: http://monetization-service:8099
       POST_SERVICE_URL: http://post-service:8084
+      WALLET_SERVICE_URL: http://wallet-service:8114
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       REVIEWER_CREDIT_ENABLED: "false"
     ports:

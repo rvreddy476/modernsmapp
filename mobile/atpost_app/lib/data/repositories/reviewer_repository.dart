@@ -48,6 +48,7 @@ class ReviewerDashboard {
   final String status;
   final String tier;
   final double accuracy;
+  final bool kycVerified;
   final int reviewsCompleted;
   final int escalated;
   final int lifetimeEarnedPaise;
@@ -58,6 +59,7 @@ class ReviewerDashboard {
     this.status = '',
     this.tier = '',
     this.accuracy = 0,
+    this.kycVerified = false,
     this.reviewsCompleted = 0,
     this.escalated = 0,
     this.lifetimeEarnedPaise = 0,
@@ -72,6 +74,7 @@ class ReviewerDashboard {
       status: (rev?['status'] ?? '').toString(),
       tier: (rev?['tier'] ?? '').toString(),
       accuracy: (rev?['reviewer_accuracy'] as num?)?.toDouble() ?? 0,
+      kycVerified: rev?['kyc_verified'] == true,
       reviewsCompleted: (json['reviews_completed'] as num?)?.toInt() ?? 0,
       escalated: (json['escalated'] as num?)?.toInt() ?? 0,
       lifetimeEarnedPaise: (json['lifetime_earned_paise'] as num?)?.toInt() ?? 0,
@@ -93,6 +96,13 @@ class ReviewerRepository {
   Future<void> optIn({List<String> languages = const ['en'], String region = ''}) async {
     await _api.post('/v1/reviewer/opt-in',
         data: {'languages': languages, 'region': region});
+  }
+
+  /// Syncs identity-verification status from wallet-service. Returns verified.
+  Future<bool> verifyKyc() async {
+    final res = await _api.post('/v1/reviewer/verify-kyc');
+    final d = _obj(res.data);
+    return d?['kyc_verified'] == true;
   }
 
   /// Next assignment to review, or null when the queue is empty / at capacity.

@@ -24,6 +24,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		g.POST("/opt-in", h.OptIn)
 		g.GET("/me", h.Me)
 		g.GET("/me/stats", h.MyDashboard)
+		g.POST("/verify-kyc", h.VerifyKYC)
 		g.POST("/online", h.SetOnline)
 		g.GET("/assignments/next", h.NextAssignment)
 		g.POST("/assignments/:id/heartbeat", h.Heartbeat)
@@ -109,6 +110,21 @@ func (h *Handler) MyDashboard(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, stats, nil)
 }
 
+// VerifyKYC — POST /v1/reviewer/verify-kyc. Syncs the reviewer's identity
+// verification status from wallet-service. Call after the user completes KYC.
+func (h *Handler) VerifyKYC(c *gin.Context) {
+	uid, ok := userID(c)
+	if !ok {
+		return
+	}
+	verified, err := h.svc.RefreshKYC(c.Request.Context(), uid)
+	if err != nil && !verified {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadGateway, "KYC_CHECK_FAILED", "Could not check verification status", nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"kyc_verified": verified}, nil)
+}
+
 // AdminStats — GET /v1/reviewer/admin/stats (super-admin overview).
 func (h *Handler) AdminStats(c *gin.Context) {
 	if !isAdmin(c) {
@@ -149,6 +165,8 @@ func (h *Handler) NextAssignment(c *gin.Context) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NOT_REVIEWER", "Opt in to review first", nil)
 		case errors.Is(err, service.ErrSuspended):
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "SUSPENDED", "Reviewer suspended", nil)
+		case errors.Is(err, service.ErrKYCRequired):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "KYC_REQUIRED", "Verify your identity to start reviewing", nil)
 		case errors.Is(err, service.ErrAtCapacity):
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "AT_CAPACITY", "Finish your current review first", nil)
 		case errors.Is(err, service.ErrNoWork):

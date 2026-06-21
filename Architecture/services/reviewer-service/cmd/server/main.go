@@ -61,6 +61,7 @@ func main() {
 		env("GRAPH_SERVICE_URL", "http://graph-service:8083"),
 		env("MONETIZATION_SERVICE_URL", "http://monetization-service:8099"),
 		env("POST_SERVICE_URL", "http://post-service:8084"),
+		env("WALLET_SERVICE_URL", "http://wallet-service:8114"),
 		internalKey,
 	)
 	store := postgres.New(dbPool)

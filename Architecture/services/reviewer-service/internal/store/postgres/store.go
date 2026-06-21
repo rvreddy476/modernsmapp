@@ -90,6 +90,13 @@ func (s *Store) GetReviewerByUser(ctx context.Context, userID uuid.UUID) (*Revie
 		`SELECT `+reviewerCols+` FROM reviewer.reviewers WHERE user_id = $1`, userID))
 }
 
+func (s *Store) SetKYCVerified(ctx context.Context, reviewerID uuid.UUID, verified bool) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE reviewer.reviewers SET kyc_verified = $2, updated_at = now() WHERE id = $1`,
+		reviewerID, verified)
+	return err
+}
+
 func (s *Store) SetOnline(ctx context.Context, reviewerID uuid.UUID, online bool) error {
 	_, err := s.db.Exec(ctx,
 		`UPDATE reviewer.reviewers SET is_online = $2, updated_at = now() WHERE id = $1`,

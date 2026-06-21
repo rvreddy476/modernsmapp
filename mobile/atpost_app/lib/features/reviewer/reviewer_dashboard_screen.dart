@@ -38,6 +38,26 @@ class _ReviewerDashboardScreenState extends ConsumerState<ReviewerDashboardScree
     }
   }
 
+  Future<void> _refreshKyc() async {
+    setState(() => _busy = true);
+    try {
+      final verified = await ref.read(reviewerRepositoryProvider).verifyKyc();
+      await _load();
+      if (mounted && !verified) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Not verified yet — complete identity verification first.')),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Could not check status. Try again.')));
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   Future<void> _optIn() async {
     setState(() => _busy = true);
     try {
@@ -136,11 +156,58 @@ class _ReviewerDashboardScreenState extends ConsumerState<ReviewerDashboardScree
               style: AppTextStyles.body.copyWith(color: const Color(0xFFFF6B6B))),
         ),
       ],
-      const SizedBox(height: 24),
+      const SizedBox(height: 16),
+      if (!d.kycVerified) ...[
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: AppColors.bgSecondary,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: AppColors.statusWarning.withValues(alpha: 0.5)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(children: [
+                Icon(Icons.verified_user_outlined, color: AppColors.statusWarning, size: 20),
+                const SizedBox(width: 8),
+                Text('Verify your identity', style: AppTextStyles.label),
+              ]),
+              const SizedBox(height: 6),
+              Text(
+                'Reviewing is paid work, so we verify identity (KYC) before you can '
+                'start — required for payouts and to keep the system fair.',
+                style: AppTextStyles.bodySmall.copyWith(color: AppColors.textSecondary),
+              ),
+              const SizedBox(height: 12),
+              Row(children: [
+                Expanded(
+                  child: FilledButton(
+                    onPressed: () => context.push('/wallet/kyc'),
+                    style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 12)),
+                    child: const Text('Verify with DigiLocker'),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: _busy ? null : _refreshKyc,
+                    style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 12)),
+                    child: Text(_busy ? 'Checking…' : 'I\'ve verified'),
+                  ),
+                ),
+              ]),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+      ],
       FilledButton.icon(
-        onPressed: d.status == 'suspended' ? null : () => context.push('/reviewer'),
+        onPressed: (d.status == 'suspended' || !d.kycVerified) ? null : () => context.push('/reviewer'),
         icon: const Icon(Icons.play_arrow_rounded),
-        label: Text(d.pendingQueue > 0 ? 'Start reviewing (${d.pendingQueue})' : 'Start reviewing'),
+        label: Text(!d.kycVerified
+            ? 'Verify identity to start'
+            : (d.pendingQueue > 0 ? 'Start reviewing (${d.pendingQueue})' : 'Start reviewing')),
         style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14)),
       ),
     ];

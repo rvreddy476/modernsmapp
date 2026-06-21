@@ -18,17 +18,52 @@ type Clients struct {
 	graphURL        string
 	monetizationURL string
 	postURL         string
+	walletURL       string
 	internalKey     string
 }
 
-func New(graphURL, monetizationURL, postURL, internalKey string) *Clients {
+func New(graphURL, monetizationURL, postURL, walletURL, internalKey string) *Clients {
 	return &Clients{
 		http:            &http.Client{Timeout: 4 * time.Second},
 		graphURL:        graphURL,
 		monetizationURL: monetizationURL,
 		postURL:         postURL,
+		walletURL:       walletURL,
 		internalKey:     internalKey,
 	}
+}
+
+type kycResp struct {
+	Data struct {
+		Tier       string  `json:"tier"`
+		VerifiedAt *string `json:"verified_at"`
+	} `json:"data"`
+}
+
+// IsKYCVerified reports whether the user has completed identity verification in
+// wallet-service (tier full/enhanced). Fails CLOSED (false) on any error so an
+// unverifiable user is never treated as verified.
+func (c *Clients) IsKYCVerified(ctx context.Context, userID uuid.UUID) (bool, error) {
+	if c.walletURL == "" {
+		return false, fmt.Errorf("wallet url not configured")
+	}
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, c.walletURL+"/v1/wallet/kyc", nil)
+	req.Header.Set("X-Internal-Service-Key", c.internalKey)
+	req.Header.Set("X-User-Id", userID.String())
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("wallet kyc status %d", resp.StatusCode)
+	}
+	var k kycResp
+	if err := json.NewDecoder(resp.Body).Decode(&k); err != nil {
+		return false, err
+	}
+	tier := k.Data.Tier
+	return tier == "full" || tier == "enhanced", nil
 }
 
 type relationshipResp struct {
