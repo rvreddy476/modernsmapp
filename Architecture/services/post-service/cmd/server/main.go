@@ -121,6 +121,7 @@ func main() {
 	postSvc.SetGraphServiceURL(env("GRAPH_SERVICE_URL", "http://graph-service:8083"))
 	postSvc.SetMonetizationServiceURL(env("MONETIZATION_SERVICE_URL", "http://monetization-service:8099"))
 	postSvc.SetReviewerServiceURL(env("REVIEWER_SERVICE_URL", "http://reviewer-service:8120"))
+	postSvc.SetReviewAllVideos(env("REVIEW_ALL_VIDEOS", "false") == "true")
 	postSvc.SetInternalServiceKey(os.Getenv("INTERNAL_SERVICE_KEY"))
 
 	// 7. Kafka producers

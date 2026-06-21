@@ -64,6 +64,7 @@ type Service struct {
 	graphServiceURL        string
 	monetizationServiceURL string
 	reviewerServiceURL     string
+	reviewAllVideos        bool
 	internalServiceKey     string
 	httpClient             *http.Client
 
@@ -209,6 +210,13 @@ func (s *Service) SetInternalServiceKey(key string) {
 // enqueue flagged video content for human review. Empty disables enqueue.
 func (s *Service) SetReviewerServiceURL(url string) {
 	s.reviewerServiceURL = url
+}
+
+// SetReviewAllVideos, when true, routes EVERY new video to human review (marks
+// it 'flagged' so it enqueues), not just spam-flagged ones. Off by default;
+// intended for staged rollout / testing of the reviewer pipeline.
+func (s *Service) SetReviewAllVideos(v bool) {
+	s.reviewAllVideos = v
 }
 
 // AutoResolveFlagged sets a FLAGGED post to a terminal review_status
@@ -789,6 +797,10 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	// non-'approved' post, so no event-flow change is needed.
 	if reviewStatus == "approved" && isVideoContentType(p.ContentType) && videoMediaID != uuid.Nil {
 		reviewStatus = s.gateVideoReviewStatus(ctx, videoMediaID)
+	}
+	// Optional: send every (clean) video to human review, not just spam-flagged.
+	if s.reviewAllVideos && isVideoContentType(p.ContentType) && reviewStatus == "approved" {
+		reviewStatus = "flagged"
 	}
 	p.ReviewStatus = reviewStatus
 
