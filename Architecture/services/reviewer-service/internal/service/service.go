@@ -139,7 +139,7 @@ func (s *Service) Enqueue(ctx context.Context, q postgres.QueueItem) error {
 // language + rotation cap (in SQL) and graph relationship (anti-collusion),
 // then atomically claims the first eligible item. Blind: creator identity is
 // stripped from the returned assignment.
-func (s *Service) NextAssignment(ctx context.Context, userID uuid.UUID) (*postgres.Assignment, error) {
+func (s *Service) NextAssignment(ctx context.Context, userID uuid.UUID, targetContentID uuid.UUID) (*postgres.Assignment, error) {
 	r, err := s.store.GetReviewerByUser(ctx, userID)
 	if err != nil {
 		return nil, ErrNotReviewer
@@ -172,11 +172,28 @@ func (s *Service) NextAssignment(ctx context.Context, userID uuid.UUID) (*postgr
 		return nil, ErrAtCapacity
 	}
 
-	candidates, err := s.store.CandidateQueue(ctx, r.ID, r.Languages, s.rotationCapK, 15)
+	candidates, err := s.store.CandidateQueue(ctx, r.ID, r.Languages, s.rotationCapK, 50)
 	if err != nil {
 		return nil, err
 	}
+
+	var chosen *postgres.QueueItem
+	if targetContentID != uuid.Nil {
+		for _, cand := range candidates {
+			if cand.ContentID == targetContentID {
+				chosen = &cand
+				break
+			}
+		}
+		if chosen == nil {
+			return nil, ErrNoWork
+		}
+	}
+
 	for _, cand := range candidates {
+		if chosen != nil && cand.ContentID != chosen.ContentID {
+			continue
+		}
 		related, relErr := s.clients.IsRelated(ctx, r.UserID, cand.CreatorID)
 		if relErr != nil {
 			slog.Warn("graph relationship check failed; skipping candidate (fail-closed)",
@@ -184,10 +201,16 @@ func (s *Service) NextAssignment(ctx context.Context, userID uuid.UUID) (*postgr
 			continue
 		}
 		if related {
+			if chosen != nil {
+				return nil, ErrNoWork
+			}
 			continue // anti-collusion: never assign a connected pair
 		}
 		a, claimErr := s.store.ClaimAndAssign(ctx, cand, r.ID, s.assignmentTTL)
 		if errors.Is(claimErr, postgres.ErrAlreadyClaimed) {
+			if chosen != nil {
+				return nil, ErrNoWork
+			}
 			continue // lost the race; try next
 		}
 		if claimErr != nil {
@@ -355,4 +378,15 @@ func (s *Service) RunExpirySweeper(ctx context.Context) {
 			}
 		}
 	}
+}
+
+func (s *Service) GetReviewerQueue(ctx context.Context, userID uuid.UUID) ([]postgres.QueueItem, error) {
+	r, err := s.store.GetReviewerByUser(ctx, userID)
+	if err != nil {
+		return nil, ErrNotReviewer
+	}
+	if r.Status == "suspended" {
+		return nil, ErrSuspended
+	}
+	return s.store.CandidateQueue(ctx, r.ID, r.Languages, s.rotationCapK, 50)
 }

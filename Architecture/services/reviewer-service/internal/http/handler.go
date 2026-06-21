@@ -26,6 +26,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		g.GET("/me/stats", h.MyDashboard)
 		g.POST("/verify-kyc", h.VerifyKYC)
 		g.POST("/online", h.SetOnline)
+		g.GET("/queue", h.GetQueue)
 		g.GET("/assignments/next", h.NextAssignment)
 		g.POST("/assignments/:id/heartbeat", h.Heartbeat)
 		g.POST("/assignments/:id/decision", h.Decide)
@@ -158,7 +159,13 @@ func (h *Handler) NextAssignment(c *gin.Context) {
 	if !ok {
 		return
 	}
-	a, err := h.svc.NextAssignment(c.Request.Context(), uid)
+	var targetContentID uuid.UUID
+	if cidStr := c.Query("content_id"); cidStr != "" {
+		if id, err := uuid.Parse(cidStr); err == nil {
+			targetContentID = id
+		}
+	}
+	a, err := h.svc.NextAssignment(c.Request.Context(), uid, targetContentID)
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrNotReviewer):
@@ -343,4 +350,20 @@ func (h *Handler) Enqueue(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, gin.H{"enqueued": req.ContentID}, nil)
+}
+
+func (h *Handler) GetQueue(c *gin.Context) {
+	uid, ok := userID(c)
+	if !ok {
+		return
+	}
+	q, err := h.svc.GetReviewerQueue(c.Request.Context(), uid)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	if q == nil {
+		q = []postgres.QueueItem{}
+	}
+	api.JSON(c.Writer, http.StatusOK, q, nil)
 }
