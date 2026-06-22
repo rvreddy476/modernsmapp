@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rsa"
 	"log/slog"
 	"os"
 	"strings"
@@ -147,6 +148,16 @@ func main() {
 		ActiveSecret:   jwtSecret,
 		PreviousKID:    os.Getenv("JWT_KID_PREVIOUS"),
 		PreviousSecret: os.Getenv("JWT_SECRET_PREVIOUS"),
+	}
+	// Optional RS256 verification (additive): load auth-service's public key.
+	if pubPEM := os.Getenv("JWT_PUBLIC_KEY_PEM"); pubPEM != "" {
+		pub, perr := mediaHttp.ParseRSAPublicKeyPEM(pubPEM)
+		if perr != nil {
+			slog.Error("failed to parse JWT_PUBLIC_KEY_PEM", "err", perr)
+			os.Exit(1)
+		}
+		jwtKeys.RSAKeys = map[string]*rsa.PublicKey{env("JWT_RS256_KID", "rsa-1"): pub}
+		slog.Info("RS256 token verification enabled", "kid", env("JWT_RS256_KID", "rsa-1"))
 	}
 	authMW := mediaHttp.AuthMiddlewareWithKeys(jwtKeys)
 	optionalAuthMW := mediaHttp.OptionalAuthMiddlewareWithKeys(jwtKeys)

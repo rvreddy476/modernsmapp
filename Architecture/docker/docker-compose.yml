@@ -255,6 +255,10 @@ services:
     environment:
       HTTP_PORT: "8080"
       JWT_SECRET: ${JWT_SECRET:-local_dev_jwt_change_me}
+      # RS256 (optional): set JWT_PUBLIC_KEY_PEM to also verify RS256 tokens
+      # minted by identity-auth's private key. Empty = HS256 only (default).
+      JWT_PUBLIC_KEY_PEM: ${JWT_PUBLIC_KEY_PEM:-}
+      JWT_RS256_KID: ${JWT_RS256_KID:-rsa-1}
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       CORS_ORIGINS: "${CORS_ORIGINS:-http://localhost:3000}"
       AUTH_SERVICE_URL: http://identity-auth:8081
@@ -323,6 +327,19 @@ services:
       # Dev: tokens never expire — no more surprise logouts
       ACCESS_TOKEN_TTL: "8760h"
       REFRESH_TOKEN_TTL: "87600h"
+      # Authorization scopes are now resolved SERVER-SIDE from these allowlists
+      # and stamped into the signed access token. The gateway authorizes admin /
+      # internal surfaces from the token claim ONLY — it no longer trusts a
+      # client-sent X-Scopes header. Set these to the relevant user UUIDs;
+      # comma-separated. Empty = nobody has admin (secure default).
+      SUPERADMIN_USER_IDS: ${SUPERADMIN_USER_IDS:-}
+      ADMIN_USER_IDS: ${ADMIN_USER_IDS:-}
+      MODERATOR_USER_IDS: ${MODERATOR_USER_IDS:-}
+      # RS256 (optional): set JWT_PRIVATE_KEY_PEM to sign access tokens with
+      # RS256 (verifiers then use the matching JWT_PUBLIC_KEY_PEM). Empty =
+      # HS256 signing (default). Enabling RS256 is a deliberate opt-in.
+      JWT_PRIVATE_KEY_PEM: ${JWT_PRIVATE_KEY_PEM:-}
+      JWT_RS256_KID: ${JWT_RS256_KID:-rsa-1}
     ports:
       - "8081:8081"
     depends_on:
@@ -586,6 +603,9 @@ services:
       HTTP_PORT: "8087"
       POSTGRES_DSN: *app_postgres_dsn
       JWT_SECRET: ${JWT_SECRET:-local_dev_jwt_change_me}
+      # RS256 (optional): verify RS256 tokens too when set. Empty = HS256 only.
+      JWT_PUBLIC_KEY_PEM: ${JWT_PUBLIC_KEY_PEM:-}
+      JWT_RS256_KID: ${JWT_RS256_KID:-rsa-1}
       MINIO_ENDPOINT: minio:9000
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-https://cleestudio.com}
       MINIO_ACCESS_KEY: *minio_access_key

@@ -75,6 +75,13 @@ func (s *stubAuthService) ListSessions(_ context.Context, _ uuid.UUID) ([]store.
 func (s *stubAuthService) RevokeSessionByID(_ context.Context, _, _ uuid.UUID) error { return nil }
 func (s *stubAuthService) DeleteAccount(_ context.Context, _ uuid.UUID) error        { return nil }
 
+// RBAC stubs
+func (s *stubAuthService) GrantRole(_ context.Context, _, _ uuid.UUID, _ string) error  { return nil }
+func (s *stubAuthService) RevokeRole(_ context.Context, _, _ uuid.UUID, _ string) error { return nil }
+func (s *stubAuthService) ListUserRoles(_ context.Context, _, _ uuid.UUID) ([]store.UserRole, error) {
+	return nil, nil
+}
+
 // 2FA stubs
 func (s *stubAuthService) Setup2FA(_ context.Context, _ uuid.UUID) (*service.TwoFASetupResponse, error) {
 	return nil, nil

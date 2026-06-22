@@ -170,11 +170,16 @@ func main() {
 	// C7 — kid-aware verify so a rotation has a window where both the
 	// previous and active secret verify (set JWT_SECRET_PREVIOUS during
 	// the cutover; unset once AccessTokenTTL has elapsed).
+	// RSAPublic/RSAKID let the service verify the RS256 tokens it mints (nil
+	// when signing is HS256). Derived from the loaded private key, so no extra
+	// public-key env is needed for the service's own endpoints.
 	authMW := internalhttp.AuthMiddlewareWithKeys(internalhttp.JWTKeySet{
 		ActiveKID:      cfg.JWTKID,
 		ActiveSecret:   cfg.JWTSecret,
 		PreviousKID:    cfg.JWTKIDPrevious,
 		PreviousSecret: cfg.JWTSecretPrevious,
+		RSAPublic:      authSvc.AccessTokenPublicKey(),
+		RSAKID:         cfg.AccessTokenRS256KID,
 	}, rdb)
 	csrfMW := internalhttp.RequireCSRFMiddleware()
 	authHandler.RegisterRoutes(r, authMW, csrfMW)

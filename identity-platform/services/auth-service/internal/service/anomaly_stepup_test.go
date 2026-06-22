@@ -332,6 +332,14 @@ func (f *fakeAnomalyStore) UpdatePassword(_ context.Context, _ uuid.UUID, _ stri
 }
 func (f *fakeAnomalyStore) MarkEmailVerified(_ context.Context, _ uuid.UUID) error { return nil }
 func (f *fakeAnomalyStore) MarkPhoneVerified(_ context.Context, _ uuid.UUID) error { return nil }
+func (f *fakeAnomalyStore) GrantRole(_ context.Context, _, _ uuid.UUID, _ string) error { return nil }
+func (f *fakeAnomalyStore) RevokeRole(_ context.Context, _ uuid.UUID, _ string) error    { return nil }
+func (f *fakeAnomalyStore) RolesForUser(_ context.Context, _ uuid.UUID) ([]string, error) {
+	return nil, nil
+}
+func (f *fakeAnomalyStore) ListUserRoles(_ context.Context, _ uuid.UUID) ([]store.UserRole, error) {
+	return nil, nil
+}
 func (f *fakeAnomalyStore) CreateSession(_ context.Context, sess *store.Session) error {
 	f.sessions = append(f.sessions, storeSessionRecord{ID: sess.ID, UserID: sess.UserID})
 	return nil

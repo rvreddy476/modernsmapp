@@ -91,6 +91,19 @@ CREATE TABLE IF NOT EXISTS auth.recovery_codes (
 );
 CREATE INDEX IF NOT EXISTS idx_recovery_codes_user_id ON auth.recovery_codes(user_id);
 
+-- RBAC: server-side roles. The signed access token's `scopes` claim is resolved
+-- from this table (UNION the SUPERADMIN/ADMIN/MODERATOR_USER_IDS env allowlists,
+-- which remain as the bootstrap path for the first superadmin). Replaces the
+-- previous model where clients declared their own privileges via X-Scopes.
+CREATE TABLE IF NOT EXISTS auth.user_roles (
+    user_id    UUID NOT NULL,
+    role       TEXT NOT NULL CHECK (role IN ('superadmin','admin','moderator')),
+    granted_by UUID,
+    granted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, role)
+);
+CREATE INDEX IF NOT EXISTS idx_user_roles_user_id ON auth.user_roles(user_id);
+
 CREATE TABLE IF NOT EXISTS usr.users (
     id UUID PRIMARY KEY REFERENCES auth.users(user_id) ON DELETE CASCADE,
     status TEXT NOT NULL DEFAULT 'active',

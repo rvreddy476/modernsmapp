@@ -18,6 +18,9 @@ type Config struct {
 	JWTKID           string
 	JWTSecretPrevious string
 	JWTKIDPrevious    string
+	// RS256 (optional, additive): public key + kid to verify RS256 tokens.
+	JWTPublicKeyPEM  string
+	JWTRS256KID      string
 	AllowedOrigins   []string
 	WSAllowQueryToken bool
 	WSWriteWait      time.Duration
@@ -39,6 +42,8 @@ func Load() *Config {
 		JWTKID:            getEnv("JWT_KID", "v1"),
 		JWTSecretPrevious: getEnv("JWT_SECRET_PREVIOUS", ""),
 		JWTKIDPrevious:    getEnv("JWT_KID_PREVIOUS", ""),
+		JWTPublicKeyPEM:  getEnv("JWT_PUBLIC_KEY_PEM", ""),
+		JWTRS256KID:      getEnv("JWT_RS256_KID", "rsa-1"),
 		AllowedOrigins:   splitAndClean(getEnv("ALLOWED_ORIGINS", "")),
 		WSAllowQueryToken: getEnvBool("WS_ALLOW_QUERY_TOKEN", true),
 		WSWriteWait:      getEnvDuration("WS_WRITE_WAIT", 10*time.Second),
