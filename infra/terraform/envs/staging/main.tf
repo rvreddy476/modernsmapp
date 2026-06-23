@@ -143,6 +143,12 @@ module "waf" {
   environment = "staging"
 }
 
+module "auth_keys" {
+  source = "../../modules/auth-keys"
+
+  environment = "staging"
+}
+
 # ─── In-cluster tooling (helm + kubernetes providers) ───────────────
 # These wait on the EKS cluster — see the two-apply bootstrap note in
 # the README. On a fresh apply they fail; re-applying after EKS is up
@@ -161,6 +167,7 @@ module "external_secrets" {
     module.elasticache.kms_key_arn,
     module.opensearch.kms_key_arn,
     module.media.kms_key_arn,
+    module.auth_keys.kms_key_arn,
   ]
 }
 
@@ -290,3 +297,5 @@ output "media_bucket_name" { value = module.media.bucket_name }
 output "media_cloudfront_domain" { value = module.media.cloudfront_domain_name }
 output "media_client_iam_policy_arn" { value = module.media.client_iam_policy_arn }
 output "waf_web_acl_arn" { value = module.waf.web_acl_arn }
+output "auth_keys_secret_name" { value = module.auth_keys.secret_name }
+output "auth_keys_secret_arn" { value = module.auth_keys.secret_arn }

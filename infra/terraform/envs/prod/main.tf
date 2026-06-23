@@ -146,6 +146,15 @@ module "waf" {
   # (output below) after the first apply.
 }
 
+module "auth_keys" {
+  source = "../../modules/auth-keys"
+
+  environment = "prod"
+  # manage_values=true generates the RS256 keypair + JWT/internal secrets into
+  # Secrets Manager (values land in encrypted TF state — see module docs). Flip
+  # to false to keep the signing key out of state and populate by hand.
+}
+
 # ─── In-cluster tooling — see staging/main.tf for the two-apply note ─
 
 module "external_secrets" {
@@ -161,6 +170,7 @@ module "external_secrets" {
     module.elasticache.kms_key_arn,
     module.opensearch.kms_key_arn,
     module.media.kms_key_arn,
+    module.auth_keys.kms_key_arn,
   ]
 }
 
@@ -283,3 +293,5 @@ output "media_bucket_name" { value = module.media.bucket_name }
 output "media_cloudfront_domain" { value = module.media.cloudfront_domain_name }
 output "media_client_iam_policy_arn" { value = module.media.client_iam_policy_arn }
 output "waf_web_acl_arn" { value = module.waf.web_acl_arn }
+output "auth_keys_secret_name" { value = module.auth_keys.secret_name }
+output "auth_keys_secret_arn" { value = module.auth_keys.secret_arn }
