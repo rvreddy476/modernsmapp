@@ -104,7 +104,11 @@ type HTTPClient struct {
 	BaseURL string
 	UserID    uuid.UUID
 	AdminRole string
-	c         *http.Client
+	// BearerOverride, when set, is sent as the Authorization token verbatim
+	// instead of a minted one — used by the auth E2E flow to carry the real
+	// access token returned by login/refresh.
+	BearerOverride string
+	c              *http.Client
 }
 
 // NewHTTPClient constructs a client whose every request carries
@@ -126,6 +130,15 @@ func NewHTTPClient(baseURL string, userID uuid.UUID) *HTTPClient {
 func (h *HTTPClient) WithAdminRole() *HTTPClient {
 	clone := *h
 	clone.AdminRole = "admin"
+	return &clone
+}
+
+// WithBearer returns a copy that sends the given access token (e.g. the one
+// returned by /v1/auth/login) instead of a minted one. Use for the auth flow
+// where the real token's claims are what's under test.
+func (h *HTTPClient) WithBearer(token string) *HTTPClient {
+	clone := *h
+	clone.BearerOverride = token
 	return &clone
 }
 
@@ -160,7 +173,12 @@ func (h *HTTPClient) Do(ctx context.Context, method, path string, body interface
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if h.UserID != uuid.Nil {
+	switch {
+	case h.BearerOverride != "":
+		// Real login/refresh token — identity comes only from the token (no
+		// X-User-Id), so this exercises the genuine auth path.
+		req.Header.Set("Authorization", "Bearer "+h.BearerOverride)
+	case h.UserID != uuid.Nil:
 		// Real JWT for gateway-routed calls (gateway strips inbound X-User-Id
 		// and derives identity from the verified token); X-User-Id kept for
 		// services dialed directly. Admin clients get privileged scopes so the
