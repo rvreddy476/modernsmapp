@@ -56,6 +56,12 @@ SERVICE_PORT[trust-safety-service]=8091
 SERVICE_DIR[reviewer-service]="Architecture/services/reviewer-service"
 SERVICE_PORT[reviewer-service]=8120
 
+SERVICE_DIR[dating-service]="Architecture/services/dating-service"
+SERVICE_PORT[dating-service]=8112
+
+SERVICE_DIR[wallet-service]="Architecture/services/wallet-service"
+SERVICE_PORT[wallet-service]=8114
+
 SERVICE_DIR[monetization-service]="Architecture/services/monetization-service"
 SERVICE_PORT[monetization-service]=8099
 

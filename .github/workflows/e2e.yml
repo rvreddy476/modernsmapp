@@ -60,6 +60,18 @@ jobs:
             services: "api-gateway trust-safety-service"
             health: "http://localhost:8080 http://localhost:8091"
             run: "TestE2E_TrustSafety"
+          - domain: wallet
+            services: "api-gateway wallet-service"
+            health: "http://localhost:8080 http://localhost:8114"
+            run: "TestE2E_Wallet"
+          - domain: commerce
+            services: "api-gateway commerce-service"
+            health: "http://localhost:8080 http://localhost:8109"
+            run: "TestE2E_Commerce"
+          - domain: dating
+            services: "api-gateway dating-service"
+            health: "http://localhost:8080 http://localhost:8112"
+            run: "TestE2E_Dating"
     steps:
       - uses: actions/checkout@v4
 
