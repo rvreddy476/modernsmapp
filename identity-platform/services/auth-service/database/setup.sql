@@ -104,6 +104,21 @@ CREATE TABLE IF NOT EXISTS auth.user_roles (
 );
 CREATE INDEX IF NOT EXISTS idx_user_roles_user_id ON auth.user_roles(user_id);
 
+-- Immutable audit trail of privileged actions (role grants/revokes, etc.).
+-- Append-only: revokes delete the user_roles row, so this is the durable record
+-- of who did what to whom, including denied attempts. Industry-best / SOC2.
+CREATE TABLE IF NOT EXISTS auth.admin_audit (
+    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    actor_id   UUID NOT NULL,
+    action     TEXT NOT NULL,
+    target_id  UUID,
+    detail     TEXT,
+    allowed    BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_admin_audit_actor ON auth.admin_audit(actor_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_admin_audit_target ON auth.admin_audit(target_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS usr.users (
     id UUID PRIMARY KEY REFERENCES auth.users(user_id) ON DELETE CASCADE,
     status TEXT NOT NULL DEFAULT 'active',

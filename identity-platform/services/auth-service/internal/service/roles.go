@@ -12,6 +12,36 @@ import (
 // ErrNotSuperadmin is returned when a non-superadmin attempts role management.
 var ErrNotSuperadmin = errors.New("superadmin role required")
 
+// ErrMFARequired is returned when REQUIRE_MFA_FOR_PRIVILEGED is on and the
+// acting user has not enrolled 2FA.
+var ErrMFARequired = errors.New("MFA must be enabled for privileged actions")
+
+// authorizePrivileged enforces the gate for role-management actions: the actor
+// must be a superadmin and (when REQUIRE_MFA_FOR_PRIVILEGED is set) must have
+// 2FA enabled. Denied attempts are audit-logged. action/target are recorded.
+func (s *Service) authorizePrivileged(ctx context.Context, actorID, targetID uuid.UUID, action string) error {
+	if !s.IsSuperadmin(ctx, actorID) {
+		s.audit(ctx, actorID, targetID, action, "denied: not superadmin", false)
+		return ErrNotSuperadmin
+	}
+	if s.cfg.RequireMFAForPrivileged {
+		actor, err := s.store.GetUserByID(ctx, actorID)
+		if err != nil || actor == nil || !actor.TwoFactorEnabled {
+			s.audit(ctx, actorID, targetID, action, "denied: MFA not enabled", false)
+			return ErrMFARequired
+		}
+	}
+	return nil
+}
+
+// audit writes a best-effort privileged-action record. A logging failure must
+// not fail the underlying action, but it is surfaced in the service log.
+func (s *Service) audit(ctx context.Context, actorID, targetID uuid.UUID, action, detail string, allowed bool) {
+	if err := s.store.InsertAdminAudit(ctx, actorID, targetID, action, detail, allowed); err != nil {
+		s.log.Warn("admin audit write failed", "action", action, "actor", actorID, "err", err)
+	}
+}
+
 // resolveScopes computes the access-token `scopes` claim for a user by UNIONing
 // the env allowlist roles (bootstrap) with the DB roles table, then expanding
 // implications (superadmin⊇admin⊇moderator). On a DB error it falls back to the
@@ -58,21 +88,30 @@ func (s *Service) GrantRole(ctx context.Context, actorID, targetID uuid.UUID, ro
 	if !store.ValidRole(role) {
 		return errors.New("invalid role")
 	}
-	if !s.IsSuperadmin(ctx, actorID) {
-		return ErrNotSuperadmin
+	if err := s.authorizePrivileged(ctx, actorID, targetID, "role.grant"); err != nil {
+		return err
 	}
-	return s.store.GrantRole(ctx, targetID, actorID, role)
+	if err := s.store.GrantRole(ctx, targetID, actorID, role); err != nil {
+		return err
+	}
+	s.audit(ctx, actorID, targetID, "role.grant", "role="+role, true)
+	return nil
 }
 
 // RevokeRole removes a role from a target user. Superadmin (actor) only.
 func (s *Service) RevokeRole(ctx context.Context, actorID, targetID uuid.UUID, role string) error {
-	if !s.IsSuperadmin(ctx, actorID) {
-		return ErrNotSuperadmin
+	if err := s.authorizePrivileged(ctx, actorID, targetID, "role.revoke"); err != nil {
+		return err
 	}
-	return s.store.RevokeRole(ctx, targetID, role)
+	if err := s.store.RevokeRole(ctx, targetID, role); err != nil {
+		return err
+	}
+	s.audit(ctx, actorID, targetID, "role.revoke", "role="+role, true)
+	return nil
 }
 
 // ListUserRoles lists a target user's role grants. Superadmin (actor) only.
+// Read-only, so it is not gated on MFA (no state change to audit).
 func (s *Service) ListUserRoles(ctx context.Context, actorID, targetID uuid.UUID) ([]store.UserRole, error) {
 	if !s.IsSuperadmin(ctx, actorID) {
 		return nil, ErrNotSuperadmin

@@ -73,6 +73,23 @@ func (s *Store) RolesForUser(ctx context.Context, userID uuid.UUID) ([]string, e
 	return roles, rows.Err()
 }
 
+// InsertAdminAudit appends an immutable privileged-action record. actor is the
+// caller; target may be uuid.Nil. allowed=false records a denied attempt.
+func (s *Store) InsertAdminAudit(ctx context.Context, actorID, targetID uuid.UUID, action, detail string, allowed bool) error {
+	var target *uuid.UUID
+	if targetID != uuid.Nil {
+		target = &targetID
+	}
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO auth.admin_audit (actor_id, action, target_id, detail, allowed)
+		VALUES ($1, $2, $3, $4, $5)
+	`, actorID, action, target, detail, allowed)
+	if err != nil {
+		return fmt.Errorf("insert admin audit: %w", err)
+	}
+	return nil
+}
+
 // ListUserRoles returns all role grants for a user with metadata (admin view).
 func (s *Store) ListUserRoles(ctx context.Context, userID uuid.UUID) ([]UserRole, error) {
 	rows, err := s.db.Query(ctx, `

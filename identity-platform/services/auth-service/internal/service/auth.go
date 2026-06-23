@@ -63,6 +63,7 @@ type Store interface {
 	RevokeRole(ctx context.Context, userID uuid.UUID, role string) error
 	RolesForUser(ctx context.Context, userID uuid.UUID) ([]string, error)
 	ListUserRoles(ctx context.Context, userID uuid.UUID) ([]store.UserRole, error)
+	InsertAdminAudit(ctx context.Context, actorID, targetID uuid.UUID, action, detail string, allowed bool) error
 	// Sessions
 	CreateSession(ctx context.Context, sess *store.Session) error
 	GetSessionByRefreshTokenHash(ctx context.Context, refreshTokenHash string) (*store.Session, error)

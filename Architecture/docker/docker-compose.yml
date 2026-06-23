@@ -340,6 +340,10 @@ services:
       # HS256 signing (default). Enabling RS256 is a deliberate opt-in.
       JWT_PRIVATE_KEY_PEM: ${JWT_PRIVATE_KEY_PEM:-}
       JWT_RS256_KID: ${JWT_RS256_KID:-rsa-1}
+      # When true, privileged actions (role grant/revoke) require the acting
+      # superadmin to have 2FA enabled. Off by default so first-superadmin
+      # bootstrap isn't locked out before enrolling MFA.
+      REQUIRE_MFA_FOR_PRIVILEGED: ${REQUIRE_MFA_FOR_PRIVILEGED:-false}
     ports:
       - "8081:8081"
     depends_on:

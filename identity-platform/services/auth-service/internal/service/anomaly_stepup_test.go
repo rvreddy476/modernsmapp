@@ -340,6 +340,9 @@ func (f *fakeAnomalyStore) RolesForUser(_ context.Context, _ uuid.UUID) ([]strin
 func (f *fakeAnomalyStore) ListUserRoles(_ context.Context, _ uuid.UUID) ([]store.UserRole, error) {
 	return nil, nil
 }
+func (f *fakeAnomalyStore) InsertAdminAudit(_ context.Context, _, _ uuid.UUID, _, _ string, _ bool) error {
+	return nil
+}
 func (f *fakeAnomalyStore) CreateSession(_ context.Context, sess *store.Session) error {
 	f.sessions = append(f.sessions, storeSessionRecord{ID: sess.ID, UserID: sess.UserID})
 	return nil

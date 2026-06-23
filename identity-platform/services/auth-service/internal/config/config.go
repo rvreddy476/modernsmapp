@@ -77,6 +77,10 @@ type Config struct {
 	// stamped as the token `kid` and must match the verifiers' configured kid.
 	AccessTokenPrivateKeyPEM string
 	AccessTokenRS256KID      string
+	// RequireMFAForPrivileged, when true, blocks privileged actions (role
+	// management) unless the acting user has 2FA enabled. Default off so dev /
+	// first-superadmin bootstrap isn't locked out before enrolling MFA.
+	RequireMFAForPrivileged bool
 }
 
 // EnvRolesForUser returns the raw roles assigned to a user via the env
@@ -163,6 +167,7 @@ func Load() *Config {
 		ScopeSuperadminUserIDs:   splitToSet(getEnv("SUPERADMIN_USER_IDS", "")),
 		AccessTokenPrivateKeyPEM: getEnv("JWT_PRIVATE_KEY_PEM", ""),
 		AccessTokenRS256KID:      getEnv("JWT_RS256_KID", "rsa-1"),
+		RequireMFAForPrivileged:  getEnvBool("REQUIRE_MFA_FOR_PRIVILEGED", false),
 	}
 	return cfg
 }

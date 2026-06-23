@@ -31,6 +31,8 @@ func (h *Handler) writeRoleErr(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, service.ErrNotSuperadmin):
 		api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "superadmin role required", nil, nil)
+	case errors.Is(err, service.ErrMFARequired):
+		api.Error(c.Writer, http.StatusForbidden, "MFA_REQUIRED", "enable two-factor auth to perform admin actions", nil, nil)
 	default:
 		h.log.Error("role op failed", "err", err, "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
