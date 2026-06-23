@@ -137,6 +137,15 @@ module "media" {
   cloudfront_price_class = "PriceClass_200" # incl. India + Asia POPs
 }
 
+module "waf" {
+  source = "../../modules/waf"
+
+  environment = "prod"
+  # Set the gateway Ingress wafv2-acl-arn annotation in
+  # deploy/services/api-gateway/values-prod.yaml to module.waf.web_acl_arn
+  # (output below) after the first apply.
+}
+
 # ─── In-cluster tooling — see staging/main.tf for the two-apply note ─
 
 module "external_secrets" {
@@ -273,3 +282,4 @@ output "opensearch_master_secret_arn" { value = module.opensearch.master_secret_
 output "media_bucket_name" { value = module.media.bucket_name }
 output "media_cloudfront_domain" { value = module.media.cloudfront_domain_name }
 output "media_client_iam_policy_arn" { value = module.media.client_iam_policy_arn }
+output "waf_web_acl_arn" { value = module.waf.web_acl_arn }

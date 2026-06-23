@@ -35,11 +35,18 @@ externalSecret:
     - { secretKey: JWT_KID, remoteRef: jwt_kid }
     - { secretKey: JWT_SECRET_PREVIOUS, remoteRef: jwt_secret_previous }
     - { secretKey: JWT_KID_PREVIOUS, remoteRef: jwt_kid_previous }
+    # RS256 verification (public key). Verifies RS256 tokens auth-service mints;
+    # HS256 stays accepted in parallel. Safe to ship before signing flips on.
+    - { secretKey: JWT_PUBLIC_KEY_PEM, remoteRef: jwt_public_key_pem }
 
 env:
   ENV: prod
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  # RS256 key id — must match auth-service's JWT_RS256_KID.
+  JWT_RS256_KID: rsa-1
+  # NOTE: points at the provisioned ElastiCache endpoint (module.elasticache
+  # primary_endpoint) — not an in-cluster Redis. Fill from the TF output.
   REDIS_ADDR: redis-master.observability.svc.cluster.local:6379
   CORS_ORIGINS: https://cleestudio.com,https://app.cleestudio.com
   AUTH_SERVICE_URL: http://identity-auth-service.atpost.svc.cluster.local:8081
@@ -80,8 +87,8 @@ ingress:
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
     alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:ap-south-1:123456789012:certificate/CHANGEME
     alb.ingress.kubernetes.io/ssl-redirect: "443"
-    # Prod-only: WAF web ACL (Phase 5 — flagged here for reviewer).
-    # alb.ingress.kubernetes.io/wafv2-acl-arn: arn:aws:wafv2:...
+    # Edge WAF — fill from `terraform output waf_web_acl_arn` (modules/waf).
+    alb.ingress.kubernetes.io/wafv2-acl-arn: arn:aws:wafv2:ap-south-1:123456789012:regional/webacl/atpost-prod-edge/CHANGEME
   hosts:
     - host: api.cleestudio.com
       paths:

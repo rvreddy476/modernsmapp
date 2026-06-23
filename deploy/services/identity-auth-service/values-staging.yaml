@@ -30,21 +30,26 @@ externalSecret:
   enabled: true
   remoteKey: atpost/staging/identity-auth-service
   data:
+    - { secretKey: DATABASE_URL, remoteRef: postgres_dsn }
+    - { secretKey: REDIS_ADDR, remoteRef: redis_addr }
+    - { secretKey: REDIS_PASSWORD, remoteRef: redis_password }
+    - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
     - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
     - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
     - { secretKey: JWT_KID, remoteRef: jwt_kid }
-    # Add per-service secrets here (POSTGRES_DSN, REDIS_ADDR,
-    # KAFKA_BROKERS, SCYLLA_HOSTS, courier API keys, etc.).
+    # RS256 access-token signing (private key). Test RS256 here before prod.
+    - { secretKey: JWT_PRIVATE_KEY_PEM, remoteRef: jwt_private_key_pem }
 
 env:
   ENV: staging
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
-  # Add per-service inter-service URLs here. Common ones:
-  #   USER_SERVICE_URL:  http://user-service.atpost.svc.cluster.local:8082
-  #   GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083
-  #   POST_SERVICE_URL:  http://post-service.atpost.svc.cluster.local:8084
-  #   MEDIA_SERVICE_URL: http://media-service.atpost.svc.cluster.local:8087
+  JWT_RS256_KID: rsa-1
+  # RBAC bootstrap — set the staging superadmin UUID(s) to exercise /admin/access.
+  SUPERADMIN_USER_IDS: ""  # CHANGEME
+  ADMIN_USER_IDS: ""
+  MODERATOR_USER_IDS: ""
+  REQUIRE_MFA_FOR_PRIVILEGED: "false"  # staging convenience; on in prod
 
 # Internal-only — api-gateway is the external surface.
 ingress:

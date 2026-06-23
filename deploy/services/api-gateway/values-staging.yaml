@@ -29,11 +29,14 @@ externalSecret:
     - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
     - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
     - { secretKey: JWT_KID, remoteRef: jwt_kid }
+    # RS256 verification (public key); HS256 stays accepted in parallel.
+    - { secretKey: JWT_PUBLIC_KEY_PEM, remoteRef: jwt_public_key_pem }
 
 env:
   ENV: staging
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  JWT_RS256_KID: rsa-1
   REDIS_ADDR: redis-master.observability.svc.cluster.local:6379 # H5 fleet-wide rate limit
   CORS_ORIGINS: https://staging.cleestudio.com,https://app.staging.cleestudio.com
   # Upstream service URLs — every prefix the gateway routes to.

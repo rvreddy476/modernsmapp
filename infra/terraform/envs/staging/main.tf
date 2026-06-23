@@ -137,6 +137,12 @@ module "media" {
   cloudfront_price_class = "PriceClass_100" # cheap; staging traffic is dev-only
 }
 
+module "waf" {
+  source = "../../modules/waf"
+
+  environment = "staging"
+}
+
 # ─── In-cluster tooling (helm + kubernetes providers) ───────────────
 # These wait on the EKS cluster — see the two-apply bootstrap note in
 # the README. On a fresh apply they fail; re-applying after EKS is up
@@ -283,3 +289,4 @@ output "opensearch_master_secret_arn" { value = module.opensearch.master_secret_
 output "media_bucket_name" { value = module.media.bucket_name }
 output "media_cloudfront_domain" { value = module.media.cloudfront_domain_name }
 output "media_client_iam_policy_arn" { value = module.media.client_iam_policy_arn }
+output "waf_web_acl_arn" { value = module.waf.web_acl_arn }
