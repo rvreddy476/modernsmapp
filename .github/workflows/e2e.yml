@@ -52,6 +52,14 @@ jobs:
             services: "api-gateway user-service graph-service post-service monetization-service"
             health: "http://localhost:8080 http://localhost:8084 http://localhost:8099"
             run: "TestE2E_Monetization|TestTip|TestMembership|TestCreatorFund"
+          - domain: reviewer
+            services: "api-gateway reviewer-service"
+            health: "http://localhost:8080 http://localhost:8120"
+            run: "TestE2E_Reviewer"
+          - domain: trust-safety
+            services: "api-gateway trust-safety-service"
+            health: "http://localhost:8080 http://localhost:8091"
+            run: "TestE2E_TrustSafety"
     steps:
       - uses: actions/checkout@v4
 

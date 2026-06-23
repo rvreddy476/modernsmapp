@@ -53,6 +53,9 @@ SERVICE_PORT[group-service]=8090
 SERVICE_DIR[trust-safety-service]="Architecture/services/trust-safety-service"
 SERVICE_PORT[trust-safety-service]=8091
 
+SERVICE_DIR[reviewer-service]="Architecture/services/reviewer-service"
+SERVICE_PORT[reviewer-service]=8120
+
 SERVICE_DIR[monetization-service]="Architecture/services/monetization-service"
 SERVICE_PORT[monetization-service]=8099
 
