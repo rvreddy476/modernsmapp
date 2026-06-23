@@ -5,6 +5,17 @@
 #   docker compose -f Architecture/docker/docker-compose.infra.yml up -d
 # and the relevant services are running locally via:
 #   Architecture/docker/run-local.sh post-service monetization-service user-service graph-service api-gateway
+#
+# Run a single domain's flows by passing a -run regex through to `go test`
+# (the same groups the CI matrix in .github/workflows/e2e.yml uses):
+#   ./run-integration.sh -run TestE2E_Auth            # api-gateway + identity-auth + user
+#   ./run-integration.sh -run TestE2E_Social          # gateway + post + graph + feed + user
+#   ./run-integration.sh -run TestE2E_Media           # gateway + media
+#   ./run-integration.sh -run TestE2E_Chat            # gateway + chat-message-service
+#   ./run-integration.sh -run 'TestE2E_Monetization|TestTip|TestMembership'
+#
+# JWT: the harness mints tokens with ATPOST_JWT_SECRET (default the dev value
+# local_dev_jwt_change_me, which matches Architecture/docker/local.env).
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

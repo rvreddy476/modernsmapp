@@ -1,0 +1,104 @@
+name: E2E
+
+# Module-wise end-to-end flows (docs/TESTING.md W5). Each matrix entry boots the
+# shared infra (Postgres/Redis/Scylla/Redpanda/MinIO) once, starts only the
+# services that domain needs via run-local.sh, waits for health, then runs that
+# domain's flows from the build-tagged integration harness.
+#
+# Flows that authenticate with a minted JWT (social/media/chat/monetization) do
+# NOT need identity-auth running — the gateway just verifies the shared-secret
+# token. Only the auth domain starts identity-auth.
+
+on:
+  pull_request:
+    paths:
+      - 'Architecture/**'
+      - 'identity-platform/**'
+      - 'chat-service/**'
+      - '.github/workflows/e2e.yml'
+  push:
+    branches: [main]
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: e2e (${{ matrix.domain }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - domain: auth
+            services: "api-gateway identity-auth user-service"
+            health: "http://localhost:8080 http://localhost:8081"
+            run: "TestE2E_Auth|TestSmoke"
+          - domain: social
+            services: "api-gateway user-service graph-service post-service feed-service"
+            health: "http://localhost:8080 http://localhost:8084 http://localhost:8083"
+            run: "TestE2E_Social"
+          - domain: media
+            services: "api-gateway media-service"
+            health: "http://localhost:8080 http://localhost:8087"
+            run: "TestE2E_Media"
+          - domain: chat
+            services: "api-gateway chat-message-service"
+            health: "http://localhost:8080 http://localhost:8092"
+            run: "TestE2E_Chat"
+          - domain: monetization
+            services: "api-gateway user-service graph-service post-service monetization-service"
+            health: "http://localhost:8080 http://localhost:8084 http://localhost:8099"
+            run: "TestE2E_Monetization|TestTip|TestMembership|TestCreatorFund"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache-dependency-path: Architecture/go.sum
+
+      - name: Start infra (Postgres/Redis/Scylla/Redpanda/MinIO)
+        run: docker compose -f Architecture/docker/docker-compose.infra.yml up -d --wait
+
+      - name: Start services
+        run: |
+          # run-local.sh backgrounds each service then waits; background the
+          # whole script so the job continues. Logs stream to services.log.
+          nohup bash Architecture/docker/run-local.sh ${{ matrix.services }} > services.log 2>&1 &
+          echo "RUN_LOCAL_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait for health
+        run: |
+          set -e
+          for url in ${{ matrix.health }}; do
+            echo "waiting for $url/health ..."
+            for i in $(seq 1 60); do
+              if curl -fsS --max-time 2 "$url/health" >/dev/null 2>&1; then
+                echo "  ✓ $url"; break
+              fi
+              if [ "$i" = "60" ]; then
+                echo "  ✗ $url never became healthy"; tail -n 100 services.log; exit 1
+              fi
+              sleep 2
+            done
+          done
+
+      - name: Run ${{ matrix.domain }} E2E flows
+        working-directory: Architecture/tools/integration
+        env:
+          ATPOST_RUN_INTEGRATION: "1"
+          ATPOST_API_GATEWAY_URL: http://localhost:8080
+          ATPOST_USER_URL: http://localhost:8082
+          ATPOST_GRAPH_URL: http://localhost:8083
+          ATPOST_POST_URL: http://localhost:8084
+          ATPOST_MONETIZATION_URL: http://localhost:8099
+          ATPOST_INTERNAL_KEY: local_dev_internal_service_key_change_me
+          ATPOST_JWT_SECRET: local_dev_jwt_change_me
+        run: go test -tags integration -v -count=1 -run "${{ matrix.run }}" ./...
+
+      - name: Dump service logs on failure
+        if: failure()
+        run: tail -n 300 services.log || true
