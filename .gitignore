@@ -1,5 +1,7 @@
-# Markdown files
+# Markdown files (scratch notes stay out of git)...
 *.md
+# ...but the docs/ tree is real documentation — keep it tracked.
+!docs/**
 
 # Binaries
 *.exe
