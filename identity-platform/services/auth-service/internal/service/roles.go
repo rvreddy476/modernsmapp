@@ -118,3 +118,15 @@ func (s *Service) ListUserRoles(ctx context.Context, actorID, targetID uuid.UUID
 	}
 	return s.store.ListUserRoles(ctx, targetID)
 }
+
+// ListAdminAudit returns the recent privileged-action audit trail. Superadmin
+// (actor) only. Read-only. limit is clamped to [1,500].
+func (s *Service) ListAdminAudit(ctx context.Context, actorID uuid.UUID, limit int) ([]store.AdminAuditEntry, error) {
+	if !s.IsSuperadmin(ctx, actorID) {
+		return nil, ErrNotSuperadmin
+	}
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	return s.store.ListAdminAudit(ctx, limit)
+}

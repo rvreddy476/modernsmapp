@@ -3,6 +3,7 @@ package http
 import (
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/atpost/identity-auth-service/internal/service"
 	"github.com/atpost/identity-shared/api"
@@ -87,6 +88,26 @@ func (h *Handler) RevokeRole(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "revoked", "user_id": req.UserID, "role": req.Role}, nil)
+}
+
+// ListAdminAudit — GET /v1/auth/admin/audit?limit=N. Superadmin only.
+func (h *Handler) ListAdminAudit(c *gin.Context) {
+	actor, ok := h.callerID(c)
+	if !ok {
+		return
+	}
+	limit := 0
+	if v := c.Query("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			limit = n
+		}
+	}
+	entries, err := h.svc.ListAdminAudit(c.Request.Context(), actor, limit)
+	if err != nil {
+		h.writeRoleErr(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"entries": entries}, nil)
 }
 
 // ListUserRoles — GET /v1/auth/admin/roles/:userId. Superadmin only.

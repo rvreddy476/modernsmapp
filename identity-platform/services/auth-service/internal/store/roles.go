@@ -16,6 +16,17 @@ type UserRole struct {
 	GrantedAt time.Time  `json:"granted_at"`
 }
 
+// AdminAuditEntry is one row of the privileged-action audit trail.
+type AdminAuditEntry struct {
+	ID        uuid.UUID  `json:"id"`
+	ActorID   uuid.UUID  `json:"actor_id"`
+	Action    string     `json:"action"`
+	TargetID  *uuid.UUID `json:"target_id,omitempty"`
+	Detail    string     `json:"detail"`
+	Allowed   bool       `json:"allowed"`
+	CreatedAt time.Time  `json:"created_at"`
+}
+
 // ValidRole reports whether r is an assignable role.
 func ValidRole(r string) bool {
 	switch r {
@@ -88,6 +99,28 @@ func (s *Store) InsertAdminAudit(ctx context.Context, actorID, targetID uuid.UUI
 		return fmt.Errorf("insert admin audit: %w", err)
 	}
 	return nil
+}
+
+// ListAdminAudit returns the most recent privileged-action audit rows, newest
+// first. limit is clamped by the caller.
+func (s *Store) ListAdminAudit(ctx context.Context, limit int) ([]AdminAuditEntry, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT id, actor_id, action, target_id, COALESCE(detail, ''), allowed, created_at
+		FROM auth.admin_audit ORDER BY created_at DESC LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list admin audit: %w", err)
+	}
+	defer rows.Close()
+	var out []AdminAuditEntry
+	for rows.Next() {
+		var e AdminAuditEntry
+		if err := rows.Scan(&e.ID, &e.ActorID, &e.Action, &e.TargetID, &e.Detail, &e.Allowed, &e.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan admin audit: %w", err)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
 
 // ListUserRoles returns all role grants for a user with metadata (admin view).

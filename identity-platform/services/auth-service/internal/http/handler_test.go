@@ -81,6 +81,9 @@ func (s *stubAuthService) RevokeRole(_ context.Context, _, _ uuid.UUID, _ string
 func (s *stubAuthService) ListUserRoles(_ context.Context, _, _ uuid.UUID) ([]store.UserRole, error) {
 	return nil, nil
 }
+func (s *stubAuthService) ListAdminAudit(_ context.Context, _ uuid.UUID, _ int) ([]store.AdminAuditEntry, error) {
+	return nil, nil
+}
 
 // 2FA stubs
 func (s *stubAuthService) Setup2FA(_ context.Context, _ uuid.UUID) (*service.TwoFASetupResponse, error) {

@@ -48,6 +48,7 @@ type AuthService interface {
 	GrantRole(ctx context.Context, actorID, targetID uuid.UUID, role string) error
 	RevokeRole(ctx context.Context, actorID, targetID uuid.UUID, role string) error
 	ListUserRoles(ctx context.Context, actorID, targetID uuid.UUID) ([]store.UserRole, error)
+	ListAdminAudit(ctx context.Context, actorID uuid.UUID, limit int) ([]store.AdminAuditEntry, error)
 	// 2FA
 	Setup2FA(ctx context.Context, userID uuid.UUID) (*service.TwoFASetupResponse, error)
 	Verify2FASetup(ctx context.Context, userID uuid.UUID, code string) error
@@ -170,6 +171,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 			protected.POST("/admin/roles", h.GrantRole)
 			protected.DELETE("/admin/roles", h.RevokeRole)
 			protected.GET("/admin/roles/:userId", h.ListUserRoles)
+			protected.GET("/admin/audit", h.ListAdminAudit)
 
 			// 2FA management (protected)
 			protected.POST("/2fa/setup", h.Setup2FA)
