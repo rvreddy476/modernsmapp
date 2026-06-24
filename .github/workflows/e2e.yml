@@ -72,6 +72,18 @@ jobs:
             services: "api-gateway dating-service"
             health: "http://localhost:8080 http://localhost:8112"
             run: "TestE2E_Dating"
+          - domain: content
+            services: "api-gateway group-service channel-service community-service qa-service memories-service"
+            health: "http://localhost:8080 http://localhost:8090"
+            run: "TestE2E_Group|TestE2E_Channel|TestE2E_Community|TestE2E_QA|TestE2E_Memories"
+          - domain: discovery
+            services: "api-gateway search-service notification-service analytics-service suggestion-service feature-flag-service ai-service"
+            health: "http://localhost:8080 http://localhost:8089 http://localhost:8088"
+            run: "TestE2E_Search|TestE2E_Notification|TestE2E_Analytics|TestE2E_Suggestion|TestE2E_FeatureFlag|TestE2E_AI"
+          - domain: live
+            services: "api-gateway live-service live-service-v2"
+            health: "http://localhost:8080 http://localhost:8117"
+            run: "TestE2E_Live"
     steps:
       - uses: actions/checkout@v4
 
