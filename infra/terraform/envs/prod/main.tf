@@ -25,6 +25,14 @@ module "ecr" {
   repositories = var.service_names
 }
 
+# Container images for the atpost-web Multi-Zone apps (atpost/web-<zone>).
+module "ecr_web" {
+  source = "../../modules/ecr"
+
+  environment  = "prod"
+  repositories = var.web_zone_names
+}
+
 module "dns" {
   source = "../../modules/dns"
 
