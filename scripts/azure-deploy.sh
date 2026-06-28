@@ -113,6 +113,7 @@ plan_apply "$ENVDIR" "PASS 2a — platform charts/CRDs" -var-file="$ENV.tfvars" 
   -target=module.ingress_nginx \
   -target=module.external_secrets.helm_release.external_secrets \
   -target=module.argocd.helm_release.argocd \
+  -target=module.data_platform.helm_release.cert_manager \
   -target=module.data_platform.helm_release.scylla_operator \
   -target=module.data_platform.helm_release.redpanda \
   -target=module.data_platform.helm_release.minio

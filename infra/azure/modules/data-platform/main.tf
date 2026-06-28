@@ -14,6 +14,44 @@
 # Persistent volumes use the AKS built-in `managed-csi-premium`
 # (Premium SSD) storage class — the Azure analogue of the AWS gp3 class.
 
+# ── cert-manager (required by the Scylla operator for its webhook certs) ──
+resource "kubernetes_namespace" "cert_manager" {
+  metadata {
+    name   = "cert-manager"
+    labels = { "app.kubernetes.io/managed-by" = "terraform" }
+  }
+}
+
+resource "helm_release" "cert_manager" {
+  name       = "cert-manager"
+  repository = "https://charts.jetstack.io"
+  chart      = "cert-manager"
+  version    = var.cert_manager_chart_version
+  namespace  = kubernetes_namespace.cert_manager.metadata[0].name
+
+  set {
+    name  = "crds.enabled"
+    value = "true"
+    type  = "string"
+  }
+  set {
+    name  = "nodeSelector.workload"
+    value = "system"
+  }
+  set {
+    name  = "webhook.nodeSelector.workload"
+    value = "system"
+  }
+  set {
+    name  = "cainjector.nodeSelector.workload"
+    value = "system"
+  }
+  set {
+    name  = "startupapicheck.nodeSelector.workload"
+    value = "system"
+  }
+}
+
 # ── Scylla ───────────────────────────────────────────────────────
 resource "kubernetes_namespace" "scylla_operator" {
   metadata {
@@ -44,6 +82,10 @@ resource "helm_release" "scylla_operator" {
     name  = "replicas"
     value = "2"
   }
+
+  # Scylla operator renders cert-manager Certificate/Issuer resources, so its
+  # CRDs must exist first.
+  depends_on = [helm_release.cert_manager]
 }
 
 resource "kubernetes_manifest" "scylla_cluster" {

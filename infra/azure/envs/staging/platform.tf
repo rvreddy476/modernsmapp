@@ -58,21 +58,17 @@ module "postgres" {
 module "redis" {
   source = "../../modules/redis"
 
-  environment         = var.environment
-  resource_group_name = module.resource_group.name
-  location            = module.resource_group.location
-  key_vault_id        = module.keyvault.id
-  secret_name         = "atpost-${var.environment}-redis"
-  sku_name            = "Standard"
-  capacity            = 1
+  environment  = var.environment
+  key_vault_id = module.keyvault.id
+  secret_name  = "atpost-${var.environment}-redis"
 }
 
 module "data_platform" {
   source = "../../modules/data-platform"
 
-  environment           = var.environment
-  location              = module.resource_group.location
-  key_vault_id          = module.keyvault.id
+  environment  = var.environment
+  location     = module.resource_group.location
+  key_vault_id = module.keyvault.id
   # Lean staging footprint to fit a small vCPU quota: single-node Scylla
   # (dev mode), single Redpanda, standalone MinIO. Scale up via these vars.
   scylla_developer_mode      = true

@@ -110,6 +110,15 @@ resource "helm_release" "argocd" {
     name  = "configs.params.server\\.insecure"
     value = "true"
   }
+  # Bring-your-own argocd-secret: we pre-create it (above) with the admin
+  # password mirrored to Key Vault, so the chart must NOT try to create/own it
+  # (otherwise Helm refuses: "exists and cannot be imported"). argocd-server
+  # backfills server.secretkey into it at runtime.
+  set {
+    name  = "configs.secret.createSecret"
+    value = "false"
+    type  = "string"
+  }
 
   depends_on = [kubernetes_secret.argocd_secret]
 }
