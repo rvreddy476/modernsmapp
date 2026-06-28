@@ -6,11 +6,11 @@ location        = "centralindia"
 # registry_name / key_vault_name default to the suffixed names in variables.tf.
 
 # --- AKS node sizing ---
-# Fresh subscriptions often have 0 quota for the DSv5 family. Run
-# scripts/azure-check-quota.sh centralindia to see which family has headroom,
-# then either request a quota increase for DSv5, or switch family here, e.g.:
-#   system_vm_size  = "Standard_D2as_v5"   # AMD (DAsv5) — commonly available
-#   general_vm_size = "Standard_D4as_v5"
-# Minimal footprint (cost/quota): system 1 node, general 1-4 nodes (defaults).
-# system_vm_size  = "Standard_D2s_v5"
-# general_vm_size = "Standard_D4s_v5"
+# DSv5 family has 0 quota on this subscription; using DSv4 (already enabled,
+# same core counts). After the quota bump (Total Regional + DSv4) lands, these
+# work as-is. Run scripts/azure-check-quota.sh centralindia to verify.
+system_vm_size  = "Standard_D2s_v4" # 2 vCPU
+general_vm_size = "Standard_D4s_v4" # 4 vCPU
+# Switch back to v5 if/when you raise DSv5 quota:
+#   system_vm_size  = "Standard_D2s_v5"
+#   general_vm_size = "Standard_D4s_v5"
