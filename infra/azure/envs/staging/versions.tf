@@ -20,6 +20,9 @@ terraform {
 provider "azurerm" {
   features {}
   subscription_id = var.subscription_id
+  # Providers are registered once via scripts/azure-register-providers.sh;
+  # don't let Terraform bulk-register (fails on restricted/flaky egress).
+  resource_provider_registrations = "none"
 }
 
 # Kubernetes/Helm providers point at the AKS cluster (two-apply on first run:

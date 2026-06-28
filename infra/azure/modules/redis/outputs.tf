@@ -1,9 +1,9 @@
 output "hostname" {
-  value = azurerm_redis_cache.this.hostname
+  value = "redis-master.redis.svc.cluster.local"
 }
 
-output "ssl_port" {
-  value = azurerm_redis_cache.this.ssl_port
+output "port" {
+  value = 6379
 }
 
 output "secret_name" {

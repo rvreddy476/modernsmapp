@@ -96,9 +96,14 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           securityContext:
-            # Non-root by default — the Dockerfiles bake a `nobody`
-            # user already so no per-service tweak needed.
+            # Run as a non-root UID. We pin runAsUser/runAsGroup (overridable
+            # via .Values.securityContext) because the service images don't set
+            # a USER, and runAsNonRoot=true alone + a root image makes the
+            # kubelet refuse to start ("container has runAsNonRoot and image
+            # will run as root"). Pinning the UID runs them non-root regardless.
             runAsNonRoot: true
+            runAsUser: {{ .Values.securityContext.runAsUser | default 1000 }}
+            runAsGroup: {{ .Values.securityContext.runAsGroup | default 1000 }}
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
             capabilities:

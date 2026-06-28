@@ -33,6 +33,12 @@ module "ingress_nginx" {
   environment = var.environment
 }
 
+module "monitoring" {
+  source = "../../modules/monitoring"
+
+  environment = var.environment
+}
+
 module "argocd" {
   source = "../../modules/argocd"
 
@@ -61,14 +67,10 @@ module "postgres" {
 module "redis" {
   source = "../../modules/redis"
 
-  environment         = var.environment
-  resource_group_name = module.resource_group.name
-  location            = module.resource_group.location
-  key_vault_id        = module.keyvault.id
-  secret_name         = "atpost-${var.environment}-redis"
-  sku_name            = "Premium"
-  family              = "P"
-  capacity            = 1
+  environment  = var.environment
+  key_vault_id = module.keyvault.id
+  secret_name  = "atpost-${var.environment}-redis"
+  memory_limit = "2Gi"
 }
 
 module "data_platform" {

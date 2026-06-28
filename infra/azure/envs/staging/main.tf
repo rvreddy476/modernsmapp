@@ -24,8 +24,12 @@ module "aks" {
   resource_group_name = module.resource_group.name
   location            = module.resource_group.location
   aks_subnet_id       = module.network.aks_subnet_id
-  general_min         = 1
-  general_max         = 4
+  system_vm_size      = var.system_vm_size
+  general_vm_size     = var.general_vm_size
+  system_min          = var.system_min
+  system_max          = var.system_max
+  general_min         = var.general_min
+  general_max         = var.general_max
 }
 
 module "acr" {

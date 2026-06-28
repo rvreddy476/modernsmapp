@@ -17,6 +17,12 @@ variable "key_vault_id" {
   type        = string
 }
 
+# ── cert-manager (Scylla operator dependency) ──
+variable "cert_manager_chart_version" {
+  type    = string
+  default = "v1.16.2"
+}
+
 # ── Scylla ──
 variable "scylla_operator_chart_version" {
   type    = string

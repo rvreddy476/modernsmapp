@@ -43,6 +43,13 @@ nodeSelector:
   workload: general
 tolerations: []
 
+# Container runtime user. The images don't set a USER, so the chart pins a
+# non-root UID here to satisfy runAsNonRoot. Override per-service if an image
+# needs a specific uid/gid.
+securityContext:
+  runAsUser: 1000
+  runAsGroup: 1000
+
 # Service-account-bound IAM role (IRSA). Set to a role ARN when the
 # service needs AWS API access (S3, MSK IAM auth, etc.). Empty =
 # service-account with no AWS permissions.

@@ -16,11 +16,13 @@ variable "vnet_cidr" {
 }
 
 variable "aks_subnet_cidr" {
-  type    = string
-  default = "10.40.0.0/20"
+  description = "Override the AKS subnet CIDR. Empty = derived from vnet_cidr (first /20)."
+  type        = string
+  default     = ""
 }
 
 variable "data_subnet_cidr" {
-  type    = string
-  default = "10.40.16.0/24"
+  description = "Override the data subnet CIDR. Empty = derived from vnet_cidr (/24 at offset 16)."
+  type        = string
+  default     = ""
 }

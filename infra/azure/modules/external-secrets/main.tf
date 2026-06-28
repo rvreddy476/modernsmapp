@@ -26,12 +26,11 @@ resource "azurerm_user_assigned_identity" "eso" {
 # token for system:serviceaccount:external-secrets:external-secrets,
 # which Entra exchanges for this identity.
 resource "azurerm_federated_identity_credential" "eso" {
-  name                = "external-secrets"
-  resource_group_name = var.resource_group_name
-  parent_id           = azurerm_user_assigned_identity.eso.id
-  issuer              = var.aks_oidc_issuer_url
-  subject             = "system:serviceaccount:external-secrets:external-secrets"
-  audience            = ["api://AzureADTokenExchange"]
+  name      = "external-secrets"
+  parent_id = azurerm_user_assigned_identity.eso.id
+  issuer    = var.aks_oidc_issuer_url
+  subject   = "system:serviceaccount:external-secrets:external-secrets"
+  audience  = ["api://AzureADTokenExchange"]
 }
 
 # Read-only access to the whole vault. The AWS module scopes by secret
@@ -76,11 +75,13 @@ resource "helm_release" "external_secrets" {
   set {
     name  = "serviceAccount.labels.azure\\.workload\\.identity/use"
     value = "true"
+    type  = "string" # label values must be strings, not bool
   }
   # Pod label so the mutating webhook projects the federated token.
   set {
     name  = "podLabels.azure\\.workload\\.identity/use"
     value = "true"
+    type  = "string"
   }
 
   # Platform tooling — keep it on the system node pool.

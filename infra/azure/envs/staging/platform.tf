@@ -32,6 +32,12 @@ module "ingress_nginx" {
   environment = var.environment
 }
 
+module "monitoring" {
+  source = "../../modules/monitoring"
+
+  environment = var.environment
+}
+
 module "argocd" {
   source = "../../modules/argocd"
 
@@ -58,27 +64,33 @@ module "postgres" {
 module "redis" {
   source = "../../modules/redis"
 
-  environment         = var.environment
-  resource_group_name = module.resource_group.name
-  location            = module.resource_group.location
-  key_vault_id        = module.keyvault.id
-  secret_name         = "atpost-${var.environment}-redis"
-  sku_name            = "Standard"
-  capacity            = 1
+  environment  = var.environment
+  key_vault_id = module.keyvault.id
+  secret_name  = "atpost-${var.environment}-redis"
 }
 
 module "data_platform" {
   source = "../../modules/data-platform"
 
-  environment           = var.environment
-  location              = module.resource_group.location
-  key_vault_id          = module.keyvault.id
-  scylla_developer_mode = true
-  scylla_secret_name    = "atpost-${var.environment}-scylla"
-  redpanda_secret_name  = "atpost-${var.environment}-redpanda"
-  minio_secret_name     = "atpost-${var.environment}-minio"
-  minio_mode            = "standalone"
-  minio_replicas        = 1
+  environment  = var.environment
+  location     = module.resource_group.location
+  key_vault_id = module.keyvault.id
+  # Lean staging footprint to fit a small vCPU quota: single-node Scylla
+  # (dev mode), single Redpanda, standalone MinIO. Scale up via these vars.
+  scylla_developer_mode      = true
+  zones                      = ["1"]
+  scylla_cpu_per_replica     = "1"
+  scylla_memory_per_replica  = "4Gi"
+  scylla_storage_per_replica = "20Gi"
+  redpanda_replicas          = 1
+  redpanda_cpu               = 1
+  redpanda_storage           = "20Gi"
+  scylla_secret_name         = "atpost-${var.environment}-scylla"
+  redpanda_secret_name       = "atpost-${var.environment}-redpanda"
+  minio_secret_name          = "atpost-${var.environment}-minio"
+  minio_mode                 = "standalone"
+  minio_replicas             = 1
+  minio_storage              = "20Gi"
 }
 
 output "key_vault_uri" { value = module.keyvault.uri }

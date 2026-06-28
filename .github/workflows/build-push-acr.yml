@@ -107,10 +107,13 @@ jobs:
       - name: Resolve service path
         id: path
         run: |
-          for prefix in Architecture/services identity-platform/services chat-service/services; do
-            if [[ -d "$prefix/${{ matrix.service }}" ]]; then
-              echo "service_path=$prefix/${{ matrix.service }}" >> "$GITHUB_OUTPUT"
-              echo "workspace_root=$prefix" >> "$GITHUB_OUTPUT"
+          # workspace_root = the Go workspace root (has go.work + vendor/ +
+          # shared/ + services/); the Dockerfile COPYs from there, so it is the
+          # build CONTEXT — not the services/ subdir.
+          for root in Architecture identity-platform chat-service; do
+            if [[ -d "$root/services/${{ matrix.service }}" ]]; then
+              echo "service_path=$root/services/${{ matrix.service }}" >> "$GITHUB_OUTPUT"
+              echo "workspace_root=$root" >> "$GITHUB_OUTPUT"
               exit 0
             fi
           done
