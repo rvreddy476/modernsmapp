@@ -32,6 +32,12 @@ module "ingress_nginx" {
   environment = var.environment
 }
 
+module "monitoring" {
+  source = "../../modules/monitoring"
+
+  environment = var.environment
+}
+
 module "argocd" {
   source = "../../modules/argocd"
 

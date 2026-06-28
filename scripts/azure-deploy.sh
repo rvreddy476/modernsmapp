@@ -110,7 +110,7 @@ az aks get-credentials -g "$RG" -n "$AKS_NAME" --overwrite-existing
 #     each chart's namespace/identity/role-assignment dependencies automatically.
 plan_apply "$ENVDIR" "PASS 2a — platform charts/CRDs" -var-file="$ENV.tfvars" \
   -target=module.keyvault -target=module.postgres -target=module.redis \
-  -target=module.ingress_nginx \
+  -target=module.ingress_nginx -target=module.monitoring \
   -target=module.external_secrets.helm_release.external_secrets \
   -target=module.argocd.helm_release.argocd \
   -target=module.data_platform.helm_release.cert_manager \
