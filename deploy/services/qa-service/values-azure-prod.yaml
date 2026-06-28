@@ -5,7 +5,7 @@ service:
   name: qa-service
   port: 8108
 image:
-  repository: atpostprod.azurecr.io/atpost/qa-service
+  repository: atpostprod454350.azurecr.io/atpost/qa-service
   tag: latest
 replicaCount: 3
 hpa:

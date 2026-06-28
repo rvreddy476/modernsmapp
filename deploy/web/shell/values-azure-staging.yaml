@@ -5,7 +5,7 @@ service:
   name: web-shell
   port: 3000
 image:
-  repository: atpoststaging.azurecr.io/atpost/web-shell
+  repository: atpoststaging454350.azurecr.io/atpost/web-shell
   tag: latest
 replicaCount: 2
 hpa:

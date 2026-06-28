@@ -5,7 +5,7 @@ service:
   name: chat-message-service
   port: 8092
 image:
-  repository: atpostprod.azurecr.io/atpost/chat-message-service
+  repository: atpostprod454350.azurecr.io/atpost/chat-message-service
   tag: latest
 replicaCount: 3
 hpa:

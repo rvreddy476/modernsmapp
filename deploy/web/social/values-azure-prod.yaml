@@ -5,7 +5,7 @@ service:
   name: web-social
   port: 3000
 image:
-  repository: atpostprod.azurecr.io/atpost/web-social
+  repository: atpostprod454350.azurecr.io/atpost/web-social
   tag: latest
 replicaCount: 3
 hpa:

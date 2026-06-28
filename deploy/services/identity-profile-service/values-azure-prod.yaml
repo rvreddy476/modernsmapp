@@ -5,7 +5,7 @@ service:
   name: identity-profile-service
   port: 8098
 image:
-  repository: atpostprod.azurecr.io/atpost/identity-profile-service
+  repository: atpostprod454350.azurecr.io/atpost/identity-profile-service
   tag: latest
 replicaCount: 3
 hpa:

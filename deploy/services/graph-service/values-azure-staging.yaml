@@ -5,7 +5,7 @@ service:
   name: graph-service
   port: 8083
 image:
-  repository: atpoststaging.azurecr.io/atpost/graph-service
+  repository: atpoststaging454350.azurecr.io/atpost/graph-service
   tag: latest
 replicaCount: 2
 resources:

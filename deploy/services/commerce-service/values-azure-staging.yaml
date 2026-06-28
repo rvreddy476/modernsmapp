@@ -5,7 +5,7 @@ service:
   name: commerce-service
   port: 8109
 image:
-  repository: atpoststaging.azurecr.io/atpost/commerce-service
+  repository: atpoststaging454350.azurecr.io/atpost/commerce-service
   tag: latest
 replicaCount: 2
 resources:

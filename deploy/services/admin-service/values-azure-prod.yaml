@@ -5,7 +5,7 @@ service:
   name: admin-service
   port: 8096
 image:
-  repository: atpostprod.azurecr.io/atpost/admin-service
+  repository: atpostprod454350.azurecr.io/atpost/admin-service
   tag: latest
 replicaCount: 3
 hpa:

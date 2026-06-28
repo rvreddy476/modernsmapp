@@ -5,7 +5,7 @@ service:
   name: group-service
   port: 8090
 image:
-  repository: atpoststaging.azurecr.io/atpost/group-service
+  repository: atpoststaging454350.azurecr.io/atpost/group-service
   tag: latest
 replicaCount: 2
 resources:

@@ -5,7 +5,7 @@ service:
   name: ai-service
   port: 8098
 image:
-  repository: atpostprod.azurecr.io/atpost/ai-service
+  repository: atpostprod454350.azurecr.io/atpost/ai-service
   tag: latest
 replicaCount: 3
 hpa:

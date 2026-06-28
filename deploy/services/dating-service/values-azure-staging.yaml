@@ -5,7 +5,7 @@ service:
   name: dating-service
   port: 8112
 image:
-  repository: atpoststaging.azurecr.io/atpost/dating-service
+  repository: atpoststaging454350.azurecr.io/atpost/dating-service
   tag: latest
 replicaCount: 2
 resources:

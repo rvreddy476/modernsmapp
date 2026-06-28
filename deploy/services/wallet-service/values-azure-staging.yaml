@@ -5,7 +5,7 @@ service:
   name: wallet-service
   port: 8114
 image:
-  repository: atpoststaging.azurecr.io/atpost/wallet-service
+  repository: atpoststaging454350.azurecr.io/atpost/wallet-service
   tag: latest
 replicaCount: 2
 resources:

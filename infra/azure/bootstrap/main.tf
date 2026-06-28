@@ -31,7 +31,7 @@ resource "azurerm_resource_group" "tfstate" {
 }
 
 resource "azurerm_storage_account" "tfstate" {
-  name                            = "atposttfstate" # globally unique; adjust if taken
+  name                            = "atposttfstate454350" # globally unique (subscription-suffixed); adjust if taken
   resource_group_name             = azurerm_resource_group.tfstate.name
   location                        = azurerm_resource_group.tfstate.location
   account_tier                    = "Standard"

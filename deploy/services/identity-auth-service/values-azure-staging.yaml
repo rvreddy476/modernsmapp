@@ -5,7 +5,7 @@ service:
   name: identity-auth-service
   port: 8081
 image:
-  repository: atpoststaging.azurecr.io/atpost/identity-auth-service
+  repository: atpoststaging454350.azurecr.io/atpost/identity-auth-service
   tag: latest
 replicaCount: 2
 resources:

@@ -5,7 +5,7 @@ service:
   name: rider-service
   port: 8116
 image:
-  repository: atpoststaging.azurecr.io/atpost/rider-service
+  repository: atpoststaging454350.azurecr.io/atpost/rider-service
   tag: latest
 replicaCount: 2
 resources:

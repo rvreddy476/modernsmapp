@@ -5,7 +5,7 @@ service:
   name: post-service
   port: 8084
 image:
-  repository: atpostprod.azurecr.io/atpost/post-service
+  repository: atpostprod454350.azurecr.io/atpost/post-service
   tag: latest
 replicaCount: 6
 hpa:

@@ -24,7 +24,13 @@ variable "github_subjects" {
 variable "key_vault_name" {
   description = "Globally-unique Key Vault name (3-24 chars). Override if the default is taken."
   type        = string
-  default     = "atpost-prod-kv"
+  default     = "atpost-prod-454350"
+}
+
+variable "registry_name" {
+  description = "Globally-unique ACR name (alphanumeric, 5-50)."
+  type        = string
+  default     = "atpostprod454350"
 }
 
 variable "argocd_hostname" {

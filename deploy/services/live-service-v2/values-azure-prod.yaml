@@ -5,7 +5,7 @@ service:
   name: live-service-v2
   port: 8117
 image:
-  repository: atpostprod.azurecr.io/atpost/live-service-v2
+  repository: atpostprod454350.azurecr.io/atpost/live-service-v2
   tag: latest
 replicaCount: 3
 hpa:

@@ -5,7 +5,7 @@ service:
   name: user-service
   port: 8082
 image:
-  repository: atpoststaging.azurecr.io/atpost/user-service
+  repository: atpoststaging454350.azurecr.io/atpost/user-service
   tag: latest
 replicaCount: 2
 resources:

@@ -5,7 +5,7 @@ service:
   name: chat-ws-gateway
   port: 8093
 image:
-  repository: atpostprod.azurecr.io/atpost/chat-ws-gateway
+  repository: atpostprod454350.azurecr.io/atpost/chat-ws-gateway
   tag: latest
 replicaCount: 3
 hpa:

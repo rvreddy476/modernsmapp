@@ -5,7 +5,7 @@ service:
   name: api-gateway
   port: 8080
 image:
-  repository: atpostprod.azurecr.io/atpost/api-gateway
+  repository: atpostprod454350.azurecr.io/atpost/api-gateway
   tag: latest
 replicaCount: 6
 hpa:

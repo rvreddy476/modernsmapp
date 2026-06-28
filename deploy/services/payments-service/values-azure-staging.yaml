@@ -5,7 +5,7 @@ service:
   name: payments-service
   port: 8102
 image:
-  repository: atpoststaging.azurecr.io/atpost/payments-service
+  repository: atpoststaging454350.azurecr.io/atpost/payments-service
   tag: latest
 replicaCount: 2
 resources:

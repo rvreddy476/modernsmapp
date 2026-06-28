@@ -5,7 +5,7 @@ service:
   name: notification-service
   port: 8088
 image:
-  repository: atpostprod.azurecr.io/atpost/notification-service
+  repository: atpostprod454350.azurecr.io/atpost/notification-service
   tag: latest
 replicaCount: 3
 hpa:

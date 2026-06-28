@@ -5,7 +5,7 @@ service:
   name: web-dating
   port: 3000
 image:
-  repository: atpoststaging.azurecr.io/atpost/web-dating
+  repository: atpoststaging454350.azurecr.io/atpost/web-dating
   tag: latest
 replicaCount: 2
 hpa:

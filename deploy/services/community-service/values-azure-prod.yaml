@@ -5,7 +5,7 @@ service:
   name: community-service
   port: 8107
 image:
-  repository: atpostprod.azurecr.io/atpost/community-service
+  repository: atpostprod454350.azurecr.io/atpost/community-service
   tag: latest
 replicaCount: 3
 hpa:

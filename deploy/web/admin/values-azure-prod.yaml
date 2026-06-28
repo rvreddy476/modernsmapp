@@ -5,7 +5,7 @@ service:
   name: web-admin
   port: 3000
 image:
-  repository: atpostprod.azurecr.io/atpost/web-admin
+  repository: atpostprod454350.azurecr.io/atpost/web-admin
   tag: latest
 replicaCount: 3
 hpa:

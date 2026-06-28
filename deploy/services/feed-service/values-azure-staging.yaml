@@ -5,7 +5,7 @@ service:
   name: feed-service
   port: 8086
 image:
-  repository: atpoststaging.azurecr.io/atpost/feed-service
+  repository: atpoststaging454350.azurecr.io/atpost/feed-service
   tag: latest
 replicaCount: 2
 resources:

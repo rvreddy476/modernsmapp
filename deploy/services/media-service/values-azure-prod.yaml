@@ -5,7 +5,7 @@ service:
   name: media-service
   port: 8087
 image:
-  repository: atpostprod.azurecr.io/atpost/media-service
+  repository: atpostprod454350.azurecr.io/atpost/media-service
   tag: latest
 replicaCount: 3
 hpa:

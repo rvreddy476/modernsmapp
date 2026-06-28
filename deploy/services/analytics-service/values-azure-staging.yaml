@@ -5,7 +5,7 @@ service:
   name: analytics-service
   port: 8094
 image:
-  repository: atpoststaging.azurecr.io/atpost/analytics-service
+  repository: atpoststaging454350.azurecr.io/atpost/analytics-service
   tag: latest
 replicaCount: 2
 resources:

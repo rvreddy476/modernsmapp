@@ -88,16 +88,25 @@ details into Key Vault as `atpost-<env>-{postgres,redis,scylla,redpanda,minio}`.
 Each service's ExternalSecret reads **one** Key Vault secret named
 `atpost-<env>-<svc>` whose JSON properties match its `externalSecret.data`
 remoteRefs (e.g. `internal_service_key`, `jwt_secret`, `POSTGRES_DSN`).
-This is the same model as AWS (one per-service blob) — seed it once per
-service, composing the managed-store creds you need from the reference
-secrets above:
+This is the same model as AWS (one per-service blob). The helper does it
+for every service — generates the shared app secrets once (consistent JWT +
+internal key), pulls the managed-store reference secrets, and composes each
+`atpost-<env>-<svc>` from exactly the remoteRefs its values file requests:
 
 ```bash
-KV=atpost-staging-kv
+scripts/seed-keyvault.sh staging        # or: prod
+# re-run anytime; idempotent. Fill any '?'/blank fields it warns about
+# (e.g. third-party API keys) with: az keyvault secret set ...
+```
+
+To seed one by hand instead:
+
+```bash
+KV=atpost-staging-454350
 az keyvault secret set --vault-name $KV --name atpost-staging-user-service \
-  --value '{"internal_service_key":"...","jwt_secret":"...","jwt_kid":"rsa-1",
-            "POSTGRES_DSN":"postgres://atpostadmin:<pw>@<pg-fqdn>:5432/user_service?sslmode=require",
-            "REDIS_ADDR":"<redis-host>:6380","KAFKA_BROKERS":"redpanda.redpanda.svc.cluster.local:9093"}'
+  --value '{"internal_service_key":"...","jwt_secret":"...","jwt_kid":"hs-1",
+            "postgres_dsn":"postgres://atpostadmin:<pw>@<pg-fqdn>:5432/user_service?sslmode=require",
+            "redis_addr":"<redis-host>:6380","kafka_brokers":"redpanda.redpanda.svc.cluster.local:9093"}'
 ```
 
 > Note: Key Vault secret names allow only `[0-9a-zA-Z-]`, which is why the

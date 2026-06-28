@@ -33,9 +33,14 @@ import sys, glob, os, re, yaml
 envs = sys.argv[1].split()
 
 def acr_registry(env):
-    # Matches infra/azure/modules/acr name = atpost<env> (no dashes allowed
-    # in ACR names). Override here if you renamed the registries.
-    return f"atpost{env}.azurecr.io"
+    # Must match the ACR name in infra/azure/envs/<env> (var.registry_name).
+    # Override per-env via ACR_REGISTRY_STAGING / ACR_REGISTRY_PROD; default
+    # is the subscription-suffixed name baked into the env tfvars.
+    override = os.environ.get(f"ACR_REGISTRY_{env.upper()}")
+    if override:
+        return override
+    default = {"staging": "atpoststaging454350", "prod": "atpostprod454350"}.get(env, f"atpost{env}")
+    return f"{default}.azurecr.io"
 
 def transform(doc, env, kind, name):
     # image → ACR

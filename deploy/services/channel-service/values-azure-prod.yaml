@@ -5,7 +5,7 @@ service:
   name: channel-service
   port: 8106
 image:
-  repository: atpostprod.azurecr.io/atpost/channel-service
+  repository: atpostprod454350.azurecr.io/atpost/channel-service
   tag: latest
 replicaCount: 3
 hpa:

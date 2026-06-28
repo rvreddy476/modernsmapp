@@ -3,7 +3,7 @@
 # cluster. admin_enabled=false — pulls use the AKS kubelet identity (AcrPull),
 # pushes use the CI workload identity (AcrPush, granted in the identity module).
 resource "azurerm_container_registry" "this" {
-  name                = "atpost${var.environment}" # globally unique, alphanumeric
+  name                = coalesce(var.registry_name, "atpost${var.environment}") # globally unique, alphanumeric
   resource_group_name = var.resource_group_name
   location            = var.location
   sku                 = "Standard"

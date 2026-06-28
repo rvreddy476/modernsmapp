@@ -5,7 +5,7 @@ service:
   name: chat-call-service
   port: 8097
 image:
-  repository: atpoststaging.azurecr.io/atpost/chat-call-service
+  repository: atpoststaging454350.azurecr.io/atpost/chat-call-service
   tag: latest
 replicaCount: 2
 resources:

@@ -5,7 +5,7 @@ service:
   name: web-commerce
   port: 3000
 image:
-  repository: atpostprod.azurecr.io/atpost/web-commerce
+  repository: atpostprod454350.azurecr.io/atpost/web-commerce
   tag: latest
 replicaCount: 3
 hpa:

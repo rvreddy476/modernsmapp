@@ -5,7 +5,7 @@ service:
   name: web-community
   port: 3000
 image:
-  repository: atpostprod.azurecr.io/atpost/web-community
+  repository: atpostprod454350.azurecr.io/atpost/web-community
   tag: latest
 replicaCount: 3
 hpa:

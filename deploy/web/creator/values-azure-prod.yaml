@@ -5,7 +5,7 @@ service:
   name: web-creator
   port: 3000
 image:
-  repository: atpostprod.azurecr.io/atpost/web-creator
+  repository: atpostprod454350.azurecr.io/atpost/web-creator
   tag: latest
 replicaCount: 3
 hpa:

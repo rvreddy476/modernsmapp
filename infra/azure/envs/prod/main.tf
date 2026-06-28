@@ -36,6 +36,7 @@ module "acr" {
   resource_group_name   = module.resource_group.name
   location              = module.resource_group.location
   aks_kubelet_object_id = module.aks.kubelet_object_id
+  registry_name         = var.registry_name
 }
 
 module "identity" {

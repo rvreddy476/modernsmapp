@@ -5,7 +5,7 @@ service:
   name: bill-pay-service
   port: 8115
 image:
-  repository: atpostprod.azurecr.io/atpost/bill-pay-service
+  repository: atpostprod454350.azurecr.io/atpost/bill-pay-service
   tag: latest
 replicaCount: 3
 hpa:

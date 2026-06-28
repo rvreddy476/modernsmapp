@@ -5,7 +5,7 @@ service:
   name: search-service
   port: 8089
 image:
-  repository: atpostprod.azurecr.io/atpost/search-service
+  repository: atpostprod454350.azurecr.io/atpost/search-service
   tag: latest
 replicaCount: 3
 hpa:

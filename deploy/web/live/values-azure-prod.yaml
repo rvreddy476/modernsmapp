@@ -5,7 +5,7 @@ service:
   name: web-live
   port: 3000
 image:
-  repository: atpostprod.azurecr.io/atpost/web-live
+  repository: atpostprod454350.azurecr.io/atpost/web-live
   tag: latest
 replicaCount: 3
 hpa:
