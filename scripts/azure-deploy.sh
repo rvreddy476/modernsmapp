@@ -31,6 +31,10 @@ command -v kubectl >/dev/null || { echo "kubectl not found"; exit 1; }
 az account show >/dev/null 2>&1 || { echo "run 'az login' first"; exit 1; }
 az account set --subscription "$SUB"
 
+# 0.5 register resource providers (azurerm auto-registration is disabled)
+say "0/7 register resource providers"
+"$ROOT/scripts/azure-register-providers.sh"
+
 # 1. remote state backend (Storage Account + container)
 say "1/7 bootstrap remote state"
 terraform -chdir=infra/azure/bootstrap init -input=false

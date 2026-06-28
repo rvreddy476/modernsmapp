@@ -14,6 +14,10 @@ terraform {
 provider "azurerm" {
   features {}
   subscription_id = var.subscription_id
+  # Don't let Terraform bulk-register resource providers (the calls fail on
+  # restricted subscriptions / flaky egress). Register them once via az —
+  # see scripts/azure-register-providers.sh.
+  resource_provider_registrations = "none"
 }
 
 variable "subscription_id" {
