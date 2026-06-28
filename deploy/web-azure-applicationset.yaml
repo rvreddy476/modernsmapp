@@ -1,0 +1,113 @@
+# Azure web ApplicationSet — AKS-side twin of deploy/web-applicationset.yaml.
+# One Application per zone under deploy/web/*, deployed with
+# charts/atpost-service + that zone's values-azure-<env>.yaml (ACR image,
+# nginx ingress). nginx merges the per-zone Ingress objects on the shared
+# host by longest-prefix, so the AWS ALB group.order annotations aren't
+# needed. The AWS web ApplicationSet is untouched.
+
+# ─── Staging ───────────────────────────────────────────────────────
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: atpost-web-azure-staging
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - git:
+        repoURL: https://github.com/rvreddy476/modernsmapp.git
+        revision: main
+        directories:
+          - path: deploy/web/*
+  template:
+    metadata:
+      name: 'web-azure-staging-{{.path.basename}}'
+      labels:
+        app.kubernetes.io/part-of: atpost-web
+        atpost.io/env: staging
+        atpost.io/cloud: azure
+        atpost.io/zone: '{{.path.basename}}'
+    spec:
+      project: atpost
+      sources:
+        - repoURL: https://github.com/rvreddy476/modernsmapp.git
+          targetRevision: main
+          path: charts/atpost-service
+          helm:
+            valueFiles:
+              - $values/{{.path.path}}/values-azure-staging.yaml
+        - repoURL: https://github.com/rvreddy476/modernsmapp.git
+          targetRevision: main
+          ref: values
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: atpost-web
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - PrunePropagationPolicy=foreground
+          - PruneLast=true
+        retry:
+          limit: 3
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 3m
+
+---
+# ─── Prod ──────────────────────────────────────────────────────────
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: atpost-web-azure-prod
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - git:
+        repoURL: https://github.com/rvreddy476/modernsmapp.git
+        revision: release/prod
+        directories:
+          - path: deploy/web/*
+  template:
+    metadata:
+      name: 'web-azure-prod-{{.path.basename}}'
+      labels:
+        app.kubernetes.io/part-of: atpost-web
+        atpost.io/env: prod
+        atpost.io/cloud: azure
+        atpost.io/zone: '{{.path.basename}}'
+    spec:
+      project: atpost
+      sources:
+        - repoURL: https://github.com/rvreddy476/modernsmapp.git
+          targetRevision: release/prod
+          path: charts/atpost-service
+          helm:
+            valueFiles:
+              - $values/{{.path.path}}/values-azure-prod.yaml
+        - repoURL: https://github.com/rvreddy476/modernsmapp.git
+          targetRevision: release/prod
+          ref: values
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: atpost-web
+      syncPolicy:
+        automated:
+          prune: false
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - PrunePropagationPolicy=foreground
+          - PruneLast=true
+        retry:
+          limit: 5
+          backoff:
+            duration: 30s
+            factor: 2
+            maxDuration: 10m

@@ -62,3 +62,33 @@ variable "postgres_databases" {
     "graph_service",
   ]
 }
+
+variable "enable_edge" {
+  description = "Provision Front Door + WAF + DNS. Enable after the nginx LB IP + DNS zone exist."
+  type        = bool
+  default     = false
+}
+
+variable "edge_origin_host_name" {
+  description = "nginx ingress public IP / DNS name (Front Door origin). Required when enable_edge."
+  type        = string
+  default     = ""
+}
+
+variable "edge_frontdoor_sku" {
+  description = "Standard_AzureFrontDoor or Premium_AzureFrontDoor (managed WAF rules)."
+  type        = string
+  default     = "Premium_AzureFrontDoor"
+}
+
+variable "edge_zone_name" {
+  description = "Public DNS zone, e.g. azure.cleestudio.com. Required when enable_edge."
+  type        = string
+  default     = ""
+}
+
+variable "edge_cname_records" {
+  description = "subdomain → Front Door endpoint host. e.g. { api = \"atpost-staging-xxxx.z01.azurefd.net\" }"
+  type        = map(string)
+  default     = {}
+}
