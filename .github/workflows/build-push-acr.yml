@@ -1,0 +1,199 @@
+# Azure twin of build-push.yml: build + push service images to ACR, then bump the
+# tag in deploy/services/<svc>/values-azure-<env>.yaml. The AKS-side ArgoCD picks
+# it up. AWS build-push.yml (ECR) is untouched — run both to keep images
+# switch-ready across clouds.
+#
+# Trigger model (mirrors the ECR workflow):
+#   push to main         → build changed services → push :sha + :staging-latest
+#                          → bump values-azure-staging.yaml.
+#   push to release/prod → build changed services → push :sha + :prod-latest
+#                          → bump values-azure-prod.yaml.
+#   workflow_dispatch    → 'all' or a comma list.
+#
+# Required: vars AZURE_CLIENT_ID / AZURE_TENANT_ID / AZURE_SUBSCRIPTION_ID (CI
+# identity with AcrPush) and ACR name derived as atpost<env> (override with var
+# ACR_NAME_STAGING / ACR_NAME_PROD if you named the registries differently).
+
+name: build-push-acr
+
+on:
+  push:
+    branches:
+      - main
+      - release/prod
+    paths:
+      - "Architecture/services/**"
+      - "identity-platform/services/**"
+      - "chat-service/services/**"
+      - "deploy/services/**"
+      - ".github/workflows/build-push-acr.yml"
+  workflow_dispatch:
+    inputs:
+      services:
+        description: "Comma-separated services to rebuild (or 'all')"
+        required: true
+        default: "all"
+
+permissions:
+  contents: write        # to push the bumped values file back
+  id-token: write        # OIDC token for azure/login
+  pull-requests: read
+
+jobs:
+  # ─── Job 1: figure out which services to build ───────────────────
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.set.outputs.services }}
+      env_name: ${{ steps.env.outputs.env_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Pick environment from branch
+        id: env
+        run: |
+          if [[ "${{ github.ref_name }}" == "release/prod" ]]; then
+            echo "env_name=prod" >> "$GITHUB_OUTPUT"
+          else
+            echo "env_name=staging" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Detect changed services
+        id: set
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ github.event.inputs.services }}" != "all" ]]; then
+            echo "services=${{ github.event.inputs.services }}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            ALL=$(ls -d Architecture/services/*/ identity-platform/services/*/ chat-service/services/*/ 2>/dev/null \
+              | xargs -I{} basename {} | sort -u | grep -v '^_archived' | paste -sd, -)
+            echo "services=$ALL" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          BASE="${{ github.event.before }}"
+          if [[ -z "$BASE" || "$BASE" == "0000000000000000000000000000000000000000" ]]; then
+            BASE=$(git merge-base HEAD origin/main || echo HEAD~1)
+          fi
+          CHANGED=$(git diff --name-only "$BASE" HEAD \
+            | awk -F/ '
+                /^Architecture\/services\// && NF >= 3 { print $3 }
+                /^identity-platform\/services\// && NF >= 3 { print $3 }
+                /^chat-service\/services\// && NF >= 3 { print $3 }
+                /^deploy\/services\// && NF >= 3 { print $3 }
+              ' \
+            | sort -u | grep -v '^_archived' | paste -sd, -)
+          if [[ -z "$CHANGED" ]]; then
+            echo "No service changes detected; nothing to do."
+            echo "services=" >> "$GITHUB_OUTPUT"
+          else
+            echo "services=$CHANGED" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ─── Job 2: matrixed build + push to ACR ─────────────────────────
+  build-push:
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.services != '' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJson(format('[{0}]', join(split(needs.detect-changes.outputs.services, ','), '","'))) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve service path
+        id: path
+        run: |
+          for prefix in Architecture/services identity-platform/services chat-service/services; do
+            if [[ -d "$prefix/${{ matrix.service }}" ]]; then
+              echo "service_path=$prefix/${{ matrix.service }}" >> "$GITHUB_OUTPUT"
+              echo "workspace_root=$prefix" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "::error ::service '${{ matrix.service }}' not found under any workspace"
+          exit 1
+
+      - name: Resolve ACR registry
+        id: acr
+        env:
+          ENV_NAME: ${{ needs.detect-changes.outputs.env_name }}
+          ACR_NAME_STAGING: ${{ vars.ACR_NAME_STAGING }}
+          ACR_NAME_PROD: ${{ vars.ACR_NAME_PROD }}
+        run: |
+          if [[ "$ENV_NAME" == "prod" ]]; then
+            NAME="${ACR_NAME_PROD:-atpostprod}"
+          else
+            NAME="${ACR_NAME_STAGING:-atpoststaging}"
+          fi
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "registry=$NAME.azurecr.io" >> "$GITHUB_OUTPUT"
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: ACR login
+        run: az acr login --name ${{ steps.acr.outputs.name }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build + push image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ steps.path.outputs.workspace_root }}
+          file: ${{ steps.path.outputs.service_path }}/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.acr.outputs.registry }}/atpost/${{ matrix.service }}:${{ github.sha }}
+            ${{ steps.acr.outputs.registry }}/atpost/${{ matrix.service }}:${{ needs.detect-changes.outputs.env_name }}-latest
+          cache-from: type=gha,scope=acr-${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=acr-${{ matrix.service }}
+          # AKS general node pool is Standard_D*s_v5 (x86).
+          platforms: linux/amd64
+          provenance: false
+
+  # ─── Job 3: bump tag in the -azure values file + push back ───────
+  bump-tag:
+    needs: [detect-changes, build-push]
+    if: ${{ needs.detect-changes.outputs.services != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.VALUES_BUMP_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "atpost-ci"
+          git config user.email "ci@atpost.io"
+
+      - name: Bump image.tag per service
+        env:
+          ENV_NAME: ${{ needs.detect-changes.outputs.env_name }}
+          SERVICES: ${{ needs.detect-changes.outputs.services }}
+          SHA: ${{ github.sha }}
+        run: |
+          IFS=, read -ra SVCS <<< "$SERVICES"
+          for svc in "${SVCS[@]}"; do
+            f="deploy/services/$svc/values-azure-$ENV_NAME.yaml"
+            if [[ ! -f "$f" ]]; then
+              echo "::warning ::$f missing — skipping bump for $svc"
+              continue
+            fi
+            sed -i -E "s|^([[:space:]]*tag:[[:space:]]*).*$|\1\"$SHA\"|" "$f"
+            git add "$f"
+          done
+          if ! git diff --cached --quiet; then
+            git commit -m "ci(deploy): bump azure $ENV_NAME image tags to $SHA"
+            git push
+          else
+            echo "No values changes to commit."
+          fi
