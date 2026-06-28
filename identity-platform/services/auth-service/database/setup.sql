@@ -119,6 +119,26 @@ CREATE TABLE IF NOT EXISTS auth.admin_audit (
 CREATE INDEX IF NOT EXISTS idx_admin_audit_actor ON auth.admin_audit(actor_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_admin_audit_target ON auth.admin_audit(target_id, created_at DESC);
 
+-- WebAuthn / passkey credentials. One row per registered authenticator. The
+-- public key + sign_count are used to verify assertions at login; credential_id
+-- is the authenticator's handle (unique). Phishing-resistant second factor /
+-- passwordless. Verification logic lives behind the `webauthn` build tag.
+CREATE TABLE IF NOT EXISTS auth.webauthn_credentials (
+    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id          UUID NOT NULL,
+    credential_id    BYTEA NOT NULL UNIQUE,
+    public_key       BYTEA NOT NULL,
+    attestation_type TEXT NOT NULL DEFAULT '',
+    aaguid           BYTEA,
+    sign_count       BIGINT NOT NULL DEFAULT 0,
+    transports       TEXT[] NOT NULL DEFAULT '{}',
+    clone_warning    BOOLEAN NOT NULL DEFAULT FALSE,
+    name             TEXT NOT NULL DEFAULT 'passkey',
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_used_at     TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_webauthn_creds_user ON auth.webauthn_credentials(user_id);
+
 CREATE TABLE IF NOT EXISTS usr.users (
     id UUID PRIMARY KEY REFERENCES auth.users(user_id) ON DELETE CASCADE,
     status TEXT NOT NULL DEFAULT 'active',

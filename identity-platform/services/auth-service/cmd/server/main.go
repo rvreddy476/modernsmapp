@@ -183,6 +183,7 @@ func main() {
 	}, rdb)
 	csrfMW := internalhttp.RequireCSRFMiddleware()
 	authHandler.RegisterRoutes(r, authMW, csrfMW)
+	authHandler.RegisterWebAuthnRoutes(r, authMW, csrfMW) // no-op unless built with -tags webauthn
 	authHandler.RegisterDocsRoutes(r)
 
 	srv := &http.Server{
