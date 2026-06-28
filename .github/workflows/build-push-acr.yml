@@ -45,6 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       services: ${{ steps.set.outputs.services }}
+      matrix: ${{ steps.set.outputs.matrix }}
       env_name: ${{ steps.env.outputs.env_name }}
     steps:
       - uses: actions/checkout@v4
@@ -63,33 +64,35 @@ jobs:
       - name: Detect changed services
         id: set
         run: |
+          # Resolve the service set (comma-separated) per trigger, then emit it
+          # two ways: services= (CSV, for the if-guards + bump job) and matrix=
+          # (JSON array, for the build matrix — Actions expressions have no
+          # split(), so the array is built here with jq).
           if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ github.event.inputs.services }}" != "all" ]]; then
-            echo "services=${{ github.event.inputs.services }}" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            ALL=$(ls -d Architecture/services/*/ identity-platform/services/*/ chat-service/services/*/ 2>/dev/null \
+            SVCS="${{ github.event.inputs.services }}"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            SVCS=$(ls -d Architecture/services/*/ identity-platform/services/*/ chat-service/services/*/ 2>/dev/null \
               | xargs -I{} basename {} | sort -u | grep -v '^_archived' | paste -sd, -)
-            echo "services=$ALL" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          BASE="${{ github.event.before }}"
-          if [[ -z "$BASE" || "$BASE" == "0000000000000000000000000000000000000000" ]]; then
-            BASE=$(git merge-base HEAD origin/main || echo HEAD~1)
-          fi
-          CHANGED=$(git diff --name-only "$BASE" HEAD \
-            | awk -F/ '
-                /^Architecture\/services\// && NF >= 3 { print $3 }
-                /^identity-platform\/services\// && NF >= 3 { print $3 }
-                /^chat-service\/services\// && NF >= 3 { print $3 }
-                /^deploy\/services\// && NF >= 3 { print $3 }
-              ' \
-            | sort -u | grep -v '^_archived' | paste -sd, -)
-          if [[ -z "$CHANGED" ]]; then
-            echo "No service changes detected; nothing to do."
-            echo "services=" >> "$GITHUB_OUTPUT"
           else
-            echo "services=$CHANGED" >> "$GITHUB_OUTPUT"
+            BASE="${{ github.event.before }}"
+            if [[ -z "$BASE" || "$BASE" == "0000000000000000000000000000000000000000" ]]; then
+              BASE=$(git merge-base HEAD origin/main || echo HEAD~1)
+            fi
+            SVCS=$(git diff --name-only "$BASE" HEAD \
+              | awk -F/ '
+                  /^Architecture\/services\// && NF >= 3 { print $3 }
+                  /^identity-platform\/services\// && NF >= 3 { print $3 }
+                  /^chat-service\/services\// && NF >= 3 { print $3 }
+                  /^deploy\/services\// && NF >= 3 { print $3 }
+                ' \
+              | sort -u | grep -v '^_archived' | paste -sd, -)
+          fi
+          echo "services=$SVCS" >> "$GITHUB_OUTPUT"
+          if [[ -z "$SVCS" ]]; then
+            echo "No service changes detected; nothing to do."
+            echo "matrix=[]" >> "$GITHUB_OUTPUT"
+          else
+            echo "matrix=$(printf '%s' "$SVCS" | jq -R -c 'split(",")')" >> "$GITHUB_OUTPUT"
           fi
 
   # ─── Job 2: matrixed build + push to ACR ─────────────────────────
@@ -100,7 +103,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: ${{ fromJson(format('[{0}]', join(split(needs.detect-changes.outputs.services, ','), '","'))) }}
+        service: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
 
