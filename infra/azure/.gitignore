@@ -9,6 +9,10 @@
 .terraform/
 .terraform.lock.hcl
 
+# Saved plan files (azure-deploy.sh writes tfplan.out per stack)
+*.tfplan
+tfplan.out
+
 # Crash logs
 crash.log
 crash.*.log

@@ -4,11 +4,18 @@
 # Claude sandbox). It just chains the steps in docs/DEPLOY-azure.md so you
 # don't run them one at a time.
 #
+# Each terraform step PLANS first and shows you the diff, then asks before
+# applying (so you preview every change). Pass --yes to skip the prompts, or
+# --plan-only to preview without applying anything.
+#
 # Prerequisites (one time):
 #   - az login          (and `az account set --subscription <id>` if you have many)
 #   - terraform, kubectl, az, openssl on PATH
 #
-# Usage:  scripts/azure-deploy.sh staging      # or: prod
+# Usage:
+#   scripts/azure-deploy.sh staging              # interactive (plan → confirm → apply)
+#   scripts/azure-deploy.sh staging --plan-only  # preview only, no changes
+#   scripts/azure-deploy.sh staging --yes        # non-interactive (CI)
 #
 # Safe to re-run: terraform is declarative, seed-keyvault is idempotent, and
 # kubectl apply is declarative. If a step fails, fix it and run again.
@@ -16,13 +23,46 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 
-ENV="${1:-staging}"
-case "$ENV" in staging|prod) ;; *) echo "usage: $0 [staging|prod]" >&2; exit 1 ;; esac
+ENV="staging"; AUTO=0; PLAN_ONLY=0
+for a in "$@"; do
+  case "$a" in
+    staging|prod) ENV="$a" ;;
+    -y|--yes)     AUTO=1 ;;
+    --plan-only)  PLAN_ONLY=1 ;;
+    *) echo "usage: $0 [staging|prod] [--plan-only] [--yes]" >&2; exit 1 ;;
+  esac
+done
 SUB="454350d4-cc70-4bfa-b434-820b86f62f4d"
 ENVDIR="infra/azure/envs/$ENV"
 RG="atpost-$ENV"
+PLAN="tfplan.out"
 
-say() { printf '\n\033[1;36m=== %s ===\033[0m\n' "$*"; }
+say()  { printf '\n\033[1;36m=== %s ===\033[0m\n' "$*"; }
+note() { printf '\033[1;33m%s\033[0m\n' "$*"; }
+
+confirm() { # confirm "question" — true to proceed
+  [ "$AUTO" = 1 ] && return 0
+  read -r -p "$1 [y/N] " ans
+  [[ "$ans" =~ ^[Yy]$ ]]
+}
+
+# plan_apply <dir> <plan-label> [extra terraform args…] — plan to a file,
+# show it, confirm, then apply that exact plan.
+plan_apply() {
+  local dir="$1" label="$2"; shift 2
+  say "PLAN — $label"
+  terraform -chdir="$dir" plan -input=false -out="$PLAN" "$@"
+  if [ "$PLAN_ONLY" = 1 ]; then
+    note "plan-only: skipping apply for $label"
+    return 0
+  fi
+  if confirm "Apply this plan ($label)?"; then
+    say "APPLY — $label"
+    terraform -chdir="$dir" apply -input=false "$PLAN"
+  else
+    note "skipped $label"; return 1
+  fi
+}
 
 # 0. sanity
 command -v az >/dev/null || { echo "az not found"; exit 1; }
@@ -32,41 +72,46 @@ az account show >/dev/null 2>&1 || { echo "run 'az login' first"; exit 1; }
 az account set --subscription "$SUB"
 
 # 0.5 register resource providers (azurerm auto-registration is disabled)
-say "0/7 register resource providers"
+say "register resource providers"
 "$ROOT/scripts/azure-register-providers.sh"
 
 # 1. remote state backend (Storage Account + container)
-say "1/7 bootstrap remote state"
+say "bootstrap remote state"
 terraform -chdir=infra/azure/bootstrap init -input=false
-terraform -chdir=infra/azure/bootstrap apply -auto-approve -var "subscription_id=$SUB"
+plan_apply infra/azure/bootstrap "tfstate backend" -var "subscription_id=$SUB"
 
 # 2. init env with the azurerm backend
-say "2/7 terraform init ($ENV)"
+say "terraform init ($ENV)"
 terraform -chdir="$ENVDIR" init -input=false
 
 # 3. PASS 1 — cluster + registry + identity only (k8s/helm providers can't
 #    plan until the AKS API exists, so we target the infra modules first).
-say "3/7 apply PASS 1 — cluster/registry/identity"
-terraform -chdir="$ENVDIR" apply -auto-approve -var-file="$ENV.tfvars" \
+plan_apply "$ENVDIR" "PASS 1 — cluster/registry/identity" -var-file="$ENV.tfvars" \
   -target=module.resource_group -target=module.network \
   -target=module.aks -target=module.acr -target=module.identity
 
+# In plan-only mode the cluster doesn't exist, so stop before the steps that
+# need a live cluster (kubeconfig, platform plan, seeding, appsets).
+if [ "$PLAN_ONLY" = 1 ]; then
+  note "plan-only: stopping before cluster-dependent steps (PASS 2, seed, appsets)."
+  exit 0
+fi
+
 # 4. kubeconfig for the new cluster
-say "4/7 fetch kubeconfig"
+say "fetch kubeconfig"
 AKS_NAME="$(terraform -chdir="$ENVDIR" output -raw aks_name)"
 az aks get-credentials -g "$RG" -n "$AKS_NAME" --overwrite-existing
 
 # 5. PASS 2 — full apply (platform: ESO/KeyVault, ingress-nginx, ArgoCD,
 #    managed Postgres+Redis, self-hosted Scylla/Redpanda/MinIO).
-say "5/7 apply PASS 2 — platform (full)"
-terraform -chdir="$ENVDIR" apply -auto-approve -var-file="$ENV.tfvars"
+plan_apply "$ENVDIR" "PASS 2 — platform (full)" -var-file="$ENV.tfvars"
 
 # 6. seed per-service Key Vault secrets
-say "6/7 seed Key Vault secrets"
+say "seed Key Vault secrets"
 "$ROOT/scripts/seed-keyvault.sh" "$ENV"
 
 # 7. hand the ApplicationSets to ArgoCD
-say "7/7 apply ArgoCD ApplicationSets"
+say "apply ArgoCD ApplicationSets"
 kubectl apply -f deploy/azure-applicationset.yaml
 kubectl apply -f deploy/web-azure-applicationset.yaml
 
