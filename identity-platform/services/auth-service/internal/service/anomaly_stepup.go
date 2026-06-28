@@ -453,7 +453,7 @@ func (s *Service) finishAnomalyStepUpSession(ctx context.Context, user *store.Us
 		return nil, err
 	}
 
-	accessToken, err := s.generateAccessToken(user.ID, sessionID)
+	accessToken, err := s.generateAccessToken(ctx, user.ID, sessionID)
 	if err != nil {
 		return nil, err
 	}

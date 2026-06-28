@@ -13,6 +13,7 @@ import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/services/shell_telemetry.dart';
+import 'package:flutter/cupertino.dart' show CupertinoIcons;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -37,7 +38,7 @@ class CreateOptionsSheet extends ConsumerWidget {
       key: ShellCreateOption.post,
       label: 'Post',
       caption: 'Share a thought or photo',
-      icon: Icons.edit_note,
+      icon: CupertinoIcons.square_pencil,
       color: AppColors.postbookPrimary,
       route: '/create',
     ),
@@ -45,7 +46,7 @@ class CreateOptionsSheet extends ConsumerWidget {
       key: ShellCreateOption.reel,
       label: 'Reel',
       caption: 'Short-form video',
-      icon: Icons.movie_filter,
+      icon: CupertinoIcons.play_rectangle_fill,
       color: AppColors.postgramPrimary,
       route: '/reels/editor',
     ),
@@ -53,7 +54,7 @@ class CreateOptionsSheet extends ConsumerWidget {
       key: ShellCreateOption.story,
       label: 'Story',
       caption: 'Lasts 24 hours',
-      icon: Icons.photo_camera,
+      icon: CupertinoIcons.camera_fill,
       color: AppColors.accentPurple,
       route: '/stories/create',
     ),
@@ -61,7 +62,7 @@ class CreateOptionsSheet extends ConsumerWidget {
       key: ShellCreateOption.question,
       label: 'Question',
       caption: 'Ask the community',
-      icon: Icons.help_outline,
+      icon: CupertinoIcons.question_circle_fill,
       color: AppColors.posttubePrimary,
       route: '/qa/ask',
     ),
@@ -69,7 +70,7 @@ class CreateOptionsSheet extends ConsumerWidget {
       key: ShellCreateOption.live,
       label: 'Live',
       caption: 'Go live (coming soon)',
-      icon: Icons.live_tv,
+      icon: CupertinoIcons.dot_radiowaves_left_right,
       color: AppColors.liveRed,
       route: null, // No composer yet — we snackbar instead.
     ),
@@ -77,7 +78,7 @@ class CreateOptionsSheet extends ConsumerWidget {
       key: ShellCreateOption.listing,
       label: 'Listing',
       caption: 'Sell something',
-      icon: Icons.local_offer,
+      icon: CupertinoIcons.tag_fill,
       color: AppColors.statusWarning,
       route: '/seller/listings/new',
     ),
@@ -126,7 +127,7 @@ class CreateOptionsSheet extends ConsumerWidget {
                 crossAxisCount: 2,
                 crossAxisSpacing: 12,
                 mainAxisSpacing: 12,
-                childAspectRatio: 1.6,
+                childAspectRatio: 1.3,
               ),
               itemCount: _options.length,
               itemBuilder: (context, index) {
@@ -196,7 +197,7 @@ class _CreateCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
         onTap: onTap,
         child: Container(
-          padding: const EdgeInsets.all(14),
+          padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
             gradient: LinearGradient(
               begin: Alignment.topLeft,
@@ -210,33 +211,37 @@ class _CreateCard extends StatelessWidget {
             border: Border.all(color: option.color.withValues(alpha: 0.35)),
           ),
           child: Column(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            mainAxisAlignment: MainAxisAlignment.start,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Container(
-                width: 40,
-                height: 40,
+                width: 38,
+                height: 38,
                 decoration: BoxDecoration(
                   color: option.color.withValues(alpha: 0.25),
-                  borderRadius: BorderRadius.circular(12),
+                  borderRadius: BorderRadius.circular(11),
                 ),
-                child: Icon(option.icon, color: option.color, size: 22),
+                child: Icon(option.icon, color: option.color, size: 20),
               ),
-              const SizedBox(height: 8),
+              const Spacer(),
               Text(
                 option.label,
                 style: AppTextStyles.h3.copyWith(
                   color: AppColors.textPrimary,
                 ),
-              ),
-              const SizedBox(height: 2),
-              Text(
-                option.caption,
-                style: AppTextStyles.labelSmall.copyWith(
-                  color: AppColors.textTertiary,
-                ),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
+              ),
+              const SizedBox(height: 2),
+              Flexible(
+                child: Text(
+                  option.caption,
+                  style: AppTextStyles.labelSmall.copyWith(
+                    color: AppColors.textTertiary,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
             ],
           ),

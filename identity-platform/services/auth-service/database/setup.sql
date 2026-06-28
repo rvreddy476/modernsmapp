@@ -91,6 +91,54 @@ CREATE TABLE IF NOT EXISTS auth.recovery_codes (
 );
 CREATE INDEX IF NOT EXISTS idx_recovery_codes_user_id ON auth.recovery_codes(user_id);
 
+-- RBAC: server-side roles. The signed access token's `scopes` claim is resolved
+-- from this table (UNION the SUPERADMIN/ADMIN/MODERATOR_USER_IDS env allowlists,
+-- which remain as the bootstrap path for the first superadmin). Replaces the
+-- previous model where clients declared their own privileges via X-Scopes.
+CREATE TABLE IF NOT EXISTS auth.user_roles (
+    user_id    UUID NOT NULL,
+    role       TEXT NOT NULL CHECK (role IN ('superadmin','admin','moderator')),
+    granted_by UUID,
+    granted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, role)
+);
+CREATE INDEX IF NOT EXISTS idx_user_roles_user_id ON auth.user_roles(user_id);
+
+-- Immutable audit trail of privileged actions (role grants/revokes, etc.).
+-- Append-only: revokes delete the user_roles row, so this is the durable record
+-- of who did what to whom, including denied attempts. Industry-best / SOC2.
+CREATE TABLE IF NOT EXISTS auth.admin_audit (
+    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    actor_id   UUID NOT NULL,
+    action     TEXT NOT NULL,
+    target_id  UUID,
+    detail     TEXT,
+    allowed    BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_admin_audit_actor ON auth.admin_audit(actor_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_admin_audit_target ON auth.admin_audit(target_id, created_at DESC);
+
+-- WebAuthn / passkey credentials. One row per registered authenticator. The
+-- public key + sign_count are used to verify assertions at login; credential_id
+-- is the authenticator's handle (unique). Phishing-resistant second factor /
+-- passwordless. Verification logic lives behind the `webauthn` build tag.
+CREATE TABLE IF NOT EXISTS auth.webauthn_credentials (
+    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id          UUID NOT NULL,
+    credential_id    BYTEA NOT NULL UNIQUE,
+    public_key       BYTEA NOT NULL,
+    attestation_type TEXT NOT NULL DEFAULT '',
+    aaguid           BYTEA,
+    sign_count       BIGINT NOT NULL DEFAULT 0,
+    transports       TEXT[] NOT NULL DEFAULT '{}',
+    clone_warning    BOOLEAN NOT NULL DEFAULT FALSE,
+    name             TEXT NOT NULL DEFAULT 'passkey',
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_used_at     TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_webauthn_creds_user ON auth.webauthn_credentials(user_id);
+
 CREATE TABLE IF NOT EXISTS usr.users (
     id UUID PRIMARY KEY REFERENCES auth.users(user_id) ON DELETE CASCADE,
     status TEXT NOT NULL DEFAULT 'active',

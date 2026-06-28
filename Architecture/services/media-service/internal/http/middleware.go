@@ -2,6 +2,7 @@ package http
 
 import (
 	"crypto/hmac"
+	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -29,6 +30,9 @@ type JWTKeySet struct {
 	ActiveSecret   string
 	PreviousKID    string
 	PreviousSecret string
+	// RSAKeys (optional) verify RS256 tokens, keyed by `kid`. HS256 above stays
+	// active in parallel so pre-cutover tokens keep verifying.
+	RSAKeys map[string]*rsa.PublicKey
 }
 
 func (k JWTKeySet) secretFor(kid string) ([]byte, bool) {
@@ -37,6 +41,22 @@ func (k JWTKeySet) secretFor(kid string) ([]byte, bool) {
 	}
 	if k.PreviousSecret != "" && kid == k.PreviousKID {
 		return []byte(k.PreviousSecret), true
+	}
+	return nil, false
+}
+
+func (k JWTKeySet) rsaFor(kid string) (*rsa.PublicKey, bool) {
+	if len(k.RSAKeys) == 0 {
+		return nil, false
+	}
+	if kid != "" {
+		pub, ok := k.RSAKeys[kid]
+		return pub, ok
+	}
+	if len(k.RSAKeys) == 1 {
+		for _, pub := range k.RSAKeys {
+			return pub, true
+		}
 	}
 	return nil, false
 }
@@ -61,25 +81,36 @@ func verifyJWT(tokenStr string, keys JWTKeySet) (string, error) {
 	if err := json.Unmarshal(headerRaw, &header); err != nil {
 		return "", fmt.Errorf("header parse: %w", err)
 	}
-	// C7: reject anything that isn't HS256, including a missing alg
-	// header. A token with no alg is a spec violation + a known alg-
-	// confusion shape; mirrors the api-gateway tightening.
-	if header.Alg != "HS256" {
-		return "", fmt.Errorf("unsupported jwt algorithm")
-	}
-	secret, ok := keys.secretFor(header.Kid)
-	if !ok {
-		return "", fmt.Errorf("unknown kid")
-	}
-
-	// Verify HMAC-SHA256 signature
+	// Accept HS256 and RS256 only (no `none`/alg-confusion). RS256 lets this
+	// service verify with a public key it can't mint with; HS256 stays accepted
+	// for tokens minted before the cutover. Mirrors the api-gateway tightening.
 	signingInput := parts[0] + "." + parts[1]
-	mac := hmac.New(sha256.New, secret)
-	mac.Write([]byte(signingInput))
-	expectedSig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-
-	if !hmac.Equal([]byte(parts[2]), []byte(expectedSig)) {
-		return "", fmt.Errorf("invalid signature")
+	switch header.Alg {
+	case "HS256":
+		secret, ok := keys.secretFor(header.Kid)
+		if !ok {
+			return "", fmt.Errorf("unknown kid")
+		}
+		mac := hmac.New(sha256.New, secret)
+		mac.Write([]byte(signingInput))
+		expectedSig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+		if !hmac.Equal([]byte(parts[2]), []byte(expectedSig)) {
+			return "", fmt.Errorf("invalid signature")
+		}
+	case "RS256":
+		pub, ok := keys.rsaFor(header.Kid)
+		if !ok {
+			return "", fmt.Errorf("unknown kid")
+		}
+		sig, derr := base64.RawURLEncoding.DecodeString(parts[2])
+		if derr != nil {
+			return "", fmt.Errorf("invalid signature encoding")
+		}
+		if verr := verifyRS256(signingInput, sig, pub); verr != nil {
+			return "", fmt.Errorf("invalid signature")
+		}
+	default:
+		return "", fmt.Errorf("unsupported jwt algorithm")
 	}
 
 	// Decode payload

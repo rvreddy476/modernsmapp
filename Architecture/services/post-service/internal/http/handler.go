@@ -82,6 +82,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/:postId/comments/around/:commentId", h.ListCommentsAround)
 		v1.POST("/:postId/bookmark", h.ToggleBookmark)
 		v1.DELETE("/:postId/bookmark", h.RemoveBookmark)
+		v1.POST("/:postId/resubmit", h.Resubmit)
 		v1.GET("/:postId/poll", h.GetPoll)
 		v1.POST("/:postId/vote", h.CastVote)
 
@@ -94,6 +95,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.DELETE("/:postId/tune", h.DeleteTune)
 		v1.GET("/:postId/tune/me", h.GetTune)
 	}
+
+	// Internal: reviewer-service ML pre-filter auto-resolves flagged content.
+	// Gateway blocks /internal/ from non-admins; direct service calls carry the key.
+	r.POST("/v1/posts/internal/review-status", h.SetReviewStatusInternal)
+	r.POST("/v1/posts/internal/visibility", h.SetVisibilityInternal)
 
 	// Events
 	r.POST("/v1/events", h.CreateEvent)
@@ -204,6 +210,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		playlists.GET("/:playlistId/items", h.GetPlaylistItems)
 	}
 	r.GET("/v1/creators/:creatorId/playlists", h.ListCreatorPlaylists)
+
+	// Product feedback (distinct from trust-safety reports).
+	r.POST("/v1/feedback", h.SubmitFeedback)
 
 	// Chapters / end screens / cards
 	r.POST("/v1/posts/:postId/chapters", h.SaveChapters)
@@ -1704,8 +1713,10 @@ func (h *Handler) GetPostsByHashtag(c *gin.Context) {
 	if l, err := strconv.Atoi(c.DefaultQuery("limit", "20")); err == nil && l > 0 {
 		limit = l
 	}
+	// content_type can be repeated: ?content_type=post&content_type=flick
+	contentTypes := c.QueryArray("content_type")
 
-	posts, nextCursor, err := h.svc.GetPostsByHashtag(c.Request.Context(), tag, limit, cursor, sort)
+	posts, nextCursor, err := h.svc.GetPostsByHashtag(c.Request.Context(), tag, limit, cursor, sort, contentTypes)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return

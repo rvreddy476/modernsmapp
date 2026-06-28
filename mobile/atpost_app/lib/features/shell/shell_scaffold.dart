@@ -159,7 +159,6 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold>
 
     return Scaffold(
       backgroundColor: AppColors.bgPrimary,
-      extendBody: true,
       body: IndexedStack(
         index: _safeIndex(current),
         children: const [
@@ -177,13 +176,6 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold>
           ServicesScreen(),
         ],
       ),
-      floatingActionButton: _CreateFab(
-        onTap: () {
-          ref.read(shellTelemetryProvider).shellTabSelected(ShellTab.create);
-          showCreateOptionsSheet(context);
-        },
-      ),
-      floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
       bottomNavigationBar: _BottomBar(currentIndex: _safeIndex(current)),
     );
   }
@@ -333,48 +325,72 @@ class _BottomBar extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return BottomAppBar(
-      color: AppColors.bgSecondary,
-      elevation: 0,
-      shape: const CircularNotchedRectangle(),
-      notchMargin: 6,
-      padding: EdgeInsets.zero,
-      child: SizedBox(
-        height: 60,
-        child: Row(
-          children: [
-            _NavItem(
-              icon: Icons.home_filled,
-              label: 'Home',
-              index: ShellTabIndex.home,
-              currentIndex: currentIndex,
-              telemetryKey: ShellTab.home,
-            ),
-            _NavItem(
-              icon: Icons.people_alt_rounded,
-              label: 'Friends',
-              index: ShellTabIndex.friends,
-              currentIndex: currentIndex,
-              telemetryKey: ShellTab.friends,
-            ),
-            // Visual gap for the FAB notch.
-            const SizedBox(width: 56),
-            _NavItem(
-              icon: Icons.movie_creation_rounded,
-              label: 'Reels',
-              index: ShellTabIndex.reels,
-              currentIndex: currentIndex,
-              telemetryKey: ShellTab.reels,
-            ),
-            _NavItem(
-              // Apps grid icon — the user-facing mini-app center.
-              icon: Icons.apps_rounded,
-              label: 'Explore',
-              index: ShellTabIndex.explore,
-              currentIndex: currentIndex,
-              telemetryKey: ShellTab.explore,
-            ),
-          ],
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppColors.bgSecondary,
+        border: Border(
+          top: BorderSide(color: AppColors.borderSubtle, width: 0.5),
+        ),
+      ),
+      child: SafeArea(
+        top: false,
+        child: SizedBox(
+          height: 54,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: [
+              _NavItem(
+                icon: Icons.home_filled,
+                activeIcon: Icons.home_filled,
+                label: 'Home',
+                index: ShellTabIndex.home,
+                currentIndex: currentIndex,
+                telemetryKey: ShellTab.home,
+              ),
+              _NavItem(
+                icon: Icons.people_outline_rounded,
+                activeIcon: Icons.people_alt_rounded,
+                label: 'Friends',
+                index: ShellTabIndex.friends,
+                currentIndex: currentIndex,
+                telemetryKey: ShellTab.friends,
+              ),
+              // Integrated Create Button
+              Expanded(
+                child: InkWell(
+                  onTap: () {
+                    ref
+                        .read(shellTelemetryProvider)
+                        .shellTabSelected(ShellTab.create);
+                    showCreateOptionsSheet(context);
+                  },
+                  child: const Center(
+                    child: Icon(
+                      Icons.add_circle_outline_rounded,
+                      color: Colors.white,
+                      size: 34,
+                    ),
+                  ),
+                ),
+              ),
+              _NavItem(
+                icon: Icons.movie_creation_outlined,
+                activeIcon: Icons.movie_creation_rounded,
+                label: 'Reels',
+                index: ShellTabIndex.reels,
+                currentIndex: currentIndex,
+                telemetryKey: ShellTab.reels,
+              ),
+              _NavItem(
+                icon: Icons.apps_rounded,
+                activeIcon: Icons.apps_rounded,
+                label: 'Explore',
+                index: ShellTabIndex.explore,
+                currentIndex: currentIndex,
+                telemetryKey: ShellTab.explore,
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -384,6 +400,7 @@ class _BottomBar extends ConsumerWidget {
 class _NavItem extends ConsumerWidget {
   const _NavItem({
     required this.icon,
+    required this.activeIcon,
     required this.label,
     required this.index,
     required this.currentIndex,
@@ -391,6 +408,7 @@ class _NavItem extends ConsumerWidget {
   });
 
   final IconData icon;
+  final IconData activeIcon;
   final String label;
   final int index;
   final int currentIndex;
@@ -399,7 +417,7 @@ class _NavItem extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final active = currentIndex == index;
-    final color = active ? AppColors.postbookPrimary : AppColors.textDimmest;
+    final color = active ? Colors.white : AppColors.textDimmest;
     return Expanded(
       child: InkWell(
         onTap: () {
@@ -411,13 +429,14 @@ class _NavItem extends ConsumerWidget {
           mainAxisAlignment: MainAxisAlignment.center,
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, color: color, size: 24),
+            Icon(active ? activeIcon : icon, color: color, size: 24),
             const SizedBox(height: 2),
             Text(
               label,
               style: AppTextStyles.labelTiny.copyWith(
                 color: color,
-                fontWeight: active ? FontWeight.w800 : FontWeight.w600,
+                fontSize: 10,
+                fontWeight: active ? FontWeight.w800 : FontWeight.w500,
               ),
             ),
           ],

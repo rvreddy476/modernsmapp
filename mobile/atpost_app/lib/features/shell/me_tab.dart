@@ -482,6 +482,14 @@ class _LauncherGrid extends ConsumerWidget {
                     context.push('/apps');
                   },
                 ),
+                _MoreTile(
+                  label: 'Review videos',
+                  icon: Icons.rate_review_outlined,
+                  onTap: () {
+                    Navigator.of(sheetContext).pop();
+                    context.push('/reviewer/dashboard');
+                  },
+                ),
               ],
             ),
           ),

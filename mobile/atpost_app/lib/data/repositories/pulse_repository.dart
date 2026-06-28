@@ -315,7 +315,7 @@ class PulseRepository {
       data: {
         'message_type': 'text',
         'body_text': bodyText,
-        if (idempotencyKey != null) 'idempotency_key': idempotencyKey,
+        'idempotency_key': ?idempotencyKey,
       },
     );
     return PulseMessage.fromJson(
@@ -644,8 +644,8 @@ class PulseRepository {
     await _api.post(
       '/v1/dating/safety/panic',
       data: {
-        if (lat != null) 'location_lat': lat,
-        if (lng != null) 'location_lng': lng,
+        'location_lat': ?lat,
+        'location_lng': ?lng,
       },
     );
   }

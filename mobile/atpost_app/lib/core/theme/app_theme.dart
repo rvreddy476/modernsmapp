@@ -31,6 +31,12 @@ class AppTheme {
       color: AppColors.borderSubtle,
       thickness: 1,
     ),
+    // Neutral cursor/selection — no orange accent on focus.
+    textSelectionTheme: TextSelectionThemeData(
+      cursorColor: AppColors.textPrimary,
+      selectionColor: AppColors.postbookPrimary.withValues(alpha: 0.25),
+      selectionHandleColor: AppColors.textSecondary,
+    ),
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
       fillColor: AppColors.bgCard,
@@ -43,9 +49,10 @@ class AppTheme {
         borderRadius: BorderRadius.circular(16),
         borderSide: const BorderSide(color: AppColors.borderSubtle),
       ),
+      // Subtle neutral focus ring instead of the orange brand line.
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(16),
-        borderSide: const BorderSide(color: AppColors.postbookPrimary),
+        borderSide: const BorderSide(color: Color(0x66FFFFFF), width: 1.5),
       ),
     ),
   );
@@ -76,6 +83,11 @@ class AppTheme {
       color: Color(0x14000000),
       thickness: 1,
     ),
+    textSelectionTheme: TextSelectionThemeData(
+      cursorColor: const Color(0xFF111111),
+      selectionColor: AppColors.postbookPrimary.withValues(alpha: 0.20),
+      selectionHandleColor: const Color(0xFF555555),
+    ),
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
       fillColor: const Color(0xFFF6F6F6),
@@ -90,7 +102,7 @@ class AppTheme {
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(16),
-        borderSide: const BorderSide(color: AppColors.postbookPrimary),
+        borderSide: const BorderSide(color: Color(0x33000000), width: 1.5),
       ),
     ),
   );

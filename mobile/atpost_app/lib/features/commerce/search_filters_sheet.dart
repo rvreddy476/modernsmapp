@@ -179,7 +179,7 @@ class _SearchFiltersSheetState
                   const SizedBox(height: AppSpacing.xxl),
                   SwitchListTile(
                     contentPadding: EdgeInsets.zero,
-                    activeColor: AppColors.postbookPrimary,
+                    activeThumbColor: AppColors.postbookPrimary,
                     value: _draft.hasFreeShipping,
                     onChanged: (v) => setState(
                         () => _draft = _draft.copyWith(hasFreeShipping: v)),
@@ -188,7 +188,7 @@ class _SearchFiltersSheetState
                   ),
                   SwitchListTile(
                     contentPadding: EdgeInsets.zero,
-                    activeColor: AppColors.postbookPrimary,
+                    activeThumbColor: AppColors.postbookPrimary,
                     value: _draft.hasCod,
                     onChanged: (v) =>
                         setState(() => _draft = _draft.copyWith(hasCod: v)),

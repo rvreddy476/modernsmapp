@@ -1,0 +1,87 @@
+name: Terraform (Azure)
+
+# Azure twin of terraform.yml. validate runs on every PR (no creds); plan-apply
+# is MANUAL (workflow_dispatch) via GitHub-OIDC → Entra. AWS terraform.yml is
+# untouched.
+#
+# Required for plan-apply:
+#   vars  AZURE_CLIENT_ID / AZURE_TENANT_ID / AZURE_SUBSCRIPTION_ID  (CI identity)
+#   vars  AZ_TFSTATE_RG / AZ_TFSTATE_SA / AZ_TFSTATE_CONTAINER       (from bootstrap)
+#   a non-secret envs/<env>/<env>.tfvars (or TF_VAR_*) for required variables.
+
+on:
+  pull_request:
+    paths: ["infra/azure/**", ".github/workflows/terraform-azure.yml"]
+  push:
+    branches: [main]
+    paths: ["infra/azure/**"]
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [staging, prod]
+        default: staging
+      command:
+        type: choice
+        options: [plan, apply]
+        default: plan
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [staging, prod]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+      - run: terraform -chdir=infra/azure fmt -check -recursive
+      - run: |
+          terraform -chdir=infra/azure/envs/${{ matrix.env }} init -backend=false -input=false
+          terraform -chdir=infra/azure/envs/${{ matrix.env }} validate
+
+  plan-apply:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    env:
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_subscription_id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+      - name: init (azurerm backend)
+        working-directory: infra/azure/envs/${{ github.event.inputs.environment }}
+        run: |
+          terraform init -input=false \
+            -backend-config="resource_group_name=${{ vars.AZ_TFSTATE_RG }}" \
+            -backend-config="storage_account_name=${{ vars.AZ_TFSTATE_SA }}" \
+            -backend-config="container_name=${{ vars.AZ_TFSTATE_CONTAINER }}" \
+            -backend-config="key=envs/${{ github.event.inputs.environment }}/terraform.tfstate"
+      - name: ${{ github.event.inputs.command }}
+        working-directory: infra/azure/envs/${{ github.event.inputs.environment }}
+        run: |
+          VARFILE=""
+          [ -f "${{ github.event.inputs.environment }}.tfvars" ] && VARFILE="-var-file=${{ github.event.inputs.environment }}.tfvars"
+          if [ "${{ github.event.inputs.command }}" = "apply" ]; then
+            terraform apply -input=false -auto-approve $VARFILE
+          else
+            terraform plan -input=false -no-color $VARFILE
+          fi

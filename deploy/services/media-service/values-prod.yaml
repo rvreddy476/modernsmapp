@@ -35,11 +35,15 @@ externalSecret:
     - { secretKey: JWT_KID, remoteRef: jwt_kid }
     - { secretKey: JWT_SECRET_PREVIOUS, remoteRef: jwt_secret_previous }
     - { secretKey: JWT_KID_PREVIOUS, remoteRef: jwt_kid_previous }
+    # RS256 verification (public key); HS256 stays accepted in parallel.
+    - { secretKey: JWT_PUBLIC_KEY_PEM, remoteRef: jwt_public_key_pem }
 
 env:
   ENV: prod
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  # RS256 key id — must match auth-service's JWT_RS256_KID.
+  JWT_RS256_KID: rsa-1
 
 ingress:
   enabled: false

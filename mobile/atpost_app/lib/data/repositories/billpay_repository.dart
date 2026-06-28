@@ -314,7 +314,7 @@ class BillPayRepository {
       '/v1/billpay/scheduled',
       data: {
         'account_id': accountId,
-        if (amountPaise != null) 'amount_paise': amountPaise,
+        'amount_paise': ?amountPaise,
         'payment_method': paymentMethod,
         'schedule_kind': scheduleKind,
         'next_run_date': nextRunDate.toUtc().toIso8601String(),

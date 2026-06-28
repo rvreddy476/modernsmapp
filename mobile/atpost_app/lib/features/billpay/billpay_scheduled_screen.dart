@@ -210,7 +210,7 @@ class _BillPayScheduledScreenState
                 AppSpacing.xxxxl + 56,
               ),
               itemCount: items.length,
-              separatorBuilder: (_, __) =>
+              separatorBuilder: (_, _) =>
                   const SizedBox(height: AppSpacing.l),
               itemBuilder: (_, i) {
                 final s = items[i];
@@ -294,7 +294,7 @@ class _ScheduledCard extends StatelessWidget {
               ),
               Switch(
                 value: schedule.isActive,
-                activeColor: AppColors.postbookPrimary,
+                activeThumbColor: AppColors.postbookPrimary,
                 onChanged: onToggle,
               ),
             ],
@@ -488,7 +488,7 @@ class _AddScheduledSheetState extends ConsumerState<_AddScheduledSheet> {
             Text('Biller', style: AppTextStyles.label),
             const SizedBox(height: AppSpacing.s),
             DropdownButtonFormField<String>(
-              value: _selectedAccountId,
+              initialValue: _selectedAccountId,
               dropdownColor: AppColors.bgTertiary,
               isExpanded: true,
               decoration: _fieldDecoration(),
@@ -539,7 +539,7 @@ class _AddScheduledSheetState extends ConsumerState<_AddScheduledSheet> {
                 style: AppTextStyles.bodySmall,
               ),
               value: _payFullBill,
-              activeColor: AppColors.postbookPrimary,
+              activeThumbColor: AppColors.postbookPrimary,
               onChanged: _submitting
                   ? null
                   : (v) => setState(() => _payFullBill = v),

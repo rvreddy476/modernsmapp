@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -26,7 +27,7 @@ import (
 )
 
 var (
-	hashtagRegex = regexp.MustCompile(`#(\w{1,50})`)
+	hashtagRegex = regexp.MustCompile(`#([\p{L}\p{M}\p{N}_]{2,50})`)
 	mentionRegex = regexp.MustCompile(`@(\w{1,30})`)
 	// dbMentionRegex is the persistence-side mention pattern — 3+
 	// chars and `.` allowed (handles handles like `john.doe`).
@@ -51,19 +52,21 @@ var (
 )
 
 type Service struct {
-	pgStore         *postgres.Store
-	scyllaStore     *scylla.InteractionStore
-	scyllaSession   *gocql.Session
-	rdb             *redis.Client
-	producer        *postEvents.Producer // legacy producer, optional
-	engProducer     *engagement.Producer // new engagement event producer
-	rateLimiter     *engagement.RateLimiter
-	spam            *spam.Detector
-	userServiceURL          string
-	graphServiceURL         string
-	monetizationServiceURL  string
-	internalServiceKey      string
-	httpClient              *http.Client
+	pgStore                *postgres.Store
+	scyllaStore            *scylla.InteractionStore
+	scyllaSession          *gocql.Session
+	rdb                    *redis.Client
+	producer               *postEvents.Producer // legacy producer, optional
+	engProducer            *engagement.Producer // new engagement event producer
+	rateLimiter            *engagement.RateLimiter
+	spam                   *spam.Detector
+	userServiceURL         string
+	graphServiceURL        string
+	monetizationServiceURL string
+	reviewerServiceURL     string
+	reviewAllVideos        bool
+	internalServiceKey     string
+	httpClient             *http.Client
 
 	// Sharded post_engagement_counts counters. Each replaces a hot-row
 	// UPDATE on post_engagement_counts.<col> = <col> + 1 — at celebrity-
@@ -203,6 +206,107 @@ func (s *Service) SetInternalServiceKey(key string) {
 	s.internalServiceKey = key
 }
 
+// SetReviewerServiceURL configures the reviewer-service base URL used to
+// enqueue flagged video content for human review. Empty disables enqueue.
+func (s *Service) SetReviewerServiceURL(url string) {
+	s.reviewerServiceURL = url
+}
+
+// SetReviewAllVideos, when true, routes EVERY new video to human review (marks
+// it 'flagged' so it enqueues), not just spam-flagged ones. Off by default;
+// intended for staged rollout / testing of the reviewer pipeline.
+func (s *Service) SetReviewAllVideos(v bool) {
+	s.reviewAllVideos = v
+}
+
+// AutoResolveFlagged sets a FLAGGED post to a terminal review_status
+// (approved|rejected). Used by reviewer-service's ML pre-filter to clear
+// content without a human. Scoped to flagged rows so it can't override a
+// human/pending verdict. Busts the cached post body on success.
+func (s *Service) AutoResolveFlagged(ctx context.Context, postID uuid.UUID, status string) (bool, error) {
+	ok, err := s.pgStore.SetReviewStatusFromFlagged(ctx, postID, status)
+	if err == nil && ok && s.rdb != nil {
+		_ = s.rdb.Del(ctx, "post:body:"+postID.String()).Err()
+	}
+	return ok, err
+}
+
+// Resubmit lets the creator send an edited post (in 'needs_changes' after a
+// super-admin requested edits) back into human review. Owner-gated; re-enqueues
+// to reviewer-service so the loop continues.
+func (s *Service) Resubmit(ctx context.Context, postID, actorID uuid.UUID) (bool, error) {
+	owner, err := s.IsPostAuthor(ctx, postID, actorID)
+	if err != nil {
+		return false, err
+	}
+	if !owner {
+		return false, fmt.Errorf("forbidden: not the author")
+	}
+	changed, err := s.pgStore.ResubmitFromNeedsChanges(ctx, postID)
+	if err != nil || !changed {
+		return false, err
+	}
+	if s.rdb != nil {
+		_ = s.rdb.Del(ctx, "post:body:"+postID.String()).Err()
+	}
+	// Re-enqueue for human review (fresh content → let the pre-filter/human decide).
+	if posts, err := s.pgStore.GetPostsByIDs(ctx, []uuid.UUID{postID}); err == nil && len(posts) > 0 {
+		s.enqueueForReview(&posts[0], 0)
+	}
+	return true, nil
+}
+
+// PromoteStaged finalizes a test-audience rollout by moving a STAGED post to a
+// new visibility (typically 'public'). Used by the reviewer promotion worker.
+func (s *Service) PromoteStaged(ctx context.Context, postID uuid.UUID, visibility string) (bool, error) {
+	ok, err := s.pgStore.SetVisibilityFromStaged(ctx, postID, visibility)
+	if err == nil && ok && s.rdb != nil {
+		_ = s.rdb.Del(ctx, "post:body:"+postID.String()).Err()
+	}
+	return ok, err
+}
+
+// enqueueForReview best-effort notifies reviewer-service that a piece of video
+// content needs human review (review_status='flagged'). Fire-and-forget: never
+// blocks or fails the post-create/transcode path. No-op when the URL is unset
+// or the content isn't video.
+func (s *Service) enqueueForReview(p *postgres.Post, spamScore float64) {
+	if s.reviewerServiceURL == "" || !isVideoContentType(p.ContentType) {
+		return
+	}
+	langs := []string{}
+	if p.Language != "" {
+		langs = []string{p.Language}
+	}
+	body, _ := json.Marshal(map[string]any{
+		"content_id":      p.ID.String(),
+		"creator_id":      p.AuthorID.String(),
+		"content_type":    p.ContentType,
+		"languages":       langs,
+		"content_seconds": 0, // duration may not be known yet; reviewer caps anyway
+		"spam_score":      spamScore,
+	})
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+			s.reviewerServiceURL+"/v1/reviewer/internal/enqueue", bytes.NewReader(body))
+		if err != nil {
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if s.internalServiceKey != "" {
+			req.Header.Set("X-Internal-Service-Key", s.internalServiceKey)
+		}
+		resp, err := s.httpClient.Do(req)
+		if err != nil {
+			slog.Warn("reviewer enqueue failed (best-effort)", "post", p.ID, "err", err)
+			return
+		}
+		_ = resp.Body.Close()
+	}()
+}
+
 // SetProducer sets the legacy Kafka producer for engagement events.
 func (s *Service) SetProducer(p *postEvents.Producer) {
 	s.producer = p
@@ -292,6 +396,29 @@ func extractHashtags(text string) []string {
 		}
 	}
 	return tags
+}
+
+// filterBlockedHashtags removes any tags that are marked is_blocked=true in
+// the hashtags table. Fails open: if the DB check errors, all tags are kept.
+func (s *Service) filterBlockedHashtags(ctx context.Context, tags []string) []string {
+	if len(tags) == 0 {
+		return tags
+	}
+	blocked, err := s.pgStore.GetBlockedHashtags(ctx, tags)
+	if err != nil || len(blocked) == 0 {
+		return tags
+	}
+	blockedSet := make(map[string]bool, len(blocked))
+	for _, t := range blocked {
+		blockedSet[t] = true
+	}
+	out := tags[:0]
+	for _, t := range tags {
+		if !blockedSet[t] {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // extractMentions parses @username patterns from text.
@@ -460,8 +587,12 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		appOrigin = "postbook"
 	}
 
-	// Extract hashtags from text
+	// Extract hashtags from text (cap at 20 per design spec)
 	hashtags := extractHashtags(input.Text)
+	if len(hashtags) > 20 {
+		hashtags = hashtags[:20]
+	}
+	hashtags = s.filterBlockedHashtags(ctx, hashtags)
 
 	// Extract @mentions from text
 	mentions := extractMentions(input.Text)
@@ -667,6 +798,14 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	if reviewStatus == "approved" && isVideoContentType(p.ContentType) && videoMediaID != uuid.Nil {
 		reviewStatus = s.gateVideoReviewStatus(ctx, videoMediaID)
 	}
+	// Optional: send every video to human review, not just spam-flagged. Covers
+	// 'pending' (still transcoding) too — otherwise the transcode consumer would
+	// later flip pending→approved and publish it without review. The reviewer
+	// watches the uploaded media directly.
+	if s.reviewAllVideos && isVideoContentType(p.ContentType) &&
+		(reviewStatus == "approved" || reviewStatus == "pending") {
+		reviewStatus = "flagged"
+	}
 	p.ReviewStatus = reviewStatus
 
 	if err := s.pgStore.CreatePost(ctx, p); err != nil {
@@ -678,6 +817,11 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	// terminal verdict when it finalizes the gate.
 	if isVideoContentType(p.ContentType) && reviewStatus != "pending" {
 		s.RecordVideoModeration(ctx, p.ID, reviewStatus, spamResult.Score)
+	}
+
+	// Route flagged video content to the human-review queue (best-effort).
+	if reviewStatus == "flagged" {
+		s.enqueueForReview(p, spamResult.Score)
 	}
 
 	// Persist @mentions to post_mentions table
@@ -1719,6 +1863,25 @@ func (s *Service) CreateCommentPG(ctx context.Context, postID, authorID uuid.UUI
 		return nil, err
 	}
 
+	// Bump trending scores for hashtags in the comment body (max 5 per design spec).
+	// Fire-and-forget: comment hashtags influence trending but are not stored per-comment.
+	if commentTags := extractHashtags(body); len(commentTags) > 0 {
+		if len(commentTags) > 5 {
+			commentTags = commentTags[:5]
+		}
+		go func() {
+			bgCtx := context.Background()
+			today := time.Now().UTC().Format("2006-01-02")
+			key := "trending:hashtags:" + today
+			for _, tag := range commentTags {
+				if err := s.rdb.ZIncrBy(bgCtx, key, 0.5, tag).Err(); err != nil {
+					log.Printf("Warning: failed to bump comment hashtag trending for %s: %v", tag, err)
+				}
+			}
+			s.rdb.Expire(bgCtx, key, 48*time.Hour)
+		}()
+	}
+
 	// Bump the sharded post_engagement_counts.comment_count via Redis
 	// (with PG fallback inside adjustEngagementCount). The matching
 	// flush worker in cmd/server/main.go materialises the shard sum
@@ -2360,12 +2523,13 @@ func (s *Service) ListCollections(ctx context.Context, userID uuid.UUID) ([]post
 
 // GetPostsByHashtag returns posts with a specific hashtag.
 // sort accepts "top" or "recent" (default).
-func (s *Service) GetPostsByHashtag(ctx context.Context, hashtag string, limit int, cursor, sort string) ([]PostDetail, string, error) {
+// contentTypes filters by content_type (e.g. ["post"], ["flick"], ["long_video"]); nil = all.
+func (s *Service) GetPostsByHashtag(ctx context.Context, hashtag string, limit int, cursor, sort string, contentTypes []string) ([]PostDetail, string, error) {
 	mode := postgres.HashtagSortRecent
 	if sort == "top" {
 		mode = postgres.HashtagSortTop
 	}
-	posts, nextCursor, err := s.pgStore.GetPostsByHashtag(ctx, hashtag, limit, cursor, mode)
+	posts, nextCursor, err := s.pgStore.GetPostsByHashtag(ctx, hashtag, limit, cursor, mode, contentTypes)
 	if err != nil {
 		return nil, "", err
 	}

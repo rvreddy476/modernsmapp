@@ -56,6 +56,16 @@ variable "github_repos" {
   default     = ["TODO/atpost"] # TODO: replace with the real org/repo once known
 }
 
+variable "web_zone_names" {
+  description = "ECR repo names for the atpost-web Multi-Zone apps (atpost/<name>)."
+  type        = list(string)
+  default = [
+    "web-shell", "web-commerce", "web-admin", "web-dating", "web-social",
+    "web-community", "web-creator", "web-messenger", "web-live",
+    "web-memories", "web-miniapps",
+  ]
+}
+
 variable "tfstate_bucket_arn" {
   description = "Output from `bootstrap/`. Fill in after `terraform apply` in bootstrap/."
   type        = string

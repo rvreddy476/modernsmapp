@@ -42,10 +42,10 @@ class PagesRepository {
       'page_handle': pageHandle,
       'page_name': pageName,
       'page_type': pageType,
-      if (category != null) 'category': category,
-      if (description != null) 'description': description,
-      if (phone != null) 'phone': phone,
-      if (website != null) 'website': website,
+      'category': ?category,
+      'description': ?description,
+      'phone': ?phone,
+      'website': ?website,
     });
     final payload = (res.data['data'] as Map<String, dynamic>?) ?? res.data as Map<String, dynamic>;
     return BusinessPage.fromJson(payload);

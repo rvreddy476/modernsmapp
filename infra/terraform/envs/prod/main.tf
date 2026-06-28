@@ -25,6 +25,14 @@ module "ecr" {
   repositories = var.service_names
 }
 
+# Container images for the atpost-web Multi-Zone apps (atpost/web-<zone>).
+module "ecr_web" {
+  source = "../../modules/ecr"
+
+  environment  = "prod"
+  repositories = var.web_zone_names
+}
+
 module "dns" {
   source = "../../modules/dns"
 
@@ -137,6 +145,37 @@ module "media" {
   cloudfront_price_class = "PriceClass_200" # incl. India + Asia POPs
 }
 
+module "waf" {
+  source = "../../modules/waf"
+
+  environment = "prod"
+  # Set the gateway Ingress wafv2-acl-arn annotation in
+  # deploy/services/api-gateway/values-prod.yaml to module.waf.web_acl_arn
+  # (output below) after the first apply.
+}
+
+module "codeartifact" {
+  source = "../../modules/codeartifact"
+
+  environment = "prod"
+  aws_region  = var.aws_region
+}
+
+# Let the GitHub-OIDC CI role read/publish @atpost/* to CodeArtifact.
+resource "aws_iam_role_policy_attachment" "ci_codeartifact" {
+  role       = module.iam.ci_role_name
+  policy_arn = module.codeartifact.policy_arn
+}
+
+module "auth_keys" {
+  source = "../../modules/auth-keys"
+
+  environment = "prod"
+  # manage_values=true generates the RS256 keypair + JWT/internal secrets into
+  # Secrets Manager (values land in encrypted TF state — see module docs). Flip
+  # to false to keep the signing key out of state and populate by hand.
+}
+
 # ─── In-cluster tooling — see staging/main.tf for the two-apply note ─
 
 module "external_secrets" {
@@ -152,6 +191,7 @@ module "external_secrets" {
     module.elasticache.kms_key_arn,
     module.opensearch.kms_key_arn,
     module.media.kms_key_arn,
+    module.auth_keys.kms_key_arn,
   ]
 }
 
@@ -273,3 +313,8 @@ output "opensearch_master_secret_arn" { value = module.opensearch.master_secret_
 output "media_bucket_name" { value = module.media.bucket_name }
 output "media_cloudfront_domain" { value = module.media.cloudfront_domain_name }
 output "media_client_iam_policy_arn" { value = module.media.client_iam_policy_arn }
+output "waf_web_acl_arn" { value = module.waf.web_acl_arn }
+output "auth_keys_secret_name" { value = module.auth_keys.secret_name }
+output "auth_keys_secret_arn" { value = module.auth_keys.secret_arn }
+output "codeartifact_npm_endpoint" { value = module.codeartifact.npm_endpoint }
+output "codeartifact_domain" { value = module.codeartifact.domain }

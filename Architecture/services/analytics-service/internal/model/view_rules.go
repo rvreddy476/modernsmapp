@@ -13,7 +13,7 @@ package model
 //	  - If video length < 60s: watched >= 50% of length
 func IsDisplayView(contentType string, durationMS, watchedMS int64, percentViewed float64, loopCount int) bool {
 	switch contentType {
-	case ContentTypeReel:
+	case ContentTypeReel, "flick":
 		// Watched >= 3 seconds
 		if watchedMS >= 3000 {
 			return true

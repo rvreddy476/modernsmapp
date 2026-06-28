@@ -6,3 +6,8 @@ output "ci_role_arn" {
 output "github_oidc_provider_arn" {
   value = aws_iam_openid_connect_provider.github.arn
 }
+
+output "ci_role_name" {
+  value       = aws_iam_role.ci.name
+  description = "CI role name — for attaching extra policies (e.g. CodeArtifact)."
+}

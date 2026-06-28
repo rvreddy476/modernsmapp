@@ -30,16 +30,36 @@ externalSecret:
   enabled: true
   remoteKey: atpost/prod/identity-auth-service
   data:
+    # Datastore connections (were missing — auth-service needs the identity DB,
+    # Redis for rate-limit/revocation cache, Kafka for identity.events.v1).
+    - { secretKey: DATABASE_URL, remoteRef: postgres_dsn }
+    - { secretKey: REDIS_ADDR, remoteRef: redis_addr }
+    - { secretKey: REDIS_PASSWORD, remoteRef: redis_password }
+    - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
     - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
     - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
     - { secretKey: JWT_KID, remoteRef: jwt_kid }
     - { secretKey: JWT_SECRET_PREVIOUS, remoteRef: jwt_secret_previous }
     - { secretKey: JWT_KID_PREVIOUS, remoteRef: jwt_kid_previous }
+    # RS256 access-token signing (private key). When present, auth-service signs
+    # RS256; verifiers use the matching public key. Remove to stay on HS256.
+    - { secretKey: JWT_PRIVATE_KEY_PEM, remoteRef: jwt_private_key_pem }
 
 env:
   ENV: prod
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  # RS256 key id — must match the verifiers' JWT_RS256_KID.
+  JWT_RS256_KID: rsa-1
+  # RBAC bootstrap — server-side source of truth for the first superadmin(s).
+  # REQUIRED: set to the superadmin user UUID(s), comma-separated, or NO ONE can
+  # administer roles in prod. Further admins are then granted via the DB
+  # (/admin/access console).
+  SUPERADMIN_USER_IDS: ""  # CHANGEME e.g. "11111111-1111-1111-1111-111111111111"
+  ADMIN_USER_IDS: ""
+  MODERATOR_USER_IDS: ""
+  # Require the acting superadmin to have 2FA enabled for role grant/revoke.
+  REQUIRE_MFA_FOR_PRIVILEGED: "true"
 
 ingress:
   enabled: false

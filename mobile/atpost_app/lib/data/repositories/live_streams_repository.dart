@@ -78,7 +78,7 @@ class LiveStreamsRepository {
         'title': title,
         'description': description,
         'visibility': visibility,
-        if (coverMediaId != null) 'cover_media_id': coverMediaId,
+        'cover_media_id': ?coverMediaId,
         if (scheduledAt != null)
           'scheduled_at': scheduledAt.toUtc().toIso8601String(),
         // The `use_null_aware_elements` lint is an info hint that

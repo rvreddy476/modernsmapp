@@ -238,6 +238,9 @@ class _CommentsScreenState extends ConsumerState<CommentsScreen> {
 
     return Scaffold(
       backgroundColor: AppColors.bgPrimary,
+      // Avoid resizing so we can handle the keyboard transition smoothly
+      // with custom padding if needed, but for simple cases true is safer.
+      resizeToAvoidBottomInset: true,
       appBar: AppBar(
         backgroundColor: AppColors.bgSecondary,
         elevation: 0,
@@ -343,72 +346,73 @@ class _CommentsScreenState extends ConsumerState<CommentsScreen> {
           ),
 
           // Input bar
-          Container(
-            padding: EdgeInsets.only(
-              left: AppSpacing.xxl,
-              right: AppSpacing.m,
-              top: AppSpacing.l,
-              bottom: MediaQuery.of(context).viewInsets.bottom + AppSpacing.l,
-            ),
-            decoration: const BoxDecoration(
-              color: AppColors.bgSecondary,
-              border: Border(top: BorderSide(color: AppColors.borderSubtle)),
-            ),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: AppColors.bgTertiary,
-                      borderRadius: BorderRadius.circular(
-                        AppSpacing.radiusLarge,
-                      ),
-                      border: Border.all(color: AppColors.borderMedium),
-                    ),
-                    child: TextField(
-                      controller: _commentController,
-                      style: AppTextStyles.body,
-                      maxLines: 4,
-                      minLines: 1,
-                      textCapitalization: TextCapitalization.sentences,
-                      decoration: InputDecoration(
-                        hintText: 'Add a comment...',
-                        hintStyle: AppTextStyles.body.copyWith(
-                          color: AppColors.textMuted,
+          SafeArea(
+            top: false,
+            child: Container(
+              padding: const EdgeInsets.symmetric(
+                horizontal: AppSpacing.xxl,
+                vertical: AppSpacing.l,
+              ).copyWith(right: AppSpacing.m),
+              decoration: const BoxDecoration(
+                color: AppColors.bgSecondary,
+                border: Border(top: BorderSide(color: AppColors.borderSubtle)),
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: AppColors.bgTertiary,
+                        borderRadius: BorderRadius.circular(
+                          AppSpacing.radiusLarge,
                         ),
-                        border: InputBorder.none,
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: AppSpacing.l,
-                          vertical: AppSpacing.m,
+                        border: Border.all(color: AppColors.borderMedium),
+                      ),
+                      child: TextField(
+                        controller: _commentController,
+                        style: AppTextStyles.body,
+                        maxLines: 4,
+                        minLines: 1,
+                        textCapitalization: TextCapitalization.sentences,
+                        decoration: InputDecoration(
+                          hintText: 'Add a comment...',
+                          hintStyle: AppTextStyles.body.copyWith(
+                            color: AppColors.textMuted,
+                          ),
+                          border: InputBorder.none,
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: AppSpacing.l,
+                            vertical: AppSpacing.m,
+                          ),
                         ),
                       ),
                     ),
                   ),
-                ),
-                const SizedBox(width: AppSpacing.s),
-                _submitting
-                    ? const SizedBox(
-                        width: 40,
-                        height: 40,
-                        child: Padding(
-                          padding: EdgeInsets.all(8),
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            valueColor: AlwaysStoppedAnimation<Color>(
-                              AppColors.postbookPrimary,
+                  const SizedBox(width: AppSpacing.s),
+                  _submitting
+                      ? const SizedBox(
+                          width: 40,
+                          height: 40,
+                          child: Padding(
+                            padding: EdgeInsets.all(8),
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              valueColor: AlwaysStoppedAnimation<Color>(
+                                AppColors.postbookPrimary,
+                              ),
                             ),
                           ),
+                        )
+                      : IconButton(
+                          icon: const Icon(
+                            Icons.send_rounded,
+                            color: AppColors.postbookPrimary,
+                          ),
+                          onPressed: _submitComment,
+                          tooltip: 'Post comment',
                         ),
-                      )
-                    : IconButton(
-                        icon: const Icon(
-                          Icons.send_rounded,
-                          color: AppColors.postbookPrimary,
-                        ),
-                        onPressed: _submitComment,
-                        tooltip: 'Post comment',
-                      ),
-              ],
+                ],
+              ),
             ),
           ),
         ],

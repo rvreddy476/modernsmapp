@@ -1,0 +1,44 @@
+# web zone "commerce" (/shop) — prod. Reuses charts/atpost-service.
+service:
+  name: web-commerce
+  port: 3000            # Next standalone listens on 3000
+image:
+  repository: 123456789012.dkr.ecr.ap-south-1.amazonaws.com/atpost/web-commerce
+  tag: latest           # CI overrides with the commit SHA
+replicaCount: 3
+hpa:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 12
+  targetCPUUtilizationPercentage: 65
+resources:
+  requests: { cpu: 100m, memory: 192Mi }
+  limits: { cpu: 1, memory: 768Mi }
+env:
+  HOSTNAME: 0.0.0.0
+  PORT: "3000"
+  NODE_ENV: production
+  # Server-side proxy/refresh targets (cluster-internal):
+  API_GATEWAY_URL: http://api-gateway.atpost.svc.cluster.local:8080
+  AUTH_SERVICE_URL: http://identity-auth-service.atpost.svc.cluster.local:8081
+  # Browser axios base = this zone's basePath (Multi-Zones edge routes it here):
+  NEXT_PUBLIC_API_BASE_URL: "/shop"
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/group.name: atpost-web-prod   # all zones share ONE ALB
+    alb.ingress.kubernetes.io/group.order: "10"          # shell (/) is the catch-all, evaluated last
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    alb.ingress.kubernetes.io/healthcheck-path: /shop
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:ap-south-1:123456789012:certificate/CHANGEME
+  hosts:
+    - host: app.cleestudio.com
+      paths:
+        - { path: /shop, pathType: Prefix }
+pdb:
+  enabled: true
+  minAvailable: 1

@@ -1,6 +1,6 @@
 import 'dart:io' show Platform;
 
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kIsWeb, kDebugMode;
 
 /// Environment configuration for API endpoints.
 ///
@@ -59,10 +59,11 @@ class Environment {
         _trimOrNull(_configuredWsBaseUrl) != null) {
       return null;
     }
-    // In debug mode, we might want to default to null to use 127.0.0.1 with adb reverse.
-    // However, to keep existing behavior, we only switch if a specific flag is set
-    // or we can detect we want local. For now, let's keep the default but allow override.
-    return _defaultExternalDomain;
+    // Debug builds default to LOCAL services (direct ports / _host), so a plain
+    // `flutter run` talks to the local stack instead of production. Release builds
+    // use the production domain. Override either with ATPOST_EXTERNAL_DOMAIN /
+    // ATPOST_API_BASE_URL.
+    return kDebugMode ? null : _defaultExternalDomain;
   }
 
   static String? _trimOrNull(String? value) {

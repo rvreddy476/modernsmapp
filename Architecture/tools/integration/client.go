@@ -12,9 +12,12 @@
 //	ATPOST_API_GATEWAY_URL   default http://localhost:8080
 //	ATPOST_INTERNAL_KEY      default ""  (X-Internal-Service-Key, optional)
 //
-// Tests use synthetic UUIDs as X-User-Id headers — no real auth flow
-// — so the services need to be running with INTERNAL_AUTH_BYPASS or
-// similar dev flags. Production deployments enforce JWT.
+// Auth: each request carries a real HS256 JWT (Authorization: Bearer) minted
+// for the synthetic user id, signed with the dev JWT_SECRET, AND the legacy
+// X-User-Id header. The gateway strips inbound X-User-Id and derives identity
+// from the verified token (so gateway-routed tests work); services dialed
+// directly still read X-User-Id. Set ATPOST_JWT_SECRET to match the stack's
+// JWT_SECRET (defaults to the docker-compose dev value).
 //go:build integration
 
 package integration
@@ -22,6 +25,9 @@ package integration
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -33,6 +39,30 @@ import (
 
 	"github.com/google/uuid"
 )
+
+// jwtSecret / jwtKID match the dev stack (docker-compose default). Override via
+// env when the target stack uses a different signing secret / kid.
+func jwtSecret() string { return envOr("ATPOST_JWT_SECRET", "local_dev_jwt_change_me") }
+func jwtKID() string    { return envOr("ATPOST_JWT_KID", "v1") }
+
+// mintToken builds an HS256 access token for userID (hand-rolled, no external
+// dep — mirrors what identity-auth issues). scopes is space-separated and
+// embedded as the `scopes` claim so gateway-routed admin calls authorize too.
+func mintToken(userID uuid.UUID, scopes string) string {
+	b64 := func(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
+	header, _ := json.Marshal(map[string]string{"alg": "HS256", "typ": "JWT", "kid": jwtKID()})
+	claims, _ := json.Marshal(map[string]any{
+		"sub":     userID.String(),
+		"user_id": userID.String(),
+		"scopes":  scopes,
+		"iat":     time.Now().Unix(),
+		"exp":     time.Now().Add(time.Hour).Unix(),
+	})
+	signingInput := b64(header) + "." + b64(claims)
+	mac := hmac.New(sha256.New, []byte(jwtSecret()))
+	mac.Write([]byte(signingInput))
+	return signingInput + "." + b64(mac.Sum(nil))
+}
 
 // ServiceURLs is the set of base URLs the tests dial. Defaults match
 // run-local.sh; override per-test via env if your stack uses
@@ -74,7 +104,11 @@ type HTTPClient struct {
 	BaseURL string
 	UserID    uuid.UUID
 	AdminRole string
-	c         *http.Client
+	// BearerOverride, when set, is sent as the Authorization token verbatim
+	// instead of a minted one — used by the auth E2E flow to carry the real
+	// access token returned by login/refresh.
+	BearerOverride string
+	c              *http.Client
 }
 
 // NewHTTPClient constructs a client whose every request carries
@@ -96,6 +130,15 @@ func NewHTTPClient(baseURL string, userID uuid.UUID) *HTTPClient {
 func (h *HTTPClient) WithAdminRole() *HTTPClient {
 	clone := *h
 	clone.AdminRole = "admin"
+	return &clone
+}
+
+// WithBearer returns a copy that sends the given access token (e.g. the one
+// returned by /v1/auth/login) instead of a minted one. Use for the auth flow
+// where the real token's claims are what's under test.
+func (h *HTTPClient) WithBearer(token string) *HTTPClient {
+	clone := *h
+	clone.BearerOverride = token
 	return &clone
 }
 
@@ -130,7 +173,21 @@ func (h *HTTPClient) Do(ctx context.Context, method, path string, body interface
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if h.UserID != uuid.Nil {
+	switch {
+	case h.BearerOverride != "":
+		// Real login/refresh token — identity comes only from the token (no
+		// X-User-Id), so this exercises the genuine auth path.
+		req.Header.Set("Authorization", "Bearer "+h.BearerOverride)
+	case h.UserID != uuid.Nil:
+		// Real JWT for gateway-routed calls (gateway strips inbound X-User-Id
+		// and derives identity from the verified token); X-User-Id kept for
+		// services dialed directly. Admin clients get privileged scopes so the
+		// gateway's admin/internal gate passes too.
+		scopes := ""
+		if h.AdminRole != "" {
+			scopes = "admin moderator superadmin"
+		}
+		req.Header.Set("Authorization", "Bearer "+mintToken(h.UserID, scopes))
 		req.Header.Set("X-User-Id", h.UserID.String())
 	}
 	if h.AdminRole != "" {

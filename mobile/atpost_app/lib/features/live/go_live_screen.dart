@@ -507,7 +507,7 @@ class _SchedulePicker extends StatelessWidget {
               ),
               Switch(
                 value: scheduleEnabled,
-                activeColor: AppColors.liveRed,
+                activeThumbColor: AppColors.liveRed,
                 onChanged: enabled ? onToggle : null,
               ),
             ],

@@ -10,6 +10,7 @@ import 'package:atpost_app/features/monetization/widgets/paywall_preview.dart';
 import 'package:atpost_app/features/shell/shell_providers.dart';
 import 'package:atpost_app/providers/feed_provider.dart';
 import 'package:atpost_app/providers/following_provider.dart';
+import 'package:atpost_app/shared/widgets/video_more_sheet.dart';
 import 'package:atpost_app/services/auth_service.dart';
 import 'package:atpost_app/shared/widgets/clickable_hashtag_text.dart';
 import 'package:atpost_app/shared/widgets/echo_sheet.dart';
@@ -487,6 +488,36 @@ class _PostCardState extends ConsumerState<PostCard> {
         ref.watch(authStateProvider).valueOrNull?.userId ??
         ref.read(authServiceProvider).userId;
     final canDelete = currentUserId == post.authorId;
+
+    // Video posts get the unified "More" sheet shared with Reels / PostTube.
+    if (post.isReel || post.isVideo) {
+      return IconButton(
+        icon: const Icon(Icons.more_horiz, color: AppColors.textMuted),
+        onPressed: () => showVideoMoreSheet(
+          context,
+          post: post,
+          surface: 'feed',
+          isSaved: post.isBookmarked,
+          captionsAvailable: false,
+          captionsEnabled: false,
+          onToggleSave: () {
+            ref.read(postRepositoryProvider).toggleBookmark(post.id);
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Saved.')),
+            );
+          },
+          onToggleCaptions: () {},
+          onShare: () {
+            Clipboard.setData(ClipboardData(text: _postLink));
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Post link copied.')),
+            );
+          },
+          onReport: _reportPost,
+        ),
+      );
+    }
+
     return PopupMenuButton<String>(
       color: AppColors.bgSecondary,
       icon: const Icon(Icons.more_horiz, color: AppColors.textMuted),

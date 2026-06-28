@@ -49,7 +49,7 @@ class _OnboardingVehicleStepState extends ConsumerState<OnboardingVehicleStep> {
 
   bool get _formValid {
     return _make.text.trim().length >= 2 &&
-        _model.text.trim().length >= 1 &&
+        _model.text.trim().isNotEmpty &&
         (int.tryParse(_year.text.trim()) ?? 0) > 1990 &&
         _color.text.trim().isNotEmpty &&
         _reg.text.trim().length >= 6;

@@ -12,10 +12,12 @@ import 'package:atpost_app/data/repositories/post_repository.dart';
 import 'package:atpost_app/data/repositories/user_repository.dart';
 import 'package:atpost_app/features/shell/shell_providers.dart';
 import 'package:atpost_app/features/shell/shell_scaffold.dart';
+import 'package:atpost_app/providers/autoplay_provider.dart';
 import 'package:atpost_app/providers/data_saver_provider.dart';
 import 'package:atpost_app/shared/widgets/caption_toggle.dart';
 import 'package:atpost_app/features/reels/product_tag_composer_button.dart';
 import 'package:atpost_app/shared/widgets/product_tag_overlay.dart';
+import 'package:atpost_app/shared/widgets/video_more_sheet.dart';
 import 'package:atpost_app/shared/widgets/video_player_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -161,7 +163,9 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> with RouteAware {
       ref.read(analyticsRepositoryProvider).recordVideoView(
         contentId: post.id,
         creatorId: post.authorId,
-        contentType: post.contentType == 'video' ? 'long_video' : 'reel',
+        // Canonical short type is 'flick' (matches post content_type, RPM rates &
+        // creator-fund settlement). 'reel' records a view but never earns.
+        contentType: post.contentType == 'video' ? 'long_video' : 'flick',
         watchedMs: watchedMs,
         durationMs: (post.durationSeconds ?? 30) * 1000,
         surface: 'reels_feed',
@@ -351,47 +355,91 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> with RouteAware {
     }
   }
 
-  Future<void> _toggleDislike(Post post) async {
-    final engagement = _ensureEngagement(post);
-    final prevLiked = engagement.liked;
-    final prevDisliked = engagement.disliked;
-    final prevLikeCount = engagement.likeCount;
-    final prevDislikeCount = engagement.dislikeCount;
-
-    final shouldEnableDislike = !engagement.disliked;
-
-    setState(() {
-      if (engagement.disliked) {
-        engagement.disliked = false;
-        engagement.dislikeCount = math.max(0, engagement.dislikeCount - 1);
-      } else {
-        engagement.disliked = true;
-        engagement.dislikeCount += 1;
-        if (engagement.liked) {
-          engagement.liked = false;
-          engagement.likeCount = math.max(0, engagement.likeCount - 1);
-        }
-      }
-    });
-
-    if (!shouldEnableDislike) {
-      return;
-    }
-
+  // Report flow → POST /v1/reports (trust-safety). entity_type must be one of
+  // user/post/comment, so reels report as 'post'.
+  Future<void> _reportPost(Post post) async {
+    const reasons = <String, String>{
+      'spam': 'Spam or misleading',
+      'harassment': 'Harassment or bullying',
+      'hate_speech': 'Hate speech',
+      'violence': 'Violence or dangerous acts',
+      'nudity': 'Nudity or sexual content',
+      'misinformation': 'Misinformation',
+      'other': 'Something else',
+    };
+    final reason = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: const Color(0xFF1B1B1F),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetCtx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 16, 20, 8),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text('Report this video',
+                    style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+              ),
+            ),
+            for (final entry in reasons.entries)
+              ListTile(
+                title: Text(entry.value, style: const TextStyle(color: Colors.white, fontSize: 15)),
+                onTap: () => Navigator.of(sheetCtx).pop(entry.key),
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (reason == null) return;
     try {
-      await ref.read(postRepositoryProvider).toggleReaction(post.id, emoji: '👎');
+      await ref.read(postRepositoryProvider).submitReport(
+            targetType: 'post',
+            targetId: post.id,
+            reason: reason,
+          );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Report submitted — thanks for keeping the community safe.')),
+      );
     } catch (_) {
       if (!mounted) return;
-      setState(() {
-        engagement.liked = prevLiked;
-        engagement.disliked = prevDisliked;
-        engagement.likeCount = prevLikeCount;
-        engagement.dislikeCount = prevDislikeCount;
-      });
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not update dislike.')),
+        const SnackBar(content: Text('Could not submit report. Please try again.')),
       );
     }
+  }
+
+  // Unified video "More" sheet (shared across Reels / PostTube / feed).
+  Future<void> _showMoreOptions(Post post) async {
+    await showVideoMoreSheet(
+      context,
+      post: post,
+      surface: 'reels',
+      isSaved: _ensureEngagement(post).saved,
+      captionsAvailable: post.mediaIds.isNotEmpty,
+      captionsEnabled: _captionsEnabled(post.id),
+      onToggleSave: () => _toggleSave(post),
+      onToggleCaptions: () => _toggleCaptionsFor(post.id),
+      onShare: () => _shareReel(post),
+      onReport: () => _reportPost(post),
+      onNotInterested: () => _removeReel(post),
+    );
+  }
+
+  // "Not interested" — drop the reel from the current list so it disappears
+  // immediately (the network see_less signal is sent by the sheet).
+  void _removeReel(Post post) {
+    final idx = _reels.indexWhere((p) => p.id == post.id);
+    if (idx < 0) return;
+    setState(() {
+      _reels.removeAt(idx);
+      _engagementByPostId.remove(post.id);
+    });
   }
 
   // Per-author follow state, keyed by post.authorId. Lifted out of the
@@ -549,6 +597,16 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> with RouteAware {
     // (no prefetch / pre-render of the next reel), and per-page video
     // autoplay is suppressed at the player layer.
     final dataSaver = ref.watch(effectiveDataSaverProvider);
+    final autoplay = ref.watch(autoplayProvider);
+
+    // Dynamic padding for professional layout that respects bottom navigation
+    // bar and system notches (iPhone etc).
+    // The shell hosts Reels inside a body that already sits ABOVE the bottom
+    // nav bar (no `extendBody`), so reserving nav height here again floated the
+    // caption/rail and left an empty band at the bottom. Just clear the system
+    // gesture inset (only non-zero on the standalone fullscreen route).
+    final bottomPadding = MediaQuery.of(context).padding.bottom;
+    final totalBottomGap = bottomPadding;
 
     return Scaffold(
       backgroundColor: AppColors.bgPrimary,
@@ -579,11 +637,13 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> with RouteAware {
                   muted: _muted,
                   captionsEnabled: _captionsEnabled(post.id),
                   dataSaver: dataSaver,
+                  autoplay: autoplay,
+                  bottomGap: totalBottomGap,
                   onBack: () => context.pop(),
                   onToggleMute: () => setState(() => _muted = !_muted),
                   onToggleCaptions: () => _toggleCaptionsFor(post.id),
                   onLike: () => _toggleLike(post),
-                  onDislike: () => _toggleDislike(post),
+                  onMore: () => _showMoreOptions(post),
                   onComment: () => _openComments(post),
                   onShare: () => _shareReel(post),
                   onSave: () => _toggleSave(post),
@@ -598,7 +658,7 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> with RouteAware {
             Positioned(
               left: 0,
               right: 0,
-              bottom: widget.fullscreenRoute ? 18 : 100,
+              bottom: totalBottomGap + 12,
               child: const Center(
                 child: SizedBox(
                   width: 24,
@@ -626,11 +686,13 @@ class _ReelPage extends StatefulWidget {
     required this.muted,
     required this.captionsEnabled,
     required this.dataSaver,
+    required this.autoplay,
+    required this.bottomGap,
     required this.onBack,
     required this.onToggleMute,
     required this.onToggleCaptions,
     required this.onLike,
-    required this.onDislike,
+    required this.onMore,
     required this.onComment,
     required this.onShare,
     required this.onSave,
@@ -660,11 +722,18 @@ class _ReelPage extends StatefulWidget {
   // does not autoplay, the URL is biased toward the lowest rendition
   // (`?quality=240p`), and we never auto-download caption tracks.
   final bool dataSaver;
+
+  /// User's autoplay preference (persisted). When false, reels wait for a tap.
+  final bool autoplay;
+
+  /// Computed offset to avoid overlap with bottom navigation or notches.
+  final double bottomGap;
+
   final VoidCallback onBack;
   final VoidCallback onToggleMute;
   final VoidCallback onToggleCaptions;
   final VoidCallback onLike;
-  final VoidCallback onDislike;
+  final VoidCallback onMore;
   final VoidCallback onComment;
   final VoidCallback onShare;
   final VoidCallback onSave;
@@ -714,7 +783,7 @@ class _ReelPageState extends State<_ReelPage> {
     // `quality=` hint; for HLS manifests the player picks the matching
     // variant automatically.
     final separator = base.contains('?') ? '&' : '?';
-    return '${base}${separator}quality=240p';
+    return '$base${separator}quality=240p';
   }
 
   // When data-saver is on, autoplay is suppressed and we render a
@@ -728,8 +797,8 @@ class _ReelPageState extends State<_ReelPage> {
     // `isActive=false` means we're rendered off-screen inside the
     // shell IndexedStack — never autoplay, never even mount the
     // VideoPlayerWidget (handled below by ANDing into `shouldAutoplay`).
-    final shouldAutoplay =
-        widget.isActive && (!widget.dataSaver || _userTappedPlay);
+    final shouldAutoplay = widget.isActive &&
+        ((widget.autoplay && !widget.dataSaver) || _userTappedPlay);
 
     // Gradient background placeholder (used behind video or as fallback).
     final gradientBg = DecoratedBox(
@@ -756,6 +825,7 @@ class _ReelPageState extends State<_ReelPage> {
                   autoPlay: true,
                   looping: true,
                   showControls: false,
+                  muted: widget.muted,
                   placeholder: gradientBg,
                   onPositionUpdate: (ms) {
                     if (!mounted) return;
@@ -912,6 +982,11 @@ class _ReelPageState extends State<_ReelPage> {
                   const SizedBox(width: 8),
                 ],
                 _OverlayIconButton(
+                  icon: Icons.search_rounded,
+                  onTap: () => context.push('/search/videos'),
+                ),
+                const SizedBox(width: 8),
+                _OverlayIconButton(
                   icon: widget.muted
                       ? Icons.volume_off_outlined
                       : Icons.volume_up_outlined,
@@ -924,29 +999,28 @@ class _ReelPageState extends State<_ReelPage> {
         // Engagement rail.
         Positioned(
           right: 12,
-          bottom: widget.fullscreenRoute ? 132 : 214,
+          bottom: widget.bottomGap + 110,
           child: _ActionRail(
             liked: widget.engagement.liked,
-            disliked: widget.engagement.disliked,
             saved: widget.engagement.saved,
             likes: widget.countLabel(widget.engagement.likeCount),
-            dislikes: widget.countLabel(widget.engagement.dislikeCount),
             comments: widget.countLabel(widget.engagement.commentCount),
             shares: widget.countLabel(widget.engagement.shareCount),
             onLike: widget.onLike,
-            onDislike: widget.onDislike,
             onComment: widget.onComment,
             onShare: widget.onShare,
             onSave: widget.onSave,
+            onMore: widget.onMore,
           ),
         ),
         // Bottom info.
         Positioned(
           left: 12,
           right: 78,
-          bottom: widget.fullscreenRoute ? 24 : 98,
+          bottom: widget.bottomGap + 12,
           child: _BottomInfo(
             authorHandle: _authorHandle,
+            avatarUrl: widget.post.authorAvatar,
             title: _title,
             tags: _tags,
             mediaCount: widget.post.mediaIds.length,
@@ -986,64 +1060,80 @@ class _OverlayIconButton extends StatelessWidget {
 class _ActionRail extends StatelessWidget {
   const _ActionRail({
     required this.liked,
-    required this.disliked,
     required this.saved,
     required this.likes,
-    required this.dislikes,
     required this.comments,
     required this.shares,
     required this.onLike,
-    required this.onDislike,
     required this.onComment,
     required this.onShare,
     required this.onSave,
+    required this.onMore,
   });
 
   final bool liked;
-  final bool disliked;
   final bool saved;
   final String likes;
-  final String dislikes;
   final String comments;
   final String shares;
   final VoidCallback onLike;
-  final VoidCallback onDislike;
   final VoidCallback onComment;
   final VoidCallback onShare;
   final VoidCallback onSave;
+  final VoidCallback onMore;
 
   @override
   Widget build(BuildContext context) {
     return Column(
       children: [
+        // Single "Love" reaction — replaces the old Like + Dislike pair.
         _RailButton(
           icon: liked ? Icons.favorite_rounded : Icons.favorite_border_rounded,
           label: likes,
-          iconColor: liked ? AppColors.postgramPrimary : Colors.white,
+          iconColor: liked ? const Color(0xFFFF2D55) : Colors.white,
           glow: liked,
           onTap: onLike,
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 18),
         _RailButton(
-          icon: disliked ? Icons.thumb_down_rounded : Icons.thumb_down_outlined,
-          label: dislikes,
-          iconColor: disliked ? AppColors.postbookPrimary : Colors.white,
-          onTap: onDislike,
-        ),
-        const SizedBox(height: 12),
-        _RailButton(
-          icon: Icons.chat_bubble_outline_rounded,
+          icon: Icons.mode_comment_outlined,
           label: comments,
           onTap: onComment,
         ),
-        const SizedBox(height: 12),
-        _RailButton(icon: Icons.share_outlined, label: shares, onTap: onShare),
-        const SizedBox(height: 12),
+        const SizedBox(height: 18),
+        _RailButton(
+          icon: Icons.reply_rounded,
+          label: 'Share',
+          onTap: onShare,
+        ),
+        const SizedBox(height: 18),
         _RailButton(
           icon: saved ? Icons.bookmark_rounded : Icons.bookmark_border_rounded,
           label: 'Save',
-          iconColor: saved ? AppColors.posttubePrimary : Colors.white,
+          iconColor: saved ? AppColors.postgramPrimary : Colors.white,
           onTap: onSave,
+        ),
+        const SizedBox(height: 18),
+        _RailButton(
+          icon: Icons.more_horiz_rounded,
+          label: 'More',
+          onTap: onMore,
+        ),
+        const SizedBox(height: 18),
+        // Spinning-disc style music chip at the bottom of the rail.
+        Container(
+          width: 42,
+          height: 42,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [Color(0xFF3A3A3C), Color(0xFF1C1C1E)],
+            ),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.7), width: 2),
+          ),
+          child: const Icon(Icons.music_note_rounded, color: Colors.white, size: 18),
         ),
       ],
     );
@@ -1071,32 +1161,136 @@ class _RailButton extends StatelessWidget {
       onTap: onTap,
       child: Column(
         children: [
-          Container(
-            width: 44,
-            height: 44,
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.12),
-              shape: BoxShape.circle,
-              border: Border.all(color: Colors.white.withValues(alpha: 0.16)),
-              boxShadow: glow
-                  ? const [
-                      BoxShadow(
-                        color: Color(0x66FF3366),
-                        blurRadius: 16,
-                        spreadRadius: 1,
-                      ),
-                    ]
-                  : const [],
-            ),
-            child: Icon(icon, color: iconColor, size: 22),
+          Icon(
+            icon,
+            color: iconColor,
+            size: 30,
+            shadows: glow
+                ? [const Shadow(color: Color(0xAAFF2D55), blurRadius: 16)]
+                : null,
           ),
           const SizedBox(height: 4),
           Text(
             label,
-            style: AppTextStyles.labelSmall.copyWith(color: Colors.white),
+            style: AppTextStyles.labelSmall.copyWith(
+              color: Colors.white,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              shadows: [
+                const Shadow(
+                  color: Colors.black54,
+                  offset: Offset(0, 1),
+                  blurRadius: 2,
+                ),
+              ],
+            ),
           ),
         ],
       ),
+    );
+  }
+}
+
+class _SubscribeButton extends StatelessWidget {
+  const _SubscribeButton({required this.isFollowing, required this.onTap});
+
+  final bool isFollowing;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        decoration: BoxDecoration(
+          gradient: isFollowing
+              ? null
+              : const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [Color(0xFFFF6B35), Color(0xFFC850C0)],
+                ),
+          color: isFollowing ? Colors.white.withValues(alpha: 0.14) : null,
+          borderRadius: BorderRadius.circular(999),
+          border: isFollowing
+              ? Border.all(color: Colors.white.withValues(alpha: 0.5))
+              : null,
+          boxShadow: isFollowing
+              ? null
+              : [
+                  BoxShadow(
+                    color: const Color(0xFFC850C0).withValues(alpha: 0.45),
+                    blurRadius: 12,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              isFollowing ? Icons.check_rounded : Icons.add_rounded,
+              color: Colors.white,
+              size: 16,
+            ),
+            const SizedBox(width: 5),
+            Text(
+              isFollowing ? 'Following' : 'Subscribe',
+              style: AppTextStyles.labelSmall.copyWith(
+                color: Colors.white,
+                fontWeight: FontWeight.w800,
+                fontSize: 13,
+                letterSpacing: 0.2,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ReelAvatar extends StatelessWidget {
+  const _ReelAvatar({required this.url, required this.handle});
+
+  final String? url;
+  final String handle;
+
+  @override
+  Widget build(BuildContext context) {
+    final initial = handle.replaceAll('@', '').trim();
+    final letter = initial.isNotEmpty ? initial[0].toUpperCase() : '?';
+    final hasUrl = url != null && url!.trim().isNotEmpty;
+    return Container(
+      width: 38,
+      height: 38,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        border: Border.all(color: Colors.white, width: 1.5),
+        gradient: hasUrl
+            ? null
+            : const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Color(0xFF7C3AED), Color(0xFFDB2777)],
+              ),
+        image: hasUrl
+            ? DecorationImage(image: NetworkImage(url!), fit: BoxFit.cover)
+            : null,
+      ),
+      alignment: Alignment.center,
+      child: hasUrl
+          ? null
+          : Text(
+              letter,
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.w700,
+                fontSize: 16,
+              ),
+            ),
     );
   }
 }
@@ -1107,17 +1301,16 @@ class _BottomInfo extends StatelessWidget {
     required this.title,
     required this.tags,
     required this.mediaCount,
+    this.avatarUrl,
     this.isFollowing = false,
     this.onFollow,
   });
 
   final String authorHandle;
+  final String? avatarUrl;
   final String title;
   final String tags;
   final int mediaCount;
-  // Follow button is suppressed when onFollow is null (e.g. on the user's
-  // own reels). isFollowing toggles between filled "Follow" and outlined
-  // "Following" states with optimistic updates handled by the parent.
   final bool isFollowing;
   final VoidCallback? onFollow;
 
@@ -1129,86 +1322,75 @@ class _BottomInfo extends StatelessWidget {
       children: [
         Row(
           children: [
-            Container(
-              width: 38,
-              height: 38,
-              decoration: BoxDecoration(
-                gradient: AppColors.postbookGradient,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Center(
-                child: Text(
-                  authorHandle
-                      .replaceFirst('@', '')
-                      .substring(0, 1)
-                      .toUpperCase(),
-                  style: AppTextStyles.h3.copyWith(color: Colors.white),
-                ),
-              ),
-            ),
+            // Author avatar — real image when available, initials fallback.
+            _ReelAvatar(url: avatarUrl, handle: authorHandle),
             const SizedBox(width: 8),
-            Expanded(
+            // Author Name
+            Flexible(
               child: Text(
                 authorHandle,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: AppTextStyles.h3.copyWith(color: Colors.white),
+                style: AppTextStyles.h3.copyWith(
+                  color: Colors.white,
+                  fontSize: 15,
+                  shadows: [
+                    const Shadow(
+                      color: Colors.black54,
+                      offset: Offset(0, 1),
+                      blurRadius: 2,
+                    ),
+                  ],
+                ),
               ),
             ),
             if (onFollow != null) ...[
-              const SizedBox(width: 8),
-              GestureDetector(
-                onTap: onFollow,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 6,
-                  ),
-                  decoration: BoxDecoration(
-                    color: isFollowing
-                        ? Colors.white.withValues(alpha: 0.12)
-                        : Colors.white,
-                    borderRadius: BorderRadius.circular(999),
-                    border: Border.all(
-                      color: isFollowing
-                          ? Colors.white.withValues(alpha: 0.4)
-                          : Colors.white,
-                    ),
-                  ),
-                  child: Text(
-                    isFollowing ? 'Following' : 'Follow',
-                    style: AppTextStyles.labelSmall.copyWith(
-                      color: isFollowing ? Colors.white : Colors.black,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ),
-              ),
+              const SizedBox(width: 12),
+              _SubscribeButton(isFollowing: isFollowing, onTap: onFollow!),
             ],
           ],
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 12),
+        // Video Description
         Text(
           title,
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
-          style: AppTextStyles.body.copyWith(color: Colors.white),
-        ),
-        const SizedBox(height: 5),
-        Text(
-          tags,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: AppTextStyles.labelSmall.copyWith(
-            color: Colors.white.withValues(alpha: 0.78),
+          style: AppTextStyles.body.copyWith(
+            color: Colors.white,
+            fontSize: 14,
+            height: 1.3,
+            shadows: [
+              const Shadow(
+                color: Colors.black54,
+                offset: Offset(0, 1),
+                blurRadius: 2,
+              ),
+            ],
           ),
         ),
-        const SizedBox(height: 6),
-        Text(
-          '$mediaCount media item(s) in this reel',
-          style: AppTextStyles.monoSmall.copyWith(
-            color: Colors.white.withValues(alpha: 0.7),
-          ),
+        const SizedBox(height: 10),
+        // Sound Info style
+        Row(
+          children: [
+            const Icon(
+              Icons.music_note_rounded,
+              color: Colors.white,
+              size: 16,
+            ),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                'Original Sound - $authorHandle',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: AppTextStyles.labelSmall.copyWith(
+                  color: Colors.white,
+                  fontSize: 13,
+                ),
+              ),
+            ),
+          ],
         ),
       ],
     );

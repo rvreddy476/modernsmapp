@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:atpost_app/core/config/environment.dart';
 import 'package:atpost_app/core/errors/error_handler.dart';
@@ -178,6 +179,7 @@ class ApiClient {
     String step = 'init';
     String? presignedHost;
     int? fileSizeForDiag;
+    String? mediaId;
     try {
       final fileData = File(file.path);
       final fileSize = await fileData.length();
@@ -199,7 +201,7 @@ class ApiClient {
       );
 
       final initData = initRes.data['data'] as Map<String, dynamic>;
-      final mediaId = initData['media_id'] as String;
+      mediaId = initData['media_id'] as String;
       final uploadUrl = initData['upload_url'] as String;
       presignedHost = Uri.tryParse(uploadUrl)?.host;
 
@@ -229,6 +231,11 @@ class ApiClient {
 
       return mediaId;
     } catch (e, st) {
+      // Cleanup orphan media if we initialized it but failed later.
+      if (mediaId != null) {
+        unawaited(tryDeleteMedia(mediaId));
+      }
+
       // Pull a useful one-liner out of DioException so logcat actually
       // tells us which step blew up + the underlying status / message.
       final detail = e is DioException
@@ -257,6 +264,7 @@ class ApiClient {
     void Function(int sent, int total)? onProgress,
   }) async {
     String step = 'init';
+    String? mediaId;
     try {
       final fileData = File(file.path);
       final fileSize = await fileData.length();
@@ -273,7 +281,7 @@ class ApiClient {
       );
       final initData = initRes.data['data'] as Map<String, dynamic>;
       final uploadId = initData['upload_id'] as String;
-      final mediaId = initData['media_id'] as String;
+      mediaId = initData['media_id'] as String;
       final chunkSize = initData['chunk_size'] as int;
       final totalParts = initData['total_parts'] as int;
 
@@ -296,6 +304,9 @@ class ApiClient {
 
       return mediaId;
     } catch (e, st) {
+      if (mediaId != null) {
+        unawaited(tryDeleteMedia(mediaId));
+      }
       AppLogger.error(
         'Resumable upload failed [step=$step]',
         tag: _tag,

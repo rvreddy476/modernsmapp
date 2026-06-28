@@ -2,6 +2,7 @@ package http
 
 import (
 	"crypto/hmac"
+	"crypto/rsa"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -119,10 +120,15 @@ func AuthMiddleware(jwtSecret string) gin.HandlerFunc {
 // pair (when set) verifies tokens minted before the most recent rotation.
 // A token with no `kid` (legacy, pre-C7) falls back to the active secret.
 type JWTKeySet struct {
-	ActiveKID        string
-	ActiveSecret     string
-	PreviousKID      string
-	PreviousSecret   string
+	ActiveKID      string
+	ActiveSecret   string
+	PreviousKID    string
+	PreviousSecret string
+	// RSAPublic (optional) verifies RS256 access tokens. When auth-service is
+	// configured to sign RS256, this is its own public key so its protected
+	// endpoints accept the tokens it mints. HS256 stays accepted in parallel.
+	RSAPublic *rsa.PublicKey
+	RSAKID    string
 }
 
 func (k JWTKeySet) secretFor(kid string) ([]byte, bool) {
@@ -192,15 +198,29 @@ func authMiddleware(keys JWTKeySet, rdb *redis.Client) gin.HandlerFunc {
 		// C7: pick the secret by `kid`. Tokens minted before C7 omit
 		// `kid` entirely — secretFor("") falls back to the active key.
 		token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
-			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			// Accept HS256 (shared secret) and RS256 (public key) only. Any
+			// other method — including `none` — is rejected. golang-jwt also
+			// type-checks the returned key against the method, blocking the
+			// classic RSA↔HMAC alg-confusion attack.
+			kid, _ := t.Header["kid"].(string)
+			switch t.Method.(type) {
+			case *jwt.SigningMethodHMAC:
+				secret, ok := keys.secretFor(kid)
+				if !ok {
+					return nil, fmt.Errorf("unknown kid: %s", kid)
+				}
+				return secret, nil
+			case *jwt.SigningMethodRSA:
+				if keys.RSAPublic == nil {
+					return nil, fmt.Errorf("RS256 not configured")
+				}
+				if keys.RSAKID != "" && kid != "" && kid != keys.RSAKID {
+					return nil, fmt.Errorf("unknown kid: %s", kid)
+				}
+				return keys.RSAPublic, nil
+			default:
 				return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 			}
-			kid, _ := t.Header["kid"].(string)
-			secret, ok := keys.secretFor(kid)
-			if !ok {
-				return nil, fmt.Errorf("unknown kid: %s", kid)
-			}
-			return secret, nil
 		})
 		if err != nil || !token.Valid {
 			api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid access token", nil, nil)

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/hmac"
+	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -71,6 +72,19 @@ func main() {
 		previousKID:    env("JWT_KID_PREVIOUS", ""),
 		previousSecret: env("JWT_SECRET_PREVIOUS", ""),
 	}
+	// RS256 (optional, additive): when JWT_PUBLIC_KEY_PEM is set, the gateway
+	// can also verify RS256 tokens minted by auth-service's private key. HS256
+	// stays active in parallel so existing tokens are unaffected. The RSA key's
+	// kid is JWT_RS256_KID (must match what auth-service stamps).
+	if pubPEM := env("JWT_PUBLIC_KEY_PEM", ""); pubPEM != "" {
+		pub, perr := parseRSAPublicKeyPEM(pubPEM)
+		if perr != nil {
+			slog.Error("failed to parse JWT_PUBLIC_KEY_PEM", "err", perr)
+			os.Exit(1)
+		}
+		jwtKeys.rsaKeys = map[string]*rsa.PublicKey{env("JWT_RS256_KID", "rsa-1"): pub}
+		slog.Info("RS256 token verification enabled", "kid", env("JWT_RS256_KID", "rsa-1"))
+	}
 
 	routeDefs := []struct {
 		prefix string
@@ -95,6 +109,9 @@ func main() {
 		{"/v1/saved", env("POST_SERVICE_URL", "http://post-service:8084")},
 		{"/v1/hashtags", env("POST_SERVICE_URL", "http://post-service:8084")},
 		{"/v1/comments", env("POST_SERVICE_URL", "http://post-service:8084")},
+		{"/v1/playlists", env("POST_SERVICE_URL", "http://post-service:8084")},
+		{"/v1/creators", env("POST_SERVICE_URL", "http://post-service:8084")},
+		{"/v1/feedback", env("POST_SERVICE_URL", "http://post-service:8084")},
 		{"/v1/posts", env("POST_SERVICE_URL", "http://post-service:8084")},
 		{"/v1/feed", env("FEED_SERVICE_URL", "http://feed-service:8086")},
 		{"/v1/audio", env("MEDIA_SERVICE_URL", "http://media-service:8087")},
@@ -105,6 +122,7 @@ func main() {
 		{"/v1/search", env("SEARCH_SERVICE_URL", "http://search-service:8089")},
 		{"/v1/groups", env("GROUP_SERVICE_URL", "http://group-service:8090")},
 		{"/v1/reports", env("TRUST_SAFETY_SERVICE_URL", "http://trust-safety-service:8091")},
+		{"/v1/reviewer", env("REVIEWER_SERVICE_URL", "http://reviewer-service:8120")},
 		{"/v1/grievances", env("TRUST_SAFETY_SERVICE_URL", "http://trust-safety-service:8091")},
 		{"/v1/ws", env("WS_GATEWAY_URL", "http://ws-gateway:8093")},
 		{"/v1/calls", env("CALL_SERVICE_URL", "http://call-service:8097")},
@@ -285,6 +303,10 @@ type jwtKeySet struct {
 	activeSecret   string
 	previousKID    string
 	previousSecret string
+	// rsaKeys maps a `kid` to an RSA public key for verifying RS256 tokens.
+	// Populated from JWT_PUBLIC_KEY_PEM (+ kid). HS256 above stays in parallel
+	// so long-lived tokens minted before the RS256 cutover keep verifying.
+	rsaKeys map[string]*rsa.PublicKey
 }
 
 func (k jwtKeySet) secretFor(kid string) (string, bool) {
@@ -297,8 +319,53 @@ func (k jwtKeySet) secretFor(kid string) (string, bool) {
 	return "", false
 }
 
+// rsaFor returns the RSA public key for a kid. A token with no kid resolves to
+// the sole configured key when exactly one exists (common single-key setup).
+func (k jwtKeySet) rsaFor(kid string) (*rsa.PublicKey, bool) {
+	if len(k.rsaKeys) == 0 {
+		return nil, false
+	}
+	if kid != "" {
+		pub, ok := k.rsaKeys[kid]
+		return pub, ok
+	}
+	if len(k.rsaKeys) == 1 {
+		for _, pub := range k.rsaKeys {
+			return pub, true
+		}
+	}
+	return nil, false
+}
+
+// trustedIdentityHeaders are headers that ONLY the gateway is allowed to set,
+// derived from a verified token (or a configured secret). They are spoofable if
+// a client sets them directly, so the gateway MUST delete any inbound copy on
+// every request before (re)deriving them from the verified JWT. Without this,
+// an attacker can send `X-User-Id: <victim>` (no token) or a valid low-priv
+// token plus a forged `X-Scopes: admin` and impersonate / privilege-escalate.
+var trustedIdentityHeaders = []string{
+	"X-User-Id",
+	"X-Verified-User-Id",
+	"X-Scopes",
+	"X-Device-Id",
+	"X-Internal-Service-Key",
+}
+
+func stripInboundIdentityHeaders(r *http.Request) {
+	for _, h := range trustedIdentityHeaders {
+		r.Header.Del(h)
+	}
+}
+
 func jwtExtractMiddleware(keys jwtKeySet, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// SECURITY: delete any client-supplied copy of the gateway-controlled
+		// identity headers up front. From here on these headers can ONLY be set
+		// by the gateway from a verified token. This runs unconditionally —
+		// including the no-token path below — so an unauthenticated request can
+		// never smuggle an identity or scope past the edge.
+		stripInboundIdentityHeaders(r)
+
 		// Resolve JWT from one of (in priority order):
 		//   1. Authorization: Bearer header   — mobile + REST callers
 		//   2. access_token cookie            — browser EventSource
@@ -366,26 +433,38 @@ func verifyJWT(tokenStr string, keys jwtKeySet) (userID, scopes, deviceID string
 	if jsonErr := json.Unmarshal(headerRaw, &header); jsonErr != nil {
 		return "", "", "", &jwtError{"invalid header JSON"}
 	}
-	if header.Alg != "HS256" {
-		return "", "", "", &jwtError{"unsupported jwt algorithm"}
-	}
-	secret, ok := keys.secretFor(header.Kid)
-	if !ok {
-		return "", "", "", &jwtError{"unknown kid"}
-	}
-
-	// Verify HMAC-SHA256 signature.
+	// Decode signature bytes (shared by both algorithms).
 	signingInput := parts[0] + "." + parts[1]
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte(signingInput))
-	expectedSig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-
 	actualSig, decErr := base64.RawURLEncoding.DecodeString(parts[2])
 	if decErr != nil {
 		return "", "", "", &jwtError{"invalid signature encoding"}
 	}
-	if !hmac.Equal([]byte(expectedSig), []byte(base64.RawURLEncoding.EncodeToString(actualSig))) {
-		return "", "", "", &jwtError{"signature verification failed"}
+
+	// Verify per the pinned algorithm. Only HS256 and RS256 are accepted (no
+	// `none`, no alg-confusion). RS256 is preferred: the gateway holds only the
+	// public key and can verify but never mint. HS256 stays accepted in parallel
+	// so long-lived tokens minted before the RS256 cutover keep working.
+	switch header.Alg {
+	case "HS256":
+		secret, ok := keys.secretFor(header.Kid)
+		if !ok {
+			return "", "", "", &jwtError{"unknown kid"}
+		}
+		mac := hmac.New(sha256.New, []byte(secret))
+		mac.Write([]byte(signingInput))
+		if !hmac.Equal(mac.Sum(nil), actualSig) {
+			return "", "", "", &jwtError{"signature verification failed"}
+		}
+	case "RS256":
+		pub, ok := keys.rsaFor(header.Kid)
+		if !ok {
+			return "", "", "", &jwtError{"unknown kid"}
+		}
+		if vErr := verifyRS256(signingInput, actualSig, pub); vErr != nil {
+			return "", "", "", &jwtError{"signature verification failed"}
+		}
+	default:
+		return "", "", "", &jwtError{"unsupported jwt algorithm"}
 	}
 
 	// Decode payload.

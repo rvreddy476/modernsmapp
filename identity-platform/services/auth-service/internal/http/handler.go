@@ -27,10 +27,11 @@ const (
 )
 
 type Handler struct {
-	svc AuthService
-	cfg *config.Config
-	log *slog.Logger
-	rdb *redis.Client
+	svc     AuthService
+	cfg     *config.Config
+	log     *slog.Logger
+	rdb     *redis.Client
+	waStore WebAuthnStore // set via SetWebAuthnStore; used only by the webauthn-tagged ceremony
 }
 
 type AuthService interface {
@@ -39,11 +40,17 @@ type AuthService interface {
 	RegisterWithPassword(ctx context.Context, phone, email, password, firstName, lastName, dob, gender string) (*service.AuthResponse, error)
 	LoginWithPassword(ctx context.Context, identifier, password, deviceID, platform, ip, userAgent string) (*service.AuthResponse, error)
 	RefreshSession(ctx context.Context, refreshToken, ip, userAgent string) (*service.AuthResponse, error)
+	IssueSessionForUser(ctx context.Context, userID uuid.UUID, deviceID, platform, ip, userAgent string) (*service.AuthResponse, error)
 	Logout(ctx context.Context, refreshToken string) error
 	LogoutAll(ctx context.Context, userID uuid.UUID) (int64, error)
 	ListSessions(ctx context.Context, userID uuid.UUID) ([]store.Session, error)
 	RevokeSessionByID(ctx context.Context, userID, sessionID uuid.UUID) error
 	DeleteAccount(ctx context.Context, userID uuid.UUID) error
+	// RBAC role management (superadmin-gated in the service layer)
+	GrantRole(ctx context.Context, actorID, targetID uuid.UUID, role string) error
+	RevokeRole(ctx context.Context, actorID, targetID uuid.UUID, role string) error
+	ListUserRoles(ctx context.Context, actorID, targetID uuid.UUID) ([]store.UserRole, error)
+	ListAdminAudit(ctx context.Context, actorID uuid.UUID, limit int) ([]store.AdminAuditEntry, error)
 	// 2FA
 	Setup2FA(ctx context.Context, userID uuid.UUID) (*service.TwoFASetupResponse, error)
 	Verify2FASetup(ctx context.Context, userID uuid.UUID, code string) error
@@ -159,6 +166,14 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 			protected.GET("/sessions", h.ListSessions)
 			protected.DELETE("/sessions/:id", h.RevokeSessionByID)
 			protected.DELETE("/account", h.DeleteAccount)
+
+			// RBAC role management — authorization (superadmin) is enforced in
+			// the service layer against the live env∪DB source of truth, not a
+			// (possibly stale) token scope.
+			protected.POST("/admin/roles", h.GrantRole)
+			protected.DELETE("/admin/roles", h.RevokeRole)
+			protected.GET("/admin/roles/:userId", h.ListUserRoles)
+			protected.GET("/admin/audit", h.ListAdminAudit)
 
 			// 2FA management (protected)
 			protected.POST("/2fa/setup", h.Setup2FA)

@@ -25,7 +25,7 @@ class WalletTransactionsScreen extends ConsumerStatefulWidget {
 }
 
 class _TxnTab {
-  const _TxnTab({required this.label, this.type, this.direction});
+  const _TxnTab({required this.label, this.type}) : direction = null;
 
   final String label;
   final String? type;

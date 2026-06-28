@@ -58,6 +58,82 @@ type Config struct {
 	MiniAppSessionIssuer     string
 	MiniAppSessionKeyID      string
 	MiniAppSessionPrivateKey string
+	// Scope allowlists — the SERVER-SIDE source of truth for authorization
+	// scopes that get stamped into the signed access token. Previously the
+	// platform had NO server-side notion of "admin": clients declared their
+	// own privileges via an X-Scopes header, which the gateway trusted. These
+	// env allowlists (comma-separated user UUIDs) move that decision to the
+	// server. A full RBAC roles table is the next step; this is the secure,
+	// reversible v1 that closes the privilege-escalation hole today.
+	ScopeAdminUserIDs      map[string]struct{}
+	ScopeModeratorUserIDs  map[string]struct{}
+	ScopeSuperadminUserIDs map[string]struct{}
+	// RS256 access-token signing (optional, additive). When
+	// AccessTokenPrivateKeyPEM is set, access tokens are signed with RS256 and
+	// verifiers use the matching public key — so a compromised downstream
+	// service (which holds only the public key) can no longer mint tokens.
+	// When empty, signing stays HS256 (shared secret) for backward compat, so
+	// enabling RS256 is a deliberate, reversible opt-in. AccessTokenRS256KID is
+	// stamped as the token `kid` and must match the verifiers' configured kid.
+	AccessTokenPrivateKeyPEM string
+	AccessTokenRS256KID      string
+	// RequireMFAForPrivileged, when true, blocks privileged actions (role
+	// management) unless the acting user has 2FA enabled. Default off so dev /
+	// first-superadmin bootstrap isn't locked out before enrolling MFA.
+	RequireMFAForPrivileged bool
+	// WebAuthn / passkey relying-party config (used by the `webauthn`-tagged
+	// ceremony). RPID is the registrable domain (e.g. "cleestudio.com");
+	// RPOrigins are the full origins allowed to authenticate.
+	WebAuthnRPID          string
+	WebAuthnRPDisplayName string
+	WebAuthnRPOrigins     []string
+}
+
+// EnvRolesForUser returns the raw roles assigned to a user via the env
+// allowlists (the bootstrap source of truth, alongside the DB roles table).
+func (c *Config) EnvRolesForUser(userID string) []string {
+	var roles []string
+	if _, ok := c.ScopeSuperadminUserIDs[userID]; ok {
+		roles = append(roles, "superadmin")
+	}
+	if _, ok := c.ScopeAdminUserIDs[userID]; ok {
+		roles = append(roles, "admin")
+	}
+	if _, ok := c.ScopeModeratorUserIDs[userID]; ok {
+		roles = append(roles, "moderator")
+	}
+	return roles
+}
+
+// ExpandRoles turns a set of raw roles into the space-separated scope string
+// embedded in the access-token `scopes` claim. superadmin implies admin+
+// moderator; admin implies moderator. Order is stable for deterministic tokens.
+// Returns "" when no privileged role is present.
+func ExpandRoles(roles []string) string {
+	set := map[string]struct{}{}
+	for _, r := range roles {
+		switch r {
+		case "superadmin":
+			set["superadmin"], set["admin"], set["moderator"] = struct{}{}, struct{}{}, struct{}{}
+		case "admin":
+			set["admin"], set["moderator"] = struct{}{}, struct{}{}
+		case "moderator":
+			set["moderator"] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(set))
+	for _, s := range []string{"superadmin", "admin", "moderator"} {
+		if _, ok := set[s]; ok {
+			out = append(out, s)
+		}
+	}
+	return strings.Join(out, " ")
+}
+
+// ScopesForUser returns the env-derived scopes for a user (bootstrap path).
+// The service unions these with the DB roles table at mint time.
+func (c *Config) ScopesForUser(userID string) string {
+	return ExpandRoles(c.EnvRolesForUser(userID))
 }
 
 // Load reads configuration from environment variables and applies sensible defaults for local development.
@@ -92,8 +168,29 @@ func Load() *Config {
 		MiniAppSessionIssuer:     getEnv("MINI_APP_SESSION_ISSUER", "atpost-mini-app-runtime"),
 		MiniAppSessionKeyID:      getEnv("MINI_APP_SESSION_KEY_ID", "mini-app-session-1"),
 		MiniAppSessionPrivateKey: getEnv("MINI_APP_SESSION_PRIVATE_KEY_PEM", ""),
+		ScopeAdminUserIDs:        splitToSet(getEnv("ADMIN_USER_IDS", "")),
+		ScopeModeratorUserIDs:    splitToSet(getEnv("MODERATOR_USER_IDS", "")),
+		ScopeSuperadminUserIDs:   splitToSet(getEnv("SUPERADMIN_USER_IDS", "")),
+		AccessTokenPrivateKeyPEM: getEnv("JWT_PRIVATE_KEY_PEM", ""),
+		AccessTokenRS256KID:      getEnv("JWT_RS256_KID", "rsa-1"),
+		RequireMFAForPrivileged:  getEnvBool("REQUIRE_MFA_FOR_PRIVILEGED", false),
+		WebAuthnRPID:             getEnv("WEBAUTHN_RP_ID", "localhost"),
+		WebAuthnRPDisplayName:    getEnv("WEBAUTHN_RP_NAME", "atPost"),
+		WebAuthnRPOrigins:        splitAndClean(getEnv("WEBAUTHN_RP_ORIGINS", "http://localhost:3000")),
 	}
 	return cfg
+}
+
+// splitToSet parses a comma-separated env value into a set of trimmed,
+// non-empty tokens for O(1) membership checks.
+func splitToSet(v string) map[string]struct{} {
+	set := map[string]struct{}{}
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			set[p] = struct{}{}
+		}
+	}
+	return set
 }
 
 func getEnv(key, def string) string {

@@ -42,6 +42,13 @@ endif()
 function(APPLY_STANDARD_SETTINGS TARGET)
   target_compile_features(${TARGET} PUBLIC cxx_std_14)
   target_compile_options(${TARGET} PRIVATE -Wall -Werror)
+  # Newer clang (Ubuntu 26.04) treats the deprecated `operator "" _json` spacing
+  # in flutter_secure_storage_linux's bundled nlohmann/json.hpp as an error under
+  # -Werror. Downgrade just that one diagnostic (appended after -Werror so it wins)
+  # so the desktop build succeeds. Harmless on compilers that lack the flag.
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(${TARGET} PRIVATE -Wno-error=deprecated-literal-operator)
+  endif()
   target_compile_options(${TARGET} PRIVATE "$<$<NOT:$<CONFIG:Debug>>:-O3>")
   target_compile_definitions(${TARGET} PRIVATE "$<$<NOT:$<CONFIG:Debug>>:NDEBUG>")
 endfunction()

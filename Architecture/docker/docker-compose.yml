@@ -255,6 +255,10 @@ services:
     environment:
       HTTP_PORT: "8080"
       JWT_SECRET: ${JWT_SECRET:-local_dev_jwt_change_me}
+      # RS256 (optional): set JWT_PUBLIC_KEY_PEM to also verify RS256 tokens
+      # minted by identity-auth's private key. Empty = HS256 only (default).
+      JWT_PUBLIC_KEY_PEM: ${JWT_PUBLIC_KEY_PEM:-}
+      JWT_RS256_KID: ${JWT_RS256_KID:-rsa-1}
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       CORS_ORIGINS: "${CORS_ORIGINS:-http://localhost:3000}"
       AUTH_SERVICE_URL: http://identity-auth:8081
@@ -268,6 +272,7 @@ services:
       SEARCH_SERVICE_URL: http://search-service:8089
       MONETIZATION_SERVICE_URL: http://monetization-service:8099
       TRUST_SAFETY_SERVICE_URL: http://trust-safety-service:8091
+      REVIEWER_SERVICE_URL: http://reviewer-service:8120
       MESSAGE_SERVICE_URL: http://chat-message-service:8092
       ANALYTICS_SERVICE_URL: http://analytics-service:8094
       AI_SERVICE_URL: http://ai-service:8117
@@ -316,9 +321,29 @@ services:
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
       JWT_SECRET: ${JWT_SECRET:-local_dev_jwt_change_me}
-      RATE_LIMIT_ENABLED: "true"
+      RATE_LIMIT_ENABLED: "false"
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
+      # Dev: tokens never expire — no more surprise logouts
+      ACCESS_TOKEN_TTL: "8760h"
+      REFRESH_TOKEN_TTL: "87600h"
+      # Authorization scopes are now resolved SERVER-SIDE from these allowlists
+      # and stamped into the signed access token. The gateway authorizes admin /
+      # internal surfaces from the token claim ONLY — it no longer trusts a
+      # client-sent X-Scopes header. Set these to the relevant user UUIDs;
+      # comma-separated. Empty = nobody has admin (secure default).
+      SUPERADMIN_USER_IDS: ${SUPERADMIN_USER_IDS:-}
+      ADMIN_USER_IDS: ${ADMIN_USER_IDS:-}
+      MODERATOR_USER_IDS: ${MODERATOR_USER_IDS:-}
+      # RS256 (optional): set JWT_PRIVATE_KEY_PEM to sign access tokens with
+      # RS256 (verifiers then use the matching JWT_PUBLIC_KEY_PEM). Empty =
+      # HS256 signing (default). Enabling RS256 is a deliberate opt-in.
+      JWT_PRIVATE_KEY_PEM: ${JWT_PRIVATE_KEY_PEM:-}
+      JWT_RS256_KID: ${JWT_RS256_KID:-rsa-1}
+      # When true, privileged actions (role grant/revoke) require the acting
+      # superadmin to have 2FA enabled. Off by default so first-superadmin
+      # bootstrap isn't locked out before enrolling MFA.
+      REQUIRE_MFA_FOR_PRIVILEGED: ${REQUIRE_MFA_FOR_PRIVILEGED:-false}
     ports:
       - "8081:8081"
     depends_on:
@@ -507,6 +532,8 @@ services:
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
       USER_SERVICE_URL: http://identity-user:8110
+      REVIEWER_SERVICE_URL: http://reviewer-service:8120
+      REVIEW_ALL_VIDEOS: "true"
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
       # Migration runner baseline knob — leave default ("false") so new migration
@@ -580,6 +607,9 @@ services:
       HTTP_PORT: "8087"
       POSTGRES_DSN: *app_postgres_dsn
       JWT_SECRET: ${JWT_SECRET:-local_dev_jwt_change_me}
+      # RS256 (optional): verify RS256 tokens too when set. Empty = HS256 only.
+      JWT_PUBLIC_KEY_PEM: ${JWT_PUBLIC_KEY_PEM:-}
+      JWT_RS256_KID: ${JWT_RS256_KID:-rsa-1}
       MINIO_ENDPOINT: minio:9000
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-https://cleestudio.com}
       MINIO_ACCESS_KEY: *minio_access_key
@@ -756,6 +786,33 @@ services:
         condition: service_healthy
       redpanda:
         condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+  reviewer-service:
+    build:
+      context: ..
+      dockerfile: services/reviewer-service/Dockerfile
+    environment:
+      HTTP_PORT: "8120"
+      POSTGRES_DSN: *app_postgres_dsn
+      GRAPH_SERVICE_URL: http://graph-service:8083
+      MONETIZATION_SERVICE_URL: http://monetization-service:8099
+      POST_SERVICE_URL: http://post-service:8084
+      WALLET_SERVICE_URL: http://wallet-service:8114
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      REVIEWER_CREDIT_ENABLED: "false"
+    ports:
+      - "8120:8120"
+    depends_on:
+      postgres:
+        condition: service_healthy
     deploy:
       resources:
         limits:
@@ -968,7 +1025,7 @@ services:
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
     ports:
-      - "8117:8117"
+      - "8118:8117"
     depends_on:
       postgres:
         condition: service_healthy
@@ -1319,7 +1376,7 @@ services:
       MINIO_BUCKET_LIVE_RECORDINGS: ${MINIO_BUCKET_LIVE_RECORDINGS:-live-recordings}
       LIVE_RECORDING_PUBLIC_BASE_URL: ${LIVE_RECORDING_PUBLIC_BASE_URL:-http://localhost:9001}
     ports:
-      - "8117:8117"
+      - "8119:8117"
     depends_on:
       postgres:
         condition: service_healthy

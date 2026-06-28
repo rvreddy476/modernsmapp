@@ -150,9 +150,10 @@ CREATE INDEX IF NOT EXISTS idx_posts_review_status
     ON posts(review_status)
     WHERE review_status != 'approved';
 -- migration 018: allow the 'pending' review state for the video publish gate.
+-- migration 024: allow 'needs_changes' (super-admin requested edits; creator loop).
 ALTER TABLE posts DROP CONSTRAINT IF EXISTS posts_review_status_check;
 ALTER TABLE posts ADD CONSTRAINT posts_review_status_check
-    CHECK (review_status IN ('approved', 'flagged', 'rejected', 'pending'));
+    CHECK (review_status IN ('approved', 'flagged', 'rejected', 'pending', 'needs_changes'));
 
 -- migration 015 backfill: post_reposts (Echo) table.
 -- BootstrapSchema doesn't run migrations/, so a fresh install needs this here.

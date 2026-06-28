@@ -58,6 +58,16 @@ EOT
   type        = list(string)
 }
 
+variable "web_zone_names" {
+  description = "ECR repo names for the atpost-web Multi-Zone apps (atpost/<name>)."
+  type        = list(string)
+  default = [
+    "web-shell", "web-commerce", "web-admin", "web-dating", "web-social",
+    "web-community", "web-creator", "web-messenger", "web-live",
+    "web-memories", "web-miniapps",
+  ]
+}
+
 variable "tfstate_bucket_arn" {
   type = string
 }

@@ -1,9 +1,12 @@
 import 'package:atpost_app/core/errors/error_handler.dart';
 import 'package:atpost_app/data/models/group.dart';
+import 'package:atpost_app/data/models/group_invite.dart';
+import 'package:atpost_app/data/models/group_member.dart';
+import 'package:atpost_app/data/models/group_post.dart';
+import 'package:atpost_app/data/models/group_rule.dart';
 import 'package:atpost_app/data/repositories/groups_repository.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-/// State for managing groups with optimistic update support.
 class GroupsState {
   final List<Group> myGroups;
   final List<Group> discoveredGroups;
@@ -28,7 +31,6 @@ class GroupsState {
   }
 }
 
-/// Advanced Groups Notifier for production scale.
 class GroupsNotifier extends StateNotifier<AsyncValue<GroupsState>> {
   final GroupsRepository _repo;
 
@@ -45,7 +47,6 @@ class GroupsNotifier extends StateNotifier<AsyncValue<GroupsState>> {
           () => _repo.getGroups(type: 'public', sort: 'members'),
         ),
       ]);
-
       state = AsyncValue.data(
         GroupsState(myGroups: results[0], discoveredGroups: results[1]),
       );
@@ -54,12 +55,10 @@ class GroupsNotifier extends StateNotifier<AsyncValue<GroupsState>> {
     }
   }
 
-  /// Optimistically toggles the join status of a group.
   Future<void> toggleJoin(String groupId) async {
     final currentState = state.value;
     if (currentState == null) return;
 
-    // Find the group in either list
     Group? targetGroup;
     bool inMyGroups = true;
     int index = currentState.myGroups.indexWhere((g) => g.id == groupId);
@@ -84,19 +83,18 @@ class GroupsNotifier extends StateNotifier<AsyncValue<GroupsState>> {
           : targetGroup.memberCount + 1,
     );
 
-    // 1. Optimistic Update
     final newMyGroups = List<Group>.from(currentState.myGroups);
     final newDiscoverGroups = List<Group>.from(currentState.discoveredGroups);
 
     if (inMyGroups) {
       if (!updatedGroup.isMember) {
-        newMyGroups.removeAt(index); // Remove from "My Groups" if left
+        newMyGroups.removeAt(index);
       } else {
         newMyGroups[index] = updatedGroup;
       }
     } else {
       if (updatedGroup.isMember) {
-        newMyGroups.insert(0, updatedGroup); // Add to "My Groups" if joined
+        newMyGroups.insert(0, updatedGroup);
         newDiscoverGroups.removeAt(index);
       } else {
         newDiscoverGroups[index] = updatedGroup;
@@ -110,7 +108,6 @@ class GroupsNotifier extends StateNotifier<AsyncValue<GroupsState>> {
       ),
     );
 
-    // 2. Perform API call
     try {
       if (wasJoined) {
         await _repo.leaveGroup(groupId);
@@ -118,41 +115,64 @@ class GroupsNotifier extends StateNotifier<AsyncValue<GroupsState>> {
         await _repo.joinGroup(groupId);
       }
     } catch (e) {
-      // 3. Rollback on failure
       state = AsyncValue.data(currentState);
-      ErrorHandler.handle(
-        e,
-        StackTrace.current,
-        context: 'GroupsNotifier.toggleJoin',
-      );
+      ErrorHandler.handle(e, StackTrace.current, context: 'GroupsNotifier.toggleJoin');
     }
   }
 }
 
 final groupsProvider =
-    StateNotifierProvider.autoDispose<GroupsNotifier, AsyncValue<GroupsState>>((
-      ref,
-    ) {
-      return GroupsNotifier(ref.watch(groupsRepositoryProvider));
-    });
+    StateNotifierProvider.autoDispose<GroupsNotifier, AsyncValue<GroupsState>>(
+  (ref) => GroupsNotifier(ref.watch(groupsRepositoryProvider)),
+);
 
-/// Legacy compatibility providers (refactored to use the central state)
 final myGroupsProvider = Provider.autoDispose<AsyncValue<List<Group>>>((ref) {
   return ref.watch(groupsProvider).whenData((s) => s.myGroups);
 });
 
-final discoverGroupsProvider = Provider.autoDispose<AsyncValue<List<Group>>>((
-  ref,
-) {
+final discoverGroupsProvider =
+    Provider.autoDispose<AsyncValue<List<Group>>>((ref) {
   return ref.watch(groupsProvider).whenData((s) => s.discoveredGroups);
 });
 
-final groupDetailProvider = FutureProvider.autoDispose.family<Group, String>((
-  ref,
-  groupId,
-) async {
+final groupDetailProvider =
+    FutureProvider.autoDispose.family<Group, String>((ref, groupId) async {
   return ref.watch(groupsRepositoryProvider).getGroup(groupId);
 });
+
+final groupMembersProvider =
+    FutureProvider.autoDispose.family<List<GroupMember>, String>(
+  (ref, groupId) async =>
+      ref.watch(groupsRepositoryProvider).getGroupMembers(groupId),
+);
+
+final groupFeedProvider =
+    FutureProvider.autoDispose<List<GroupPost>>((ref) async {
+  return ref.watch(groupsRepositoryProvider).getGroupFeed();
+});
+
+final groupInvitesProvider =
+    FutureProvider.autoDispose<List<GroupInvite>>((ref) async {
+  return ref.watch(groupsRepositoryProvider).getGroupInvites();
+});
+
+final groupMediaProvider =
+    FutureProvider.autoDispose.family<List<GroupPost>, String>(
+  (ref, groupId) async =>
+      ref.watch(groupsRepositoryProvider).getGroupMedia(groupId),
+);
+
+final groupRulesProvider =
+    FutureProvider.autoDispose.family<List<GroupRule>, String>(
+  (ref, groupId) async =>
+      ref.watch(groupsRepositoryProvider).getGroupRules(groupId),
+);
+
+final groupBannedProvider =
+    FutureProvider.autoDispose.family<List<GroupMember>, String>(
+  (ref, groupId) async =>
+      ref.watch(groupsRepositoryProvider).getBannedMembers(groupId),
+);
 
 extension GroupExtension on Group {
   Group copyWith({bool? isMember, int? memberCount}) {
@@ -162,12 +182,22 @@ extension GroupExtension on Group {
       description: description,
       privacy: privacy,
       coverMediaId: coverMediaId,
+      avatarMediaId: avatarMediaId,
       creatorId: creatorId,
       memberCount: memberCount ?? this.memberCount,
       postCount: postCount,
       isMember: isMember ?? this.isMember,
       isAdmin: isAdmin,
       createdAt: createdAt,
+      handle: handle,
+      category: category,
+      privacyLevel: privacyLevel,
+      joinMode: joinMode,
+      viewerRole: viewerRole,
+      isMature: isMature,
+      pendingRequestCount: pendingRequestCount,
+      location: location,
+      chatConversationId: chatConversationId,
     );
   }
 }

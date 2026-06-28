@@ -2,6 +2,7 @@ package http
 
 import (
 	"crypto/hmac"
+	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -22,6 +23,25 @@ type JWTKeySet struct {
 	ActiveSecret   string
 	PreviousKID    string
 	PreviousSecret string
+	// RSAKeys (optional) verify RS256 tokens, keyed by `kid`. HS256 stays
+	// active in parallel so pre-cutover tokens keep verifying.
+	RSAKeys map[string]*rsa.PublicKey
+}
+
+func (k JWTKeySet) rsaFor(kid string) (*rsa.PublicKey, bool) {
+	if len(k.RSAKeys) == 0 {
+		return nil, false
+	}
+	if kid != "" {
+		pub, ok := k.RSAKeys[kid]
+		return pub, ok
+	}
+	if len(k.RSAKeys) == 1 {
+		for _, pub := range k.RSAKeys {
+			return pub, true
+		}
+	}
+	return nil, false
 }
 
 func (k JWTKeySet) secretFor(kid string) ([]byte, bool) {
@@ -133,21 +153,32 @@ func parseAndValidateJWTWithKeys(token string, keys JWTKeySet) (uuid.UUID, time.
 		return uuid.Nil, time.Time{}, errors.New("invalid token header json")
 	}
 	alg, _ := header["alg"].(string)
-	if alg != "HS256" {
-		return uuid.Nil, time.Time{}, errors.New("unsupported jwt algorithm")
-	}
 	kid, _ := header["kid"].(string)
-	secret, ok := keys.secretFor(kid)
-	if !ok {
-		return uuid.Nil, time.Time{}, errors.New("unknown kid")
-	}
-
 	signingInput := parts[0] + "." + parts[1]
-	mac := hmac.New(sha256.New, secret)
-	_, _ = mac.Write([]byte(signingInput))
-	expected := mac.Sum(nil)
-	if !hmac.Equal(signatureRaw, expected) {
-		return uuid.Nil, time.Time{}, errors.New("invalid token signature")
+	// Accept HS256 and RS256 only (no `none`/alg-confusion). RS256 verifies with
+	// a public key the gateway can't mint with; HS256 stays accepted in parallel
+	// so tokens minted before the cutover keep working.
+	switch alg {
+	case "HS256":
+		secret, ok := keys.secretFor(kid)
+		if !ok {
+			return uuid.Nil, time.Time{}, errors.New("unknown kid")
+		}
+		mac := hmac.New(sha256.New, secret)
+		_, _ = mac.Write([]byte(signingInput))
+		if !hmac.Equal(signatureRaw, mac.Sum(nil)) {
+			return uuid.Nil, time.Time{}, errors.New("invalid token signature")
+		}
+	case "RS256":
+		pub, ok := keys.rsaFor(kid)
+		if !ok {
+			return uuid.Nil, time.Time{}, errors.New("unknown kid")
+		}
+		if err := verifyRS256(signingInput, signatureRaw, pub); err != nil {
+			return uuid.Nil, time.Time{}, errors.New("invalid token signature")
+		}
+	default:
+		return uuid.Nil, time.Time{}, errors.New("unsupported jwt algorithm")
 	}
 
 	var payload map[string]any

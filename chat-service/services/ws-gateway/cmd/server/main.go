@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rsa"
 	"log/slog"
 	"net/http"
 	"os"
@@ -39,14 +40,26 @@ func main() {
 	}
 	logger.Info("connected to Redis")
 
+	jwtKeys := httpapi.JWTKeySet{
+		ActiveKID:      cfg.JWTKID,
+		ActiveSecret:   cfg.JWTSecret,
+		PreviousKID:    cfg.JWTKIDPrevious,
+		PreviousSecret: cfg.JWTSecretPrevious,
+	}
+	// Optional RS256 verification (additive): load auth-service's public key.
+	if cfg.JWTPublicKeyPEM != "" {
+		pub, perr := httpapi.ParseRSAPublicKeyPEM(cfg.JWTPublicKeyPEM)
+		if perr != nil {
+			logger.Error("failed to parse JWT_PUBLIC_KEY_PEM", "err", perr)
+			os.Exit(1)
+		}
+		jwtKeys.RSAKeys = map[string]*rsa.PublicKey{cfg.JWTRS256KID: pub}
+		logger.Info("RS256 token verification enabled", "kid", cfg.JWTRS256KID)
+	}
+
 	server := httpapi.NewServer(rdb, logger, httpapi.ServerOptions{
-		JWTSecret:      cfg.JWTSecret,
-		JWTKeys: httpapi.JWTKeySet{
-			ActiveKID:      cfg.JWTKID,
-			ActiveSecret:   cfg.JWTSecret,
-			PreviousKID:    cfg.JWTKIDPrevious,
-			PreviousSecret: cfg.JWTSecretPrevious,
-		},
+		JWTSecret: cfg.JWTSecret,
+		JWTKeys:   jwtKeys,
 		AllowedOrigins: cfg.AllowedOrigins,
 		AllowQueryToken: cfg.WSAllowQueryToken,
 		WriteWait:      cfg.WSWriteWait,

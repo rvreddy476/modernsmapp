@@ -23,6 +23,14 @@ module "ecr" {
   repositories = var.service_names
 }
 
+# Container images for the atpost-web Multi-Zone apps (atpost/web-<zone>).
+module "ecr_web" {
+  source = "../../modules/ecr"
+
+  environment  = "staging"
+  repositories = var.web_zone_names
+}
+
 module "dns" {
   source = "../../modules/dns"
 
@@ -137,6 +145,30 @@ module "media" {
   cloudfront_price_class = "PriceClass_100" # cheap; staging traffic is dev-only
 }
 
+module "waf" {
+  source = "../../modules/waf"
+
+  environment = "staging"
+}
+
+module "auth_keys" {
+  source = "../../modules/auth-keys"
+
+  environment = "staging"
+}
+
+module "codeartifact" {
+  source = "../../modules/codeartifact"
+
+  environment = "staging"
+  aws_region  = var.aws_region
+}
+
+resource "aws_iam_role_policy_attachment" "ci_codeartifact" {
+  role       = module.iam.ci_role_name
+  policy_arn = module.codeartifact.policy_arn
+}
+
 # ─── In-cluster tooling (helm + kubernetes providers) ───────────────
 # These wait on the EKS cluster — see the two-apply bootstrap note in
 # the README. On a fresh apply they fail; re-applying after EKS is up
@@ -155,6 +187,7 @@ module "external_secrets" {
     module.elasticache.kms_key_arn,
     module.opensearch.kms_key_arn,
     module.media.kms_key_arn,
+    module.auth_keys.kms_key_arn,
   ]
 }
 
@@ -283,3 +316,8 @@ output "opensearch_master_secret_arn" { value = module.opensearch.master_secret_
 output "media_bucket_name" { value = module.media.bucket_name }
 output "media_cloudfront_domain" { value = module.media.cloudfront_domain_name }
 output "media_client_iam_policy_arn" { value = module.media.client_iam_policy_arn }
+output "waf_web_acl_arn" { value = module.waf.web_acl_arn }
+output "auth_keys_secret_name" { value = module.auth_keys.secret_name }
+output "auth_keys_secret_arn" { value = module.auth_keys.secret_arn }
+output "codeartifact_npm_endpoint" { value = module.codeartifact.npm_endpoint }
+output "codeartifact_domain" { value = module.codeartifact.domain }

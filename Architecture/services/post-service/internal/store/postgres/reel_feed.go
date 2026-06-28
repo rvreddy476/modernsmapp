@@ -29,7 +29,7 @@ func (s *Store) GetReelCandidates(ctx context.Context, limit int, cursor string)
 		rows, err = s.db.Query(ctx, `
 			SELECT `+postCols+`
 			FROM posts
-			WHERE content_type = 'reel' AND visibility = 'public'
+			WHERE content_type = 'reel' AND visibility IN ('public', 'staged')
 				AND deleted_at IS NULL AND review_status = 'approved'
 			ORDER BY created_at DESC, id DESC
 			LIMIT $1
@@ -38,7 +38,7 @@ func (s *Store) GetReelCandidates(ctx context.Context, limit int, cursor string)
 		rows, err = s.db.Query(ctx, `
 			SELECT `+postCols+`
 			FROM posts
-			WHERE content_type = 'reel' AND visibility = 'public'
+			WHERE content_type = 'reel' AND visibility IN ('public', 'staged')
 				AND deleted_at IS NULL AND review_status = 'approved'
 				AND (created_at, id) < ($2, $3)
 			ORDER BY created_at DESC, id DESC
@@ -119,7 +119,7 @@ func (s *Store) GetFlickCandidates(ctx context.Context, limit int, cursor string
 		rows, err = s.db.Query(ctx, `
 			SELECT `+postCols+`
 			FROM posts
-			WHERE content_type IN ('flick', 'reel') AND visibility = 'public'
+			WHERE content_type IN ('flick', 'reel') AND visibility IN ('public', 'staged')
 				AND deleted_at IS NULL AND review_status = 'approved'
 			ORDER BY created_at DESC, id DESC
 			LIMIT $1
@@ -128,7 +128,7 @@ func (s *Store) GetFlickCandidates(ctx context.Context, limit int, cursor string
 		rows, err = s.db.Query(ctx, `
 			SELECT `+postCols+`
 			FROM posts
-			WHERE content_type IN ('flick', 'reel') AND visibility = 'public'
+			WHERE content_type IN ('flick', 'reel') AND visibility IN ('public', 'staged')
 				AND deleted_at IS NULL AND review_status = 'approved'
 				AND (created_at, id) < ($2, $3)
 			ORDER BY created_at DESC, id DESC
@@ -179,7 +179,7 @@ func (s *Store) GetLongVideoCandidates(ctx context.Context, limit int, cursor st
 		rows, err = s.db.Query(ctx, `
 			SELECT `+postCols+`
 			FROM posts
-			WHERE content_type IN ('long_video', 'video') AND visibility = 'public'
+			WHERE content_type IN ('long_video', 'video') AND visibility IN ('public', 'staged')
 				AND deleted_at IS NULL AND review_status = 'approved'
 			ORDER BY created_at DESC, id DESC
 			LIMIT $1
@@ -188,7 +188,7 @@ func (s *Store) GetLongVideoCandidates(ctx context.Context, limit int, cursor st
 		rows, err = s.db.Query(ctx, `
 			SELECT `+postCols+`
 			FROM posts
-			WHERE content_type IN ('long_video', 'video') AND visibility = 'public'
+			WHERE content_type IN ('long_video', 'video') AND visibility IN ('public', 'staged')
 				AND deleted_at IS NULL AND review_status = 'approved'
 				AND (created_at, id) < ($2, $3)
 			ORDER BY created_at DESC, id DESC

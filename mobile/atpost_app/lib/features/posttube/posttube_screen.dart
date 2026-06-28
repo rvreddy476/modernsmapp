@@ -13,6 +13,7 @@ import 'package:atpost_app/providers/comments_provider.dart';
 import 'package:atpost_app/providers/data_saver_provider.dart';
 import 'package:atpost_app/providers/feed_provider.dart';
 import 'package:atpost_app/shared/widgets/caption_toggle.dart';
+import 'package:atpost_app/shared/widgets/video_more_sheet.dart';
 import 'package:atpost_app/shared/widgets/video_player_widget.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/material.dart';
@@ -70,7 +71,8 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
       ref.read(analyticsRepositoryProvider).recordVideoView(
         contentId: post.id,
         creatorId: post.authorId,
-        contentType: post.contentType == 'reel' ? 'reel' : 'long_video',
+        // Short content earns only as 'flick' (settlement ignores 'reel').
+        contentType: (post.contentType == 'reel' || post.contentType == 'flick') ? 'flick' : 'long_video',
         watchedMs: watchedMs,
         durationMs: (post.durationSeconds ?? 0) * 1000,
         surface: 'posttube_watch',
@@ -129,35 +131,6 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
     }
   }
 
-  Future<void> _toggleDislike(Post post) async {
-    final eng = _ensureEngagement(post);
-    final prev = eng.copy();
-    final shouldEnable = !eng.disliked;
-    setState(() {
-      if (eng.disliked) {
-        eng.disliked = false;
-        eng.dislikeCount = math.max(0, eng.dislikeCount - 1);
-      } else {
-        eng.disliked = true;
-        eng.dislikeCount += 1;
-        if (eng.liked) {
-          eng.liked = false;
-          eng.likeCount = math.max(0, eng.likeCount - 1);
-        }
-      }
-    });
-    if (!shouldEnable) return;
-    try {
-      await ref.read(postRepositoryProvider).toggleReaction(post.id, emoji: '👎');
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => eng.restoreFrom(prev));
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not update dislike.')),
-      );
-    }
-  }
-
   Future<void> _toggleSave(Post post) async {
     final eng = _ensureEngagement(post);
     final prev = eng.saved;
@@ -188,6 +161,79 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
 
   void _openComments(Post post) {
     context.push('/comments/${post.id}');
+  }
+
+  // Unified video "More" sheet (shared across Reels / PostTube / feed).
+  Future<void> _showMore(Post post) async {
+    await showVideoMoreSheet(
+      context,
+      post: post,
+      surface: 'posttube',
+      isSaved: _ensureEngagement(post).saved,
+      captionsAvailable: post.mediaIds.isNotEmpty,
+      captionsEnabled: _captionsEnabled(post.id),
+      onToggleSave: () => _toggleSave(post),
+      onToggleCaptions: () => _toggleCaptions(post.id),
+      onShare: () => _share(post),
+      onReport: () => _reportVideo(post),
+    );
+  }
+
+  Future<void> _reportVideo(Post post) async {
+    const reasons = <String, String>{
+      'spam': 'Spam or misleading',
+      'harassment': 'Harassment or bullying',
+      'hate_speech': 'Hate speech',
+      'violence': 'Violence or dangerous acts',
+      'nudity': 'Nudity or sexual content',
+      'misinformation': 'Misinformation',
+      'other': 'Something else',
+    };
+    final reason = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: const Color(0xFF1B1B1F),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetCtx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 16, 20, 8),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text('Report this video',
+                    style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+              ),
+            ),
+            for (final entry in reasons.entries)
+              ListTile(
+                title: Text(entry.value, style: const TextStyle(color: Colors.white, fontSize: 15)),
+                onTap: () => Navigator.of(sheetCtx).pop(entry.key),
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (reason == null) return;
+    try {
+      await ref.read(postRepositoryProvider).submitReport(
+            targetType: 'post',
+            targetId: post.id,
+            reason: reason,
+          );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Report submitted — thanks for keeping the community safe.')),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not submit report. Please try again.')),
+      );
+    }
   }
 
   Future<void> _toggleSubscribe(Post post) async {
@@ -233,7 +279,7 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
     final base = '${Environment.apiBaseUrl}${post.firstMediaUrl}';
     if (!dataSaver) return base;
     final separator = base.contains('?') ? '&' : '?';
-    return '${base}${separator}quality=240p';
+    return '$base${separator}quality=240p';
   }
 
   // Chapters are now derived from video metadata when available.
@@ -276,6 +322,30 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    // Header — brand + search.
+                    Row(
+                      children: [
+                        Text(
+                          'PostTube',
+                          style: AppTextStyles.h2.copyWith(fontSize: 20),
+                        ),
+                        const Spacer(),
+                        IconButton(
+                          icon: const Icon(Icons.search_rounded),
+                          color: AppColors.textPrimary,
+                          tooltip: 'Search videos',
+                          onPressed: () => context.push('/search/videos'),
+                        ),
+                        if (currentVideo != null)
+                          IconButton(
+                            icon: const Icon(Icons.more_vert_rounded),
+                            color: AppColors.textPrimary,
+                            tooltip: 'More',
+                            onPressed: () => _showMore(currentVideo),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
                     // Discovery strip — surfaces /subscriptions and /history
                     // since this screen is the top-level Posttube tab and
                     // those pages are otherwise unreachable from the shell.
@@ -340,22 +410,14 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
                             scrollDirection: Axis.horizontal,
                             child: Row(
                               children: [
+                                // Single "Love" reaction (replaces Like + Dislike).
                                 ActionPillButton(
                                   icon: eng.liked
-                                      ? Icons.thumb_up_alt
-                                      : Icons.thumb_up_alt_outlined,
+                                      ? Icons.favorite_rounded
+                                      : Icons.favorite_border_rounded,
                                   label: _formatCount(eng.likeCount),
                                   active: eng.liked,
                                   onTap: () => _toggleLike(currentVideo),
-                                ),
-                                const SizedBox(width: 8),
-                                ActionPillButton(
-                                  icon: eng.disliked
-                                      ? Icons.thumb_down_alt
-                                      : Icons.thumb_down_alt_outlined,
-                                  label: _formatCount(eng.dislikeCount),
-                                  active: eng.disliked,
-                                  onTap: () => _toggleDislike(currentVideo),
                                 ),
                                 const SizedBox(width: 8),
                                 ActionPillButton(
@@ -476,7 +538,11 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
                             ? _videos.sublist(1)
                             : const [],
                       ),
-                    const SizedBox(height: 100),
+                    // High professional spacing that adapts to screen safe areas
+                    // and bottom navigation bars.
+                    SizedBox(
+                      height: MediaQuery.of(context).padding.bottom + 80,
+                    ),
                   ],
                 ),
               ),

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -34,6 +35,9 @@ type Service struct {
 	log                  *slog.Logger
 	rdb                  *redis.Client
 	miniAppSessionSigner *MiniAppSessionSigner
+	// accessSigningKey, when non-nil, switches access-token signing to RS256.
+	// Loaded from cfg.AccessTokenPrivateKeyPEM at construction; nil → HS256.
+	accessSigningKey *rsa.PrivateKey
 }
 
 type Store interface {
@@ -54,6 +58,13 @@ type Store interface {
 	UpdatePassword(ctx context.Context, userID uuid.UUID, passwordHash string) error
 	MarkEmailVerified(ctx context.Context, userID uuid.UUID) error
 	MarkPhoneVerified(ctx context.Context, userID uuid.UUID) error
+	// RBAC roles
+	GrantRole(ctx context.Context, userID, grantedBy uuid.UUID, role string) error
+	RevokeRole(ctx context.Context, userID uuid.UUID, role string) error
+	RolesForUser(ctx context.Context, userID uuid.UUID) ([]string, error)
+	ListUserRoles(ctx context.Context, userID uuid.UUID) ([]store.UserRole, error)
+	InsertAdminAudit(ctx context.Context, actorID, targetID uuid.UUID, action, detail string, allowed bool) error
+	ListAdminAudit(ctx context.Context, limit int) ([]store.AdminAuditEntry, error)
 	// Sessions
 	CreateSession(ctx context.Context, sess *store.Session) error
 	GetSessionByRefreshTokenHash(ctx context.Context, refreshTokenHash string) (*store.Session, error)
@@ -108,7 +119,7 @@ func New(store Store, producer Producer, cfg *config.Config, logger *slog.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Service{
+	svc := &Service{
 		store:                store,
 		producer:             producer,
 		cfg:                  cfg,
@@ -116,6 +127,29 @@ func New(store Store, producer Producer, cfg *config.Config, logger *slog.Logger
 		rdb:                  rdb,
 		miniAppSessionSigner: miniAppSessionSigner,
 	}
+	// Opt-in RS256 access-token signing. Reuses the same PEM parser as the
+	// mini-app signer. A parse failure is fatal: misconfiguring the signing key
+	// must not silently fall back to HS256 in a deploy that intended RS256.
+	if pem := strings.TrimSpace(cfg.AccessTokenPrivateKeyPEM); pem != "" {
+		key, err := loadMiniAppPrivateKey(pem)
+		if err != nil {
+			logger.Error("failed to load JWT_PRIVATE_KEY_PEM for RS256 access tokens", "err", err)
+			panic(fmt.Sprintf("invalid JWT_PRIVATE_KEY_PEM: %v", err))
+		}
+		svc.accessSigningKey = key
+		logger.Info("RS256 access-token signing enabled", "kid", cfg.AccessTokenRS256KID)
+	}
+	return svc
+}
+
+// AccessTokenPublicKey returns the RSA public key for verifying RS256 access
+// tokens this service mints, or nil when signing is HS256. main wires this into
+// the auth middleware so the service's own protected endpoints accept its tokens.
+func (s *Service) AccessTokenPublicKey() *rsa.PublicKey {
+	if s.accessSigningKey == nil {
+		return nil
+	}
+	return &s.accessSigningKey.PublicKey
 }
 
 type TokenPair struct {
@@ -142,6 +176,11 @@ type AuthResponse struct {
 type AccessClaims struct {
 	jwt.RegisteredClaims
 	SessionID string `json:"sid"`
+	// Scopes is a space-separated authorization scope list resolved from the
+	// server-side allowlist at mint time (e.g. "admin moderator"). Empty for
+	// ordinary users. The gateway reads this claim — NOT a client header — to
+	// authorize admin/internal surfaces.
+	Scopes string `json:"scopes,omitempty"`
 }
 
 // RequestOTP generates and saves an OTP.
@@ -389,7 +428,7 @@ func (s *Service) RegisterWithPassword(ctx context.Context, phone, email, passwo
 		return nil, err
 	}
 
-	accessToken, err := s.generateAccessToken(user.ID, sessionID)
+	accessToken, err := s.generateAccessToken(ctx, user.ID, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -568,7 +607,7 @@ func (s *Service) RefreshSession(ctx context.Context, refreshToken, ip, userAgen
 			})
 	}
 
-	accessToken, err := s.generateAccessToken(user.ID, sess.ID)
+	accessToken, err := s.generateAccessToken(ctx, user.ID, sess.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -657,7 +696,7 @@ func (s *Service) generateOTP() (string, error) {
 	return fmt.Sprintf(format, n.Int64()), nil
 }
 
-func (s *Service) generateAccessToken(userID, sessionID uuid.UUID) (string, error) {
+func (s *Service) generateAccessToken(ctx context.Context, userID, sessionID uuid.UUID) (string, error) {
 	now := time.Now()
 	claims := AccessClaims{
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -668,6 +707,17 @@ func (s *Service) generateAccessToken(userID, sessionID uuid.UUID) (string, erro
 			ExpiresAt: jwt.NewNumericDate(now.Add(s.cfg.AccessTokenTTL)),
 		},
 		SessionID: sessionID.String(),
+		// Resolve scopes server-side (env allowlist ∪ DB roles). A client can
+		// never influence this — it is bound to the user id in the signed token.
+		Scopes: s.resolveScopes(ctx, userID),
+	}
+
+	// RS256 when a private key is configured (verifiers hold only the public
+	// key and cannot mint). Otherwise HS256 with the shared secret as before.
+	if s.accessSigningKey != nil {
+		token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+		token.Header["kid"] = s.cfg.AccessTokenRS256KID
+		return token.SignedString(s.accessSigningKey)
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
@@ -1218,7 +1268,7 @@ func (s *Service) createSessionForUser(ctx context.Context, user *store.User, de
 		return nil, err
 	}
 
-	accessToken, err := s.generateAccessToken(user.ID, sessionID)
+	accessToken, err := s.generateAccessToken(ctx, user.ID, sessionID)
 	if err != nil {
 		return nil, err
 	}

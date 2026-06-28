@@ -33,13 +33,16 @@ externalSecret:
     - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
     - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
     - { secretKey: JWT_KID, remoteRef: jwt_kid }
-    # Add per-service secrets here (POSTGRES_DSN, REDIS_ADDR,
-    # KAFKA_BROKERS, SCYLLA_HOSTS, courier API keys, etc.).
+    # RS256 verification (public key); HS256 stays accepted in parallel.
+    - { secretKey: JWT_PUBLIC_KEY_PEM, remoteRef: jwt_public_key_pem }
+    # Add remaining per-service secrets here (POSTGRES_DSN, REDIS_ADDR,
+    # KAFKA_BROKERS, etc.).
 
 env:
   ENV: staging
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  JWT_RS256_KID: rsa-1
   # Add per-service inter-service URLs here. Common ones:
   #   USER_SERVICE_URL:  http://user-service.atpost.svc.cluster.local:8082
   #   GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083

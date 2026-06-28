@@ -42,6 +42,16 @@ CREATE TABLE IF NOT EXISTS channel_members (
 );
 CREATE INDEX IF NOT EXISTS idx_cm_user ON channel_members(user_id);
 
+-- Self-heal: older deployments created channel_members before these columns
+-- existed (CREATE TABLE IF NOT EXISTS won't add them). Idempotent ALTERs run on
+-- every BootstrapSchema startup so existing DBs converge to the current schema.
+-- (Missing notify_on caused subscribe/unsubscribe to 500: SQLSTATE 42703.)
+ALTER TABLE channel_members ADD COLUMN IF NOT EXISTS notify_on TEXT NOT NULL DEFAULT 'all';
+ALTER TABLE channel_members ADD COLUMN IF NOT EXISTS muted_until TIMESTAMPTZ;
+ALTER TABLE channel_members ADD COLUMN IF NOT EXISTS snoozed_until TIMESTAMPTZ;
+ALTER TABLE channel_members ADD COLUMN IF NOT EXISTS paid BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE channel_members ADD COLUMN IF NOT EXISTS subscribed_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
 CREATE TABLE IF NOT EXISTS channel_updates (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     channel_id UUID NOT NULL REFERENCES broadcast_channels(id) ON DELETE CASCADE,
