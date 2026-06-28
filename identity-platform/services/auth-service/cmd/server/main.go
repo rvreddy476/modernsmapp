@@ -141,6 +141,7 @@ func main() {
 
 	authSvc := service.New(authStore, authProducer, cfg, logger, rdb, miniAppSessionSigner)
 	authHandler := internalhttp.New(authSvc, cfg, logger, rdb)
+	authHandler.SetWebAuthnStore(authStore) // credential store for the passkey ceremony
 
 	// 4. Outbox Relay
 	relay := events.NewOutboxRelay(authStore, authProducer, logger, 1*time.Second)

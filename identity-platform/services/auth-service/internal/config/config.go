@@ -81,6 +81,12 @@ type Config struct {
 	// management) unless the acting user has 2FA enabled. Default off so dev /
 	// first-superadmin bootstrap isn't locked out before enrolling MFA.
 	RequireMFAForPrivileged bool
+	// WebAuthn / passkey relying-party config (used by the `webauthn`-tagged
+	// ceremony). RPID is the registrable domain (e.g. "cleestudio.com");
+	// RPOrigins are the full origins allowed to authenticate.
+	WebAuthnRPID          string
+	WebAuthnRPDisplayName string
+	WebAuthnRPOrigins     []string
 }
 
 // EnvRolesForUser returns the raw roles assigned to a user via the env
@@ -168,6 +174,9 @@ func Load() *Config {
 		AccessTokenPrivateKeyPEM: getEnv("JWT_PRIVATE_KEY_PEM", ""),
 		AccessTokenRS256KID:      getEnv("JWT_RS256_KID", "rsa-1"),
 		RequireMFAForPrivileged:  getEnvBool("REQUIRE_MFA_FOR_PRIVILEGED", false),
+		WebAuthnRPID:             getEnv("WEBAUTHN_RP_ID", "localhost"),
+		WebAuthnRPDisplayName:    getEnv("WEBAUTHN_RP_NAME", "atPost"),
+		WebAuthnRPOrigins:        splitAndClean(getEnv("WEBAUTHN_RP_ORIGINS", "http://localhost:3000")),
 	}
 	return cfg
 }

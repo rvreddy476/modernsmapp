@@ -27,10 +27,11 @@ const (
 )
 
 type Handler struct {
-	svc AuthService
-	cfg *config.Config
-	log *slog.Logger
-	rdb *redis.Client
+	svc     AuthService
+	cfg     *config.Config
+	log     *slog.Logger
+	rdb     *redis.Client
+	waStore WebAuthnStore // set via SetWebAuthnStore; used only by the webauthn-tagged ceremony
 }
 
 type AuthService interface {
@@ -39,6 +40,7 @@ type AuthService interface {
 	RegisterWithPassword(ctx context.Context, phone, email, password, firstName, lastName, dob, gender string) (*service.AuthResponse, error)
 	LoginWithPassword(ctx context.Context, identifier, password, deviceID, platform, ip, userAgent string) (*service.AuthResponse, error)
 	RefreshSession(ctx context.Context, refreshToken, ip, userAgent string) (*service.AuthResponse, error)
+	IssueSessionForUser(ctx context.Context, userID uuid.UUID, deviceID, platform, ip, userAgent string) (*service.AuthResponse, error)
 	Logout(ctx context.Context, refreshToken string) error
 	LogoutAll(ctx context.Context, userID uuid.UUID) (int64, error)
 	ListSessions(ctx context.Context, userID uuid.UUID) ([]store.Session, error)

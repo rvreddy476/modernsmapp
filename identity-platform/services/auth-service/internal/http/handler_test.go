@@ -72,6 +72,9 @@ func (s *stubAuthService) LogoutAll(_ context.Context, _ uuid.UUID) (int64, erro
 func (s *stubAuthService) ListSessions(_ context.Context, _ uuid.UUID) ([]store.Session, error) {
 	return nil, nil
 }
+func (s *stubAuthService) IssueSessionForUser(_ context.Context, _ uuid.UUID, _, _, _, _ string) (*service.AuthResponse, error) {
+	return &service.AuthResponse{}, nil
+}
 func (s *stubAuthService) RevokeSessionByID(_ context.Context, _, _ uuid.UUID) error { return nil }
 func (s *stubAuthService) DeleteAccount(_ context.Context, _ uuid.UUID) error        { return nil }
 
