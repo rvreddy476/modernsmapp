@@ -1,0 +1,18 @@
+# Mirrors infra/terraform/.gitignore. State lives in the azurerm backend
+# (bootstrap creates it); never commit tfstate.
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Provider cache + lock — noisy across workstations; operator preference,
+# keep ignored (same as the AWS tree).
+.terraform/
+.terraform.lock.hcl
+
+# Crash logs
+crash.log
+crash.*.log
+
+# NOTE: deliberately NOT ignoring *.tfvars here — the pre-filled
+# <env>.tfvars hold only subscription_id + location (no secrets) and are
+# committed for a turnkey deploy. Put any real secrets in Key Vault, not here.

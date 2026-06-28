@@ -17,14 +17,14 @@
 # ── Scylla ───────────────────────────────────────────────────────
 resource "kubernetes_namespace" "scylla_operator" {
   metadata {
-    name = "scylla-operator"
+    name   = "scylla-operator"
     labels = { "app.kubernetes.io/managed-by" = "terraform" }
   }
 }
 
 resource "kubernetes_namespace" "scylla" {
   metadata {
-    name = "scylla"
+    name   = "scylla"
     labels = { "app.kubernetes.io/managed-by" = "terraform" }
   }
 }
@@ -72,7 +72,7 @@ resource "kubernetes_manifest" "scylla_cluster" {
                       key      = "workload"
                       operator = "In"
                       values   = ["general"]
-                    }, {
+                      }, {
                       key      = "topology.kubernetes.io/zone"
                       operator = "In"
                       values   = ["${var.location}-${z}"]
@@ -119,7 +119,7 @@ resource "azurerm_key_vault_secret" "scylla" {
 # ── Redpanda (Kafka-compatible) ──────────────────────────────────
 resource "kubernetes_namespace" "redpanda" {
   metadata {
-    name = "redpanda"
+    name   = "redpanda"
     labels = { "app.kubernetes.io/managed-by" = "terraform" }
   }
 }
@@ -175,7 +175,7 @@ resource "azurerm_key_vault_secret" "redpanda" {
 # ── MinIO (S3-compatible object store) ───────────────────────────
 resource "kubernetes_namespace" "minio" {
   metadata {
-    name = "minio"
+    name   = "minio"
     labels = { "app.kubernetes.io/managed-by" = "terraform" }
   }
 }

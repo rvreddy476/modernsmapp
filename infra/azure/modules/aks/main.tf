@@ -14,13 +14,13 @@ resource "azurerm_kubernetes_cluster" "this" {
   workload_identity_enabled = true
 
   default_node_pool {
-    name                 = "system"
-    vm_size              = var.system_vm_size
-    vnet_subnet_id       = var.aks_subnet_id
-    auto_scaling_enabled = true
-    min_count            = var.system_min
-    max_count            = var.system_max
-    node_labels          = { workload = "system" }
+    name                         = "system"
+    vm_size                      = var.system_vm_size
+    vnet_subnet_id               = var.aks_subnet_id
+    auto_scaling_enabled         = true
+    min_count                    = var.system_min
+    max_count                    = var.system_max
+    node_labels                  = { workload = "system" }
     only_critical_addons_enabled = true
   }
 
