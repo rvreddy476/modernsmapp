@@ -102,9 +102,25 @@ say "fetch kubeconfig"
 AKS_NAME="$(terraform -chdir="$ENVDIR" output -raw aks_name)"
 az aks get-credentials -g "$RG" -n "$AKS_NAME" --overwrite-existing
 
-# 5. PASS 2 — full apply (platform: ESO/KeyVault, ingress-nginx, ArgoCD,
-#    managed Postgres+Redis, self-hosted Scylla/Redpanda/MinIO).
-plan_apply "$ENVDIR" "PASS 2 — platform (full)" -var-file="$ENV.tfvars"
+# 5a. PASS 2a — install the Helm charts that ship CRDs FIRST (external-secrets,
+#     argo-cd, scylla-operator), plus the other charts + managed infra. This
+#     deliberately excludes the kubernetes_manifest custom resources, which
+#     terraform validates against the cluster API at plan time and which would
+#     fail with "no matches for kind" until their CRDs exist. -target pulls in
+#     each chart's namespace/identity/role-assignment dependencies automatically.
+plan_apply "$ENVDIR" "PASS 2a — platform charts/CRDs" -var-file="$ENV.tfvars" \
+  -target=module.keyvault -target=module.postgres -target=module.redis \
+  -target=module.ingress_nginx \
+  -target=module.external_secrets.helm_release.external_secrets \
+  -target=module.argocd.helm_release.argocd \
+  -target=module.data_platform.helm_release.scylla_operator \
+  -target=module.data_platform.helm_release.redpanda \
+  -target=module.data_platform.helm_release.minio
+
+# 5b. PASS 2b — full apply: now the CRDs exist, the custom resources
+#     (ClusterSecretStore, AppProject, ScyllaCluster) + their Key Vault secrets
+#     plan and apply cleanly.
+plan_apply "$ENVDIR" "PASS 2b — platform custom resources (full)" -var-file="$ENV.tfvars"
 
 # 6. seed per-service Key Vault secrets
 say "seed Key Vault secrets"
