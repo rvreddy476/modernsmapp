@@ -12,12 +12,11 @@ resource "azurerm_user_assigned_identity" "ci" {
 resource "azurerm_federated_identity_credential" "ci_github" {
   for_each = toset(var.github_subjects)
 
-  name                = "gh-${replace(replace(each.value, ":", "-"), "/", "-")}"
-  resource_group_name = var.resource_group_name
-  parent_id           = azurerm_user_assigned_identity.ci.id
-  audience            = ["api://AzureADTokenExchange"]
-  issuer              = "https://token.actions.githubusercontent.com"
-  subject             = each.value
+  name      = "gh-${replace(replace(each.value, ":", "-"), "/", "-")}"
+  parent_id = azurerm_user_assigned_identity.ci.id
+  audience  = ["api://AzureADTokenExchange"]
+  issuer    = "https://token.actions.githubusercontent.com"
+  subject   = each.value
 }
 
 # Push images to ACR.

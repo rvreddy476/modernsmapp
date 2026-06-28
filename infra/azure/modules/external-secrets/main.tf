@@ -26,12 +26,11 @@ resource "azurerm_user_assigned_identity" "eso" {
 # token for system:serviceaccount:external-secrets:external-secrets,
 # which Entra exchanges for this identity.
 resource "azurerm_federated_identity_credential" "eso" {
-  name                = "external-secrets"
-  resource_group_name = var.resource_group_name
-  parent_id           = azurerm_user_assigned_identity.eso.id
-  issuer              = var.aks_oidc_issuer_url
-  subject             = "system:serviceaccount:external-secrets:external-secrets"
-  audience            = ["api://AzureADTokenExchange"]
+  name      = "external-secrets"
+  parent_id = azurerm_user_assigned_identity.eso.id
+  issuer    = var.aks_oidc_issuer_url
+  subject   = "system:serviceaccount:external-secrets:external-secrets"
+  audience  = ["api://AzureADTokenExchange"]
 }
 
 # Read-only access to the whole vault. The AWS module scopes by secret
