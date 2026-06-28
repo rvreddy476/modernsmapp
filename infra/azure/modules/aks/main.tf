@@ -14,14 +14,19 @@ resource "azurerm_kubernetes_cluster" "this" {
   workload_identity_enabled = true
 
   default_node_pool {
-    name                         = "system"
-    vm_size                      = var.system_vm_size
-    vnet_subnet_id               = var.aks_subnet_id
-    auto_scaling_enabled         = true
-    min_count                    = var.system_min
-    max_count                    = var.system_max
-    node_labels                  = { workload = "system" }
-    only_critical_addons_enabled = true
+    name                 = "system"
+    vm_size              = var.system_vm_size
+    vnet_subnet_id       = var.aks_subnet_id
+    auto_scaling_enabled = true
+    min_count            = var.system_min
+    max_count            = var.system_max
+    node_labels          = { workload = "system" }
+    # NOT only_critical_addons_enabled: this pool intentionally hosts the
+    # platform tooling (ESO, ArgoCD, ingress-nginx, scylla-operator), which the
+    # charts pin via nodeSelector workload=system — same role as the AWS system
+    # node group. Tainting it CriticalAddonsOnly would leave those pods
+    # unschedulable. App workloads stay off it via their workload=general
+    # nodeSelector.
   }
 
   identity {
