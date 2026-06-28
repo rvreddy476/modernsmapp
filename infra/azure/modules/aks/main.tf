@@ -21,6 +21,10 @@ resource "azurerm_kubernetes_cluster" "this" {
     min_count            = var.system_min
     max_count            = var.system_max
     node_labels          = { workload = "system" }
+    # Lets azurerm rotate the system pool in place (temp pool → drain → swap)
+    # when an immutable default_node_pool field changes (vm_size, taints, etc.)
+    # instead of forcing a whole-cluster replace.
+    temporary_name_for_rotation = "systmp"
     # NOT only_critical_addons_enabled: this pool intentionally hosts the
     # platform tooling (ESO, ArgoCD, ingress-nginx, scylla-operator), which the
     # charts pin via nodeSelector workload=system — same role as the AWS system
