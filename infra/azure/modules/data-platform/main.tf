@@ -31,8 +31,7 @@ resource "helm_release" "cert_manager" {
 
   set {
     name  = "crds.enabled"
-    value = "true"
-    type  = "string"
+    value = "true" # real bool — cert-manager schema rejects a string here
   }
   set {
     name  = "nodeSelector.workload"

@@ -116,8 +116,7 @@ resource "helm_release" "argocd" {
   # backfills server.secretkey into it at runtime.
   set {
     name  = "configs.secret.createSecret"
-    value = "false"
-    type  = "string"
+    value = "false" # real bool — a string "false" is truthy in Helm templates
   }
 
   depends_on = [kubernetes_secret.argocd_secret]
