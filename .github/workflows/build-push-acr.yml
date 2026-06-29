@@ -68,11 +68,19 @@ jobs:
           # two ways: services= (CSV, for the if-guards + bump job) and matrix=
           # (JSON array, for the build matrix — Actions expressions have no
           # split(), so the array is built here with jq).
+          # Service names use the DEPLOY convention (= image repo + deploy dir):
+          # Architecture/services/<s> -> <s>; identity-platform/services/<s> ->
+          # identity-<s>; chat-service/services/<s> -> chat-<s>. This matches the
+          # deploy/services/<name> dirs + values image.repository, and avoids the
+          # user-service name collision across workspaces.
           if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ github.event.inputs.services }}" != "all" ]]; then
             SVCS="${{ github.event.inputs.services }}"
           elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            SVCS=$(ls -d Architecture/services/*/ identity-platform/services/*/ chat-service/services/*/ 2>/dev/null \
-              | xargs -I{} basename {} | sort -u | grep -v '^_archived' | paste -sd, -)
+            SVCS=$( {
+              for d in Architecture/services/*/;     do echo "$(basename "$d")"; done
+              for d in identity-platform/services/*/; do echo "identity-$(basename "$d")"; done
+              for d in chat-service/services/*/;      do echo "chat-$(basename "$d")"; done
+            } 2>/dev/null | grep -v '_archived' | sort -u | paste -sd, -)
           else
             BASE="${{ github.event.before }}"
             if [[ -z "$BASE" || "$BASE" == "0000000000000000000000000000000000000000" ]]; then
@@ -81,11 +89,11 @@ jobs:
             SVCS=$(git diff --name-only "$BASE" HEAD \
               | awk -F/ '
                   /^Architecture\/services\// && NF >= 3 { print $3 }
-                  /^identity-platform\/services\// && NF >= 3 { print $3 }
-                  /^chat-service\/services\// && NF >= 3 { print $3 }
+                  /^identity-platform\/services\// && NF >= 3 { print "identity-" $3 }
+                  /^chat-service\/services\// && NF >= 3 { print "chat-" $3 }
                   /^deploy\/services\// && NF >= 3 { print $3 }
                 ' \
-              | sort -u | grep -v '^_archived' | paste -sd, -)
+              | grep -v '_archived' | sort -u | paste -sd, -)
           fi
           echo "services=$SVCS" >> "$GITHUB_OUTPUT"
           if [[ -z "$SVCS" ]]; then
@@ -109,19 +117,23 @@ jobs:
 
       - name: Resolve service path
         id: path
+        env:
+          SVC: ${{ matrix.service }}
         run: |
-          # workspace_root = the Go workspace root (has go.work + vendor/ +
-          # shared/ + services/); the Dockerfile COPYs from there, so it is the
-          # build CONTEXT — not the services/ subdir.
-          for root in Architecture identity-platform chat-service; do
-            if [[ -d "$root/services/${{ matrix.service }}" ]]; then
-              echo "service_path=$root/services/${{ matrix.service }}" >> "$GITHUB_OUTPUT"
-              echo "workspace_root=$root" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          done
-          echo "::error ::service '${{ matrix.service }}' not found under any workspace"
-          exit 1
+          # Map the deploy name back to its source dir. workspace_root = the Go
+          # workspace root (has go.work + vendor/ + shared/ + services/) and is
+          # the Docker build CONTEXT; the image keeps the deploy name (SVC).
+          if [[ -d "Architecture/services/$SVC" ]]; then
+            root=Architecture; src="$SVC"
+          elif [[ "$SVC" == identity-* && -d "identity-platform/services/${SVC#identity-}" ]]; then
+            root=identity-platform; src="${SVC#identity-}"
+          elif [[ "$SVC" == chat-* && -d "chat-service/services/${SVC#chat-}" ]]; then
+            root=chat-service; src="${SVC#chat-}"
+          else
+            echo "::error ::service '$SVC' not found under any workspace"; exit 1
+          fi
+          echo "service_path=$root/services/$src" >> "$GITHUB_OUTPUT"
+          echo "workspace_root=$root" >> "$GITHUB_OUTPUT"
 
       - name: Resolve ACR registry
         id: acr
