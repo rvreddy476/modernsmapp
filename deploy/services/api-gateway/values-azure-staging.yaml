@@ -6,7 +6,7 @@ service:
   port: 8080
 image:
   repository: atpoststaging454350.azurecr.io/atpost/api-gateway
-  tag: latest
+  tag: "3bf3601cca56c71a9eb4c556a964f316260115eb"
 replicaCount: 2
 resources:
   requests:
