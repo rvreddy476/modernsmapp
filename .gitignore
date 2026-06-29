@@ -14,9 +14,6 @@ server
 # Local settings
 .claude/settings.local.json
 
-# Go workspace sum
-go.work.sum
-
 # OS
 .DS_Store
 Thumbs.db
