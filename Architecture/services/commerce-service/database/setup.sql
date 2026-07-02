@@ -795,7 +795,10 @@ ALTER TABLE reviews ADD COLUMN IF NOT EXISTS seller_responded_at TIMESTAMPTZ;
 -- 'live') — the rewrite documents the full set the code actually uses.
 ALTER TABLE products DROP CONSTRAINT IF EXISTS products_approval_status_check;
 ALTER TABLE products ADD CONSTRAINT products_approval_status_check
-    CHECK (approval_status IN ('draft','pending','approved','rejected','flagged','changes_requested','live'));
+    CHECK (approval_status IN (
+        'draft','submitted','under_review','pending','approved','rejected',
+        'flagged','changes_requested','live','hidden','archived'
+    ));
 
 -- ─── Phase 6.1 — Fulfillment job queue ─────────────────────────
 -- Replaces `go s.fulfillPaidOrder()` with a durable retry-with-backoff

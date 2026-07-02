@@ -1737,9 +1737,13 @@ func (h *Handler) AddAddress(c *gin.Context) {
 	if country == "" {
 		country = "IN"
 	}
+	addressType := req.AddressType
+	if addressType == "" {
+		addressType = "home"
+	}
 	addr := &postgres.CustomerAddress{
 		UserID:       userID,
-		AddressType:  req.AddressType,
+		AddressType:  addressType,
 		ContactName:  req.FullName,
 		Phone:        req.Phone,
 		AddressLine1: req.AddressLine1,
