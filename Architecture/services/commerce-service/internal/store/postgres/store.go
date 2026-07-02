@@ -133,6 +133,8 @@ func (s *Store) GetProductByID(ctx context.Context, id uuid.UUID) (*Product, err
 		  country_of_origin,warranty_info,return_policy_type,return_policy_days,hsn_code,search_keywords,
 		  meta_title,meta_description,
 		  avg_rating,review_count,order_count,view_count,wishlist_count,is_featured,created_at,updated_at,published_at
+		  ,(SELECT value FROM product_attributes WHERE product_id=products.id AND name='source_image_url' ORDER BY sort_order LIMIT 1)
+		  ,(SELECT store_name FROM sellers WHERE id=products.seller_id)
 		FROM products WHERE id=$1`, id).Scan(
 		&p.ID, &p.SellerID, &p.CategoryID, &p.BrandID, &p.TaxClassID,
 		&p.Title, &p.ShortTitle, &p.Slug, &p.Description, &p.ShortDescription,
@@ -144,7 +146,7 @@ func (s *Store) GetProductByID(ctx context.Context, id uuid.UUID) (*Product, err
 		&p.ReturnPolicyType, &p.ReturnPolicyDays, &p.HSNCode, &p.SearchKeywords,
 		&p.MetaTitle, &p.MetaDescription, &p.AvgRating, &p.ReviewCount,
 		&p.OrderCount, &p.ViewCount, &p.WishlistCount, &p.IsFeatured,
-		&p.CreatedAt, &p.UpdatedAt, &p.PublishedAt,
+		&p.CreatedAt, &p.UpdatedAt, &p.PublishedAt, &p.SourceImageURL, &p.RetailerName,
 	)
 	return &p, err
 }
@@ -307,7 +309,7 @@ func (s *Store) ListProductsFiltered(ctx context.Context, f ProductFilter) ([]*P
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
-	conds := []string{"p.status = 'active'", "p.approval_status = 'approved'"}
+	conds := []string{"p.status = 'active'", "p.approval_status IN ('approved','live')"}
 	args := []any{}
 	idx := 1
 	if f.CategoryID != nil {
@@ -379,11 +381,14 @@ func (s *Store) ListProductsFiltered(ctx context.Context, f ProductFilter) ([]*P
 		SELECT p.id, p.seller_id, p.category_id, p.title, p.slug, p.status, p.approval_status,
 		       p.avg_rating, p.review_count, p.order_count, p.view_count, p.created_at, p.updated_at,
 		       p.primary_image_media_id,
+		       (SELECT value FROM product_attributes WHERE product_id=p.id AND name='source_image_url' ORDER BY sort_order LIMIT 1),
+		       sl.store_name,
 		       v.id  AS default_variant_id,
 		       v.min_selling_price,
 		       v.min_mrp,
 		       COALESCE(s.total_stock, 0) AS total_stock
 		FROM products p
+		JOIN sellers sl ON sl.id = p.seller_id
 		LEFT JOIN LATERAL (
 			SELECT id, selling_price AS min_selling_price, mrp AS min_mrp
 			FROM product_variants
@@ -411,7 +416,7 @@ func (s *Store) ListProductsFiltered(ctx context.Context, f ProductFilter) ([]*P
 		if err := rows.Scan(&p.ID, &p.SellerID, &p.CategoryID, &p.Title, &p.Slug,
 			&p.Status, &p.ApprovalStatus, &p.AvgRating, &p.ReviewCount, &p.OrderCount,
 			&p.ViewCount, &p.CreatedAt, &p.UpdatedAt,
-			&p.PrimaryImageMediaID,
+			&p.PrimaryImageMediaID, &p.SourceImageURL, &p.RetailerName,
 			&p.DefaultVariantID, &p.MinSellingPrice, &p.MinMRP, &p.TotalStock); err != nil {
 			return nil, "", err
 		}
@@ -438,7 +443,7 @@ func (s *Store) ListProductsFiltered(ctx context.Context, f ProductFilter) ([]*P
 // paused, archived. approval_status: draft, submitted, under_review,
 // approved, rejected, live, hidden, archived. We surface active+approved.
 func (s *Store) ListProducts(ctx context.Context, categoryID *uuid.UUID, query string, limit, offset int) ([]*Product, int, error) {
-	conds := []string{"p.status = 'active'", "p.approval_status = 'approved'"}
+	conds := []string{"p.status = 'active'", "p.approval_status IN ('approved','live')"}
 	args := []any{}
 	idx := 1
 	if categoryID != nil {
@@ -467,11 +472,14 @@ func (s *Store) ListProducts(ctx context.Context, categoryID *uuid.UUID, query s
 		SELECT p.id, p.seller_id, p.category_id, p.title, p.slug, p.status, p.approval_status,
 		       p.avg_rating, p.review_count, p.order_count, p.view_count, p.created_at, p.updated_at,
 		       p.primary_image_media_id,
+		       (SELECT value FROM product_attributes WHERE product_id=p.id AND name='source_image_url' ORDER BY sort_order LIMIT 1),
+		       sl.store_name,
 		       v.id  AS default_variant_id,
 		       v.min_selling_price,
 		       v.min_mrp,
 		       COALESCE(s.total_stock, 0) AS total_stock
 		FROM products p
+		JOIN sellers sl ON sl.id = p.seller_id
 		LEFT JOIN LATERAL (
 			SELECT id, selling_price AS min_selling_price, mrp AS min_mrp
 			FROM product_variants
@@ -485,7 +493,7 @@ func (s *Store) ListProducts(ctx context.Context, categoryID *uuid.UUID, query s
 			JOIN inventory_items i ON i.variant_id = pv.id
 			WHERE pv.product_id = p.id AND pv.status = 'active'
 		) s ON true
-		` + where + fmt.Sprintf(`
+		`+where+fmt.Sprintf(`
 		ORDER BY p.created_at DESC
 		LIMIT $%d OFFSET $%d`, idx, idx+1), args...)
 	if err != nil {
@@ -498,7 +506,7 @@ func (s *Store) ListProducts(ctx context.Context, categoryID *uuid.UUID, query s
 		if err := rows.Scan(&p.ID, &p.SellerID, &p.CategoryID, &p.Title, &p.Slug,
 			&p.Status, &p.ApprovalStatus, &p.AvgRating, &p.ReviewCount, &p.OrderCount,
 			&p.ViewCount, &p.CreatedAt, &p.UpdatedAt,
-			&p.PrimaryImageMediaID,
+			&p.PrimaryImageMediaID, &p.SourceImageURL, &p.RetailerName,
 			&p.DefaultVariantID, &p.MinSellingPrice, &p.MinMRP, &p.TotalStock); err != nil {
 			return nil, 0, err
 		}
@@ -1177,12 +1185,12 @@ func (s *Store) CreateAddress(ctx context.Context, addr *CustomerAddress) error 
 
 // TaxClass holds GST percentages for a given class (e.g. "GST 18%").
 type TaxClass struct {
-	ID              uuid.UUID `db:"id"`
-	Name            string    `db:"name"`
-	CGSTPercentage  float64   `db:"cgst_percentage"`
-	SGSTPercentage  float64   `db:"sgst_percentage"`
-	IGSTPercentage  float64   `db:"igst_percentage"`
-	CESSPercentage  float64   `db:"cess_percentage"`
+	ID             uuid.UUID `db:"id"`
+	Name           string    `db:"name"`
+	CGSTPercentage float64   `db:"cgst_percentage"`
+	SGSTPercentage float64   `db:"sgst_percentage"`
+	IGSTPercentage float64   `db:"igst_percentage"`
+	CESSPercentage float64   `db:"cess_percentage"`
 }
 
 func (s *Store) GetTaxClass(ctx context.Context, id uuid.UUID) (*TaxClass, error) {
