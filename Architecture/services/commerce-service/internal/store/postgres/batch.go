@@ -28,7 +28,9 @@ func (s *Store) GetProductsByIDs(ctx context.Context, ids []uuid.UUID) (map[uuid
 		  rejection_reason,primary_image_media_id,video_media_id,weight_grams,length_cm,width_cm,height_cm,
 		  country_of_origin,warranty_info,return_policy_type,return_policy_days,hsn_code,search_keywords,
 		  meta_title,meta_description,
-		  avg_rating,review_count,order_count,view_count,wishlist_count,is_featured,created_at,updated_at,published_at
+		  avg_rating,review_count,order_count,view_count,wishlist_count,is_featured,created_at,updated_at,published_at,
+		  (SELECT value FROM product_attributes WHERE product_id=products.id AND name='source_image_url' ORDER BY sort_order LIMIT 1),
+		  (SELECT store_name FROM sellers WHERE id=products.seller_id)
 		FROM products WHERE id = ANY($1)`, ids)
 	if err != nil {
 		return nil, err
@@ -48,7 +50,7 @@ func (s *Store) GetProductsByIDs(ctx context.Context, ids []uuid.UUID) (map[uuid
 			&p.ReturnPolicyType, &p.ReturnPolicyDays, &p.HSNCode, &p.SearchKeywords,
 			&p.MetaTitle, &p.MetaDescription, &p.AvgRating, &p.ReviewCount,
 			&p.OrderCount, &p.ViewCount, &p.WishlistCount, &p.IsFeatured,
-			&p.CreatedAt, &p.UpdatedAt, &p.PublishedAt,
+			&p.CreatedAt, &p.UpdatedAt, &p.PublishedAt, &p.SourceImageURL, &p.RetailerName,
 		); err != nil {
 			return nil, err
 		}
