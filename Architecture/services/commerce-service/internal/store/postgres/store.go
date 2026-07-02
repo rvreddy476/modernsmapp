@@ -299,6 +299,24 @@ type ProductFilter struct {
 	Offset int
 }
 
+// productSearchCondition keeps the customer catalog's search behavior
+// consistent across cursor and offset pagination. All values remain bound
+// parameters; the generated SQL contains no user-provided text.
+func productSearchCondition(param int) string {
+	placeholder := fmt.Sprintf("$%d", param)
+	return `(
+		p.title ILIKE ` + placeholder + ` OR
+		COALESCE(p.short_title, '') ILIKE ` + placeholder + ` OR
+		COALESCE(p.description, '') ILIKE ` + placeholder + ` OR
+		COALESCE(p.short_description, '') ILIKE ` + placeholder + ` OR
+		COALESCE(p.brand_name, '') ILIKE ` + placeholder + ` OR
+		COALESCE(array_to_string(p.search_keywords, ' '), '') ILIKE ` + placeholder + ` OR
+		EXISTS (SELECT 1 FROM product_categories pc WHERE pc.id=p.category_id AND (pc.name ILIKE ` + placeholder + ` OR pc.slug ILIKE ` + placeholder + `)) OR
+		EXISTS (SELECT 1 FROM sellers ss WHERE ss.id=p.seller_id AND (ss.store_name ILIKE ` + placeholder + ` OR COALESCE(ss.brand_name, '') ILIKE ` + placeholder + `)) OR
+		EXISTS (SELECT 1 FROM product_variants psv WHERE psv.product_id=p.id AND (psv.sku ILIKE ` + placeholder + ` OR COALESCE(psv.barcode, '') ILIKE ` + placeholder + `))
+	)`
+}
+
 // ListProductsFiltered is the scale-friendly variant. Cursor pagination
 // is the default; offset is supported only as a fallback for legacy
 // callers (admin grid). Returns the products + a `nextCursor` the
@@ -323,7 +341,7 @@ func (s *Store) ListProductsFiltered(ctx context.Context, f ProductFilter) ([]*P
 		idx++
 	}
 	if q := strings.TrimSpace(f.Query); q != "" {
-		conds = append(conds, fmt.Sprintf("p.title ILIKE $%d", idx))
+		conds = append(conds, productSearchCondition(idx))
 		args = append(args, "%"+q+"%")
 		idx++
 	}
@@ -452,7 +470,7 @@ func (s *Store) ListProducts(ctx context.Context, categoryID *uuid.UUID, query s
 		idx++
 	}
 	if q := strings.TrimSpace(query); q != "" {
-		conds = append(conds, fmt.Sprintf("p.title ILIKE $%d", idx))
+		conds = append(conds, productSearchCondition(idx))
 		args = append(args, "%"+q+"%")
 		idx++
 	}

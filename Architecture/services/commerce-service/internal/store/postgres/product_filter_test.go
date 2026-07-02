@@ -1,12 +1,36 @@
 package postgres
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+func TestProductSearchConditionCoversCatalogFields(t *testing.T) {
+	condition := productSearchCondition(3)
+	for _, fragment := range []string{
+		"p.title ILIKE $3",
+		"p.description",
+		"p.brand_name",
+		"product_categories",
+		"ss.store_name",
+		"psv.sku",
+		"psv.barcode",
+	} {
+		if !strings.Contains(condition, fragment) {
+			t.Errorf("search condition missing %q:\n%s", fragment, condition)
+		}
+	}
+	if strings.Contains(condition, "%s") {
+		t.Fatal("search condition contains an unexpanded format token")
+	}
+	if got := strings.Count(condition, fmt.Sprintf("$%d", 3)); got < 9 {
+		t.Fatalf("expected all search fields to reuse bound parameter $3, got %d references", got)
+	}
+}
 
 // TestProductFilter_DefaultsAndShape is a unit test on the public
 // surface that doesn't need a DB. It documents what the filter
