@@ -5,7 +5,7 @@ import 'package:social_domain/post.dart';
 import 'package:atpost_app/data/models/user.dart';
 import 'package:atpost_app/data/repositories/user_repository.dart';
 import 'package:atpost_network/api_client.dart';
-import 'package:atpost_app/shared/widgets/content_cards.dart';
+import 'package:social_ui/content_cards.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';

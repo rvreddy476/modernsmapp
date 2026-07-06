@@ -23,6 +23,7 @@ dependencies:
   feature_contracts: ^0.1.0
   shared_ui: ^0.1.0
   social_domain: ^0.1.0
+  social_ui: ^0.1.0
   commerce_domain: ^0.1.0
   feature_commerce: ^0.1.0
   wallet_domain: ^0.1.0

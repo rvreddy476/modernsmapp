@@ -3,18 +3,15 @@ import 'package:atpost_core/config/environment.dart';
 import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_spacing.dart';
 import 'package:atpost_design/app_text_styles.dart';
+import 'package:atpost_network/auth_session.dart';
+import 'package:feature_contracts/feature_contracts.dart';
 import 'package:social_domain/post.dart';
 import 'package:social_domain/data/post_repository.dart';
-import 'package:atpost_app/data/repositories/user_repository.dart';
-import 'package:atpost_app/features/hashtag_feed/state/hashtag_feed_notifier.dart';
-import 'package:atpost_app/features/monetization/widgets/paywall_preview.dart';
-import 'package:atpost_app/features/shell/shell_providers.dart';
 import 'package:social_domain/providers/feed_provider.dart';
 import 'package:social_domain/providers/following_provider.dart';
-import 'package:atpost_app/shared/widgets/video_more_sheet.dart';
-import 'package:atpost_app/services/auth_service.dart';
+import 'package:social_ui/video_more_sheet.dart';
 import 'package:shared_ui/clickable_hashtag_text.dart';
-import 'package:atpost_app/shared/widgets/echo_sheet.dart';
+import 'package:social_ui/echo_sheet.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -292,8 +289,11 @@ class _PostCardState extends ConsumerState<PostCard> {
 
             if (post.bodyRedacted)
               // Tier 3c: backend stripped the body for this caller —
-              // render the paywall preview in place of text/media.
-              PaywallPreview(
+              // render the paywall preview in place of text/media. The
+              // widget is injected by the host so this package never
+              // depends on the monetization feature.
+              ref.watch(appPaywallBuilderProvider)(
+                context,
                 creatorId: post.authorId,
                 creatorName: post.authorName,
               )
@@ -370,20 +370,13 @@ class _PostCardState extends ConsumerState<PostCard> {
     );
   }
 
-  /// Switch the home feed to the #Hashtag tab and select [normalized].
-  /// Falls back to pushing /hashtag/:tag if the user is currently viewing
-  /// outside the home shell.
+  /// Route a hashtag tap to the host. On the home shell it switches to
+  /// the #Hashtag tab and selects the tag; elsewhere it pushes
+  /// /hashtag/:tag. The host owns that decision (see appHashtagTapProvider).
   void _onHashtagTap(String normalized) {
     final cleaned = normalized.replaceAll('#', '').trim();
     if (cleaned.isEmpty) return;
-    try {
-      ref.read(homeFeedTabProvider.notifier).state = 2;
-      ref
-          .read(hashtagFeedProvider.notifier)
-          .selectHashtagByName(cleaned);
-    } catch (_) {
-      context.push('/hashtag/${Uri.encodeComponent(cleaned)}');
-    }
+    ref.read(appHashtagTapProvider)(context, cleaned);
   }
 
   Widget _buildMediaBlock() {
@@ -440,9 +433,7 @@ class _PostCardState extends ConsumerState<PostCard> {
     final authorInitial = authorName.isNotEmpty
         ? authorName[0].toUpperCase()
         : '?';
-    final currentUserId =
-        ref.watch(authStateProvider).valueOrNull?.userId ??
-        ref.read(authServiceProvider).userId;
+    final currentUserId = ref.watch(authSessionProvider).userId;
     final isOwn = currentUserId == post.authorId;
     return Row(
       children: [
@@ -485,9 +476,7 @@ class _PostCardState extends ConsumerState<PostCard> {
   }
 
   Widget _buildMoreMenu(BuildContext context) {
-    final currentUserId =
-        ref.watch(authStateProvider).valueOrNull?.userId ??
-        ref.read(authServiceProvider).userId;
+    final currentUserId = ref.watch(authSessionProvider).userId;
     final canDelete = currentUserId == post.authorId;
 
     // Video posts get the unified "More" sheet shared with Reels / PostTube.
@@ -673,12 +662,12 @@ class _FollowButtonState extends ConsumerState<_FollowButton> {
       notifier.markUnfollowing(widget.authorId);
     }
 
-    final repo = ref.read(userRepositoryProvider);
+    final actions = ref.read(appUserActionsProvider);
     try {
       if (next) {
-        await repo.followUser(widget.authorId);
+        await actions.follow(widget.authorId);
       } else {
-        await repo.unfollowUser(widget.authorId);
+        await actions.unfollow(widget.authorId);
       }
     } catch (_) {
       // Revert local set on failure.

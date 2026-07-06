@@ -1,0 +1,27 @@
+# Social post-rendering widgets shared across the home feed, hashtag
+# feeds, reels and posttube: PostCard, the video "More" sheet, the Echo
+# sheet. Host couplings (current user, follow/mute, hashtag nav, paywall)
+# come in through feature_contracts; data through the social_domain kernel.
+name: social_ui
+description: atPost social post-rendering widgets.
+version: 0.1.0
+publish_to: none
+environment:
+  sdk: ^3.10.7
+resolution: workspace
+dependencies:
+  flutter:
+    sdk: flutter
+  atpost_core: ^0.1.0
+  atpost_design: ^0.1.0
+  atpost_network: ^0.1.0
+  feature_contracts: ^0.1.0
+  social_domain: ^0.1.0
+  shared_ui: ^0.1.0
+  flutter_riverpod: ^2.6.1
+  flutter_animate: ^4.5.2
+  go_router: ^16.3.0
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0

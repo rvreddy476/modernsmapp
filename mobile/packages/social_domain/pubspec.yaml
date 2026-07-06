@@ -18,6 +18,7 @@ dependencies:
   atpost_realtime: ^0.1.0
   feature_contracts: ^0.1.0
   flutter_riverpod: ^2.6.1
+  flutter_secure_storage: ^9.2.2
 dev_dependencies:
   flutter_test:
     sdk: flutter

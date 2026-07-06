@@ -5,7 +5,7 @@ import 'package:atpost_design/app_text_styles.dart';
 import 'package:social_domain/post.dart';
 import 'package:social_domain/data/post_repository.dart';
 import 'package:social_domain/providers/comments_provider.dart';
-import 'package:atpost_app/providers/data_saver_provider.dart';
+import 'package:social_domain/providers/data_saver_provider.dart';
 import 'package:atpost_app/providers/user_provider.dart';
 import 'package:atpost_app/services/image_url_helper.dart';
 import 'package:flutter/material.dart';

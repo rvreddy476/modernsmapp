@@ -14,11 +14,11 @@ import 'package:atpost_design/app_text_styles.dart';
 import 'package:social_domain/post.dart';
 import 'package:social_domain/data/feed_signal_repository.dart';
 import 'package:social_domain/data/feedback_repository.dart';
-import 'package:atpost_app/data/repositories/playlist_repository.dart';
-import 'package:atpost_app/data/repositories/user_repository.dart';
-import 'package:atpost_app/providers/autoplay_provider.dart';
-import 'package:atpost_app/providers/data_saver_provider.dart';
-import 'package:atpost_app/services/auth_service.dart';
+import 'package:social_domain/data/playlist_repository.dart';
+import 'package:social_domain/providers/autoplay_provider.dart';
+import 'package:social_domain/providers/data_saver_provider.dart';
+import 'package:atpost_network/auth_session.dart';
+import 'package:feature_contracts/feature_contracts.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -198,7 +198,7 @@ class _VideoMoreSheet extends ConsumerWidget {
                 label: "Don't recommend this channel",
                 onTap: () {
                   Navigator.of(context).pop();
-                  _safe(() => ref.read(userRepositoryProvider).muteUser(post.authorId));
+                  _safe(() => ref.read(appUserActionsProvider).mute(post.authorId));
                   _toast("Got it — we'll recommend this channel less.");
                 },
               ),
@@ -444,7 +444,7 @@ void _showPlaylistPicker(
   Post post,
   void Function(String) toast,
 ) {
-  final userId = ref.read(authServiceProvider).userId;
+  final userId = ref.read(authSessionProvider).userId;
   if (userId == null || userId.isEmpty) {
     toast('Please log in to use playlists.');
     return;

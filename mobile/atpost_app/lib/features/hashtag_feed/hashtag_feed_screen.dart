@@ -4,7 +4,7 @@ import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/features/hashtag_feed/models/hashtag_model.dart';
 import 'package:atpost_app/features/hashtag_feed/state/hashtag_feed_notifier.dart';
 import 'package:atpost_app/features/hashtag_feed/state/hashtag_feed_state.dart';
-import 'package:atpost_app/shared/widgets/content_cards.dart';
+import 'package:social_ui/content_cards.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 

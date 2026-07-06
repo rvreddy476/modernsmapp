@@ -21,7 +21,7 @@
 // "auto-enable" sub-toggle inert (graceful degradation; manual override
 // always works).
 
-import 'package:commerce_domain/commerce_telemetry.dart';
+import 'package:atpost_network/telemetry.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
