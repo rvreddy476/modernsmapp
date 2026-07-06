@@ -4,7 +4,7 @@ import 'package:atpost_design/app_spacing.dart';
 import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/data/models/live_stream.dart';
 import 'package:atpost_app/data/repositories/live_repository.dart';
-import 'package:atpost_app/shared/widgets/video_player_widget.dart';
+import 'package:shared_ui/video_player_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';

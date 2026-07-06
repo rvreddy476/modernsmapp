@@ -19,7 +19,7 @@ import 'package:atpost_app/shared/widgets/caption_toggle.dart';
 import 'package:atpost_app/features/reels/product_tag_composer_button.dart';
 import 'package:atpost_app/shared/widgets/product_tag_overlay.dart';
 import 'package:atpost_app/shared/widgets/video_more_sheet.dart';
-import 'package:atpost_app/shared/widgets/video_player_widget.dart';
+import 'package:shared_ui/video_player_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';

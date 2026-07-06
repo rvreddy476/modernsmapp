@@ -8,7 +8,7 @@ import 'package:atpost_app/providers/presence_provider.dart';
 import 'package:atpost_app/services/auth_service.dart';
 import 'package:atpost_app/services/call_service.dart';
 import 'package:atpost_realtime/realtime_service.dart' as rt;
-import 'package:atpost_app/shared/widgets/glass_icon_button.dart';
+import 'package:shared_ui/glass_icon_button.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';

@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/google/uuid"
@@ -19,9 +20,12 @@ func New(db *pgxpool.Pool) *Store {
 }
 
 type RestaurantFilter struct {
-	Query string
-	City  string
-	Limit int
+	Query       string
+	City        string
+	Limit       int
+	Latitude    float64
+	Longitude   float64
+	HasLocation bool
 }
 
 func (s *Store) ListCuisines(ctx context.Context) ([]Cuisine, error) {
@@ -98,6 +102,14 @@ func (s *Store) ListRestaurants(ctx context.Context, filter RestaurantFilter) ([
 			)
 		)`, len(args), len(args), len(args)))
 	}
+	distanceExpression := "0::float8"
+	if filter.HasLocation && filter.Latitude >= -90 && filter.Latitude <= 90 && filter.Longitude >= -180 && filter.Longitude <= 180 {
+		args = append(args, filter.Latitude, filter.Longitude)
+		latArg, lngArg := len(args)-1, len(args)
+		distanceExpression = fmt.Sprintf(`CASE WHEN r.latitude IS NULL OR r.longitude IS NULL THEN 0 ELSE
+			6371 * 2 * ASIN(SQRT(POWER(SIN(RADIANS(r.latitude - $%d) / 2), 2) +
+			COS(RADIANS($%d)) * COS(RADIANS(r.latitude)) * POWER(SIN(RADIANS(r.longitude - $%d) / 2), 2))) END`, latArg, latArg, lngArg)
+	}
 	args = append(args, limit)
 
 	query := fmt.Sprintf(`
@@ -128,12 +140,13 @@ func (s *Store) ListRestaurants(ctx context.Context, filter RestaurantFilter) ([
 				FROM food.restaurant_cuisines rc
 				JOIN food.cuisines c ON c.id = rc.cuisine_id
 				WHERE rc.restaurant_id = r.id
-			), '')
+			), ''),
+			%s
 		FROM food.restaurants r
 		WHERE %s
 		ORDER BY r.is_open DESC, r.avg_rating DESC, r.rating_count DESC, r.name
 		LIMIT $%d
-	`, strings.Join(clauses, " AND "), len(args))
+	`, distanceExpression, strings.Join(clauses, " AND "), len(args))
 
 	rows, err := s.db.Query(ctx, query, args...)
 	if err != nil {
@@ -295,12 +308,18 @@ func scanRestaurantSummary(rows pgx.Rows) (RestaurantSummary, error) {
 		&r.AvgPreparationMins,
 		&r.HeroImageURL,
 		&cuisines,
+		&r.DistanceKM,
 	); err != nil {
 		return RestaurantSummary{}, err
 	}
 	r.Cuisines = splitCSV(cuisines)
-	r.EstimatedDelivery = fmt.Sprintf("%d-%d min", r.AvgPreparationMins+12, r.AvgPreparationMins+22)
-	r.DeliveryFeeEstimate = 29
+	travelMinutes := 10
+	if r.DistanceKM > 0 {
+		travelMinutes = int(math.Ceil(r.DistanceKM*3.2)) + 4
+	}
+	r.EstimatedDeliveryMins = r.AvgPreparationMins + travelMinutes
+	r.EstimatedDelivery = fmt.Sprintf("%d-%d min", r.EstimatedDeliveryMins, r.EstimatedDeliveryMins+8)
+	r.DeliveryFeeEstimate = math.Round(19 + math.Max(r.DistanceKM, 2)*5)
 	return r, nil
 }
 

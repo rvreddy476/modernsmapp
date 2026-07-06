@@ -224,7 +224,14 @@ func (h *Handler) ResolvePartnerAccess(c *gin.Context) {
 }
 
 func (h *Handler) Home(c *gin.Context) {
-	home, err := h.svc.Home(c.Request.Context(), c.Query("city"))
+	var latitude, longitude *float64
+	if value, err := strconv.ParseFloat(c.Query("lat"), 64); err == nil {
+		latitude = &value
+	}
+	if value, err := strconv.ParseFloat(c.Query("lng"), 64); err == nil {
+		longitude = &value
+	}
+	home, err := h.svc.Home(c.Request.Context(), c.Query("city"), latitude, longitude)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "FOOD_HOME_FAILED", err.Error(), nil)
 		return

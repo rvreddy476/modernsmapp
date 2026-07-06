@@ -13,7 +13,7 @@ import 'package:social_domain/providers/feed_provider.dart';
 import 'package:social_domain/providers/following_provider.dart';
 import 'package:atpost_app/shared/widgets/video_more_sheet.dart';
 import 'package:atpost_app/services/auth_service.dart';
-import 'package:atpost_app/shared/widgets/clickable_hashtag_text.dart';
+import 'package:shared_ui/clickable_hashtag_text.dart';
 import 'package:atpost_app/shared/widgets/echo_sheet.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';

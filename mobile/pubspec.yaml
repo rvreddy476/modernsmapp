@@ -13,6 +13,7 @@ workspace:
   - packages/atpost_design
   - packages/atpost_network
   - packages/atpost_realtime
+  - packages/shared_ui
   - packages/social_domain
   - packages/feature_contracts
   - packages/commerce_domain

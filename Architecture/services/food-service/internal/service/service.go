@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -299,28 +300,47 @@ type Offer struct {
 	Description string `json:"description"`
 }
 
-func (s *Service) Home(ctx context.Context, city string) (*Home, error) {
+func (s *Service) Home(ctx context.Context, city string, latitude, longitude *float64) (*Home, error) {
 	cuisines, err := s.store.ListCuisines(ctx)
 	if err != nil {
 		return nil, err
 	}
-	restaurants, err := s.store.ListRestaurants(ctx, postgres.RestaurantFilter{City: city, Limit: 12})
+	filter := postgres.RestaurantFilter{City: city, Limit: 20}
+	if latitude != nil && longitude != nil {
+		filter.Latitude = *latitude
+		filter.Longitude = *longitude
+		filter.HasLocation = true
+	}
+	restaurants, err := s.store.ListRestaurants(ctx, filter)
 	if err != nil {
 		return nil, err
+	}
+
+	topRated := append([]postgres.RestaurantSummary(nil), restaurants...)
+	sort.SliceStable(topRated, func(i, j int) bool { return topRated[i].AvgRating > topRated[j].AvgRating })
+	fastDelivery := append([]postgres.RestaurantSummary(nil), restaurants...)
+	sort.SliceStable(fastDelivery, func(i, j int) bool { return fastDelivery[i].AvgPreparationMins < fastDelivery[j].AvgPreparationMins })
+
+	offers := make([]Offer, 0, 4)
+	if rows, couponErr := s.store.AdminListCoupons(ctx); couponErr == nil {
+		for _, row := range rows {
+			active, _ := row["is_active"].(bool)
+			if !active || len(offers) == 4 {
+				continue
+			}
+			code, _ := row["code"].(string)
+			title, _ := row["title"].(string)
+			minimum, _ := row["min_order_amount"].(float64)
+			offers = append(offers, Offer{Code: code, Title: title, Description: fmt.Sprintf("Use %s on orders above ₹%.0f", code, minimum)})
+		}
 	}
 
 	home := &Home{
 		Cuisines:          cuisines,
 		NearbyRestaurants: restaurants,
-		TopRated:          take(restaurants, 6),
-		FastDelivery:      take(restaurants, 6),
-		Offers: []Offer{
-			{
-				Code:        "FIGO50",
-				Title:       "FiGo launch offer",
-				Description: "Get Rs 50 off on orders above Rs 199.",
-			},
-		},
+		TopRated:          take(topRated, 8),
+		FastDelivery:      take(fastDelivery, 8),
+		Offers:            offers,
 	}
 	return home, nil
 }

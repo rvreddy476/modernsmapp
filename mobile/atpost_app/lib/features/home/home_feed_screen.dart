@@ -15,7 +15,7 @@ import 'package:social_domain/providers/stories_provider.dart';
 import 'package:atpost_app/services/auth_service.dart';
 import 'package:atpost_app/providers/user_provider.dart';
 import 'package:atpost_app/services/image_url_helper.dart';
-import 'package:atpost_app/shared/widgets/badge_icon_button.dart';
+import 'package:shared_ui/badge_icon_button.dart';
 import 'package:atpost_app/shared/widgets/content_cards.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';

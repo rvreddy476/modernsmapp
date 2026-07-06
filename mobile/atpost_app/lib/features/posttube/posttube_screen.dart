@@ -14,7 +14,7 @@ import 'package:atpost_app/providers/data_saver_provider.dart';
 import 'package:social_domain/providers/feed_provider.dart';
 import 'package:atpost_app/shared/widgets/caption_toggle.dart';
 import 'package:atpost_app/shared/widgets/video_more_sheet.dart';
-import 'package:atpost_app/shared/widgets/video_player_widget.dart';
+import 'package:shared_ui/video_player_widget.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';

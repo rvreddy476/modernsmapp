@@ -16,24 +16,26 @@ type Cuisine struct {
 }
 
 type RestaurantSummary struct {
-	ID                  uuid.UUID `json:"id"`
-	Name                string    `json:"name"`
-	Slug                string    `json:"slug"`
-	Description         string    `json:"description,omitempty"`
-	City                string    `json:"city"`
-	State               string    `json:"state,omitempty"`
-	Status              string    `json:"status"`
-	IsOpen              bool      `json:"is_open"`
-	IsAcceptingOrders   bool      `json:"is_accepting_orders"`
-	AvgRating           float64   `json:"avg_rating"`
-	RatingCount         int       `json:"rating_count"`
-	MinOrderAmount      float64   `json:"min_order_amount"`
-	PackagingFee        float64   `json:"packaging_fee"`
-	AvgPreparationMins  int       `json:"avg_preparation_minutes"`
-	HeroImageURL        string    `json:"hero_image_url,omitempty"`
-	Cuisines            []string  `json:"cuisines"`
-	EstimatedDelivery   string    `json:"estimated_delivery"`
-	DeliveryFeeEstimate float64   `json:"delivery_fee_estimate"`
+	ID                    uuid.UUID `json:"id"`
+	Name                  string    `json:"name"`
+	Slug                  string    `json:"slug"`
+	Description           string    `json:"description,omitempty"`
+	City                  string    `json:"city"`
+	State                 string    `json:"state,omitempty"`
+	Status                string    `json:"status"`
+	IsOpen                bool      `json:"is_open"`
+	IsAcceptingOrders     bool      `json:"is_accepting_orders"`
+	AvgRating             float64   `json:"avg_rating"`
+	RatingCount           int       `json:"rating_count"`
+	MinOrderAmount        float64   `json:"min_order_amount"`
+	PackagingFee          float64   `json:"packaging_fee"`
+	AvgPreparationMins    int       `json:"avg_preparation_minutes"`
+	HeroImageURL          string    `json:"hero_image_url,omitempty"`
+	Cuisines              []string  `json:"cuisines"`
+	EstimatedDelivery     string    `json:"estimated_delivery"`
+	EstimatedDeliveryMins int       `json:"estimated_delivery_minutes"`
+	DistanceKM            float64   `json:"distance_km"`
+	DeliveryFeeEstimate   float64   `json:"delivery_fee_estimate"`
 }
 
 type RestaurantDetail struct {
