@@ -2,7 +2,7 @@ import 'package:atpost_design/app_images.dart';
 import 'dart:async';
 
 import 'package:atpost_design/app_text_styles.dart';
-import 'package:atpost_app/data/models/story.dart';
+import 'package:social_domain/story.dart';
 import 'package:atpost_app/features/stories/widgets/countdown_widget.dart';
 import 'package:atpost_app/features/stories/widgets/interactive_results_sheet.dart';
 import 'package:atpost_app/features/stories/widgets/poll_widget.dart';

@@ -1,6 +1,6 @@
 import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_text_styles.dart';
-import 'package:atpost_app/data/models/story.dart';
+import 'package:social_domain/story.dart';
 import 'package:flutter/material.dart';
 
 /// Bottom sheet shown from the story creator. Lets the author build one of:

@@ -1,5 +1,5 @@
 import 'package:atpost_app/data/models/conversation.dart';
-import 'package:atpost_app/data/models/post.dart';
+import 'package:social_domain/post.dart';
 import 'package:atpost_app/data/models/user.dart';
 
 /// Creates a fake [Post] with sensible defaults for testing.

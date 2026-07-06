@@ -1,7 +1,7 @@
 import 'package:atpost_core/cache/cache_keys.dart';
 import 'package:atpost_core/cache/cache_manager.dart';
 import 'package:atpost_core/utils/app_logger.dart';
-import 'package:atpost_app/data/models/post.dart';
+import 'package:social_domain/post.dart';
 import 'package:atpost_app/data/models/user.dart';
 import 'package:atpost_app/data/repositories/user_repository.dart';
 import 'package:atpost_network/api_client.dart';

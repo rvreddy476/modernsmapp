@@ -1,4 +1,4 @@
-import 'package:atpost_app/data/models/post.dart';
+import 'package:social_domain/post.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {

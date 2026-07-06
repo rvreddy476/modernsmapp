@@ -23,7 +23,7 @@ import 'dart:convert';
 
 import 'package:billpay_domain/billpay.dart';
 import 'package:commerce_domain/models/commerce.dart';
-import 'package:atpost_app/data/models/post.dart';
+import 'package:social_domain/post.dart';
 import 'package:atpost_app/data/models/qa.dart';
 import 'package:atpost_app/data/models/user.dart';
 import 'package:billpay_domain/billpay_repository.dart';

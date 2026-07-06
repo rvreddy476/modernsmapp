@@ -1,5 +1,5 @@
 import 'package:atpost_core/config/environment.dart';
-import 'package:atpost_app/data/models/story.dart';
+import 'package:social_domain/story.dart';
 import 'package:atpost_network/api_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 

@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:atpost_core/errors/error_handler.dart';
 import 'package:atpost_core/utils/app_logger.dart';
-import 'package:atpost_app/data/models/post.dart';
+import 'package:social_domain/post.dart';
 import 'package:atpost_realtime/realtime_event.dart';
 import 'package:atpost_app/data/repositories/feed_repository.dart';
 import 'package:atpost_app/services/auth_service.dart';

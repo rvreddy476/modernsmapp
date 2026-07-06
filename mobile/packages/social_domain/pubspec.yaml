@@ -1,0 +1,20 @@
+# Social domain vocabulary: the Post and Story models — the shared types
+# the whole social surface speaks (feed, reels, posttube, stories,
+# profile, hashtag, comments, bookmarks, search). Pure data; the
+# repositories/providers that hydrate them from post-service + user-
+# service stay in the app until a user-hydration contract is designed.
+name: social_domain
+description: atPost social domain models (post, story).
+version: 0.1.0
+publish_to: none
+environment:
+  sdk: ^3.10.7
+resolution: workspace
+dependencies:
+  flutter:
+    sdk: flutter
+  atpost_core: ^0.1.0
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0

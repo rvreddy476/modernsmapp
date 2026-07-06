@@ -2,7 +2,7 @@ import 'package:atpost_design/app_images.dart';
 import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_spacing.dart';
 import 'package:atpost_design/app_text_styles.dart';
-import 'package:atpost_app/data/models/post.dart';
+import 'package:social_domain/post.dart';
 import 'package:atpost_app/data/repositories/post_repository.dart';
 import 'package:atpost_app/providers/comments_provider.dart';
 import 'package:atpost_app/providers/data_saver_provider.dart';

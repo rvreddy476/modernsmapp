@@ -1,4 +1,4 @@
-import 'package:atpost_app/data/models/story.dart';
+import 'package:social_domain/story.dart';
 import 'package:atpost_app/data/repositories/stories_repository.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 

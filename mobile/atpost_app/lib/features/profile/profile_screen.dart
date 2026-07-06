@@ -1,7 +1,7 @@
 import 'package:atpost_design/app_images.dart';
 import 'package:atpost_core/config/environment.dart';
 import 'package:atpost_design/app_colors.dart';
-import 'package:atpost_app/data/models/post.dart';
+import 'package:social_domain/post.dart';
 import 'package:atpost_app/data/models/user.dart';
 import 'package:atpost_app/providers/data_saver_provider.dart';
 import 'package:atpost_app/providers/profile_provider.dart';
