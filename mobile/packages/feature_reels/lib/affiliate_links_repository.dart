@@ -9,7 +9,7 @@
 // merging would hide the cross-service hop behind a single repo
 // surface.
 
-import 'package:atpost_app/data/models/affiliate_link.dart';
+import 'package:feature_reels/affiliate_link.dart';
 import 'package:atpost_network/api_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 

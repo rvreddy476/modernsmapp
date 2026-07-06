@@ -8,16 +8,13 @@ import 'package:atpost_design/app_text_styles.dart';
 import 'package:social_domain/post.dart';
 import 'package:atpost_network/analytics_repository.dart';
 import 'package:social_domain/data/feed_repository.dart';
-import 'package:atpost_app/app/router.dart';
 import 'package:social_domain/data/post_repository.dart';
-import 'package:atpost_app/data/repositories/user_repository.dart';
-import 'package:atpost_app/features/shell/shell_providers.dart';
-import 'package:atpost_app/features/shell/shell_scaffold.dart';
+import 'package:feature_contracts/feature_contracts.dart';
 import 'package:social_domain/providers/autoplay_provider.dart';
 import 'package:social_domain/providers/data_saver_provider.dart';
 import 'package:social_ui/caption_toggle.dart';
-import 'package:atpost_app/features/reels/product_tag_composer_button.dart';
-import 'package:atpost_app/shared/widgets/product_tag_overlay.dart';
+import 'package:feature_reels/product_tag_composer_button.dart';
+import 'package:feature_reels/product_tag_overlay.dart';
 import 'package:social_ui/video_more_sheet.dart';
 import 'package:shared_ui/video_player_widget.dart';
 import 'package:flutter/material.dart';
@@ -86,7 +83,7 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> with RouteAware {
   // True while another route (e.g. /reels/editor, /reels/caption,
   // /comments/:id) sits on top of the host route. RouteAware flips
   // this from didPushNext / didPopNext so the player gates correctly
-  // even when shellTabProvider is still on Reels.
+  // even when appShellTabProvider is still on Reels.
   bool _coveredByPushedRoute = false;
   RouteObserver<ModalRoute<void>>? _routeObserver;
 
@@ -107,7 +104,7 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> with RouteAware {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    final observer = ref.read(routeObserverProvider);
+    final observer = ref.read(appRouteObserverProvider);
     if (_routeObserver != observer) {
       _routeObserver?.unsubscribe(this);
       final route = ModalRoute.of(context);
@@ -461,11 +458,11 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> with RouteAware {
       _followedAuthors[authorId] = !wasFollowing;
     });
     try {
-      final repo = ref.read(userRepositoryProvider);
+      final repo = ref.read(appUserActionsProvider);
       if (wasFollowing) {
-        await repo.unfollowUser(authorId);
+        await repo.unfollow(authorId);
       } else {
-        await repo.followUser(authorId);
+        await repo.follow(authorId);
       }
     } catch (_) {
       if (!mounted) return;
@@ -531,7 +528,7 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> with RouteAware {
     final isActive =
         !_coveredByPushedRoute &&
         (widget.fullscreenRoute ||
-            ref.watch(shellTabProvider) == ShellTabIndex.reels);
+            ref.watch(appShellTabProvider) == ShellTab.reels);
 
     if (isActive && !_initialLoadKicked) {
       _initialLoadKicked = true;

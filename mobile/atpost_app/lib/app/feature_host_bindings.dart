@@ -1,3 +1,4 @@
+import 'package:atpost_app/app/router.dart';
 import 'package:atpost_app/data/models/user.dart';
 import 'package:atpost_app/data/repositories/user_repository.dart';
 import 'package:atpost_app/features/hashtag_feed/state/hashtag_feed_notifier.dart';
@@ -94,6 +95,12 @@ List<Override> featureHostBindings() => [
             {required String creatorId, String? creatorName}) =>
         PaywallPreview(creatorId: creatorId, creatorName: creatorName);
   }),
+
+  // Shell: the current bottom-nav tab + the shared route observer, so
+  // tab surfaces (reels, home) can gate work without importing the shell.
+  appShellTabProvider.overrideWith((ref) => ref.watch(shellTabProvider)),
+  appRouteObserverProvider
+      .overrideWith((ref) => ref.watch(routeObserverProvider)),
 
   // Pulse-specific: live chat messages off the shared realtime channel,
   // filtered to the chat wire type and flattened to the Pulse shape.

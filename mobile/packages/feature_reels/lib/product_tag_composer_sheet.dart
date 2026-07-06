@@ -17,9 +17,9 @@
 // Returns true when at least one tag was created/deleted so the
 // caller can refresh the overlay state.
 
-import 'package:atpost_app/data/models/affiliate_link.dart';
+import 'package:feature_reels/affiliate_link.dart';
 import 'package:commerce_domain/models/product_tag.dart';
-import 'package:atpost_app/data/repositories/affiliate_links_repository.dart';
+import 'package:feature_reels/affiliate_links_repository.dart';
 import 'package:commerce_domain/data/product_tags_repository.dart';
 import 'package:commerce_domain/providers/product_tags_provider.dart';
 import 'package:flutter/material.dart';

@@ -28,5 +28,6 @@ workspace:
   - packages/feature_memories
   - packages/feature_figo
   - packages/feature_posttube
+  - packages/feature_reels
   - packages/feature_pulse
   - packages/feature_stories

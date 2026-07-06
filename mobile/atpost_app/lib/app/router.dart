@@ -65,7 +65,7 @@ import 'package:atpost_app/features/social/followers_screen.dart';
 import 'package:atpost_app/features/social/following_screen.dart';
 import 'package:atpost_app/features/social/friend_requests_screen.dart';
 import 'package:atpost_app/features/social/friends_screen.dart';
-import 'package:atpost_app/features/reels/reels_screen.dart';
+import 'package:feature_reels/reels_routes.dart';
 import 'package:feature_posttube/posttube_routes.dart';
 import 'package:atpost_app/features/qa/ask_question_screen.dart';
 import 'package:atpost_app/features/qa/drafts_screen.dart';
@@ -376,11 +376,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             ),
           ),
           ...posttubeRoutes(),
-          GoRoute(
-            path: '/reels',
-            builder: (context, state) =>
-                const ReelsScreen(fullscreenRoute: true),
-          ),
+          ...reelsRoutes(),
           GoRoute(
             path: '/reels/editor',
             builder: (context, state) => const ReelsEditorScreen(),

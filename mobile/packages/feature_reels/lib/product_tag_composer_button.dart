@@ -6,8 +6,8 @@
 // sheet on tap. Renders nothing for non-authors so embedding screens
 // drop it in without conditional logic.
 
-import 'package:atpost_app/features/reels/product_tag_composer_sheet.dart';
-import 'package:atpost_app/services/auth_service.dart';
+import 'package:feature_reels/product_tag_composer_sheet.dart';
+import 'package:feature_contracts/feature_contracts.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -23,8 +23,7 @@ class ProductTagComposerButton extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final authState = ref.watch(authStateProvider);
-    final selfId = authState.valueOrNull?.userId;
+    final selfId = ref.watch(currentAppUserProvider).valueOrNull?.id;
     if (selfId == null || selfId != postAuthorId) {
       return const SizedBox.shrink();
     }

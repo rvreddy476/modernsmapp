@@ -36,6 +36,7 @@ dependencies:
   feature_stories: ^0.1.0
   feature_figo: ^0.1.0
   feature_posttube: ^0.1.0
+  feature_reels: ^0.1.0
   feature_pulse: ^0.1.0
 
   cupertino_icons: ^1.0.8
