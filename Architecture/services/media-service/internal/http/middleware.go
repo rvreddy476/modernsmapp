@@ -37,6 +37,11 @@ type JWTKeySet struct {
 
 func (k JWTKeySet) secretFor(kid string) ([]byte, bool) {
 	if kid == "" || kid == k.ActiveKID {
+		// RSA-only mode leaves ActiveSecret empty — refuse HS256 outright
+		// rather than verifying against an empty-string HMAC key.
+		if k.ActiveSecret == "" {
+			return nil, false
+		}
 		return []byte(k.ActiveSecret), true
 	}
 	if k.PreviousSecret != "" && kid == k.PreviousKID {

@@ -55,19 +55,20 @@ type MenuCategory struct {
 }
 
 type MenuItem struct {
-	ID                 uuid.UUID `json:"id"`
-	RestaurantID       uuid.UUID `json:"restaurant_id"`
-	CategoryID         uuid.UUID `json:"category_id,omitempty"`
-	Name               string    `json:"name"`
-	Description        string    `json:"description,omitempty"`
-	FoodType           string    `json:"food_type"`
-	BasePrice          float64   `json:"base_price"`
-	DiscountPrice      float64   `json:"discount_price,omitempty"`
-	ImageURL           string    `json:"image_url,omitempty"`
-	PreparationMinutes int       `json:"preparation_minutes"`
-	IsAvailable        bool      `json:"is_available"`
-	IsRecommended      bool      `json:"is_recommended"`
-	TaxPercentage      float64   `json:"tax_percentage"`
+	ID                 uuid.UUID      `json:"id"`
+	RestaurantID       uuid.UUID      `json:"restaurant_id"`
+	CategoryID         uuid.UUID      `json:"category_id,omitempty"`
+	Name               string         `json:"name"`
+	Description        string         `json:"description,omitempty"`
+	FoodType           string         `json:"food_type"`
+	BasePrice          float64        `json:"base_price"`
+	DiscountPrice      float64        `json:"discount_price,omitempty"`
+	ImageURL           string         `json:"image_url,omitempty"`
+	PreparationMinutes int            `json:"preparation_minutes"`
+	IsAvailable        bool           `json:"is_available"`
+	IsRecommended      bool           `json:"is_recommended"`
+	TaxPercentage      float64        `json:"tax_percentage"`
+	Metadata           map[string]any `json:"metadata,omitempty"`
 }
 
 type Cart struct {
@@ -225,23 +226,41 @@ type PartnerRestaurantInput struct {
 	Longitude      *float64
 	MinOrderAmount float64
 	PackagingFee   float64
+	Metadata       map[string]any
+	// Cuisines holds cuisine slugs (see food.cuisines.slug). nil = leave the
+	// restaurant's cuisine links untouched; empty slice = clear them.
+	Cuisines []string
 }
 
 type PartnerRestaurant struct {
-	ID                uuid.UUID `json:"id"`
-	PartnerID         uuid.UUID `json:"partner_id"`
-	OwnerUserID       uuid.UUID `json:"owner_user_id"`
-	Name              string    `json:"name"`
-	Slug              string    `json:"slug"`
-	Description       string    `json:"description,omitempty"`
-	Status            string    `json:"status"`
-	IsOpen            bool      `json:"is_open"`
-	IsAcceptingOrders bool      `json:"is_accepting_orders"`
-	City              string    `json:"city"`
-	State             string    `json:"state,omitempty"`
-	MinOrderAmount    float64   `json:"min_order_amount"`
-	PackagingFee      float64   `json:"packaging_fee"`
-	CreatedAt         string    `json:"created_at"`
+	ID                uuid.UUID      `json:"id"`
+	PartnerID         uuid.UUID      `json:"partner_id"`
+	OwnerUserID       uuid.UUID      `json:"owner_user_id"`
+	Name              string         `json:"name"`
+	Slug              string         `json:"slug"`
+	Description       string         `json:"description,omitempty"`
+	Status            string         `json:"status"`
+	IsOpen            bool           `json:"is_open"`
+	IsAcceptingOrders bool           `json:"is_accepting_orders"`
+	City              string         `json:"city"`
+	State             string         `json:"state,omitempty"`
+	MinOrderAmount    float64        `json:"min_order_amount"`
+	PackagingFee      float64        `json:"packaging_fee"`
+	Phone             string         `json:"phone,omitempty"`
+	Email             string         `json:"email,omitempty"`
+	AddressLine1      string         `json:"address_line1,omitempty"`
+	AddressLine2      string         `json:"address_line2,omitempty"`
+	PostalCode        string         `json:"postal_code,omitempty"`
+	Metadata          map[string]any `json:"metadata,omitempty"`
+	Cuisines          []string       `json:"cuisines"`
+	CreatedAt         string         `json:"created_at"`
+}
+
+// PartnerAccessIdentity is returned only to trusted services while resolving
+// a human-friendly Restaurant ID to its owning authentication account.
+type PartnerAccessIdentity struct {
+	RestaurantID uuid.UUID `json:"restaurant_id"`
+	OwnerUserID  uuid.UUID `json:"owner_user_id"`
 }
 
 type MenuCategoryInput struct {
@@ -260,6 +279,7 @@ type MenuItemInput struct {
 	PreparationMinutes int
 	IsRecommended      bool
 	TaxPercentage      float64
+	Metadata           map[string]any
 }
 
 type DeliveryPartnerInput struct {
@@ -300,11 +320,18 @@ type DeliveryAssignment struct {
 }
 
 type AdminDashboard struct {
-	TotalOrdersToday        int     `json:"total_orders_today"`
-	GMVToday                float64 `json:"gmv_today"`
-	CancelledOrdersToday    int     `json:"cancelled_orders_today"`
-	ActiveRestaurants       int     `json:"active_restaurants"`
-	PendingRestaurants      int     `json:"pending_restaurants"`
-	PendingDeliveryPartners int     `json:"pending_delivery_partners"`
-	OnlineDeliveryPartners  int     `json:"online_delivery_partners"`
+	TotalOrdersToday        int               `json:"total_orders_today"`
+	GMVToday                float64           `json:"gmv_today"`
+	SalesYesterday          float64           `json:"sales_yesterday"`
+	CancelledOrdersToday    int               `json:"cancelled_orders_today"`
+	ActiveRestaurants       int               `json:"active_restaurants"`
+	PendingRestaurants      int               `json:"pending_restaurants"`
+	PendingDeliveryPartners int               `json:"pending_delivery_partners"`
+	OnlineDeliveryPartners  int               `json:"online_delivery_partners"`
+	SalesLast30Days         []DailySalesPoint `json:"sales_last_30_days"`
+}
+
+type DailySalesPoint struct {
+	Date   string  `json:"date"`
+	Amount float64 `json:"amount"`
 }

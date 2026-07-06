@@ -26,6 +26,10 @@ func TestJWTKeySetSecretFor(t *testing.T) {
 		{"single-key set accepts legacy (no kid)", JWTKeySet{ActiveSecret: "only"}, "", true, "only"},
 		{"single-key set rejects unknown kid", JWTKeySet{ActiveSecret: "only"}, "v1", false, ""},
 		{"empty previous secret disables previous", JWTKeySet{ActiveKID: "v2", ActiveSecret: "new", PreviousKID: "v1"}, "v1", false, ""},
+		// RSA-only mode: no HS256 secret configured → HS256 tokens must be
+		// refused, never verified against an empty-string HMAC key.
+		{"empty active secret refuses HS256 (RSA-only mode)", JWTKeySet{}, "", false, ""},
+		{"empty active secret refuses HS256 even with matching kid", JWTKeySet{ActiveKID: "v1"}, "v1", false, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -23,6 +23,7 @@ import (
 
 type Store interface {
 	ListCuisines(ctx context.Context) ([]postgres.Cuisine, error)
+	ListDishCategories(ctx context.Context) ([]postgres.Cuisine, error)
 	ListRestaurants(ctx context.Context, filter postgres.RestaurantFilter) ([]postgres.RestaurantSummary, error)
 	GetRestaurant(ctx context.Context, id uuid.UUID) (*postgres.RestaurantDetail, error)
 	GetMenu(ctx context.Context, restaurantID uuid.UUID) ([]postgres.MenuCategory, error)
@@ -50,6 +51,7 @@ type Store interface {
 	RateDelivery(ctx context.Context, userID, orderID uuid.UUID, rating int, review string) (map[string]any, error)
 	CreatePartnerRestaurant(ctx context.Context, ownerID uuid.UUID, in postgres.PartnerRestaurantInput) (*postgres.PartnerRestaurant, error)
 	ListPartnerRestaurants(ctx context.Context, ownerID uuid.UUID) ([]postgres.PartnerRestaurant, error)
+	ResolvePartnerAccess(ctx context.Context, restaurantID string) (*postgres.PartnerAccessIdentity, error)
 	GetPartnerRestaurant(ctx context.Context, ownerID, restaurantID uuid.UUID) (*postgres.PartnerRestaurant, error)
 	UpdatePartnerRestaurant(ctx context.Context, ownerID, restaurantID uuid.UUID, in postgres.PartnerRestaurantInput) (*postgres.PartnerRestaurant, error)
 	AddRestaurantDocument(ctx context.Context, ownerID, restaurantID uuid.UUID, input map[string]any) (map[string]any, error)
@@ -145,6 +147,8 @@ type Store interface {
 	DeliveryHistory(ctx context.Context, userID uuid.UUID) ([]postgres.DeliveryAssignment, error)
 	AdminDashboard(ctx context.Context) (*postgres.AdminDashboard, error)
 	AdminPendingRestaurants(ctx context.Context) ([]postgres.PartnerRestaurant, error)
+	AdminRestaurantDocuments(ctx context.Context, restaurantID uuid.UUID) ([]map[string]any, error)
+	AdminRestaurantDocumentDownload(ctx context.Context, restaurantID, documentID uuid.UUID) (map[string]any, error)
 	AdminApproveRestaurant(ctx context.Context, adminID, restaurantID uuid.UUID, approve bool, reason string) error
 	AdminSetRestaurantStatus(ctx context.Context, adminID, restaurantID uuid.UUID, status, reason string) error
 	AdminPendingDeliveryPartners(ctx context.Context) ([]postgres.DeliveryPartner, error)
@@ -327,6 +331,10 @@ func (s *Service) ListRestaurants(ctx context.Context, filter postgres.Restauran
 
 func (s *Service) ListCuisines(ctx context.Context) ([]postgres.Cuisine, error) {
 	return s.store.ListCuisines(ctx)
+}
+
+func (s *Service) ListDishCategories(ctx context.Context) ([]postgres.Cuisine, error) {
+	return s.store.ListDishCategories(ctx)
 }
 
 func (s *Service) GetRestaurant(ctx context.Context, id uuid.UUID) (*postgres.RestaurantDetail, error) {
@@ -742,6 +750,10 @@ func (s *Service) ListPartnerRestaurants(ctx context.Context, ownerID uuid.UUID)
 	return s.store.ListPartnerRestaurants(ctx, ownerID)
 }
 
+func (s *Service) ResolvePartnerAccess(ctx context.Context, restaurantID string) (*postgres.PartnerAccessIdentity, error) {
+	return s.store.ResolvePartnerAccess(ctx, restaurantID)
+}
+
 func (s *Service) GetPartnerRestaurant(ctx context.Context, ownerID, restaurantID uuid.UUID) (*postgres.PartnerRestaurant, error) {
 	return s.store.GetPartnerRestaurant(ctx, ownerID, restaurantID)
 }
@@ -950,6 +962,14 @@ func (s *Service) AdminDashboard(ctx context.Context) (*postgres.AdminDashboard,
 
 func (s *Service) AdminPendingRestaurants(ctx context.Context) ([]postgres.PartnerRestaurant, error) {
 	return s.store.AdminPendingRestaurants(ctx)
+}
+
+func (s *Service) AdminRestaurantDocuments(ctx context.Context, restaurantID uuid.UUID) ([]map[string]any, error) {
+	return s.store.AdminRestaurantDocuments(ctx, restaurantID)
+}
+
+func (s *Service) AdminRestaurantDocumentDownload(ctx context.Context, restaurantID, documentID uuid.UUID) (map[string]any, error) {
+	return s.store.AdminRestaurantDocumentDownload(ctx, restaurantID, documentID)
 }
 
 func (s *Service) AdminApproveRestaurant(ctx context.Context, adminID, restaurantID uuid.UUID, approve bool, reason string) error {

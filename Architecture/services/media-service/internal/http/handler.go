@@ -1,6 +1,7 @@
 package http
 
 import (
+	"io"
 	"net/http"
 	"strings"
 
@@ -37,6 +38,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, optionalAuthMW gin.Handl
 		v1.DELETE("/:mediaId", authMW, h.DeleteMedia)
 		v1.PATCH("/:mediaId/alt-text", authMW, h.UpdateAltText)
 		v1.POST("/upload/presigned", authMW, h.GetPresignedUploadURL)
+		v1.POST("/upload", authMW, h.UploadMedia)
 
 		// Cover frame extraction
 		v1.POST("/:mediaId/extract-frame", authMW, h.ExtractFrame)
@@ -50,6 +52,35 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, optionalAuthMW gin.Handl
 		v1.GET("/:mediaId/serve", h.ServeMedia)
 		v1.GET("/:mediaId/serve/:variant", h.ServeMediaVariant)
 	}
+}
+
+func (h *Handler) UploadMedia(c *gin.Context) {
+	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
+		return
+	}
+
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 6<<20)
+	file, header, err := c.Request.FormFile("file")
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "image file required (form field: file)", nil)
+		return
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "failed to read image", nil)
+		return
+	}
+	mimeType := header.Header.Get("Content-Type")
+	asset, err := h.svc.UploadMedia(c.Request.Context(), userID, header.Filename, mimeType, data)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "UPLOAD_FAILED", err.Error(), nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusCreated, asset, nil)
 }
 
 func (h *Handler) HealthCheck(c *gin.Context) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"path"
 	"strings"
 	"time"
 
@@ -19,11 +20,11 @@ import (
 
 // Size limits per subtype/file_type
 const (
-	MaxImageSize  int64 = 20 * 1024 * 1024  // 20 MB
+	MaxImageSize  int64 = 20 * 1024 * 1024       // 20 MB
 	MaxVideoSize  int64 = 2 * 1024 * 1024 * 1024 // 2 GB
-	MaxAvatarSize int64 = 10 * 1024 * 1024  // 10 MB
-	MaxCoverSize  int64 = 10 * 1024 * 1024  // 10 MB
-	MaxGIFSize    int64 = 15 * 1024 * 1024  // 15 MB
+	MaxAvatarSize int64 = 10 * 1024 * 1024       // 10 MB
+	MaxCoverSize  int64 = 10 * 1024 * 1024       // 10 MB
+	MaxGIFSize    int64 = 15 * 1024 * 1024       // 15 MB
 
 	defaultURLExpiry = 15 * time.Minute
 )
@@ -625,6 +626,44 @@ type PresignedUploadResponse struct {
 	MediaID   uuid.UUID `json:"media_id"`
 	ObjectKey string    `json:"object_key"`
 	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// UploadMedia stores a small authenticated image through the API. This is used
+// for form-bound assets such as restaurant logos where upload and save are one action.
+func (s *Service) UploadMedia(ctx context.Context, userID uuid.UUID, filename, contentType string, data []byte) (*postgres.MediaAsset, error) {
+	if !strings.HasPrefix(contentType, "image/") {
+		return nil, fmt.Errorf("only image uploads are supported")
+	}
+	if err := ValidateUploadSize(int64(len(data))); err != nil {
+		return nil, err
+	}
+	if err := ValidateUploadMIME(contentType, "image"); err != nil {
+		return nil, err
+	}
+	if err := s.CheckUploadRateLimit(ctx, userID); err != nil {
+		return nil, err
+	}
+
+	mediaID := uuid.New()
+	safeName := strings.ReplaceAll(path.Base(filename), " ", "_")
+	if safeName == "." || safeName == "/" || safeName == "" {
+		safeName = "image"
+	}
+	objectKey := fmt.Sprintf("user/%s/%s/original/%s", userID, mediaID, safeName)
+	if err := s.blobStore.UploadObject(ctx, objectKey, data, contentType); err != nil {
+		return nil, fmt.Errorf("store image: %w", err)
+	}
+
+	now := time.Now()
+	asset := &postgres.MediaAsset{
+		ID: mediaID, UploaderID: userID, FileType: "image", MediaSubtype: "general",
+		MimeType: contentType, FileSizeBytes: int64(len(data)), StorageBucket: s.blobStore.Bucket(),
+		StorageKey: objectKey, ProcessingStatus: "ready", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.pgStore.CreateMedia(ctx, asset); err != nil {
+		return nil, fmt.Errorf("create media record: %w", err)
+	}
+	return asset, nil
 }
 
 // GetPresignedUploadURL creates a new media asset record in pending_upload state and

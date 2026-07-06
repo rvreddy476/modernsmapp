@@ -8,11 +8,15 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func (s *Store) CreatePartnerRestaurant(ctx context.Context, ownerID uuid.UUID, in PartnerRestaurantInput) (*PartnerRestaurant, error) {
 	if strings.TrimSpace(in.Name) == "" || strings.TrimSpace(in.AddressLine1) == "" || strings.TrimSpace(in.City) == "" {
 		return nil, fmt.Errorf("name, address_line1, and city are required")
+	}
+	if in.Metadata == nil {
+		in.Metadata = map[string]any{}
 	}
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -44,14 +48,19 @@ func (s *Store) CreatePartnerRestaurant(ctx context.Context, ownerID uuid.UUID, 
 		INSERT INTO food.restaurants (
 			partner_id, owner_user_id, name, slug, description, phone, email,
 			status, address_line1, address_line2, city, state, postal_code,
-			latitude, longitude, min_order_amount, packaging_fee
+			latitude, longitude, min_order_amount, packaging_fee, metadata
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,'PENDING_REVIEW',$8,$9,$10,$11,$12,$13,$14,$15,$16)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,'PENDING_REVIEW',$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
 		RETURNING id
 	`, partnerID, ownerID, in.Name, slug, in.Description, in.Phone, in.Email,
 		in.AddressLine1, in.AddressLine2, in.City, in.State, in.PostalCode,
-		in.Latitude, in.Longitude, in.MinOrderAmount, in.PackagingFee).Scan(&restaurantID); err != nil {
+		in.Latitude, in.Longitude, in.MinOrderAmount, in.PackagingFee, in.Metadata).Scan(&restaurantID); err != nil {
 		return nil, err
+	}
+	if len(in.Cuisines) > 0 {
+		if err := replaceRestaurantCuisines(ctx, tx, restaurantID, in.Cuisines); err != nil {
+			return nil, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
@@ -59,14 +68,50 @@ func (s *Store) CreatePartnerRestaurant(ctx context.Context, ownerID uuid.UUID, 
 	return s.GetPartnerRestaurant(ctx, ownerID, restaurantID)
 }
 
+// cuisineExecer is satisfied by both *pgxpool.Pool and pgx.Tx so cuisine
+// links can be replaced inside the create transaction or standalone.
+type cuisineExecer interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+}
+
+// replaceRestaurantCuisines makes the restaurant's cuisine links exactly
+// match the given slugs (unknown slugs are ignored, not errors).
+func replaceRestaurantCuisines(ctx context.Context, db cuisineExecer, restaurantID uuid.UUID, slugs []string) error {
+	if _, err := db.Exec(ctx, `DELETE FROM food.restaurant_cuisines WHERE restaurant_id = $1`, restaurantID); err != nil {
+		return err
+	}
+	cleaned := make([]string, 0, len(slugs))
+	for _, slug := range slugs {
+		if slug = strings.ToLower(strings.TrimSpace(slug)); slug != "" {
+			cleaned = append(cleaned, slug)
+		}
+	}
+	if len(cleaned) == 0 {
+		return nil
+	}
+	_, err := db.Exec(ctx, `
+		INSERT INTO food.restaurant_cuisines (restaurant_id, cuisine_id)
+		SELECT $1, id FROM food.cuisines WHERE slug = ANY($2)
+		ON CONFLICT DO NOTHING
+	`, restaurantID, cleaned)
+	return err
+}
+
 func (s *Store) ListPartnerRestaurants(ctx context.Context, ownerID uuid.UUID) ([]PartnerRestaurant, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, partner_id, owner_user_id, name, slug, COALESCE(description, ''),
-			status::text, is_open, is_accepting_orders, city, COALESCE(state, ''),
-			min_order_amount::float8, packaging_fee::float8, created_at::text
-		FROM food.restaurants
-		WHERE owner_user_id = $1
-		ORDER BY created_at DESC
+		SELECT r.id, r.partner_id, r.owner_user_id, r.name, r.slug, COALESCE(r.description, ''),
+			r.status::text, r.is_open, r.is_accepting_orders, r.city, COALESCE(r.state, ''),
+			r.min_order_amount::float8, r.packaging_fee::float8, COALESCE(r.phone, ''), COALESCE(r.email, ''),
+			r.address_line1, COALESCE(r.address_line2, ''), COALESCE(r.postal_code, ''), r.metadata,
+			COALESCE((
+				SELECT array_agg(c.slug ORDER BY c.slug)
+				FROM food.restaurant_cuisines rc JOIN food.cuisines c ON c.id = rc.cuisine_id
+				WHERE rc.restaurant_id = r.id
+			), '{}'::text[]),
+			r.created_at::text
+		FROM food.restaurants r
+		WHERE r.owner_user_id = $1
+		ORDER BY r.created_at DESC
 	`, ownerID)
 	if err != nil {
 		return nil, err
@@ -83,13 +128,38 @@ func (s *Store) ListPartnerRestaurants(ctx context.Context, ownerID uuid.UUID) (
 	return restaurants, rows.Err()
 }
 
+func (s *Store) ResolvePartnerAccess(ctx context.Context, restaurantID string) (*PartnerAccessIdentity, error) {
+	identifier := strings.TrimSpace(restaurantID)
+	var access PartnerAccessIdentity
+	err := s.db.QueryRow(ctx, `
+		SELECT r.id, r.owner_user_id
+		FROM food.restaurants r
+		WHERE LOWER(r.id::text) = LOWER($1)
+		   OR LOWER(r.slug) = LOWER($1)
+		   OR UPPER('FIGO-' || RIGHT(REPLACE(r.id::text, '-', ''), 8)) = UPPER($1)
+		   OR UPPER(RIGHT(REPLACE(r.id::text, '-', ''), 8)) = UPPER($1)
+		LIMIT 1
+	`, identifier).Scan(&access.RestaurantID, &access.OwnerUserID)
+	if err != nil {
+		return nil, err
+	}
+	return &access, nil
+}
+
 func (s *Store) GetPartnerRestaurant(ctx context.Context, ownerID, restaurantID uuid.UUID) (*PartnerRestaurant, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, partner_id, owner_user_id, name, slug, COALESCE(description, ''),
-			status::text, is_open, is_accepting_orders, city, COALESCE(state, ''),
-			min_order_amount::float8, packaging_fee::float8, created_at::text
-		FROM food.restaurants
-		WHERE owner_user_id = $1 AND id = $2
+		SELECT r.id, r.partner_id, r.owner_user_id, r.name, r.slug, COALESCE(r.description, ''),
+			r.status::text, r.is_open, r.is_accepting_orders, r.city, COALESCE(r.state, ''),
+			r.min_order_amount::float8, r.packaging_fee::float8, COALESCE(r.phone, ''), COALESCE(r.email, ''),
+			r.address_line1, COALESCE(r.address_line2, ''), COALESCE(r.postal_code, ''), r.metadata,
+			COALESCE((
+				SELECT array_agg(c.slug ORDER BY c.slug)
+				FROM food.restaurant_cuisines rc JOIN food.cuisines c ON c.id = rc.cuisine_id
+				WHERE rc.restaurant_id = r.id
+			), '{}'::text[]),
+			r.created_at::text
+		FROM food.restaurants r
+		WHERE r.owner_user_id = $1 AND r.id = $2
 	`, ownerID, restaurantID)
 	if err != nil {
 		return nil, err
@@ -108,6 +178,9 @@ func (s *Store) GetPartnerRestaurant(ctx context.Context, ownerID, restaurantID 
 func (s *Store) UpdatePartnerRestaurant(ctx context.Context, ownerID, restaurantID uuid.UUID, in PartnerRestaurantInput) (*PartnerRestaurant, error) {
 	if strings.TrimSpace(in.Name) == "" || strings.TrimSpace(in.AddressLine1) == "" || strings.TrimSpace(in.City) == "" {
 		return nil, fmt.Errorf("name, address_line1, and city are required")
+	}
+	if in.Metadata == nil {
+		in.Metadata = map[string]any{}
 	}
 	slug := strings.TrimSpace(in.Slug)
 	if slug == "" {
@@ -129,17 +202,23 @@ func (s *Store) UpdatePartnerRestaurant(ctx context.Context, ownerID, restaurant
 			longitude = $14,
 			min_order_amount = $15,
 			packaging_fee = $16,
+			metadata = $17,
 			status = CASE WHEN status = 'ACTIVE' THEN 'PENDING_REVIEW' ELSE status END,
 			is_accepting_orders = CASE WHEN status = 'ACTIVE' THEN FALSE ELSE is_accepting_orders END
 		WHERE owner_user_id = $1 AND id = $2
 	`, ownerID, restaurantID, in.Name, slug, in.Description, in.Phone, in.Email,
 		in.AddressLine1, in.AddressLine2, in.City, in.State, in.PostalCode,
-		in.Latitude, in.Longitude, in.MinOrderAmount, in.PackagingFee)
+		in.Latitude, in.Longitude, in.MinOrderAmount, in.PackagingFee, in.Metadata)
 	if err != nil {
 		return nil, err
 	}
 	if tag.RowsAffected() == 0 {
 		return nil, pgx.ErrNoRows
+	}
+	if in.Cuisines != nil {
+		if err := replaceRestaurantCuisines(ctx, s.db, restaurantID, in.Cuisines); err != nil {
+			return nil, err
+		}
 	}
 	return s.GetPartnerRestaurant(ctx, ownerID, restaurantID)
 }
@@ -178,7 +257,9 @@ func (s *Store) AddRestaurantImage(ctx context.Context, ownerID, restaurantID uu
 	if err := s.requireRestaurantOwner(ctx, ownerID, restaurantID); err != nil {
 		return nil, err
 	}
-	imageURL := stringValue(input, "image_url", "")
+	// Accept file_url as an alias — the documents endpoint uses file_url, so
+	// clients (web/mobile) have historically sent it here too.
+	imageURL := stringValue(input, "image_url", stringValue(input, "file_url", ""))
 	if imageURL == "" {
 		return nil, fmt.Errorf("image_url is required")
 	}
@@ -219,11 +300,67 @@ func (s *Store) CreateMenuCategory(ctx context.Context, ownerID, restaurantID uu
 	return &category, nil
 }
 
+// ListMenuCategories is the PARTNER view of the menu: every active category —
+// including ones with no dishes yet — with all their active items regardless
+// of availability. It must NOT reuse the customer GetMenu, whose INNER JOIN
+// on menu_items hides empty categories; that made a freshly created first
+// category invisible in the partner console, so the first dish could never
+// be assigned to it.
 func (s *Store) ListMenuCategories(ctx context.Context, ownerID, restaurantID uuid.UUID) ([]MenuCategory, error) {
 	if err := s.requireRestaurantOwner(ctx, ownerID, restaurantID); err != nil {
 		return nil, err
 	}
-	return s.GetMenu(ctx, restaurantID)
+	catRows, err := s.db.Query(ctx, `
+		SELECT id, name, COALESCE(description, ''), sort_order
+		FROM food.menu_categories
+		WHERE restaurant_id = $1 AND is_active = TRUE
+		ORDER BY sort_order, name
+	`, restaurantID)
+	if err != nil {
+		return nil, err
+	}
+	defer catRows.Close()
+	categories := []MenuCategory{}
+	index := map[uuid.UUID]int{}
+	for catRows.Next() {
+		var cat MenuCategory
+		if err := catRows.Scan(&cat.ID, &cat.Name, &cat.Description, &cat.SortOrder); err != nil {
+			return nil, err
+		}
+		cat.Items = []MenuItem{}
+		index[cat.ID] = len(categories)
+		categories = append(categories, cat)
+	}
+	if err := catRows.Err(); err != nil {
+		return nil, err
+	}
+
+	itemRows, err := s.db.Query(ctx, `
+		SELECT id, restaurant_id, category_id, name, COALESCE(description, ''),
+			food_type::text, base_price::float8, COALESCE(discount_price, 0)::float8,
+			COALESCE(image_url, ''), preparation_minutes, is_available, is_recommended,
+			tax_percentage::float8, metadata
+		FROM food.menu_items
+		WHERE restaurant_id = $1 AND is_active = TRUE AND category_id IS NOT NULL
+		ORDER BY is_recommended DESC, name
+	`, restaurantID)
+	if err != nil {
+		return nil, err
+	}
+	defer itemRows.Close()
+	for itemRows.Next() {
+		var item MenuItem
+		if err := itemRows.Scan(&item.ID, &item.RestaurantID, &item.CategoryID, &item.Name,
+			&item.Description, &item.FoodType, &item.BasePrice, &item.DiscountPrice,
+			&item.ImageURL, &item.PreparationMinutes, &item.IsAvailable, &item.IsRecommended,
+			&item.TaxPercentage, &item.Metadata); err != nil {
+			return nil, err
+		}
+		if at, ok := index[item.CategoryID]; ok {
+			categories[at].Items = append(categories[at].Items, item)
+		}
+	}
+	return categories, itemRows.Err()
 }
 
 func (s *Store) UpdateMenuCategory(ctx context.Context, ownerID, categoryID uuid.UUID, in MenuCategoryInput) (*MenuCategory, error) {
@@ -278,23 +415,26 @@ func (s *Store) CreateMenuItem(ctx context.Context, ownerID, restaurantID, categ
 	if in.PreparationMinutes <= 0 {
 		in.PreparationMinutes = 20
 	}
+	if in.Metadata == nil {
+		in.Metadata = map[string]any{}
+	}
 	var item MenuItem
 	if err := s.db.QueryRow(ctx, `
 		INSERT INTO food.menu_items (
 			restaurant_id, category_id, name, description, food_type, base_price,
-			discount_price, image_url, preparation_minutes, is_recommended, tax_percentage
+			discount_price, image_url, preparation_minutes, is_recommended, tax_percentage, metadata
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
 		RETURNING id, restaurant_id, category_id, name, COALESCE(description, ''),
 			food_type::text, base_price::float8, COALESCE(discount_price, 0)::float8,
 			COALESCE(image_url, ''), preparation_minutes, is_available,
-			is_recommended, tax_percentage::float8
+			is_recommended, tax_percentage::float8, metadata
 	`, restaurantID, categoryID, in.Name, in.Description, foodType, in.BasePrice,
 		in.DiscountPrice, in.ImageURL, in.PreparationMinutes, in.IsRecommended,
-		in.TaxPercentage).Scan(&item.ID, &item.RestaurantID, &item.CategoryID, &item.Name,
+		in.TaxPercentage, in.Metadata).Scan(&item.ID, &item.RestaurantID, &item.CategoryID, &item.Name,
 		&item.Description, &item.FoodType, &item.BasePrice, &item.DiscountPrice,
 		&item.ImageURL, &item.PreparationMinutes, &item.IsAvailable, &item.IsRecommended,
-		&item.TaxPercentage); err != nil {
+		&item.TaxPercentage, &item.Metadata); err != nil {
 		return nil, err
 	}
 	return &item, nil
@@ -306,6 +446,9 @@ func (s *Store) UpdateMenuItem(ctx context.Context, ownerID, itemID uuid.UUID, i
 	}
 	if in.PreparationMinutes <= 0 {
 		in.PreparationMinutes = 20
+	}
+	if in.Metadata == nil {
+		in.Metadata = map[string]any{}
 	}
 	var item MenuItem
 	if err := s.db.QueryRow(ctx, `
@@ -319,18 +462,19 @@ func (s *Store) UpdateMenuItem(ctx context.Context, ownerID, itemID uuid.UUID, i
 			preparation_minutes = $9,
 			is_recommended = $10,
 			tax_percentage = $11
+			, metadata = $12
 		FROM food.restaurants r
 		WHERE i.restaurant_id = r.id AND r.owner_user_id = $1 AND i.id = $2
 		RETURNING i.id, i.restaurant_id, i.category_id, i.name, COALESCE(i.description, ''),
 			i.food_type::text, i.base_price::float8, COALESCE(i.discount_price, 0)::float8,
 			COALESCE(i.image_url, ''), i.preparation_minutes, i.is_available,
-			i.is_recommended, i.tax_percentage::float8
+			i.is_recommended, i.tax_percentage::float8, i.metadata
 	`, ownerID, itemID, in.Name, in.Description, in.FoodType, in.BasePrice,
 		in.DiscountPrice, in.ImageURL, in.PreparationMinutes, in.IsRecommended,
-		in.TaxPercentage).Scan(&item.ID, &item.RestaurantID, &item.CategoryID, &item.Name,
+		in.TaxPercentage, in.Metadata).Scan(&item.ID, &item.RestaurantID, &item.CategoryID, &item.Name,
 		&item.Description, &item.FoodType, &item.BasePrice, &item.DiscountPrice,
 		&item.ImageURL, &item.PreparationMinutes, &item.IsAvailable, &item.IsRecommended,
-		&item.TaxPercentage); err != nil {
+		&item.TaxPercentage, &item.Metadata); err != nil {
 		return nil, err
 	}
 	return &item, nil
@@ -784,16 +928,39 @@ func (s *Store) AdminDashboard(ctx context.Context) (*AdminDashboard, error) {
 	var d AdminDashboard
 	if err := s.db.QueryRow(ctx, `
 		SELECT
-			(SELECT COUNT(*) FROM food.orders WHERE placed_at::date = CURRENT_DATE),
-			(SELECT COALESCE(SUM(final_amount), 0)::float8 FROM food.orders WHERE placed_at::date = CURRENT_DATE),
-			(SELECT COUNT(*) FROM food.orders WHERE placed_at::date = CURRENT_DATE AND status::text LIKE 'CANCELLED%'),
+                        (SELECT COUNT(*) FROM food.orders WHERE placed_at::date = CURRENT_DATE),
+                        (SELECT COALESCE(SUM(final_amount), 0)::float8 FROM food.orders WHERE placed_at::date = CURRENT_DATE),
+                        (SELECT COALESCE(SUM(final_amount), 0)::float8 FROM food.orders WHERE placed_at::date = CURRENT_DATE - 1),
+                        (SELECT COUNT(*) FROM food.orders WHERE placed_at::date = CURRENT_DATE AND status::text LIKE 'CANCELLED%'),
 			(SELECT COUNT(*) FROM food.restaurants WHERE status = 'ACTIVE'),
 			(SELECT COUNT(*) FROM food.restaurants WHERE status = 'PENDING_REVIEW'),
 			(SELECT COUNT(*) FROM food.delivery_partners WHERE status = 'PENDING_REVIEW'),
 			(SELECT COUNT(*) FROM food.delivery_partners WHERE is_online = TRUE)
-	`).Scan(&d.TotalOrdersToday, &d.GMVToday, &d.CancelledOrdersToday,
+        `).Scan(&d.TotalOrdersToday, &d.GMVToday, &d.SalesYesterday, &d.CancelledOrdersToday,
 		&d.ActiveRestaurants, &d.PendingRestaurants, &d.PendingDeliveryPartners,
 		&d.OnlineDeliveryPartners); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.Query(ctx, `
+                SELECT day::date::text, COALESCE(SUM(o.final_amount), 0)::float8
+                FROM generate_series(CURRENT_DATE - INTERVAL '29 days', CURRENT_DATE, INTERVAL '1 day') AS day
+                LEFT JOIN food.orders o ON o.placed_at::date = day::date
+                GROUP BY day
+                ORDER BY day
+        `)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	d.SalesLast30Days = make([]DailySalesPoint, 0, 30)
+	for rows.Next() {
+		var point DailySalesPoint
+		if err := rows.Scan(&point.Date, &point.Amount); err != nil {
+			return nil, err
+		}
+		d.SalesLast30Days = append(d.SalesLast30Days, point)
+	}
+	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	return &d, nil
@@ -801,6 +968,60 @@ func (s *Store) AdminDashboard(ctx context.Context) (*AdminDashboard, error) {
 
 func (s *Store) AdminPendingRestaurants(ctx context.Context) ([]PartnerRestaurant, error) {
 	return s.adminRestaurantsByStatus(ctx, "PENDING_REVIEW")
+}
+
+func (s *Store) AdminRestaurantDocuments(ctx context.Context, restaurantID uuid.UUID) ([]map[string]any, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT id, document_type, COALESCE(document_number, ''), status::text,
+			COALESCE(expires_at::text, ''), created_at,
+			(file_url IS NOT NULL OR media_id IS NOT NULL) AS download_available
+		FROM food.restaurant_documents
+		WHERE restaurant_id = $1
+		ORDER BY created_at DESC
+	`, restaurantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	documents := make([]map[string]any, 0)
+	for rows.Next() {
+		var id uuid.UUID
+		var documentType, documentNumber, status, expiresAt string
+		var createdAt time.Time
+		var downloadAvailable bool
+		if err := rows.Scan(&id, &documentType, &documentNumber, &status, &expiresAt, &createdAt, &downloadAvailable); err != nil {
+			return nil, err
+		}
+		documents = append(documents, map[string]any{
+			"id": id, "document_type": documentType, "document_number": documentNumber,
+			"status": status, "expires_at": expiresAt, "created_at": createdAt,
+			"download_available": downloadAvailable,
+		})
+	}
+	return documents, rows.Err()
+}
+
+func (s *Store) AdminRestaurantDocumentDownload(ctx context.Context, restaurantID, documentID uuid.UUID) (map[string]any, error) {
+	var documentType, fileURL, mediaID string
+	if err := s.db.QueryRow(ctx, `
+		SELECT document_type, COALESCE(file_url, ''), COALESCE(media_id::text, '')
+		FROM food.restaurant_documents
+		WHERE restaurant_id = $1 AND id = $2
+	`, restaurantID, documentID).Scan(&documentType, &fileURL, &mediaID); err != nil {
+		return nil, err
+	}
+	if fileURL == "" && mediaID != "" {
+		fileURL = "/figo/v1/media/" + mediaID + "/serve"
+	}
+	if fileURL == "" {
+		return nil, fmt.Errorf("document file is unavailable")
+	}
+	return map[string]any{
+		"document_id":   documentID,
+		"document_type": documentType,
+		"download_url":  fileURL,
+		"filename":      strings.ToLower(documentType) + "-" + documentID.String()[:8],
+	}, nil
 }
 
 func (s *Store) AdminApproveRestaurant(ctx context.Context, adminID, restaurantID uuid.UUID, approve bool, reason string) error {
@@ -1566,7 +1787,11 @@ func scanPartnerRestaurant(rows pgx.Rows) (PartnerRestaurant, error) {
 		&restaurant.Name, &restaurant.Slug, &restaurant.Description, &restaurant.Status,
 		&restaurant.IsOpen, &restaurant.IsAcceptingOrders, &restaurant.City,
 		&restaurant.State, &restaurant.MinOrderAmount, &restaurant.PackagingFee,
-		&restaurant.CreatedAt)
+		&restaurant.Phone, &restaurant.Email, &restaurant.AddressLine1, &restaurant.AddressLine2,
+		&restaurant.PostalCode, &restaurant.Metadata, &restaurant.Cuisines, &restaurant.CreatedAt)
+	if restaurant.Cuisines == nil {
+		restaurant.Cuisines = []string{}
+	}
 	return restaurant, err
 }
 
@@ -1611,13 +1836,23 @@ func (s *Store) getAssignmentTx(ctx context.Context, tx pgx.Tx, assignmentID uui
 }
 
 func (s *Store) adminRestaurantsByStatus(ctx context.Context, status string) ([]PartnerRestaurant, error) {
+	// Column list MUST stay in lockstep with scanPartnerRestaurant — this
+	// query previously selected a 14-column subset and every scan failed
+	// with a field-count mismatch.
 	rows, err := s.db.Query(ctx, `
-		SELECT id, partner_id, owner_user_id, name, slug, COALESCE(description, ''),
-			status::text, is_open, is_accepting_orders, city, COALESCE(state, ''),
-			min_order_amount::float8, packaging_fee::float8, created_at::text
-		FROM food.restaurants
-		WHERE status = $1
-		ORDER BY created_at DESC
+		SELECT r.id, r.partner_id, r.owner_user_id, r.name, r.slug, COALESCE(r.description, ''),
+			r.status::text, r.is_open, r.is_accepting_orders, r.city, COALESCE(r.state, ''),
+			r.min_order_amount::float8, r.packaging_fee::float8, COALESCE(r.phone, ''), COALESCE(r.email, ''),
+			r.address_line1, COALESCE(r.address_line2, ''), COALESCE(r.postal_code, ''), r.metadata,
+			COALESCE((
+				SELECT array_agg(c.slug ORDER BY c.slug)
+				FROM food.restaurant_cuisines rc JOIN food.cuisines c ON c.id = rc.cuisine_id
+				WHERE rc.restaurant_id = r.id
+			), '{}'::text[]),
+			r.created_at::text
+		FROM food.restaurants r
+		WHERE r.status = $1
+		ORDER BY r.created_at DESC
 	`, status)
 	if err != nil {
 		return nil, err

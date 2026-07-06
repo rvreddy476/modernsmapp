@@ -2,6 +2,8 @@ package service
 
 import (
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 )
 
@@ -13,13 +15,27 @@ const (
 	MaxReelDurationSec = 90
 	MinReelDurationSec = 3
 
-	// Per-user upload rate limits.
-	MaxUploadsPerHour = 10
-	MaxUploadsPerDay  = 30
-
 	// Maximum number of draft uploads a user may keep.
 	MaxDraftsPerUser = 50
 )
+
+// Per-user upload rate limits. Env-tunable because legitimate flows blow past
+// the old hardcoded 10/hour — a single restaurant-partner onboarding uploads
+// logo + outlet photos + PAN/FSSAI/GST/cheque + one photo per dish in one
+// submit. Defaults stay conservative for production; dev compose raises them.
+var (
+	MaxUploadsPerHour = envInt("UPLOAD_RATE_MAX_PER_HOUR", 10)
+	MaxUploadsPerDay  = envInt("UPLOAD_RATE_MAX_PER_DAY", 30)
+)
+
+func envInt(key string, fallback int) int {
+	if raw := os.Getenv(key); raw != "" {
+		if value, err := strconv.Atoi(raw); err == nil && value > 0 {
+			return value
+		}
+	}
+	return fallback
+}
 
 var allowedVideoMIME = map[string]bool{
 	"video/mp4":          true,

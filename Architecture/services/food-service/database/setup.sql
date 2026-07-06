@@ -1002,6 +1002,54 @@ VALUES
     ('Healthy', 'healthy', 6)
 ON CONFLICT (slug) DO NOTHING;
 
+-- ============================================================
+-- MASTER DISH CATEGORIES (platform-curated)
+-- Partners pick a dish's category from this list only — they cannot
+-- create their own. Curated by the FiGo ops team.
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS food.dish_categories (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(120) NOT NULL UNIQUE,
+    slug VARCHAR(140) NOT NULL UNIQUE,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO food.dish_categories (name, slug, sort_order)
+VALUES
+    ('Appetizers', 'appetizers', 1),
+    ('BBQ & Grilling', 'bbq-grilling', 2),
+    ('Beef', 'beef', 3),
+    ('Bread', 'bread', 4),
+    ('Breakfast', 'breakfast', 5),
+    ('Cake', 'cake', 6),
+    ('Candy', 'candy', 7),
+    ('Casseroles', 'casseroles', 8),
+    ('Chicken', 'chicken', 9),
+    ('Cookies & Bars', 'cookies-bars', 10),
+    ('Desserts', 'desserts', 11),
+    ('Main Dishes', 'main-dishes', 12),
+    ('Meats', 'meats', 13),
+    ('Pasta', 'pasta', 14),
+    ('Pie', 'pie', 15),
+    ('Pizza', 'pizza', 16),
+    ('Pork', 'pork', 17),
+    ('Rice & Beans', 'rice-beans', 18),
+    ('Salad Dressings', 'salad-dressings', 19),
+    ('Salads', 'salads', 20),
+    ('Sandwiches', 'sandwiches', 21),
+    ('Sauces', 'sauces', 22),
+    ('Seafood', 'seafood', 23),
+    ('Side Dishes', 'side-dishes', 24),
+    ('Slow Cooker', 'slow-cooker', 25),
+    ('Soups & Stews', 'soups-stews', 26),
+    ('Stir-Fry', 'stir-fry', 27),
+    ('Turkey', 'turkey', 28),
+    ('Vegetables', 'vegetables', 29)
+ON CONFLICT (slug) DO NOTHING;
+
 INSERT INTO food.service_areas (
     id, name, city, state, postal_code, center_latitude, center_longitude, radius_km, is_active
 )
@@ -1078,6 +1126,14 @@ VALUES
     )
 ON CONFLICT (slug) DO NOTHING;
 
+UPDATE food.restaurants
+SET metadata = metadata || '{"seat_count":48,"table_count":12,"opening_time":"11:00","closing_time":"23:30"}'::jsonb
+WHERE id = '33333333-3333-4333-8333-333333333331';
+
+UPDATE food.restaurants
+SET metadata = metadata || '{"seat_count":32,"table_count":8,"opening_time":"06:30","closing_time":"22:00"}'::jsonb
+WHERE id = '33333333-3333-4333-8333-333333333332';
+
 INSERT INTO food.restaurant_cuisines (restaurant_id, cuisine_id)
 SELECT '33333333-3333-4333-8333-333333333331', id FROM food.cuisines WHERE slug IN ('biryani', 'north-indian')
 ON CONFLICT DO NOTHING;
@@ -1088,7 +1144,7 @@ ON CONFLICT DO NOTHING;
 
 INSERT INTO food.restaurant_images (id, restaurant_id, image_url, image_type, sort_order)
 VALUES
-    ('44444444-4444-4444-8444-444444444441', '33333333-3333-4333-8333-333333333331', 'https://images.unsplash.com/photo-1563379091339-03246963d96c?auto=format&fit=crop&w=1200&q=80', 'hero', 1),
+    ('44444444-4444-4444-8444-444444444441', '33333333-3333-4333-8333-333333333331', 'https://images.unsplash.com/photo-1633945274405-b6c8069047b0?auto=format&fit=crop&w=1200&q=80', 'hero', 1),
     ('44444444-4444-4444-8444-444444444442', '33333333-3333-4333-8333-333333333332', 'https://images.unsplash.com/photo-1589301760014-d929f3979dbc?auto=format&fit=crop&w=1200&q=80', 'hero', 1)
 ON CONFLICT (id) DO NOTHING;
 

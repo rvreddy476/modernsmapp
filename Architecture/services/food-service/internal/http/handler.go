@@ -32,12 +32,14 @@ func (h *Handler) WithInternalKey(key string) *Handler {
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	if h.internalKey != "" {
 		r.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
+		r.POST("/internal/partner-access/resolve", h.ResolvePartnerAccess)
 	}
 
 	v1 := r.Group("/v1/food")
 	{
 		v1.GET("/home", h.Home)
 		v1.GET("/cuisines", h.ListCuisines)
+		v1.GET("/dish-categories", h.ListDishCategories)
 		v1.GET("/restaurants", h.ListRestaurants)
 		v1.GET("/restaurants/:restaurantId", h.GetRestaurant)
 		v1.GET("/restaurants/:restaurantId/menu", h.GetMenu)
@@ -172,6 +174,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			admin.GET("/settlements/files", h.AdminListSettlementFiles)
 			admin.GET("/settlements/files/:id/download", h.AdminDownloadSettlementFile)
 			admin.GET("/restaurants/pending", h.AdminPendingRestaurants)
+			admin.GET("/restaurants/:restaurantId/documents", h.AdminRestaurantDocuments)
+			admin.GET("/restaurants/:restaurantId/documents/:documentId/download", h.AdminRestaurantDocumentDownload)
 			admin.POST("/restaurants/:restaurantId/approve", h.AdminApproveRestaurant)
 			admin.POST("/restaurants/:restaurantId/reject", h.AdminRejectRestaurant)
 			admin.PATCH("/restaurants/:restaurantId/status", h.AdminSetRestaurantStatus)
@@ -201,6 +205,24 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	}
 }
 
+func (h *Handler) ResolvePartnerAccess(c *gin.Context) {
+	var body struct {
+		RestaurantID string `json:"restaurant_id" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_RESTAURANT_ID", "Restaurant ID is required", nil)
+		return
+	}
+	access, err := h.svc.ResolvePartnerAccess(c.Request.Context(), body.RestaurantID)
+	if err != nil {
+		// Keep the response generic so the endpoint cannot be used to enumerate
+		// restaurant owner contact information.
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "RESTAURANT_NOT_FOUND", "Restaurant account was not found", nil)
+		return
+	}
+	api.JSONWithContext(c.Request.Context(), c.Writer, http.StatusOK, access)
+}
+
 func (h *Handler) Home(c *gin.Context) {
 	home, err := h.svc.Home(c.Request.Context(), c.Query("city"))
 	if err != nil {
@@ -217,6 +239,18 @@ func (h *Handler) ListCuisines(c *gin.Context) {
 		return
 	}
 	api.JSONWithContext(c.Request.Context(), c.Writer, http.StatusOK, map[string]any{"items": cuisines})
+}
+
+// ListDishCategories serves the platform-curated master dish categories.
+// Partners assign every dish to one of these; free-form categories are not
+// allowed.
+func (h *Handler) ListDishCategories(c *gin.Context) {
+	categories, err := h.svc.ListDishCategories(c.Request.Context())
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "FOOD_DISH_CATEGORIES_FAILED", err.Error(), nil)
+		return
+	}
+	api.JSONWithContext(c.Request.Context(), c.Writer, http.StatusOK, map[string]any{"items": categories})
 }
 
 func (h *Handler) ListRestaurants(c *gin.Context) {
@@ -774,22 +808,24 @@ func (h *Handler) CreatePartnerRestaurant(c *gin.Context) {
 		return
 	}
 	var body struct {
-		LegalName      string   `json:"legal_name"`
-		DisplayName    string   `json:"display_name"`
-		Name           string   `json:"name"`
-		Slug           string   `json:"slug"`
-		Description    string   `json:"description"`
-		Phone          string   `json:"phone"`
-		Email          string   `json:"email"`
-		AddressLine1   string   `json:"address_line1"`
-		AddressLine2   string   `json:"address_line2"`
-		City           string   `json:"city"`
-		State          string   `json:"state"`
-		PostalCode     string   `json:"postal_code"`
-		Latitude       *float64 `json:"latitude"`
-		Longitude      *float64 `json:"longitude"`
-		MinOrderAmount float64  `json:"min_order_amount"`
-		PackagingFee   float64  `json:"packaging_fee"`
+		LegalName      string         `json:"legal_name"`
+		DisplayName    string         `json:"display_name"`
+		Name           string         `json:"name"`
+		Slug           string         `json:"slug"`
+		Description    string         `json:"description"`
+		Phone          string         `json:"phone"`
+		Email          string         `json:"email"`
+		AddressLine1   string         `json:"address_line1"`
+		AddressLine2   string         `json:"address_line2"`
+		City           string         `json:"city"`
+		State          string         `json:"state"`
+		PostalCode     string         `json:"postal_code"`
+		Latitude       *float64       `json:"latitude"`
+		Longitude      *float64       `json:"longitude"`
+		MinOrderAmount float64        `json:"min_order_amount"`
+		PackagingFee   float64        `json:"packaging_fee"`
+		Metadata       map[string]any `json:"metadata"`
+		Cuisines       []string       `json:"cuisines"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
@@ -812,6 +848,8 @@ func (h *Handler) CreatePartnerRestaurant(c *gin.Context) {
 		Longitude:      body.Longitude,
 		MinOrderAmount: body.MinOrderAmount,
 		PackagingFee:   body.PackagingFee,
+		Metadata:       body.Metadata,
+		Cuisines:       body.Cuisines,
 	})
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "FOOD_PARTNER_RESTAURANT_CREATE_FAILED", err.Error(), nil)
@@ -860,22 +898,24 @@ func (h *Handler) UpdatePartnerRestaurant(c *gin.Context) {
 		return
 	}
 	var body struct {
-		LegalName      string   `json:"legal_name"`
-		DisplayName    string   `json:"display_name"`
-		Name           string   `json:"name"`
-		Slug           string   `json:"slug"`
-		Description    string   `json:"description"`
-		Phone          string   `json:"phone"`
-		Email          string   `json:"email"`
-		AddressLine1   string   `json:"address_line1"`
-		AddressLine2   string   `json:"address_line2"`
-		City           string   `json:"city"`
-		State          string   `json:"state"`
-		PostalCode     string   `json:"postal_code"`
-		Latitude       *float64 `json:"latitude"`
-		Longitude      *float64 `json:"longitude"`
-		MinOrderAmount float64  `json:"min_order_amount"`
-		PackagingFee   float64  `json:"packaging_fee"`
+		LegalName      string         `json:"legal_name"`
+		DisplayName    string         `json:"display_name"`
+		Name           string         `json:"name"`
+		Slug           string         `json:"slug"`
+		Description    string         `json:"description"`
+		Phone          string         `json:"phone"`
+		Email          string         `json:"email"`
+		AddressLine1   string         `json:"address_line1"`
+		AddressLine2   string         `json:"address_line2"`
+		City           string         `json:"city"`
+		State          string         `json:"state"`
+		PostalCode     string         `json:"postal_code"`
+		Latitude       *float64       `json:"latitude"`
+		Longitude      *float64       `json:"longitude"`
+		MinOrderAmount float64        `json:"min_order_amount"`
+		PackagingFee   float64        `json:"packaging_fee"`
+		Metadata       map[string]any `json:"metadata"`
+		Cuisines       []string       `json:"cuisines"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
@@ -898,6 +938,8 @@ func (h *Handler) UpdatePartnerRestaurant(c *gin.Context) {
 		Longitude:      body.Longitude,
 		MinOrderAmount: body.MinOrderAmount,
 		PackagingFee:   body.PackagingFee,
+		Metadata:       body.Metadata,
+		Cuisines:       body.Cuisines,
 	})
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "FOOD_PARTNER_RESTAURANT_UPDATE_FAILED", err.Error(), nil)
@@ -1051,16 +1093,17 @@ func (h *Handler) CreateMenuItem(c *gin.Context) {
 		return
 	}
 	var body struct {
-		CategoryID         string   `json:"category_id"`
-		Name               string   `json:"name"`
-		Description        string   `json:"description"`
-		FoodType           string   `json:"food_type"`
-		BasePrice          float64  `json:"base_price"`
-		DiscountPrice      *float64 `json:"discount_price"`
-		ImageURL           string   `json:"image_url"`
-		PreparationMinutes int      `json:"preparation_minutes"`
-		IsRecommended      bool     `json:"is_recommended"`
-		TaxPercentage      float64  `json:"tax_percentage"`
+		CategoryID         string         `json:"category_id"`
+		Name               string         `json:"name"`
+		Description        string         `json:"description"`
+		FoodType           string         `json:"food_type"`
+		BasePrice          float64        `json:"base_price"`
+		DiscountPrice      *float64       `json:"discount_price"`
+		ImageURL           string         `json:"image_url"`
+		PreparationMinutes int            `json:"preparation_minutes"`
+		IsRecommended      bool           `json:"is_recommended"`
+		TaxPercentage      float64        `json:"tax_percentage"`
+		Metadata           map[string]any `json:"metadata"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
@@ -1081,6 +1124,7 @@ func (h *Handler) CreateMenuItem(c *gin.Context) {
 		PreparationMinutes: body.PreparationMinutes,
 		IsRecommended:      body.IsRecommended,
 		TaxPercentage:      body.TaxPercentage,
+		Metadata:           body.Metadata,
 	})
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "FOOD_MENU_ITEM_CREATE_FAILED", err.Error(), nil)
@@ -1099,15 +1143,16 @@ func (h *Handler) UpdateMenuItem(c *gin.Context) {
 		return
 	}
 	var body struct {
-		Name               string   `json:"name"`
-		Description        string   `json:"description"`
-		FoodType           string   `json:"food_type"`
-		BasePrice          float64  `json:"base_price"`
-		DiscountPrice      *float64 `json:"discount_price"`
-		ImageURL           string   `json:"image_url"`
-		PreparationMinutes int      `json:"preparation_minutes"`
-		IsRecommended      bool     `json:"is_recommended"`
-		TaxPercentage      float64  `json:"tax_percentage"`
+		Name               string         `json:"name"`
+		Description        string         `json:"description"`
+		FoodType           string         `json:"food_type"`
+		BasePrice          float64        `json:"base_price"`
+		DiscountPrice      *float64       `json:"discount_price"`
+		ImageURL           string         `json:"image_url"`
+		PreparationMinutes int            `json:"preparation_minutes"`
+		IsRecommended      bool           `json:"is_recommended"`
+		TaxPercentage      float64        `json:"tax_percentage"`
+		Metadata           map[string]any `json:"metadata"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
@@ -1123,6 +1168,7 @@ func (h *Handler) UpdateMenuItem(c *gin.Context) {
 		PreparationMinutes: body.PreparationMinutes,
 		IsRecommended:      body.IsRecommended,
 		TaxPercentage:      body.TaxPercentage,
+		Metadata:           body.Metadata,
 	})
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "FOOD_MENU_ITEM_UPDATE_FAILED", err.Error(), nil)
@@ -1501,6 +1547,45 @@ func (h *Handler) AdminPendingRestaurants(c *gin.Context) {
 		return
 	}
 	api.JSONWithContext(c.Request.Context(), c.Writer, http.StatusOK, map[string]any{"items": restaurants})
+}
+
+func (h *Handler) AdminRestaurantDocuments(c *gin.Context) {
+	if _, ok := h.currentUserID(c); !ok {
+		return
+	}
+	restaurantID, err := uuid.Parse(c.Param("restaurantId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "FOOD_INVALID_RESTAURANT_ID", "Invalid restaurant ID", nil)
+		return
+	}
+	documents, err := h.svc.AdminRestaurantDocuments(c.Request.Context(), restaurantID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "FOOD_ADMIN_DOCUMENTS_FAILED", err.Error(), nil)
+		return
+	}
+	api.JSONWithContext(c.Request.Context(), c.Writer, http.StatusOK, map[string]any{"items": documents})
+}
+
+func (h *Handler) AdminRestaurantDocumentDownload(c *gin.Context) {
+	if _, ok := h.currentUserID(c); !ok {
+		return
+	}
+	restaurantID, err := uuid.Parse(c.Param("restaurantId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "FOOD_INVALID_RESTAURANT_ID", "Invalid restaurant ID", nil)
+		return
+	}
+	documentID, err := uuid.Parse(c.Param("documentId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "FOOD_INVALID_DOCUMENT_ID", "Invalid document ID", nil)
+		return
+	}
+	download, err := h.svc.AdminRestaurantDocumentDownload(c.Request.Context(), restaurantID, documentID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "FOOD_DOCUMENT_NOT_FOUND", "Document not found", nil)
+		return
+	}
+	api.JSONWithContext(c.Request.Context(), c.Writer, http.StatusOK, download)
 }
 
 func (h *Handler) AdminApproveRestaurant(c *gin.Context) {

@@ -47,6 +47,32 @@ func (s *Store) ListCuisines(ctx context.Context) ([]Cuisine, error) {
 	return cuisines, rows.Err()
 }
 
+// ListDishCategories returns the platform-curated master list of dish
+// categories. Partners choose from these; they cannot add their own.
+// Reuses the Cuisine shape (id/name/slug/sort_order) — same contract.
+func (s *Store) ListDishCategories(ctx context.Context) ([]Cuisine, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT id, name, slug, '', sort_order
+		FROM food.dish_categories
+		WHERE is_active = TRUE
+		ORDER BY sort_order, name
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var categories []Cuisine
+	for rows.Next() {
+		var c Cuisine
+		if err := rows.Scan(&c.ID, &c.Name, &c.Slug, &c.ImageURL, &c.SortOrder); err != nil {
+			return nil, err
+		}
+		categories = append(categories, c)
+	}
+	return categories, rows.Err()
+}
+
 func (s *Store) ListRestaurants(ctx context.Context, filter RestaurantFilter) ([]RestaurantSummary, error) {
 	limit := filter.Limit
 	if limit <= 0 || limit > 50 {
@@ -192,7 +218,8 @@ func (s *Store) GetMenu(ctx context.Context, restaurantID uuid.UUID) ([]MenuCate
 			i.preparation_minutes,
 			i.is_available,
 			i.is_recommended,
-			i.tax_percentage::float8
+			i.tax_percentage::float8,
+			i.metadata
 		FROM food.menu_categories c
 		JOIN food.menu_items i ON i.category_id = c.id
 		WHERE c.restaurant_id = $1
@@ -227,6 +254,7 @@ func (s *Store) GetMenu(ctx context.Context, restaurantID uuid.UUID) ([]MenuCate
 			&item.IsAvailable,
 			&item.IsRecommended,
 			&item.TaxPercentage,
+			&item.Metadata,
 		); err != nil {
 			return nil, err
 		}
