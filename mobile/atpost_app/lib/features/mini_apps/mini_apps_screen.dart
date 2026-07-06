@@ -1,5 +1,6 @@
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_images.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/data/models/mini_app.dart';
 import 'package:atpost_app/features/mini_apps/mini_app_permission_prompt.dart';
 import 'package:atpost_app/providers/mini_apps_provider.dart';
@@ -286,7 +287,7 @@ class _MiniAppGlassCard extends ConsumerWidget {
         borderRadius: BorderRadius.circular(18),
         image: app.iconUrl != null
             ? DecorationImage(
-                image: NetworkImage(app.iconUrl!),
+                image: cachedAvatarProvider(app.iconUrl!),
                 fit: BoxFit.cover,
               )
             : null,

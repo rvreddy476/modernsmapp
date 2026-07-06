@@ -1,0 +1,20 @@
+# Bill-pay domain kernel: the billpay model + repository. Shared with the
+# app's unified search. UI lives in feature_billpay. Never import
+# atpost_app or a feature package.
+name: billpay_domain
+description: atPost bill-pay domain (model, repository).
+version: 0.1.0
+publish_to: none
+environment:
+  sdk: ^3.10.7
+resolution: workspace
+dependencies:
+  flutter:
+    sdk: flutter
+  atpost_core: ^0.1.0
+  atpost_network: ^0.1.0
+  flutter_riverpod: ^2.6.1
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0

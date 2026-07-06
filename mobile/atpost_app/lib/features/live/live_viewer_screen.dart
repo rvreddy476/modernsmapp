@@ -7,8 +7,8 @@
 
 import 'dart:async';
 
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/data/models/live_stream_v2.dart';
 import 'package:atpost_app/data/repositories/live_streams_repository.dart';
 import 'package:atpost_app/features/live/live_chat_panel.dart';

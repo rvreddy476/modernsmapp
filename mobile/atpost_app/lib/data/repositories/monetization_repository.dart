@@ -1,5 +1,5 @@
 import 'package:atpost_app/data/models/monetization.dart';
-import 'package:atpost_app/services/api_client.dart';
+import 'package:atpost_network/api_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 /// One creator-membership tier — what the fan picks from when joining.

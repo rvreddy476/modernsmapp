@@ -1,6 +1,7 @@
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_spacing.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_images.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_spacing.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/data/models/memory.dart';
 import 'package:atpost_app/data/repositories/memories_repository.dart';
 import 'package:atpost_app/features/memories/slambooks_screen.dart';
@@ -599,14 +600,7 @@ class _MemoryCard extends StatelessWidget {
                             borderRadius: const BorderRadius.vertical(
                               top: Radius.circular(16),
                             ),
-                            child: Image.network(
-                              memory.mediaUrl!,
-                              fit: BoxFit.cover,
-                              width: double.infinity,
-                              height: double.infinity,
-                              errorBuilder: (_, _, _) =>
-                                  const SizedBox.shrink(),
-                            ),
+                            child: AppNetworkImage(memory.mediaUrl!, fit: BoxFit.cover, width: double.infinity, height: double.infinity, decodeWidth: kThumbDecodeWidth, error: const SizedBox.shrink()),
                           )
                         else
                           const Center(
@@ -690,12 +684,7 @@ class _CollectionCard extends StatelessWidget {
                       borderRadius: const BorderRadius.vertical(
                         top: Radius.circular(16),
                       ),
-                      child: Image.network(
-                        collection.coverUrl!,
-                        fit: BoxFit.cover,
-                        width: double.infinity,
-                        errorBuilder: (_, _, _) => const SizedBox.shrink(),
-                      ),
+                      child: AppNetworkImage(collection.coverUrl!, fit: BoxFit.cover, width: double.infinity, decodeWidth: kThumbDecodeWidth, error: const SizedBox.shrink()),
                     )
                   : const Center(
                       child: Icon(

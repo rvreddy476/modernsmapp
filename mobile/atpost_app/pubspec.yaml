@@ -7,9 +7,29 @@ version: 1.0.0+1
 environment:
   sdk: ^3.10.7
 
+# Member of the pub workspace rooted at mobile/pubspec.yaml — one shared
+# resolution across the app and the extracted packages.
+resolution: workspace
+
 dependencies:
   flutter:
     sdk: flutter
+
+  # Workspace packages (modular architecture, P1/P2 extraction).
+  atpost_core: ^0.1.0
+  atpost_design: ^0.1.0
+  atpost_network: ^0.1.0
+  atpost_realtime: ^0.1.0
+  commerce_domain: ^0.1.0
+  feature_commerce: ^0.1.0
+  wallet_domain: ^0.1.0
+  feature_wallet: ^0.1.0
+  billpay_domain: ^0.1.0
+  feature_billpay: ^0.1.0
+  mopedu_domain: ^0.1.0
+  feature_mopedu: ^0.1.0
+  feature_figo: ^0.1.0
+  feature_pulse: ^0.1.0
 
   cupertino_icons: ^1.0.8
   google_fonts: ^6.3.2
@@ -49,6 +69,9 @@ dependencies:
   # Offline caching
   hive: ^2.2.3
   hive_flutter: ^1.1.0
+
+  # Testable time source (chat_provider stamps message times through it).
+  clock: ^1.1.1
 
 dev_dependencies:
   flutter_test:

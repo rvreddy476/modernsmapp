@@ -1,6 +1,7 @@
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_spacing.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_images.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_spacing.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/data/models/qa.dart';
 import 'package:atpost_app/data/repositories/qa_repository.dart';
 import 'package:atpost_app/features/qa/widgets/qa_report_sheet.dart';
@@ -70,7 +71,7 @@ class QuestionCard extends ConsumerWidget {
           radius: 14,
           backgroundColor: AppColors.bgTertiary,
           backgroundImage:
-              avatarUrl != null && avatarUrl.isNotEmpty ? NetworkImage(avatarUrl) : null,
+              avatarUrl != null && avatarUrl.isNotEmpty ? cachedAvatarProvider(avatarUrl) : null,
           child: avatarUrl == null || avatarUrl.isEmpty
               ? Icon(
                   isAnon ? Icons.visibility_off_outlined : Icons.person,

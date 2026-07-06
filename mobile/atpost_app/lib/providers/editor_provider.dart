@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:atpost_app/data/models/editor.dart';
-import 'package:atpost_app/services/api_client.dart';
+import 'package:atpost_network/api_client.dart';
 
 class EditorNotifier extends StateNotifier<EditorModel> {
   final ApiClient _api;

@@ -1,5 +1,5 @@
 import 'package:atpost_app/data/models/notification.dart';
-import 'package:atpost_app/data/models/realtime_event.dart';
+import 'package:atpost_realtime/realtime_event.dart';
 import 'package:atpost_app/data/repositories/chat_repository.dart';
 import 'package:atpost_app/data/repositories/notification_repository.dart';
 import 'package:atpost_app/services/auth_service.dart';

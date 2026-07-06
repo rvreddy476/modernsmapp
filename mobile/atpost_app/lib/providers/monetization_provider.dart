@@ -1,4 +1,4 @@
-import 'package:atpost_app/core/errors/error_handler.dart';
+import 'package:atpost_core/errors/error_handler.dart';
 import 'package:atpost_app/data/models/monetization.dart';
 import 'package:atpost_app/data/repositories/monetization_repository.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';

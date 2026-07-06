@@ -1,4 +1,4 @@
-import 'package:atpost_app/services/api_client.dart';
+import 'package:atpost_network/api_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 /// One assignment handed to a reviewer (creator identity is blinded server-side).

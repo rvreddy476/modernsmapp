@@ -1,8 +1,9 @@
+import 'package:atpost_design/app_images.dart';
 import 'dart:convert';
 
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
-import 'package:atpost_app/core/utils/app_logger.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_text_styles.dart';
+import 'package:atpost_core/utils/app_logger.dart';
 import 'package:atpost_app/data/models/mini_app.dart';
 import 'package:atpost_app/data/models/mini_app_manifest.dart';
 import 'package:atpost_app/data/repositories/mini_apps_repository.dart';
@@ -697,7 +698,7 @@ class _MiniAppSandboxScreenState extends ConsumerState<MiniAppSandboxScreen> {
             if (_app?.iconUrl != null)
               CircleAvatar(
                 radius: 14,
-                backgroundImage: NetworkImage(_app!.iconUrl!),
+                backgroundImage: cachedAvatarProvider(_app!.iconUrl!),
               )
             else
               const CircleAvatar(

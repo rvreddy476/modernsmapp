@@ -1,6 +1,7 @@
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_spacing.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_images.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_spacing.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/data/models/user.dart';
 import 'package:atpost_app/data/repositories/user_repository.dart';
 import 'package:atpost_app/providers/social_provider.dart';
@@ -333,7 +334,7 @@ class _FollowingTileState extends ConsumerState<_FollowingTile> {
                   alpha: 0.2,
                 ),
                 backgroundImage: user.hasAvatar
-                    ? NetworkImage(user.avatarUrl)
+                    ? cachedAvatarProvider(user.avatarUrl)
                     : null,
                 child: user.hasAvatar
                     ? null

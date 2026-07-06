@@ -1,4 +1,4 @@
-import 'package:atpost_app/core/theme/app_colors.dart';
+import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_app/features/social/widgets/friend_requests_sheet.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';

@@ -1,6 +1,6 @@
 import 'package:atpost_app/data/models/community.dart';
 import 'package:atpost_app/data/models/community_post.dart';
-import 'package:atpost_app/services/api_client.dart';
+import 'package:atpost_network/api_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 class CommunityPostsRepository {

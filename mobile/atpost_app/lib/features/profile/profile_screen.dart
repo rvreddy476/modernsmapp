@@ -1,5 +1,6 @@
-import 'package:atpost_app/core/config/environment.dart';
-import 'package:atpost_app/core/theme/app_colors.dart';
+import 'package:atpost_design/app_images.dart';
+import 'package:atpost_core/config/environment.dart';
+import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_app/data/models/post.dart';
 import 'package:atpost_app/data/models/user.dart';
 import 'package:atpost_app/providers/data_saver_provider.dart';
@@ -217,7 +218,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
         ),
         image: user.hasCover
             ? DecorationImage(
-                image: NetworkImage(
+                image: cachedImageProvider(
                   resolveImageUrl(
                     user.coverUrl!,
                     dataSaver: ref.watch(effectiveDataSaverProvider),
@@ -246,7 +247,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
         border: Border.all(color: AppColors.bgPrimary, width: 3.5),
         image: user.hasAvatar
             ? DecorationImage(
-                image: NetworkImage(
+                image: cachedAvatarProvider(
                   resolveImageUrl(
                     user.avatarUrl,
                     dataSaver: ref.watch(effectiveDataSaverProvider),
@@ -645,15 +646,11 @@ class _GridTile extends StatelessWidget {
           fit: StackFit.expand,
           children: [
             if (post.mediaIds.isNotEmpty)
-              Image.network(
-                resolveImageUrl(
+              AppNetworkImage(resolveImageUrl(
                   '${Environment.apiBaseUrl}${post.firstMediaUrl}',
                   dataSaver: dataSaver,
                   size: ImageSize.medium,
-                ),
-                fit: BoxFit.cover,
-                errorBuilder: (_, _, _) => _gradientFill(colors),
-              )
+                ), fit: BoxFit.cover, error: _gradientFill(colors))
             else
               _gradientFill(colors),
             // Top-right marker: play for reels, stack for carousels.

@@ -1,9 +1,9 @@
 import 'dart:convert';
 
-import 'package:atpost_app/core/utils/app_logger.dart';
+import 'package:atpost_core/utils/app_logger.dart';
 import 'package:atpost_app/data/models/mini_app.dart';
 import 'package:atpost_app/data/models/mini_app_manifest.dart';
-import 'package:atpost_app/services/api_client.dart';
+import 'package:atpost_network/api_client.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 

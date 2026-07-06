@@ -5,7 +5,7 @@
 // right per README §8 + §9 prevents the "5 notifications, only the
 // last one shown" UX regression we were chasing.
 
-import 'package:atpost_app/data/models/realtime_event.dart';
+import 'package:atpost_realtime/realtime_event.dart';
 import 'package:atpost_app/features/shell/notification_toast_queue.dart';
 import 'package:flutter_test/flutter_test.dart';
 

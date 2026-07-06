@@ -1,5 +1,5 @@
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/data/models/community.dart';
 import 'package:atpost_app/providers/communities_provider.dart';
 import 'package:atpost_app/shared/widgets/glass_icon_button.dart';

@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:math';
 
-import 'package:atpost_app/core/errors/app_exception.dart';
-import 'package:atpost_app/core/utils/app_logger.dart';
+import 'package:atpost_core/errors/app_exception.dart';
+import 'package:atpost_core/utils/app_logger.dart';
 import 'package:atpost_app/data/models/call.dart' as models;
 import 'package:atpost_app/data/repositories/calls_repository.dart';
 import 'package:atpost_app/data/repositories/user_repository.dart';

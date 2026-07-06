@@ -1,12 +1,12 @@
 import 'dart:async';
 
-import 'package:atpost_app/core/errors/error_handler.dart';
-import 'package:atpost_app/core/utils/app_logger.dart';
+import 'package:atpost_core/errors/error_handler.dart';
+import 'package:atpost_core/utils/app_logger.dart';
 import 'package:atpost_app/data/models/post.dart';
-import 'package:atpost_app/data/models/realtime_event.dart';
+import 'package:atpost_realtime/realtime_event.dart';
 import 'package:atpost_app/data/repositories/feed_repository.dart';
 import 'package:atpost_app/services/auth_service.dart';
-import 'package:atpost_app/services/realtime_service.dart';
+import 'package:atpost_realtime/realtime_service.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 /// State for the paginated feed with production-grade efficiency.

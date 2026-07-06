@@ -1,5 +1,5 @@
 import 'dart:io';
-import 'package:atpost_app/core/utils/app_logger.dart';
+import 'package:atpost_core/utils/app_logger.dart';
 
 /// Wrapper around ffmpeg_kit_flutter for video processing operations.
 /// All methods return the output file path on success, throw on failure.

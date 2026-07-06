@@ -19,11 +19,11 @@
 //     to dedupe and key lists.
 
 import 'package:atpost_app/data/models/notification.dart';
-import 'package:atpost_app/data/models/order.dart';
-import 'package:atpost_app/data/models/pulse.dart';
+import 'package:commerce_domain/models/order.dart';
+import 'package:feature_pulse/models/pulse.dart';
 import 'package:atpost_app/providers/notification_provider.dart';
-import 'package:atpost_app/providers/orders_provider.dart';
-import 'package:atpost_app/providers/pulse_providers.dart';
+import 'package:commerce_domain/providers/orders_provider.dart';
+import 'package:feature_pulse/providers/pulse_providers.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 /// Filter values that drive the Inbox tab strip in the shell.

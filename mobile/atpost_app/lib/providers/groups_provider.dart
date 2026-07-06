@@ -1,4 +1,4 @@
-import 'package:atpost_app/core/errors/error_handler.dart';
+import 'package:atpost_core/errors/error_handler.dart';
 import 'package:atpost_app/data/models/group.dart';
 import 'package:atpost_app/data/models/group_invite.dart';
 import 'package:atpost_app/data/models/group_member.dart';

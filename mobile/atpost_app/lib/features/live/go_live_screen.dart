@@ -5,10 +5,10 @@
 
 import 'dart:io';
 
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/providers/live_streams_provider.dart';
-import 'package:atpost_app/services/api_client.dart';
+import 'package:atpost_network/api_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -621,15 +621,16 @@ class _VisibilityChooser extends StatelessWidget {
                         ],
                       ),
                     ),
-                    Radio<String>(
-                      value: opt.value,
+                    RadioGroup<String>(
                       groupValue: value,
-                      activeColor: AppColors.liveRed,
-                      onChanged: enabled
-                          ? (v) {
-                              if (v != null) onChanged(v);
-                            }
-                          : null,
+                      onChanged: (v) {
+                        if (v != null) onChanged(v);
+                      },
+                      child: Radio<String>(
+                        value: opt.value,
+                        enabled: enabled,
+                        activeColor: AppColors.liveRed,
+                      ),
                     ),
                   ],
                 ),

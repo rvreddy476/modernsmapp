@@ -1,6 +1,7 @@
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_spacing.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_images.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_spacing.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/data/models/community_post.dart';
 import 'package:flutter/material.dart';
 
@@ -98,7 +99,7 @@ class CommunityPostCard extends StatelessWidget {
                     backgroundColor:
                         AppColors.postbookPrimary.withValues(alpha: 0.2),
                     backgroundImage: post.authorAvatarUrl != null
-                        ? NetworkImage(post.authorAvatarUrl!)
+                        ? cachedAvatarProvider(post.authorAvatarUrl!)
                         : null,
                     child: post.authorAvatarUrl == null
                         ? Text(

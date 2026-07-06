@@ -1,0 +1,27 @@
+# Commerce domain kernel: the models, repositories, providers, and
+# telemetry that describe products/orders/product-tags. This is SHARED
+# vocabulary — reels (product tags), search, shop, and inbox all speak
+# it, so it lives below the feature layer. UI lives in feature_commerce.
+# Never import atpost_app or a feature package from here.
+name: commerce_domain
+description: atPost commerce domain (product/order/tag models, repos, providers).
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.10.7
+
+resolution: workspace
+
+dependencies:
+  flutter:
+    sdk: flutter
+  atpost_core: ^0.1.0
+  atpost_network: ^0.1.0
+  dio: ^5.9.0
+  flutter_riverpod: ^2.6.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0

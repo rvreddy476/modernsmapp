@@ -15,9 +15,10 @@
 //   playthrough is the new-playthrough signal — the parent decides
 //   when to do that (usually a Key change on the video URL change).
 
-import 'package:atpost_app/data/models/product_tag.dart';
-import 'package:atpost_app/data/repositories/product_tags_repository.dart';
-import 'package:atpost_app/providers/product_tags_provider.dart';
+import 'package:atpost_design/app_images.dart';
+import 'package:commerce_domain/models/product_tag.dart';
+import 'package:commerce_domain/data/product_tags_repository.dart';
+import 'package:commerce_domain/providers/product_tags_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -158,13 +159,7 @@ class _ProductCardState extends ConsumerState<_ProductCard> {
               if (tag.imageUrl.isNotEmpty)
                 ClipRRect(
                   borderRadius: BorderRadius.circular(8),
-                  child: Image.network(
-                    tag.imageUrl,
-                    width: 36,
-                    height: 36,
-                    fit: BoxFit.cover,
-                    errorBuilder: (_, _, _) => _placeholderThumb(),
-                  ),
+                  child: AppNetworkImage(tag.imageUrl, fit: BoxFit.cover, width: 36, height: 36, error: _placeholderThumb()),
                 )
               else
                 _placeholderThumb(),

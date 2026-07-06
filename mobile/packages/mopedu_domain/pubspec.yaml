@@ -1,0 +1,24 @@
+# Mopedu (ride-hailing) domain kernel: model, repository, providers, and
+# the location / telemetry / crash-breadcrumb services. Shared with the
+# shell's "Me" tab. UI lives in feature_mopedu. Never import atpost_app
+# or a feature package.
+name: mopedu_domain
+description: atPost Mopedu ride-hailing domain (model, repo, providers, services).
+version: 0.1.0
+publish_to: none
+environment:
+  sdk: ^3.10.7
+resolution: workspace
+dependencies:
+  flutter:
+    sdk: flutter
+  atpost_core: ^0.1.0
+  atpost_network: ^0.1.0
+  atpost_realtime: ^0.1.0
+  flutter_riverpod: ^2.6.1
+  flutter_secure_storage: ^9.2.2
+  geolocator: ^12.0.0
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0

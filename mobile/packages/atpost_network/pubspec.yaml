@@ -1,0 +1,28 @@
+# HTTP layer: Dio ApiClient (retries, token refresh, resilient media
+# uploads), request interceptors, and the offline flag. Auth is consumed
+# through the AuthSession interface — this package must never import the
+# app or any feature package.
+name: atpost_network
+description: atPost mobile network layer (ApiClient, interceptors, connectivity).
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.10.7
+
+resolution: workspace
+
+dependencies:
+  flutter:
+    sdk: flutter
+  atpost_core: ^0.1.0
+  dio: ^5.9.0
+  flutter_riverpod: ^2.6.1
+  cross_file: ^0.3.4
+  mime: ^1.0.6
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  mocktail: ^1.0.4

@@ -1,9 +1,10 @@
+import 'package:atpost_design/app_images.dart';
 import 'dart:async';
 import 'dart:math' as math;
 
-import 'package:atpost_app/core/config/environment.dart';
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_core/config/environment.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/data/models/post.dart';
 import 'package:atpost_app/data/repositories/analytics_repository.dart';
 import 'package:atpost_app/data/repositories/feed_repository.dart';
@@ -616,8 +617,11 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> with RouteAware {
             controller: _pageController,
             scrollDirection: Axis.vertical,
             itemCount: _reels.length,
-            // data-saver: PageView precaches just current + next; nothing
-            // further to do here without a custom delegate.
+            // Keep the adjacent page alive so the next reel's player
+            // initializes (buffers) BEFORE the swipe lands — this is what
+            // makes the transition feel instant. Data-saver turns the
+            // pre-buffer off.
+            allowImplicitScrolling: !dataSaver,
             onPageChanged: _onPageChanged,
             itemBuilder: (context, index) {
               final post = _reels[index];
@@ -626,30 +630,34 @@ class _ReelsScreenState extends ConsumerState<ReelsScreen> with RouteAware {
 
               final canFollow = post.authorId.isNotEmpty;
               final isFollowing = _followedAuthors[post.authorId] ?? false;
-              return GestureDetector(
-                onDoubleTap: () => _toggleLike(post),
-                child: _ReelPage(
-                  post: post,
-                  engagement: engagement,
-                  colors: colors,
-                  fullscreenRoute: widget.fullscreenRoute,
-                  isActive: isActive,
-                  muted: _muted,
-                  captionsEnabled: _captionsEnabled(post.id),
-                  dataSaver: dataSaver,
-                  autoplay: autoplay,
-                  bottomGap: totalBottomGap,
-                  onBack: () => context.pop(),
-                  onToggleMute: () => setState(() => _muted = !_muted),
-                  onToggleCaptions: () => _toggleCaptionsFor(post.id),
-                  onLike: () => _toggleLike(post),
-                  onMore: () => _showMoreOptions(post),
-                  onComment: () => _openComments(post),
-                  onShare: () => _shareReel(post),
-                  onSave: () => _toggleSave(post),
-                  countLabel: _countLabel,
-                  isFollowing: isFollowing,
-                  onFollow: canFollow ? () => _toggleFollow(post) : null,
+              // RepaintBoundary keeps overlay animations (hearts, loading
+              // pill) from re-rasterising the whole video page.
+              return RepaintBoundary(
+                child: GestureDetector(
+                  onDoubleTap: () => _toggleLike(post),
+                  child: _ReelPage(
+                    post: post,
+                    engagement: engagement,
+                    colors: colors,
+                    fullscreenRoute: widget.fullscreenRoute,
+                    isActive: isActive,
+                    muted: _muted,
+                    captionsEnabled: _captionsEnabled(post.id),
+                    dataSaver: dataSaver,
+                    autoplay: autoplay,
+                    bottomGap: totalBottomGap,
+                    onBack: () => context.pop(),
+                    onToggleMute: () => setState(() => _muted = !_muted),
+                    onToggleCaptions: () => _toggleCaptionsFor(post.id),
+                    onLike: () => _toggleLike(post),
+                    onMore: () => _showMoreOptions(post),
+                    onComment: () => _openComments(post),
+                    onShare: () => _shareReel(post),
+                    onSave: () => _toggleSave(post),
+                    countLabel: _countLabel,
+                    isFollowing: isFollowing,
+                    onFollow: canFollow ? () => _toggleFollow(post) : null,
+                  ),
                 ),
               );
             },
@@ -1277,7 +1285,7 @@ class _ReelAvatar extends StatelessWidget {
                 colors: [Color(0xFF7C3AED), Color(0xFFDB2777)],
               ),
         image: hasUrl
-            ? DecorationImage(image: NetworkImage(url!), fit: BoxFit.cover)
+            ? DecorationImage(image: cachedAvatarProvider(url!), fit: BoxFit.cover)
             : null,
       ),
       alignment: Alignment.center,

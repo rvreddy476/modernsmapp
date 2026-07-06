@@ -1,13 +1,13 @@
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_spacing.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_spacing.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/data/models/conversation.dart';
 import 'package:atpost_app/data/models/presence.dart';
 import 'package:atpost_app/providers/chat_provider.dart';
 import 'package:atpost_app/providers/presence_provider.dart';
 import 'package:atpost_app/services/auth_service.dart';
 import 'package:atpost_app/services/call_service.dart';
-import 'package:atpost_app/services/realtime_service.dart' as rt;
+import 'package:atpost_realtime/realtime_service.dart' as rt;
 import 'package:atpost_app/shared/widgets/glass_icon_button.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';

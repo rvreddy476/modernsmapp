@@ -22,8 +22,8 @@
 import 'dart:async';
 import 'dart:collection';
 
-import 'package:atpost_app/core/utils/app_logger.dart';
-import 'package:atpost_app/services/api_client.dart';
+import 'package:atpost_core/utils/app_logger.dart';
+import 'package:atpost_network/api_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 /// Keys we will never forward, even if a caller mistakenly includes them.

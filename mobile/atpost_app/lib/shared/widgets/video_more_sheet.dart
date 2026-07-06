@@ -8,9 +8,9 @@
 // (Add to playlist, feed signals, Quality, Autoplay, Feedback, Why-seeing) are
 // handled inside via repositories/providers.
 
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_spacing.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_spacing.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/data/models/post.dart';
 import 'package:atpost_app/data/repositories/feed_signal_repository.dart';
 import 'package:atpost_app/data/repositories/feedback_repository.dart';

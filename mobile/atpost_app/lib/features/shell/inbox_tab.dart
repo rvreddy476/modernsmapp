@@ -8,8 +8,9 @@
 // link. Section headers divide the list by day. Unread badges sit on the
 // tab strip.
 
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_images.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/providers/inbox_providers.dart';
 import 'package:atpost_app/services/shell_telemetry.dart';
 import 'package:flutter/material.dart';
@@ -308,7 +309,7 @@ class _Avatar extends StatelessWidget {
       return CircleAvatar(
         radius: 22,
         backgroundColor: AppColors.bgTertiary,
-        backgroundImage: NetworkImage(item.avatarUrl!),
+        backgroundImage: cachedAvatarProvider(item.avatarUrl!),
       );
     }
     return CircleAvatar(

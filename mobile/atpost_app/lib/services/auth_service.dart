@@ -1,6 +1,7 @@
 import 'dart:async';
-import 'package:atpost_app/core/config/environment.dart';
-import 'package:atpost_app/core/utils/app_logger.dart';
+import 'package:atpost_core/config/environment.dart';
+import 'package:atpost_core/utils/app_logger.dart';
+import 'package:atpost_network/auth_session.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -81,7 +82,10 @@ class LoginResult {
 }
 
 /// Manages authentication tokens and user session with high-resilience logic.
-class AuthService {
+///
+/// Implements the network layer's [AuthSession] so ApiClient and the
+/// interceptors stay decoupled from session storage and login flows.
+class AuthService implements AuthSession {
   static const _keyUserId = 'auth_user_id';
   static const _keyToken = 'auth_token';
   static const _keyRefreshToken = 'auth_refresh_token';
@@ -105,10 +109,15 @@ class AuthService {
 
   Stream<AuthState> get stateStream => _stateController.stream;
   AuthState get state => _state;
+  @override
   String? get token => _state.token;
   String? get refreshToken => _state.refreshToken;
+  @override
   String? get userId => _state.userId;
+  @override
   bool get isAuthenticated => _state.isAuthenticated;
+  @override
+  Stream<void> get sessionChanges => stateStream;
 
   AuthService({FlutterSecureStorage? storage, Dio? dio})
     : _storage = storage ?? const FlutterSecureStorage(),
@@ -332,6 +341,7 @@ class AuthService {
   }
 
   /// Refreshes the token and handles edge cases (like server downtime).
+  @override
   Future<bool> refreshAccessToken() async {
     final currentRefresh = _normalize(_state.refreshToken);
     if (currentRefresh == null) return false;
@@ -387,6 +397,7 @@ class AuthService {
     await _persistSession();
   }
 
+  @override
   void logout() {
     _state = const AuthState();
     _stateController.add(_state);

@@ -1,6 +1,7 @@
+import 'package:atpost_design/app_images.dart';
 import 'dart:async';
 
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/data/models/story.dart';
 import 'package:atpost_app/features/stories/widgets/countdown_widget.dart';
 import 'package:atpost_app/features/stories/widgets/interactive_results_sheet.dart';
@@ -211,17 +212,13 @@ class _StoryViewerScreenState extends ConsumerState<StoryViewerScreen> {
         ),
       );
     }
-    return Image.network(
-      item.mediaId,
-      fit: BoxFit.cover,
-      errorBuilder: (_, _, _) => Container(
+    return AppNetworkImage(item.mediaId, fit: BoxFit.cover, error: Container(
         color: const Color(0xFF14141F),
         child: const Center(
           child:
               Icon(Icons.image_not_supported, color: Colors.white38, size: 64),
         ),
-      ),
-    );
+      ));
   }
 
   @override

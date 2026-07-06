@@ -1,4 +1,4 @@
-import 'package:atpost_app/core/utils/app_logger.dart';
+import 'package:atpost_core/utils/app_logger.dart';
 
 /// Production-ready MiniApp model with total resilience logic.
 class MiniApp {

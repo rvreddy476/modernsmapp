@@ -1,7 +1,8 @@
+import 'package:atpost_design/app_images.dart';
 import 'dart:async';
 
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/data/models/qa.dart';
 import 'package:atpost_app/data/repositories/qa_repository.dart';
 import 'package:atpost_app/features/qa/widgets/qa_report_sheet.dart';
@@ -346,7 +347,7 @@ class _QuestionDetailScreenState
               radius: 14,
               backgroundColor: AppColors.bgTertiary,
               backgroundImage: avatarUrl != null && avatarUrl.isNotEmpty
-                  ? NetworkImage(avatarUrl)
+                  ? cachedAvatarProvider(avatarUrl)
                   : null,
               child: avatarUrl == null || avatarUrl.isEmpty
                   ? Icon(
@@ -555,7 +556,7 @@ class _AnswerTile extends StatelessWidget {
                 radius: 12,
                 backgroundColor: AppColors.bgTertiary,
                 backgroundImage: avatarUrl != null && avatarUrl.isNotEmpty
-                    ? NetworkImage(avatarUrl)
+                    ? cachedAvatarProvider(avatarUrl)
                     : null,
                 child: avatarUrl == null || avatarUrl.isEmpty
                     ? Icon(

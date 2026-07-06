@@ -1,4 +1,5 @@
-import 'package:atpost_app/core/theme/app_colors.dart';
+import 'package:atpost_design/app_images.dart';
+import 'package:atpost_design/app_colors.dart';
 import 'package:flutter/material.dart';
 
 /// Shared building blocks for the Friends module surfaces (home screen +
@@ -28,7 +29,7 @@ class FriendAvatar extends StatelessWidget {
           colors: colors,
         ),
         image: (url != null && url!.isNotEmpty)
-            ? DecorationImage(image: NetworkImage(url!), fit: BoxFit.cover)
+            ? DecorationImage(image: cachedAvatarProvider(url!), fit: BoxFit.cover)
             : null,
       ),
       alignment: Alignment.center,

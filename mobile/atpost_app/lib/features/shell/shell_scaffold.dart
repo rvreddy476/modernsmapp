@@ -17,9 +17,9 @@
 // inside the shell (Home quick-actions, Me-tab launcher grid) and from
 // external deep links.
 
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
-import 'package:atpost_app/data/models/realtime_event.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_text_styles.dart';
+import 'package:atpost_realtime/realtime_event.dart';
 import 'package:atpost_app/features/home/home_feed_screen.dart';
 import 'package:atpost_app/features/reels/reels_screen.dart';
 import 'package:atpost_app/features/services/services_screen.dart';
@@ -29,7 +29,7 @@ import 'package:atpost_app/features/shell/shell_providers.dart';
 import 'package:atpost_app/features/social/friends_screen.dart';
 import 'package:atpost_app/providers/notification_provider.dart';
 import 'package:atpost_app/services/presence_service.dart';
-import 'package:atpost_app/services/realtime_service.dart';
+import 'package:atpost_realtime/realtime_service.dart';
 import 'package:atpost_app/services/shell_telemetry.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -277,42 +277,6 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold>
                 },
               )
             : null,
-      ),
-    );
-  }
-}
-
-class _CreateFab extends StatelessWidget {
-  const _CreateFab({required this.onTap});
-
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      width: 58,
-      height: 58,
-      child: FloatingActionButton(
-        onPressed: onTap,
-        backgroundColor: AppColors.postbookPrimary,
-        elevation: 6,
-        shape: const CircleBorder(),
-        child: Container(
-          width: 58,
-          height: 58,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            gradient: AppColors.ctaGradient,
-            boxShadow: const [
-              BoxShadow(
-                color: Color(0x66FF6B35),
-                blurRadius: 14,
-                offset: Offset(0, 4),
-              ),
-            ],
-          ),
-          child: const Icon(Icons.add, color: Colors.white, size: 28),
-        ),
       ),
     );
   }

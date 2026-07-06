@@ -1,6 +1,6 @@
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_spacing.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_spacing.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/features/hashtag_feed/models/hashtag_model.dart';
 import 'package:atpost_app/features/hashtag_feed/state/hashtag_feed_notifier.dart';
 import 'package:atpost_app/features/hashtag_feed/state/hashtag_feed_state.dart';

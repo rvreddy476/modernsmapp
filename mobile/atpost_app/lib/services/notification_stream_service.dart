@@ -27,12 +27,12 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 
-import 'package:atpost_app/core/config/environment.dart';
-import 'package:atpost_app/core/utils/app_logger.dart';
-import 'package:atpost_app/data/models/realtime_event.dart';
+import 'package:atpost_core/config/environment.dart';
+import 'package:atpost_core/utils/app_logger.dart';
+import 'package:atpost_realtime/realtime_event.dart';
 import 'package:atpost_app/services/auth_service.dart';
-import 'package:atpost_app/services/interceptors/auth_interceptor.dart';
-import 'package:atpost_app/services/interceptors/expired_token_interceptor.dart';
+import 'package:atpost_network/interceptors/auth_interceptor.dart';
+import 'package:atpost_network/interceptors/expired_token_interceptor.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 

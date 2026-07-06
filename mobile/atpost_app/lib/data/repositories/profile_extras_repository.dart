@@ -1,6 +1,6 @@
 import 'package:atpost_app/data/models/profile_extras.dart';
 import 'package:atpost_app/data/repositories/user_repository.dart';
-import 'package:atpost_app/services/api_client.dart';
+import 'package:atpost_network/api_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 class ProfileExtrasRepository {

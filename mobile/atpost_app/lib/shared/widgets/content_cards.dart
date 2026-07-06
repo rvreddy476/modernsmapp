@@ -1,7 +1,8 @@
-import 'package:atpost_app/core/config/environment.dart';
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_spacing.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_images.dart';
+import 'package:atpost_core/config/environment.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_spacing.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/data/models/post.dart';
 import 'package:atpost_app/data/repositories/post_repository.dart';
 import 'package:atpost_app/data/repositories/user_repository.dart';
@@ -395,10 +396,10 @@ class _PostCardState extends ConsumerState<PostCard> {
           child: Stack(
             fit: StackFit.expand,
             children: [
-              Image.network(
+              AppNetworkImage(
                 '${Environment.apiBaseUrl}${post.firstMediaUrl}',
-                fit: BoxFit.cover,
-                errorBuilder: (_, _, _) => Container(
+                placeholderColor: AppColors.bgTertiary,
+                error: Container(
                   color: AppColors.bgTertiary,
                   alignment: Alignment.center,
                   child: Text(
@@ -449,7 +450,7 @@ class _PostCardState extends ConsumerState<PostCard> {
           radius: 20,
           backgroundColor: AppColors.bgTertiary,
           backgroundImage: avatarUrl.isNotEmpty
-              ? NetworkImage(avatarUrl)
+              ? cachedAvatarProvider(avatarUrl)
               : null,
           child: avatarUrl.isEmpty
               ? Text(authorInitial, style: AppTextStyles.h3)
@@ -778,8 +779,8 @@ class ReelCard extends StatelessWidget {
         margin: const EdgeInsets.only(bottom: 14),
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(AppSpacing.radiusXL),
-          image: const DecorationImage(
-            image: NetworkImage(
+          image: DecorationImage(
+            image: cachedImageProvider(
               'https://images.unsplash.com/photo-1611162617474-5b21e879e113?w=800&q=80',
             ),
             fit: BoxFit.cover,
@@ -882,8 +883,8 @@ class VideoCard extends StatelessWidget {
                 decoration: BoxDecoration(
                   color: AppColors.bgCard,
                   borderRadius: BorderRadius.circular(AppSpacing.radiusXL),
-                  image: const DecorationImage(
-                    image: NetworkImage(
+                  image: DecorationImage(
+                    image: cachedImageProvider(
                       'https://images.unsplash.com/photo-1492691527719-9d1e07e534b4?w=800&q=80',
                     ),
                     fit: BoxFit.cover,

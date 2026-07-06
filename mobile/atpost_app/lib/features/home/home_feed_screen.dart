@@ -1,8 +1,9 @@
+import 'package:atpost_design/app_images.dart';
 import 'dart:async';
 
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_spacing.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_spacing.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/data/models/user.dart';
 import 'package:atpost_app/data/repositories/user_repository.dart';
 import 'package:atpost_app/features/hashtag_feed/hashtag_feed_screen.dart';
@@ -214,7 +215,7 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
                 radius: 18,
                 backgroundColor: AppColors.bgTertiary,
                 backgroundImage: avatar != null
-                    ? NetworkImage(
+                    ? cachedAvatarProvider(
                         resolveImageUrl(
                           avatar,
                           dataSaver: dataSaver,
@@ -374,7 +375,7 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
                 radius: 22,
                 backgroundColor: AppColors.bgTertiary,
                 backgroundImage: hasAvatar
-                    ? NetworkImage(
+                    ? cachedAvatarProvider(
                         resolveImageUrl(
                           user.avatarUrl,
                           dataSaver: ref.watch(effectiveDataSaverProvider),

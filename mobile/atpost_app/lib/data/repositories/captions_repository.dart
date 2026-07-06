@@ -1,4 +1,4 @@
-import 'package:atpost_app/services/api_client.dart';
+import 'package:atpost_network/api_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 /// Subtitle / closed-caption track exposed by media-service. The

@@ -1,0 +1,25 @@
+# Wallet UI vertical: home, top-up, send (AtPost user picker via host),
+# transactions, KYC/Aadhaar. Sits on wallet_domain. Never imports
+# atpost_app or another feature package.
+name: feature_wallet
+description: atPost consumer wallet feature (home, send, top-up, KYC).
+version: 0.1.0
+publish_to: none
+environment:
+  sdk: ^3.10.7
+resolution: workspace
+dependencies:
+  flutter:
+    sdk: flutter
+  atpost_core: ^0.1.0
+  atpost_design: ^0.1.0
+  atpost_network: ^0.1.0
+  wallet_domain: ^0.1.0
+  flutter_riverpod: ^2.6.1
+  go_router: ^16.3.0
+  webview_flutter: ^4.10.1
+  shimmer: ^3.0.0
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0

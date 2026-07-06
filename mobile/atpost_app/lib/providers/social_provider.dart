@@ -1,13 +1,13 @@
 import 'dart:async';
 
-import 'package:atpost_app/core/config/environment.dart';
-import 'package:atpost_app/data/models/realtime_event.dart';
+import 'package:atpost_core/config/environment.dart';
+import 'package:atpost_realtime/realtime_event.dart';
 import 'package:atpost_app/data/models/user.dart';
 import 'package:atpost_app/data/repositories/chat_repository.dart';
 import 'package:atpost_app/data/repositories/user_repository.dart';
-import 'package:atpost_app/services/api_client.dart';
+import 'package:atpost_network/api_client.dart';
 import 'package:atpost_app/services/auth_service.dart';
-import 'package:atpost_app/services/realtime_service.dart';
+import 'package:atpost_realtime/realtime_service.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 final followersProvider =

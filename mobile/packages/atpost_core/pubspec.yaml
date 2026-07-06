@@ -1,0 +1,24 @@
+# Foundation package: environment config, HTTP error taxonomy, logging,
+# and the Hive cache. No Flutter UI, no feature knowledge — everything
+# here must stay importable by every feature package without cycles.
+name: atpost_core
+description: atPost mobile foundation (env, errors, logging, cache).
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.10.7
+
+resolution: workspace
+
+dependencies:
+  flutter:
+    sdk: flutter
+  dio: ^5.9.0
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0

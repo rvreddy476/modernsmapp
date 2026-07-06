@@ -1,0 +1,21 @@
+# Wallet domain kernel: the wallet model, repository, and providers.
+# Shared vocabulary — billpay, mopedu, and the shell's "Me" tab all read
+# wallet state, so it lives below the feature layer. Wallet UI lives in
+# feature_wallet. Never import atpost_app or a feature package.
+name: wallet_domain
+description: atPost wallet domain (model, repository, providers).
+version: 0.1.0
+publish_to: none
+environment:
+  sdk: ^3.10.7
+resolution: workspace
+dependencies:
+  flutter:
+    sdk: flutter
+  atpost_core: ^0.1.0
+  atpost_network: ^0.1.0
+  flutter_riverpod: ^2.6.1
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0

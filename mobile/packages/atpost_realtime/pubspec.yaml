@@ -1,0 +1,26 @@
+# Shared websocket layer: one connection multiplexing chat, feed,
+# presence, call signaling, and live-stream events. Auth comes through
+# atpost_network's AuthSession — never import the app from here.
+name: atpost_realtime
+description: atPost mobile realtime layer (websocket connection + event types).
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.10.7
+
+resolution: workspace
+
+dependencies:
+  flutter:
+    sdk: flutter
+  atpost_core: ^0.1.0
+  atpost_network: ^0.1.0
+  dio: ^5.9.0
+  flutter_riverpod: ^2.6.1
+  web_socket_channel: ^3.0.3
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0

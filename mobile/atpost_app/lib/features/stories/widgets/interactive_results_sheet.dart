@@ -1,5 +1,5 @@
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/data/models/story.dart';
 import 'package:atpost_app/providers/stories_provider.dart';
 import 'package:flutter/material.dart';

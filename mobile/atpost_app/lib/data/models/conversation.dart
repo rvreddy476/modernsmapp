@@ -1,4 +1,4 @@
-import 'package:atpost_app/core/utils/app_logger.dart';
+import 'package:atpost_core/utils/app_logger.dart';
 
 class ConversationMember {
   final String userId;

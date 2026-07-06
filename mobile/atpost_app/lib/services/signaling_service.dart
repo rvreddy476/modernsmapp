@@ -1,7 +1,7 @@
 import 'dart:async';
 
-import 'package:atpost_app/data/models/realtime_event.dart';
-import 'package:atpost_app/services/realtime_service.dart';
+import 'package:atpost_realtime/realtime_event.dart';
+import 'package:atpost_realtime/realtime_service.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 enum SignalType {

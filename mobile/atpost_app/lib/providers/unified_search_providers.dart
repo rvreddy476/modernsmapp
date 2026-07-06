@@ -21,13 +21,13 @@
 
 import 'dart:convert';
 
-import 'package:atpost_app/data/models/billpay.dart';
-import 'package:atpost_app/data/models/commerce.dart';
+import 'package:billpay_domain/billpay.dart';
+import 'package:commerce_domain/models/commerce.dart';
 import 'package:atpost_app/data/models/post.dart';
 import 'package:atpost_app/data/models/qa.dart';
 import 'package:atpost_app/data/models/user.dart';
-import 'package:atpost_app/data/repositories/billpay_repository.dart';
-import 'package:atpost_app/data/repositories/commerce_repository.dart';
+import 'package:billpay_domain/billpay_repository.dart';
+import 'package:commerce_domain/data/commerce_repository.dart';
 import 'package:atpost_app/data/repositories/user_repository.dart';
 import 'package:atpost_app/providers/qa_provider.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -178,7 +178,7 @@ final unifiedSearchProvider = FutureProvider.autoDispose
 /// pagination; Sprint 2 swaps each entry for the existing module-specific
 /// search provider with a cursor.
 final unifiedSearchByCategoryProvider = FutureProvider.autoDispose
-    .family<List<Object>, _SearchKey>((ref, key) async {
+    .family<List<Object>, SearchKey>((ref, key) async {
   final query = key.query.trim();
   if (query.isEmpty) return const <Object>[];
   switch (key.category) {
@@ -203,15 +203,15 @@ final unifiedSearchByCategoryProvider = FutureProvider.autoDispose
   }
 });
 
-class _SearchKey {
-  const _SearchKey(this.query, this.category);
+class SearchKey {
+  const SearchKey(this.query, this.category);
 
   final String query;
   final SearchCategory category;
 
   @override
   bool operator ==(Object other) =>
-      other is _SearchKey &&
+      other is SearchKey &&
       other.query == query &&
       other.category == category;
 
@@ -219,10 +219,9 @@ class _SearchKey {
   int get hashCode => Object.hash(query, category);
 }
 
-/// Public alias so screens can build the family key without seeing the
-/// private class name.
-_SearchKey searchKey(String query, SearchCategory category) =>
-    _SearchKey(query, category);
+/// Convenience builder for the search family key.
+SearchKey searchKey(String query, SearchCategory category) =>
+    SearchKey(query, category);
 
 // ─── Per-source fetchers ───────────────────────────────────────────────
 

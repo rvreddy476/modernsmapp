@@ -1,11 +1,12 @@
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_images.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/data/models/user.dart';
 import 'package:atpost_app/data/repositories/chat_repository.dart';
 import 'package:atpost_app/providers/chat_provider.dart';
 import 'package:atpost_app/providers/social_provider.dart';
 import 'package:atpost_app/services/auth_service.dart';
-import 'package:atpost_app/services/realtime_service.dart';
+import 'package:atpost_realtime/realtime_service.dart';
 import 'package:atpost_app/shared/widgets/glass_icon_button.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -370,7 +371,7 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
             return ListTile(
               onTap: () => _startDirectChat(friend),
               leading: CircleAvatar(
-                backgroundImage: NetworkImage(friend.avatarUrl),
+                backgroundImage: cachedAvatarProvider(friend.avatarUrl),
               ),
               title: Text(friend.displayName, style: AppTextStyles.h3),
               subtitle: Text(
@@ -439,7 +440,7 @@ class _FriendStripItem extends StatelessWidget {
                     radius: 26,
                     backgroundColor: Colors.white10,
                     backgroundImage:
-                        friend.hasAvatar ? NetworkImage(friend.avatarUrl) : null,
+                        friend.hasAvatar ? cachedAvatarProvider(friend.avatarUrl) : null,
                     child: friend.hasAvatar
                         ? null
                         : Text(

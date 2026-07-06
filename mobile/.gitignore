@@ -1,0 +1,13 @@
+# Dart/Flutter build artifacts across the whole pub workspace (the app
+# and every package under packages/). Per-project .gitignores still
+# apply; this covers the workspace-level and package-level tooling dirs.
+.dart_tool/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# Pub workspace: only the workspace-root pubspec.lock (mobile/pubspec.lock)
+# is committed. Member packages resolve against it and don't carry their
+# own lockfiles.
+atpost_app/pubspec.lock
+packages/*/pubspec.lock

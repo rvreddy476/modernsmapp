@@ -1,0 +1,25 @@
+# Pub workspace root — one shared dependency resolution for the app and
+# every extracted package. Run `flutter pub get` here (or in any member;
+# pub walks up to this file). Add new packages to the list below.
+name: _atpost_mobile_workspace
+publish_to: none
+
+environment:
+  sdk: ^3.10.7
+
+workspace:
+  - atpost_app
+  - packages/atpost_core
+  - packages/atpost_design
+  - packages/atpost_network
+  - packages/atpost_realtime
+  - packages/commerce_domain
+  - packages/wallet_domain
+  - packages/billpay_domain
+  - packages/mopedu_domain
+  - packages/feature_mopedu
+  - packages/feature_billpay
+  - packages/feature_wallet
+  - packages/feature_commerce
+  - packages/feature_figo
+  - packages/feature_pulse

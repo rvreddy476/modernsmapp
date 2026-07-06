@@ -1,4 +1,4 @@
-import 'package:atpost_app/core/cache/cache_manager.dart';
+import 'package:atpost_core/cache/cache_manager.dart';
 import 'package:atpost_app/features/services/models/service_app.dart';
 
 /// Hive-backed store for which permissions a user has granted/denied per

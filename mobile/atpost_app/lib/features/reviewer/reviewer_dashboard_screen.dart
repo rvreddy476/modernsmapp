@@ -1,8 +1,8 @@
 // Reviewer dashboard — entry point to the review flow. Shows the user's reviewer
 // standing (status / tier / accuracy / earnings) and how much work is waiting,
 // with a button into the review console. Non-reviewers see an opt-in card.
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/data/repositories/reviewer_repository.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';

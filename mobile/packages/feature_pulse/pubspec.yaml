@@ -1,0 +1,35 @@
+# Pulse dating vertical — screens, models, repository, providers, and
+# pulse-scoped services. Talks to the host app ONLY through
+# lib/host/pulse_host.dart contracts; never imports atpost_app or other
+# feature packages.
+name: feature_pulse
+description: Pulse dating feature (discover, matches, chat, safety, premium).
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.10.7
+
+resolution: workspace
+
+dependencies:
+  flutter:
+    sdk: flutter
+  atpost_core: ^0.1.0
+  atpost_design: ^0.1.0
+  atpost_network: ^0.1.0
+  dio: ^5.9.0
+  flutter_riverpod: ^2.6.1
+  go_router: ^16.3.0
+  flutter_secure_storage: ^9.2.2
+  image_picker: ^1.1.2
+  geolocator: ^12.0.0
+  webview_flutter: ^4.10.1
+  mime: ^1.0.6
+  face_verification: ^0.3.6
+  google_mlkit_face_detection: ^0.13.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0

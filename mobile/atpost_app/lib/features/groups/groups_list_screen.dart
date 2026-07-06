@@ -1,5 +1,6 @@
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_images.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/data/models/group.dart';
 import 'package:atpost_app/data/models/group_invite.dart';
 import 'package:atpost_app/data/models/group_post.dart';
@@ -883,11 +884,7 @@ class _GroupAvatar extends StatelessWidget {
       child: ClipRRect(
         borderRadius: BorderRadius.circular(size * 0.28),
         child: avatarUrl != null
-            ? Image.network(
-                avatarUrl!,
-                fit: BoxFit.cover,
-                errorBuilder: (_, _, _) => _AvatarFallback(initial: initial, size: size),
-              )
+            ? AppNetworkImage(avatarUrl!, fit: BoxFit.cover, decodeWidth: kThumbDecodeWidth, error: _AvatarFallback(initial: initial, size: size))
             : _AvatarFallback(initial: initial, size: size),
       ),
     );
@@ -933,14 +930,10 @@ class _GroupCover extends StatelessWidget {
       return SizedBox(
         height: height,
         width: double.infinity,
-        child: Image.network(
-          coverUrl!,
-          fit: BoxFit.cover,
-          errorBuilder: (_, _, _) => _GradientCover(
+        child: AppNetworkImage(coverUrl!, fit: BoxFit.cover, decodeWidth: kThumbDecodeWidth, error: _GradientCover(
             gradient: gradient,
             height: height,
-          ),
-        ),
+          )),
       );
     }
     return _GradientCover(gradient: gradient, height: height);

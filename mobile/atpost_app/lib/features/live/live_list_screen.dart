@@ -2,8 +2,8 @@
 // `liveStreamsListProvider` (live-service-v2). Tapping a card pushes
 // `/live/v2/:id` which is the LiveKit-based viewer flow.
 
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/data/models/live_stream_v2.dart';
 import 'package:atpost_app/providers/live_streams_provider.dart';
 import 'package:flutter/material.dart';

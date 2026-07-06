@@ -1,7 +1,8 @@
+import 'package:atpost_design/app_images.dart';
 import 'dart:io';
 import 'dart:math' as math;
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/features/create/providers/creation_provider.dart';
 import 'package:atpost_app/features/create/widgets/mention_field.dart';
 import 'package:atpost_app/features/create/widgets/trending_hashtag_strip.dart';
@@ -321,7 +322,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
               radius: 22,
               backgroundColor: Colors.white10,
               backgroundImage: user?.avatarUrl != null
-                  ? NetworkImage(user!.avatarUrl)
+                  ? cachedAvatarProvider(user!.avatarUrl)
                   : null,
             ),
             const SizedBox(width: 12),

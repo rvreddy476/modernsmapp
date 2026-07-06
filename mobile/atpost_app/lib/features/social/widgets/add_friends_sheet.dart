@@ -1,4 +1,4 @@
-import 'package:atpost_app/core/theme/app_colors.dart';
+import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_app/data/repositories/user_repository.dart';
 import 'package:atpost_app/features/social/widgets/friends_common.dart';
 import 'package:atpost_app/providers/social_provider.dart';

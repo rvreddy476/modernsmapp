@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:atpost_app/data/models/conversation.dart';
-import 'package:atpost_app/data/models/realtime_event.dart';
+import 'package:atpost_realtime/realtime_event.dart';
 import 'package:atpost_app/data/repositories/chat_repository.dart';
 import 'package:atpost_app/providers/chat_provider.dart';
 import 'package:fake_async/fake_async.dart';

@@ -1,6 +1,7 @@
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_spacing.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_images.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_spacing.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/data/models/live_stream.dart';
 import 'package:atpost_app/data/repositories/live_repository.dart';
 import 'package:atpost_app/shared/widgets/video_player_widget.dart';
@@ -501,13 +502,7 @@ class _LiveStreamCard extends StatelessWidget {
                             placeholder: _streamPlaceholder(),
                           )
                         : (stream.thumbnailUrl ?? '').isNotEmpty
-                        ? Image.network(
-                            stream.thumbnailUrl!,
-                            fit: BoxFit.cover,
-                            width: double.infinity,
-                            height: double.infinity,
-                            errorBuilder: (_, _, _) => _streamPlaceholder(),
-                          )
+                        ? AppNetworkImage(stream.thumbnailUrl!, fit: BoxFit.cover, width: double.infinity, height: double.infinity, error: _streamPlaceholder())
                         : _streamPlaceholder(),
                   ),
                   // LIVE badge.

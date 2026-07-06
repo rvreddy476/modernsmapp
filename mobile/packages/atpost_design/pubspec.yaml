@@ -1,0 +1,22 @@
+# Design system: color/spacing/typography tokens and the app theme.
+# UI-only — must never depend on data, providers, or features.
+name: atpost_design
+description: atPost mobile design tokens and theme.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.10.7
+
+resolution: workspace
+
+dependencies:
+  flutter:
+    sdk: flutter
+  google_fonts: ^6.3.2
+  cached_network_image: ^3.4.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0

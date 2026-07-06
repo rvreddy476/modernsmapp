@@ -1,9 +1,10 @@
-import 'package:atpost_app/core/config/environment.dart';
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_spacing.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_images.dart';
+import 'package:atpost_core/config/environment.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_spacing.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/data/models/post.dart';
-import 'package:atpost_app/services/api_client.dart';
+import 'package:atpost_network/api_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -133,12 +134,7 @@ class _TrendingCard extends StatelessWidget {
               width: 110,
               height: 70,
               child: thumb != null
-                  ? Image.network(
-                      thumb,
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, _, _) =>
-                          Container(color: AppColors.bgTertiary),
-                    )
+                  ? AppNetworkImage(thumb, fit: BoxFit.cover, decodeWidth: kThumbDecodeWidth, error: Container(color: AppColors.bgTertiary))
                   : Container(color: AppColors.bgTertiary),
             ),
           ),

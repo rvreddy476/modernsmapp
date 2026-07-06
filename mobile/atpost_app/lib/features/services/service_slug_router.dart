@@ -1,5 +1,5 @@
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/features/services/coming_soon_screen.dart';
 import 'package:atpost_app/features/services/data/service_registry.dart';
 import 'package:atpost_app/features/services/models/service_app.dart';

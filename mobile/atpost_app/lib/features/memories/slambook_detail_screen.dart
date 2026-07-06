@@ -1,9 +1,10 @@
+import 'package:atpost_design/app_images.dart';
 import 'dart:async';
 
-import 'package:atpost_app/core/config/environment.dart';
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_spacing.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_core/config/environment.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_spacing.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/data/models/slambook.dart';
 import 'package:atpost_app/data/models/user.dart';
 import 'package:atpost_app/data/repositories/memories_repository.dart';
@@ -789,7 +790,7 @@ class _UserAvatar extends StatelessWidget {
     if (user.hasAvatar) {
       return CircleAvatar(
         radius: radius,
-        backgroundImage: NetworkImage(user.avatarUrl),
+        backgroundImage: cachedAvatarProvider(user.avatarUrl),
         backgroundColor: AppColors.bgSecondary,
       );
     }

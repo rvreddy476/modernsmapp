@@ -5,7 +5,7 @@ import 'package:atpost_app/data/models/editor.dart';
 import 'package:atpost_app/features/create/widgets/cover_frame_picker.dart';
 import 'package:atpost_app/features/create/widgets/trimmer_widget.dart';
 import 'package:atpost_app/providers/editor_provider.dart';
-import 'package:atpost_app/services/api_client.dart';
+import 'package:atpost_network/api_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';

@@ -1,6 +1,7 @@
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_spacing.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_images.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_spacing.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/data/models/broadcast_channel.dart';
 import 'package:atpost_app/data/repositories/broadcast_channels_repository.dart';
 import 'package:atpost_app/providers/broadcast_channels_provider.dart';
@@ -186,12 +187,7 @@ class _ChannelTileState extends State<_ChannelTile> {
           child: widget.channel.avatarMediaId != null
               ? ClipRRect(
                   borderRadius: BorderRadius.circular(12),
-                  child: Image.network(
-                    '/v1/media/${widget.channel.avatarMediaId}/serve',
-                    fit: BoxFit.cover,
-                    errorBuilder: (_, _, _) =>
-                        const Icon(Icons.campaign, color: Colors.white, size: 24),
-                  ),
+                  child: AppNetworkImage('/v1/media/${widget.channel.avatarMediaId}/serve', fit: BoxFit.cover, decodeWidth: kThumbDecodeWidth, error: const Icon(Icons.campaign, color: Colors.white, size: 24)),
                 )
               : Center(
                   child: Text(

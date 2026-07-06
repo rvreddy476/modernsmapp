@@ -1,5 +1,5 @@
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/data/repositories/post_repository.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -185,7 +185,7 @@ class _EchoSheetBodyState extends ConsumerState<_EchoSheetBody> {
               'Your followers see your comment above the original post.',
               style: AppTextStyles.labelSmall.copyWith(color: Colors.white38),
             ),
-            activeColor: AppColors.postbookPrimary,
+            activeThumbColor: AppColors.postbookPrimary,
           ),
           if (_withQuote) ...[
             const SizedBox(height: 8),

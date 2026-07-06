@@ -1,6 +1,7 @@
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_spacing.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_images.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_spacing.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/data/models/group.dart';
 import 'package:atpost_app/data/models/group_member.dart';
 import 'package:atpost_app/data/models/group_post.dart';
@@ -247,11 +248,7 @@ class _GroupDetailBodyState extends ConsumerState<_GroupDetailBody>
 
   Widget _buildCover(Group group) {
     if (group.coverUrl != null) {
-      return Image.network(
-        group.coverUrl!,
-        fit: BoxFit.cover,
-        errorBuilder: (_, _, _) => _gradientCover(group),
-      );
+      return AppNetworkImage(group.coverUrl!, fit: BoxFit.cover, error: _gradientCover(group));
     }
     return _gradientCover(group);
   }
@@ -318,11 +315,11 @@ class _GroupDetailBodyState extends ConsumerState<_GroupDetailBody>
     if (userId == null || userId.isEmpty) return;
     try {
       await ref.read(groupsRepositoryProvider).inviteUser(widget.groupId, userId);
-      if (!mounted) return;
+      if (!context.mounted) return;
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('Invite sent.')));
     } catch (_) {
-      if (!mounted) return;
+      if (!context.mounted) return;
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('Could not send invite.')));
     }
@@ -487,15 +484,11 @@ class _GroupAvatar extends StatelessWidget {
       child: ClipRRect(
         borderRadius: BorderRadius.circular(size * 0.25 - 2),
         child: group.avatarUrl != null
-            ? Image.network(
-                group.avatarUrl!,
-                fit: BoxFit.cover,
-                errorBuilder: (_, _, _) => _AvatarPlaceholder(
+            ? AppNetworkImage(group.avatarUrl!, fit: BoxFit.cover, error: _AvatarPlaceholder(
                   name: group.name,
                   colors: colors,
                   size: size,
-                ),
-              )
+                ))
             : _AvatarPlaceholder(
                 name: group.name,
                 colors: colors,
@@ -1122,16 +1115,12 @@ class _MemberTile extends StatelessWidget {
                   AppColors.postbookPrimary.withValues(alpha: 0.15),
               child: member.avatarMediaId != null
                   ? ClipOval(
-                      child: Image.network(
-                        '/v1/media/${member.avatarMediaId}/serve',
-                        fit: BoxFit.cover,
-                        errorBuilder: (_, _, _) => Text(
+                      child: AppNetworkImage('/v1/media/${member.avatarMediaId}/serve', fit: BoxFit.cover, error: Text(
                           member.avatarInitial,
                           style: AppTextStyles.label.copyWith(
                             color: AppColors.postbookPrimary,
                           ),
-                        ),
-                      ),
+                        )),
                     )
                   : Text(
                       member.avatarInitial,

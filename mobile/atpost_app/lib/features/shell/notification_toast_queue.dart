@@ -28,7 +28,7 @@
 
 import 'dart:async';
 
-import 'package:atpost_app/data/models/realtime_event.dart';
+import 'package:atpost_realtime/realtime_event.dart';
 
 /// Immutable view-model the shell renders into a single SnackBar.
 class NotificationToastView {

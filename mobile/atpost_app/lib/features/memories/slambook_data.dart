@@ -1,4 +1,4 @@
-import 'package:atpost_app/core/theme/app_colors.dart';
+import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_app/data/models/slambook.dart';
 import 'package:atpost_app/data/repositories/memories_repository.dart';
 import 'package:atpost_app/services/auth_service.dart';

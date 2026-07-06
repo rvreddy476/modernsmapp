@@ -1,5 +1,5 @@
 import 'package:atpost_app/app/router.dart';
-import 'package:atpost_app/core/theme/app_theme.dart';
+import 'package:atpost_design/app_theme.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 

@@ -1,5 +1,5 @@
 import 'package:atpost_app/data/models/user.dart';
-import 'package:atpost_app/services/api_client.dart';
+import 'package:atpost_network/api_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 /// Production-ready User Repository synchronized with 2026-03-19 OpenAPI spec.

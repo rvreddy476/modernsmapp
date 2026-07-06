@@ -1,10 +1,10 @@
-import 'package:atpost_app/core/cache/cache_keys.dart';
-import 'package:atpost_app/core/cache/cache_manager.dart';
-import 'package:atpost_app/core/utils/app_logger.dart';
+import 'package:atpost_core/cache/cache_keys.dart';
+import 'package:atpost_core/cache/cache_manager.dart';
+import 'package:atpost_core/utils/app_logger.dart';
 import 'package:atpost_app/data/models/post.dart';
 import 'package:atpost_app/data/models/user.dart';
 import 'package:atpost_app/data/repositories/user_repository.dart';
-import 'package:atpost_app/services/api_client.dart';
+import 'package:atpost_network/api_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 /// Production-ready repository for feed-related operations.

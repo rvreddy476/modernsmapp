@@ -1,35 +1,11 @@
+import 'package:feature_commerce/commerce_routes.dart';
+import 'package:feature_billpay/billpay_routes.dart';
+import 'package:feature_wallet/wallet_routes.dart';
 import 'dart:async';
 
-import 'package:atpost_app/data/models/commerce.dart';
 import 'package:atpost_app/features/channels/channels_list_screen.dart';
 import 'package:atpost_app/features/channels/channel_detail_screen.dart';
 import 'package:atpost_app/features/channels/create_channel_screen.dart';
-import 'package:atpost_app/features/commerce/address_book_screen.dart';
-import 'package:atpost_app/features/commerce/affiliate_redirect_screen.dart';
-import 'package:atpost_app/features/commerce/address_form_screen.dart';
-import 'package:atpost_app/features/commerce/cart_screen.dart';
-import 'package:atpost_app/features/seller/seller_bulk_import_screen.dart';
-import 'package:atpost_app/features/seller/seller_dashboard_screen.dart';
-import 'package:atpost_app/features/seller/seller_earnings_screen.dart';
-import 'package:atpost_app/features/seller/seller_orders_screen.dart';
-import 'package:atpost_app/features/seller/seller_products_screen.dart';
-import 'package:atpost_app/features/seller/seller_returns_screen.dart';
-import 'package:atpost_app/features/seller/seller_variants_screen.dart';
-import 'package:atpost_app/features/commerce/checkout_screen.dart';
-import 'package:atpost_app/features/commerce/commerce_home_screen.dart';
-import 'package:atpost_app/features/commerce/rfq/rfq_detail_screen.dart';
-import 'package:atpost_app/features/commerce/rfq/rfq_list_screen.dart';
-import 'package:atpost_app/features/commerce/rfq/rfq_new_screen.dart';
-import 'package:atpost_app/features/commerce/commerce_order_detail_screen.dart';
-import 'package:atpost_app/features/commerce/my_orders_screen.dart';
-import 'package:atpost_app/features/commerce/my_returns_screen.dart';
-import 'package:atpost_app/features/commerce/product_detail_screen.dart';
-import 'package:atpost_app/features/commerce/product_reviews_screen.dart';
-import 'package:atpost_app/features/commerce/return_detail_screen.dart';
-import 'package:atpost_app/features/commerce/return_request_screen.dart';
-import 'package:atpost_app/features/commerce/search_screen.dart';
-import 'package:atpost_app/features/commerce/wishlist_screen.dart';
-import 'package:atpost_app/features/commerce/write_review_screen.dart';
 // Communities feature disabled — consolidated into Groups ("MySpace").
 // Screens kept on disk; no routes reference them.
 // import 'package:atpost_app/features/communities/communities_list_screen.dart';
@@ -37,15 +13,6 @@ import 'package:atpost_app/features/commerce/write_review_screen.dart';
 // import 'package:atpost_app/features/communities/community_space_screen.dart';
 // import 'package:atpost_app/features/communities/create_community_screen.dart';
 import 'package:atpost_app/features/auth/forgot_password_screen.dart';
-import 'package:atpost_app/features/billpay/billpay_account_detail_screen.dart';
-import 'package:atpost_app/features/billpay/billpay_add_account_screen.dart';
-import 'package:atpost_app/features/billpay/billpay_category_screen.dart';
-import 'package:atpost_app/features/billpay/billpay_home_screen.dart';
-import 'package:atpost_app/features/billpay/billpay_payments_screen.dart';
-import 'package:atpost_app/features/billpay/billpay_receipt_screen.dart';
-import 'package:atpost_app/features/billpay/billpay_recharge_screen.dart';
-import 'package:atpost_app/features/billpay/billpay_reminders_screen.dart';
-import 'package:atpost_app/features/billpay/billpay_scheduled_screen.dart';
 import 'package:atpost_app/features/create/upload_progress_screen.dart';
 import 'package:atpost_app/features/posttube/channel_screen.dart';
 import 'package:atpost_app/features/posttube/posttube_upload_screen.dart';
@@ -62,8 +29,7 @@ import 'package:atpost_app/features/create/create_post_screen.dart';
 import 'package:atpost_app/features/create/reels_caption_screen.dart';
 import 'package:atpost_app/features/create/reels_editor_screen.dart';
 import 'package:atpost_app/features/discover/discover_screen.dart';
-import 'package:atpost_app/features/figo/figo_home_screen.dart';
-import 'package:atpost_app/features/figo/figo_rewards_screen.dart';
+import 'package:feature_figo/figo_routes.dart';
 import 'package:atpost_app/features/groups/group_admin_screen.dart';
 import 'package:atpost_app/features/hashtag/hashtag_screen.dart';
 import 'package:atpost_app/features/groups/group_detail_screen.dart';
@@ -77,8 +43,6 @@ import 'package:atpost_app/features/monetization/creator_analytics_screen.dart';
 import 'package:atpost_app/features/monetization/monetization_dashboard_screen.dart';
 import 'package:atpost_app/features/monetization/payouts_screen.dart';
 import 'package:atpost_app/features/monetization/subscription_tiers_screen.dart';
-import 'package:atpost_app/features/orders/order_detail_screen.dart';
-import 'package:atpost_app/features/orders/orders_screen.dart';
 import 'package:atpost_app/features/search/search_results_screen.dart';
 import 'package:atpost_app/features/shell/search_tab.dart';
 import 'package:atpost_app/features/search/video_search_screen.dart';
@@ -120,49 +84,11 @@ import 'package:atpost_app/features/qa/qa_feed_screen.dart';
 import 'package:atpost_app/features/qa/qa_profile_screen.dart';
 import 'package:atpost_app/features/qa/qa_search_screen.dart';
 import 'package:atpost_app/features/qa/question_detail_screen.dart';
-import 'package:atpost_app/features/pulse/match_inbox_screen.dart';
-import 'package:atpost_app/features/pulse/pulse_chat_screen.dart';
-import 'package:atpost_app/features/pulse/pulse_discover_screen.dart';
-import 'package:atpost_app/features/pulse/pulse_gate.dart';
-import 'package:atpost_app/features/pulse/pulse_landing_screen.dart';
-import 'package:atpost_app/features/pulse/pulse_matches_screen.dart';
-import 'package:atpost_app/features/pulse/pulse_onboarding_screen.dart';
-import 'package:atpost_app/features/pulse/pulse_profile_screen.dart';
-import 'package:atpost_app/features/pulse/onboarding/intent_picker_screen.dart';
-import 'package:atpost_app/features/pulse/onboarding/tune_setup_screen.dart';
-import 'package:atpost_app/features/pulse/onboarding/echoes_consent_screen.dart';
-import 'package:atpost_app/features/pulse/safety/block_list_screen.dart';
-import 'package:atpost_app/features/pulse/safety/reports_screen.dart';
-import 'package:atpost_app/features/pulse/safety/safety_center_screen.dart';
-import 'package:atpost_app/features/pulse/safety/trusted_contact_picker.dart';
-import 'package:atpost_app/features/pulse/safety/vouch_inbox_screen.dart';
-import 'package:atpost_app/features/pulse/safety/vouch_management_screen.dart';
-import 'package:atpost_app/features/pulse/verification/aadhaar_verification_screen.dart';
-import 'package:atpost_app/features/pulse/verification/selfie_verification_screen.dart';
-import 'package:atpost_app/features/pulse/verification/verification_landing_screen.dart';
-import 'package:atpost_app/features/pulse/premium/premium_screen.dart';
-import 'package:atpost_app/features/pulse/premium/data_export_screen.dart';
+import 'package:feature_mopedu/mopedu_routes.dart';
+import 'package:feature_pulse/pulse_routes.dart';
 import 'package:atpost_app/features/mini_apps/mini_apps_screen.dart';
 import 'package:atpost_app/features/mini_apps/mini_app_detail_screen.dart';
 import 'package:atpost_app/features/mini_apps/mini_app_sandbox_screen.dart';
-import 'package:atpost_app/features/mopedu/booking_in_progress_screen.dart';
-import 'package:atpost_app/features/mopedu/mopedu_gate.dart';
-import 'package:atpost_app/features/mopedu/mopedu_home_screen.dart';
-import 'package:atpost_app/features/mopedu/safety/my_complaints_screen.dart';
-import 'package:atpost_app/features/mopedu/safety/safety_center_screen.dart'
-    as mopedu_safety;
-import 'package:atpost_app/features/mopedu/safety/shared_ride_viewer_screen.dart';
-import 'package:atpost_app/features/mopedu/partner/partner_dashboard_screen.dart';
-import 'package:atpost_app/features/mopedu/partner/partner_earnings_screen.dart';
-import 'package:atpost_app/features/mopedu/partner/partner_landing_screen.dart';
-import 'package:atpost_app/features/mopedu/partner/partner_onboarding_screen.dart';
-import 'package:atpost_app/features/mopedu/partner/partner_referral_screen.dart';
-import 'package:atpost_app/features/mopedu/partner/partner_rides_breakdown_screen.dart';
-import 'package:atpost_app/features/mopedu/partner/partner_subscription_screen.dart';
-import 'package:atpost_app/features/mopedu/partner/ride_navigation_screen.dart';
-import 'package:atpost_app/features/mopedu/ride_history_screen.dart';
-import 'package:atpost_app/features/mopedu/ride_summary_screen.dart';
-import 'package:atpost_app/features/mopedu/saved_places_screen.dart';
 import 'package:atpost_app/features/settings/data_saver_screen.dart';
 import 'package:atpost_app/features/settings/edit_profile_screen.dart';
 import 'package:atpost_app/features/settings/notification_settings_screen.dart';
@@ -173,16 +99,9 @@ import 'package:atpost_app/features/settings/verification_screen.dart';
 import 'package:atpost_app/features/settings/wellbeing_settings_screen.dart';
 import 'package:atpost_app/features/shell/shell_scaffold.dart';
 import 'package:atpost_app/features/shop/shop_screen.dart';
-import 'package:atpost_app/features/wallet/wallet_aadhaar_verification_screen.dart';
-import 'package:atpost_app/features/wallet/wallet_home_screen.dart';
-import 'package:atpost_app/features/wallet/wallet_kyc_screen.dart';
-import 'package:atpost_app/features/wallet/wallet_send_screen.dart';
-import 'package:atpost_app/features/wallet/wallet_top_up_screen.dart';
-import 'package:atpost_app/features/wallet/wallet_transaction_detail_screen.dart';
-import 'package:atpost_app/features/wallet/wallet_transactions_screen.dart';
 import 'package:atpost_app/services/auth_service.dart';
 import 'package:atpost_app/services/call_service.dart';
-import 'package:atpost_app/core/utils/app_logger.dart';
+import 'package:atpost_core/utils/app_logger.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -505,420 +424,16 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             path: '/shop',
             builder: (context, state) => const ShopScreen(),
           ),
-          // Sprint 1 (commerce parity): the new `/v1/commerce/*` surface
-          // lives at `/commerce`. The legacy `/shop` route stays in place
-          // until shop-service callers are migrated (see COMMERCE_RECON §J).
-          GoRoute(
-            path: '/commerce',
-            builder: (_, _) => const CommerceHomeScreen(),
-          ),
-          GoRoute(
-            path: '/commerce/category/:slug',
-            builder: (context, state) => CommerceHomeScreen(
-              initialCategorySlug: state.pathParameters['slug'],
-            ),
-          ),
-          GoRoute(
-            path: '/commerce/product/:id',
-            builder: (context, state) => ProductDetailScreen(
-              productId: state.pathParameters['id']!,
-            ),
-          ),
-          GoRoute(
-            path: '/commerce/product/:id/reviews',
-            builder: (context, state) => ProductReviewsScreen(
-              productId: state.pathParameters['id']!,
-            ),
-          ),
-          GoRoute(
-            path: '/commerce/cart',
-            builder: (_, _) => const CartScreen(),
-          ),
-          // In-video affiliate redirect. Mirrors the public web URL
-          // /v1/commerce/affiliate/:linkId; the screen calls the
-          // server endpoint with redirects disabled, captures
-          // ?via= into AffiliateAttribution, then routes onward.
-          GoRoute(
-            path: '/commerce/affiliate/:linkId',
-            builder: (context, state) => AffiliateRedirectScreen(
-              linkId: state.pathParameters['linkId']!,
-            ),
-          ),
-          GoRoute(
-            path: '/commerce/checkout',
-            builder: (_, _) => const CheckoutScreen(),
-          ),
-          GoRoute(
-            path: '/commerce/addresses',
-            builder: (context, state) => AddressBookScreen(
-              pickerMode: state.uri.queryParameters['picker'] == '1',
-            ),
-          ),
-          GoRoute(
-            path: '/commerce/addresses/new',
-            builder: (context, state) => AddressFormScreen(
-              existing: state.extra is Address ? state.extra as Address : null,
-            ),
-          ),
-          GoRoute(
-            path: '/commerce/orders',
-            builder: (_, _) => const MyOrdersScreen(),
-          ),
-          GoRoute(
-            path: '/commerce/orders/:id',
-            builder: (context, state) => CommerceOrderDetailScreen(
-              orderId: state.pathParameters['id']!,
-              justPlaced: state.uri.queryParameters['placed'] == '1',
-            ),
-          ),
-          GoRoute(
-            path: '/commerce/orders/:id/return',
-            builder: (context, state) => ReturnRequestScreen(
-              orderId: state.pathParameters['id']!,
-            ),
-          ),
-          GoRoute(
-            path: '/commerce/returns',
-            builder: (_, _) => const MyReturnsScreen(),
-          ),
-          GoRoute(
-            path: '/commerce/returns/:id',
-            builder: (context, state) => ReturnDetailScreen(
-              returnId: state.pathParameters['id']!,
-            ),
-          ),
-          GoRoute(
-            path: '/commerce/products/:id/review',
-            builder: (context, state) {
-              // The order detail screen passes seller_id +
-              // order_item_id + product_title via `extra`. The backend
-              // requires them to mark the review as a verified purchase.
-              final extra = state.extra is Map
-                  ? Map<String, dynamic>.from(state.extra as Map)
-                  : <String, dynamic>{};
-              return WriteReviewScreen(
-                productId: state.pathParameters['id']!,
-                sellerId: extra['seller_id']?.toString() ?? '',
-                orderItemId: extra['order_item_id']?.toString() ?? '',
-                productTitle: extra['product_title']?.toString(),
-              );
-            },
-          ),
-          GoRoute(
-            path: '/commerce/wishlist',
-            builder: (_, _) => const WishlistScreen(),
-          ),
-          GoRoute(
-            path: '/commerce/search',
-            builder: (context, state) => SearchScreen(
-              initialQuery: state.uri.queryParameters['q'],
-            ),
-          ),
-          // Seller surface — dashboard + product management. The "My
-          // orders" tile reuses the existing customer order list
-          // (sellers see their orders as a buyer would view them, with
-          // the upcoming fulfillment actions following in a later
-          // slice).
-          GoRoute(
-            path: '/seller/dashboard',
-            builder: (_, _) => const SellerDashboardScreen(),
-          ),
-          GoRoute(
-            path: '/seller/products',
-            builder: (_, _) => const SellerProductsScreen(),
-          ),
-          GoRoute(
-            path: '/seller/products/:id/variants',
-            builder: (context, state) => SellerVariantsScreen(
-              productId: state.pathParameters['id']!,
-            ),
-          ),
-          GoRoute(
-            path: '/seller/orders',
-            builder: (_, _) => const SellerOrdersScreen(),
-          ),
-          GoRoute(
-            path: '/seller/returns',
-            builder: (_, _) => const SellerReturnsScreen(),
-          ),
-          GoRoute(
-            path: '/seller/earnings',
-            builder: (_, _) => const SellerEarningsScreen(),
-          ),
-          GoRoute(
-            path: '/seller/bulk-import',
-            builder: (_, _) => const SellerBulkImportScreen(),
-          ),
-          // Phase F4 mobile — RFQ buyer flow.
-          GoRoute(
-            path: '/rfq',
-            builder: (_, _) => const RFQListScreen(),
-          ),
-          GoRoute(
-            path: '/rfq/new',
-            builder: (context, state) {
-              final sellerId = state.uri.queryParameters['seller_id'] ?? '';
-              final variantId = state.uri.queryParameters['variant_id'] ?? '';
-              return RFQNewScreen(
-                sellerId: sellerId,
-                variantId: variantId,
-              );
-            },
-          ),
-          GoRoute(
-            path: '/rfq/:id',
-            builder: (context, state) => RFQDetailScreen(
-              rfqId: state.pathParameters['id']!,
-            ),
-          ),
-          GoRoute(
-            path: '/figo',
-            builder: (context, state) => const FigoHomeScreen(),
-          ),
-          GoRoute(
-            path: '/figo/rewards',
-            builder: (context, state) => const FigoRewardsScreen(),
-          ),
+          // Commerce (buyer / seller / RFQ / legacy orders) — feature owns routes.
+          ...commerceRoutes(),
+          // FiGo (food) — the feature package owns its route table.
+          ...figoRoutes(),
           // Phase 2 Sprint 1 — consumer wallet (BC of partner-bank PPI).
-          GoRoute(
-            path: '/wallet',
-            builder: (_, _) => const WalletHomeScreen(),
-          ),
-          GoRoute(
-            path: '/wallet/top-up',
-            builder: (_, _) => const WalletTopUpScreen(),
-          ),
-          GoRoute(
-            path: '/wallet/send',
-            builder: (context, state) {
-              final extra = state.extra is Map
-                  ? Map<String, dynamic>.from(state.extra as Map)
-                  : null;
-              return WalletSendScreen(preset: extra);
-            },
-          ),
-          GoRoute(
-            path: '/wallet/transactions',
-            builder: (_, _) => const WalletTransactionsScreen(),
-          ),
-          GoRoute(
-            path: '/wallet/transactions/:id',
-            builder: (context, state) => WalletTransactionDetailScreen(
-              transactionId: state.pathParameters['id']!,
-            ),
-          ),
-          GoRoute(
-            path: '/wallet/kyc',
-            builder: (_, _) => const WalletKycScreen(),
-          ),
-          GoRoute(
-            path: '/wallet/kyc/aadhaar',
-            builder: (_, _) => const WalletAadhaarVerificationScreen(),
-          ),
-          GoRoute(
-            path: '/wallet/kyc/aadhaar/callback',
-            builder: (context, state) => WalletAadhaarVerificationScreen(
-              incomingCode: state.uri.queryParameters['code'],
-              incomingState: state.uri.queryParameters['state'],
-            ),
-          ),
+          ...walletRoutes(),
           // Phase 2 — Bill-pay (BBPS via Setu, decision §D2).
-          GoRoute(
-            path: '/billpay',
-            builder: (_, _) => const BillPayHomeScreen(),
-          ),
-          GoRoute(
-            path: '/billpay/category/:id',
-            builder: (context, state) => BillPayCategoryScreen(
-              categoryId: state.pathParameters['id']!,
-            ),
-          ),
-          GoRoute(
-            path: '/billpay/add-account',
-            builder: (context, state) => BillPayAddAccountScreen(
-              providerId: state.uri.queryParameters['providerId'] ??
-                  state.uri.queryParameters['provider'] ??
-                  '',
-            ),
-          ),
-          GoRoute(
-            path: '/billpay/account/:id',
-            builder: (context, state) => BillPayAccountDetailScreen(
-              accountId: state.pathParameters['id']!,
-            ),
-          ),
-          GoRoute(
-            path: '/billpay/recharge',
-            builder: (_, _) => const BillPayRechargeScreen(),
-          ),
-          GoRoute(
-            path: '/billpay/payments',
-            builder: (_, _) => const BillPayPaymentsScreen(),
-          ),
-          GoRoute(
-            path: '/billpay/payments/:id',
-            builder: (context, state) => BillPayReceiptScreen(
-              paymentId: state.pathParameters['id']!,
-            ),
-          ),
-          GoRoute(
-            path: '/billpay/reminders',
-            builder: (_, _) => const BillPayRemindersScreen(),
-          ),
-          GoRoute(
-            path: '/billpay/scheduled',
-            builder: (_, _) => const BillPayScheduledScreen(),
-          ),
-          // Sprint 2: /pulse is now the orbital + list hero surface. The
-          // legacy landing screen lives at /pulse/landing for any deep links.
-          //
-          // Sprint 6: every Pulse user-facing surface is wrapped in
-          // `PulseGate`, which gates on the master `pulse_enabled_master`
-          // flag and the v1 city allow-list (Bengaluru / Bangalore).
-          GoRoute(
-            path: '/pulse',
-            builder: (context, state) =>
-                const PulseGate(child: PulseDiscoverScreen()),
-          ),
-          GoRoute(
-            path: '/pulse/landing',
-            builder: (context, state) =>
-                const PulseGate(child: PulseLandingScreen()),
-          ),
-          GoRoute(
-            path: '/pulse/onboarding',
-            builder: (context, state) =>
-                const PulseGate(child: PulseOnboardingScreen()),
-          ),
-          GoRoute(
-            path: '/pulse/discover',
-            builder: (context, state) =>
-                const PulseGate(child: PulseDiscoverScreen()),
-          ),
-          GoRoute(
-            path: '/pulse/matches',
-            builder: (context, state) => MatchInboxScreen(
-              initialTab: state.uri.queryParameters['tab'],
-            ),
-          ),
-          // Sprint 3: deep-link target for `dating.spark.matched` push —
-          // opens the inbox positioned on the right tab. The S1 matches
-          // surface stays accessible at /pulse/matches/legacy if anyone
-          // deep-linked to it.
-          GoRoute(
-            path: '/pulse/matches/legacy',
-            builder: (context, state) => const PulseMatchesScreen(),
-          ),
-          GoRoute(
-            path: '/pulse/matches/:matchId',
-            builder: (context, state) => MatchInboxScreen(
-              initialTab: state.uri.queryParameters['tab'],
-            ),
-          ),
-          GoRoute(
-            path: '/pulse/profile',
-            builder: (context, state) => const PulseProfileScreen(),
-          ),
-          GoRoute(
-            path: '/pulse/chat/:conversationId',
-            builder: (context, state) => PulseChatScreen(
-              conversationId: state.pathParameters['conversationId']!,
-            ),
-          ),
-          // Sprint 1: Pulse onboarding additions (intent -> tune -> echoes consent).
-          GoRoute(
-            path: '/pulse/onboarding/intent',
-            builder: (context, state) => const IntentPickerScreen(),
-          ),
-          GoRoute(
-            path: '/pulse/onboarding/tune',
-            builder: (context, state) => const TuneSetupScreen(),
-          ),
-          GoRoute(
-            path: '/pulse/onboarding/echoes',
-            builder: (context, state) => const EchoesConsentScreen(),
-          ),
-          // Sprint 4: verification ladder.
-          GoRoute(
-            path: '/pulse/verification',
-            builder: (_, _) => const VerificationLandingScreen(),
-          ),
-          GoRoute(
-            path: '/pulse/verification/aadhaar',
-            builder: (_, _) => const AadhaarVerificationScreen(),
-          ),
-          GoRoute(
-            path: '/pulse/verification/aadhaar/callback',
-            builder: (context, state) => AadhaarVerificationScreen(
-              incomingCode: state.uri.queryParameters['code'],
-              incomingState: state.uri.queryParameters['state'],
-            ),
-          ),
-          GoRoute(
-            path: '/pulse/verification/selfie',
-            builder: (_, _) => const SelfieVerificationScreen(),
-          ),
-          // Sprint 4: safety center + sub-screens.
-          GoRoute(
-            path: '/pulse/safety',
-            builder: (_, _) => const SafetyCenterScreen(),
-          ),
-          GoRoute(
-            path: '/pulse/safety/vouches',
-            builder: (_, _) => const VouchManagementScreen(),
-          ),
-          GoRoute(
-            path: '/pulse/safety/vouches/inbox',
-            builder: (_, _) => const VouchInboxScreen(),
-          ),
-          GoRoute(
-            path: '/pulse/safety/trusted-contact',
-            builder: (_, _) => const TrustedContactPicker(),
-          ),
-          GoRoute(
-            path: '/pulse/safety/blocks',
-            builder: (_, _) => const BlockListScreen(),
-          ),
-          GoRoute(
-            path: '/pulse/safety/reports',
-            builder: (_, _) => const MyReportsScreen(),
-          ),
-          // Sprint 5: Premium tier + DPDP data export.
-          GoRoute(
-            path: '/pulse/premium',
-            builder: (_, _) => const PremiumScreen(),
-          ),
-          GoRoute(
-            path: '/pulse/data-export',
-            builder: (_, _) => const DataExportScreen(),
-          ),
-          // Legacy /postmatch/* redirects (30-day deprecation window from
-          // Sprint 1 ship). Remove after confirming no inbound deep links.
-          GoRoute(
-            path: '/postmatch',
-            redirect: (_, _) => '/pulse',
-          ),
-          GoRoute(
-            path: '/postmatch/onboarding',
-            redirect: (_, _) => '/pulse/onboarding',
-          ),
-          GoRoute(
-            path: '/postmatch/discover',
-            redirect: (_, _) => '/pulse/discover',
-          ),
-          GoRoute(
-            path: '/postmatch/matches',
-            redirect: (_, _) => '/pulse/matches',
-          ),
-          GoRoute(
-            path: '/postmatch/profile',
-            redirect: (_, _) => '/pulse/profile',
-          ),
-          GoRoute(
-            path: '/postmatch/chat/:conversationId',
-            redirect: (_, state) =>
-                '/pulse/chat/${state.pathParameters['conversationId']}',
-          ),
+          ...billpayRoutes(),
+          // Pulse (dating) — the feature package owns its route table.
+          ...pulseRoutes(),
           GoRoute(
             path: '/memories',
             builder: (context, state) => const MemoriesScreen(),
@@ -1062,113 +577,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           // The public shared-ride viewer (`/mopedu/share/:token`) is
           // intentionally NOT gated — recipients of share links may not
           // even have AtPost installed in a launch city.
-          GoRoute(
-            path: '/mopedu',
-            builder: (_, _) => const MopeduGate(child: MopeduHomeScreen()),
-          ),
-          GoRoute(
-            path: '/mopedu/booking/:id',
-            builder: (context, state) => MopeduGate(
-              child: BookingInProgressScreen(
-                rideId: state.pathParameters['id']!,
-              ),
-            ),
-          ),
-          GoRoute(
-            path: '/mopedu/rides',
-            builder: (_, _) => const MopeduGate(child: RideHistoryScreen()),
-          ),
-          GoRoute(
-            path: '/mopedu/rides/:id',
-            builder: (context, state) => MopeduGate(
-              child: RideSummaryScreen(rideId: state.pathParameters['id']!),
-            ),
-          ),
-          GoRoute(
-            path: '/mopedu/saved-places',
-            builder: (_, _) => const MopeduGate(child: SavedPlacesScreen()),
-          ),
-          // Sprint 3 — Mopedu customer safety surfaces.
-          GoRoute(
-            path: '/mopedu/safety',
-            builder: (_, _) => const MopeduGate(
-              child: mopedu_safety.SafetyCenterScreen(),
-            ),
-          ),
-          GoRoute(
-            path: '/mopedu/complaints',
-            builder: (_, _) => const MopeduGate(child: MyComplaintsScreen()),
-          ),
-          // Public, no-auth shared-ride viewer reached via deep link.
-          // The auth interceptor still attaches a token if present, but
-          // the backend ignores it for this endpoint. NOT wrapped in
-          // `MopeduGate` because share-link recipients may not be in a
-          // launch city — withholding the ride view would defeat the
-          // whole point of the safety share flow.
-          GoRoute(
-            path: '/mopedu/share/:token',
-            builder: (context, state) => SharedRideViewerScreen(
-              token: state.pathParameters['token']!,
-            ),
-          ),
-          // Sprint 2 — Mopedu partner side. Partner routes are gated too
-          // because we are not recruiting partners in any city outside
-          // the v1 allow-list. The `MopeduGate` waitlist screen is the
-          // right surface for an out-of-city partner who taps "Become a
-          // Mopedu Partner".
-          GoRoute(
-            path: '/mopedu/partner',
-            builder: (_, _) => const MopeduGate(
-              child: PartnerLandingScreen(),
-            ),
-          ),
-          GoRoute(
-            path: '/mopedu/partner/onboarding',
-            builder: (_, _) => const MopeduGate(
-              child: PartnerOnboardingScreen(),
-            ),
-          ),
-          GoRoute(
-            path: '/mopedu/partner/dashboard',
-            builder: (_, _) => const MopeduGate(
-              child: PartnerDashboardScreen(),
-            ),
-          ),
-          GoRoute(
-            path: '/mopedu/partner/earnings',
-            builder: (_, _) => const MopeduGate(
-              child: PartnerEarningsScreen(),
-            ),
-          ),
-          GoRoute(
-            path: '/mopedu/partner/subscription',
-            builder: (_, _) => const MopeduGate(
-              child: PartnerSubscriptionScreen(),
-            ),
-          ),
-          // Sprint 4 — partner polish.
-          GoRoute(
-            path: '/mopedu/partner/rides-breakdown',
-            builder: (context, state) => MopeduGate(
-              child: PartnerRidesBreakdownScreen(
-                period: state.uri.queryParameters['period'] ?? 'week',
-              ),
-            ),
-          ),
-          GoRoute(
-            path: '/mopedu/partner/referral',
-            builder: (_, _) => const MopeduGate(
-              child: PartnerReferralScreen(),
-            ),
-          ),
-          GoRoute(
-            path: '/mopedu/partner/rides/:id',
-            builder: (context, state) => MopeduGate(
-              child: RideNavigationScreen(
-                rideId: state.pathParameters['id']!,
-              ),
-            ),
-          ),
+          // Mopedu (ride-hailing) — the feature package owns its route table.
+          ...mopeduRoutes(),
           GoRoute(
             path: '/stories/create',
             builder: (context, state) => const CreateStoryScreen(),
@@ -1279,15 +689,6 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: '/monetization/analytics',
             builder: (context, state) => const CreatorAnalyticsScreen(),
-          ),
-          GoRoute(
-            path: '/orders',
-            builder: (context, state) => const OrdersScreen(),
-          ),
-          GoRoute(
-            path: '/orders/:orderId',
-            builder: (context, state) =>
-                OrderDetailScreen(orderId: state.pathParameters['orderId']!),
           ),
           GoRoute(
             path: '/qa',

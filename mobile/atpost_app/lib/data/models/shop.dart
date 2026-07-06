@@ -1,4 +1,4 @@
-import 'package:atpost_app/core/utils/app_logger.dart';
+import 'package:atpost_core/utils/app_logger.dart';
 
 /// Production-ready Product model with Total Resilience parsing.
 class Product {

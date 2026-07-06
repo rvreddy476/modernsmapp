@@ -1,6 +1,6 @@
-import 'package:atpost_app/data/models/order.dart';
+import 'package:commerce_domain/models/order.dart';
 import 'package:atpost_app/data/models/shop.dart';
-import 'package:atpost_app/services/api_client.dart';
+import 'package:atpost_network/api_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 /// Phase F1.1 — re-pointed from the retired `/v1/shop` (shop-service)

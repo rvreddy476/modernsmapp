@@ -1,4 +1,5 @@
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_images.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/services/call_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -155,7 +156,7 @@ class _CallScreenState extends ConsumerState<CallScreen> {
           CircleAvatar(
             radius: 60,
             backgroundImage: info.peerAvatar.isNotEmpty
-                ? NetworkImage(info.peerAvatar)
+                ? cachedAvatarProvider(info.peerAvatar)
                 : null,
             child: info.peerAvatar.isEmpty
                 ? Text(

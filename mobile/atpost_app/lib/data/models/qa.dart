@@ -1,4 +1,4 @@
-import 'package:atpost_app/core/utils/app_logger.dart';
+import 'package:atpost_core/utils/app_logger.dart';
 
 /// Production-ready Question model for the Q&A system.
 class Question {

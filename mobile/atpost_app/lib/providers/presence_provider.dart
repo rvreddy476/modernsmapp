@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:atpost_app/data/models/presence.dart';
 import 'package:atpost_app/data/repositories/presence_repository.dart';
-import 'package:atpost_app/services/realtime_service.dart';
+import 'package:atpost_realtime/realtime_service.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 /// Polled 10s refresh of the M1 conversation-presence rollup. Stays an

@@ -1,8 +1,8 @@
 // Creator-facing "needs changes" screen — shows the super-admin's notes for a
 // video that needs edits, and lets the creator re-submit after editing (loops
 // back into review).
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/data/repositories/reviewer_repository.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';

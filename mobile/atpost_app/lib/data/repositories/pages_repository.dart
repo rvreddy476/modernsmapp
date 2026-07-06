@@ -1,5 +1,5 @@
 import 'package:atpost_app/data/models/business_page.dart';
-import 'package:atpost_app/services/api_client.dart';
+import 'package:atpost_network/api_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 /// Follow-Only Public Pages — talks to user-service `/v1/pages/*`.

@@ -1,5 +1,6 @@
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_images.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/data/models/qa.dart';
 import 'package:atpost_app/providers/qa_provider.dart';
 import 'package:atpost_app/shared/widgets/glass_icon_button.dart';
@@ -118,7 +119,7 @@ class _ProfileHeader extends StatelessWidget {
                 backgroundColor: AppColors.bgTertiary,
                 backgroundImage: profile.avatarUrl != null &&
                         profile.avatarUrl!.isNotEmpty
-                    ? NetworkImage(profile.avatarUrl!)
+                    ? cachedAvatarProvider(profile.avatarUrl!)
                     : null,
                 child: profile.avatarUrl == null || profile.avatarUrl!.isEmpty
                     ? const Icon(Icons.person, color: Colors.white24)

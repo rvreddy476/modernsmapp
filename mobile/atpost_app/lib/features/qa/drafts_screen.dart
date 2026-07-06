@@ -1,5 +1,5 @@
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/data/models/qa.dart';
 import 'package:atpost_app/data/repositories/qa_repository.dart';
 import 'package:atpost_app/features/qa/ask_question_screen.dart';

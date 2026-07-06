@@ -1,9 +1,10 @@
-import 'package:atpost_app/core/config/environment.dart';
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_images.dart';
+import 'package:atpost_core/config/environment.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/data/models/post.dart';
 import 'package:atpost_app/providers/user_provider.dart';
-import 'package:atpost_app/services/api_client.dart';
+import 'package:atpost_network/api_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -290,24 +291,7 @@ class _PostTile extends StatelessWidget {
             child: Container(
               color: const Color(0xFF1A1A1A),
               child: hasMedia
-                  ? Image.network(
-                      mediaUrl!,
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, _, _) => _textTilePreview(),
-                      loadingBuilder: (_, child, prog) => prog == null
-                          ? child
-                          : Center(
-                              child: SizedBox(
-                                width: 18,
-                                height: 18,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: AppColors.postbookPrimary
-                                      .withValues(alpha: 0.7),
-                                ),
-                              ),
-                            ),
-                    )
+                  ? AppNetworkImage(mediaUrl!, fit: BoxFit.cover, decodeWidth: kThumbDecodeWidth, error: _textTilePreview())
                   : _textTilePreview(),
             ),
           ),

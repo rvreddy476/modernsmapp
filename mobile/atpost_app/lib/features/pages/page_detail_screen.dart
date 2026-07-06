@@ -1,6 +1,7 @@
-import 'package:atpost_app/core/config/environment.dart';
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_images.dart';
+import 'package:atpost_core/config/environment.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/data/models/business_page.dart';
 import 'package:atpost_app/data/page_types.dart';
 import 'package:atpost_app/data/repositories/pages_repository.dart';
@@ -105,7 +106,7 @@ class _Body extends ConsumerWidget {
           ),
           flexibleSpace: FlexibleSpaceBar(
             background: cover != null
-                ? Image.network(cover, fit: BoxFit.cover)
+                ? AppNetworkImage(cover, fit: BoxFit.cover)
                 : Container(color: AppColors.bgTertiary),
           ),
         ),
@@ -120,7 +121,7 @@ class _Body extends ConsumerWidget {
                     CircleAvatar(
                       radius: 34,
                       backgroundColor: AppColors.bgTertiary,
-                      backgroundImage: avatar != null ? NetworkImage(avatar) : null,
+                      backgroundImage: avatar != null ? cachedAvatarProvider(avatar) : null,
                       child: avatar == null
                           ? Text(page.pageName.isNotEmpty ? page.pageName[0].toUpperCase() : '?', style: AppTextStyles.h1)
                           : null,

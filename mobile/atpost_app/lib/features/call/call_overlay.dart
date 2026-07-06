@@ -1,7 +1,7 @@
 import 'dart:async';
 
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/services/call_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -383,9 +383,11 @@ class _CallOverlayState extends ConsumerState<CallOverlay> {
 
   Widget _buildRemoteVideo(CallInfo info) {
     if (info.remoteVideoTrack != null) {
+      // livekit_client 2.x renders with its own VideoViewFit enum (the
+      // webrtc RTCVideoViewObjectFit no longer coerces).
       return lk.VideoTrackRenderer(
         info.remoteVideoTrack!,
-        fit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+        fit: lk.VideoViewFit.cover,
       );
     }
 
@@ -399,7 +401,7 @@ class _CallOverlayState extends ConsumerState<CallOverlay> {
     if (info.localVideoTrack != null) {
       return lk.VideoTrackRenderer(
         info.localVideoTrack!,
-        fit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+        fit: lk.VideoViewFit.cover,
         mirrorMode: lk.VideoViewMirrorMode.mirror,
       );
     }

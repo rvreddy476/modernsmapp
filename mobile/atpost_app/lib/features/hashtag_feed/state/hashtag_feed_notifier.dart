@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:atpost_app/core/utils/app_logger.dart';
+import 'package:atpost_core/utils/app_logger.dart';
 import 'package:atpost_app/features/hashtag_feed/data/hashtag_live_stream.dart';
 import 'package:atpost_app/features/hashtag_feed/data/hashtag_repository.dart';
 import 'package:atpost_app/features/hashtag_feed/models/hashtag_model.dart';

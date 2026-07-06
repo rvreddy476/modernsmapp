@@ -1,14 +1,14 @@
 import 'dart:async';
 
-import 'package:atpost_app/core/errors/app_exception.dart';
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_core/errors/app_exception.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/data/models/live_stream.dart';
-import 'package:atpost_app/data/models/realtime_event.dart';
+import 'package:atpost_realtime/realtime_event.dart';
 import 'package:atpost_app/data/repositories/live_repository.dart';
 import 'package:atpost_app/features/live/live_whip_publisher.dart';
 import 'package:atpost_app/services/auth_service.dart';
-import 'package:atpost_app/services/realtime_service.dart';
+import 'package:atpost_realtime/realtime_service.dart';
 import 'package:atpost_app/shared/widgets/glass_icon_button.dart';
 import 'package:atpost_app/shared/widgets/video_player_widget.dart';
 import 'package:flutter/material.dart';

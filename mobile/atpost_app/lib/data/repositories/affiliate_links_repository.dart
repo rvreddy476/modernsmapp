@@ -10,7 +10,7 @@
 // surface.
 
 import 'package:atpost_app/data/models/affiliate_link.dart';
-import 'package:atpost_app/services/api_client.dart';
+import 'package:atpost_network/api_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 class AffiliateLinksRepository {

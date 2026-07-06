@@ -1,6 +1,6 @@
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_spacing.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_spacing.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/data/models/group.dart';
 import 'package:atpost_app/data/models/group_member.dart';
 import 'package:atpost_app/data/models/group_post.dart';
@@ -313,10 +313,10 @@ class _DetailsPanelState extends ConsumerState<_DetailsPanel> {
     if (confirm != true) return;
     try {
       await ref.read(groupsRepositoryProvider).deleteGroup(widget.groupId);
-      if (!mounted) return;
+      if (!context.mounted) return;
       context.go('/groups');
     } catch (_) {
-      if (!mounted) return;
+      if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Could not delete space.')),
       );

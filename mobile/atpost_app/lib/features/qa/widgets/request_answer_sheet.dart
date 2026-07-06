@@ -1,3 +1,4 @@
+import 'package:atpost_design/app_images.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -234,7 +235,7 @@ class _RequestAnswerSheetState extends ConsumerState<RequestAnswerSheet> {
         return ListTile(
           leading: CircleAvatar(
             backgroundImage:
-                e.avatarUrl.isNotEmpty ? NetworkImage(e.avatarUrl) : null,
+                e.avatarUrl.isNotEmpty ? cachedAvatarProvider(e.avatarUrl) : null,
             child: e.avatarUrl.isEmpty
                 ? Text(e.name.isNotEmpty ? e.name[0].toUpperCase() : '?')
                 : null,

@@ -1,6 +1,7 @@
-import 'package:atpost_app/core/config/environment.dart';
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_images.dart';
+import 'package:atpost_core/config/environment.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/data/models/business_page.dart';
 import 'package:atpost_app/providers/pages_provider.dart';
 import 'package:flutter/material.dart';
@@ -153,7 +154,7 @@ class _PageRow extends StatelessWidget {
             CircleAvatar(
               radius: 26,
               backgroundColor: AppColors.bgTertiary,
-              backgroundImage: avatar != null ? NetworkImage(avatar) : null,
+              backgroundImage: avatar != null ? cachedAvatarProvider(avatar) : null,
               child: avatar == null
                   ? Text(page.pageName.isNotEmpty ? page.pageName[0].toUpperCase() : '?',
                       style: AppTextStyles.h3)

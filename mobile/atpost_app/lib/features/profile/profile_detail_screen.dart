@@ -1,6 +1,7 @@
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_spacing.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_design/app_images.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_spacing.dart';
+import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/data/repositories/chat_repository.dart';
 import 'package:atpost_app/data/repositories/user_repository.dart';
 import 'package:atpost_app/features/monetization/widgets/tier_picker_sheet.dart';
@@ -263,17 +264,11 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
                               AppSpacing.radiusLarge,
                             ),
                             child: user.hasAvatar
-                                ? Image.network(
-                                    user.avatarUrl,
-                                    width: 72,
-                                    height: 72,
-                                    fit: BoxFit.cover,
-                                    errorBuilder: (_, _, _) => _AvatarFallback(
+                                ? AppNetworkImage(user.avatarUrl, fit: BoxFit.cover, width: 72, height: 72, error: _AvatarFallback(
                                       size: 72,
                                       initial: user.displayName,
                                       style: AppTextStyles.h1,
-                                    ),
-                                  )
+                                    ))
                                 : _AvatarFallback(
                                     size: 72,
                                     initial: user.displayName,

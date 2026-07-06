@@ -11,16 +11,17 @@
 // The launcher grid is the "8-app" door — every tap routes to the existing
 // standalone module surface. Telemetry tags every tap with the module key.
 
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_spacing.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
-import 'package:atpost_app/data/models/mopedu.dart';
+import 'package:atpost_design/app_images.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_spacing.dart';
+import 'package:atpost_design/app_text_styles.dart';
+import 'package:mopedu_domain/mopedu.dart';
 import 'package:atpost_app/data/models/user.dart';
-import 'package:atpost_app/data/models/wallet.dart';
-import 'package:atpost_app/features/mopedu/mopedu_gate.dart';
-import 'package:atpost_app/providers/mopedu_providers.dart';
+import 'package:wallet_domain/wallet.dart';
+import 'package:feature_mopedu/mopedu/mopedu_gate.dart';
+import 'package:mopedu_domain/mopedu_providers.dart';
 import 'package:atpost_app/providers/user_provider.dart';
-import 'package:atpost_app/providers/wallet_providers.dart';
+import 'package:wallet_domain/wallet_providers.dart';
 import 'package:atpost_app/services/auth_service.dart';
 import 'package:atpost_app/services/shell_telemetry.dart';
 import 'package:flutter/material.dart';
@@ -88,7 +89,7 @@ class _ProfileHeader extends ConsumerWidget {
           CircleAvatar(
             radius: 32,
             backgroundColor: AppColors.bgTertiary,
-            backgroundImage: me.hasAvatar ? NetworkImage(me.avatarUrl) : null,
+            backgroundImage: me.hasAvatar ? cachedAvatarProvider(me.avatarUrl) : null,
             child: !me.hasAvatar
                 ? Text(
                     (me.displayName.isNotEmpty

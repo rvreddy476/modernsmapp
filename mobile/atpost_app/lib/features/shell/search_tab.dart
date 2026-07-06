@@ -11,10 +11,10 @@
 
 import 'dart:async';
 
-import 'package:atpost_app/core/theme/app_colors.dart';
-import 'package:atpost_app/core/theme/app_text_styles.dart';
-import 'package:atpost_app/data/models/billpay.dart';
-import 'package:atpost_app/data/models/commerce.dart';
+import 'package:atpost_design/app_colors.dart';
+import 'package:atpost_design/app_text_styles.dart';
+import 'package:billpay_domain/billpay.dart';
+import 'package:commerce_domain/models/commerce.dart';
 import 'package:atpost_app/data/models/post.dart';
 import 'package:atpost_app/data/models/qa.dart';
 import 'package:atpost_app/data/models/user.dart';
