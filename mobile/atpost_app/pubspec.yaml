@@ -31,6 +31,7 @@ dependencies:
   mopedu_domain: ^0.1.0
   feature_mopedu: ^0.1.0
   feature_memories: ^0.1.0
+  feature_stories: ^0.1.0
   feature_figo: ^0.1.0
   feature_pulse: ^0.1.0
 

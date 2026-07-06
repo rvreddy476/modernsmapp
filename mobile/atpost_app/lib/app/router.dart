@@ -51,8 +51,6 @@ import 'package:atpost_app/features/reviewer/reviewer_dashboard_screen.dart';
 import 'package:atpost_app/features/reviewer/needs_changes_screen.dart';
 import 'package:atpost_app/features/services/service_slug_router.dart';
 import 'package:atpost_app/features/services/services_screen.dart';
-import 'package:atpost_app/features/stories/create_story_screen.dart';
-import 'package:atpost_app/features/stories/story_viewer_screen.dart';
 import 'package:atpost_app/features/chat/chat_detail_screen.dart';
 import 'package:atpost_app/features/chat/chat_list_screen.dart';
 import 'package:atpost_app/features/chat/message_requests_screen.dart';
@@ -81,6 +79,7 @@ import 'package:atpost_app/features/qa/qa_profile_screen.dart';
 import 'package:atpost_app/features/qa/qa_search_screen.dart';
 import 'package:atpost_app/features/qa/question_detail_screen.dart';
 import 'package:feature_memories/memories_routes.dart';
+import 'package:feature_stories/stories_routes.dart';
 import 'package:feature_mopedu/mopedu_routes.dart';
 import 'package:feature_pulse/pulse_routes.dart';
 import 'package:atpost_app/features/mini_apps/mini_apps_screen.dart';
@@ -559,15 +558,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           // even have AtPost installed in a launch city.
           // Mopedu (ride-hailing) — the feature package owns its route table.
           ...mopeduRoutes(),
-          GoRoute(
-            path: '/stories/create',
-            builder: (context, state) => const CreateStoryScreen(),
-          ),
-          GoRoute(
-            path: '/stories/:userId',
-            builder: (context, state) =>
-                StoryViewerScreen(userId: state.pathParameters['userId']!),
-          ),
+          // Stories — the feature package owns its route table.
+          ...storiesRoutes(),
           // ── Restored routes ───────────────────────────────────────────
           // The module-wiring commit (eba4a40) rewrote this file and
           // accidentally dropped the whole pre-existing block below

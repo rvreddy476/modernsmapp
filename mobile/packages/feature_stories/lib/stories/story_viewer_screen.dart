@@ -3,14 +3,14 @@ import 'dart:async';
 
 import 'package:atpost_design/app_text_styles.dart';
 import 'package:social_domain/story.dart';
-import 'package:atpost_app/features/stories/widgets/countdown_widget.dart';
-import 'package:atpost_app/features/stories/widgets/interactive_results_sheet.dart';
-import 'package:atpost_app/features/stories/widgets/poll_widget.dart';
-import 'package:atpost_app/features/stories/widgets/question_widget.dart';
-import 'package:atpost_app/features/stories/widgets/quiz_widget.dart';
-import 'package:atpost_app/features/stories/widgets/slider_widget.dart';
+import 'package:feature_stories/stories/widgets/countdown_widget.dart';
+import 'package:feature_stories/stories/widgets/interactive_results_sheet.dart';
+import 'package:feature_stories/stories/widgets/poll_widget.dart';
+import 'package:feature_stories/stories/widgets/question_widget.dart';
+import 'package:feature_stories/stories/widgets/quiz_widget.dart';
+import 'package:feature_stories/stories/widgets/slider_widget.dart';
 import 'package:social_domain/providers/stories_provider.dart';
-import 'package:atpost_app/services/auth_service.dart';
+import 'package:feature_contracts/app_user.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -256,8 +256,8 @@ class _StoryViewerScreenState extends ConsumerState<StoryViewerScreen> {
           _onStoryLoaded(story);
         });
 
-        final authState = ref.watch(authStateProvider);
-        final selfId = authState.valueOrNull?.userId;
+        final selfUser = ref.watch(currentAppUserProvider);
+        final selfId = selfUser.valueOrNull?.id;
         final isOwnStory = selfId != null && selfId == story.authorId;
 
         if (story.items.isEmpty) {
