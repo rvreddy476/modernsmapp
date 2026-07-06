@@ -220,41 +220,47 @@ class _FriendsScreenState extends ConsumerState<FriendsScreen> {
 
     final listed = _applySearchAndSort(friends, presence);
 
-    return ListView(
+    // Fixed leading widgets (header, search, sections). Bounded + built
+    // once; the potentially-long friend list below is virtualized via
+    // ListView.builder so only on-screen rows are constructed.
+    final leading = <Widget>[
+      _header(friends.length, pending.length),
+      if (_searching) _searchBar(),
+      if (friends.isNotEmpty) ...[
+        const SizedBox(height: 6),
+        _pulseSection(friends, presence),
+      ],
+      const SizedBox(height: 14),
+      _trustedCircleCard(friends, closeFriends.length),
+      if (pending.isNotEmpty) ...[
+        const SizedBox(height: 10),
+        _newRequestsCard(pending),
+      ],
+      const SizedBox(height: 8),
+      _allFriendsHeader(friends.length),
+      if (listed.isEmpty)
+        _emptyFriends(
+          friends.isEmpty
+              ? 'No friends yet — tap the add icon to grow your orbit.'
+              : 'No friends match your search.',
+        ),
+    ];
+
+    return ListView.builder(
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.only(bottom: 110),
-      children: [
-        _header(friends.length, pending.length),
-        if (_searching) _searchBar(),
-        if (friends.isNotEmpty) ...[
-          const SizedBox(height: 6),
-          _pulseSection(friends, presence),
-        ],
-        const SizedBox(height: 14),
-        _trustedCircleCard(friends, closeFriends.length),
-        if (pending.isNotEmpty) ...[
-          const SizedBox(height: 10),
-          _newRequestsCard(pending),
-        ],
-        const SizedBox(height: 8),
-        _allFriendsHeader(friends.length),
-        if (listed.isEmpty)
-          _emptyFriends(
-            friends.isEmpty
-                ? 'No friends yet — tap the add icon to grow your orbit.'
-                : 'No friends match your search.',
-          )
-        else
-          ...listed.map(
-            (u) => _FriendRow(
-              user: u,
-              online: presence[u.id] == true,
-              unread: unread[u.id] ?? 0,
-              onTap: () => context.push('/profile/${u.id}'),
-              onMessage: () => _openConversation(u.id),
-            ),
-          ),
-      ],
+      itemCount: leading.length + listed.length,
+      itemBuilder: (context, index) {
+        if (index < leading.length) return leading[index];
+        final u = listed[index - leading.length];
+        return _FriendRow(
+          user: u,
+          online: presence[u.id] == true,
+          unread: unread[u.id] ?? 0,
+          onTap: () => context.push('/profile/${u.id}'),
+          onMessage: () => _openConversation(u.id),
+        );
+      },
     );
   }
 

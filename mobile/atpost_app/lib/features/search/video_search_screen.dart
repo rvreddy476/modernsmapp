@@ -153,31 +153,36 @@ class _VideoSearchScreenState extends ConsumerState<VideoSearchScreen> {
         text: 'No videos found for "${_controller.text.trim()}"',
       );
     }
-    return ListView(
-      padding: const EdgeInsets.only(bottom: 24),
-      children: [
-        if (_shorts.isNotEmpty) ...[
-          const _SectionHeader('Shorts'),
-          SizedBox(
-            height: 200,
-            child: ListView.separated(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              itemCount: _shorts.length,
-              separatorBuilder: (_, _) => const SizedBox(width: 12),
-              itemBuilder: (_, i) =>
-                  _ShortCard(hit: _shorts[i], onTap: () => _openVideo(_shorts[i])),
-            ),
+    // Bounded leading slots (the horizontal Shorts rail is itself a
+    // builder); the long-form video list is virtualized below so only
+    // on-screen cards are constructed.
+    final leading = <Widget>[
+      if (_shorts.isNotEmpty) ...[
+        const _SectionHeader('Shorts'),
+        SizedBox(
+          height: 200,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            itemCount: _shorts.length,
+            separatorBuilder: (_, _) => const SizedBox(width: 12),
+            itemBuilder: (_, i) =>
+                _ShortCard(hit: _shorts[i], onTap: () => _openVideo(_shorts[i])),
           ),
-          const SizedBox(height: 8),
-        ],
-        if (_longs.isNotEmpty) ...[
-          const _SectionHeader('Videos'),
-          ..._longs.map(
-            (h) => _LongCard(hit: h, onTap: () => _openVideo(h)),
-          ),
-        ],
+        ),
+        const SizedBox(height: 8),
       ],
+      if (_longs.isNotEmpty) const _SectionHeader('Videos'),
+    ];
+
+    return ListView.builder(
+      padding: const EdgeInsets.only(bottom: 24),
+      itemCount: leading.length + _longs.length,
+      itemBuilder: (context, index) {
+        if (index < leading.length) return leading[index];
+        final h = _longs[index - leading.length];
+        return _LongCard(hit: h, onTap: () => _openVideo(h));
+      },
     );
   }
 }

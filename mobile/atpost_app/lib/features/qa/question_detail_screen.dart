@@ -277,24 +277,30 @@ class _QuestionDetailScreenState
     final isAuthor = currentUserId != null &&
         currentUserId.isNotEmpty &&
         currentUserId == detail.question.authorId;
-    return ListView(
+    // Question + answers header are bounded leading slots; the answer
+    // list (unbounded on popular questions) is virtualized below.
+    final leading = <Widget>[
+      _buildQuestionSection(detail.question),
+      const Divider(height: 40, color: Colors.white10),
+      Text('${detail.answers.length} Answers', style: AppTextStyles.h3),
+      const SizedBox(height: 16),
+    ];
+    return ListView.builder(
       padding: const EdgeInsets.all(16),
-      children: [
-        _buildQuestionSection(detail.question),
-        const Divider(height: 40, color: Colors.white10),
-        Text('${detail.answers.length} Answers', style: AppTextStyles.h3),
-        const SizedBox(height: 16),
-        ...detail.answers.map(
-          (answer) => _AnswerTile(
-            answer: answer,
-            canMarkBest: isAuthor && !answer.isAccepted,
-            onVote: (vt) => _toggleAnswerVote(answer, vt),
-            onMarkBest: () => _markAsBest(detail.question, answer),
-            onReport: () => _reportAnswer(answer),
-          ),
-        ),
-        const SizedBox(height: 100),
-      ],
+      itemCount: leading.length + detail.answers.length + 1,
+      itemBuilder: (context, index) {
+        if (index < leading.length) return leading[index];
+        final ai = index - leading.length;
+        if (ai >= detail.answers.length) return const SizedBox(height: 100);
+        final answer = detail.answers[ai];
+        return _AnswerTile(
+          answer: answer,
+          canMarkBest: isAuthor && !answer.isAccepted,
+          onVote: (vt) => _toggleAnswerVote(answer, vt),
+          onMarkBest: () => _markAsBest(detail.question, answer),
+          onReport: () => _reportAnswer(answer),
+        );
+      },
     );
   }
 
