@@ -4,6 +4,60 @@ Everything you need to bring up AtPost / VChat locally.
 
 ---
 
+## Recommended for feature work: focused stacks
+
+Do not start all product services when developing one module. Infrastructure
+runs separately on the stable `atpost_dev` network; a feature stack then starts
+only authentication, its API, the gateway, and selected dependencies.
+
+From `Architecture/docker` on Windows:
+
+```powershell
+# If Windows blocks local scripts, allow them in this terminal only.
+Set-ExecutionPolicy -Scope Process Bypass
+
+# Shared infrastructure: Postgres, Redis, Kafka, MinIO, etc.
+.\focus.ps1 infra up
+
+# FiGo API + auth + gateway (catalog/cart/COD/partner/delivery testing)
+.\focus.ps1 food up core
+
+# Core plus media upload/transcoding
+.\focus.ps1 food up media
+
+# Media plus online payments and monetization
+.\focus.ps1 food up full
+
+# Full FiGo dependencies plus the standalone FiGo web app (default)
+.\focus.ps1 food up web
+```
+
+The FiGo web app is available at `http://localhost:3011/figo`. Health endpoints
+are gateway `:8080/readyz`, auth `:8081/v1/auth/health`, Food `:8113/healthz`,
+and media `:8087/healthz` when enabled.
+
+```powershell
+.\focus.ps1 food status
+.\focus.ps1 food logs
+.\focus.ps1 food down
+.\focus.ps1 infra down  # only after every focused stack is stopped
+```
+
+Modes run these application containers (shared infrastructure is not counted):
+
+| Mode | Containers |
+|---|---|
+| `core` | identity-auth, food-service, api-gateway |
+| `media` | core + media-service + media-worker |
+| `full` | media + payments-service + monetization-service |
+| `web` | full + standalone `@atpost/food` Next.js zone |
+
+Do not run `atpost_stack` and `atpost_food` together; they publish the same
+ports. The focused file reuses existing per-service Dockerfiles—Compose defines
+the dependency set, while each Dockerfile continues to build one service.
+
+---
+
 ## One-time setup (do this once after a fresh install)
 
 ### 1. Add your user to the docker group

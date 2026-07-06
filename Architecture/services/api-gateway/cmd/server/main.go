@@ -12,7 +12,6 @@ import (
 	"log"
 	"log/slog"
 	"math/rand"
-	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -54,12 +53,18 @@ func main() {
 		}
 	}
 
-	// Validate JWT_SECRET at startup; downstream services rely on it for full
-	// signature verification so the gateway must ensure it is configured.
+	// Validate signing config at startup. HS256 (JWT_SECRET) and RS256
+	// (JWT_PUBLIC_KEY_PEM) each suffice on their own: once the RS256 cutover
+	// completes and old HS256 tokens age out, JWT_SECRET can be removed from
+	// the gateway entirely (RSA-only mode). Neither set = refuse to boot.
 	jwtSecret := env("JWT_SECRET", "")
-	if jwtSecret == "" {
-		slog.Error("JWT_SECRET env var is required")
+	rsaPubPEM := env("JWT_PUBLIC_KEY_PEM", "")
+	if jwtSecret == "" && rsaPubPEM == "" {
+		slog.Error("JWT_SECRET (HS256) or JWT_PUBLIC_KEY_PEM (RS256) is required")
 		os.Exit(1)
+	}
+	if jwtSecret == "" {
+		slog.Info("JWT_SECRET not set — HS256 verification disabled (RS256-only mode)")
 	}
 	if jwtSecret == "dev_secret_change_me" {
 		slog.Warn("JWT_SECRET is set to the development default — do not use in production")
@@ -76,8 +81,8 @@ func main() {
 	// can also verify RS256 tokens minted by auth-service's private key. HS256
 	// stays active in parallel so existing tokens are unaffected. The RSA key's
 	// kid is JWT_RS256_KID (must match what auth-service stamps).
-	if pubPEM := env("JWT_PUBLIC_KEY_PEM", ""); pubPEM != "" {
-		pub, perr := parseRSAPublicKeyPEM(pubPEM)
+	if rsaPubPEM != "" {
+		pub, perr := parseRSAPublicKeyPEM(rsaPubPEM)
 		if perr != nil {
 			slog.Error("failed to parse JWT_PUBLIC_KEY_PEM", "err", perr)
 			os.Exit(1)
@@ -236,6 +241,15 @@ func main() {
 		slog.Warn("INTERNAL_SERVICE_KEY not set — internal service authentication disabled")
 	}
 
+	// Rate-limit key extraction trusts X-Real-IP / X-Forwarded-For only
+	// from these networks (default: loopback + private ranges). Set
+	// TRUSTED_PROXY_CIDRS to the edge proxy's addresses in prod, or
+	// "none" when the gateway is directly exposed.
+	if err := initTrustedProxies(env("TRUSTED_PROXY_CIDRS", "")); err != nil {
+		slog.Error("invalid TRUSTED_PROXY_CIDRS", "err", err)
+		os.Exit(1)
+	}
+
 	// H5 — Redis-backed rate limiter so per-IP / per-user limits hold
 	// across the whole gateway fleet, not just per-pod. The in-memory
 	// limiter still runs in front of this and acts as a fast-path
@@ -257,8 +271,15 @@ func main() {
 	// Phase F3.5 — otelhttp wraps the chain inside CORS so a server span
 	// is opened on every request. The span name is just the method;
 	// downstream services produce the more specific route names.
+	revocationCheck := func(ctx context.Context, sessionID string) (bool, error) {
+		if rateRDB == nil || sessionID == "" {
+			return false, nil
+		}
+		value, err := rateRDB.Get(ctx, "sess_revoked:"+sessionID).Result()
+		return err == nil && value != "", err
+	}
 	tracedCore := otelhttp.NewHandler(
-		requestIDMiddleware(jwtExtractMiddleware(jwtKeys, rateLimitHandler(requireAdminForInternalPaths(injectInternalKeyMiddleware(internalKey, coreHandler))))),
+		requestIDMiddleware(jwtExtractMiddlewareWithRevocations(jwtKeys, revocationCheck, rateLimitHandler(requireAdminForInternalPaths(injectInternalKeyMiddleware(internalKey, coreHandler))))),
 		"api-gateway",
 		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
 			return r.Method + " " + r.URL.Path
@@ -284,8 +305,18 @@ func main() {
 		handler.ServeHTTP(w, r)
 	})
 
+	// ReadHeaderTimeout bounds how long a client may dribble request headers
+	// (Slowloris). Read/Write timeouts are deliberately NOT set: the gateway
+	// proxies long-lived SSE streams (/v1/notifications) and WebSocket
+	// upgrades (/v1/ws), which a WriteTimeout would sever mid-stream.
+	srv := &http.Server{
+		Addr:              ":" + port,
+		Handler:           recoveryHandler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 	log.Printf("API Gateway listening on :%s", port)
-	log.Fatal(http.ListenAndServe(":"+port, recoveryHandler))
+	log.Fatal(srv.ListenAndServe())
 }
 
 // jwtExtractMiddleware inspects the Authorization: Bearer <token> header,
@@ -311,6 +342,11 @@ type jwtKeySet struct {
 
 func (k jwtKeySet) secretFor(kid string) (string, bool) {
 	if kid == "" || kid == k.activeKID {
+		// RSA-only mode leaves activeSecret empty — refuse HS256 outright
+		// rather than verifying against an empty-string HMAC key.
+		if k.activeSecret == "" {
+			return "", false
+		}
 		return k.activeSecret, true
 	}
 	if k.previousSecret != "" && kid == k.previousKID {
@@ -358,6 +394,12 @@ func stripInboundIdentityHeaders(r *http.Request) {
 }
 
 func jwtExtractMiddleware(keys jwtKeySet, next http.Handler) http.Handler {
+	return jwtExtractMiddlewareWithRevocations(keys, nil, next)
+}
+
+type sessionRevocationCheck func(context.Context, string) (bool, error)
+
+func jwtExtractMiddlewareWithRevocations(keys jwtKeySet, revoked sessionRevocationCheck, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// SECURITY: delete any client-supplied copy of the gateway-controlled
 		// identity headers up front. From here on these headers can ONLY be set
@@ -396,6 +438,17 @@ func jwtExtractMiddleware(keys jwtKeySet, next http.Handler) http.Handler {
 			w.Write([]byte(`{"error":{"code":"UNAUTHORIZED","message":"Invalid or expired token"}}`))
 			return
 		}
+		if revoked != nil {
+			if sessionID := verifiedJWTSessionID(token); sessionID != "" {
+				isRevoked, revokeErr := revoked(r.Context(), sessionID)
+				if revokeErr == nil && isRevoked {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusUnauthorized)
+					w.Write([]byte(`{"error":{"code":"SESSION_REVOKED","message":"Session has been revoked"}}`))
+					return
+				}
+			}
+		}
 		if userID != "" {
 			r.Header.Set("X-User-Id", userID)
 			r.Header.Set("X-Verified-User-Id", userID)
@@ -408,6 +461,26 @@ func jwtExtractMiddleware(keys jwtKeySet, next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// verifiedJWTSessionID extracts sid only after verifyJWT has authenticated the
+// same token's signature and expiry.
+func verifiedJWTSessionID(token string) string {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		SessionID string `json:"sid"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return ""
+	}
+	return claims.SessionID
 }
 
 // verifyJWT validates an HS256 JWT against the configured key set, checks
@@ -566,20 +639,11 @@ func rateLimitMiddleware(next http.Handler) http.Handler {
 	ipStore := newRateLimiterStore(100, 200)
 	userStore := newRateLimiterStore(60, 120)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip := r.RemoteAddr
-		if realIP := r.Header.Get("X-Real-IP"); realIP != "" {
-			ip = strings.TrimSpace(realIP)
-		} else if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			if idx := strings.Index(xff, ","); idx != -1 {
-				ip = strings.TrimSpace(xff[:idx])
-			} else {
-				ip = strings.TrimSpace(xff)
-			}
-		}
-		// Strip port if present (RemoteAddr includes port)
-		if host, _, err := net.SplitHostPort(ip); err == nil {
-			ip = host
-		}
+		// Shared with the Redis limiter: X-Real-IP / X-Forwarded-For are
+		// honoured only when the direct peer is a trusted proxy (see
+		// clientIPForRateLimit) — otherwise a client could spoof a fresh
+		// key per request and bypass per-IP limits.
+		ip := clientIPForRateLimit(r)
 		if !ipStore.get(ip).Allow() {
 			w.Header().Set("Retry-After", "1")
 			w.Header().Set("Content-Type", "application/json")

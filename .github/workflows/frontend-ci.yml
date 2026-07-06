@@ -1,33 +1,146 @@
 name: Frontend / Mobile CI
 
 # The web frontend lives in the sibling postbook-ui repo so it isn't checked
-# here. This workflow covers the Flutter mobile app only. Web CI is owned by
-# the postbook-ui repo's own workflows.
+# here. This workflow covers the Flutter mobile app + its workspace packages.
+# Web CI is owned by the postbook-ui repo's own workflows.
+#
+# Modular / changed-scope: the mobile app is a Dart pub workspace
+# (mobile/pubspec.yaml) with independently testable members. This pipeline
+# detects which members changed and only analyzes + tests those — a change
+# in feature_pulse re-verifies feature_pulse (and the app that consumes it),
+# not all 147k lines. See mobile/README.md.
 
 on:
   pull_request:
     paths:
-      - 'mobile/atpost_app/**'
+      - 'mobile/**'
       - '.github/workflows/frontend-ci.yml'
   push:
     branches: [main]
     paths:
-      - 'mobile/atpost_app/**'
+      - 'mobile/**'
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: mobile-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: '3.44.4'
 
 jobs:
-  flutter:
-    name: Flutter (analyze + test)
+  detect:
+    name: Detect changed members
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.scope.outputs.matrix }}
+      any: ${{ steps.scope.outputs.any }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: scope
+        name: Compute changed workspace members
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+
+          # Workspace members: dir -> job name. Keep in sync with
+          # mobile/pubspec.yaml `workspace:`.
+          declare -A MEMBERS=(
+            ["mobile/packages/atpost_core"]="atpost_core"
+            ["mobile/packages/atpost_design"]="atpost_design"
+            ["mobile/packages/atpost_network"]="atpost_network"
+            ["mobile/packages/atpost_realtime"]="atpost_realtime"
+            ["mobile/packages/feature_figo"]="feature_figo"
+            ["mobile/packages/feature_pulse"]="feature_pulse"
+            ["mobile/atpost_app"]="atpost_app"
+          )
+
+          # Diff range: PRs diff against the merge base; pushes diff the
+          # pushed range. Fall back to HEAD~1 for the first commit.
+          if [ -n "${BASE_SHA:-}" ]; then
+            RANGE="${BASE_SHA}...HEAD"
+          elif [ -n "${{ github.event.before }}" ] && \
+               git cat-file -e "${{ github.event.before }}^{commit}" 2>/dev/null; then
+            RANGE="${{ github.event.before }}...HEAD"
+          else
+            RANGE="HEAD~1...HEAD"
+          fi
+          echo "Diff range: $RANGE"
+          CHANGED="$(git diff --name-only "$RANGE" || git diff --name-only HEAD~1...HEAD)"
+          echo "Changed files:"; echo "$CHANGED"
+
+          # Root workspace files (shared lockfile / pubspec / this workflow)
+          # force a full verify — a resolution change touches everyone.
+          FULL=false
+          if echo "$CHANGED" | grep -qE '^mobile/pubspec\.yaml$|^mobile/pubspec\.lock$|^\.github/workflows/frontend-ci\.yml$'; then
+            FULL=true
+          fi
+
+          selected=()
+          pkg_changed=false
+          for dir in "${!MEMBERS[@]}"; do
+            if $FULL || echo "$CHANGED" | grep -q "^${dir}/"; then
+              selected+=("{\"name\":\"${MEMBERS[$dir]}\",\"dir\":\"${dir}\"}")
+              if [ "$dir" != "mobile/atpost_app" ]; then pkg_changed=true; fi
+            fi
+          done
+
+          # The app is the integration point: if any *package* changed, also
+          # verify the app even when its own sources didn't (a contract or
+          # export change can break the consumer).
+          if $pkg_changed && ! printf '%s\n' "${selected[@]:-}" | grep -q '"atpost_app"'; then
+            selected+=("{\"name\":\"atpost_app\",\"dir\":\"mobile/atpost_app\"}")
+          fi
+
+          if [ "${#selected[@]}" -eq 0 ]; then
+            echo "any=false" >> "$GITHUB_OUTPUT"
+            echo "matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
+            echo "No mobile members changed."
+          else
+            joined="$(IFS=,; echo "${selected[*]}")"
+            echo "any=true" >> "$GITHUB_OUTPUT"
+            echo "matrix={\"include\":[${joined}]}" >> "$GITHUB_OUTPUT"
+            echo "Verifying: ${joined}"
+          fi
+
+  verify:
+    name: ${{ matrix.name }} (analyze + test)
+    needs: detect
+    if: needs.detect.outputs.any == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.detect.outputs.matrix) }}
     defaults:
       run:
-        working-directory: mobile/atpost_app
+        working-directory: ${{ matrix.dir }}
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
         with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
+
+      # `resolution: workspace` means pub resolves the whole workspace from
+      # any member — one lockfile, one download.
       - run: flutter pub get
+
+      # Warnings and errors fail the build; the ~27 pre-existing info-level
+      # deprecations (RadioGroup, activeColor) are tracked separately and do
+      # not gate PRs yet.
       - run: flutter analyze --no-fatal-infos
-      - run: flutter test
+
+      # Every member carries its own tests. Members with no test/ dir are a
+      # no-op pass.
+      - run: |
+          if [ -d test ]; then
+            flutter test
+          else
+            echo "No test/ directory in ${{ matrix.name }} — skipping."
+          fi

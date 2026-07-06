@@ -323,6 +323,13 @@ services:
       JWT_SECRET: ${JWT_SECRET:-local_dev_jwt_change_me}
       RATE_LIMIT_ENABLED: "false"
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      # Dev OTP bypass: any phone + this code signs in / registers (no SMS
+      # provider locally, and the generated OTP is never logged, so phone-OTP
+      # login is impossible without it). `${VAR-default}` (no colon) applies
+      # the default only when the var is UNSET — an explicitly empty
+      # OTP_BYPASS_CODE= (the prod template) still disables the bypass. The
+      # production overlay also pins it empty. MUST be empty in prod.
+      OTP_BYPASS_CODE: ${OTP_BYPASS_CODE-123456}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
       # Dev: tokens never expire — no more surprise logouts
       ACCESS_TOKEN_TTL: "8760h"
@@ -620,6 +627,10 @@ services:
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
       REDIS_ADDR: redis:6379
+      # Dev: partner onboarding uploads logo+photos+documents+dish photos in
+      # one submit; the prod defaults (10/hour, 30/day) block it instantly.
+      UPLOAD_RATE_MAX_PER_HOUR: ${UPLOAD_RATE_MAX_PER_HOUR:-500}
+      UPLOAD_RATE_MAX_PER_DAY: ${UPLOAD_RATE_MAX_PER_DAY:-2000}
     ports:
       - "8087:8087"
     depends_on:
@@ -846,6 +857,10 @@ services:
       KAFKA_BROKERS: redpanda:9092
       KAFKA_TOPIC: chat.events.v1
       JWT_SECRET: ${JWT_SECRET:-local_dev_jwt_change_me}
+      # RS256 (optional): set JWT_PUBLIC_KEY_PEM to also verify RS256 tokens
+      # minted by identity-auth. HS256 stays accepted in parallel.
+      JWT_PUBLIC_KEY_PEM: ${JWT_PUBLIC_KEY_PEM:-}
+      JWT_RS256_KID: ${JWT_RS256_KID:-rsa-1}
       USER_SERVICE_URL: http://user-service:8082
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       IDENTITY_KAFKA_TOPIC: identity.events.v1
@@ -882,6 +897,10 @@ services:
       HTTP_PORT: "8093"
       REDIS_ADDR: redis:6379
       JWT_SECRET: ${JWT_SECRET:-local_dev_jwt_change_me}
+      # RS256 (optional): set JWT_PUBLIC_KEY_PEM to also verify RS256 tokens
+      # minted by identity-auth. HS256 stays accepted in parallel.
+      JWT_PUBLIC_KEY_PEM: ${JWT_PUBLIC_KEY_PEM:-}
+      JWT_RS256_KID: ${JWT_RS256_KID:-rsa-1}
       ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-*}"
       WS_ALLOW_QUERY_TOKEN: ${WS_ALLOW_QUERY_TOKEN:-true}
     ports:
@@ -909,6 +928,10 @@ services:
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
       JWT_SECRET: ${JWT_SECRET:-local_dev_jwt_change_me}
+      # RS256 (optional): set JWT_PUBLIC_KEY_PEM to also verify RS256 tokens
+      # minted by identity-auth. HS256 stays accepted in parallel.
+      JWT_PUBLIC_KEY_PEM: ${JWT_PUBLIC_KEY_PEM:-}
+      JWT_RS256_KID: ${JWT_RS256_KID:-rsa-1}
       KAFKA_LIFECYCLE_TOPIC: call.lifecycle
       KAFKA_NOTIFICATION_TOPIC: call.notifications
       KAFKA_ANALYTICS_TOPIC: call.analytics

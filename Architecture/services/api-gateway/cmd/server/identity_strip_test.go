@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -89,5 +90,32 @@ func TestGatewayHonoursScopesFromVerifiedToken(t *testing.T) {
 
 	if got["X-Scopes"] != "admin moderator" {
 		t.Fatalf("X-Scopes=%q want %q (only the token's scopes, not the forged one)", got["X-Scopes"], "admin moderator")
+	}
+}
+
+func TestGatewayRejectsRevokedSessionImmediately(t *testing.T) {
+	keys := jwtKeySet{activeKID: "v1", activeSecret: "secret"}
+	called := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+	mw := jwtExtractMiddlewareWithRevocations(keys, func(_ context.Context, sessionID string) (bool, error) {
+		return sessionID == "revoked-session", nil
+	}, next)
+	token := signJWT(t, map[string]any{"alg": "HS256", "kid": "v1"}, map[string]any{
+		"user_id": "real-user",
+		"sid":     "revoked-session",
+		"exp":     time.Now().Add(time.Hour).Unix(),
+	}, keys.activeSecret)
+	req := httptest.NewRequest(http.MethodGet, "/v1/food/partner/restaurants", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp := httptest.NewRecorder()
+	mw.ServeHTTP(resp, req)
+	if resp.Code != http.StatusUnauthorized {
+		t.Fatalf("expected %d for revoked session, got %d", http.StatusUnauthorized, resp.Code)
+	}
+	if called {
+		t.Fatal("revoked session reached downstream handler")
 	}
 }

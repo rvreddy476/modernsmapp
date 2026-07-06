@@ -1,7 +1,9 @@
 -- Creator Affiliate Storefronts
 CREATE TABLE IF NOT EXISTS affiliate_links (
     id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    creator_id       UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    -- Identity users live in identity_db, so this cross-database reference
+    -- cannot be represented as a PostgreSQL foreign key.
+    creator_id       UUID NOT NULL,
     -- listing_id points at marketplace.listings in commerce_db — a different
     -- database, so no FK here (same pattern as creator_tiers migration 012).
     listing_id       UUID NOT NULL,
@@ -32,7 +34,7 @@ CREATE INDEX IF NOT EXISTS idx_affiliate_conv_link ON affiliate_conversions(affi
 -- Fundraising & Social Giving
 CREATE TABLE IF NOT EXISTS fundraisers (
     id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    creator_id     UUID NOT NULL REFERENCES users(id),
+    creator_id     UUID NOT NULL,
     type           TEXT NOT NULL CHECK (type IN ('personal','community','ngo','emergency')),
     title          TEXT NOT NULL,
     description    TEXT NOT NULL,
@@ -53,7 +55,7 @@ CREATE INDEX IF NOT EXISTS idx_fundraisers_active ON fundraisers(status, created
 CREATE TABLE IF NOT EXISTS donations (
     id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     fundraiser_id     UUID NOT NULL REFERENCES fundraisers(id),
-    donor_id          UUID NOT NULL REFERENCES users(id),
+    donor_id          UUID NOT NULL,
     amount            NUMERIC(12,2) NOT NULL,
     currency          VARCHAR(3) NOT NULL DEFAULT 'INR',
     payment_intent_id UUID NOT NULL,

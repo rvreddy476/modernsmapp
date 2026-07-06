@@ -50,6 +50,27 @@ func TestClientIPForRateLimit(t *testing.T) {
 			xff:        "203.0.113.12",
 			want:       "203.0.113.12",
 		},
+		// Forwarded headers from an UNTRUSTED (public) peer are spoofable
+		// bytes and must be ignored — otherwise a client can pick a fresh
+		// rate-limit key per request and bypass per-IP limits.
+		{
+			name:       "spoofed X-Real-IP from public peer ignored",
+			remoteAddr: "203.0.113.7:54321",
+			xRealIP:    "198.51.100.99",
+			want:       "203.0.113.7",
+		},
+		{
+			name:       "spoofed XFF from public peer ignored",
+			remoteAddr: "203.0.113.7:54321",
+			xff:        "198.51.100.99, 10.0.0.5",
+			want:       "203.0.113.7",
+		},
+		{
+			name:       "loopback peer is trusted",
+			remoteAddr: "127.0.0.1:54321",
+			xRealIP:    "203.0.113.20",
+			want:       "203.0.113.20",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -87,6 +87,8 @@ services:
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:?set INTERNAL_SERVICE_KEY}
       KAFKA_BROKERS: redpanda:9093
+      # Hard-disable the dev OTP bypass in production regardless of host env.
+      OTP_BYPASS_CODE: ""
 
   identity-user:
     <<: *transport_certs

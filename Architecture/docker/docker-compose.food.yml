@@ -1,0 +1,341 @@
+name: atpost_food
+
+# Focused FiGo development stack. Infrastructure is deliberately external:
+#   docker compose -p atpost_infra -f docker-compose.infra.yml up -d
+# Then choose core/full/web with focus.ps1. This file reuses the existing
+# per-service Dockerfiles; it does not run unrelated product services.
+
+x-app-postgres-dsn: &app_postgres_dsn postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/app?sslmode=disable
+x-commerce-postgres-dsn: &commerce_postgres_dsn postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/commerce_db?sslmode=disable
+x-identity-postgres-dsn: &identity_postgres_dsn postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/identity_db?sslmode=disable
+x-chat-postgres-dsn: &chat_postgres_dsn postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/chat_db?sslmode=disable
+x-internal-key: &internal_key ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+x-jwt-secret: &jwt_secret ${JWT_SECRET:-local_dev_jwt_change_me}
+
+services:
+  identity-auth:
+    build:
+      context: ../../identity-platform
+      dockerfile: services/auth-service/Dockerfile
+    environment:
+      HTTP_PORT: "8081"
+      POSTGRES_DSN: *identity_postgres_dsn
+      REDIS_ADDR: redis:6379
+      KAFKA_BROKERS: redpanda:29092
+      JWT_SECRET: *jwt_secret
+      INTERNAL_SERVICE_KEY: *internal_key
+      RATE_LIMIT_ENABLED: "false"
+      # Dev OTP bypass: any phone + this code signs in / registers (no SMS
+      # provider locally, so phone-OTP login is impossible without it).
+      # MUST be empty in production.
+      OTP_BYPASS_CODE: ${OTP_BYPASS_CODE-123456}
+      ACCESS_TOKEN_TTL: "8760h"
+      REFRESH_TOKEN_TTL: "87600h"
+      SUPERADMIN_USER_IDS: ${SUPERADMIN_USER_IDS:-}
+      ADMIN_USER_IDS: ${ADMIN_USER_IDS:-}
+      MODERATOR_USER_IDS: ${MODERATOR_USER_IDS:-}
+    ports:
+      - "8081:8081"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/v1/auth/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  food-service:
+    build:
+      context: ..
+      dockerfile: services/food-service/Dockerfile
+    environment:
+      HTTP_PORT: "8113"
+      POSTGRES_DSN: *app_postgres_dsn
+      REDIS_ADDR: redis:6379
+      KAFKA_BROKERS: redpanda:29092
+      KAFKA_TOPIC: food-events
+      INTERNAL_SERVICE_KEY: *internal_key
+      REALTIME_TOKEN_SECRET: *internal_key
+      MONETIZATION_SERVICE_URL: http://monetization-service:8099
+      PAYMENTS_SERVICE_URL: http://payments-service:8102
+      MINIO_ENDPOINT: minio:9000
+      MINIO_PUBLIC_ENDPOINT: http://localhost:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minio}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-local_dev_minio_password_change_me}
+      FOOD_BLOB_BUCKET: food
+    ports:
+      - "8113:8113"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8113/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  # Online payments/refunds. Enable with profile "payments".
+  payments-service:
+    profiles: ["payments"]
+    build:
+      context: ..
+      dockerfile: services/payments-service/Dockerfile
+    environment:
+      HTTP_PORT: "8102"
+      POSTGRES_DSN: *commerce_postgres_dsn
+      KAFKA_BROKERS: redpanda:29092
+      RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
+      RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
+      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-}
+      PAYMENTS_ALLOW_STUB: ${PAYMENTS_ALLOW_STUB:-true}
+      INTERNAL_SERVICE_KEY: *internal_key
+    ports:
+      - "8102:8102"
+    restart: unless-stopped
+
+  # Wallet charge/refund path. Kept with the payments profile.
+  monetization-service:
+    profiles: ["payments"]
+    build:
+      context: ..
+      dockerfile: services/monetization-service/Dockerfile
+    environment:
+      HTTP_PORT: "8099"
+      POSTGRES_DSN: *app_postgres_dsn
+      REDIS_ADDR: redis:6379
+      KAFKA_BROKERS: redpanda:29092
+      INTERNAL_SERVICE_KEY: *internal_key
+    ports:
+      - "8099:8099"
+    restart: unless-stopped
+
+  # Upload API and transcoder. Enable with profile "media".
+  media-service:
+    profiles: ["media"]
+    build:
+      context: ..
+      dockerfile: services/media-service/Dockerfile
+    environment:
+      HTTP_PORT: "8087"
+      POSTGRES_DSN: *app_postgres_dsn
+      JWT_SECRET: *jwt_secret
+      INTERNAL_SERVICE_KEY: *internal_key
+      MINIO_ENDPOINT: minio:9000
+      MINIO_PUBLIC_ENDPOINT: http://localhost:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minio}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-local_dev_minio_password_change_me}
+      MINIO_BUCKET: media
+      KAFKA_BROKERS: redpanda:29092
+      REDIS_ADDR: redis:6379
+      MEDIA_SCANNER_ENABLED: ${MEDIA_SCANNER_ENABLED:-false}
+      # Dev: partner onboarding uploads logo+photos+documents+dish photos in
+      # one submit; the prod defaults (10/hour, 30/day) block it instantly.
+      UPLOAD_RATE_MAX_PER_HOUR: ${UPLOAD_RATE_MAX_PER_HOUR:-500}
+      UPLOAD_RATE_MAX_PER_DAY: ${UPLOAD_RATE_MAX_PER_DAY:-2000}
+    ports:
+      - "8087:8087"
+    restart: unless-stopped
+
+  media-worker:
+    profiles: ["media"]
+    build:
+      context: ..
+      dockerfile: services/media-service/Dockerfile.worker
+    environment:
+      POSTGRES_DSN: *app_postgres_dsn
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minio}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-local_dev_minio_password_change_me}
+      MINIO_BUCKET: media
+      KAFKA_BROKERS: redpanda:29092
+      MEDIA_SCANNER_ENABLED: ${MEDIA_SCANNER_ENABLED:-false}
+    restart: unless-stopped
+
+  api-gateway:
+    build:
+      context: ..
+      dockerfile: services/api-gateway/Dockerfile
+    environment:
+      HTTP_PORT: "8080"
+      JWT_SECRET: *jwt_secret
+      INTERNAL_SERVICE_KEY: *internal_key
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:3011,http://localhost:3013,http://localhost:3003}
+      REDIS_ADDR: redis:6379
+      AUTH_SERVICE_URL: http://identity-auth:8081
+      FOOD_SERVICE_URL: http://food-service:8113
+      DATING_SERVICE_URL: http://dating-service:8112
+      MEDIA_SERVICE_URL: http://media-service:8087
+      PAYMENTS_SERVICE_URL: http://payments-service:8102
+      MONETIZATION_SERVICE_URL: http://monetization-service:8099
+      # Dating match chat rooms live in the chat-service message backend.
+      MESSAGE_SERVICE_URL: http://chat-message-service:8092
+      WS_GATEWAY_URL: http://chat-ws-gateway:8093
+    ports:
+      - "8080:8080"
+    depends_on:
+      identity-auth:
+        condition: service_healthy
+      food-service:
+        condition: service_healthy
+      dating-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  # Optional standalone FiGo Next.js zone; no shell or other web zones.
+  food-web:
+    profiles: ["web"]
+    build:
+      context: ../../../atpost-web
+      dockerfile: Dockerfile
+      args:
+        ZONE: food
+    environment:
+      HOSTNAME: 0.0.0.0
+      PORT: "3000"
+      NODE_ENV: production
+      API_GATEWAY_URL: http://api-gateway:8080
+      FOOD_SERVICE_URL: http://food-service:8113
+      INTERNAL_SERVICE_KEY: *internal_key
+      AUTH_SERVICE_URL: http://identity-auth:8081
+      # Google Maps browser key, served to the client at runtime via
+      # /figo/api/maps/key (NEXT_PUBLIC_* would be baked at image build).
+      # Restrict the key by HTTP referrer in the Google Cloud console.
+      # Empty = the onboarding map falls back to Leaflet/OpenStreetMap.
+      GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY:-}
+    ports:
+      - "3011:3000"
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # FiGo ops console — the admin zone (restaurant/rider review queues, orders,
+  # settlements). Sign in with an account whose user id is listed in
+  # SUPERADMIN_USER_IDS (identity-auth resolves it into the token's scopes).
+  admin-web:
+    profiles: ["web"]
+    build:
+      context: ../../../atpost-web
+      dockerfile: Dockerfile
+      args:
+        ZONE: admin
+    environment:
+      HOSTNAME: 0.0.0.0
+      PORT: "3000"
+      NODE_ENV: production
+      API_GATEWAY_URL: http://api-gateway:8080
+      AUTH_SERVICE_URL: http://identity-auth:8081
+      INTERNAL_SERVICE_KEY: *internal_key
+    ports:
+      - "3022:3000"
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+    restart: unless-stopped
+
+  dating-service:
+    build:
+      context: ..
+      dockerfile: services/dating-service/Dockerfile
+    environment:
+      HTTP_PORT: "8112"
+      POSTGRES_DSN: *app_postgres_dsn
+      REDIS_ADDR: redis:6379
+      KAFKA_BROKERS: redpanda:29092
+      KAFKA_TOPIC: dating-events
+      INTERNAL_SERVICE_KEY: *internal_key
+      # Match-formation saga allocates the chat room on the
+      # chat-message-service container below.
+      MESSAGE_SERVICE_URL: http://chat-message-service:8092
+      # Dev bypass: auto-approve photos + auto-activate complete profiles
+      # so discovery works without the moderation scanner / on-device
+      # selfie embeddings. MUST be empty in production.
+      DATING_AUTO_ACTIVATE: ${DATING_AUTO_ACTIVATE-true}
+    ports:
+      - "8112:8112"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8112/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  # ── Chat backend (dating-match conversations + messages) ──────────
+  # dating-service's match saga allocates rooms here; the web/mobile
+  # clients read + send through the gateway's /v1/chat proxy. Postgres
+  # (chat_db) holds conversations, Scylla (infra stack) holds messages.
+  chat-message-service:
+    build:
+      context: ../../chat-service
+      dockerfile: services/message-service/Dockerfile
+    environment:
+      HTTP_PORT: "8092"
+      POSTGRES_DSN: *chat_postgres_dsn
+      SCYLLA_HOSTS: scylla
+      SCYLLA_KEYSPACE: chatservice
+      REDIS_ADDR: redis:6379
+      KAFKA_BROKERS: redpanda:29092
+      KAFKA_TOPIC: chat.events.v1
+      JWT_SECRET: *jwt_secret
+      INTERNAL_SERVICE_KEY: *internal_key
+      IDENTITY_KAFKA_TOPIC: identity.events.v1
+      IDENTITY_KAFKA_GROUP_ID: chat-service-identity-food
+    ports:
+      - "8092:8092"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8092/v1/chat/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+    restart: unless-stopped
+
+  # WebSocket fan-out for live chat/notification events (the dating web
+  # zone connects to ws://localhost:8093/v1/ws/notifications). Optional —
+  # clients fall back to polling when it's down.
+  chat-ws-gateway:
+    build:
+      context: ../../chat-service
+      dockerfile: services/ws-gateway/Dockerfile
+    environment:
+      HTTP_PORT: "8093"
+      REDIS_ADDR: redis:6379
+      JWT_SECRET: *jwt_secret
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
+      WS_ALLOW_QUERY_TOKEN: ${WS_ALLOW_QUERY_TOKEN:-true}
+    ports:
+      - "8093:8093"
+    restart: unless-stopped
+
+  dating-web:
+    profiles: ["web"]
+    build:
+      context: ../../../atpost-web
+      dockerfile: Dockerfile
+      args:
+        ZONE: dating
+    environment:
+      HOSTNAME: 0.0.0.0
+      PORT: "3000"
+      NODE_ENV: production
+      API_GATEWAY_URL: http://api-gateway:8080
+      DATING_SERVICE_URL: http://dating-service:8112
+      INTERNAL_SERVICE_KEY: *internal_key
+      AUTH_SERVICE_URL: http://identity-auth:8081
+    ports:
+      - "3013:3000"
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+    restart: unless-stopped
+
+networks:
+  default:
+    name: atpost_dev
+    external: true

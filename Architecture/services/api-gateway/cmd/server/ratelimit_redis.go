@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -95,10 +96,98 @@ func redisRateLimitMiddleware(rl *redisRateLimiter, next http.Handler) http.Hand
 	})
 }
 
-// clientIPForRateLimit centralises the same XFF / X-Real-IP / RemoteAddr
-// fallback the in-memory limiter uses so the two paths can't disagree.
+// trustedProxyNets are the networks whose X-Real-IP / X-Forwarded-For
+// headers the rate limiter honours. Both headers are client-controlled
+// bytes; trusting them from an arbitrary peer lets a public client spoof
+// a fresh "IP" per request and dodge per-IP limits entirely. The default
+// covers loopback + RFC1918 + IPv6 ULA — i.e. Caddy / the docker network /
+// an in-VPC load balancer — which preserves real-client-IP behaviour in
+// every current deployment while ignoring the headers on direct public
+// exposure. Override with TRUSTED_PROXY_CIDRS (comma-separated CIDRs or
+// bare IPs; "none" disables header trust entirely).
+const defaultTrustedProxyCIDRs = "127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128,fc00::/7"
+
+var trustedProxyNets = mustParseCIDRList(defaultTrustedProxyCIDRs)
+
+// initTrustedProxies replaces the trusted set from configuration. Returns an
+// error on an unparseable entry so main can fail fast on a typo instead of
+// silently rate-limiting the proxy's IP for all traffic.
+func initTrustedProxies(csv string) error {
+	csv = strings.TrimSpace(csv)
+	if csv == "" {
+		return nil // keep the default set
+	}
+	if strings.EqualFold(csv, "none") {
+		trustedProxyNets = nil
+		return nil
+	}
+	nets, err := parseCIDRList(csv)
+	if err != nil {
+		return err
+	}
+	trustedProxyNets = nets
+	return nil
+}
+
+func parseCIDRList(csv string) ([]*net.IPNet, error) {
+	var out []*net.IPNet
+	for _, part := range strings.Split(csv, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if _, n, err := net.ParseCIDR(part); err == nil {
+			out = append(out, n)
+			continue
+		}
+		ip := net.ParseIP(part)
+		if ip == nil {
+			return nil, fmt.Errorf("invalid CIDR or IP %q", part)
+		}
+		bits := 32
+		if ip.To4() == nil {
+			bits = 128
+		}
+		out = append(out, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
+	}
+	return out, nil
+}
+
+func mustParseCIDRList(csv string) []*net.IPNet {
+	nets, err := parseCIDRList(csv)
+	if err != nil {
+		panic("api-gateway: bad built-in trusted proxy CIDR list: " + err.Error())
+	}
+	return nets
+}
+
+func isTrustedProxy(remoteHost string) bool {
+	ip := net.ParseIP(remoteHost)
+	if ip == nil {
+		return false
+	}
+	for _, n := range trustedProxyNets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// clientIPForRateLimit centralises the XFF / X-Real-IP / RemoteAddr
+// fallback used by BOTH the in-memory and Redis limiters so the two paths
+// can't disagree. Forwarded headers are honoured only when the direct peer
+// (RemoteAddr) is a trusted proxy — otherwise the spoofable header would
+// let a client pick its own rate-limit key.
 func clientIPForRateLimit(r *http.Request) string {
-	ip := r.RemoteAddr
+	remote := r.RemoteAddr
+	if host, _, err := splitHostPortLenient(remote); err == nil {
+		remote = host
+	}
+	if !isTrustedProxy(remote) {
+		return remote
+	}
+	ip := remote
 	if realIP := r.Header.Get("X-Real-IP"); realIP != "" {
 		ip = strings.TrimSpace(realIP)
 	} else if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
@@ -108,7 +197,7 @@ func clientIPForRateLimit(r *http.Request) string {
 			ip = strings.TrimSpace(xff)
 		}
 	}
-	// Strip port if present (RemoteAddr includes port).
+	// Strip port if present (some proxies append it to the header value).
 	if host, _, err := splitHostPortLenient(ip); err == nil {
 		ip = host
 	}
