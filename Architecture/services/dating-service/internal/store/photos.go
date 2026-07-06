@@ -268,6 +268,29 @@ func (s *Store) CountApprovedPrimaryPhotos(ctx context.Context, userID uuid.UUID
 	return n, err
 }
 
+// GetPrimaryPhotoMediaID returns the media id of the user's primary photo
+// (nil when the user has none). Used by the matches / incoming-sparks
+// enrichment so list rows can render an avatar without a second API hop.
+// Moderation-approved photos are preferred; when nothing is approved yet
+// (fresh onboarding, scanner still pending) we fall back to any primary
+// so the owner's own surfaces aren't blank.
+func (s *Store) GetPrimaryPhotoMediaID(ctx context.Context, userID uuid.UUID) (*uuid.UUID, error) {
+	var mediaID *uuid.UUID
+	err := s.db.QueryRow(ctx, `
+        SELECT media_id
+        FROM dating_photos
+        WHERE user_id = $1 AND is_primary = true
+        ORDER BY (moderation_status = 'approved') DESC, created_at DESC
+        LIMIT 1`, userID).Scan(&mediaID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("primary photo lookup: %w", err)
+	}
+	return mediaID, nil
+}
+
 // DeletePhoto removes the photo if it belongs to the user. Returns
 // ErrPhotoNotFound if nothing was deleted.
 func (s *Store) DeletePhoto(ctx context.Context, userID, photoID uuid.UUID) error {

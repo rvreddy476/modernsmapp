@@ -246,9 +246,54 @@ func (s *Service) FormMatch(ctx context.Context, userA, userB uuid.UUID, sparkTa
 	return match, nil
 }
 
-// ListMatches returns the caller's matches, filtered by status bucket.
-func (s *Service) ListMatches(ctx context.Context, userID uuid.UUID, status string) ([]*store.Match, error) {
-	return s.store.ListMatchesForUser(ctx, userID, status)
+// MatchPeer is the enrichment block attached to each match row so list
+// surfaces can render the other participant without N extra API calls.
+// PhotoURL follows the same "/media/{id}" convention as the pulse deck.
+type MatchPeer struct {
+	UserID    uuid.UUID `json:"user_id"`
+	FirstName string    `json:"first_name"`
+	PhotoURL  string    `json:"photo_url,omitempty"`
+}
+
+// EnrichedMatch is a match row plus the viewer-relative other_user block.
+// Additive over store.Match — existing consumers of the raw shape keep
+// working.
+type EnrichedMatch struct {
+	*store.Match
+	OtherUser *MatchPeer `json:"other_user,omitempty"`
+}
+
+// matchPeer builds the enrichment block for one user. Lookup failures
+// degrade to a bare user_id rather than failing the list.
+func (s *Service) matchPeer(ctx context.Context, userID uuid.UUID) *MatchPeer {
+	peer := &MatchPeer{UserID: userID}
+	if name, err := s.store.LookupFirstName(ctx, userID); err == nil {
+		peer.FirstName = name
+	}
+	if mediaID, err := s.store.GetPrimaryPhotoMediaID(ctx, userID); err == nil && mediaID != nil {
+		peer.PhotoURL = "/media/" + mediaID.String()
+	}
+	return peer
+}
+
+// ListMatches returns the caller's matches, filtered by status bucket,
+// each enriched with the other participant's name + primary photo.
+func (s *Service) ListMatches(ctx context.Context, userID uuid.UUID, status string) ([]EnrichedMatch, error) {
+	matches, err := s.store.ListMatchesForUser(ctx, userID, status)
+	if err != nil {
+		return nil, err
+	}
+	// Matches lists are small (per-user), but the same peer can appear
+	// once at most, so a flat loop with per-peer lookups is fine.
+	out := make([]EnrichedMatch, 0, len(matches))
+	for _, m := range matches {
+		other := m.UserA
+		if other == userID {
+			other = m.UserB
+		}
+		out = append(out, EnrichedMatch{Match: m, OtherUser: s.matchPeer(ctx, other)})
+	}
+	return out, nil
 }
 
 // GetMatch returns a single match (caller must be a participant; checked

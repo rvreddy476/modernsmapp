@@ -124,9 +124,34 @@ func (s *Service) CreateSpark(ctx context.Context, fromUserID, toUserID uuid.UUI
 	return sp, &mid, nil
 }
 
-// ListIncomingSparks returns sparks targeted at userID.
-func (s *Service) ListIncomingSparks(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*store.Spark, error) {
-	return s.store.ListIncomingSparks(ctx, userID, limit, offset)
+// EnrichedSpark is an incoming spark plus the sender's name + primary
+// photo, so the "Sparks received" grid renders without N profile calls.
+// Additive over store.Spark — the raw fields keep their shape.
+type EnrichedSpark struct {
+	*store.Spark
+	FromUser *MatchPeer `json:"from_user,omitempty"`
+}
+
+// ListIncomingSparks returns sparks targeted at userID, enriched with
+// each sender's display block.
+func (s *Service) ListIncomingSparks(ctx context.Context, userID uuid.UUID, limit, offset int) ([]EnrichedSpark, error) {
+	sparks, err := s.store.ListIncomingSparks(ctx, userID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	// The same sender may have sparked multiple targets — memoise the
+	// peer lookups per request.
+	peers := map[uuid.UUID]*MatchPeer{}
+	out := make([]EnrichedSpark, 0, len(sparks))
+	for _, sp := range sparks {
+		peer, ok := peers[sp.FromUserID]
+		if !ok {
+			peer = s.matchPeer(ctx, sp.FromUserID)
+			peers[sp.FromUserID] = peer
+		}
+		out = append(out, EnrichedSpark{Spark: sp, FromUser: peer})
+	}
+	return out, nil
 }
 
 // RevokeSpark removes the spark only when ownerID matches the row's

@@ -85,6 +85,37 @@ func (h *Handler) ExplainPulseCandidate(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, resp, nil)
 }
 
+// passRequest — body for POST /v1/dating/pulse/pass.
+type passRequest struct {
+	CandidateID string  `json:"candidate_id"`
+	Reason      *string `json:"reason,omitempty"`
+}
+
+// PostPulsePass — POST /v1/dating/pulse/pass.
+// Records a left-swipe so the candidate stops surfacing in future decks.
+// Web/mobile call this on every pass; idempotent on retries.
+func (h *Handler) PostPulsePass(c *gin.Context) {
+	viewerID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	var body passRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	candidate, err := parseUUIDValue(body.CandidateID)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "invalid candidate_id", nil)
+		return
+	}
+	if err := h.svc.RecordPass(c.Request.Context(), viewerID, candidate, body.Reason); err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "PASS_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"passed": true}, nil)
+}
+
 // parseQueryInt is a forgiving helper — falls back to fallback on any parse
 // problem instead of erroring.
 func parseQueryInt(c *gin.Context, key string, fallback int) int {

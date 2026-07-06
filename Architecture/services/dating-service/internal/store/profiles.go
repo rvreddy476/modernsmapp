@@ -13,6 +13,7 @@ import (
 // UpsertProfileParams is the payload accepted by POST /v1/dating/profile.
 // Pointer fields are optional — when nil they are not written.
 type UpsertProfileParams struct {
+	FirstName        *string    `json:"first_name,omitempty"`
 	Intent           *string    `json:"intent,omitempty"`
 	Bio              *string    `json:"bio,omitempty"`
 	Gender           *string    `json:"gender,omitempty"`
@@ -43,7 +44,7 @@ type UpsertProfileParams struct {
 var ErrProfileNotFound = errors.New("not_found: dating profile not found")
 
 const profileSelectCols = `
-    user_id, intent, bio, gender, birth_date, city, state, country,
+    user_id, first_name, intent, bio, gender, birth_date, city, state, country,
     latitude, longitude, location_geohash, height_cm, religion, community,
     occupation, education, drinking, smoking, exercise, diet,
     wants_children, family_plans, blur_mode, visible_to_public, paused,
@@ -52,7 +53,7 @@ const profileSelectCols = `
 func scanProfile(row pgx.Row) (*Profile, error) {
 	p := &Profile{}
 	err := row.Scan(
-		&p.UserID, &p.Intent, &p.Bio, &p.Gender, &p.BirthDate, &p.City, &p.State, &p.Country,
+		&p.UserID, &p.FirstName, &p.Intent, &p.Bio, &p.Gender, &p.BirthDate, &p.City, &p.State, &p.Country,
 		&p.Latitude, &p.Longitude, &p.LocationGeohash, &p.HeightCm, &p.Religion, &p.Community,
 		&p.Occupation, &p.Education, &p.Drinking, &p.Smoking, &p.Exercise, &p.Diet,
 		&p.WantsChildren, &p.FamilyPlans, &p.BlurMode, &p.VisibleToPublic, &p.Paused,
@@ -97,6 +98,9 @@ func (s *Store) UpsertProfile(ctx context.Context, userID uuid.UUID, p UpsertPro
 	}
 
 	// Step 2: per-column updates. Skip nil pointers.
+	if p.FirstName != nil {
+		_, _ = s.db.Exec(ctx, `UPDATE dating_profiles SET first_name = $2, updated_at = now() WHERE user_id = $1`, userID, *p.FirstName)
+	}
 	if p.Intent != nil {
 		_, _ = s.db.Exec(ctx, `UPDATE dating_profiles SET intent = $2, updated_at = now() WHERE user_id = $1`, userID, *p.Intent)
 	}

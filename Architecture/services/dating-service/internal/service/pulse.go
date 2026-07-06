@@ -492,6 +492,51 @@ func round2(f float64) float64 {
 	return float64(int(f*100)) / 100
 }
 
+// RecordPass persists a left-swipe (dating_passes) so the candidate stops
+// surfacing in future deck generations, then prunes the card from the
+// viewer's cached deck in place. Pruning instead of invalidating keeps a
+// swipe O(1) — recomputing the whole deck per pass would hammer the
+// matcher.
+func (s *Service) RecordPass(ctx context.Context, viewerID, candidateID uuid.UUID, reason *string) error {
+	if err := s.store.RecordPass(ctx, viewerID, candidateID, reason); err != nil {
+		return err
+	}
+	s.removeCardFromPulseCache(ctx, viewerID, candidateID)
+	return nil
+}
+
+// removeCardFromPulseCache drops one candidate from the viewer's cached
+// deck (best-effort — a miss or marshal error just leaves the cache to
+// its TTL; the store-level pass filter is the source of truth).
+func (s *Service) removeCardFromPulseCache(ctx context.Context, viewerID, candidateID uuid.UUID) {
+	if s.rdb == nil {
+		return
+	}
+	cached := s.readPulseCache(ctx, viewerID)
+	if cached == nil {
+		return
+	}
+	kept := make([]PulseCard, 0, len(cached.Data))
+	for _, card := range cached.Data {
+		if card.CandidateID != candidateID {
+			kept = append(kept, card)
+		}
+	}
+	if len(kept) == len(cached.Data) {
+		return
+	}
+	cached.Data = kept
+	cached.Meta.Size = len(kept)
+	raw, err := json.Marshal(cached)
+	if err != nil {
+		return
+	}
+	// KEEPTTL preserves the original 24h window instead of restarting it.
+	if err := s.rdb.Set(ctx, s.cacheKey(viewerID), raw, redis.KeepTTL).Err(); err != nil {
+		slog.Warn("pulse cache prune failed", "viewer_id", viewerID, "error", err)
+	}
+}
+
 // GetPulseNebulaPassed returns the user's recently-passed candidates as
 // PulseCards. Paged, max 100.
 func (s *Service) GetPulseNebulaPassed(ctx context.Context, viewerID uuid.UUID, limit, offset int) (*PulseResponse, error) {

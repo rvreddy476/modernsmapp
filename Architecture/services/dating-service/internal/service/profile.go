@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"time"
 
 	"github.com/atpost/dating-service/internal/store"
@@ -170,6 +171,22 @@ func (s *Service) UpsertProfile(ctx context.Context, userID uuid.UUID, p store.U
 		}
 	}
 
+	// Dev-only bypass (DATING_AUTO_ACTIVATE=true): jump pending_photo /
+	// pending_selfie straight to active so a local stack without the
+	// photo-moderation scanner or on-device selfie embeddings can run the
+	// full discover→spark→match→chat loop. Same pattern as identity-auth's
+	// OTP_BYPASS_CODE — MUST be unset in production.
+	if os.Getenv("DATING_AUTO_ACTIVATE") == "true" &&
+		(out.ProfileStatus == store.ProfileStatusPendingPhoto || out.ProfileStatus == store.ProfileStatusPendingSelfie) &&
+		hasMinimumOnboardingFields(out) {
+		if updated, err := s.store.SetProfileStatus(ctx, userID, store.ProfileStatusActive); err == nil {
+			slog.Warn("DATING_AUTO_ACTIVATE: profile auto-activated (dev bypass)", "user_id", userID)
+			out = updated
+		} else {
+			slog.Warn("profile state: dev auto-activate failed", "user_id", userID, "error", err)
+		}
+	}
+
 	if s.producer != nil {
 		if !existed {
 			_ = s.producer.PublishProfileCreated(ctx, userID, out.Intent)
@@ -253,6 +270,9 @@ func (s *Service) DeleteProfile(ctx context.Context, userID uuid.UUID, reason st
 
 func fieldsTouched(p store.UpsertProfileParams) []string {
 	var out []string
+	if p.FirstName != nil {
+		out = append(out, "first_name")
+	}
 	if p.Intent != nil {
 		out = append(out, "intent")
 	}

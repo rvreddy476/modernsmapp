@@ -439,6 +439,24 @@ type PassedCandidate struct {
 	Reason      *string
 }
 
+// RecordPass stores a left-swipe so ExcludePassed filters the candidate
+// out of future deck generations. Idempotent — repeat passes refresh the
+// timestamp rather than erroring.
+func (s *Store) RecordPass(ctx context.Context, userID, candidateID uuid.UUID, reason *string) error {
+	if userID == candidateID {
+		return fmt.Errorf("invalid: cannot pass on yourself")
+	}
+	_, err := s.db.Exec(ctx, `
+        INSERT INTO dating_passes (user_id, candidate_id, reason)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (user_id, candidate_id)
+        DO UPDATE SET passed_at = now(), reason = EXCLUDED.reason`, userID, candidateID, reason)
+	if err != nil {
+		return fmt.Errorf("record pass: %w", err)
+	}
+	return nil
+}
+
 // ListPassedCandidates returns the user's most-recent passes (paged, max
 // `limit`). Used by GET /v1/dating/pulse/nebula?filter=passed.
 func (s *Store) ListPassedCandidates(ctx context.Context, userID uuid.UUID, limit, offset int) ([]PassedCandidate, error) {

@@ -103,6 +103,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// Returns structured reasons (age band, distance, gender
 		// pref, shared community, shared interest, promoted).
 		dating.GET("/pulse/:targetUserId/explain", fpMW, h.ExplainPulseCandidate)
+		// Left-swipe persistence — dating_passes feeds the
+		// ExcludePassed deck filter and the nebula "passed" list.
+		dating.POST("/pulse/pass", fpMW, h.PostPulsePass)
 
 		// Sprint 3 — Sparks
 		dating.POST("/sparks", fpMW, h.CreateSpark)

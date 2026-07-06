@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 
 	"github.com/atpost/dating-service/internal/store"
 	"github.com/google/uuid"
@@ -52,7 +53,24 @@ func (s *Service) CreatePhoto(ctx context.Context, userID uuid.UUID, p store.Cre
 	if p.Visibility != "" && !validVisibility(p.Visibility) {
 		return nil, fmt.Errorf("invalid: visibility must be one of public|match_only|sparked_only")
 	}
-	return s.store.CreatePhoto(ctx, userID, p)
+	photo, err := s.store.CreatePhoto(ctx, userID, p)
+	if err != nil {
+		return nil, err
+	}
+	// Dev-only bypass (DATING_AUTO_ACTIVATE=true): auto-approve so the
+	// P0-6 approved-photo discovery filter passes without the moderation
+	// scanner / admin queue. Runs through SetPhotoModerationStatus so the
+	// deck invalidation + pending_photo→pending_selfie transition still
+	// fire. MUST be unset in production.
+	if os.Getenv("DATING_AUTO_ACTIVATE") == "true" && photo.ModerationStatus != "approved" {
+		if approved, aerr := s.SetPhotoModerationStatus(ctx, uuid.Nil, photo.ID, "approved", "dev auto-approve"); aerr == nil {
+			slog.Warn("DATING_AUTO_ACTIVATE: photo auto-approved (dev bypass)", "photo_id", photo.ID, "user_id", userID)
+			photo = approved
+		} else {
+			slog.Warn("dev auto-approve failed", "photo_id", photo.ID, "error", aerr)
+		}
+	}
+	return photo, nil
 }
 
 // UpdatePhoto applies the partial update.

@@ -103,11 +103,18 @@ func main() {
 	datingStore := store.New(dbPool)
 	datingSvc := service.New(datingStore, rdb)
 
-	graphProvider := matcher.NewHTTPGraphProvider(
-		os.Getenv("GRAPH_SERVICE_URL"),
-		os.Getenv("COMMUNITY_SERVICE_URL"),
-	)
-	datingSvc.SetGraphProvider(graphProvider)
+	// Graph/community echo signals are optional: with neither URL
+	// configured (focused stacks that don't run the social graph) the
+	// service falls back to the static provider instead of paying a
+	// 2s timeout per candidate against unreachable defaults.
+	if os.Getenv("GRAPH_SERVICE_URL") != "" || os.Getenv("COMMUNITY_SERVICE_URL") != "" {
+		datingSvc.SetGraphProvider(matcher.NewHTTPGraphProvider(
+			os.Getenv("GRAPH_SERVICE_URL"),
+			os.Getenv("COMMUNITY_SERVICE_URL"),
+		))
+	} else {
+		slog.Info("graph/community URLs unset — using static graph provider")
+	}
 
 	producer := datingevents.NewProducerWithDialer(kafkaBrokers, kafkaTopic, kafkaDialer)
 	datingSvc.SetProducer(producer)

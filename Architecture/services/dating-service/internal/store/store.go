@@ -26,6 +26,10 @@ func New(db *pgxpool.Pool) *Store {
 // Profile is a user's dating profile (spec §10 dating_profiles).
 type Profile struct {
 	UserID           uuid.UUID  `json:"user_id"`
+	// FirstName is the display name on the dating card. Writable through
+	// UpsertProfile (onboarding); the pulse deck, matches/sparks
+	// enrichment and the cross-service preview read the same column.
+	FirstName        *string    `json:"first_name,omitempty"`
 	Intent           string     `json:"intent"`
 	Bio              string     `json:"bio"`
 	Gender           *string    `json:"gender,omitempty"`
