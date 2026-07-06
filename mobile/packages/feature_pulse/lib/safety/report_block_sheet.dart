@@ -154,16 +154,20 @@ class _ReportSheetState extends ConsumerState<ReportSheet> {
             const SizedBox(height: 14),
             Text('Category', style: AppTextStyles.label),
             const SizedBox(height: 6),
-            ..._options.entries.map(
-              (e) => RadioListTile<String>(
-                value: e.key,
-                groupValue: _category,
-                onChanged: (v) =>
-                    setState(() => _category = v ?? _category),
-                title: Text(e.value, style: AppTextStyles.body),
-                dense: true,
-                contentPadding: EdgeInsets.zero,
-                activeColor: AppColors.postbookPrimary,
+            RadioGroup<String>(
+              groupValue: _category,
+              onChanged: (v) => setState(() => _category = v ?? _category),
+              child: Column(
+                children: [
+                  for (final e in _options.entries)
+                    RadioListTile<String>(
+                      value: e.key,
+                      title: Text(e.value, style: AppTextStyles.body),
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      activeColor: AppColors.postbookPrimary,
+                    ),
+                ],
               ),
             ),
             const SizedBox(height: 8),

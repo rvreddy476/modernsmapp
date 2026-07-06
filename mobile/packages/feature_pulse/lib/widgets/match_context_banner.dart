@@ -63,7 +63,7 @@ class _BannerBody extends ConsumerWidget {
     final ttl = match.timeUntilExpiry;
     final urgent = ttl != null && ttl.inHours < 24 && ttl.inSeconds > 0;
 
-    final user = ref.watch(pulseHostUserProvider);
+    final user = ref.watch(currentAppUserProvider);
     final viewerId = user.maybeWhen(
       data: (u) => u?.id ?? '',
       orElse: () => '',

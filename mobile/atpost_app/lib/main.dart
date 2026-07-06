@@ -1,7 +1,5 @@
 import 'package:atpost_app/app/atpost_app.dart';
-import 'package:atpost_app/app/mopedu_host_bindings.dart';
-import 'package:atpost_app/app/pulse_host_bindings.dart';
-import 'package:atpost_app/app/wallet_host_bindings.dart';
+import 'package:atpost_app/app/feature_host_bindings.dart';
 import 'package:atpost_app/services/auth_service.dart';
 import 'package:atpost_core/cache/cache_manager.dart';
 import 'package:atpost_network/auth_session.dart';
@@ -13,9 +11,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 /// wiring can reuse this list in their own ProviderScope.
 List<Override> appOverrides() => [
   authSessionProvider.overrideWith((ref) => ref.watch(authServiceProvider)),
-  ...pulseHostBindings(),
-  ...walletHostBindings(),
-  ...mopeduHostBindings(),
+  ...featureHostBindings(),
 ];
 
 void main() async {

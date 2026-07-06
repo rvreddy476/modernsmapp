@@ -35,9 +35,9 @@ class _SendVouchSheetState extends ConsumerState<SendVouchSheet> {
   Timer? _debounce;
   String _query = '';
   bool _searching = false;
-  List<PulseHostUser> _results = const [];
+  List<AppUserRef> _results = const [];
 
-  PulseHostUser? _selectedUser;
+  AppUserRef? _selectedUser;
   String _relationship = 'friend';
   bool _submitting = false;
   String? _error;
@@ -79,7 +79,7 @@ class _SendVouchSheetState extends ConsumerState<SendVouchSheet> {
       _searching = true;
     });
     try {
-      final search = ref.read(pulseUserSearchProvider);
+      final search = ref.read(appUserSearchProvider);
       final result = await search(trimmed);
       if (!mounted) return;
       setState(() {
@@ -295,7 +295,7 @@ class _SendVouchSheetState extends ConsumerState<SendVouchSheet> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(user.displayName, style: AppTextStyles.h3),
-                Text('@${user.username ?? ''}',
+                Text('@${user.username}',
                     style: AppTextStyles.bodySmall),
               ],
             ),
@@ -353,7 +353,7 @@ class _SendVouchSheetState extends ConsumerState<SendVouchSheet> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(user.displayName, style: AppTextStyles.h3),
-                        Text('@${user.username ?? ''}',
+                        Text('@${user.username}',
                             style: AppTextStyles.bodySmall),
                       ],
                     ),

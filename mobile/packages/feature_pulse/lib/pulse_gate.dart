@@ -98,7 +98,7 @@ class PulseCityGateState {
 final pulseCityGateProvider = FutureProvider<PulseCityGateState>((ref) async {
   String userCity = '';
   try {
-    final user = await ref.watch(pulseHostUserProvider.future);
+    final user = await ref.watch(currentAppUserProvider.future);
     if (user?.city != null && user!.city!.isNotEmpty) {
       userCity = user.city!;
     }

@@ -3,7 +3,7 @@ import 'package:atpost_design/app_spacing.dart';
 import 'package:atpost_design/app_text_styles.dart';
 import 'package:feature_mopedu/mopedu/mopedu_waitlist_screen.dart';
 import 'package:mopedu_domain/mopedu_providers.dart';
-import 'package:feature_mopedu/host/mopedu_host.dart';
+import 'package:feature_contracts/app_user.dart';
 import 'package:atpost_network/api_client.dart';
 import 'package:mopedu_domain/mopedu_crash_breadcrumbs.dart';
 import 'package:flutter/material.dart';
@@ -89,7 +89,7 @@ class MopeduCityGateState {
 /// Determines whether the current user's city is in the v1 allowed list.
 ///
 /// Source order:
-///   1. `mopeduHostUserProvider` city (the AtPost-wide profile
+///   1. `currentAppUserProvider` city (the AtPost-wide profile
 ///      city).
 ///   2. The Mopedu-side selected city id resolved against the cities
 ///      list (`riderCitiesProvider`).
@@ -100,7 +100,7 @@ final mopeduCityAllowedProvider =
     FutureProvider<MopeduCityGateState>((ref) async {
   String userCity = '';
   try {
-    final user = await ref.watch(mopeduHostUserProvider.future);
+    final user = await ref.watch(currentAppUserProvider.future);
     if (user?.city != null && user!.city!.isNotEmpty) {
       userCity = user.city!;
     }

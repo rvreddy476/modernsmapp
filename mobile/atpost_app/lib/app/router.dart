@@ -65,10 +65,6 @@ import 'package:atpost_app/features/live/live_list_screen.dart';
 import 'package:atpost_app/features/live/live_viewer_screen.dart';
 import 'package:atpost_app/features/live/go_live_screen.dart';
 import 'package:atpost_app/features/live/live_broadcaster_screen.dart';
-import 'package:atpost_app/features/memories/memories_screen.dart';
-import 'package:atpost_app/features/memories/slambook_detail_screen.dart';
-import 'package:atpost_app/features/memories/slambook_share_screen.dart';
-import 'package:atpost_app/features/memories/slambooks_screen.dart';
 import 'package:atpost_app/features/notifications/notifications_screen.dart';
 import 'package:atpost_app/features/profile/my_media_screen.dart';
 import 'package:atpost_app/features/profile/profile_detail_screen.dart';
@@ -84,6 +80,7 @@ import 'package:atpost_app/features/qa/qa_feed_screen.dart';
 import 'package:atpost_app/features/qa/qa_profile_screen.dart';
 import 'package:atpost_app/features/qa/qa_search_screen.dart';
 import 'package:atpost_app/features/qa/question_detail_screen.dart';
+import 'package:feature_memories/memories_routes.dart';
 import 'package:feature_mopedu/mopedu_routes.dart';
 import 'package:feature_pulse/pulse_routes.dart';
 import 'package:atpost_app/features/mini_apps/mini_apps_screen.dart';
@@ -434,25 +431,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           ...billpayRoutes(),
           // Pulse (dating) — the feature package owns its route table.
           ...pulseRoutes(),
-          GoRoute(
-            path: '/memories',
-            builder: (context, state) => const MemoriesScreen(),
-          ),
-          GoRoute(
-            path: '/memories/slambooks',
-            builder: (context, state) => const SlambooksScreen(),
-          ),
-          GoRoute(
-            path: '/memories/slambooks/:slambookId',
-            builder: (context, state) => SlambookDetailScreen(
-              slambookId: state.pathParameters['slambookId']!,
-            ),
-          ),
-          GoRoute(
-            path: '/memories/slambooks/share/:token',
-            builder: (context, state) =>
-                SlambookShareScreen(shareToken: state.pathParameters['token']!),
-          ),
+          // Memories (slambooks) — the feature package owns its route table.
+          ...memoriesRoutes(),
           GoRoute(
             path: '/live',
             builder: (context, state) => const LiveScreen(),

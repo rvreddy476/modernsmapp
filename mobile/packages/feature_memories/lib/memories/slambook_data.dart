@@ -1,7 +1,7 @@
 import 'package:atpost_design/app_colors.dart';
-import 'package:atpost_app/data/models/slambook.dart';
-import 'package:atpost_app/data/repositories/memories_repository.dart';
-import 'package:atpost_app/services/auth_service.dart';
+import 'package:feature_memories/data/slambook.dart';
+import 'package:feature_memories/data/memories_repository.dart';
+import 'package:atpost_network/auth_session.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -12,7 +12,7 @@ final slambookTemplatePacksProvider =
 
 final mySlambooksProvider =
     FutureProvider.autoDispose<List<Slambook>>((ref) async {
-      final userId = ref.watch(authServiceProvider).userId;
+      final userId = ref.watch(authSessionProvider).userId;
       if (userId == null || userId.isEmpty) {
         return const <Slambook>[];
       }

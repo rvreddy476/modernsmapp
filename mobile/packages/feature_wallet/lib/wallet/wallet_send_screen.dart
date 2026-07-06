@@ -18,7 +18,7 @@ import 'dart:async';
 import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_spacing.dart';
 import 'package:atpost_design/app_text_styles.dart';
-import 'package:feature_wallet/host/wallet_host.dart';
+import 'package:feature_contracts/app_user.dart';
 import 'package:wallet_domain/wallet.dart';
 import 'package:wallet_domain/wallet_providers.dart';
 import 'package:feature_wallet/wallet_telemetry.dart';
@@ -273,7 +273,7 @@ class _WalletSendScreenState extends ConsumerState<WalletSendScreen>
     });
   }
 
-  void _onPickAtPostUser(WalletHostUser u) {
+  void _onPickAtPostUser(AppUserRef u) {
     setState(() {
       _recipientUserId = u.id;
       _recipientPhone = null;
@@ -604,7 +604,7 @@ class _FrequentRecipientsList extends ConsumerWidget {
 class _AtPostUserPicker extends ConsumerStatefulWidget {
   const _AtPostUserPicker({required this.onPick});
 
-  final void Function(WalletHostUser) onPick;
+  final void Function(AppUserRef) onPick;
 
   @override
   ConsumerState<_AtPostUserPicker> createState() => _AtPostUserPickerState();
@@ -613,7 +613,7 @@ class _AtPostUserPicker extends ConsumerStatefulWidget {
 class _AtPostUserPickerState extends ConsumerState<_AtPostUserPicker> {
   final _ctrl = TextEditingController();
   Timer? _debounce;
-  Future<List<WalletHostUser>>? _future;
+  Future<List<AppUserRef>>? _future;
 
   @override
   void dispose() {
@@ -631,7 +631,7 @@ class _AtPostUserPickerState extends ConsumerState<_AtPostUserPicker> {
     }
     _debounce = Timer(const Duration(milliseconds: 350), () {
       setState(() {
-        _future = ref.read(walletUserSearchProvider)(query);
+        _future = ref.read(appUserSearchProvider)(query);
       });
     });
   }
@@ -667,7 +667,7 @@ class _AtPostUserPickerState extends ConsumerState<_AtPostUserPicker> {
                     style: AppTextStyles.bodySmall,
                   ),
                 )
-              : FutureBuilder<List<WalletHostUser>>(
+              : FutureBuilder<List<AppUserRef>>(
                   future: _future,
                   builder: (context, snap) {
                     if (snap.connectionState == ConnectionState.waiting) {
@@ -683,7 +683,7 @@ class _AtPostUserPickerState extends ConsumerState<_AtPostUserPicker> {
                             style: AppTextStyles.bodySmall),
                       );
                     }
-                    final users = snap.data ?? const <WalletHostUser>[];
+                    final users = snap.data ?? const <AppUserRef>[];
                     if (users.isEmpty) {
                       return Center(
                         child: Text('No matches.',

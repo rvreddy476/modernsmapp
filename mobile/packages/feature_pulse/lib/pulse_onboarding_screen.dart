@@ -106,9 +106,9 @@ class _PulseOnboardingScreenState
   }
 
   Future<void> _bootstrap() async {
-    PulseHostUser? currentUser;
+    AppUserRef? currentUser;
     try {
-      currentUser = await ref.read(pulseHostUserProvider.future);
+      currentUser = await ref.read(currentAppUserProvider.future);
     } catch (_) {
       currentUser = null;
     }

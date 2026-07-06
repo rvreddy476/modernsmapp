@@ -1,6 +1,6 @@
 import 'package:atpost_core/config/environment.dart';
-import 'package:atpost_app/data/models/memory.dart';
-import 'package:atpost_app/data/models/slambook.dart';
+import 'package:feature_memories/data/memory.dart';
+import 'package:feature_memories/data/slambook.dart';
 import 'package:atpost_network/api_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 

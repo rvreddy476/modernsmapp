@@ -9,7 +9,7 @@ import 'package:atpost_design/app_spacing.dart';
 import 'package:atpost_design/app_text_styles.dart';
 import 'package:mopedu_domain/mopedu.dart';
 import 'package:mopedu_domain/mopedu_providers.dart';
-import 'package:feature_mopedu/host/mopedu_host.dart';
+import 'package:feature_contracts/app_user.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -37,7 +37,7 @@ class _OnboardingProfileStepState extends ConsumerState<OnboardingProfileStep> {
     _cityId = st.cityId ?? ref.read(selectedCityProvider);
     // Best-effort prefill of name from current user.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      final u = ref.read(mopeduHostUserProvider).value;
+      final u = ref.read(currentAppUserProvider).value;
       if (u != null && _name.text.isEmpty) {
         _name.text = u.displayName;
       }

@@ -1,0 +1,20 @@
+# Cross-feature host contracts. A feature that needs something the host
+# app owns (the signed-in user, user search) depends on the interface
+# here; the app binds the implementation once in main.dart. This keeps
+# features decoupled from the app AND from each other, and stops every
+# feature re-declaring its own near-identical user projection.
+name: feature_contracts
+description: atPost shared feature<->host contracts (user ref, search).
+version: 0.1.0
+publish_to: none
+environment:
+  sdk: ^3.10.7
+resolution: workspace
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_riverpod: ^2.6.1
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0

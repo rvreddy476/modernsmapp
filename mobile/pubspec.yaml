@@ -13,6 +13,7 @@ workspace:
   - packages/atpost_design
   - packages/atpost_network
   - packages/atpost_realtime
+  - packages/feature_contracts
   - packages/commerce_domain
   - packages/wallet_domain
   - packages/billpay_domain
@@ -21,5 +22,6 @@ workspace:
   - packages/feature_billpay
   - packages/feature_wallet
   - packages/feature_commerce
+  - packages/feature_memories
   - packages/feature_figo
   - packages/feature_pulse

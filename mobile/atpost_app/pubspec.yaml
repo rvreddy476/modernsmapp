@@ -20,6 +20,7 @@ dependencies:
   atpost_design: ^0.1.0
   atpost_network: ^0.1.0
   atpost_realtime: ^0.1.0
+  feature_contracts: ^0.1.0
   commerce_domain: ^0.1.0
   feature_commerce: ^0.1.0
   wallet_domain: ^0.1.0
@@ -28,6 +29,7 @@ dependencies:
   feature_billpay: ^0.1.0
   mopedu_domain: ^0.1.0
   feature_mopedu: ^0.1.0
+  feature_memories: ^0.1.0
   feature_figo: ^0.1.0
   feature_pulse: ^0.1.0
 

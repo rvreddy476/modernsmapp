@@ -1,10 +1,10 @@
 import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_spacing.dart';
 import 'package:atpost_design/app_text_styles.dart';
-import 'package:atpost_app/data/models/slambook.dart';
-import 'package:atpost_app/features/memories/slambook_compose_screen.dart';
-import 'package:atpost_app/features/memories/slambook_data.dart';
-import 'package:atpost_app/features/memories/slambook_detail_screen.dart';
+import 'package:feature_memories/data/slambook.dart';
+import 'package:feature_memories/memories/slambook_compose_screen.dart';
+import 'package:feature_memories/memories/slambook_data.dart';
+import 'package:feature_memories/memories/slambook_detail_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 

@@ -5,12 +5,11 @@ import 'package:atpost_core/config/environment.dart';
 import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_spacing.dart';
 import 'package:atpost_design/app_text_styles.dart';
-import 'package:atpost_app/data/models/slambook.dart';
-import 'package:atpost_app/data/models/user.dart';
-import 'package:atpost_app/data/repositories/memories_repository.dart';
-import 'package:atpost_app/data/repositories/user_repository.dart';
-import 'package:atpost_app/features/memories/slambook_data.dart';
-import 'package:atpost_app/features/memories/slambook_response_screen.dart';
+import 'package:feature_memories/data/slambook.dart';
+import 'package:feature_contracts/app_user.dart';
+import 'package:feature_memories/data/memories_repository.dart';
+import 'package:feature_memories/memories/slambook_data.dart';
+import 'package:feature_memories/memories/slambook_response_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -565,8 +564,8 @@ class _InvitePickerSheet extends ConsumerStatefulWidget {
 class _InvitePickerSheetState extends ConsumerState<_InvitePickerSheet> {
   final _searchController = TextEditingController();
   final _messageController = TextEditingController();
-  final List<User> _selectedUsers = <User>[];
-  final List<User> _results = <User>[];
+  final List<AppUserRef> _selectedUsers = <AppUserRef>[];
+  final List<AppUserRef> _results = <AppUserRef>[];
   Timer? _debounce;
   int _searchVersion = 0;
   bool _searching = false;
@@ -595,14 +594,14 @@ class _InvitePickerSheetState extends ConsumerState<_InvitePickerSheet> {
     _debounce = Timer(const Duration(milliseconds: 300), () async {
       final version = ++_searchVersion;
       try {
-        final result = await ref.read(userRepositoryProvider).searchUsers(query, limit: 8);
+        final found = await ref.read(appUserSearchProvider)(query);
         if (!mounted || version != _searchVersion) return;
         final selectedIds = _selectedUsers.map((user) => user.id).toSet();
         setState(() {
           _results
             ..clear()
             ..addAll(
-              result.users.where(
+              found.where(
                 (user) => user.id.isNotEmpty && !selectedIds.contains(user.id),
               ),
             );
@@ -618,7 +617,7 @@ class _InvitePickerSheetState extends ConsumerState<_InvitePickerSheet> {
     });
   }
 
-  void _selectUser(User user) {
+  void _selectUser(AppUserRef user) {
     if (_selectedUsers.any((item) => item.id == user.id)) return;
     setState(() {
       _selectedUsers.add(user);
@@ -782,7 +781,7 @@ class _UserAvatar extends StatelessWidget {
     this.radius = 16,
   });
 
-  final User user;
+  final AppUserRef user;
   final double radius;
 
   @override
@@ -790,7 +789,7 @@ class _UserAvatar extends StatelessWidget {
     if (user.hasAvatar) {
       return CircleAvatar(
         radius: radius,
-        backgroundImage: cachedAvatarProvider(user.avatarUrl),
+        backgroundImage: cachedAvatarProvider(user.avatarUrl!),
         backgroundColor: AppColors.bgSecondary,
       );
     }

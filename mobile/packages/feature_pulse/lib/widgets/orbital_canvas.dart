@@ -422,7 +422,7 @@ class _CenterAvatar extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final user = ref.watch(pulseHostUserProvider);
+    final user = ref.watch(currentAppUserProvider);
     return Positioned(
       left: center.dx - 44,
       top: center.dy - 44,
