@@ -14,11 +14,6 @@ import 'package:atpost_app/features/channels/create_channel_screen.dart';
 // import 'package:atpost_app/features/communities/create_community_screen.dart';
 import 'package:atpost_app/features/auth/forgot_password_screen.dart';
 import 'package:atpost_app/features/create/upload_progress_screen.dart';
-import 'package:atpost_app/features/posttube/channel_screen.dart';
-import 'package:atpost_app/features/posttube/posttube_upload_screen.dart';
-import 'package:atpost_app/features/posttube/subscriptions_screen.dart';
-import 'package:atpost_app/features/posttube/trending_screen.dart';
-import 'package:atpost_app/features/posttube/watch_history_screen.dart';
 import 'package:atpost_app/features/auth/anomaly_stepup_screen.dart';
 import 'package:atpost_app/features/auth/login_screen.dart';
 import 'package:atpost_app/features/auth/otp_verify_screen.dart';
@@ -70,8 +65,8 @@ import 'package:atpost_app/features/social/followers_screen.dart';
 import 'package:atpost_app/features/social/following_screen.dart';
 import 'package:atpost_app/features/social/friend_requests_screen.dart';
 import 'package:atpost_app/features/social/friends_screen.dart';
-import 'package:atpost_app/features/posttube/posttube_screen.dart';
 import 'package:atpost_app/features/reels/reels_screen.dart';
+import 'package:feature_posttube/posttube_routes.dart';
 import 'package:atpost_app/features/qa/ask_question_screen.dart';
 import 'package:atpost_app/features/qa/drafts_screen.dart';
 import 'package:atpost_app/features/qa/qa_feed_screen.dart';
@@ -380,10 +375,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
               handle: state.pathParameters['handle'] ?? '',
             ),
           ),
-          GoRoute(
-            path: '/posttube',
-            builder: (context, state) => const PosttubeScreen(),
-          ),
+          ...posttubeRoutes(),
           GoRoute(
             path: '/reels',
             builder: (context, state) =>
@@ -705,28 +697,6 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                 visibility: extra['visibility'] as String? ?? 'public',
               );
             },
-          ),
-          GoRoute(
-            path: '/posttube/upload',
-            builder: (_, _) => const PosttubeUploadScreen(),
-          ),
-          GoRoute(
-            path: '/posttube/subscriptions',
-            builder: (_, _) => const PosttubeSubscriptionsScreen(),
-          ),
-          GoRoute(
-            path: '/posttube/trending',
-            builder: (_, _) => const PosttubeTrendingScreen(),
-          ),
-          GoRoute(
-            path: '/posttube/history',
-            builder: (_, _) => const WatchHistoryScreen(),
-          ),
-          GoRoute(
-            path: '/posttube/channel/:userId',
-            builder: (_, state) => PosttubeChannelScreen(
-              userId: state.pathParameters['userId'] ?? '',
-            ),
           ),
         ],
       ),

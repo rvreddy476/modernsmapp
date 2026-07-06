@@ -1,6 +1,7 @@
 /// Barrel for the social domain (models + feed/social data layer).
 library;
 
+export 'data/captions_repository.dart';
 export 'data/feed_repository.dart';
 export 'data/feed_signal_repository.dart';
 export 'data/feedback_repository.dart';

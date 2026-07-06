@@ -1,4 +1,4 @@
-import 'package:atpost_app/data/repositories/analytics_repository.dart';
+import 'package:atpost_network/analytics_repository.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 /// Raw creator analytics provider — keyed by period string ('7d', '30d', '90d').

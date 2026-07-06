@@ -27,5 +27,6 @@ workspace:
   - packages/feature_commerce
   - packages/feature_memories
   - packages/feature_figo
+  - packages/feature_posttube
   - packages/feature_pulse
   - packages/feature_stories

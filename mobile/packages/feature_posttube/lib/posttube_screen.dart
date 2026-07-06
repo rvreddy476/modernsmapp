@@ -6,13 +6,13 @@ import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_spacing.dart';
 import 'package:atpost_design/app_text_styles.dart';
 import 'package:social_domain/post.dart';
-import 'package:atpost_app/data/repositories/analytics_repository.dart';
+import 'package:atpost_network/analytics_repository.dart';
 import 'package:social_domain/data/post_repository.dart';
-import 'package:atpost_app/data/repositories/user_repository.dart';
+import 'package:feature_contracts/feature_contracts.dart';
 import 'package:social_domain/providers/comments_provider.dart';
 import 'package:social_domain/providers/data_saver_provider.dart';
 import 'package:social_domain/providers/feed_provider.dart';
-import 'package:atpost_app/shared/widgets/caption_toggle.dart';
+import 'package:social_ui/caption_toggle.dart';
 import 'package:social_ui/video_more_sheet.dart';
 import 'package:shared_ui/video_player_widget.dart';
 import 'package:flutter/services.dart';
@@ -242,11 +242,11 @@ class _PosttubeScreenState extends ConsumerState<PosttubeScreen> {
     final wasFollowing = _followedAuthors[authorId] ?? false;
     setState(() => _followedAuthors[authorId] = !wasFollowing);
     try {
-      final repo = ref.read(userRepositoryProvider);
+      final repo = ref.read(appUserActionsProvider);
       if (wasFollowing) {
-        await repo.unfollowUser(authorId);
+        await repo.unfollow(authorId);
       } else {
-        await repo.followUser(authorId);
+        await repo.follow(authorId);
       }
     } catch (_) {
       if (!mounted) return;

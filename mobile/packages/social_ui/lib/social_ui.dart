@@ -4,6 +4,7 @@
 /// feature package.
 library;
 
+export 'caption_toggle.dart';
 export 'content_cards.dart';
 export 'echo_sheet.dart';
 export 'video_more_sheet.dart';

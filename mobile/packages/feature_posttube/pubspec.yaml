@@ -1,0 +1,28 @@
+# PostTube — long-form video surface (watch screen, channel, uploads,
+# subscriptions, trending, watch history). Video data + prefs come from
+# the social_domain kernel; shared post-rendering + captions from
+# social_ui; host user actions through feature_contracts.
+name: feature_posttube
+description: atPost PostTube long-form video feature.
+version: 0.1.0
+publish_to: none
+environment:
+  sdk: ^3.10.7
+resolution: workspace
+dependencies:
+  flutter:
+    sdk: flutter
+  atpost_core: ^0.1.0
+  atpost_design: ^0.1.0
+  atpost_network: ^0.1.0
+  feature_contracts: ^0.1.0
+  social_domain: ^0.1.0
+  social_ui: ^0.1.0
+  shared_ui: ^0.1.0
+  flutter_riverpod: ^2.6.1
+  go_router: ^16.3.0
+  image_picker: ^1.1.2
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0

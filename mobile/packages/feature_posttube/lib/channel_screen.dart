@@ -4,7 +4,7 @@ import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_spacing.dart';
 import 'package:atpost_design/app_text_styles.dart';
 import 'package:social_domain/post.dart';
-import 'package:atpost_app/data/repositories/user_repository.dart';
+import 'package:feature_contracts/feature_contracts.dart';
 import 'package:atpost_network/api_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -59,11 +59,11 @@ class _PosttubeChannelScreenState extends ConsumerState<PosttubeChannelScreen> {
     final wasSubscribed = _subscribed;
     setState(() => _subscribed = !_subscribed);
     try {
-      final repo = ref.read(userRepositoryProvider);
+      final repo = ref.read(appUserActionsProvider);
       if (wasSubscribed) {
-        await repo.unfollowUser(widget.userId);
+        await repo.unfollow(widget.userId);
       } else {
-        await repo.followUser(widget.userId);
+        await repo.follow(widget.userId);
       }
     } catch (_) {
       if (!mounted) return;
