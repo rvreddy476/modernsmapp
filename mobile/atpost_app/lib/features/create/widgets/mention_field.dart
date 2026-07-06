@@ -5,8 +5,8 @@ import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/data/models/user.dart';
 import 'package:atpost_app/data/repositories/user_repository.dart';
-import 'package:atpost_app/features/hashtag_feed/data/hashtag_repository.dart';
-import 'package:atpost_app/features/hashtag_feed/models/hashtag_model.dart';
+import 'package:feature_home/hashtag_feed/data/hashtag_repository.dart';
+import 'package:feature_home/hashtag_feed/models/hashtag_model.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 

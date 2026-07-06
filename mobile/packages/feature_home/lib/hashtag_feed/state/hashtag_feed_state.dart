@@ -1,5 +1,5 @@
 import 'package:social_domain/post.dart';
-import 'package:atpost_app/features/hashtag_feed/models/hashtag_model.dart';
+import 'package:feature_home/hashtag_feed/models/hashtag_model.dart';
 import 'package:flutter/foundation.dart';
 
 enum HashtagSort { top, recent }

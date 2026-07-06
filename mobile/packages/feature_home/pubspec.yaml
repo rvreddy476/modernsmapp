@@ -1,0 +1,28 @@
+# Home — the primary feed surface (For You / Following / #Hashtag tabs,
+# inline people search, stories rail) plus the embedded hashtag-feed
+# cluster. Feed data + prefs from the social_domain kernel; post rendering
+# from social_ui; user/session/badge couplings via feature_contracts.
+name: feature_home
+description: atPost Home feed feature.
+version: 0.1.0
+publish_to: none
+environment:
+  sdk: ^3.10.7
+resolution: workspace
+dependencies:
+  flutter:
+    sdk: flutter
+  atpost_core: ^0.1.0
+  atpost_design: ^0.1.0
+  atpost_network: ^0.1.0
+  feature_contracts: ^0.1.0
+  social_domain: ^0.1.0
+  social_ui: ^0.1.0
+  shared_ui: ^0.1.0
+  dio: ^5.9.0
+  flutter_riverpod: ^2.6.1
+  go_router: ^16.3.0
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0

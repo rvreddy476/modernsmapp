@@ -1,9 +1,11 @@
 import 'package:atpost_app/app/router.dart';
 import 'package:atpost_app/data/models/user.dart';
 import 'package:atpost_app/data/repositories/user_repository.dart';
-import 'package:atpost_app/features/hashtag_feed/state/hashtag_feed_notifier.dart';
+import 'package:feature_home/hashtag_feed/state/hashtag_feed_notifier.dart';
+import 'package:feature_home/home_providers.dart';
 import 'package:atpost_app/features/monetization/widgets/paywall_preview.dart';
 import 'package:atpost_app/features/shell/shell_providers.dart';
+import 'package:atpost_app/providers/notification_provider.dart';
 import 'package:atpost_app/providers/user_provider.dart';
 import 'package:atpost_realtime/realtime_event.dart';
 import 'package:atpost_realtime/realtime_service.dart';
@@ -101,6 +103,13 @@ List<Override> featureHostBindings() => [
   appShellTabProvider.overrideWith((ref) => ref.watch(shellTabProvider)),
   appRouteObserverProvider
       .overrideWith((ref) => ref.watch(routeObserverProvider)),
+
+  // Home: unread notification / chat badge counts, from the realtime-
+  // driven notification providers (flattened to a plain int).
+  appUnreadNotificationsProvider.overrideWith(
+      (ref) => ref.watch(unreadNotificationCountProvider).valueOrNull ?? 0),
+  appUnreadChatProvider.overrideWith(
+      (ref) => ref.watch(unreadChatCountProvider).valueOrNull ?? 0),
 
   // Pulse-specific: live chat messages off the shared realtime channel,
   // filtered to the chat wire type and flattened to the Pulse shape.

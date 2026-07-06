@@ -1,7 +1,6 @@
 import 'package:social_domain/post.dart';
-import 'package:atpost_app/data/models/user.dart';
-import 'package:atpost_app/data/repositories/user_repository.dart';
-import 'package:atpost_app/features/hashtag_feed/models/hashtag_model.dart';
+import 'package:feature_contracts/feature_contracts.dart';
+import 'package:feature_home/hashtag_feed/models/hashtag_model.dart';
 import 'package:atpost_network/api_client.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -18,10 +17,10 @@ class HashtagPostsPage {
 /// - GET /v1/hashtags/search        → prefix-match suggestions
 /// - GET /v1/hashtags/:tag/posts    → posts filtered by hashtag (sort=top|recent)
 class HashtagRepository {
-  HashtagRepository(this._api, this._users);
+  HashtagRepository(this._api, this._hydrate);
 
   final ApiClient _api;
-  final UserRepository _users;
+  final AppUserBatchLookup _hydrate;
 
   Future<List<HashtagModel>> getTrending({int limit = 15}) async {
     final response = await _api.get(
@@ -100,8 +99,8 @@ class HashtagRepository {
     };
     if (ids.isEmpty) return posts;
     try {
-      final users = await _users.getUsersBatch(ids.toList());
-      final byId = <String, User>{for (final u in users) u.id: u};
+      final users = await _hydrate(ids.toList());
+      final byId = <String, AppUserRef>{for (final u in users) u.id: u};
       return posts.map((p) {
         final u = byId[p.authorId];
         if (u == null) return p;
@@ -134,6 +133,6 @@ class HashtagRepository {
 final hashtagRepositoryProvider = Provider<HashtagRepository>((ref) {
   return HashtagRepository(
     ref.watch(apiClientProvider),
-    ref.watch(userRepositoryProvider),
+    ref.watch(appUserBatchProvider),
   );
 });

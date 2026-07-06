@@ -21,12 +21,6 @@ final shellTabProvider = StateProvider<int>((ref) => 0);
 /// place to avoid breaking imports during the migration.
 final createMenuOpenProvider = StateProvider<bool>((ref) => false);
 
-/// Active sub-tab inside the legacy Home feed screen
-/// (`HomeFeedScreen`, kept reachable as a standalone route): 0 = For You,
-/// 1 = Following, 2 = #Hashtag. Lifted out of HomeFeedScreen's local state
-/// so other widgets (e.g. PostCard's clickable hashtags) can switch tabs.
-///
-/// The new Home tab in `ShellScaffold` (`home_tab.dart`) does NOT read this
-/// provider — it has its own scrolling shape. Keep this around for the
-/// legacy screen + content cards that reference it.
-final homeFeedTabProvider = StateProvider<int>((ref) => 0);
+// The Home feed's sub-tab state (For You / Following / #Hashtag) moved to
+// feature_home/home_providers.dart (homeFeedTabProvider) when Home was
+// extracted into its own package.

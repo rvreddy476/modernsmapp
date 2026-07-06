@@ -24,3 +24,10 @@ final appShellTabProvider = Provider<int>((_) => ShellTab.home);
 final appRouteObserverProvider = Provider<RouteObserver<ModalRoute<void>>>(
   (_) => RouteObserver<ModalRoute<void>>(),
 );
+
+/// Unread notification / chat badge counts shown in feature headers (e.g.
+/// the home feed's bell + inbox badges). The app binds these to its
+/// realtime-driven notification providers; features read a plain int and
+/// never touch the notification stack. Default 0.
+final appUnreadNotificationsProvider = Provider<int>((_) => 0);
+final appUnreadChatProvider = Provider<int>((_) => 0);

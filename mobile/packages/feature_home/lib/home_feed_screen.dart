@@ -4,17 +4,14 @@ import 'dart:async';
 import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_spacing.dart';
 import 'package:atpost_design/app_text_styles.dart';
-import 'package:atpost_app/data/models/user.dart';
-import 'package:atpost_app/data/repositories/user_repository.dart';
-import 'package:atpost_app/features/hashtag_feed/hashtag_feed_screen.dart';
-import 'package:atpost_app/features/shell/shell_providers.dart';
+import 'package:feature_contracts/feature_contracts.dart';
+import 'package:feature_home/hashtag_feed/hashtag_feed_screen.dart';
+import 'package:feature_home/home_providers.dart';
 import 'package:social_domain/providers/data_saver_provider.dart';
 import 'package:social_domain/providers/feed_provider.dart';
-import 'package:atpost_app/providers/notification_provider.dart';
 import 'package:social_domain/providers/stories_provider.dart';
-import 'package:atpost_app/services/auth_service.dart';
-import 'package:atpost_app/providers/user_provider.dart';
-import 'package:atpost_app/services/image_url_helper.dart';
+import 'package:atpost_network/auth_session.dart';
+import 'package:atpost_design/image_url_helper.dart';
 import 'package:shared_ui/badge_icon_button.dart';
 import 'package:social_ui/content_cards.dart';
 import 'package:flutter/material.dart';
@@ -37,7 +34,7 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
   final FocusNode _searchFocus = FocusNode();
   Timer? _searchDebounce;
   String _searchQuery = '';
-  List<User> _searchResults = const [];
+  List<AppUserRef> _searchResults = const [];
   bool _searchLoading = false;
   String? _searchError;
 
@@ -97,12 +94,11 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
   }
 
   Future<void> _runSearch(String query) async {
-    final repo = ref.read(userRepositoryProvider);
     try {
-      final result = await repo.searchUsers(query, limit: 20);
+      final results = await ref.read(appUserSearchProvider)(query);
       if (!mounted || _searchQuery != query) return;
       setState(() {
-        _searchResults = result.users;
+        _searchResults = results;
         _searchLoading = false;
       });
     } catch (e) {
@@ -128,8 +124,9 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
 
   Future<void> _refreshHome() async {
     ref.invalidate(feedStoriesProvider);
-    ref.invalidate(unreadNotificationCountProvider);
-    ref.invalidate(unreadChatCountProvider);
+    // Unread notification / chat badges are driven by the realtime
+    // notification stream (host-provided via appUnread*Provider), so a
+    // manual pull-to-refresh no longer needs to invalidate them.
     await ref.read(homeFeedProvider.notifier).fetchFirstPage();
   }
 
@@ -186,13 +183,13 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
           tooltip: 'Notifications',
           tintColor: AppColors.postbookPrimary,
           badgeCount:
-              ref.watch(unreadNotificationCountProvider).valueOrNull ?? 0,
+              ref.watch(appUnreadNotificationsProvider),
           onPressed: () => context.push('/notifications'),
         ),
         const SizedBox(width: 8),
         Builder(
           builder: (_) {
-            final me = ref.watch(currentUserProvider).valueOrNull;
+            final me = ref.watch(currentAppUserProvider).valueOrNull;
             final avatar = me?.hasAvatar == true ? me!.avatarUrl : null;
             final dataSaver = ref.watch(effectiveDataSaverProvider);
             return GestureDetector(
@@ -204,7 +201,7 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
                 // — first open after install, weak connection, etc.
                 final id =
                     me?.id ??
-                    ref.read(authStateProvider).valueOrNull?.userId;
+                    ref.read(authSessionProvider).userId;
                 if (id != null && id.isNotEmpty) {
                   context.push('/profile/$id');
                 } else {
@@ -377,7 +374,7 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
                 backgroundImage: hasAvatar
                     ? cachedAvatarProvider(
                         resolveImageUrl(
-                          user.avatarUrl,
+                          user.avatarUrl!,
                           dataSaver: ref.watch(effectiveDataSaverProvider),
                           size: ImageSize.small,
                         ),

@@ -7,7 +7,7 @@ import 'package:social_domain/data/post_repository.dart';
 import 'package:social_domain/providers/comments_provider.dart';
 import 'package:social_domain/providers/data_saver_provider.dart';
 import 'package:atpost_app/providers/user_provider.dart';
-import 'package:atpost_app/services/image_url_helper.dart';
+import 'package:atpost_design/image_url_helper.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 

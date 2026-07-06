@@ -6,4 +6,5 @@ export 'app_images.dart';
 export 'app_spacing.dart';
 export 'app_text_styles.dart';
 export 'app_theme.dart';
+export 'image_url_helper.dart';
 export 'upi_intent_helper.dart';

@@ -20,7 +20,7 @@
 import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_realtime/realtime_event.dart';
-import 'package:atpost_app/features/home/home_feed_screen.dart';
+import 'package:feature_home/home_feed_screen.dart';
 import 'package:feature_reels/reels_screen.dart';
 import 'package:atpost_app/features/services/services_screen.dart';
 import 'package:atpost_app/features/shell/create_options_sheet.dart';

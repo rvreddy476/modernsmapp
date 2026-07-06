@@ -27,7 +27,7 @@ import 'dart:math' as math;
 
 import 'package:atpost_core/config/environment.dart';
 import 'package:atpost_core/utils/app_logger.dart';
-import 'package:atpost_app/features/hashtag_feed/models/hashtag_model.dart';
+import 'package:feature_home/hashtag_feed/models/hashtag_model.dart';
 import 'package:dio/dio.dart';
 
 const _tag = 'HashtagLiveStream';
