@@ -211,6 +211,45 @@ func TestLoginMissingIdentifier(t *testing.T) {
 	}
 }
 
+func TestLogoutAcceptsRefreshTokenBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	var revoked string
+	h := New(&stubAuthService{logoutFn: func(refreshToken string) error {
+		revoked = refreshToken
+		return nil
+	}}, &config.Config{}, nil, nil)
+	h.RegisterRoutes(r, noopMiddleware(), noopMiddleware())
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/logout", bytes.NewBufferString(`{"refresh_token":"refresh-from-web"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	r.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, resp.Code)
+	}
+	if revoked != "refresh-from-web" {
+		t.Fatalf("expected request refresh token to be revoked, got %q", revoked)
+	}
+}
+
+func TestLogoutWithoutTokenIsIdempotent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	h := New(&stubAuthService{}, &config.Config{}, nil, nil)
+	h.RegisterRoutes(r, noopMiddleware(), noopMiddleware())
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/logout", bytes.NewBufferString(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	r.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, resp.Code)
+	}
+}
+
 func TestForgotPasswordMissingIdentifier(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rsa"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -139,12 +140,23 @@ func main() {
 	r.Use(http.LoggerMiddleware(logger))
 	r.Use(http.RecoveryMiddleware(logger))
 	r.Use(http.CORSMiddleware())
-	r.Use(http.AuthMiddlewareWithKeys(http.JWTKeySet{
+	jwtKeys := http.JWTKeySet{
 		ActiveKID:      cfg.JWTKID,
 		ActiveSecret:   cfg.JWTSecret,
 		PreviousKID:    cfg.JWTKIDPrevious,
 		PreviousSecret: cfg.JWTSecretPrevious,
-	}, logger))
+	}
+	// Optional RS256 verification (additive): load auth-service's public key.
+	if cfg.JWTPublicKeyPEM != "" {
+		pub, perr := http.ParseRSAPublicKeyPEM(cfg.JWTPublicKeyPEM)
+		if perr != nil {
+			logger.Error("failed to parse JWT_PUBLIC_KEY_PEM", "err", perr)
+			os.Exit(1)
+		}
+		jwtKeys.RSAKeys = map[string]*rsa.PublicKey{cfg.JWTRS256KID: pub}
+		logger.Info("RS256 token verification enabled", "kid", cfg.JWTRS256KID)
+	}
+	r.Use(http.AuthMiddlewareWithKeys(jwtKeys, logger))
 
 	proxies := cfg.TrustedProxies
 	if len(proxies) == 0 {

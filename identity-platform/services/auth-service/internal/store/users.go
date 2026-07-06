@@ -127,7 +127,12 @@ func (s *Store) WithTOTPEncryption(box *crypto.SecretBox) *Store {
 }
 
 // allUserCols is the list of columns returned when scanning a User row.
-const allUserCols = `user_id, COALESCE(phone, ''), email, password_hash,
+// password_hash is NULL for OTP-/OAuth-created users and scans into a plain
+// string (empty = "no password set" — LoginWithPassword relies on that), so
+// it is COALESCE'd like phone. Without it every GetUserBy* on a passwordless
+// user fails with "cannot scan NULL into *string" — which broke phone-OTP
+// login entirely.
+const allUserCols = `user_id, COALESCE(phone, ''), email, COALESCE(password_hash, ''),
 	email_verified, phone_verified, two_factor_enabled, two_factor_secret,
 	account_type, account_status, login_provider, recovery_email, recovery_phone,
 	age_verification, consent_terms, consent_privacy, consent_age,

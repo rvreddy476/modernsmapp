@@ -19,6 +19,10 @@ type Config struct {
 	JWTKID                 string
 	JWTSecretPrevious      string
 	JWTKIDPrevious         string
+	// RS256 (optional, additive): auth-service's PUBLIC key so RS256 access
+	// tokens verify here too. HS256 stays accepted in parallel.
+	JWTPublicKeyPEM        string
+	JWTRS256KID            string
 	TrustedProxies         []string
 	OutboxPollInterval     time.Duration
 
@@ -48,6 +52,8 @@ func Load() *Config {
 		JWTKID:                 getEnv("JWT_KID", "v1"),
 		JWTSecretPrevious:      getEnv("JWT_SECRET_PREVIOUS", ""),
 		JWTKIDPrevious:         getEnv("JWT_KID_PREVIOUS", ""),
+		JWTPublicKeyPEM:        getEnv("JWT_PUBLIC_KEY_PEM", ""),
+		JWTRS256KID:            getEnv("JWT_RS256_KID", "rsa-1"),
 		TrustedProxies:         splitAndClean(getEnv("TRUSTED_PROXIES", "")),
 		OutboxPollInterval:     getEnvDuration("OUTBOX_POLL_INTERVAL", 1*time.Second),
 		LiveKitHost:            getFirstEnv([]string{"LIVEKIT_HOST", "LIVEKIT_URL"}, ""),

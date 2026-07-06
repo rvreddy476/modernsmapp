@@ -120,7 +120,7 @@ CREATE INDEX IF NOT EXISTS idx_admin_audit_actor ON auth.admin_audit(actor_id, c
 CREATE INDEX IF NOT EXISTS idx_admin_audit_target ON auth.admin_audit(target_id, created_at DESC);
 
 -- WebAuthn / passkey credentials. One row per registered authenticator. The
--- public key + sign_count are used to verify assertions at login; credential_id
+-- public key + sign_count are used to verify assertions at login, while credential_id
 -- is the authenticator's handle (unique). Phishing-resistant second factor /
 -- passwordless. Verification logic lives behind the `webauthn` build tag.
 CREATE TABLE IF NOT EXISTS auth.webauthn_credentials (

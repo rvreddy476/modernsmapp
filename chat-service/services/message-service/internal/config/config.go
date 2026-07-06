@@ -19,6 +19,10 @@ type Config struct {
 	JWTKID               string
 	JWTSecretPrevious    string
 	JWTKIDPrevious       string
+	// RS256 (optional, additive): auth-service's PUBLIC key so RS256 access
+	// tokens verify here too. HS256 stays accepted in parallel.
+	JWTPublicKeyPEM      string
+	JWTRS256KID          string
 	UserServiceURL       string
 	GraphServiceURL      string
 	InternalServiceKey   string
@@ -46,6 +50,8 @@ func Load() *Config {
 		JWTKID:               getEnv("JWT_KID", "v1"),
 		JWTSecretPrevious:    getEnv("JWT_SECRET_PREVIOUS", ""),
 		JWTKIDPrevious:       getEnv("JWT_KID_PREVIOUS", ""),
+		JWTPublicKeyPEM:      getEnv("JWT_PUBLIC_KEY_PEM", ""),
+		JWTRS256KID:          getEnv("JWT_RS256_KID", "rsa-1"),
 		UserServiceURL:       getEnv("USER_SERVICE_URL", "http://user-service:8082"),
 		GraphServiceURL:      getEnv("GRAPH_SERVICE_URL", "http://graph-service:8083"),
 		InternalServiceKey:   getEnv("INTERNAL_SERVICE_KEY", ""),

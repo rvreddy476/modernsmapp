@@ -518,6 +518,25 @@ func (h *Handler) Refresh(c *gin.Context) {
 
 func (h *Handler) Logout(c *gin.Context) {
 	refreshToken, _ := c.Cookie(refreshTokenCookieName)
+	if refreshToken == "" {
+		var req struct {
+			RefreshTokenSnake string `json:"refresh_token"`
+			RefreshTokenCamel string `json:"refreshToken"`
+		}
+		if err := c.ShouldBindJSON(&req); err == nil {
+			refreshToken = req.RefreshTokenSnake
+			if refreshToken == "" {
+				refreshToken = req.RefreshTokenCamel
+			}
+		}
+	}
+	// Logout is intentionally idempotent. A client with no remaining token is
+	// already logged out and should still receive cookie-clearing headers.
+	if refreshToken == "" {
+		h.clearAuthCookies(c)
+		api.JSON(c.Writer, http.StatusOK, gin.H{"status": "ok"}, nil)
+		return
+	}
 	if err := h.svc.Logout(c.Request.Context(), refreshToken); err != nil {
 		h.log.Error("logout failed", "err", err, "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)

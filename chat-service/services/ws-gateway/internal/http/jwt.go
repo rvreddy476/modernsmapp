@@ -81,7 +81,9 @@ func authenticateUserFromJWTWithExpiry(r *http.Request, jwtSecret string, allowQ
 // rotation window construct a key set from JWT_KID / JWT_SECRET_PREVIOUS
 // / JWT_KID_PREVIOUS and pass it here.
 func authenticateUserFromJWTWithKeys(r *http.Request, keys JWTKeySet, allowQueryToken bool) (uuid.UUID, time.Time, error) {
-	if strings.TrimSpace(keys.ActiveSecret) == "" {
+	// RSA-only deployments (JWT_SECRET retired post-RS256-cutover) are
+	// valid — refuse only when NO verification key is configured at all.
+	if strings.TrimSpace(keys.ActiveSecret) == "" && len(keys.RSAKeys) == 0 {
 		return uuid.Nil, time.Time{}, errors.New("jwt secret not configured")
 	}
 	token := readBearerToken(r, allowQueryToken)

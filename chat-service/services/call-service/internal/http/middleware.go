@@ -2,6 +2,7 @@ package http
 
 import (
 	"crypto/hmac"
+	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -100,8 +101,11 @@ func RecoveryMiddleware(log *slog.Logger) gin.HandlerFunc {
 
 func CORSMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Auth is header-based (Authorization bearer), not cookie-based, so
+		// credentials are never needed. `Allow-Credentials: true` combined
+		// with a wildcard origin is invalid per the CORS spec (browsers
+		// reject the response for credentialed requests) — do not add it.
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
-		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-User-Id, X-Request-Id, Idempotency-Key")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		if c.Request.Method == http.MethodOptions {
@@ -120,6 +124,25 @@ type JWTKeySet struct {
 	ActiveSecret   string
 	PreviousKID    string
 	PreviousSecret string
+	// RSAKeys (optional) verify RS256 tokens, keyed by `kid`. HS256 stays
+	// active in parallel so pre-cutover tokens keep verifying.
+	RSAKeys map[string]*rsa.PublicKey
+}
+
+func (k JWTKeySet) rsaFor(kid string) (*rsa.PublicKey, bool) {
+	if len(k.RSAKeys) == 0 {
+		return nil, false
+	}
+	if kid != "" {
+		pub, ok := k.RSAKeys[kid]
+		return pub, ok
+	}
+	if len(k.RSAKeys) == 1 {
+		for _, pub := range k.RSAKeys {
+			return pub, true
+		}
+	}
+	return nil, false
 }
 
 func (k JWTKeySet) secretFor(kid string) ([]byte, bool) {
@@ -150,7 +173,9 @@ func AuthMiddlewareWithKeys(keys JWTKeySet, log *slog.Logger) gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		if strings.TrimSpace(keys.ActiveSecret) == "" {
+		// RSA-only deployments (JWT_SECRET retired post-RS256-cutover) are
+		// valid — refuse only when NO verification key is configured at all.
+		if strings.TrimSpace(keys.ActiveSecret) == "" && len(keys.RSAKeys) == 0 {
 			api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Authentication not configured", nil, nil)
 			c.Abort()
 			return
@@ -205,21 +230,32 @@ func parseAndValidateJWTWithKeys(token string, keys JWTKeySet) (string, error) {
 		return "", errors.New("invalid token header json")
 	}
 	alg, _ := header["alg"].(string)
-	if alg != "HS256" {
-		return "", errors.New("unsupported jwt algorithm")
-	}
 	kid, _ := header["kid"].(string)
-	secret, ok := keys.secretFor(kid)
-	if !ok {
-		return "", errors.New("unknown kid")
-	}
-
 	signingInput := parts[0] + "." + parts[1]
-	mac := hmac.New(sha256.New, secret)
-	_, _ = mac.Write([]byte(signingInput))
-	expected := mac.Sum(nil)
-	if !hmac.Equal(signatureRaw, expected) {
-		return "", errors.New("invalid token signature")
+	// Accept HS256 and RS256 only (no `none`/alg-confusion). RS256 verifies
+	// with a public key this service can't mint with; HS256 stays accepted in
+	// parallel so tokens minted before the cutover keep working.
+	switch alg {
+	case "HS256":
+		secret, ok := keys.secretFor(kid)
+		if !ok {
+			return "", errors.New("unknown kid")
+		}
+		mac := hmac.New(sha256.New, secret)
+		_, _ = mac.Write([]byte(signingInput))
+		if !hmac.Equal(signatureRaw, mac.Sum(nil)) {
+			return "", errors.New("invalid token signature")
+		}
+	case "RS256":
+		pub, ok := keys.rsaFor(kid)
+		if !ok {
+			return "", errors.New("unknown kid")
+		}
+		if err := verifyRS256(signingInput, signatureRaw, pub); err != nil {
+			return "", errors.New("invalid token signature")
+		}
+	default:
+		return "", errors.New("unsupported jwt algorithm")
 	}
 
 	var payload map[string]any

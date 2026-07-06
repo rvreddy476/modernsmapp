@@ -264,21 +264,12 @@ func RequireCSRFMiddleware() gin.HandlerFunc {
 	}
 }
 
-func CORSMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
-		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With, X-Request-Id, X-Client-Platform, X-Client-Version, X-Client-Source")
-		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE, PATCH")
-
-		if c.Request.Method == "OPTIONS" {
-			c.AbortWithStatus(204)
-			return
-		}
-
-		c.Next()
-	}
-}
+// NOTE: CORS is handled exclusively by the API Gateway (see cmd/server/main.go).
+// A local CORSMiddleware used to live here but was dead code with an invalid
+// wildcard-origin + Allow-Credentials combination — deleted so it can't be
+// wired back in by accident. If auth-service ever needs direct browser access,
+// implement an origin allowlist (reflect specific origins, never `*` with
+// credentials).
 
 func RequireInternalServiceKey(secret string) gin.HandlerFunc {
 	return func(c *gin.Context) {
