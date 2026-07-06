@@ -36,3 +36,19 @@ final currentAppUserProvider =
 typedef AppUserSearch = Future<List<AppUserRef>> Function(String query);
 final appUserSearchProvider =
     Provider<AppUserSearch>((_) => (_) async => const []);
+
+/// Batch-resolve users by id — used to hydrate feed post authors
+/// (display name + avatar) when the post payload carries only author_id.
+/// Missing ids are simply absent from the result. Defaults to empty so
+/// the feed still renders (authors just show as unknown).
+typedef AppUserBatchLookup =
+    Future<List<AppUserRef>> Function(List<String> ids);
+final appUserBatchProvider =
+    Provider<AppUserBatchLookup>((_) => (_) async => const []);
+
+/// The set of user ids the given user currently follows — drives the
+/// follow/unfollow state on feed + profile surfaces. Returned as a flat
+/// id list (the caller sets-ifies). Defaults to empty.
+typedef AppFollowingIds = Future<List<String>> Function(String userId);
+final appFollowingIdsProvider =
+    Provider<AppFollowingIds>((_) => (_) async => const []);

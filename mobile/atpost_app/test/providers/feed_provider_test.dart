@@ -1,7 +1,7 @@
 import 'dart:async';
 
-import 'package:atpost_app/data/repositories/feed_repository.dart';
-import 'package:atpost_app/providers/feed_provider.dart';
+import 'package:social_domain/data/feed_repository.dart';
+import 'package:social_domain/providers/feed_provider.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';

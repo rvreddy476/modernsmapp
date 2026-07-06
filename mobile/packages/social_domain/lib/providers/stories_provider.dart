@@ -1,5 +1,5 @@
 import 'package:social_domain/story.dart';
-import 'package:atpost_app/data/repositories/stories_repository.dart';
+import 'package:social_domain/data/stories_repository.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 final feedStoriesProvider = FutureProvider.autoDispose<List<Story>>((ref) async {

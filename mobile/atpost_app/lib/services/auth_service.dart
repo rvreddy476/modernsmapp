@@ -105,6 +105,7 @@ class AuthService implements AuthSession {
   Timer? _restoreDeadline;
 
   // Future to track session readiness for GoRouter redirects
+  @override
   late final Future<void> sessionReady;
 
   Stream<AuthState> get stateStream => _stateController.stream;

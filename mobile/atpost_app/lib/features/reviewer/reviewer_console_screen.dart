@@ -5,7 +5,7 @@ import 'dart:async';
 import 'package:atpost_core/config/environment.dart';
 import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_text_styles.dart';
-import 'package:atpost_app/data/repositories/post_repository.dart';
+import 'package:social_domain/data/post_repository.dart';
 import 'package:atpost_app/data/repositories/reviewer_repository.dart';
 import 'package:atpost_app/shared/widgets/video_player_widget.dart';
 import 'package:flutter/material.dart';

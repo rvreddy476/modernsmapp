@@ -14,6 +14,11 @@ abstract interface class AuthSession {
   /// Whether a user session is currently active.
   bool get isAuthenticated;
 
+  /// Completes once the initial session restore (from secure storage) has
+  /// finished, so callers can defer their first authed fetch until the
+  /// token is known. Already-complete for a fresh (never-restored) session.
+  Future<void> get sessionReady;
+
   /// Emits whenever the session changes (login, logout, refresh). Used
   /// by long-lived transports (websocket) to connect/disconnect.
   Stream<void> get sessionChanges;
@@ -39,6 +44,9 @@ class UnauthenticatedSession implements AuthSession {
 
   @override
   bool get isAuthenticated => false;
+
+  @override
+  Future<void> get sessionReady => Future<void>.value();
 
   @override
   Stream<void> get sessionChanges => const Stream.empty();

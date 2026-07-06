@@ -1,5 +1,5 @@
-import 'package:atpost_app/data/repositories/user_repository.dart';
-import 'package:atpost_app/services/auth_service.dart';
+import 'package:feature_contracts/app_user.dart';
+import 'package:atpost_network/auth_session.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 /// Cached set of user IDs the viewer currently follows. Used by:
@@ -11,13 +11,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 /// Invalidate after a successful follow/unfollow to keep both consumers
 /// in sync.
 class FollowingNotifier extends StateNotifier<AsyncValue<Set<String>>> {
-  FollowingNotifier(this._repo, this._auth)
+  FollowingNotifier(this._following, this._auth)
       : super(const AsyncValue.loading()) {
     refresh();
   }
 
-  final UserRepository _repo;
-  final AuthService _auth;
+  final AppFollowingIds _following;
+  final AuthSession _auth;
 
   Future<void> refresh() async {
     final me = _auth.userId;
@@ -26,7 +26,7 @@ class FollowingNotifier extends StateNotifier<AsyncValue<Set<String>>> {
       return;
     }
     try {
-      final ids = await _repo.getFollowingIds(me);
+      final ids = await _following(me);
       state = AsyncValue.data(ids.toSet());
     } catch (e, st) {
       state = AsyncValue.error(e, st);
@@ -50,7 +50,7 @@ class FollowingNotifier extends StateNotifier<AsyncValue<Set<String>>> {
 final followingProvider =
     StateNotifierProvider<FollowingNotifier, AsyncValue<Set<String>>>((ref) {
   return FollowingNotifier(
-    ref.watch(userRepositoryProvider),
-    ref.watch(authServiceProvider),
+    ref.watch(appFollowingIdsProvider),
+    ref.watch(authSessionProvider),
   );
 });

@@ -4,7 +4,7 @@ import 'package:atpost_app/features/create/widgets/trending_hashtag_strip.dart';
 import 'package:atpost_app/features/hashtag_feed/data/hashtag_repository.dart';
 import 'package:atpost_app/features/hashtag_feed/models/hashtag_model.dart';
 import 'package:atpost_app/providers/editor_provider.dart';
-import 'package:atpost_app/providers/feed_provider.dart';
+import 'package:social_domain/providers/feed_provider.dart';
 import 'package:atpost_network/api_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';

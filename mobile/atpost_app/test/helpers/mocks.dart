@@ -1,6 +1,6 @@
 import 'package:atpost_app/data/repositories/chat_repository.dart';
-import 'package:atpost_app/data/repositories/feed_repository.dart';
-import 'package:atpost_app/data/repositories/post_repository.dart';
+import 'package:social_domain/data/feed_repository.dart';
+import 'package:social_domain/data/post_repository.dart';
 import 'package:atpost_app/data/repositories/user_repository.dart';
 import 'package:atpost_network/api_client.dart';
 import 'package:atpost_app/services/auth_service.dart';

@@ -1,4 +1,4 @@
-import 'package:atpost_app/data/repositories/feed_repository.dart';
+import 'package:social_domain/data/feed_repository.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 

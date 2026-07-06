@@ -9,7 +9,7 @@ import 'package:atpost_app/features/stories/widgets/poll_widget.dart';
 import 'package:atpost_app/features/stories/widgets/question_widget.dart';
 import 'package:atpost_app/features/stories/widgets/quiz_widget.dart';
 import 'package:atpost_app/features/stories/widgets/slider_widget.dart';
-import 'package:atpost_app/providers/stories_provider.dart';
+import 'package:social_domain/providers/stories_provider.dart';
 import 'package:atpost_app/services/auth_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';

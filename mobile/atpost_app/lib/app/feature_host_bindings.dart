@@ -38,6 +38,18 @@ List<Override> featureHostBindings() => [
     };
   }),
 
+  // Social: batch author hydration + the viewer's following set.
+  appUserBatchProvider.overrideWith((ref) {
+    return (List<String> ids) async {
+      final users = await ref.read(userRepositoryProvider).getUsersBatch(ids);
+      return users.map(_toRef).toList();
+    };
+  }),
+  appFollowingIdsProvider.overrideWith((ref) {
+    return (String userId) =>
+        ref.read(userRepositoryProvider).getFollowingIds(userId);
+  }),
+
   // Pulse-specific: live chat messages off the shared realtime channel,
   // filtered to the chat wire type and flattened to the Pulse shape.
   pulseChatEventsProvider.overrideWith((ref) {

@@ -4,8 +4,8 @@ import 'package:atpost_core/errors/error_handler.dart';
 import 'package:atpost_core/utils/app_logger.dart';
 import 'package:social_domain/post.dart';
 import 'package:atpost_realtime/realtime_event.dart';
-import 'package:atpost_app/data/repositories/feed_repository.dart';
-import 'package:atpost_app/services/auth_service.dart';
+import 'package:social_domain/data/feed_repository.dart';
+import 'package:atpost_network/auth_session.dart';
 import 'package:atpost_realtime/realtime_service.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -48,7 +48,7 @@ class HomeFeedNotifier extends StateNotifier<AsyncValue<FeedState>> {
   static const _tag = 'FeedNotifier';
   final FeedRepository _repo;
   final RealtimeService _realtime;
-  final AuthService _auth;
+  final AuthSession _auth;
   StreamSubscription? _realtimeSub;
   String _currentFilter = 'For You';
 
@@ -287,7 +287,7 @@ final homeFeedProvider =
     ) {
       final repo = ref.watch(feedRepositoryProvider);
       final realtime = ref.watch(realtimeServiceProvider);
-      final auth = ref.watch(authServiceProvider);
+      final auth = ref.watch(authSessionProvider);
       final notifier = HomeFeedNotifier(repo, realtime, auth);
       ref.listen<String>(feedFilterProvider, (_, next) {
         notifier.updateFilter(next);

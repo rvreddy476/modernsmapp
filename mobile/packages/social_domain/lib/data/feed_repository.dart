@@ -1,9 +1,8 @@
 import 'package:atpost_core/cache/cache_keys.dart';
 import 'package:atpost_core/cache/cache_manager.dart';
 import 'package:atpost_core/utils/app_logger.dart';
+import 'package:feature_contracts/app_user.dart';
 import 'package:social_domain/post.dart';
-import 'package:atpost_app/data/models/user.dart';
-import 'package:atpost_app/data/repositories/user_repository.dart';
 import 'package:atpost_network/api_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -12,16 +11,18 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 class FeedRepository {
   final ApiClient _api;
   final CacheManager? _cache;
-  final UserRepository? _users;
+  // Batch author hydration, injected from the host (see appUserBatchProvider)
+  // so the feed layer never depends on the app's user repository.
+  final AppUserBatchLookup? _hydrate;
   static const _tag = 'FeedRepository';
 
-  FeedRepository(this._api, [this._cache, this._users]);
+  FeedRepository(this._api, [this._cache, this._hydrate]);
 
   /// Hydrate posts with author display name + avatar URL.
   /// /v1/feed/home returns only author_id; the web app does the same lookup
   /// via useBatchProfiles. Without this, all posts render as "Anonymous".
   Future<List<Post>> _hydrateAuthors(List<Post> posts) async {
-    if (_users == null || posts.isEmpty) return posts;
+    if (_hydrate == null || posts.isEmpty) return posts;
     final ids = <String>{};
     for (final p in posts) {
       final id = p.authorId.trim();
@@ -31,8 +32,8 @@ class FeedRepository {
     }
     if (ids.isEmpty) return posts;
     try {
-      final users = await _users.getUsersBatch(ids.toList());
-      final byId = <String, User>{for (final u in users) u.id: u};
+      final users = await _hydrate(ids.toList());
+      final byId = <String, AppUserRef>{for (final u in users) u.id: u};
       return posts.map((p) {
         final u = byId[p.authorId];
         if (u == null) return p;
@@ -208,6 +209,6 @@ final feedRepositoryProvider = Provider<FeedRepository>((ref) {
   return FeedRepository(
     ref.watch(apiClientProvider),
     null,
-    ref.watch(userRepositoryProvider),
+    ref.watch(appUserBatchProvider),
   );
 });
