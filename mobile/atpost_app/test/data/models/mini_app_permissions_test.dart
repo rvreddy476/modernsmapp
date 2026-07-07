@@ -1,4 +1,4 @@
-import 'package:atpost_app/features/mini_apps/mini_app_permissions.dart';
+import 'package:feature_mini_apps/mini_app_permissions.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {

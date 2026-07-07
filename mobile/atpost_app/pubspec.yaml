@@ -27,6 +27,11 @@ dependencies:
   feature_reviewer: ^0.1.0
   feature_services: ^0.1.0
   feature_settings: ^0.1.0
+  feature_channels: ^0.1.0
+  feature_pages: ^0.1.0
+  feature_shop: ^0.1.0
+  feature_mini_apps: ^0.1.0
+  feature_create: ^0.1.0
   feature_social: ^0.1.0
   community_domain: ^0.1.0
   user_domain: ^0.1.0

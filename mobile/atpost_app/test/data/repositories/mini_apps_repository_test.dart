@@ -1,4 +1,4 @@
-import 'package:atpost_app/data/repositories/mini_apps_repository.dart';
+import 'package:feature_mini_apps/mini_apps_repository.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 

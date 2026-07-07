@@ -3,9 +3,6 @@ import 'package:feature_billpay/billpay_routes.dart';
 import 'package:feature_wallet/wallet_routes.dart';
 import 'dart:async';
 
-import 'package:atpost_app/features/channels/channels_list_screen.dart';
-import 'package:atpost_app/features/channels/channel_detail_screen.dart';
-import 'package:atpost_app/features/channels/create_channel_screen.dart';
 // Communities feature disabled — consolidated into Groups ("MySpace").
 // Screens kept on disk; no routes reference them.
 // import 'package:atpost_app/features/communities/communities_list_screen.dart';
@@ -13,16 +10,17 @@ import 'package:atpost_app/features/channels/create_channel_screen.dart';
 // import 'package:atpost_app/features/communities/community_space_screen.dart';
 // import 'package:atpost_app/features/communities/create_community_screen.dart';
 import 'package:atpost_app/features/auth/forgot_password_screen.dart';
-import 'package:atpost_app/features/create/upload_progress_screen.dart';
 import 'package:atpost_app/features/auth/anomaly_stepup_screen.dart';
 import 'package:atpost_app/features/auth/login_screen.dart';
 import 'package:atpost_app/features/auth/otp_verify_screen.dart';
 import 'package:atpost_app/features/auth/register_screen.dart';
 import 'package:feature_bookmarks/bookmarks_routes.dart';
+import 'package:feature_channels/channels_routes.dart';
+import 'package:feature_pages/pages_routes.dart';
+import 'package:feature_shop/shop_routes.dart';
+import 'package:feature_mini_apps/mini_apps_routes.dart';
+import 'package:feature_create/create_routes.dart';
 import 'package:feature_comments/comments_routes.dart';
-import 'package:atpost_app/features/create/create_post_screen.dart';
-import 'package:atpost_app/features/create/reels_caption_screen.dart';
-import 'package:atpost_app/features/create/reels_editor_screen.dart';
 import 'package:atpost_app/features/discover/discover_screen.dart';
 import 'package:feature_figo/figo_routes.dart';
 import 'package:atpost_app/features/groups/group_admin_screen.dart';
@@ -31,9 +29,6 @@ import 'package:atpost_app/features/groups/group_detail_screen.dart';
 import 'package:atpost_app/features/groups/group_post_composer_screen.dart';
 import 'package:atpost_app/features/groups/groups_list_screen.dart';
 import 'package:atpost_app/features/groups/create_group_screen.dart';
-import 'package:atpost_app/features/pages/pages_list_screen.dart';
-import 'package:atpost_app/features/pages/page_detail_screen.dart';
-import 'package:atpost_app/features/pages/create_page_screen.dart';
 import 'package:atpost_app/features/monetization/creator_analytics_screen.dart';
 import 'package:atpost_app/features/monetization/monetization_dashboard_screen.dart';
 import 'package:atpost_app/features/monetization/payouts_screen.dart';
@@ -65,12 +60,8 @@ import 'package:feature_memories/memories_routes.dart';
 import 'package:feature_stories/stories_routes.dart';
 import 'package:feature_mopedu/mopedu_routes.dart';
 import 'package:feature_pulse/pulse_routes.dart';
-import 'package:atpost_app/features/mini_apps/mini_apps_screen.dart';
-import 'package:atpost_app/features/mini_apps/mini_app_detail_screen.dart';
-import 'package:atpost_app/features/mini_apps/mini_app_sandbox_screen.dart';
 import 'package:feature_settings/settings_routes.dart';
 import 'package:atpost_app/features/shell/shell_scaffold.dart';
-import 'package:atpost_app/features/shop/shop_screen.dart';
 import 'package:atpost_app/services/auth_service.dart';
 import 'package:atpost_app/services/call_service.dart';
 import 'package:atpost_core/utils/app_logger.dart';
@@ -342,49 +333,12 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             builder: (context, state) => const CallScreen(),
           ),
           // Follow-Only Public Pages
-          GoRoute(
-            path: '/pages',
-            builder: (context, state) => const PagesListScreen(),
-          ),
-          GoRoute(
-            path: '/pages/create',
-            builder: (context, state) => const CreatePageScreen(),
-          ),
-          GoRoute(
-            path: '/page/:handle',
-            builder: (context, state) => PageDetailScreen(
-              handle: state.pathParameters['handle'] ?? '',
-            ),
-          ),
+          ...pagesRoutes(),
           ...posttubeRoutes(),
           ...reelsRoutes(),
-          GoRoute(
-            path: '/reels/editor',
-            builder: (context, state) => const ReelsEditorScreen(),
-          ),
-          GoRoute(
-            path: '/reels/caption',
-            builder: (context, state) => const ReelsCaptionScreen(),
-          ),
-          // Brand sweep 2026-04-30: legacy /flicks/* paths redirect to /reels/*
-          // for 30 days while clients on older builds finish rolling forward.
-          GoRoute(
-            path: '/flicks/editor',
-            redirect: (_, _) => '/reels/editor',
-          ),
-          GoRoute(
-            path: '/flicks/caption',
-            redirect: (_, _) => '/reels/caption',
-          ),
-          GoRoute(
-            path: '/create',
-            builder: (context, state) => const CreatePostScreen(),
-          ),
+          ...createRoutes(),
           ...commentsRoutes(),
-          GoRoute(
-            path: '/shop',
-            builder: (context, state) => const ShopScreen(),
-          ),
+          ...shopRoutes(),
           // Commerce (buyer / seller / RFQ / legacy orders) — feature owns routes.
           ...commerceRoutes(),
           // FiGo (food) — the feature package owns its route table.
@@ -434,17 +388,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           ...socialRoutes(),
           ...settingsRoutes(),
           ...servicesRoutes(),
-          GoRoute(path: '/apps', builder: (_, _) => const MiniAppsScreen()),
-          GoRoute(
-            path: '/apps/:id',
-            builder: (context, state) =>
-                MiniAppDetailScreen(appId: state.pathParameters['id']!),
-          ),
-          GoRoute(
-            path: '/apps/sandbox/:id',
-            builder: (context, state) =>
-                MiniAppSandboxScreen(appId: state.pathParameters['id']!),
-          ),
+          ...miniAppsRoutes(),
           // Sprint 1 — Mopedu rider mini-app (customer side).
           //
           // Sprint 5: every Mopedu user-facing surface is wrapped in
@@ -490,20 +434,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             builder: (context, state) => const VideoSearchScreen(),
           ),
           ...reviewerRoutes(),
-          GoRoute(
-            path: '/channels',
-            builder: (context, state) => const ChannelsListScreen(),
-          ),
-          GoRoute(
-            path: '/channels/create',
-            builder: (context, state) => const CreateChannelScreen(),
-          ),
-          GoRoute(
-            path: '/channels/:channelId',
-            builder: (context, state) => ChannelDetailScreen(
-              channelId: state.pathParameters['channelId']!,
-            ),
-          ),
+          ...channelsRoutes(),
           GoRoute(
             path: '/groups',
             builder: (context, state) => const GroupsListScreen(),
@@ -545,18 +476,6 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             builder: (context, state) => const CreatorAnalyticsScreen(),
           ),
           ...qaRoutes(),
-          GoRoute(
-            path: '/upload/progress',
-            builder: (context, state) {
-              final extra = state.extra as Map<String, dynamic>? ?? {};
-              return UploadProgressScreen(
-                videoPath: extra['videoPath'] as String? ?? '',
-                caption: extra['caption'] as String? ?? '',
-                hashtags: List<String>.from(extra['hashtags'] as List? ?? []),
-                visibility: extra['visibility'] as String? ?? 'public',
-              );
-            },
-          ),
         ],
       ),
     ],

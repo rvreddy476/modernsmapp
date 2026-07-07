@@ -1,4 +1,4 @@
-import 'package:atpost_app/data/models/mini_app.dart';
+import 'package:feature_mini_apps/mini_app.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 MiniApp _buildApp({

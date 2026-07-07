@@ -1,0 +1,19 @@
+name: feature_shop
+description: atPost shop feature.
+version: 0.1.0
+publish_to: none
+environment: {sdk: ^3.10.7}
+resolution: workspace
+dependencies:
+  flutter: {sdk: flutter}
+  atpost_core: ^0.1.0
+  atpost_design: ^0.1.0
+  atpost_network: ^0.1.0
+  commerce_domain: ^0.1.0
+  shared_ui: ^0.1.0
+  flutter_animate: ^4.5.2
+  flutter_riverpod: ^2.6.1
+  go_router: ^16.3.0
+dev_dependencies:
+  flutter_test: {sdk: flutter}
+  flutter_lints: ^6.0.0

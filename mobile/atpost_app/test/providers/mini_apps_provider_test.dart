@@ -1,6 +1,6 @@
-import 'package:atpost_app/data/models/mini_app.dart';
-import 'package:atpost_app/data/repositories/mini_apps_repository.dart';
-import 'package:atpost_app/providers/mini_apps_provider.dart';
+import 'package:feature_mini_apps/mini_app.dart';
+import 'package:feature_mini_apps/mini_apps_repository.dart';
+import 'package:feature_mini_apps/mini_apps_provider.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../helpers/mocks.dart';

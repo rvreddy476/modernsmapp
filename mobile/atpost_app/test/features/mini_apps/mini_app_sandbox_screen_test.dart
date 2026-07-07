@@ -1,10 +1,10 @@
 import 'dart:convert';
 
-import 'package:atpost_app/data/models/mini_app.dart';
-import 'package:atpost_app/data/models/mini_app_manifest.dart';
-import 'package:atpost_app/data/repositories/mini_apps_repository.dart';
-import 'package:atpost_app/features/mini_apps/mini_app_sandbox_screen.dart';
-import 'package:atpost_app/services/auth_service.dart';
+import 'package:feature_mini_apps/mini_app.dart';
+import 'package:feature_mini_apps/mini_app_manifest.dart';
+import 'package:feature_mini_apps/mini_apps_repository.dart';
+import 'package:feature_mini_apps/mini_app_sandbox_screen.dart';
+import 'package:atpost_network/auth_session.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -314,7 +314,7 @@ void main() {
       ProviderScope(
         overrides: [
           miniAppsRepositoryProvider.overrideWithValue(fakeRepo),
-          authServiceProvider.overrideWithValue(mockAuth),
+          authSessionProvider.overrideWithValue(mockAuth),
         ],
         child: const MaterialApp(home: MiniAppSandboxScreen(appId: 'app-1')),
       ),

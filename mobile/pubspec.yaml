@@ -19,6 +19,11 @@ workspace:
   - packages/feature_reviewer
   - packages/feature_services
   - packages/feature_settings
+  - packages/feature_channels
+  - packages/feature_pages
+  - packages/feature_shop
+  - packages/feature_mini_apps
+  - packages/feature_create
   - packages/feature_social
   - packages/community_domain
   - packages/user_domain

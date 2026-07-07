@@ -1,6 +1,6 @@
-import 'package:atpost_app/data/models/mini_app.dart';
-import 'package:atpost_app/data/repositories/mini_apps_repository.dart';
-import 'package:atpost_app/features/mini_apps/mini_app_detail_screen.dart';
+import 'package:feature_mini_apps/mini_app.dart';
+import 'package:feature_mini_apps/mini_apps_repository.dart';
+import 'package:feature_mini_apps/mini_app_detail_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
