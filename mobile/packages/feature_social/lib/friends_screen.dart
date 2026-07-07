@@ -1,11 +1,10 @@
 import 'package:atpost_design/app_colors.dart';
 import 'package:user_domain/user.dart';
-import 'package:atpost_app/data/repositories/chat_repository.dart';
-import 'package:atpost_app/features/social/widgets/add_friends_sheet.dart';
-import 'package:atpost_app/features/social/widgets/friend_requests_sheet.dart';
-import 'package:atpost_app/features/social/widgets/friends_common.dart';
-import 'package:atpost_app/features/social/widgets/trusted_circle_sheet.dart';
-import 'package:atpost_app/providers/chat_provider.dart';
+import 'package:feature_contracts/feature_contracts.dart';
+import 'package:feature_social/widgets/add_friends_sheet.dart';
+import 'package:feature_social/widgets/friend_requests_sheet.dart';
+import 'package:feature_social/widgets/friends_common.dart';
+import 'package:feature_social/widgets/trusted_circle_sheet.dart';
 import 'package:user_domain/social_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -58,11 +57,10 @@ class _FriendsScreenState extends ConsumerState<FriendsScreen> {
   Future<void> _openConversation(String userId) async {
     final messenger = ScaffoldMessenger.of(context);
     try {
-      final conversation = await ref
-          .read(chatRepositoryProvider)
-          .createDirectConversation(userId);
-      if (!mounted) return;
-      context.push('/chat/${conversation.id}');
+      final conversationId =
+          await ref.read(appStartConversationProvider)(userId);
+      if (!mounted || conversationId == null) return;
+      context.push('/chat/$conversationId');
     } catch (_) {
       messenger.showSnackBar(
         const SnackBar(content: Text("Couldn't open the conversation")),
@@ -216,7 +214,7 @@ class _FriendsScreenState extends ConsumerState<FriendsScreen> {
         ref.watch(closeFriendsProvider).valueOrNull ?? const <User>[];
     // Live per-friend unread message counts (same source as the Messages
     // screen — see conversationUnreadByUserProvider).
-    final unread = ref.watch(conversationUnreadByUserProvider);
+    final unread = ref.watch(appConversationUnreadProvider);
 
     final listed = _applySearchAndSort(friends, presence);
 

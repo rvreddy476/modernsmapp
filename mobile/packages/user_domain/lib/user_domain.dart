@@ -8,4 +8,5 @@ library;
 
 export 'social_provider.dart';
 export 'user.dart';
+export 'user_provider.dart';
 export 'user_repository.dart';

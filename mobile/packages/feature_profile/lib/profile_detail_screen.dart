@@ -2,12 +2,10 @@ import 'package:atpost_design/app_images.dart';
 import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_spacing.dart';
 import 'package:atpost_design/app_text_styles.dart';
-import 'package:atpost_app/data/repositories/chat_repository.dart';
+import 'package:feature_contracts/feature_contracts.dart';
 import 'package:user_domain/user_repository.dart';
-import 'package:atpost_app/features/monetization/widgets/tier_picker_sheet.dart';
-import 'package:atpost_app/features/monetization/widgets/tip_sheet.dart';
 import 'package:user_domain/social_provider.dart';
-import 'package:atpost_app/providers/user_provider.dart';
+import 'package:user_domain/user_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -35,11 +33,10 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
     setState(() => _openingConversation = true);
     final messenger = ScaffoldMessenger.of(context);
     try {
-      final conversation = await ref
-          .read(chatRepositoryProvider)
-          .createDirectConversation(widget.userId);
-      if (!mounted) return;
-      context.push('/chat/${conversation.id}');
+      final conversationId =
+          await ref.read(appStartConversationProvider)(widget.userId);
+      if (!mounted || conversationId == null) return;
+      context.push('/chat/$conversationId');
     } catch (_) {
       if (!mounted) return;
       messenger.showSnackBar(
@@ -416,7 +413,7 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
                                 // sheet returns the chosen tier ID on
                                 // success.
                                 final pickedTierId =
-                                    await TierPickerSheet.show(
+                                    await ref.read(appShowTierPickerProvider)(
                                   context,
                                   creatorId: widget.userId,
                                 );
@@ -457,7 +454,7 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
                             // Tier 3d: tip button next to Subscribe.
                             GestureDetector(
                               onTap: () {
-                                TipSheet.show(
+                                ref.read(appShowTipProvider)(
                                   context,
                                   creatorId: widget.userId,
                                 );

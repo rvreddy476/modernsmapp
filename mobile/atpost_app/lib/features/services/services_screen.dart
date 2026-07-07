@@ -7,7 +7,7 @@ import 'package:atpost_app/features/services/data/service_registry.dart';
 import 'package:atpost_app/features/services/models/service_app.dart';
 import 'package:atpost_app/features/services/service_app_launcher.dart';
 import 'package:atpost_app/features/services/widgets/service_card.dart';
-import 'package:atpost_app/providers/user_provider.dart';
+import 'package:user_domain/user_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';

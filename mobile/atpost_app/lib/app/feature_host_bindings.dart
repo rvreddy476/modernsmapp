@@ -4,12 +4,15 @@ import 'package:user_domain/user_repository.dart';
 import 'package:feature_home/hashtag_feed/state/hashtag_feed_notifier.dart';
 import 'package:feature_home/home_providers.dart';
 import 'package:atpost_app/features/monetization/widgets/paywall_preview.dart';
+import 'package:atpost_app/features/monetization/widgets/tier_picker_sheet.dart';
+import 'package:atpost_app/features/monetization/widgets/tip_sheet.dart';
 import 'package:atpost_app/features/shell/shell_providers.dart';
 import 'package:atpost_app/data/repositories/chat_repository.dart';
+import 'package:atpost_app/providers/chat_provider.dart';
 import 'package:atpost_app/providers/communities_provider.dart';
 import 'package:atpost_app/providers/chat_badge_provider.dart';
 import 'package:feature_notifications/notification_provider.dart';
-import 'package:atpost_app/providers/user_provider.dart';
+import 'package:user_domain/user_provider.dart';
 import 'package:atpost_realtime/realtime_event.dart';
 import 'package:atpost_realtime/realtime_service.dart';
 import 'package:feature_contracts/feature_contracts.dart';
@@ -85,6 +88,36 @@ List<Override> featureHostBindings() => [
   // service's presence channel (so user_domain needn't import chat).
   appPresenceLookupProvider.overrideWith(
       (ref) => (ids) => ref.read(chatRepositoryProvider).getPresence(ids)),
+
+  // Chat: "Message" button on social/profile — open (or create) a 1:1
+  // conversation and return its id; plus per-friend unread badges.
+  appStartConversationProvider.overrideWith((ref) {
+    return (String userId) async {
+      final convo =
+          await ref.read(chatRepositoryProvider).createDirectConversation(userId);
+      return convo.id;
+    };
+  }),
+  appConversationUnreadProvider
+      .overrideWith((ref) => ref.watch(conversationUnreadByUserProvider)),
+
+  // Monetization: subscribe (tier picker) + tip sheets shown from a
+  // creator profile, injected so profile needn't import monetization.
+  appShowTierPickerProvider.overrideWith((ref) {
+    return (BuildContext context,
+            {required String creatorId, String? creatorName}) =>
+        TierPickerSheet.show(context,
+            creatorId: creatorId, creatorName: creatorName);
+  }),
+  appShowTipProvider.overrideWith((ref) {
+    return (BuildContext context,
+        {required String creatorId,
+        String? creatorName,
+        String? postId}) async {
+      await TipSheet.show(context,
+          creatorId: creatorId, creatorName: creatorName, postId: postId);
+    };
+  }),
 
   // Social UI: a hashtag tapped in a post body. On the home shell, switch
   // to the #Hashtag tab and select it; otherwise push /hashtag/:tag.

@@ -3,7 +3,7 @@ import 'dart:math' as math;
 import 'package:atpost_design/app_colors.dart';
 import 'package:user_domain/user.dart';
 import 'package:user_domain/user_repository.dart';
-import 'package:atpost_app/features/social/widgets/friends_common.dart';
+import 'package:feature_social/widgets/friends_common.dart';
 import 'package:user_domain/social_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';

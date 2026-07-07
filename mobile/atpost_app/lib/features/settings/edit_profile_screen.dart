@@ -3,7 +3,7 @@ import 'dart:io';
 import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_spacing.dart';
 import 'package:atpost_design/app_text_styles.dart';
-import 'package:atpost_app/providers/user_provider.dart';
+import 'package:user_domain/user_provider.dart';
 import 'package:atpost_network/api_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';

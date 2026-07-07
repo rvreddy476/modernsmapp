@@ -4,7 +4,7 @@ import 'package:atpost_design/app_colors.dart';
 import 'package:social_domain/post.dart';
 import 'package:user_domain/user.dart';
 import 'package:social_domain/providers/data_saver_provider.dart';
-import 'package:atpost_app/providers/profile_provider.dart';
+import 'package:feature_profile/profile_provider.dart';
 import 'package:atpost_design/image_url_helper.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';

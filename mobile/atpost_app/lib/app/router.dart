@@ -59,12 +59,8 @@ import 'package:atpost_app/features/live/live_viewer_screen.dart';
 import 'package:atpost_app/features/live/go_live_screen.dart';
 import 'package:atpost_app/features/live/live_broadcaster_screen.dart';
 import 'package:feature_notifications/notifications_routes.dart';
-import 'package:atpost_app/features/profile/my_media_screen.dart';
-import 'package:atpost_app/features/profile/profile_detail_screen.dart';
-import 'package:atpost_app/features/social/followers_screen.dart';
-import 'package:atpost_app/features/social/following_screen.dart';
-import 'package:atpost_app/features/social/friend_requests_screen.dart';
-import 'package:atpost_app/features/social/friends_screen.dart';
+import 'package:feature_profile/profile_routes.dart';
+import 'package:feature_social/social_routes.dart';
 import 'package:feature_reels/reels_routes.dart';
 import 'package:feature_posttube/posttube_routes.dart';
 import 'package:feature_qa/qa_routes.dart';
@@ -443,31 +439,9 @@ final appRouterProvider = Provider<GoRouter>((ref) {
               streamId: state.pathParameters['streamId']!,
             ),
           ),
-          GoRoute(
-            path: '/profile/:userId',
-            builder: (context, state) => ProfileDetailScreen(
-              userId: state.pathParameters['userId'] ?? '',
-            ),
-          ),
+          ...profileRoutes(),
           ...notificationsRoutes(),
-          GoRoute(
-            path: '/followers/:userId',
-            builder: (context, state) =>
-                FollowersScreen(userId: state.pathParameters['userId']!),
-          ),
-          GoRoute(
-            path: '/following/:userId',
-            builder: (context, state) =>
-                FollowingScreen(userId: state.pathParameters['userId']!),
-          ),
-          GoRoute(
-            path: '/friends',
-            builder: (context, state) => const FriendsScreen(),
-          ),
-          GoRoute(
-            path: '/friend-requests',
-            builder: (context, state) => const FriendRequestsScreen(),
-          ),
+          ...socialRoutes(),
           GoRoute(
             path: '/settings',
             builder: (context, state) => const SettingsScreen(),
@@ -508,10 +482,6 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             path: '/services/:slug',
             builder: (context, state) =>
                 ServiceSlugRouter(slug: state.pathParameters['slug']!),
-          ),
-          GoRoute(
-            path: '/profile/media',
-            builder: (_, _) => const MyMediaScreen(),
           ),
           GoRoute(path: '/apps', builder: (_, _) => const MiniAppsScreen()),
           GoRoute(

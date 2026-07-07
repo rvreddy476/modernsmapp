@@ -20,7 +20,7 @@ import 'package:user_domain/user.dart';
 import 'package:wallet_domain/wallet.dart';
 import 'package:feature_mopedu/mopedu/mopedu_gate.dart';
 import 'package:mopedu_domain/mopedu_providers.dart';
-import 'package:atpost_app/providers/user_provider.dart';
+import 'package:user_domain/user_provider.dart';
 import 'package:wallet_domain/wallet_providers.dart';
 import 'package:atpost_app/services/auth_service.dart';
 import 'package:atpost_app/services/shell_telemetry.dart';
