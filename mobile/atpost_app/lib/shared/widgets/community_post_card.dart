@@ -2,7 +2,7 @@ import 'package:atpost_design/app_images.dart';
 import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_spacing.dart';
 import 'package:atpost_design/app_text_styles.dart';
-import 'package:atpost_app/data/models/community_post.dart';
+import 'package:community_domain/community_post.dart';
 import 'package:flutter/material.dart';
 
 class CommunityPostCard extends StatelessWidget {

@@ -1,6 +1,6 @@
 import 'package:atpost_core/errors/error_handler.dart';
-import 'package:atpost_app/data/models/community.dart';
-import 'package:atpost_app/data/repositories/communities_repository.dart';
+import 'package:community_domain/community.dart';
+import 'package:community_domain/communities_repository.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 /// State for managing communities with optimistic update support.

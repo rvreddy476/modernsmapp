@@ -9,7 +9,7 @@ import 'package:atpost_app/features/monetization/widgets/tip_sheet.dart';
 import 'package:atpost_app/features/shell/shell_providers.dart';
 import 'package:atpost_app/data/repositories/chat_repository.dart';
 import 'package:atpost_app/providers/chat_provider.dart';
-import 'package:atpost_app/providers/communities_provider.dart';
+import 'package:community_domain/communities_provider.dart';
 import 'package:atpost_app/providers/chat_badge_provider.dart';
 import 'package:feature_notifications/notification_provider.dart';
 import 'package:user_domain/user_provider.dart';

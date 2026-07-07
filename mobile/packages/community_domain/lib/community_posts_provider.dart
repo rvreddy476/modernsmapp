@@ -1,6 +1,6 @@
-import 'package:atpost_app/data/models/community.dart';
-import 'package:atpost_app/data/models/community_post.dart';
-import 'package:atpost_app/data/repositories/community_posts_repository.dart';
+import 'package:community_domain/community.dart';
+import 'package:community_domain/community_post.dart';
+import 'package:community_domain/community_posts_repository.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 /// Params for fetching posts in a specific community space.

@@ -25,6 +25,7 @@ dependencies:
   social_domain: ^0.1.0
   feature_profile: ^0.1.0
   feature_social: ^0.1.0
+  community_domain: ^0.1.0
   user_domain: ^0.1.0
   social_ui: ^0.1.0
   commerce_domain: ^0.1.0

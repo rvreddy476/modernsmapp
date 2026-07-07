@@ -17,6 +17,7 @@ workspace:
   - packages/social_domain
   - packages/feature_profile
   - packages/feature_social
+  - packages/community_domain
   - packages/user_domain
   - packages/social_ui
   - packages/feature_contracts

@@ -1,5 +1,5 @@
-import 'package:atpost_app/data/models/community.dart';
-import 'package:atpost_app/data/models/community_post.dart';
+import 'package:community_domain/community.dart';
+import 'package:community_domain/community_post.dart';
 import 'package:atpost_network/api_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 

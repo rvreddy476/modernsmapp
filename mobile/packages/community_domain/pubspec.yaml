@@ -1,0 +1,22 @@
+# Community domain kernel: community + community-post models, repositories,
+# and providers. A shared vocabulary used by the communities feature,
+# discover, search, and the Q&A community picker. Member/author data comes
+# from user_domain.
+name: community_domain
+description: atPost community domain.
+version: 0.1.0
+publish_to: none
+environment:
+  sdk: ^3.10.7
+resolution: workspace
+dependencies:
+  flutter:
+    sdk: flutter
+  atpost_core: ^0.1.0
+  atpost_network: ^0.1.0
+  user_domain: ^0.1.0
+  flutter_riverpod: ^2.6.1
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
