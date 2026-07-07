@@ -7,7 +7,7 @@ import 'package:atpost_core/utils/app_logger.dart';
 import 'package:atpost_app/data/models/mini_app.dart';
 import 'package:atpost_app/data/models/mini_app_manifest.dart';
 import 'package:atpost_app/data/repositories/mini_apps_repository.dart';
-import 'package:atpost_app/data/repositories/user_repository.dart';
+import 'package:user_domain/user_repository.dart';
 import 'package:atpost_app/providers/mini_apps_provider.dart';
 import 'package:atpost_app/services/auth_service.dart';
 import 'package:flutter/material.dart';

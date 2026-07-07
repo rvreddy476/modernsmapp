@@ -1,10 +1,10 @@
 import 'package:atpost_design/app_images.dart';
 import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_text_styles.dart';
-import 'package:atpost_app/data/models/user.dart';
+import 'package:user_domain/user.dart';
 import 'package:atpost_app/data/repositories/chat_repository.dart';
 import 'package:atpost_app/providers/chat_provider.dart';
-import 'package:atpost_app/providers/social_provider.dart';
+import 'package:user_domain/social_provider.dart';
 import 'package:atpost_app/services/auth_service.dart';
 import 'package:atpost_realtime/realtime_service.dart';
 import 'package:shared_ui/glass_icon_button.dart';

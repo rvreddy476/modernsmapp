@@ -2,11 +2,11 @@ import 'dart:async';
 
 import 'package:atpost_core/config/environment.dart';
 import 'package:atpost_realtime/realtime_event.dart';
-import 'package:atpost_app/data/models/user.dart';
-import 'package:atpost_app/data/repositories/chat_repository.dart';
-import 'package:atpost_app/data/repositories/user_repository.dart';
+import 'package:user_domain/user.dart';
+import 'package:feature_contracts/feature_contracts.dart';
+import 'package:user_domain/user_repository.dart';
 import 'package:atpost_network/api_client.dart';
-import 'package:atpost_app/services/auth_service.dart';
+import 'package:atpost_network/auth_session.dart';
 import 'package:atpost_realtime/realtime_service.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -23,7 +23,7 @@ final followingProvider =
 /// The current user's connections (formerly "friends").
 /// Synchronized with GET /v1/graph/connections/:userId
 final friendsProvider = FutureProvider.autoDispose<List<User>>((ref) async {
-  final auth = ref.watch(authServiceProvider);
+  final auth = ref.watch(authSessionProvider);
   await auth.sessionReady;
   final userId = auth.userId;
   if (userId == null) return const [];
@@ -47,7 +47,7 @@ final friendsProvider = FutureProvider.autoDispose<List<User>>((ref) async {
 final friendRequestsProvider =
     FutureProvider.autoDispose<List<FriendRequest>>((ref) async {
   final repo = ref.watch(userRepositoryProvider);
-  final auth = ref.watch(authServiceProvider);
+  final auth = ref.watch(authSessionProvider);
   await auth.sessionReady;
   final currentUserId = auth.userId;
   final items = await repo.getPendingConnectionRequests();
@@ -87,7 +87,7 @@ final friendRequestsProvider =
 final filteredFriendRequestsProvider =
     FutureProvider.autoDispose<List<FriendRequest>>((ref) async {
   final repo = ref.watch(userRepositoryProvider);
-  final auth = ref.watch(authServiceProvider);
+  final auth = ref.watch(authSessionProvider);
   await auth.sessionReady;
   final currentUserId = auth.userId;
   final items = await repo.getFilteredConnectionRequests();
@@ -120,7 +120,7 @@ final filteredFriendRequestsProvider =
 /// notification prefs, etc.). Synchronized with GET /v1/users/me/settings.
 final userSettingsProvider =
     FutureProvider.autoDispose<Map<String, dynamic>>((ref) async {
-  final auth = ref.watch(authServiceProvider);
+  final auth = ref.watch(authSessionProvider);
   await auth.sessionReady;
   if (auth.userId == null) return const {};
   return ref.watch(userRepositoryProvider).getUserSettings();
@@ -131,7 +131,7 @@ final userSettingsProvider =
 /// Drives the status-aware Add Friend / Connect button.
 final connectionStatusProvider =
     FutureProvider.autoDispose.family<String, String>((ref, otherUserId) async {
-  final auth = ref.watch(authServiceProvider);
+  final auth = ref.watch(authSessionProvider);
   await auth.sessionReady;
   final viewerId = auth.userId;
   if (viewerId == null || viewerId == otherUserId) return 'none';
@@ -284,7 +284,7 @@ class FriendSuggestion {
 /// Ranked friend suggestions for the current user (suggestion-service).
 final friendSuggestionsProvider =
     FutureProvider.autoDispose<List<FriendSuggestion>>((ref) async {
-  final auth = ref.watch(authServiceProvider);
+  final auth = ref.watch(authSessionProvider);
   await auth.sessionReady;
   if (auth.userId == null) return const [];
   final raw =
@@ -296,7 +296,7 @@ final friendSuggestionsProvider =
 /// objects. Synchronized with GET /v1/graph/close-friends.
 final closeFriendsProvider =
     FutureProvider.autoDispose<List<User>>((ref) async {
-  final auth = ref.watch(authServiceProvider);
+  final auth = ref.watch(authSessionProvider);
   await auth.sessionReady;
   if (auth.userId == null) return const [];
   final repo = ref.watch(userRepositoryProvider);
@@ -325,12 +325,12 @@ final friendsPresenceProvider =
   }
   final ids = friends.take(100).map((u) => u.id).toList();
   final watched = ids.toSet();
-  final chat = ref.watch(chatRepositoryProvider);
+  final presenceLookup = ref.watch(appPresenceLookupProvider);
 
   // Initial snapshot.
   var presence = <String, bool>{};
   try {
-    presence = Map<String, bool>.from(await chat.getPresence(ids));
+    presence = Map<String, bool>.from(await presenceLookup(ids));
   } catch (_) {
     presence = <String, bool>{};
   }
@@ -349,7 +349,7 @@ final friendsPresenceProvider =
 
   final poll = Timer.periodic(const Duration(seconds: 25), (_) async {
     try {
-      final fresh = await chat.getPresence(ids);
+      final fresh = await presenceLookup(ids);
       presence = {...presence, ...Map<String, bool>.from(fresh)};
       out.add(Map<String, bool>.of(presence));
     } catch (_) {

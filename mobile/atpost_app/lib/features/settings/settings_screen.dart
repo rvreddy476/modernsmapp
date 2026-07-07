@@ -1,7 +1,7 @@
 import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_spacing.dart';
 import 'package:atpost_design/app_text_styles.dart';
-import 'package:atpost_app/data/repositories/user_repository.dart';
+import 'package:user_domain/user_repository.dart';
 import 'package:atpost_app/providers/user_provider.dart';
 import 'package:atpost_app/services/auth_service.dart';
 import 'package:flutter/material.dart';

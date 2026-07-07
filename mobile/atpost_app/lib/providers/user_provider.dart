@@ -1,5 +1,5 @@
-import 'package:atpost_app/data/models/user.dart';
-import 'package:atpost_app/data/repositories/user_repository.dart';
+import 'package:user_domain/user.dart';
+import 'package:user_domain/user_repository.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 /// Current user profile provider.

@@ -1,12 +1,12 @@
 import 'package:atpost_design/app_colors.dart';
-import 'package:atpost_app/data/models/user.dart';
+import 'package:user_domain/user.dart';
 import 'package:atpost_app/data/repositories/chat_repository.dart';
 import 'package:atpost_app/features/social/widgets/add_friends_sheet.dart';
 import 'package:atpost_app/features/social/widgets/friend_requests_sheet.dart';
 import 'package:atpost_app/features/social/widgets/friends_common.dart';
 import 'package:atpost_app/features/social/widgets/trusted_circle_sheet.dart';
 import 'package:atpost_app/providers/chat_provider.dart';
-import 'package:atpost_app/providers/social_provider.dart';
+import 'package:user_domain/social_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';

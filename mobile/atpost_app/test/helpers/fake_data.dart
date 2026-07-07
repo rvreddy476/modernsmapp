@@ -1,6 +1,6 @@
 import 'package:atpost_app/data/models/conversation.dart';
 import 'package:social_domain/post.dart';
-import 'package:atpost_app/data/models/user.dart';
+import 'package:user_domain/user.dart';
 
 /// Creates a fake [Post] with sensible defaults for testing.
 Post fakePost({

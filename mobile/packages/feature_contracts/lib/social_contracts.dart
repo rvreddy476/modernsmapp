@@ -46,3 +46,12 @@ typedef AppPaywallBuilder = Widget Function(
 final appPaywallBuilderProvider = Provider<AppPaywallBuilder>(
   (_) => (_, {required creatorId, creatorName}) => const SizedBox.shrink(),
 );
+
+/// Online-presence lookup for a set of user ids — drives the green dots on
+/// the friends / social-graph surfaces. Backed by the app's chat service
+/// (which owns the presence channel); the social-graph kernel depends on
+/// this contract instead of the chat repository. Default: all offline.
+typedef AppPresenceLookup = Future<Map<String, bool>> Function(
+    List<String> userIds);
+final appPresenceLookupProvider =
+    Provider<AppPresenceLookup>((_) => (_) async => const {});

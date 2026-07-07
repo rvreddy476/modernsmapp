@@ -17,7 +17,7 @@ import 'package:billpay_domain/billpay.dart';
 import 'package:commerce_domain/models/commerce.dart';
 import 'package:social_domain/post.dart';
 import 'package:feature_qa/qa.dart';
-import 'package:atpost_app/data/models/user.dart';
+import 'package:user_domain/user.dart';
 import 'package:atpost_app/providers/unified_search_providers.dart';
 import 'package:atpost_app/services/shell_telemetry.dart';
 import 'package:flutter/material.dart';

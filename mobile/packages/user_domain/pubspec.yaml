@@ -1,0 +1,23 @@
+# User + social-graph domain kernel: User model, user_repository, and the
+# social-graph providers. The one chat coupling (friends presence) comes
+# through feature_contracts (appPresenceLookupProvider); session via the
+# AuthSession contract. Consumed by profile/social/chat + the host bindings.
+name: user_domain
+description: atPost user + social-graph domain.
+version: 0.1.0
+publish_to: none
+environment:
+  sdk: ^3.10.7
+resolution: workspace
+dependencies:
+  flutter:
+    sdk: flutter
+  atpost_core: ^0.1.0
+  atpost_network: ^0.1.0
+  atpost_realtime: ^0.1.0
+  feature_contracts: ^0.1.0
+  flutter_riverpod: ^2.6.1
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0

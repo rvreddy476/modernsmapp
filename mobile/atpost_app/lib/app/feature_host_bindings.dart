@@ -1,10 +1,11 @@
 import 'package:atpost_app/app/router.dart';
-import 'package:atpost_app/data/models/user.dart';
-import 'package:atpost_app/data/repositories/user_repository.dart';
+import 'package:user_domain/user.dart';
+import 'package:user_domain/user_repository.dart';
 import 'package:feature_home/hashtag_feed/state/hashtag_feed_notifier.dart';
 import 'package:feature_home/home_providers.dart';
 import 'package:atpost_app/features/monetization/widgets/paywall_preview.dart';
 import 'package:atpost_app/features/shell/shell_providers.dart';
+import 'package:atpost_app/data/repositories/chat_repository.dart';
 import 'package:atpost_app/providers/communities_provider.dart';
 import 'package:atpost_app/providers/chat_badge_provider.dart';
 import 'package:feature_notifications/notification_provider.dart';
@@ -79,6 +80,11 @@ List<Override> featureHostBindings() => [
   // Social UI: follow / unfollow / mute another user.
   appUserActionsProvider
       .overrideWith((ref) => _AppUserActions(ref.read(userRepositoryProvider))),
+
+  // Social graph: friends online-presence lookup, backed by the chat
+  // service's presence channel (so user_domain needn't import chat).
+  appPresenceLookupProvider.overrideWith(
+      (ref) => (ids) => ref.read(chatRepositoryProvider).getPresence(ids)),
 
   // Social UI: a hashtag tapped in a post body. On the home shell, switch
   // to the #Hashtag tab and select it; otherwise push /hashtag/:tag.

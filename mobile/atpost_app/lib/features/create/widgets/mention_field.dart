@@ -3,8 +3,8 @@ import 'dart:async';
 
 import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_text_styles.dart';
-import 'package:atpost_app/data/models/user.dart';
-import 'package:atpost_app/data/repositories/user_repository.dart';
+import 'package:user_domain/user.dart';
+import 'package:user_domain/user_repository.dart';
 import 'package:feature_home/hashtag_feed/data/hashtag_repository.dart';
 import 'package:feature_home/hashtag_feed/models/hashtag_model.dart';
 import 'package:flutter/material.dart';

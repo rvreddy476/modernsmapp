@@ -2,7 +2,7 @@ import 'dart:async';
 import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_spacing.dart';
 import 'package:atpost_design/app_text_styles.dart';
-import 'package:atpost_app/data/repositories/user_repository.dart';
+import 'package:user_domain/user_repository.dart';
 import 'package:atpost_app/features/services/data/service_registry.dart';
 import 'package:atpost_app/features/services/models/service_app.dart';
 import 'package:atpost_app/features/services/widgets/service_icon.dart';

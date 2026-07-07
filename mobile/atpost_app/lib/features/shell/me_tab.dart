@@ -16,7 +16,7 @@ import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_spacing.dart';
 import 'package:atpost_design/app_text_styles.dart';
 import 'package:mopedu_domain/mopedu.dart';
-import 'package:atpost_app/data/models/user.dart';
+import 'package:user_domain/user.dart';
 import 'package:wallet_domain/wallet.dart';
 import 'package:feature_mopedu/mopedu/mopedu_gate.dart';
 import 'package:mopedu_domain/mopedu_providers.dart';
