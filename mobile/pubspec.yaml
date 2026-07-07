@@ -30,5 +30,7 @@ workspace:
   - packages/feature_posttube
   - packages/feature_reels
   - packages/feature_home
+  - packages/feature_bookmarks
+  - packages/feature_comments
   - packages/feature_pulse
   - packages/feature_stories

@@ -18,8 +18,8 @@ import 'package:atpost_app/features/auth/anomaly_stepup_screen.dart';
 import 'package:atpost_app/features/auth/login_screen.dart';
 import 'package:atpost_app/features/auth/otp_verify_screen.dart';
 import 'package:atpost_app/features/auth/register_screen.dart';
-import 'package:atpost_app/features/bookmarks/bookmarks_screen.dart';
-import 'package:atpost_app/features/comments/comments_screen.dart';
+import 'package:feature_bookmarks/bookmarks_routes.dart';
+import 'package:feature_comments/comments_routes.dart';
 import 'package:atpost_app/features/create/create_post_screen.dart';
 import 'package:atpost_app/features/create/reels_caption_screen.dart';
 import 'package:atpost_app/features/create/reels_editor_screen.dart';
@@ -399,11 +399,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             path: '/create',
             builder: (context, state) => const CreatePostScreen(),
           ),
-          GoRoute(
-            path: '/comments/:postId',
-            builder: (context, state) =>
-                CommentsScreen(postId: state.pathParameters['postId']!),
-          ),
+          ...commentsRoutes(),
           GoRoute(
             path: '/shop',
             builder: (context, state) => const ShopScreen(),
@@ -555,10 +551,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           // monetization/orders/qa/upload/posttube). Restored verbatim
           // from the last commit that had them (e5796fb), minus the
           // four /communities routes — that feature is disabled.
-          GoRoute(
-            path: '/bookmarks',
-            builder: (context, state) => const BookmarksScreen(),
-          ),
+          ...bookmarksRoutes(),
           GoRoute(
             path: '/discover',
             builder: (context, state) => const DiscoverScreen(),

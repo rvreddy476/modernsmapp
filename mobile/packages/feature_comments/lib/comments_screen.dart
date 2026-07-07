@@ -6,7 +6,7 @@ import 'package:social_domain/post.dart';
 import 'package:social_domain/data/post_repository.dart';
 import 'package:social_domain/providers/comments_provider.dart';
 import 'package:social_domain/providers/data_saver_provider.dart';
-import 'package:atpost_app/providers/user_provider.dart';
+import 'package:feature_contracts/feature_contracts.dart';
 import 'package:atpost_design/image_url_helper.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -115,7 +115,7 @@ class _CommentsScreenState extends ConsumerState<CommentsScreen> {
   }
 
   Widget _buildCommentTile(Comment comment) {
-    final currentUser = ref.read(currentUserProvider).valueOrNull;
+    final currentUser = ref.read(currentAppUserProvider).valueOrNull;
     final isOwn = currentUser != null && comment.authorId == currentUser.id;
 
     final initials = (comment.authorName?.isNotEmpty == true)
