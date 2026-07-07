@@ -1,9 +1,9 @@
 import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_text_styles.dart';
-import 'package:atpost_app/features/services/coming_soon_screen.dart';
-import 'package:atpost_app/features/services/data/service_registry.dart';
-import 'package:atpost_app/features/services/models/service_app.dart';
-import 'package:atpost_app/features/services/service_app_shell.dart';
+import 'package:feature_services/coming_soon_screen.dart';
+import 'package:feature_services/data/service_registry.dart';
+import 'package:feature_services/models/service_app.dart';
+import 'package:feature_services/service_app_shell.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';

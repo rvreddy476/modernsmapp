@@ -1,0 +1,26 @@
+# Settings — account/app settings screens (root, edit-profile, security,
+# notifications, privacy, wellbeing, data-saver, verification). Logout via
+# the AuthSession contract; user data from user_domain, prefs from social_domain.
+name: feature_settings
+description: atPost settings feature.
+version: 0.1.0
+publish_to: none
+environment:
+  sdk: ^3.10.7
+resolution: workspace
+dependencies:
+  flutter:
+    sdk: flutter
+  atpost_core: ^0.1.0
+  atpost_design: ^0.1.0
+  atpost_network: ^0.1.0
+  social_domain: ^0.1.0
+  user_domain: ^0.1.0
+  dio: ^5.9.0
+  image_picker: ^1.1.2
+  flutter_riverpod: ^2.6.1
+  go_router: ^16.3.0
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0

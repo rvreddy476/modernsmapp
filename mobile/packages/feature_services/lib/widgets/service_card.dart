@@ -1,9 +1,9 @@
 import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_spacing.dart';
 import 'package:atpost_design/app_text_styles.dart';
-import 'package:atpost_app/features/services/models/service_app.dart';
-import 'package:atpost_app/features/services/widgets/service_icon.dart';
-import 'package:atpost_app/features/services/widgets/service_status_badge.dart';
+import 'package:feature_services/models/service_app.dart';
+import 'package:feature_services/widgets/service_icon.dart';
+import 'package:feature_services/widgets/service_status_badge.dart';
 import 'package:flutter/material.dart';
 
 enum ServiceCardVariant { grid, list, featured }

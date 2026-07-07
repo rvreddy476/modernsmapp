@@ -1,4 +1,4 @@
-import 'package:atpost_app/features/services/models/service_app.dart';
+import 'package:feature_services/models/service_app.dart';
 import 'package:flutter/material.dart';
 
 /// Curated catalog of internal AtPost mini-apps surfaced under /services.

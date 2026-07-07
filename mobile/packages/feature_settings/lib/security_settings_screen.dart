@@ -3,7 +3,7 @@ import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_spacing.dart';
 import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_network/api_client.dart';
-import 'package:atpost_app/services/auth_service.dart';
+import 'package:atpost_network/auth_session.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -229,7 +229,7 @@ class _SecuritySettingsScreenState
       await ref
           .read(apiClientProvider)
           .post('${Environment.authPath}/logout-all');
-      ref.read(authServiceProvider).logout();
+      ref.read(authSessionProvider).logout();
       if (mounted) context.go('/login');
     } catch (_) {
       if (!mounted) return;

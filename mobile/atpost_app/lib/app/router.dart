@@ -41,11 +41,8 @@ import 'package:atpost_app/features/monetization/subscription_tiers_screen.dart'
 import 'package:atpost_app/features/search/search_results_screen.dart';
 import 'package:atpost_app/features/shell/search_tab.dart';
 import 'package:atpost_app/features/search/video_search_screen.dart';
-import 'package:atpost_app/features/reviewer/reviewer_console_screen.dart';
-import 'package:atpost_app/features/reviewer/reviewer_dashboard_screen.dart';
-import 'package:atpost_app/features/reviewer/needs_changes_screen.dart';
-import 'package:atpost_app/features/services/service_slug_router.dart';
-import 'package:atpost_app/features/services/services_screen.dart';
+import 'package:feature_reviewer/reviewer_routes.dart';
+import 'package:feature_services/services_routes.dart';
 import 'package:atpost_app/features/chat/chat_detail_screen.dart';
 import 'package:atpost_app/features/chat/chat_list_screen.dart';
 import 'package:atpost_app/features/chat/message_requests_screen.dart';
@@ -71,14 +68,7 @@ import 'package:feature_pulse/pulse_routes.dart';
 import 'package:atpost_app/features/mini_apps/mini_apps_screen.dart';
 import 'package:atpost_app/features/mini_apps/mini_app_detail_screen.dart';
 import 'package:atpost_app/features/mini_apps/mini_app_sandbox_screen.dart';
-import 'package:atpost_app/features/settings/data_saver_screen.dart';
-import 'package:atpost_app/features/settings/edit_profile_screen.dart';
-import 'package:atpost_app/features/settings/notification_settings_screen.dart';
-import 'package:atpost_app/features/settings/privacy_settings_screen.dart';
-import 'package:atpost_app/features/settings/security_settings_screen.dart';
-import 'package:atpost_app/features/settings/settings_screen.dart';
-import 'package:atpost_app/features/settings/verification_screen.dart';
-import 'package:atpost_app/features/settings/wellbeing_settings_screen.dart';
+import 'package:feature_settings/settings_routes.dart';
 import 'package:atpost_app/features/shell/shell_scaffold.dart';
 import 'package:atpost_app/features/shop/shop_screen.dart';
 import 'package:atpost_app/services/auth_service.dart';
@@ -442,47 +432,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           ...profileRoutes(),
           ...notificationsRoutes(),
           ...socialRoutes(),
-          GoRoute(
-            path: '/settings',
-            builder: (context, state) => const SettingsScreen(),
-          ),
-          GoRoute(
-            path: '/settings/profile',
-            builder: (context, state) => const EditProfileScreen(),
-          ),
-          GoRoute(
-            path: '/settings/security',
-            builder: (context, state) => const SecuritySettingsScreen(),
-          ),
-          GoRoute(
-            path: '/settings/notifications',
-            builder: (context, state) => const NotificationSettingsScreen(),
-          ),
-          GoRoute(
-            path: '/settings/privacy',
-            builder: (context, state) => const PrivacySettingsScreen(),
-          ),
-          GoRoute(
-            path: '/settings/wellbeing',
-            builder: (_, _) => const WellbeingSettingsScreen(),
-          ),
-          GoRoute(
-            path: '/settings/data-saver',
-            builder: (_, _) => const DataSaverScreen(),
-          ),
-          GoRoute(
-            path: '/settings/verification',
-            builder: (_, _) => const VerificationScreen(),
-          ),
-          GoRoute(
-            path: '/services',
-            builder: (_, _) => const ServicesScreen(),
-          ),
-          GoRoute(
-            path: '/services/:slug',
-            builder: (context, state) =>
-                ServiceSlugRouter(slug: state.pathParameters['slug']!),
-          ),
+          ...settingsRoutes(),
+          ...servicesRoutes(),
           GoRoute(path: '/apps', builder: (_, _) => const MiniAppsScreen()),
           GoRoute(
             path: '/apps/:id',
@@ -538,19 +489,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             path: '/search/videos',
             builder: (context, state) => const VideoSearchScreen(),
           ),
-          GoRoute(
-            path: '/reviewer',
-            builder: (context, state) => const ReviewerConsoleScreen(),
-          ),
-          GoRoute(
-            path: '/reviewer/dashboard',
-            builder: (context, state) => const ReviewerDashboardScreen(),
-          ),
-          GoRoute(
-            path: '/reviewer/feedback/:contentId',
-            builder: (context, state) =>
-                NeedsChangesScreen(contentId: state.pathParameters['contentId']!),
-          ),
+          ...reviewerRoutes(),
           GoRoute(
             path: '/channels',
             builder: (context, state) => const ChannelsListScreen(),

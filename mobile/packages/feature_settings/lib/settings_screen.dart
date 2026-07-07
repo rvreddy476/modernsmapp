@@ -3,7 +3,7 @@ import 'package:atpost_design/app_spacing.dart';
 import 'package:atpost_design/app_text_styles.dart';
 import 'package:user_domain/user_repository.dart';
 import 'package:user_domain/user_provider.dart';
-import 'package:atpost_app/services/auth_service.dart';
+import 'package:atpost_network/auth_session.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -259,7 +259,7 @@ class SettingsScreen extends ConsumerWidget {
                 );
 
                 if (confirmed == true) {
-                  ref.read(authServiceProvider).logout();
+                  ref.read(authSessionProvider).logout();
                   if (context.mounted) {
                     context.go('/login');
                   }

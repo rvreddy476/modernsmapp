@@ -1,10 +1,10 @@
 import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_spacing.dart';
 import 'package:atpost_design/app_text_styles.dart';
-import 'package:atpost_app/features/services/data/service_providers.dart';
-import 'package:atpost_app/features/services/models/service_app.dart';
-import 'package:atpost_app/features/services/widgets/service_icon.dart';
-import 'package:atpost_app/features/services/widgets/service_permission_sheet.dart';
+import 'package:feature_services/data/service_providers.dart';
+import 'package:feature_services/models/service_app.dart';
+import 'package:feature_services/widgets/service_icon.dart';
+import 'package:feature_services/widgets/service_permission_sheet.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';

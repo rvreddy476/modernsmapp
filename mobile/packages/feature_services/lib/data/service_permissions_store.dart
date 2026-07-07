@@ -1,5 +1,5 @@
 import 'package:atpost_core/cache/cache_manager.dart';
-import 'package:atpost_app/features/services/models/service_app.dart';
+import 'package:feature_services/models/service_app.dart';
 
 /// Hive-backed store for which permissions a user has granted/denied per
 /// internal mini-app. No backend; persists locally via [CacheManager].
