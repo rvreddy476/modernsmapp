@@ -32,5 +32,6 @@ workspace:
   - packages/feature_home
   - packages/feature_bookmarks
   - packages/feature_comments
+  - packages/feature_notifications
   - packages/feature_pulse
   - packages/feature_stories

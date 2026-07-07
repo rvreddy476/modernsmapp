@@ -30,7 +30,7 @@ import 'dart:math' as math;
 import 'package:atpost_core/config/environment.dart';
 import 'package:atpost_core/utils/app_logger.dart';
 import 'package:atpost_realtime/realtime_event.dart';
-import 'package:atpost_app/services/auth_service.dart';
+import 'package:atpost_network/auth_session.dart';
 import 'package:atpost_network/interceptors/auth_interceptor.dart';
 import 'package:atpost_network/interceptors/expired_token_interceptor.dart';
 import 'package:dio/dio.dart';
@@ -61,7 +61,7 @@ class NotificationStreamService {
     _dio.interceptors.add(ExpiredTokenInterceptor(_auth, _dio));
   }
 
-  final AuthService _auth;
+  final AuthSession _auth;
   final FlutterSecureStorage _storage;
   late final Dio _dio;
 

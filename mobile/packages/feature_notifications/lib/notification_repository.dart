@@ -1,5 +1,5 @@
 import 'package:atpost_core/config/environment.dart';
-import 'package:atpost_app/data/models/notification.dart';
+import 'package:feature_notifications/notification.dart';
 import 'package:atpost_network/api_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 

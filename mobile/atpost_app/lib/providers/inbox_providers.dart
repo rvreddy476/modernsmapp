@@ -18,10 +18,10 @@
 //   - Each `InboxItem` is immutable; equality is identity-based, used only
 //     to dedupe and key lists.
 
-import 'package:atpost_app/data/models/notification.dart';
+import 'package:feature_notifications/notification.dart';
 import 'package:commerce_domain/models/order.dart';
 import 'package:feature_pulse/models/pulse.dart';
-import 'package:atpost_app/providers/notification_provider.dart';
+import 'package:feature_notifications/notification_provider.dart';
 import 'package:commerce_domain/providers/orders_provider.dart';
 import 'package:feature_pulse/providers/pulse_providers.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';

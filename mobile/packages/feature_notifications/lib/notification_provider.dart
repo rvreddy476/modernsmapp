@@ -1,9 +1,8 @@
-import 'package:atpost_app/data/models/notification.dart';
+import 'package:feature_notifications/notification.dart';
 import 'package:atpost_realtime/realtime_event.dart';
-import 'package:atpost_app/data/repositories/chat_repository.dart';
-import 'package:atpost_app/data/repositories/notification_repository.dart';
-import 'package:atpost_app/services/auth_service.dart';
-import 'package:atpost_app/services/notification_stream_service.dart';
+import 'package:feature_notifications/notification_repository.dart';
+import 'package:atpost_network/auth_session.dart';
+import 'package:feature_notifications/notification_stream_service.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 /// Unread notification count for badge display.
@@ -22,7 +21,7 @@ final unreadNotificationCountProvider = FutureProvider.autoDispose<int>((
 /// down (i.e. process termination).
 final notificationStreamServiceProvider =
     Provider<NotificationStreamService>((ref) {
-  final auth = ref.watch(authServiceProvider);
+  final auth = ref.watch(authSessionProvider);
   final service = NotificationStreamService(auth);
   service.start();
   ref.onDispose(service.dispose);
@@ -36,12 +35,6 @@ final notificationStreamServiceProvider =
 ///     below so the badge and inbox refresh without an explicit fetch
 final liveNotificationsProvider = StreamProvider<NotificationEvent>((ref) {
   return ref.watch(notificationStreamServiceProvider).events;
-});
-
-/// Unread chat message count for badge display.
-final unreadChatCountProvider = FutureProvider.autoDispose<int>((ref) async {
-  final repo = ref.watch(chatRepositoryProvider);
-  return repo.getUnreadCount();
 });
 
 /// Full notifications list provider.

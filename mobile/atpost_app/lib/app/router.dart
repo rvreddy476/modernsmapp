@@ -58,7 +58,7 @@ import 'package:atpost_app/features/live/live_list_screen.dart';
 import 'package:atpost_app/features/live/live_viewer_screen.dart';
 import 'package:atpost_app/features/live/go_live_screen.dart';
 import 'package:atpost_app/features/live/live_broadcaster_screen.dart';
-import 'package:atpost_app/features/notifications/notifications_screen.dart';
+import 'package:feature_notifications/notifications_routes.dart';
 import 'package:atpost_app/features/profile/my_media_screen.dart';
 import 'package:atpost_app/features/profile/profile_detail_screen.dart';
 import 'package:atpost_app/features/social/followers_screen.dart';
@@ -454,10 +454,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
               userId: state.pathParameters['userId'] ?? '',
             ),
           ),
-          GoRoute(
-            path: '/notifications',
-            builder: (context, state) => const NotificationsScreen(),
-          ),
+          ...notificationsRoutes(),
           GoRoute(
             path: '/followers/:userId',
             builder: (context, state) =>
