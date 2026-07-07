@@ -1,7 +1,7 @@
 import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_spacing.dart';
 import 'package:atpost_design/app_text_styles.dart';
-import 'package:atpost_app/data/models/qa.dart';
+import 'package:feature_qa/qa.dart';
 import 'package:flutter/material.dart';
 
 class QaQuestionTile extends StatelessWidget {

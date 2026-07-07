@@ -1,9 +1,9 @@
 import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_text_styles.dart';
-import 'package:atpost_app/data/models/qa.dart';
-import 'package:atpost_app/data/repositories/qa_repository.dart';
-import 'package:atpost_app/features/qa/ask_question_screen.dart';
-import 'package:atpost_app/providers/qa_provider.dart';
+import 'package:feature_qa/qa.dart';
+import 'package:feature_qa/qa_repository.dart';
+import 'package:feature_qa/ask_question_screen.dart';
+import 'package:feature_qa/qa_provider.dart';
 import 'package:shared_ui/glass_icon_button.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';

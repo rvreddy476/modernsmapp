@@ -33,5 +33,6 @@ workspace:
   - packages/feature_bookmarks
   - packages/feature_comments
   - packages/feature_notifications
+  - packages/feature_qa
   - packages/feature_pulse
   - packages/feature_stories

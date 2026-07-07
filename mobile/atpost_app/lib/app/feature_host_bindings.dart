@@ -5,6 +5,7 @@ import 'package:feature_home/hashtag_feed/state/hashtag_feed_notifier.dart';
 import 'package:feature_home/home_providers.dart';
 import 'package:atpost_app/features/monetization/widgets/paywall_preview.dart';
 import 'package:atpost_app/features/shell/shell_providers.dart';
+import 'package:atpost_app/providers/communities_provider.dart';
 import 'package:atpost_app/providers/chat_badge_provider.dart';
 import 'package:feature_notifications/notification_provider.dart';
 import 'package:atpost_app/providers/user_provider.dart';
@@ -111,6 +112,16 @@ List<Override> featureHostBindings() => [
       (ref) => ref.watch(unreadNotificationCountProvider).valueOrNull ?? 0),
   appUnreadChatProvider.overrideWith(
       (ref) => ref.watch(unreadChatCountProvider).valueOrNull ?? 0),
+
+  // Q&A: the signed-in user's communities, for the ask-question community
+  // picker (projected to id+name so feature_qa needn't know the model).
+  appMyCommunitiesProvider.overrideWith((ref) {
+    return ref.watch(myCommunitiesProvider).whenData(
+          (list) => list
+              .map((c) => AppCommunityRef(id: c.id, name: c.name))
+              .toList(),
+        );
+  }),
 
   // Pulse-specific: live chat messages off the shared realtime channel,
   // filtered to the chat wire type and flattened to the Pulse shape.

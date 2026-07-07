@@ -4,8 +4,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import 'package:atpost_app/data/repositories/qa_repository.dart';
-import 'package:atpost_app/data/repositories/user_repository.dart';
+import 'package:feature_qa/qa_repository.dart';
+import 'package:feature_contracts/feature_contracts.dart';
 
 /// Bottom sheet that lets the viewer pick a user to invite to answer a
 /// question. Uses the existing `/v1/search/users` endpoint with debounced
@@ -70,18 +70,17 @@ class _RequestAnswerSheetState extends ConsumerState<RequestAnswerSheet> {
       _searchError = null;
     });
     try {
-      final repo = ref.read(userRepositoryProvider);
-      final result = await repo.searchUsers(q, limit: 10);
+      final results = await ref.read(appUserSearchProvider)(q);
       if (!mounted || _query != q) return;
       setState(() {
-        _results = result.users
+        _results = results
             .map((u) => _PickerEntry(
                   id: u.id,
                   name: u.displayName.isNotEmpty
                       ? u.displayName
                       : (u.username.isNotEmpty ? u.username : u.id),
                   username: u.username,
-                  avatarUrl: u.avatarUrl,
+                  avatarUrl: u.avatarUrl ?? '',
                 ))
             .toList();
       });

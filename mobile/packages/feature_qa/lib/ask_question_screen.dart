@@ -2,10 +2,9 @@ import 'dart:async';
 
 import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_text_styles.dart';
-import 'package:atpost_app/data/models/community.dart';
-import 'package:atpost_app/data/repositories/qa_repository.dart';
-import 'package:atpost_app/providers/communities_provider.dart';
-import 'package:atpost_app/providers/qa_provider.dart';
+import 'package:feature_qa/qa_repository.dart';
+import 'package:feature_contracts/feature_contracts.dart';
+import 'package:feature_qa/qa_provider.dart';
 import 'package:shared_ui/glass_icon_button.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -151,7 +150,7 @@ class _AskQuestionScreenState extends ConsumerState<AskQuestionScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final myCommunitiesAsync = ref.watch(myCommunitiesProvider);
+    final myCommunitiesAsync = ref.watch(appMyCommunitiesProvider);
 
     final bool anonymityEnabled;
     if (_communityId == null) {
@@ -333,7 +332,7 @@ class _AskQuestionScreenState extends ConsumerState<AskQuestionScreen> {
     );
   }
 
-  Widget _buildCommunityDropdown(List<Community> communities) {
+  Widget _buildCommunityDropdown(List<AppCommunityRef> communities) {
     final items = <DropdownMenuItem<String?>>[
       const DropdownMenuItem<String?>(
         value: null,

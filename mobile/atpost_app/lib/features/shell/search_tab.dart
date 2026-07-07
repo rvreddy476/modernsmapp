@@ -16,7 +16,7 @@ import 'package:atpost_design/app_text_styles.dart';
 import 'package:billpay_domain/billpay.dart';
 import 'package:commerce_domain/models/commerce.dart';
 import 'package:social_domain/post.dart';
-import 'package:atpost_app/data/models/qa.dart';
+import 'package:feature_qa/qa.dart';
 import 'package:atpost_app/data/models/user.dart';
 import 'package:atpost_app/providers/unified_search_providers.dart';
 import 'package:atpost_app/services/shell_telemetry.dart';

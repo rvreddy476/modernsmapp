@@ -1,0 +1,25 @@
+# Q&A — the questions/answers surface (feed, ask, detail, search, drafts,
+# per-user profile) plus its model/repository/providers. Self-contained;
+# host couplings via feature_contracts (user search, current user, the
+# community picker), post-rendering helpers from shared_ui.
+name: feature_qa
+description: atPost Q&A feature.
+version: 0.1.0
+publish_to: none
+environment:
+  sdk: ^3.10.7
+resolution: workspace
+dependencies:
+  flutter:
+    sdk: flutter
+  atpost_core: ^0.1.0
+  atpost_design: ^0.1.0
+  atpost_network: ^0.1.0
+  feature_contracts: ^0.1.0
+  shared_ui: ^0.1.0
+  flutter_riverpod: ^2.6.1
+  go_router: ^16.3.0
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
