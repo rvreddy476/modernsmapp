@@ -7,8 +7,10 @@ import 'package:atpost_network/auth_session.dart';
 import 'package:atpost_network/interceptors/auth_interceptor.dart';
 import 'package:atpost_network/interceptors/csrf_interceptor.dart';
 import 'package:atpost_network/interceptors/expired_token_interceptor.dart';
+import 'package:atpost_network/ssl_pinning.dart';
 import 'package:cross_file/cross_file.dart';
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:mime/mime.dart';
 
@@ -35,6 +37,9 @@ class ApiClient {
       'Configured API base URL: ${Environment.apiBaseUrl}',
       tag: _tag,
     );
+
+    _configureSecurity();
+
     // Decode large JSON payloads (feeds, search pages) on a background
     // isolate instead of the UI thread — dio only offloads bodies past
     // its 50KB threshold, so small responses stay on the fast path.
@@ -45,7 +50,7 @@ class ApiClient {
       ExpiredTokenInterceptor(_auth, _dio),
       LogInterceptor(
         requestHeader: true,
-        requestBody: true,
+        requestBody: kDebugMode, // Only log bodies in debug
         responseHeader: true,
         responseBody: false,
         error: true,
@@ -53,6 +58,9 @@ class ApiClient {
       ),
     ]);
   }
+
+  /// Installs the shared SSL-pinning adapter (see ssl_pinning.dart).
+  void _configureSecurity() => configureSslPinning(_dio, tag: _tag);
 
   // --- Core Methods ---
 

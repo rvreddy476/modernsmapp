@@ -16,6 +16,7 @@ dependencies:
   flutter:
     sdk: flutter
   atpost_core: ^0.1.0
+  crypto: ^3.0.6
   dio: ^5.9.0
   flutter_riverpod: ^2.6.1
   cross_file: ^0.3.4

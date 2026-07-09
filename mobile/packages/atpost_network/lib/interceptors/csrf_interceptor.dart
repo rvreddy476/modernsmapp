@@ -1,29 +1,23 @@
-import 'dart:math';
 import 'package:dio/dio.dart';
 
 /// Interceptor to handle CSRF protection.
-/// Mirrors the web app's requirement for X-CSRF-Token on mutating requests.
+///
+/// Strictly server-driven: it captures tokens from 'set-cookie' or 'X-CSRF-Token'
+/// response headers and injects them into subsequent mutating requests.
+/// Client-side generation of CSRF tokens is insecure and prohibited.
 class CsrfInterceptor extends Interceptor {
   String? _csrfToken;
 
-  /// Generates a simple token if one isn't available.
-  /// In a production environment, this might be fetched from a 'priming' endpoint
-  /// or extracted from a response cookie.
-  String _ensureToken() {
-    if (_csrfToken == null) {
-      final random = Random.secure();
-      final values = List<int>.generate(16, (i) => random.nextInt(256));
-      _csrfToken = values.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
-    }
-    return _csrfToken!;
-  }
-
   @override
   void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
-    // Inject CSRF token for mutating methods as required by the backend
+    // Inject CSRF token for mutating methods if available.
+    // If null, the request proceeds—highly secured backends will reject the
+    // mutation, prompting the client to perform a GET 'handshake' first.
     final method = options.method.toUpperCase();
     if (['POST', 'PUT', 'DELETE', 'PATCH'].contains(method)) {
-      options.headers['X-CSRF-Token'] = _ensureToken();
+      if (_csrfToken != null) {
+        options.headers['X-CSRF-Token'] = _csrfToken;
+      }
     }
 
     handler.next(options);

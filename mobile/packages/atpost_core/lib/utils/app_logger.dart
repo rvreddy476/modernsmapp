@@ -30,14 +30,19 @@ class AppLogger {
     Object? error,
     StackTrace? stackTrace,
   }) {
+    // SECURITY: Sanitize sensitive information from logs in all builds.
+    // Prevents accidental leak of JWTs, passwords, or PII to system logs.
+    final sanitizedMessage = _sanitize(message);
+    final sanitizedError = error != null ? _sanitize(error.toString()) : null;
+
     final timestamp = DateTime.now().toIso8601String();
     final logTag = tag != null ? '[$tag]' : '';
-    final fullMessage = '$timestamp [$level]$logTag $message';
+    final fullMessage = '$timestamp [$level]$logTag $sanitizedMessage';
 
     dev.log(
       fullMessage,
       name: 'atpost.app',
-      error: error,
+      error: sanitizedError,
       stackTrace: stackTrace,
       level: _levelToInt(level),
     );
@@ -50,11 +55,11 @@ class AppLogger {
       switch (level) {
         case 'ERROR':
           debugPrint('🚨 CRITICAL ERROR: $fullMessage');
-          if (error != null) debugPrint('   ↳ cause: $error');
+          if (sanitizedError != null) debugPrint('   ↳ cause: $sanitizedError');
           if (stackTrace != null) debugPrint('   ↳ stack: $stackTrace');
         case 'WARN':
           debugPrint('⚠️  $fullMessage');
-          if (error != null) debugPrint('   ↳ cause: $error');
+          if (sanitizedError != null) debugPrint('   ↳ cause: $sanitizedError');
         case 'INFO':
           debugPrint('ℹ️  $fullMessage');
         case 'DEBUG':
@@ -64,6 +69,24 @@ class AppLogger {
       // In a real production app, you might send this to Sentry/Firebase Crashlytics here.
       debugPrint('🚨 CRITICAL ERROR: $fullMessage');
     }
+  }
+
+  /// Removes sensitive patterns (JWTs, auth headers, etc.) from log strings.
+  static String _sanitize(String input) {
+    var output = input;
+    // Mask JWT-like structures (header.payload.signature)
+    output = output.replaceAll(RegExp(r'eyJ[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.?[A-Za-z0-9-_.+/=]*'), '[REDACTED_JWT]');
+    // Mask common Auth/Bearer patterns. NOTE: must use replaceAllMapped —
+    // String.replaceAll inserts the replacement literally and does NOT expand
+    // $1/$2 backreferences, so the old code emitted a literal "$1$2 [REDACTED]".
+    output = output.replaceAllMapped(
+      RegExp(r'(Authorization|Bearer|token|password|secret|key)(=|:)\s*[^\s,]+',
+          caseSensitive: false),
+      (m) => '${m.group(1)}${m.group(2)} [REDACTED]',
+    );
+    // Mask potential email PII
+    output = output.replaceAll(RegExp(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', caseSensitive: false), '[PII_EMAIL]');
+    return output;
   }
 
   static int _levelToInt(String level) {

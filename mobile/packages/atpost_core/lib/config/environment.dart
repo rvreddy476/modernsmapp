@@ -123,6 +123,14 @@ class Environment {
 
   static String get wsGatewayUrl => wsGatewayUri.toString();
 
+  /// SHA-256 Fingerprint of the server's SSL certificate for pinning.
+  /// Format: 'A1:B2:C3...' or plain hex string.
+  /// Leave empty in debug mode to allow proxy tools like Charles/Fiddler.
+  static const String sslFingerprint = String.fromEnvironment(
+    'ATPOST_SSL_FINGERPRINT',
+    defaultValue: '',
+  );
+
   // API paths
   static const String authPath = '/v1/auth';
   static const String usersPath = '/v1/users';

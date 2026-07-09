@@ -59,15 +59,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           '&methods=${Uri.encodeQueryComponent(methods)}',
         );
       } else if (result.requires2fa) {
-        // Existing 2FA path. The dedicated screen isn't shipped on
-        // mobile yet (pre-existing gap), so surface a clear message
-        // until the parity screen lands.
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'Two-factor authentication is required. Please sign in on the web for now.',
-            ),
-          ),
+        // HIGH SECURITY: Redirect to OTP verification for 2FA.
+        // We use the same identifier (email/phone) to track the session.
+        context.push(
+          '/verify-otp?id=${Uri.encodeQueryComponent(email)}&mode=2fa'
+          '&token=${Uri.encodeQueryComponent(result.pendingToken ?? '')}',
         );
       } else {
         ScaffoldMessenger.of(context).showSnackBar(

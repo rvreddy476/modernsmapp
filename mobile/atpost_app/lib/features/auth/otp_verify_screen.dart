@@ -119,29 +119,43 @@ class _OtpVerifyScreenState extends ConsumerState<OtpVerifyScreen> {
         connectTimeout: const Duration(seconds: 10),
       ));
 
+      final is2FA = widget.mode == '2fa';
+      final path = is2FA
+          ? '${Environment.authPath}/verify-2fa'
+          : '${Environment.authPath}/verify-otp';
+
+      final pendingToken = GoRouterState.of(context).uri.queryParameters['token'];
+
       final response = await dio.post(
-        '${Environment.authPath}/verify-otp',
+        path,
         data: {
           'identifier': widget.identifier,
           'code': otp,
+          'pending_token': ?pendingToken,
         },
       );
 
       if (!mounted) return;
 
-      final data = response.data['data'] as Map<String, dynamic>?;
+      final data = response.data['data'] as Map<String, dynamic>? ?? response.data;
 
       if (data != null) {
-        final userId = data['user_id'] as String? ?? '';
-        final token = data['access_token'] as String? ?? '';
-        final refreshToken = data['refresh_token'] as String?;
+        final tokens = data['tokens'] as Map<String, dynamic>? ?? data;
+        final user = data['user'] as Map<String, dynamic>?;
+
+        final userId = user?['id']?.toString() ?? data['user_id']?.toString() ?? '';
+        final token = tokens['access_token']?.toString() ?? tokens['accessToken']?.toString() ?? '';
+        final refreshToken = tokens['refresh_token']?.toString() ?? tokens['refreshToken']?.toString();
 
         if (userId.isNotEmpty && token.isNotEmpty) {
-          ref.read(authServiceProvider).setSession(
+          await ref.read(authServiceProvider).setSession(
                 userId: userId,
                 token: token,
                 refreshToken: refreshToken,
               );
+          // setSession awaits secure-storage writes — re-check liveness
+          // before touching the context again.
+          if (!mounted) return;
         }
       }
 

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:atpost_core/config/environment.dart';
 import 'package:atpost_core/utils/app_logger.dart';
 import 'package:atpost_network/auth_session.dart';
+import 'package:atpost_network/ssl_pinning.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -133,7 +134,14 @@ class AuthService implements AuthSession {
                 'X-Requested-With': 'XMLHttpRequest',
               },
             ),
-          );
+          ) {
+    _configureSecurity();
+  }
+
+  /// Installs the shared SSL-pinning adapter on the dedicated auth Dio so
+  /// pinning is active even for login/refresh (see atpost_network's
+  /// ssl_pinning.dart).
+  void _configureSecurity() => configureSslPinning(_dio, tag: _tag);
 
   /// Restore session from secure storage with fault tolerance and timeout.
   Future<void> restoreSession() async {
@@ -182,9 +190,8 @@ class AuthService implements AuthSession {
       final token = _normalize(results[1]);
       final refreshToken = _normalize(results[2]);
 
-      // PRODUCTION FIX: Only require userId and token.
-      // If refreshToken is missing, session is still valid until token expires.
-      if (userId != null && token != null) {
+      // HIGH SECURITY: Validate token format before attempting to use it.
+      if (userId != null && token != null && _isValidJwt(token)) {
         _state = AuthState(
           userId: userId,
           token: token,
@@ -196,7 +203,7 @@ class AuthService implements AuthSession {
 
         // Refresh at startup when possible so the app does not fan out a burst
         // of requests with an expired access token across multiple tabs.
-        if (refreshToken != null) {
+        if (refreshToken != null && _isValidJwt(refreshToken)) {
           final refreshed = await refreshAccessToken();
           if (refreshed) {
             AppLogger.info(
@@ -211,10 +218,10 @@ class AuthService implements AuthSession {
           }
         }
       } else {
-        // Only clear if we have partial data (cleanup)
+        // Only clear if we have partial or invalid data (cleanup)
         if (userId != null || token != null) {
           await _clearPersistedSession();
-          AppLogger.warn('Cleared incomplete auth session', tag: _tag);
+          AppLogger.warn('Cleared incomplete or invalid auth session', tag: _tag);
         }
       }
     } catch (e, stack) {
@@ -225,6 +232,14 @@ class AuthService implements AuthSession {
         stackTrace: stack,
       );
     }
+  }
+
+  /// Sanity check that a string looks like a JWS-compact JWT: exactly three
+  /// non-empty dot-separated segments (header.payload.signature). A 2-part
+  /// token is unsigned, which we never accept — the backend always signs.
+  bool _isValidJwt(String token) {
+    final parts = token.split('.');
+    return parts.length == 3 && parts.every((p) => p.isNotEmpty);
   }
 
   /// Login with phone/email and password.
