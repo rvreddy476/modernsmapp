@@ -1,9 +1,9 @@
 import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_text_styles.dart';
-import 'package:atpost_app/data/models/conversation.dart';
-import 'package:atpost_app/data/repositories/chat_repository.dart';
-import 'package:atpost_app/providers/chat_provider.dart';
-import 'package:atpost_app/services/auth_service.dart';
+import 'package:feature_chat/conversation.dart';
+import 'package:feature_chat/chat_repository.dart';
+import 'package:feature_chat/chat_provider.dart';
+import 'package:atpost_network/auth_session.dart';
 import 'package:shared_ui/glass_icon_button.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -172,7 +172,7 @@ class _RequestTileState extends ConsumerState<_RequestTile> {
 
   @override
   Widget build(BuildContext context) {
-    final currentUserId = ref.watch(authServiceProvider).userId;
+    final currentUserId = ref.watch(authSessionProvider).userId;
     final convo = widget.conversation;
     final displayName = convo.displayNameFor(currentUserId);
     final initial = displayName.trim().isNotEmpty

@@ -1,4 +1,4 @@
-import 'package:atpost_app/data/models/presence.dart';
+import 'package:feature_chat/presence.dart';
 import 'package:atpost_network/api_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 

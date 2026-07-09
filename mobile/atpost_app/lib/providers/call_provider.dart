@@ -1,5 +1,5 @@
-import 'package:atpost_app/data/models/call.dart';
-import 'package:atpost_app/data/repositories/calls_repository.dart';
+import 'package:feature_calls/call.dart';
+import 'package:feature_calls/calls_repository.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 /// Fetches call history with pagination.

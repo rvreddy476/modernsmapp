@@ -1,4 +1,4 @@
-import 'package:atpost_app/data/models/call.dart';
+import 'package:feature_calls/call.dart';
 import 'package:atpost_network/api_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 

@@ -27,6 +27,8 @@ dependencies:
   feature_reviewer: ^0.1.0
   feature_services: ^0.1.0
   feature_settings: ^0.1.0
+  feature_calls: ^0.1.0
+  feature_chat: ^0.1.0
   feature_channels: ^0.1.0
   feature_pages: ^0.1.0
   feature_shop: ^0.1.0

@@ -1,4 +1,4 @@
-import 'package:atpost_app/data/repositories/chat_repository.dart';
+import 'package:feature_chat/chat_repository.dart';
 import 'package:social_domain/data/feed_repository.dart';
 import 'package:social_domain/data/post_repository.dart';
 import 'package:user_domain/user_repository.dart';

@@ -1,7 +1,7 @@
 import 'dart:async';
 
-import 'package:atpost_app/data/models/presence.dart';
-import 'package:atpost_app/data/repositories/presence_repository.dart';
+import 'package:feature_chat/presence.dart';
+import 'package:feature_chat/presence_repository.dart';
 import 'package:atpost_realtime/realtime_service.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 

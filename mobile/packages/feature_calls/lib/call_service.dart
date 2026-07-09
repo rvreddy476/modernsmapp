@@ -3,8 +3,8 @@ import 'dart:math';
 
 import 'package:atpost_core/errors/app_exception.dart';
 import 'package:atpost_core/utils/app_logger.dart';
-import 'package:atpost_app/data/models/call.dart' as models;
-import 'package:atpost_app/data/repositories/calls_repository.dart';
+import 'package:feature_calls/call.dart' as models;
+import 'package:feature_calls/calls_repository.dart';
 import 'package:user_domain/user_repository.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';

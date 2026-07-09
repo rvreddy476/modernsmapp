@@ -1,9 +1,9 @@
 import 'dart:async';
 
-import 'package:atpost_app/data/models/conversation.dart';
+import 'package:feature_chat/conversation.dart';
 import 'package:atpost_realtime/realtime_event.dart';
-import 'package:atpost_app/data/repositories/chat_repository.dart';
-import 'package:atpost_app/services/auth_service.dart';
+import 'package:feature_chat/chat_repository.dart';
+import 'package:atpost_network/auth_session.dart';
 import 'package:atpost_realtime/realtime_service.dart';
 import 'package:clock/clock.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -17,7 +17,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 /// (StreamProvider) so every existing consumer keeps working unchanged.
 final chatConversationsProvider =
     StreamProvider.autoDispose<List<Conversation>>((ref) async* {
-      final auth = ref.watch(authServiceProvider);
+      final auth = ref.watch(authSessionProvider);
       // Wait for session to be restored before making API calls
       await auth.sessionReady;
 
@@ -65,7 +65,7 @@ final conversationUnreadByUserProvider =
     Provider.autoDispose<Map<String, int>>((ref) {
       final conversations =
           ref.watch(chatConversationsProvider).valueOrNull ?? const [];
-      final me = ref.watch(authServiceProvider).userId;
+      final me = ref.watch(authSessionProvider).userId;
       final byUser = <String, int>{};
       for (final c in conversations) {
         if (c.type == 'group' || c.unreadCount <= 0) continue;
@@ -82,7 +82,7 @@ final conversationUnreadByUserProvider =
 /// conversation list never shows un-accepted requests.
 final messageRequestsProvider =
     FutureProvider.autoDispose<List<Conversation>>((ref) async {
-      final auth = ref.watch(authServiceProvider);
+      final auth = ref.watch(authSessionProvider);
       await auth.sessionReady;
 
       if (!auth.isAuthenticated) {
@@ -110,7 +110,7 @@ final filteredConversationsProvider =
       final conversationsAsync = ref.watch(chatConversationsProvider);
       final query = ref.watch(chatSearchQueryProvider).toLowerCase();
       final activeFilter = ref.watch(chatActiveFilterProvider);
-      final currentUserId = ref.watch(authServiceProvider).userId;
+      final currentUserId = ref.watch(authSessionProvider).userId;
 
       return conversationsAsync.whenData((list) {
         return list.where((conversation) {
@@ -412,7 +412,7 @@ final chatMessagesProvider = StateNotifierProvider.autoDispose
     ) {
       final repo = ref.watch(chatRepositoryProvider);
       final realtime = ref.watch(realtimeServiceProvider);
-      final currentUserId = ref.watch(authServiceProvider).userId;
+      final currentUserId = ref.watch(authSessionProvider).userId;
       return ChatMessagesNotifier(
         repo,
         realtime,

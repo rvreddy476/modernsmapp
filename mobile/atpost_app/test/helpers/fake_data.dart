@@ -1,4 +1,4 @@
-import 'package:atpost_app/data/models/conversation.dart';
+import 'package:feature_chat/conversation.dart';
 import 'package:social_domain/post.dart';
 import 'package:user_domain/user.dart';
 

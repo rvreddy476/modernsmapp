@@ -1,9 +1,9 @@
 import 'dart:async';
 
-import 'package:atpost_app/data/models/conversation.dart';
+import 'package:feature_chat/conversation.dart';
 import 'package:atpost_realtime/realtime_event.dart';
-import 'package:atpost_app/data/repositories/chat_repository.dart';
-import 'package:atpost_app/providers/chat_provider.dart';
+import 'package:feature_chat/chat_repository.dart';
+import 'package:feature_chat/chat_provider.dart';
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';

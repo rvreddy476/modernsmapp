@@ -1,5 +1,5 @@
 import 'dart:math';
-import 'package:atpost_app/data/models/conversation.dart';
+import 'package:feature_chat/conversation.dart';
 import 'package:atpost_network/api_client.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';

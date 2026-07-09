@@ -30,10 +30,8 @@ import 'package:atpost_app/features/shell/search_tab.dart';
 import 'package:feature_search/search_routes.dart';
 import 'package:feature_reviewer/reviewer_routes.dart';
 import 'package:feature_services/services_routes.dart';
-import 'package:atpost_app/features/chat/chat_detail_screen.dart';
-import 'package:atpost_app/features/chat/chat_list_screen.dart';
-import 'package:atpost_app/features/chat/message_requests_screen.dart';
-import 'package:atpost_app/features/calls/call_screen.dart';
+import 'package:feature_chat/chat_routes.dart';
+import 'package:feature_calls/calls_routes.dart';
 // Live streaming v2 (LiveKit / live-service-v2). Routed under /live/v2/*
 // so the legacy v1 screens stay reachable during the gateway cutover.
 import 'package:feature_live/live_routes.dart';
@@ -50,7 +48,7 @@ import 'package:feature_pulse/pulse_routes.dart';
 import 'package:feature_settings/settings_routes.dart';
 import 'package:atpost_app/features/shell/shell_scaffold.dart';
 import 'package:atpost_app/services/auth_service.dart';
-import 'package:atpost_app/services/call_service.dart';
+import 'package:feature_calls/call_service.dart';
 import 'package:atpost_core/utils/app_logger.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -300,25 +298,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                   .toList(),
             ),
           ),
-          GoRoute(
-            path: '/chat',
-            builder: (context, state) => const ChatListScreen(),
-          ),
-          GoRoute(
-            path: '/chat/requests',
-            builder: (context, state) => const MessageRequestsScreen(),
-          ),
-          GoRoute(
-            path: '/chat/:conversationId',
-            builder: (context, state) => ChatDetailScreen(
-              conversationId:
-                  state.pathParameters['conversationId'] ?? 'general',
-            ),
-          ),
-          GoRoute(
-            path: '/call',
-            builder: (context, state) => const CallScreen(),
-          ),
+          ...chatRoutes(),
+          ...callsRoutes(),
           // Follow-Only Public Pages
           ...pagesRoutes(),
           ...posttubeRoutes(),

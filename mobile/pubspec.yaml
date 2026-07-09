@@ -19,6 +19,8 @@ workspace:
   - packages/feature_reviewer
   - packages/feature_services
   - packages/feature_settings
+  - packages/feature_calls
+  - packages/feature_chat
   - packages/feature_channels
   - packages/feature_pages
   - packages/feature_shop

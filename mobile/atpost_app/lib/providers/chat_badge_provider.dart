@@ -1,4 +1,4 @@
-import 'package:atpost_app/data/repositories/chat_repository.dart';
+import 'package:feature_chat/chat_repository.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 /// Unread chat message count for badge display. Lives in the app (not

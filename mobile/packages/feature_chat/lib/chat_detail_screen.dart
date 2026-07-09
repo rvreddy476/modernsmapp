@@ -1,12 +1,12 @@
 import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_spacing.dart';
 import 'package:atpost_design/app_text_styles.dart';
-import 'package:atpost_app/data/models/conversation.dart';
-import 'package:atpost_app/data/models/presence.dart';
-import 'package:atpost_app/providers/chat_provider.dart';
-import 'package:atpost_app/providers/presence_provider.dart';
-import 'package:atpost_app/services/auth_service.dart';
-import 'package:atpost_app/services/call_service.dart';
+import 'package:feature_chat/conversation.dart';
+import 'package:feature_chat/presence.dart';
+import 'package:feature_chat/chat_provider.dart';
+import 'package:feature_chat/presence_provider.dart';
+import 'package:atpost_network/auth_session.dart';
+import 'package:feature_calls/call_service.dart';
 import 'package:atpost_realtime/realtime_service.dart' as rt;
 import 'package:shared_ui/glass_icon_button.dart';
 import 'package:flutter/material.dart';
@@ -94,7 +94,7 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
             _scrollController.position.pixels >=
                 _scrollController.position.maxScrollExtent - 100;
         final isMine = next.messages.isNotEmpty &&
-            next.messages.last.senderId == ref.read(authServiceProvider).userId;
+            next.messages.last.senderId == ref.read(authSessionProvider).userId;
 
         if (wasAtBottom || isMine) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -106,7 +106,7 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
       }
     });
 
-    final currentUserId = ref.watch(authServiceProvider).userId;
+    final currentUserId = ref.watch(authSessionProvider).userId;
     final conversationAsync = ref.watch(
       chatConversationProvider(widget.conversationId),
     );
