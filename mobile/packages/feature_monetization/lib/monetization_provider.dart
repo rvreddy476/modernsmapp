@@ -1,6 +1,6 @@
 import 'package:atpost_core/errors/error_handler.dart';
-import 'package:atpost_app/data/models/monetization.dart';
-import 'package:atpost_app/data/repositories/monetization_repository.dart';
+import 'package:feature_monetization/monetization.dart';
+import 'package:feature_monetization/monetization_repository.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 /// State for the Monetization Dashboard.

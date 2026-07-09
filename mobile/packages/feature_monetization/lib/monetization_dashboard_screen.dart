@@ -1,8 +1,8 @@
 import 'dart:math';
 import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_text_styles.dart';
-import 'package:atpost_app/data/models/monetization.dart';
-import 'package:atpost_app/providers/monetization_provider.dart';
+import 'package:feature_monetization/monetization.dart';
+import 'package:feature_monetization/monetization_provider.dart';
 import 'package:shared_ui/glass_icon_button.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';

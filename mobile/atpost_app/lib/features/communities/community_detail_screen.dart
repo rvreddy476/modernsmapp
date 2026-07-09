@@ -6,7 +6,7 @@ import 'package:feature_qa/qa.dart';
 import 'package:community_domain/communities_repository.dart';
 import 'package:community_domain/community_posts_repository.dart';
 import 'package:feature_qa/question_detail_screen.dart';
-import 'package:atpost_app/features/discover/qa_question_tile.dart';
+import 'package:feature_discover/qa_question_tile.dart';
 import 'package:atpost_app/features/communities/widgets/community_qa_settings_sheet.dart';
 import 'package:community_domain/communities_provider.dart';
 import 'package:community_domain/community_posts_provider.dart';

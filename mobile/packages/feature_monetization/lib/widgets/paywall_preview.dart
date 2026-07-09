@@ -1,4 +1,4 @@
-import 'package:atpost_app/features/monetization/widgets/tier_picker_sheet.dart';
+import 'package:feature_monetization/widgets/tier_picker_sheet.dart';
 import 'package:flutter/material.dart';
 
 /// Inline paywall preview rendered in place of a post body when the

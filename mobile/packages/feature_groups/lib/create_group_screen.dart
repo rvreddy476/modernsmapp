@@ -1,8 +1,8 @@
 import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_spacing.dart';
 import 'package:atpost_design/app_text_styles.dart';
-import 'package:atpost_app/data/repositories/groups_repository.dart';
-import 'package:atpost_app/providers/groups_provider.dart';
+import 'package:feature_groups/groups_repository.dart';
+import 'package:feature_groups/groups_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';

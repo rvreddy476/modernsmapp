@@ -5,7 +5,7 @@
 // new ranked surfaces (multi-entity search, click analytics, multi-entity
 // autocomplete).
 
-import 'package:atpost_app/data/models/search_results.dart';
+import 'package:feature_search/search_results.dart';
 import 'package:atpost_network/api_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 

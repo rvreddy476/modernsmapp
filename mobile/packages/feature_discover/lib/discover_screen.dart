@@ -2,7 +2,7 @@ import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_spacing.dart';
 import 'package:atpost_design/app_text_styles.dart';
 import 'package:user_domain/user_repository.dart';
-import 'package:atpost_app/features/discover/qa_topics_screen.dart';
+import 'package:feature_discover/qa_topics_screen.dart';
 import 'package:feature_services/data/service_registry.dart';
 import 'package:feature_services/models/service_app.dart';
 import 'package:feature_services/widgets/service_icon.dart';

@@ -4,7 +4,7 @@
 // separate proxy entries for each.
 
 import 'package:atpost_core/config/environment.dart';
-import 'package:atpost_app/data/models/live_stream_v2.dart';
+import 'package:feature_live/live_stream_v2.dart';
 import 'package:atpost_network/api_client.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';

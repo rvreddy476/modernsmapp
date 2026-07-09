@@ -6,9 +6,9 @@
 
 import 'dart:async';
 
-import 'package:atpost_app/data/models/live_stream_v2.dart';
+import 'package:feature_live/live_stream_v2.dart';
 import 'package:atpost_realtime/realtime_event.dart';
-import 'package:atpost_app/data/repositories/live_streams_repository.dart';
+import 'package:feature_live/live_streams_repository.dart';
 import 'package:atpost_realtime/realtime_service.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 

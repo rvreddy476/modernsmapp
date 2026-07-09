@@ -3,11 +3,11 @@ import 'dart:async';
 import 'package:atpost_core/errors/app_exception.dart';
 import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_text_styles.dart';
-import 'package:atpost_app/data/models/live_stream.dart';
+import 'package:feature_live/live_stream.dart';
 import 'package:atpost_realtime/realtime_event.dart';
-import 'package:atpost_app/data/repositories/live_repository.dart';
-import 'package:atpost_app/features/live/live_whip_publisher.dart';
-import 'package:atpost_app/services/auth_service.dart';
+import 'package:feature_live/live_repository.dart';
+import 'package:feature_live/live_whip_publisher.dart';
+import 'package:atpost_network/auth_session.dart';
 import 'package:atpost_realtime/realtime_service.dart';
 import 'package:shared_ui/glass_icon_button.dart';
 import 'package:shared_ui/video_player_widget.dart';
@@ -53,7 +53,7 @@ class _BroadcastScreenState extends ConsumerState<BroadcastScreen> {
   String? _error;
   String? _pinnedMessageId;
 
-  String? get _currentUserId => ref.read(authServiceProvider).userId;
+  String? get _currentUserId => ref.read(authSessionProvider).userId;
   bool get _hostCanStart =>
       _stream != null &&
       _isHost(_stream!) &&

@@ -1,11 +1,11 @@
 import 'package:atpost_design/app_images.dart';
 import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_text_styles.dart';
-import 'package:atpost_app/data/models/group.dart';
-import 'package:atpost_app/data/models/group_invite.dart';
-import 'package:atpost_app/data/models/group_post.dart';
-import 'package:atpost_app/data/repositories/groups_repository.dart';
-import 'package:atpost_app/providers/groups_provider.dart';
+import 'package:feature_groups/group.dart';
+import 'package:feature_groups/group_invite.dart';
+import 'package:feature_groups/group_post.dart';
+import 'package:feature_groups/groups_repository.dart';
+import 'package:feature_groups/groups_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';

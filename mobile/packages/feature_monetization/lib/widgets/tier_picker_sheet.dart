@@ -1,4 +1,4 @@
-import 'package:atpost_app/data/repositories/monetization_repository.dart';
+import 'package:feature_monetization/monetization_repository.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 

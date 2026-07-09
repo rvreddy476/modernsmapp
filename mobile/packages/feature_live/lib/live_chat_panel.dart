@@ -6,7 +6,7 @@
 // Expanded. Auto-scrolls to bottom on new messages.
 
 import 'dart:async';
-import 'package:atpost_app/providers/live_streams_provider.dart';
+import 'package:feature_live/live_streams_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 

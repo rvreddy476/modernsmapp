@@ -1,5 +1,5 @@
-import 'package:atpost_app/data/models/group_post.dart';
-import 'package:atpost_app/data/repositories/group_posts_repository.dart';
+import 'package:feature_groups/group_post.dart';
+import 'package:feature_groups/group_posts_repository.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 /// Params for fetching posts in a specific group + optional channel filter.

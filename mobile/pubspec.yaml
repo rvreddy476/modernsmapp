@@ -24,6 +24,12 @@ workspace:
   - packages/feature_shop
   - packages/feature_mini_apps
   - packages/feature_create
+  - packages/feature_groups
+  - packages/feature_hashtag
+  - packages/feature_discover
+  - packages/feature_live
+  - packages/feature_monetization
+  - packages/feature_search
   - packages/feature_social
   - packages/community_domain
   - packages/user_domain

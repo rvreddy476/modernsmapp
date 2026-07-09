@@ -1,7 +1,7 @@
 import 'dart:async';
 
-import 'package:atpost_app/data/models/live_stream.dart';
-import 'package:atpost_app/data/repositories/live_repository.dart';
+import 'package:feature_live/live_stream.dart';
+import 'package:feature_live/live_repository.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 

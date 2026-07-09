@@ -21,35 +21,22 @@ import 'package:feature_shop/shop_routes.dart';
 import 'package:feature_mini_apps/mini_apps_routes.dart';
 import 'package:feature_create/create_routes.dart';
 import 'package:feature_comments/comments_routes.dart';
-import 'package:atpost_app/features/discover/discover_screen.dart';
+import 'package:feature_discover/discover_routes.dart';
+import 'package:feature_hashtag/hashtag_routes.dart';
 import 'package:feature_figo/figo_routes.dart';
-import 'package:atpost_app/features/groups/group_admin_screen.dart';
-import 'package:atpost_app/features/hashtag/hashtag_screen.dart';
-import 'package:atpost_app/features/groups/group_detail_screen.dart';
-import 'package:atpost_app/features/groups/group_post_composer_screen.dart';
-import 'package:atpost_app/features/groups/groups_list_screen.dart';
-import 'package:atpost_app/features/groups/create_group_screen.dart';
-import 'package:atpost_app/features/monetization/creator_analytics_screen.dart';
-import 'package:atpost_app/features/monetization/monetization_dashboard_screen.dart';
-import 'package:atpost_app/features/monetization/payouts_screen.dart';
-import 'package:atpost_app/features/monetization/subscription_tiers_screen.dart';
-import 'package:atpost_app/features/search/search_results_screen.dart';
+import 'package:feature_groups/groups_routes.dart';
+import 'package:feature_monetization/monetization_routes.dart';
 import 'package:atpost_app/features/shell/search_tab.dart';
-import 'package:atpost_app/features/search/video_search_screen.dart';
+import 'package:feature_search/search_routes.dart';
 import 'package:feature_reviewer/reviewer_routes.dart';
 import 'package:feature_services/services_routes.dart';
 import 'package:atpost_app/features/chat/chat_detail_screen.dart';
 import 'package:atpost_app/features/chat/chat_list_screen.dart';
 import 'package:atpost_app/features/chat/message_requests_screen.dart';
 import 'package:atpost_app/features/calls/call_screen.dart';
-import 'package:atpost_app/features/live/live_screen.dart';
-import 'package:atpost_app/features/live/broadcast_screen.dart';
 // Live streaming v2 (LiveKit / live-service-v2). Routed under /live/v2/*
 // so the legacy v1 screens stay reachable during the gateway cutover.
-import 'package:atpost_app/features/live/live_list_screen.dart';
-import 'package:atpost_app/features/live/live_viewer_screen.dart';
-import 'package:atpost_app/features/live/go_live_screen.dart';
-import 'package:atpost_app/features/live/live_broadcaster_screen.dart';
+import 'package:feature_live/live_routes.dart';
 import 'package:feature_notifications/notifications_routes.dart';
 import 'package:feature_profile/profile_routes.dart';
 import 'package:feature_social/social_routes.dart';
@@ -351,38 +338,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           ...pulseRoutes(),
           // Memories (slambooks) — the feature package owns its route table.
           ...memoriesRoutes(),
-          GoRoute(
-            path: '/live',
-            builder: (context, state) => const LiveScreen(),
-          ),
-          GoRoute(
-            path: '/live/broadcast/:streamId',
-            builder: (context, state) => BroadcastScreen(
-              streamId: state.pathParameters['streamId']!,
-              title: state.uri.queryParameters['title'] ?? 'Live Stream',
-            ),
-          ),
-          // Live streaming v2 (LiveKit / live-service-v2).
-          GoRoute(
-            path: '/live/v2',
-            builder: (_, _) => const LiveListScreen(),
-          ),
-          GoRoute(
-            path: '/live/v2/new',
-            builder: (_, _) => const GoLiveScreen(),
-          ),
-          GoRoute(
-            path: '/live/v2/:streamId',
-            builder: (context, state) => LiveViewerScreen(
-              streamId: state.pathParameters['streamId']!,
-            ),
-          ),
-          GoRoute(
-            path: '/live/v2/:streamId/broadcast',
-            builder: (context, state) => LiveBroadcasterScreen(
-              streamId: state.pathParameters['streamId']!,
-            ),
-          ),
+          ...liveRoutes(),
           ...profileRoutes(),
           ...notificationsRoutes(),
           ...socialRoutes(),
@@ -409,72 +365,19 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           // from the last commit that had them (e5796fb), minus the
           // four /communities routes — that feature is disabled.
           ...bookmarksRoutes(),
-          GoRoute(
-            path: '/discover',
-            builder: (context, state) => const DiscoverScreen(),
-          ),
-          GoRoute(
-            path: '/hashtag/:tag',
-            builder: (context, state) => HashtagScreen(
-              tag: state.pathParameters['tag'] ?? '',
-            ),
-          ),
-          GoRoute(
-            path: '/search/results',
-            builder: (context, state) => SearchResultsScreen(
-              query: state.uri.queryParameters['q'] ?? '',
-            ),
-          ),
+          ...discoverRoutes(),
+          ...hashtagRoutes(),
+          ...searchRoutes(),
+          // The unified SearchTab is a shell surface (embeds many feature
+          // tabs), so its route stays app-side.
           GoRoute(
             path: '/search/explore',
             builder: (context, state) => const SearchTab(),
           ),
-          GoRoute(
-            path: '/search/videos',
-            builder: (context, state) => const VideoSearchScreen(),
-          ),
           ...reviewerRoutes(),
           ...channelsRoutes(),
-          GoRoute(
-            path: '/groups',
-            builder: (context, state) => const GroupsListScreen(),
-          ),
-          GoRoute(
-            path: '/groups/create',
-            builder: (context, state) => const CreateGroupScreen(),
-          ),
-          GoRoute(
-            path: '/groups/:groupId',
-            builder: (context, state) =>
-                GroupDetailScreen(groupId: state.pathParameters['groupId']!),
-          ),
-          GoRoute(
-            path: '/groups/:groupId/post',
-            builder: (context, state) => GroupPostComposerScreen(
-              groupId: state.pathParameters['groupId']!,
-            ),
-          ),
-          GoRoute(
-            path: '/groups/:groupId/admin',
-            builder: (context, state) =>
-                GroupAdminScreen(groupId: state.pathParameters['groupId']!),
-          ),
-          GoRoute(
-            path: '/monetization',
-            builder: (context, state) => const MonetizationDashboardScreen(),
-          ),
-          GoRoute(
-            path: '/monetization/tiers',
-            builder: (context, state) => const SubscriptionTiersScreen(),
-          ),
-          GoRoute(
-            path: '/monetization/payouts',
-            builder: (context, state) => const PayoutsScreen(),
-          ),
-          GoRoute(
-            path: '/monetization/analytics',
-            builder: (context, state) => const CreatorAnalyticsScreen(),
-          ),
+          ...groupsRoutes(),
+          ...monetizationRoutes(),
           ...qaRoutes(),
         ],
       ),

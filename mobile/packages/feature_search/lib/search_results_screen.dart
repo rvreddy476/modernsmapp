@@ -15,8 +15,8 @@
 
 import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_text_styles.dart';
-import 'package:atpost_app/data/models/search_results.dart';
-import 'package:atpost_app/providers/search_providers.dart';
+import 'package:feature_search/search_results.dart';
+import 'package:feature_search/search_providers.dart';
 import 'package:atpost_network/api_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';

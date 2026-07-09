@@ -10,8 +10,8 @@
 // `ref.read(searchRecordClickProvider).call(...)` without pulling the
 // repository directly.
 
-import 'package:atpost_app/data/models/search_results.dart';
-import 'package:atpost_app/data/repositories/search_repository.dart';
+import 'package:feature_search/search_results.dart';
+import 'package:feature_search/search_repository.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 /// Initial fetch for a query. Empty / whitespace queries return an

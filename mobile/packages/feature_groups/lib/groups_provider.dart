@@ -1,10 +1,10 @@
 import 'package:atpost_core/errors/error_handler.dart';
-import 'package:atpost_app/data/models/group.dart';
-import 'package:atpost_app/data/models/group_invite.dart';
-import 'package:atpost_app/data/models/group_member.dart';
-import 'package:atpost_app/data/models/group_post.dart';
-import 'package:atpost_app/data/models/group_rule.dart';
-import 'package:atpost_app/data/repositories/groups_repository.dart';
+import 'package:feature_groups/group.dart';
+import 'package:feature_groups/group_invite.dart';
+import 'package:feature_groups/group_member.dart';
+import 'package:feature_groups/group_post.dart';
+import 'package:feature_groups/group_rule.dart';
+import 'package:feature_groups/groups_repository.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 class GroupsState {
