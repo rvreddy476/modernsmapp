@@ -35,7 +35,10 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
     setState(() => _loading = true);
 
     // Goes through AuthService's pinned client, not an ad-hoc Dio.
-    final error = await ref.read(authServiceProvider).requestOtp(identifier);
+    // POST /forgot-password (email or phone) — always 200 for unknown
+    // accounts so attackers can't enumerate users.
+    final error =
+        await ref.read(authServiceProvider).requestPasswordReset(identifier);
 
     if (!mounted) return;
     setState(() => _loading = false);

@@ -166,13 +166,13 @@ void main() {
       ).called(1);
     });
 
-    test('verifyOtp (2fa) forwards the pending token and mints the session',
+    test('verify2fa posts user_id + pending token to /2fa/verify and mints',
         () async {
       when(
-        () => dio.post('/v1/auth/verify-2fa', data: any(named: 'data')),
+        () => dio.post('/v1/auth/2fa/verify', data: any(named: 'data')),
       ).thenAnswer(
         (_) async => Response<Map<String, dynamic>>(
-          requestOptions: RequestOptions(path: '/v1/auth/verify-2fa'),
+          requestOptions: RequestOptions(path: '/v1/auth/2fa/verify'),
           data: {
             'data': {
               'user': {'id': 'user-9'},
@@ -186,11 +186,10 @@ void main() {
       );
 
       final service = AuthService(storage: storage, dio: dio);
-      final error = await service.verifyOtp(
-        identifier: 'user@example.com',
+      final error = await service.verify2fa(
+        userId: 'user-9',
         code: '123456',
         pendingToken: 'pending-1',
-        is2fa: true,
       );
 
       expect(error, isNull);
@@ -200,19 +199,19 @@ void main() {
       expect(service.refreshToken, 'fresh-refresh');
 
       final sent = verify(
-        () => dio.post('/v1/auth/verify-2fa', data: captureAny(named: 'data')),
+        () => dio.post('/v1/auth/2fa/verify', data: captureAny(named: 'data')),
       ).captured.single as Map<String, dynamic>;
+      expect(sent['user_id'], 'user-9');
       expect(sent['pending_token'], 'pending-1');
-      expect(sent['identifier'], 'user@example.com');
       expect(sent['code'], '123456');
     });
 
-    test('verifyOtp (2fa) treats a token-less 200 as a failure', () async {
+    test('verify2fa treats a token-less 200 as a failure', () async {
       when(
-        () => dio.post('/v1/auth/verify-2fa', data: any(named: 'data')),
+        () => dio.post('/v1/auth/2fa/verify', data: any(named: 'data')),
       ).thenAnswer(
         (_) async => Response<Map<String, dynamic>>(
-          requestOptions: RequestOptions(path: '/v1/auth/verify-2fa'),
+          requestOptions: RequestOptions(path: '/v1/auth/2fa/verify'),
           data: {
             'data': {'status': 'ok'},
           },
@@ -220,15 +219,75 @@ void main() {
       );
 
       final service = AuthService(storage: storage, dio: dio);
-      final error = await service.verifyOtp(
-        identifier: 'user@example.com',
+      final error = await service.verify2fa(
+        userId: 'user-9',
         code: '123456',
         pendingToken: 'pending-1',
-        is2fa: true,
       );
 
       expect(error, isNotNull);
       expect(service.isAuthenticated, isFalse);
+    });
+
+    test('verifyLoginOtp posts the backend phone/otp/purpose shape', () async {
+      when(
+        () => dio.post('/v1/auth/verify-otp', data: any(named: 'data')),
+      ).thenAnswer(
+        (_) async => Response<Map<String, dynamic>>(
+          requestOptions: RequestOptions(path: '/v1/auth/verify-otp'),
+          data: {
+            'data': {
+              'user_id': 'user-3',
+              'tokens': {'access_token': 'otp-access'},
+            },
+          },
+        ),
+      );
+
+      final service = AuthService(storage: storage, dio: dio);
+      final error = await service.verifyLoginOtp(
+        phone: '+911234567890',
+        code: '654321',
+      );
+
+      expect(error, isNull);
+      expect(service.userId, 'user-3');
+
+      final sent = verify(
+        () => dio.post('/v1/auth/verify-otp', data: captureAny(named: 'data')),
+      ).captured.single as Map<String, dynamic>;
+      expect(sent['phone'], '+911234567890');
+      expect(sent['otp'], '654321');
+      expect(sent['purpose'], 'login');
+    });
+
+    test('resetPassword posts identifier/code/new_password', () async {
+      when(
+        () => dio.post('/v1/auth/reset-password', data: any(named: 'data')),
+      ).thenAnswer(
+        (_) async => Response<Map<String, dynamic>>(
+          requestOptions: RequestOptions(path: '/v1/auth/reset-password'),
+          data: {
+            'data': {'message': 'Password reset successfully'},
+          },
+        ),
+      );
+
+      final service = AuthService(storage: storage, dio: dio);
+      final error = await service.resetPassword(
+        identifier: 'user@example.com',
+        code: '654321',
+        newPassword: 'brand-new-pass',
+      );
+
+      expect(error, isNull);
+      final sent = verify(
+        () => dio.post('/v1/auth/reset-password',
+            data: captureAny(named: 'data')),
+      ).captured.single as Map<String, dynamic>;
+      expect(sent['identifier'], 'user@example.com');
+      expect(sent['code'], '654321');
+      expect(sent['new_password'], 'brand-new-pass');
     });
 
     test('a rejected refresh token (401) clears the local session', () async {

@@ -18,11 +18,16 @@ class OtpVerifyScreen extends ConsumerStatefulWidget {
   /// navigation logs or deep-link history.
   final String? pendingToken;
 
+  /// The account being 2FA-verified (POST /2fa/verify requires it
+  /// alongside the pending token). Also via `extra`.
+  final String? userId;
+
   const OtpVerifyScreen({
     super.key,
     required this.identifier,
     required this.mode,
     this.pendingToken,
+    this.userId,
   });
 
   @override
@@ -115,16 +120,36 @@ class _OtpVerifyScreenState extends ConsumerState<OtpVerifyScreen> {
       return;
     }
 
+    // Reset mode never verifies here: /reset-password validates the
+    // code together with the new password, so just carry both forward
+    // (code via `extra` — one-time secrets stay out of URLs).
+    if (widget.mode == 'reset') {
+      context.push(
+        '/reset-password?id=${Uri.encodeQueryComponent(widget.identifier)}',
+        extra: otp,
+      );
+      return;
+    }
+
     setState(() => _loading = true);
 
     // Verification runs through AuthService's pinned + CSRF-aware client
     // and mints the session there; this screen only renders the outcome.
-    final error = await ref.read(authServiceProvider).verifyOtp(
-          identifier: widget.identifier,
-          code: otp,
-          pendingToken: widget.pendingToken,
-          is2fa: widget.mode == '2fa',
-        );
+    final auth = ref.read(authServiceProvider);
+    final String? error;
+    if (widget.mode == '2fa') {
+      final userId = widget.userId ?? '';
+      final pendingToken = widget.pendingToken ?? '';
+      error = (userId.isEmpty || pendingToken.isEmpty)
+          ? 'This sign-in session expired. Please log in again.'
+          : await auth.verify2fa(
+              userId: userId,
+              code: otp,
+              pendingToken: pendingToken,
+            );
+    } else {
+      error = await auth.verifyLoginOtp(phone: widget.identifier, code: otp);
+    }
 
     if (!mounted) return;
     setState(() => _loading = false);
@@ -149,8 +174,13 @@ class _OtpVerifyScreenState extends ConsumerState<OtpVerifyScreen> {
   Future<void> _resendCode() async {
     if (_resendCountdown > 0) return;
 
-    final error =
-        await ref.read(authServiceProvider).requestOtp(widget.identifier);
+    // Reset codes come from the forgot-password channel; login OTPs
+    // from the generic (phone) OTP channel. 2FA has no resend — TOTP
+    // codes rotate on their own (the resend row is hidden in that mode).
+    final auth = ref.read(authServiceProvider);
+    final error = widget.mode == 'reset'
+        ? await auth.requestPasswordReset(widget.identifier)
+        : await auth.requestOtp(widget.identifier);
     if (!mounted) return;
 
     if (error == null) {
@@ -214,7 +244,9 @@ class _OtpVerifyScreenState extends ConsumerState<OtpVerifyScreen> {
               ),
               const SizedBox(height: 10),
               Text(
-                'We sent a 6-digit code to\n${widget.identifier}',
+                widget.mode == '2fa'
+                    ? 'Enter the 6-digit code from\nyour authenticator app'
+                    : 'We sent a 6-digit code to\n${widget.identifier}',
                 style: AppTextStyles.body.copyWith(color: AppColors.textTertiary),
                 textAlign: TextAlign.center,
               ),
@@ -310,7 +342,9 @@ class _OtpVerifyScreenState extends ConsumerState<OtpVerifyScreen> {
 
               const SizedBox(height: 28),
 
-              // Resend row
+              // Resend row (2FA codes rotate in the authenticator app —
+              // nothing to resend)
+              if (widget.mode != '2fa')
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:atpost_core/config/environment.dart';
+import 'package:atpost_network/ssl_pinning.dart';
 import 'package:feature_pulse/models/pulse.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -13,6 +14,14 @@ class PulseAuthService {
   static const _keyRefreshToken = 'pulse_refresh_token';
   static const _keySession = 'pulse_session';
 
+  /// Same hardened token storage as the main AuthService: Android
+  /// EncryptedSharedPreferences, iOS keychain readable after first
+  /// unlock and never migrated to other devices via backup.
+  static const _secureStorage = FlutterSecureStorage(
+    aOptions: AndroidOptions(encryptedSharedPreferences: true),
+    iOptions: IOSOptions(accessibility: KeychainAccessibility.first_unlock),
+  );
+
   final FlutterSecureStorage _storage;
   final Dio _dio;
 
@@ -22,7 +31,7 @@ class PulseAuthService {
   late final Future<void> sessionReady;
 
   PulseAuthService({FlutterSecureStorage? storage, Dio? dio})
-    : _storage = storage ?? const FlutterSecureStorage(),
+    : _storage = storage ?? _secureStorage,
       _dio =
           dio ??
           Dio(
@@ -36,6 +45,7 @@ class PulseAuthService {
               },
             ),
           ) {
+    configureSslPinning(_dio, tag: 'PulseAuth');
     sessionReady = restoreSession();
   }
 
@@ -109,8 +119,15 @@ class PulseAuthService {
       _refreshToken = refreshToken;
       await _persistSession();
       return true;
+    } on DioException catch (e) {
+      // Only a definitive rejection (revoked/expired refresh token) kills
+      // the session; a network blip or 5xx must not sign the user out.
+      final status = e.response?.statusCode;
+      if (status == 401 || status == 403) {
+        await clearSession();
+      }
+      return false;
     } catch (_) {
-      await clearSession();
       return false;
     }
   }

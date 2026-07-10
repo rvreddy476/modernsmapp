@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:atpost_core/config/environment.dart';
 import 'package:atpost_network/auth_session.dart';
+import 'package:atpost_network/ssl_pinning.dart';
 import 'package:feature_pulse/services/pulse_auth_service.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -24,6 +25,7 @@ class PulseApiClient {
           },
         ),
       ) {
+    configureSslPinning(_dio, tag: 'PulseApiClient');
     // Deck payloads can be large — decode JSON off the UI thread (dio
     // only offloads bodies past its 50KB threshold).
     _dio.transformer = BackgroundTransformer();

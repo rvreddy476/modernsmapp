@@ -13,6 +13,7 @@ import 'package:atpost_app/features/auth/forgot_password_screen.dart';
 import 'package:atpost_app/features/auth/anomaly_stepup_screen.dart';
 import 'package:atpost_app/features/auth/login_screen.dart';
 import 'package:atpost_app/features/auth/otp_verify_screen.dart';
+import 'package:atpost_app/features/auth/reset_password_screen.dart';
 import 'package:atpost_app/features/auth/register_screen.dart';
 import 'package:feature_bookmarks/bookmarks_routes.dart';
 import 'package:feature_channels/channels_routes.dart';
@@ -59,6 +60,7 @@ const _publicPaths = {
   '/login',
   '/register',
   '/forgot-password',
+  '/reset-password',
   '/verify-otp',
   '/auth/step-up', // A13 anomaly gate — user not yet authenticated.
 };
@@ -280,12 +282,28 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           ),
           GoRoute(
             path: '/verify-otp',
-            builder: (context, state) => OtpVerifyScreen(
+            builder: (context, state) {
+              // 2FA secrets (user id + one-shot pending token) ride in
+              // `extra` (in-memory only) so they never appear in URLs or
+              // navigation logs.
+              final extra = state.extra;
+              final params =
+                  extra is Map ? extra.cast<String, String>() : null;
+              return OtpVerifyScreen(
+                identifier: state.uri.queryParameters['id'] ?? '',
+                mode: state.uri.queryParameters['mode'] ?? 'login',
+                pendingToken: params?['pending_token'],
+                userId: params?['user_id'],
+              );
+            },
+          ),
+          // Final forgot-password step; the one-time reset code arrives
+          // via `extra` from the OTP screen (same reasoning as above).
+          GoRoute(
+            path: '/reset-password',
+            builder: (context, state) => ResetPasswordScreen(
               identifier: state.uri.queryParameters['id'] ?? '',
-              mode: state.uri.queryParameters['mode'] ?? 'login',
-              // One-shot 2FA pending token rides in `extra` (in-memory
-              // only) so it never appears in URLs or navigation logs.
-              pendingToken: state.extra as String?,
+              code: state.extra as String? ?? '',
             ),
           ),
           // A13 anomaly step-up. Reached when login returns

@@ -388,14 +388,16 @@ class AuthService implements AuthSession {
     }
   }
 
-  /// Sends a one-time code to [identifier] (login OTP / password reset).
-  /// Returns null on success, or a user-facing error message. Runs on the
-  /// pinned auth client — auth traffic never uses an ad-hoc Dio.
-  Future<String?> requestOtp(String identifier) async {
+  /// Requests a login OTP for [phone] (POST /request-otp — the backend's
+  /// generic OTP channel is phone-only; password reset goes through
+  /// [requestPasswordReset] instead). Returns null on success, or a
+  /// user-facing error message. Runs on the pinned auth client — auth
+  /// traffic never uses an ad-hoc Dio.
+  Future<String?> requestOtp(String phone, {String purpose = 'login'}) async {
     try {
       await _dio.post(
         '${Environment.authPath}/request-otp',
-        data: {'identifier': identifier},
+        data: {'phone': phone, 'purpose': purpose},
       );
       return null;
     } catch (e, st) {
@@ -405,41 +407,101 @@ class AuthService implements AuthSession {
     }
   }
 
-  /// Verifies a login/reset OTP ([is2fa] false) or a 2FA code gated by a
-  /// one-shot [pendingToken] ([is2fa] true) and mints the session from the
-  /// response. Returns null on success, or a user-facing error message.
-  Future<String?> verifyOtp({
+  /// Starts the forgot-password flow: the server sends a reset code to
+  /// [identifier] (email or phone). The endpoint always returns 200 for
+  /// unknown accounts (anti-enumeration), so null only means "accepted".
+  Future<String?> requestPasswordReset(String identifier) async {
+    try {
+      await _dio.post(
+        '${Environment.authPath}/forgot-password',
+        data: {'identifier': identifier},
+      );
+      return null;
+    } catch (e, st) {
+      AppLogger.error('Password-reset request failed',
+          tag: _tag, error: e, stackTrace: st);
+      return friendlyAuthError(
+          e, 'Failed to send reset code. Please try again.');
+    }
+  }
+
+  /// Completes the forgot-password flow: exchanges the emailed/texted
+  /// [code] plus the [newPassword] in one call (the server validates the
+  /// code at this step — there is no separate verify endpoint).
+  Future<String?> resetPassword({
     required String identifier,
     required String code,
-    String? pendingToken,
-    bool is2fa = false,
+    required String newPassword,
   }) async {
     try {
-      final path = is2fa
-          ? '${Environment.authPath}/verify-2fa'
-          : '${Environment.authPath}/verify-otp';
-      final response = await _dio.post(
-        path,
+      await _dio.post(
+        '${Environment.authPath}/reset-password',
         data: {
           'identifier': identifier,
           'code': code,
-          if (pendingToken != null && pendingToken.isNotEmpty)
-            'pending_token': pendingToken,
+          'new_password': newPassword,
         },
       );
-
-      final data =
-          response.data['data'] as Map<String, dynamic>? ?? response.data;
-      final minted = await _mintSession(data as Map<String, dynamic>?);
-      if (is2fa && !minted) {
-        // A 2FA exchange MUST return tokens; treat a token-less 200 as a
-        // failure instead of bouncing an unauthenticated user to `/`.
-        return 'Verification succeeded but no session was issued. '
-            'Please sign in again.';
-      }
       return null;
     } catch (e, st) {
+      AppLogger.error('Password reset failed',
+          tag: _tag, error: e, stackTrace: st);
+      return friendlyAuthError(
+          e, 'Password reset failed. Check the code and try again.');
+    }
+  }
+
+  /// Verifies a login OTP for [phone] and mints the session
+  /// (POST /verify-otp, purpose=login).
+  Future<String?> verifyLoginOtp({
+    required String phone,
+    required String code,
+  }) async {
+    try {
+      final response = await _dio.post(
+        '${Environment.authPath}/verify-otp',
+        data: {'phone': phone, 'otp': code, 'purpose': 'login'},
+      );
+      final data =
+          response.data['data'] as Map<String, dynamic>? ?? response.data;
+      if (await _mintSession(data as Map<String, dynamic>?)) return null;
+      // 200 without tokens = the server gated this login (2FA / anomaly
+      // step-up envelope). The OTP surface doesn't carry those flows.
+      return 'Additional verification is required for this account. '
+          'Please sign in with your password.';
+    } catch (e, st) {
       AppLogger.error('OTP verification failed',
+          tag: _tag, error: e, stackTrace: st);
+      return friendlyAuthError(e, 'Invalid code. Please try again.');
+    }
+  }
+
+  /// Completes a 2FA-gated login (POST /2fa/verify): exchanges the
+  /// one-shot [pendingToken] minted by login plus the authenticator
+  /// [code] for a real session. Returns null on success.
+  Future<String?> verify2fa({
+    required String userId,
+    required String code,
+    required String pendingToken,
+  }) async {
+    try {
+      final response = await _dio.post(
+        '${Environment.authPath}/2fa/verify',
+        data: {
+          'user_id': userId,
+          'code': code,
+          'pending_token': pendingToken,
+        },
+      );
+      final data =
+          response.data['data'] as Map<String, dynamic>? ?? response.data;
+      if (await _mintSession(data as Map<String, dynamic>?)) return null;
+      // A 2FA exchange MUST return tokens; treat a token-less 200 as a
+      // failure instead of bouncing an unauthenticated user to `/`.
+      return 'Verification succeeded but no session was issued. '
+          'Please sign in again.';
+    } catch (e, st) {
+      AppLogger.error('2FA verification failed',
           tag: _tag, error: e, stackTrace: st);
       return friendlyAuthError(e, 'Invalid code. Please try again.');
     }

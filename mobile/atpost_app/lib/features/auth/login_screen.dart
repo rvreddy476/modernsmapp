@@ -63,11 +63,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           extra: result.pendingToken,
         );
       } else if (result.requires2fa) {
-        // 2FA verification; same identifier tracks the session, pending
-        // token via `extra` (see above).
+        // 2FA verification. POST /2fa/verify needs the user id + the
+        // one-shot pending token — both via `extra` (see above).
         context.push(
           '/verify-otp?id=${Uri.encodeQueryComponent(email)}&mode=2fa',
-          extra: result.pendingToken,
+          extra: <String, String>{
+            'user_id': result.userId ?? '',
+            'pending_token': result.pendingToken ?? '',
+          },
         );
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
