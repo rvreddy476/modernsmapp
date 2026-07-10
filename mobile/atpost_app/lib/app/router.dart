@@ -4,11 +4,9 @@ import 'package:feature_wallet/wallet_routes.dart';
 import 'dart:async';
 
 // Communities feature disabled — consolidated into Groups ("MySpace").
-// Screens kept on disk; no routes reference them.
-// import 'package:atpost_app/features/communities/communities_list_screen.dart';
-// import 'package:atpost_app/features/communities/community_detail_screen.dart';
-// import 'package:atpost_app/features/communities/community_space_screen.dart';
-// import 'package:atpost_app/features/communities/create_community_screen.dart';
+// The screens were deleted 2026-07-11 (recover from git history if the
+// feature returns); the community_domain kernel + contracts stay, as
+// feature_qa's community picker uses them.
 import 'package:atpost_app/features/auth/forgot_password_screen.dart';
 import 'package:atpost_app/features/auth/anomaly_stepup_screen.dart';
 import 'package:atpost_app/features/auth/login_screen.dart';
