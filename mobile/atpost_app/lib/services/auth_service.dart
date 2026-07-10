@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:atpost_core/config/environment.dart';
 import 'package:atpost_core/utils/app_logger.dart';
 import 'package:atpost_network/auth_session.dart';
+import 'package:atpost_network/interceptors/csrf_interceptor.dart';
 import 'package:atpost_network/ssl_pinning.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -121,8 +122,17 @@ class AuthService implements AuthSession {
   @override
   Stream<void> get sessionChanges => stateStream;
 
+  /// Hardened storage: Android falls back from StrongBox/TEE-backed
+  /// EncryptedSharedPreferences instead of plaintext prefs; iOS keeps
+  /// tokens readable after first unlock (background refresh) but never
+  /// migrates them to other devices via backup.
+  static const _secureStorage = FlutterSecureStorage(
+    aOptions: AndroidOptions(encryptedSharedPreferences: true),
+    iOptions: IOSOptions(accessibility: KeychainAccessibility.first_unlock),
+  );
+
   AuthService({FlutterSecureStorage? storage, Dio? dio})
-    : _storage = storage ?? const FlutterSecureStorage(),
+    : _storage = storage ?? _secureStorage,
       _dio =
           dio ??
           Dio(
@@ -136,6 +146,12 @@ class AuthService implements AuthSession {
             ),
           ) {
     _configureSecurity();
+    if (dio == null) {
+      // Same server-driven CSRF handling as ApiClient so the token minted
+      // during login is honored on the very next auth call. Only for the
+      // Dio we own — an injected client brings its own interceptor chain.
+      _dio.interceptors.add(CsrfInterceptor());
+    }
   }
 
   /// Installs the shared SSL-pinning adapter on the dedicated auth Dio so
@@ -242,6 +258,57 @@ class AuthService implements AuthSession {
     return parts.length == 3 && parts.every((p) => p.isNotEmpty);
   }
 
+  /// Extracts user + token material from an auth response body and, when
+  /// complete, installs and persists the session. Single mint path shared
+  /// by login / step-up / OTP / register so validation never drifts.
+  Future<bool> _mintSession(Map<String, dynamic>? data) async {
+    if (data == null) return false;
+
+    final tokens = data['tokens'] as Map<String, dynamic>? ?? data;
+    final user = data['user'] as Map<String, dynamic>?;
+    final uId = user?['id']?.toString() ?? data['user_id']?.toString();
+    final access = tokens['access_token']?.toString() ??
+        tokens['accessToken']?.toString();
+    final refresh = tokens['refresh_token']?.toString() ??
+        tokens['refreshToken']?.toString();
+
+    if (uId == null || uId.isEmpty || access == null || access.isEmpty) {
+      return false;
+    }
+
+    _state = AuthState(
+      userId: uId,
+      token: access,
+      refreshToken: refresh,
+      isAuthenticated: true,
+    );
+    _stateController.add(_state);
+    await _persistSession();
+    return true;
+  }
+
+  /// Human-readable message from the backend's `{"error":{code,message}}`
+  /// envelope. Falls back to [fallback] — raw exception strings never
+  /// reach the UI.
+  static String friendlyAuthError(Object e, String fallback) {
+    if (e is DioException) {
+      final body = e.response?.data;
+      final rawErr = body is Map ? body['error'] : null;
+      final message = rawErr is Map
+          ? (rawErr['message'] as String? ?? rawErr['code'] as String?)
+          : rawErr is String
+              ? rawErr
+              : (body is Map ? body['message'] as String? : null);
+      if (message != null && message.isNotEmpty) return message;
+      if (e.type == DioExceptionType.connectionTimeout ||
+          e.type == DioExceptionType.receiveTimeout ||
+          e.type == DioExceptionType.connectionError) {
+        return 'Network error. Check your connection and try again.';
+      }
+    }
+    return fallback;
+  }
+
   /// Login with phone/email and password.
   Future<LoginResult> login(String identifier, String password) async {
     try {
@@ -284,30 +351,16 @@ class AuthService implements AuthSession {
         );
       }
 
-      final tokens = data['tokens'] as Map<String, dynamic>? ?? data;
-      final user = data['user'] as Map<String, dynamic>?;
-
-      final uId = user?['id']?.toString() ?? data['user_id']?.toString();
-      final access = tokens['access_token']?.toString() ??
-          tokens['accessToken']?.toString();
-      final refresh = tokens['refresh_token']?.toString() ??
-          tokens['refreshToken']?.toString();
-
-      if (access != null && uId != null) {
-        _state = AuthState(
-          userId: uId,
-          token: access,
-          refreshToken: refresh,
-          isAuthenticated: true,
-        );
-        _stateController.add(_state);
-        await _persistSession();
+      if (await _mintSession(data as Map<String, dynamic>?)) {
         return const LoginResult.success();
       }
       return const LoginResult.failure('Authentication response missing tokens.');
     } catch (e, st) {
       AppLogger.error('Login failed', tag: _tag, error: e, stackTrace: st);
-      return LoginResult.failure(e.toString());
+      return LoginResult.failure(friendlyAuthError(
+        e,
+        'Login failed. Check credentials and try again.',
+      ));
     }
   }
 
@@ -327,32 +380,98 @@ class AuthService implements AuthSession {
       );
       final data =
           response.data['data'] as Map<String, dynamic>? ?? response.data;
-      if (data == null) return false;
-
-      final tokens = data['tokens'] as Map<String, dynamic>? ?? data;
-      final user = data['user'] as Map<String, dynamic>?;
-      final uId = user?['id']?.toString() ?? data['user_id']?.toString();
-      final access = tokens['access_token']?.toString() ??
-          tokens['accessToken']?.toString();
-      final refresh = tokens['refresh_token']?.toString() ??
-          tokens['refreshToken']?.toString();
-
-      if (access != null && uId != null) {
-        _state = AuthState(
-          userId: uId,
-          token: access,
-          refreshToken: refresh,
-          isAuthenticated: true,
-        );
-        _stateController.add(_state);
-        await _persistSession();
-        return true;
-      }
-      return false;
+      return _mintSession(data as Map<String, dynamic>?);
     } catch (e, st) {
       AppLogger.error('Step-up verify failed',
           tag: _tag, error: e, stackTrace: st);
       return false;
+    }
+  }
+
+  /// Sends a one-time code to [identifier] (login OTP / password reset).
+  /// Returns null on success, or a user-facing error message. Runs on the
+  /// pinned auth client — auth traffic never uses an ad-hoc Dio.
+  Future<String?> requestOtp(String identifier) async {
+    try {
+      await _dio.post(
+        '${Environment.authPath}/request-otp',
+        data: {'identifier': identifier},
+      );
+      return null;
+    } catch (e, st) {
+      AppLogger.error('OTP request failed',
+          tag: _tag, error: e, stackTrace: st);
+      return friendlyAuthError(e, 'Failed to send code. Please try again.');
+    }
+  }
+
+  /// Verifies a login/reset OTP ([is2fa] false) or a 2FA code gated by a
+  /// one-shot [pendingToken] ([is2fa] true) and mints the session from the
+  /// response. Returns null on success, or a user-facing error message.
+  Future<String?> verifyOtp({
+    required String identifier,
+    required String code,
+    String? pendingToken,
+    bool is2fa = false,
+  }) async {
+    try {
+      final path = is2fa
+          ? '${Environment.authPath}/verify-2fa'
+          : '${Environment.authPath}/verify-otp';
+      final response = await _dio.post(
+        path,
+        data: {
+          'identifier': identifier,
+          'code': code,
+          if (pendingToken != null && pendingToken.isNotEmpty)
+            'pending_token': pendingToken,
+        },
+      );
+
+      final data =
+          response.data['data'] as Map<String, dynamic>? ?? response.data;
+      final minted = await _mintSession(data as Map<String, dynamic>?);
+      if (is2fa && !minted) {
+        // A 2FA exchange MUST return tokens; treat a token-less 200 as a
+        // failure instead of bouncing an unauthenticated user to `/`.
+        return 'Verification succeeded but no session was issued. '
+            'Please sign in again.';
+      }
+      return null;
+    } catch (e, st) {
+      AppLogger.error('OTP verification failed',
+          tag: _tag, error: e, stackTrace: st);
+      return friendlyAuthError(e, 'Invalid code. Please try again.');
+    }
+  }
+
+  /// Registers a new account and signs it in. Returns null on success,
+  /// or a user-facing error message.
+  Future<String?> register({
+    required String email,
+    required String password,
+    required String firstName,
+    required String lastName,
+  }) async {
+    try {
+      final response = await _dio.post(
+        '${Environment.authPath}/register',
+        data: {
+          'email': email,
+          'password': password,
+          'first_name': firstName,
+          'last_name': lastName,
+        },
+      );
+
+      final data =
+          response.data['data'] as Map<String, dynamic>? ?? response.data;
+      if (await _mintSession(data as Map<String, dynamic>?)) return null;
+      return 'Account created but sign-in failed. Please log in.';
+    } catch (e, st) {
+      AppLogger.error('Registration failed',
+          tag: _tag, error: e, stackTrace: st);
+      return friendlyAuthError(e, 'Registration failed. Please try again.');
     }
   }
 
@@ -386,6 +505,28 @@ class AuthService implements AuthSession {
         await _persistSession();
         return true;
       }
+    } on DioException catch (e, st) {
+      AppLogger.error(
+        'Token refresh failed',
+        tag: _tag,
+        error: e,
+        stackTrace: st,
+      );
+      final status = e.response?.statusCode;
+      if (status == 401 || status == 403) {
+        // The refresh token itself was rejected (revoked/expired) — the
+        // session is dead server-side. Clear it locally so the app drops
+        // to the login screen instead of hammering APIs with a stale
+        // access token. Transient failures (5xx, network) keep the
+        // session and retry later.
+        AppLogger.warn(
+          'Refresh token rejected ($status); clearing local session',
+          tag: _tag,
+        );
+        _state = const AuthState();
+        _stateController.add(_state);
+        unawaited(_clearPersistedSession());
+      }
     } catch (e, st) {
       AppLogger.error(
         'Token refresh failed',
@@ -397,12 +538,22 @@ class AuthService implements AuthSession {
     return false;
   }
 
-  /// Sets the session manually (e.g., after registration or OTP verification).
+  /// Sets the session manually (e.g., dev bypasses and tests). Production
+  /// flows mint through [_mintSession] instead. Empty credentials are
+  /// rejected — an "authenticated" session without a token would wedge
+  /// the router redirect loop.
   Future<void> setSession({
     required String userId,
     required String token,
     String? refreshToken,
   }) async {
+    if (userId.isEmpty || token.isEmpty) {
+      AppLogger.error(
+        'Rejected setSession with empty userId/token',
+        tag: _tag,
+      );
+      return;
+    }
     _state = AuthState(
       userId: userId,
       token: token,
@@ -415,9 +566,39 @@ class AuthService implements AuthSession {
 
   @override
   void logout() {
+    final refresh = _normalize(_state.refreshToken);
+    final access = _normalize(_state.token);
     _state = const AuthState();
     _stateController.add(_state);
     unawaited(_clearPersistedSession());
+    if (refresh != null) {
+      unawaited(_revokeServerSession(refresh, access));
+    }
+  }
+
+  /// Best-effort server-side revocation so a leaked refresh token cannot
+  /// outlive the sign-out. Local clearing never waits on this: the user
+  /// is logged out immediately even when offline.
+  Future<void> _revokeServerSession(
+    String refreshToken,
+    String? accessToken,
+  ) async {
+    try {
+      await _dio.post(
+        '${Environment.authPath}/logout',
+        data: {'refresh_token': refreshToken},
+        options: Options(
+          headers: {
+            if (accessToken != null) 'Authorization': 'Bearer $accessToken',
+          },
+        ),
+      );
+    } catch (e) {
+      AppLogger.warn(
+        'Server-side session revoke failed (already signed out locally): $e',
+        tag: _tag,
+      );
+    }
   }
 
   Future<void> _persistSession() async {

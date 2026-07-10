@@ -123,11 +123,15 @@ class Environment {
 
   static String get wsGatewayUrl => wsGatewayUri.toString();
 
-  /// SHA-256 Fingerprint of the server's SSL certificate for pinning.
-  /// Format: 'A1:B2:C3...' or plain hex string.
-  /// Leave empty in debug mode to allow proxy tools like Charles/Fiddler.
-  static const String sslFingerprint = String.fromEnvironment(
-    'ATPOST_SSL_FINGERPRINT',
+  /// Comma-separated SPKI pins for TLS public-key pinning: SHA-256 of
+  /// the server certificate's SubjectPublicKeyInfo, hex or base64.
+  /// Ship the active pin PLUS a backup pin for the standby key so a
+  /// key rotation never bricks installed apps (see
+  /// atpost_network/ssl_pinning.dart for the openssl recipe).
+  /// Empty (and all debug builds) = pinning disabled, so proxy tools
+  /// like Charles/Fiddler keep working locally.
+  static const String sslPins = String.fromEnvironment(
+    'ATPOST_SSL_PINS',
     defaultValue: '',
   );
 

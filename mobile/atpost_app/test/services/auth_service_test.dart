@@ -133,5 +133,169 @@ void main() {
         verifyNoMoreInteractions(storage);
       },
     );
+
+    test('logout revokes the refresh token server-side', () async {
+      when(
+        () => dio.post(
+          '/v1/auth/logout',
+          data: any(named: 'data'),
+          options: any(named: 'options'),
+        ),
+      ).thenAnswer(
+        (_) async => Response<void>(
+          requestOptions: RequestOptions(path: '/v1/auth/logout'),
+        ),
+      );
+
+      final service = AuthService(storage: storage, dio: dio);
+      await service.setSession(
+        userId: 'user-1',
+        token: 'access-token',
+        refreshToken: 'refresh-token',
+      );
+
+      service.logout();
+      await _settleAsyncWork();
+
+      verify(
+        () => dio.post(
+          '/v1/auth/logout',
+          data: {'refresh_token': 'refresh-token'},
+          options: any(named: 'options'),
+        ),
+      ).called(1);
+    });
+
+    test('verifyOtp (2fa) forwards the pending token and mints the session',
+        () async {
+      when(
+        () => dio.post('/v1/auth/verify-2fa', data: any(named: 'data')),
+      ).thenAnswer(
+        (_) async => Response<Map<String, dynamic>>(
+          requestOptions: RequestOptions(path: '/v1/auth/verify-2fa'),
+          data: {
+            'data': {
+              'user': {'id': 'user-9'},
+              'tokens': {
+                'access_token': 'fresh-access',
+                'refresh_token': 'fresh-refresh',
+              },
+            },
+          },
+        ),
+      );
+
+      final service = AuthService(storage: storage, dio: dio);
+      final error = await service.verifyOtp(
+        identifier: 'user@example.com',
+        code: '123456',
+        pendingToken: 'pending-1',
+        is2fa: true,
+      );
+
+      expect(error, isNull);
+      expect(service.isAuthenticated, isTrue);
+      expect(service.userId, 'user-9');
+      expect(service.token, 'fresh-access');
+      expect(service.refreshToken, 'fresh-refresh');
+
+      final sent = verify(
+        () => dio.post('/v1/auth/verify-2fa', data: captureAny(named: 'data')),
+      ).captured.single as Map<String, dynamic>;
+      expect(sent['pending_token'], 'pending-1');
+      expect(sent['identifier'], 'user@example.com');
+      expect(sent['code'], '123456');
+    });
+
+    test('verifyOtp (2fa) treats a token-less 200 as a failure', () async {
+      when(
+        () => dio.post('/v1/auth/verify-2fa', data: any(named: 'data')),
+      ).thenAnswer(
+        (_) async => Response<Map<String, dynamic>>(
+          requestOptions: RequestOptions(path: '/v1/auth/verify-2fa'),
+          data: {
+            'data': {'status': 'ok'},
+          },
+        ),
+      );
+
+      final service = AuthService(storage: storage, dio: dio);
+      final error = await service.verifyOtp(
+        identifier: 'user@example.com',
+        code: '123456',
+        pendingToken: 'pending-1',
+        is2fa: true,
+      );
+
+      expect(error, isNotNull);
+      expect(service.isAuthenticated, isFalse);
+    });
+
+    test('a rejected refresh token (401) clears the local session', () async {
+      when(
+        () => dio.post('/v1/auth/refresh', data: any(named: 'data')),
+      ).thenThrow(
+        DioException(
+          requestOptions: RequestOptions(path: '/v1/auth/refresh'),
+          response: Response<void>(
+            requestOptions: RequestOptions(path: '/v1/auth/refresh'),
+            statusCode: 401,
+          ),
+        ),
+      );
+
+      final service = AuthService(storage: storage, dio: dio);
+      await service.setSession(
+        userId: 'user-1',
+        token: 'access-token',
+        refreshToken: 'revoked-refresh',
+      );
+
+      final refreshed = await service.refreshAccessToken();
+      await _settleAsyncWork();
+
+      expect(refreshed, isFalse);
+      expect(service.isAuthenticated, isFalse);
+      expect(service.token, isNull);
+      verify(() => storage.delete(key: 'auth_refresh_token')).called(1);
+    });
+
+    test('a transient refresh failure (503) keeps the session', () async {
+      when(
+        () => dio.post('/v1/auth/refresh', data: any(named: 'data')),
+      ).thenThrow(
+        DioException(
+          requestOptions: RequestOptions(path: '/v1/auth/refresh'),
+          response: Response<void>(
+            requestOptions: RequestOptions(path: '/v1/auth/refresh'),
+            statusCode: 503,
+          ),
+        ),
+      );
+
+      final service = AuthService(storage: storage, dio: dio);
+      await service.setSession(
+        userId: 'user-1',
+        token: 'access-token',
+        refreshToken: 'refresh-token',
+      );
+
+      final refreshed = await service.refreshAccessToken();
+
+      expect(refreshed, isFalse);
+      expect(service.isAuthenticated, isTrue);
+      expect(service.token, 'access-token');
+    });
+
+    test('setSession rejects empty credentials', () async {
+      final service = AuthService(storage: storage, dio: dio);
+
+      await service.setSession(userId: '', token: '');
+
+      expect(service.isAuthenticated, isFalse);
+      verifyNever(
+        () => storage.write(key: any(named: 'key'), value: any(named: 'value')),
+      );
+    });
   });
 }

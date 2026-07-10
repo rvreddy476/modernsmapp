@@ -283,15 +283,19 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             builder: (context, state) => OtpVerifyScreen(
               identifier: state.uri.queryParameters['id'] ?? '',
               mode: state.uri.queryParameters['mode'] ?? 'login',
+              // One-shot 2FA pending token rides in `extra` (in-memory
+              // only) so it never appears in URLs or navigation logs.
+              pendingToken: state.extra as String?,
             ),
           ),
           // A13 anomaly step-up. Reached when login returns
-          // requires_step_up; carries the one-shot pending_token plus
-          // the methods the server allows for this account.
+          // requires_step_up; carries the one-shot pending_token (via
+          // `extra`, same reasoning as /verify-otp) plus the methods the
+          // server allows for this account.
           GoRoute(
             path: '/auth/step-up',
             builder: (context, state) => AnomalyStepUpScreen(
-              pendingToken: state.uri.queryParameters['token'] ?? '',
+              pendingToken: state.extra as String? ?? '',
               methods: (state.uri.queryParameters['methods'] ?? '')
                   .split(',')
                   .where((s) => s.isNotEmpty)

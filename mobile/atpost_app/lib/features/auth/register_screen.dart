@@ -1,10 +1,7 @@
-import 'package:atpost_core/config/environment.dart';
 import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_spacing.dart';
 import 'package:atpost_design/app_text_styles.dart';
-import 'package:atpost_network/api_client.dart';
 import 'package:atpost_app/services/auth_service.dart';
-import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -60,66 +57,29 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
 
     setState(() => _loading = true);
 
-    try {
-      // Split display name into first/last for backend
-      final nameParts = _displayNameController.text.trim().split(RegExp(r'\s+'));
-      final firstName = nameParts.first;
-      final lastName = nameParts.length > 1 ? nameParts.sublist(1).join(' ') : '';
+    // Split display name into first/last for backend
+    final nameParts = _displayNameController.text.trim().split(RegExp(r'\s+'));
+    final firstName = nameParts.first;
+    final lastName = nameParts.length > 1 ? nameParts.sublist(1).join(' ') : '';
 
-      final response = await ref
-          .read(apiClientProvider)
-          .post(
-            '${Environment.authPath}/register',
-            data: {
-              'email': _emailController.text.trim(),
-              'password': _passwordController.text,
-              'first_name': firstName,
-              'last_name': lastName,
-            },
-          );
+    // Registration + session mint live in AuthService so the request runs
+    // on the pinned auth client and token handling stays in one place.
+    final registerError = await ref.read(authServiceProvider).register(
+          email: _emailController.text.trim(),
+          password: _passwordController.text,
+          firstName: firstName,
+          lastName: lastName,
+        );
 
-      final data = response.data['data'] as Map<String, dynamic>?;
-      if (data == null) {
-        throw Exception('Unexpected response format.');
-      }
+    if (!mounted) return;
+    setState(() => _loading = false);
 
-      final tokens = data['tokens'] as Map<String, dynamic>? ?? data;
-      final user = data['user'] as Map<String, dynamic>?;
-      final userId = user?['id'] as String? ?? data['user_id'] as String? ?? '';
-      final token = tokens['access_token'] as String? ?? '';
-      final refreshToken = tokens['refresh_token'] as String?;
-
-      if (!mounted) return;
-
-      ref
-          .read(authServiceProvider)
-          .setSession(userId: userId, token: token, refreshToken: refreshToken);
-
+    if (registerError == null) {
       context.go('/');
-    } on DioException catch (e) {
-      if (!mounted) return;
-      // Backend returns `{"error":{"code":"WEAK_PASSWORD","message":"..."}}`
-      // — the old `as String?` cast was silently swallowing the
-      // nested message and showing a generic fallback. Unwrap properly.
-      final body = e.response?.data;
-      final rawErr = body is Map ? body['error'] : null;
-      final message = rawErr is Map
-          ? (rawErr['message'] as String? ?? rawErr['code'] as String?)
-          : rawErr is String
-              ? rawErr
-              : (body is Map ? body['message'] as String? : null);
+    } else {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(message ?? 'Registration failed. Please try again.'),
-        ),
+        SnackBar(content: Text(registerError)),
       );
-    } catch (_) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Registration failed. Please try again.')),
-      );
-    } finally {
-      if (mounted) setState(() => _loading = false);
     }
   }
 

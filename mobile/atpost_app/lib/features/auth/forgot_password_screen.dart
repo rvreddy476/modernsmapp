@@ -1,8 +1,7 @@
-import 'package:atpost_core/config/environment.dart';
 import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_spacing.dart';
 import 'package:atpost_design/app_text_styles.dart';
-import 'package:dio/dio.dart';
+import 'package:atpost_app/services/auth_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -35,41 +34,18 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
 
     setState(() => _loading = true);
 
-    try {
-      final dio = Dio(BaseOptions(
-        baseUrl: Environment.apiBaseUrl,
-        connectTimeout: const Duration(seconds: 10),
-      ));
+    // Goes through AuthService's pinned client, not an ad-hoc Dio.
+    final error = await ref.read(authServiceProvider).requestOtp(identifier);
 
-      await dio.post(
-        '${Environment.authPath}/request-otp',
-        data: {'identifier': identifier},
-      );
+    if (!mounted) return;
+    setState(() => _loading = false);
 
-      if (!mounted) return;
-
+    if (error == null) {
       context.push('/verify-otp?id=${Uri.encodeComponent(identifier)}&mode=reset');
-    } on DioException catch (e) {
-      if (!mounted) return;
-      final body = e.response?.data;
-      final rawErr = body is Map ? body['error'] : null;
-      final message = rawErr is Map
-          ? (rawErr['message'] as String? ?? rawErr['code'] as String?)
-          : rawErr is String
-              ? rawErr
-              : (body is Map ? body['message'] as String? : null);
+    } else {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(message ?? 'Failed to send reset code. Please try again.'),
-        ),
+        SnackBar(content: Text(error)),
       );
-    } catch (_) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Failed to send reset code. Please try again.')),
-      );
-    } finally {
-      if (mounted) setState(() => _loading = false);
     }
   }
 

@@ -53,17 +53,21 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         // A13 anomaly enforcement. Hand the pending token + allowed
         // methods to the dedicated screen; user proves they're really
         // themselves via email-OTP or 2FA, then we land at /.
+        //
+        // The one-shot pending token rides in the route's `extra`, never
+        // the URL — query strings end up in router observers, logs and
+        // deep-link history.
         final methods = result.stepUpMethods.join(',');
         context.push(
-          '/auth/step-up?token=${Uri.encodeQueryComponent(result.pendingToken ?? '')}'
-          '&methods=${Uri.encodeQueryComponent(methods)}',
+          '/auth/step-up?methods=${Uri.encodeQueryComponent(methods)}',
+          extra: result.pendingToken,
         );
       } else if (result.requires2fa) {
-        // HIGH SECURITY: Redirect to OTP verification for 2FA.
-        // We use the same identifier (email/phone) to track the session.
+        // 2FA verification; same identifier tracks the session, pending
+        // token via `extra` (see above).
         context.push(
-          '/verify-otp?id=${Uri.encodeQueryComponent(email)}&mode=2fa'
-          '&token=${Uri.encodeQueryComponent(result.pendingToken ?? '')}',
+          '/verify-otp?id=${Uri.encodeQueryComponent(email)}&mode=2fa',
+          extra: result.pendingToken,
         );
       } else {
         ScaffoldMessenger.of(context).showSnackBar(

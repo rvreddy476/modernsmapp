@@ -1,11 +1,9 @@
 import 'dart:async';
 
-import 'package:atpost_core/config/environment.dart';
 import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_spacing.dart';
 import 'package:atpost_design/app_text_styles.dart';
 import 'package:atpost_app/services/auth_service.dart';
-import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -13,12 +11,18 @@ import 'package:go_router/go_router.dart';
 
 class OtpVerifyScreen extends ConsumerStatefulWidget {
   final String identifier;
-  final String mode; // 'login' | 'reset'
+  final String mode; // 'login' | 'reset' | '2fa'
+
+  /// One-shot server token gating the 2FA exchange. Passed via the
+  /// router's `extra` (never the URL) so it can't leak through
+  /// navigation logs or deep-link history.
+  final String? pendingToken;
 
   const OtpVerifyScreen({
     super.key,
     required this.identifier,
     required this.mode,
+    this.pendingToken,
   });
 
   @override
@@ -113,75 +117,26 @@ class _OtpVerifyScreenState extends ConsumerState<OtpVerifyScreen> {
 
     setState(() => _loading = true);
 
-    try {
-      final dio = Dio(BaseOptions(
-        baseUrl: Environment.apiBaseUrl,
-        connectTimeout: const Duration(seconds: 10),
-      ));
+    // Verification runs through AuthService's pinned + CSRF-aware client
+    // and mints the session there; this screen only renders the outcome.
+    final error = await ref.read(authServiceProvider).verifyOtp(
+          identifier: widget.identifier,
+          code: otp,
+          pendingToken: widget.pendingToken,
+          is2fa: widget.mode == '2fa',
+        );
 
-      final is2FA = widget.mode == '2fa';
-      final path = is2FA
-          ? '${Environment.authPath}/verify-2fa'
-          : '${Environment.authPath}/verify-otp';
+    if (!mounted) return;
+    setState(() => _loading = false);
 
-      final pendingToken = GoRouterState.of(context).uri.queryParameters['token'];
-
-      final response = await dio.post(
-        path,
-        data: {
-          'identifier': widget.identifier,
-          'code': otp,
-          'pending_token': ?pendingToken,
-        },
-      );
-
-      if (!mounted) return;
-
-      final data = response.data['data'] as Map<String, dynamic>? ?? response.data;
-
-      if (data != null) {
-        final tokens = data['tokens'] as Map<String, dynamic>? ?? data;
-        final user = data['user'] as Map<String, dynamic>?;
-
-        final userId = user?['id']?.toString() ?? data['user_id']?.toString() ?? '';
-        final token = tokens['access_token']?.toString() ?? tokens['accessToken']?.toString() ?? '';
-        final refreshToken = tokens['refresh_token']?.toString() ?? tokens['refreshToken']?.toString();
-
-        if (userId.isNotEmpty && token.isNotEmpty) {
-          await ref.read(authServiceProvider).setSession(
-                userId: userId,
-                token: token,
-                refreshToken: refreshToken,
-              );
-          // setSession awaits secure-storage writes — re-check liveness
-          // before touching the context again.
-          if (!mounted) return;
-        }
-      }
-
+    if (error == null) {
       context.go('/');
-    } on DioException catch (e) {
-      if (!mounted) return;
-      final body = e.response?.data;
-      final rawErr = body is Map ? body['error'] : null;
-      final message = rawErr is Map
-          ? (rawErr['message'] as String? ?? rawErr['code'] as String?)
-          : rawErr is String
-              ? rawErr
-              : (body is Map ? body['message'] as String? : null);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(message ?? 'Invalid code. Please try again.')),
-      );
-      _clearOtp();
-    } catch (_) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Verification failed. Please try again.')),
-      );
-      _clearOtp();
-    } finally {
-      if (mounted) setState(() => _loading = false);
+      return;
     }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(error)),
+    );
+    _clearOtp();
   }
 
   void _clearOtp() {
@@ -194,27 +149,18 @@ class _OtpVerifyScreenState extends ConsumerState<OtpVerifyScreen> {
   Future<void> _resendCode() async {
     if (_resendCountdown > 0) return;
 
-    try {
-      final dio = Dio(BaseOptions(
-        baseUrl: Environment.apiBaseUrl,
-        connectTimeout: const Duration(seconds: 10),
-      ));
+    final error =
+        await ref.read(authServiceProvider).requestOtp(widget.identifier);
+    if (!mounted) return;
 
-      await dio.post(
-        '${Environment.authPath}/request-otp',
-        data: {'identifier': widget.identifier},
-      );
-
-      if (!mounted) return;
-
+    if (error == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Code resent successfully.')),
       );
       _startResendTimer();
-    } catch (_) {
-      if (!mounted) return;
+    } else {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Failed to resend code. Please try again.')),
+        SnackBar(content: Text(error)),
       );
     }
   }
