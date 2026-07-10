@@ -130,6 +130,10 @@ class Environment {
   /// atpost_network/ssl_pinning.dart for the openssl recipe).
   /// Empty (and all debug builds) = pinning disabled, so proxy tools
   /// like Charles/Fiddler keep working locally.
+  ///
+  /// Live cleestudio.com pin as of 2026-07-11 (recompute before every
+  /// release — key rotations change it):
+  ///   xpuRqs0j1GuzFcMLp8LKHm1+nIH4iFTHGDvc4zvYqrg=
   static const String sslPins = String.fromEnvironment(
     'ATPOST_SSL_PINS',
     defaultValue: '',
