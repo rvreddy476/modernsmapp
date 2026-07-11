@@ -73,6 +73,17 @@ type MenuItem struct {
 	Metadata           map[string]any `json:"metadata,omitempty"`
 }
 
+type SearchDishResult struct {
+	MenuItem
+	RestaurantName         string   `json:"restaurant_name"`
+	RestaurantCity         string   `json:"restaurant_city,omitempty"`
+	RestaurantCuisines     []string `json:"restaurant_cuisines"`
+	RestaurantHeroImageURL string   `json:"restaurant_hero_image_url,omitempty"`
+	RestaurantRating       float64  `json:"restaurant_rating"`
+	RestaurantIsOpen       bool     `json:"restaurant_is_open"`
+	CategoryName           string   `json:"category_name,omitempty"`
+}
+
 type Cart struct {
 	ID           uuid.UUID      `json:"id"`
 	UserID       uuid.UUID      `json:"user_id"`

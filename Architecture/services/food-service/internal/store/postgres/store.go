@@ -165,6 +165,124 @@ func (s *Store) ListRestaurants(ctx context.Context, filter RestaurantFilter) ([
 	return restaurants, rows.Err()
 }
 
+func (s *Store) SearchDishes(ctx context.Context, filter RestaurantFilter) ([]SearchDishResult, error) {
+	limit := filter.Limit
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+
+	var args []any
+	clauses := []string{
+		"r.status = 'ACTIVE'",
+		"r.is_accepting_orders = TRUE",
+		"c.is_active = TRUE",
+		"i.is_active = TRUE",
+		"i.is_available = TRUE",
+	}
+	if strings.TrimSpace(filter.City) != "" {
+		args = append(args, filter.City)
+		clauses = append(clauses, fmt.Sprintf("LOWER(r.city) = LOWER($%d)", len(args)))
+	}
+	if strings.TrimSpace(filter.Query) != "" {
+		args = append(args, "%"+strings.ToLower(strings.TrimSpace(filter.Query))+"%")
+		clauses = append(clauses, fmt.Sprintf(`(
+			LOWER(i.name) LIKE $%d
+			OR LOWER(COALESCE(i.description, '')) LIKE $%d
+			OR LOWER(c.name) LIKE $%d
+			OR LOWER(r.name) LIKE $%d
+			OR EXISTS (
+				SELECT 1
+				FROM food.restaurant_cuisines rc
+				JOIN food.cuisines cu ON cu.id = rc.cuisine_id
+				WHERE rc.restaurant_id = r.id AND LOWER(cu.name) LIKE $%d
+			)
+		)`, len(args), len(args), len(args), len(args), len(args)))
+	}
+	args = append(args, limit)
+
+	query := fmt.Sprintf(`
+		SELECT
+			i.id,
+			i.restaurant_id,
+			i.category_id,
+			i.name,
+			COALESCE(i.description, ''),
+			i.food_type::text,
+			i.base_price::float8,
+			COALESCE(i.discount_price, 0)::float8,
+			COALESCE(i.image_url, ''),
+			i.preparation_minutes,
+			i.is_available,
+			i.is_recommended,
+			i.tax_percentage::float8,
+			i.metadata,
+			r.name,
+			r.city,
+			COALESCE((
+				SELECT string_agg(cu.name, ', ' ORDER BY cu.sort_order, cu.name)
+				FROM food.restaurant_cuisines rc
+				JOIN food.cuisines cu ON cu.id = rc.cuisine_id
+				WHERE rc.restaurant_id = r.id
+			), ''),
+			COALESCE((
+				SELECT image_url
+				FROM food.restaurant_images ri
+				WHERE ri.restaurant_id = r.id AND ri.is_active = TRUE
+				ORDER BY CASE WHEN ri.image_type = 'hero' THEN 0 ELSE 1 END, ri.sort_order
+				LIMIT 1
+			), ''),
+			r.avg_rating::float8,
+			r.is_open,
+			c.name
+		FROM food.menu_items i
+		JOIN food.menu_categories c ON c.id = i.category_id
+		JOIN food.restaurants r ON r.id = i.restaurant_id
+		WHERE %s
+		ORDER BY r.is_open DESC, i.is_recommended DESC, r.avg_rating DESC, i.name
+		LIMIT $%d
+	`, strings.Join(clauses, " AND "), len(args))
+
+	rows, err := s.db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var dishes []SearchDishResult
+	for rows.Next() {
+		var item SearchDishResult
+		var cuisines string
+		if err := rows.Scan(
+			&item.ID,
+			&item.RestaurantID,
+			&item.CategoryID,
+			&item.Name,
+			&item.Description,
+			&item.FoodType,
+			&item.BasePrice,
+			&item.DiscountPrice,
+			&item.ImageURL,
+			&item.PreparationMinutes,
+			&item.IsAvailable,
+			&item.IsRecommended,
+			&item.TaxPercentage,
+			&item.Metadata,
+			&item.RestaurantName,
+			&item.RestaurantCity,
+			&cuisines,
+			&item.RestaurantHeroImageURL,
+			&item.RestaurantRating,
+			&item.RestaurantIsOpen,
+			&item.CategoryName,
+		); err != nil {
+			return nil, err
+		}
+		item.RestaurantCuisines = splitCSV(cuisines)
+		dishes = append(dishes, item)
+	}
+	return dishes, rows.Err()
+}
+
 func (s *Store) GetRestaurant(ctx context.Context, id uuid.UUID) (*RestaurantDetail, error) {
 	row := s.db.QueryRow(ctx, `
 		SELECT

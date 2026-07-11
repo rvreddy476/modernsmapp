@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:atpost_design/app_images.dart';
 import 'package:atpost_design/app_colors.dart';
 import 'package:atpost_design/app_spacing.dart';
@@ -23,6 +25,9 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
   _FigoRole _role = _FigoRole.customer;
   String _paymentMethod = 'COD';
 
+  /// Active cuisine chip; filters the nearby-restaurant list client-side.
+  String? _cuisineFilter;
+
   @override
   void initState() {
     super.initState();
@@ -31,43 +36,58 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
 
   Future<_FigoSnapshot> _load() async {
     final api = ref.read(apiClientProvider);
-    // Customer-facing data — always loaded.
-    final home = await _safeLoad<_FigoHome>(() async {
-      final data = _responseData((await api.get('/v1/food/home')).data);
-      return _FigoHome.fromJson(data);
-    }, fallback: const _FigoHome(cuisines: [], restaurants: []));
-    final cart = await _safeLoad<_FigoCart?>(() async {
-      final data = _responseData((await api.get('/v1/food/cart')).data);
-      return _FigoCart.fromJson(data);
-    }, fallback: null);
-    final orders = await _safeLoad<List<_FigoOrder>>(() async {
-      final data = _responseData((await api.get('/v1/food/orders')).data);
-      return _items(data).map(_FigoOrder.fromJson).toList();
-    }, fallback: const []);
-    final addresses = await _safeLoad<List<_FigoAddress>>(() async {
-      final data = _responseData((await api.get('/v1/food/addresses')).data);
-      return _items(data).map(_FigoAddress.fromJson).toList();
-    }, fallback: const []);
+    // Customer-facing data — always loaded, and fetched IN PARALLEL:
+    // the previous sequential awaits stacked 4-6 round-trips into a
+    // waterfall before first paint.
+    final results = await Future.wait([
+      _safeLoad<_FigoHome>(() async {
+        final data = _responseData((await api.get('/v1/food/home')).data);
+        return _FigoHome.fromJson(data);
+      }, fallback: const _FigoHome(cuisines: [], restaurants: [])),
+      _safeLoad<_FigoCart?>(() async {
+        final data = _responseData((await api.get('/v1/food/cart')).data);
+        return _FigoCart.fromJson(data);
+      }, fallback: null),
+      _safeLoad<List<_FigoOrder>>(() async {
+        final data = _responseData((await api.get('/v1/food/orders')).data);
+        return _items(data).map(_FigoOrder.fromJson).toList();
+      }, fallback: const <_FigoOrder>[]),
+      _safeLoad<List<_FigoAddress>>(() async {
+        final data = _responseData((await api.get('/v1/food/addresses')).data);
+        return _items(data).map(_FigoAddress.fromJson).toList();
+      }, fallback: const <_FigoAddress>[]),
+    ]);
+    final home = results[0] as _FigoHome;
+    final cart = results[1] as _FigoCart?;
+    final orders = results[2] as List<_FigoOrder>;
+    final addresses = results[3] as List<_FigoAddress>;
     const double walletBalance = 0;
-    final tracking = await _safeLoad<_OrderTracking?>(() async {
-      if (orders.isEmpty) return null;
-      final data = _responseData(
-        (await api.get('/v1/food/orders/${orders.first.id}/tracking')).data,
-      );
-      return _OrderTracking.fromJson(data);
-    }, fallback: null);
-    // P2 batching: when the tracked order is part of a multi-pickup
-    // batch, the customer banner says "delivered alongside N orders".
-    // 404 → null; we render nothing for solo orders.
-    final batch = await _safeLoad<_OrderBatch?>(() async {
-      if (orders.isEmpty) return null;
-      final data = _responseData(
-        (await api.get(
-          '/v1/food/delivery/orders/${orders.first.id}/batch',
-        )).data,
-      );
-      return _OrderBatch.fromJson(data, orders.first.id);
-    }, fallback: null);
+
+    // Tracking + batch depend on the first order id — fetch them in
+    // parallel with each other once orders are known.
+    final trackingAndBatch = await Future.wait([
+      _safeLoad<_OrderTracking?>(() async {
+        if (orders.isEmpty) return null;
+        final data = _responseData(
+          (await api.get('/v1/food/orders/${orders.first.id}/tracking')).data,
+        );
+        return _OrderTracking.fromJson(data);
+      }, fallback: null),
+      // P2 batching: when the tracked order is part of a multi-pickup
+      // batch, the customer banner says "delivered alongside N orders".
+      // 404 → null; we render nothing for solo orders.
+      _safeLoad<_OrderBatch?>(() async {
+        if (orders.isEmpty) return null;
+        final data = _responseData(
+          (await api.get(
+            '/v1/food/delivery/orders/${orders.first.id}/batch',
+          )).data,
+        );
+        return _OrderBatch.fromJson(data, orders.first.id);
+      }, fallback: null),
+    ]);
+    final tracking = trackingAndBatch[0] as _OrderTracking?;
+    final batch = trackingAndBatch[1] as _OrderBatch?;
 
     // Role-gated data — only fetched when the matching workspace is
     // open. P0.5: a customer must never hit /v1/food/admin/* or
@@ -170,6 +190,25 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
     }
   }
 
+  // Idempotency keys are minted once per user intent and reused across
+  // retries. The old pattern regenerated the key on every attempt, so a
+  // timed-out request followed by a user retry looked like two distinct
+  // orders/payments to the server (double-order / double-charge risk).
+  // A key is dropped only after the server acknowledges the intent.
+  final Map<String, String> _idemKeys = {};
+
+  Options _idempotent(String intent) => Options(
+        headers: {
+          'Idempotency-Key': _idemKeys.putIfAbsent(
+            intent,
+            () => '$intent-${DateTime.now().microsecondsSinceEpoch}'
+                '-${identityHashCode(Object())}',
+          ),
+        },
+      );
+
+  void _idemDone(String intent) => _idemKeys.remove(intent);
+
   void _retry() {
     setState(() {
       _snapshotFuture = _load();
@@ -220,31 +259,31 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
     _DeliveryAssignment assignment,
     String action,
   ) async {
-    await ref
-        .read(apiClientProvider)
-        .post(
+    final intent = 'delivery-${assignment.id}-$action';
+    await ref.read(apiClientProvider).post(
           '/v1/food/delivery/assignments/${assignment.id}/$action',
-          options: Options(
-            headers: {
-              'Idempotency-Key':
-                  'figo-delivery-${DateTime.now().microsecondsSinceEpoch}',
-            },
-          ),
+          options: _idempotent(intent),
         );
+    _idemDone(intent);
   }
 
   Future<void> _partnerOrderAction(_FigoOrder order, String action) async {
-    await ref
-        .read(apiClientProvider)
-        .post(
+    final intent = 'partner-${order.id}-$action';
+    await ref.read(apiClientProvider).post(
           '/v1/food/partner/orders/${order.id}/$action',
-          options: Options(
-            headers: {
-              'Idempotency-Key':
-                  'figo-partner-${DateTime.now().microsecondsSinceEpoch}',
-            },
-          ),
+          options: _idempotent(intent),
         );
+    _idemDone(intent);
+  }
+
+  Future<void> _cancelOrder(_FigoOrder order) async {
+    final intent = 'cancel-${order.id}';
+    await ref.read(apiClientProvider).post(
+          '/v1/food/orders/${order.id}/cancel',
+          data: {'reason': 'Cancelled by customer from FiGo mobile'},
+          options: _idempotent(intent),
+        );
+    _idemDone(intent);
   }
 
   Future<void> _rateOrder(_FigoOrder order, String target) async {
@@ -258,6 +297,9 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
 
   Future<void> _placeOrder(_FigoAddress address, String paymentMethod) async {
     final api = ref.read(apiClientProvider);
+    // One key per checkout attempt: a timeout + retry must replay THIS
+    // order, not create a second one.
+    const placeIntent = 'place-order';
     final response = await api.post(
       '/v1/food/orders',
       data: {
@@ -265,27 +307,20 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
         'payment_method': paymentMethod,
         'customer_instruction': 'Placed from FiGo mobile',
       },
-      options: Options(
-        headers: {
-          'Idempotency-Key':
-              'figo-mobile-${DateTime.now().microsecondsSinceEpoch}',
-        },
-      ),
+      options: _idempotent(placeIntent),
     );
+    _idemDone(placeIntent);
     final order = _FigoOrder.fromJson(_responseData(response.data));
     if (paymentMethod != 'COD') {
+      final payIntent = 'pay-${order.id}';
       final intent = _responseData(
         (await api.post(
           '/v1/food/orders/${order.id}/payments/intents',
           data: {'method': paymentMethod},
-          options: Options(
-            headers: {
-              'Idempotency-Key':
-                  'figo-pay-${DateTime.now().microsecondsSinceEpoch}',
-            },
-          ),
+          options: _idempotent(payIntent),
         )).data,
       );
+      _idemDone(payIntent);
       if (paymentMethod == 'WALLET') {
         await api.post(
           '/v1/food/orders/${order.id}/payments/confirm',
@@ -295,6 +330,32 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
         );
       }
     }
+  }
+
+  /// Creates a delivery address (POST /v1/food/addresses). Without this
+  /// a new user has no way to add an address and can never check out.
+  Future<void> _createAddress(Map<String, dynamic> body) async {
+    await ref.read(apiClientProvider).post('/v1/food/addresses', data: body);
+  }
+
+  Future<void> _showSearchSheet() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppColors.bgSecondary,
+      builder: (context) => const _FigoSearchSheet(),
+    );
+  }
+
+  Future<void> _showAddAddressSheet() async {
+    final body = await showModalBottomSheet<Map<String, dynamic>>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppColors.bgSecondary,
+      builder: (context) => const _AddAddressSheet(),
+    );
+    if (body == null || !mounted) return;
+    await _runAction(() => _createAddress(body));
   }
 
   Future<void> _updateDeliveryLocation() async {
@@ -326,20 +387,13 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
   }
 
   Future<void> _adminOrderAction(_FigoOrder order, String action) async {
-    await ref
-        .read(apiClientProvider)
-        .post(
+    final intent = 'admin-${order.id}-$action';
+    await ref.read(apiClientProvider).post(
           '/v1/food/admin/orders/${order.id}/$action',
           data: {'reason': 'Updated from mobile FiGo console'},
-          options: action == 'refund'
-              ? Options(
-                  headers: {
-                    'Idempotency-Key':
-                        'figo-admin-${DateTime.now().microsecondsSinceEpoch}',
-                  },
-                )
-              : null,
+          options: action == 'refund' ? _idempotent(intent) : null,
         );
+    if (action == 'refund') _idemDone(intent);
   }
 
   Future<void> _generateSettlements() async {
@@ -347,18 +401,14 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
     final start = now.subtract(const Duration(days: 7));
     String fmt(DateTime date) =>
         '${date.year.toString().padLeft(4, '0')}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
-    await ref
-        .read(apiClientProvider)
-        .post(
+    // Settlement generation is idempotent per period window, not per tap.
+    final intent = 'settle-${fmt(start)}-${fmt(now)}';
+    await ref.read(apiClientProvider).post(
           '/v1/food/admin/settlements/generate',
           data: {'period_start': fmt(start), 'period_end': fmt(now)},
-          options: Options(
-            headers: {
-              'Idempotency-Key':
-                  'figo-settle-${DateTime.now().microsecondsSinceEpoch}',
-            },
-          ),
+          options: _idempotent(intent),
         );
+    _idemDone(intent);
   }
 
   @override
@@ -393,7 +443,14 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
             child: ListView(
               padding: const EdgeInsets.fromLTRB(18, 8, 18, 32),
               children: [
-                _Header(home: data.home),
+                _Header(
+                  home: data.home,
+                  onSearchTap: _showSearchSheet,
+                  selectedCuisine: _cuisineFilter,
+                  onCuisineSelected: (cuisine) => setState(() {
+                    _cuisineFilter = _cuisineFilter == cuisine ? null : cuisine;
+                  }),
+                ),
                 const SizedBox(height: 18),
                 _RoleSelector(
                   selected: _role,
@@ -418,9 +475,19 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
   }
 
   Widget _buildRolePanel(_FigoSnapshot data) {
+    final cuisine = _cuisineFilter;
+    final home = cuisine == null
+        ? data.home
+        : _FigoHome(
+            cuisines: data.home.cuisines,
+            restaurants: data.home.restaurants
+                .where((r) => r.cuisines
+                    .any((c) => c.toLowerCase() == cuisine.toLowerCase()))
+                .toList(),
+          );
     return switch (_role) {
       _FigoRole.customer => _CustomerPanel(
-        home: data.home,
+        home: home,
         cart: data.cart,
         orders: data.orders,
         addresses: data.addresses,
@@ -436,6 +503,8 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
             _runAction(() => _placeOrder(address, method)),
         onRateOrder: (order, target) =>
             _runAction(() => _rateOrder(order, target)),
+        onCancelOrder: (order) => _runAction(() => _cancelOrder(order)),
+        onAddAddress: _showAddAddressSheet,
       ),
       _FigoRole.restaurant => _RestaurantPanel(
         restaurants: data.partnerRestaurants,
@@ -459,9 +528,17 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
 }
 
 class _Header extends StatelessWidget {
-  const _Header({required this.home});
+  const _Header({
+    required this.home,
+    required this.onSearchTap,
+    required this.selectedCuisine,
+    required this.onCuisineSelected,
+  });
 
   final _FigoHome home;
+  final VoidCallback onSearchTap;
+  final String? selectedCuisine;
+  final ValueChanged<String> onCuisineSelected;
 
   @override
   Widget build(BuildContext context) {
@@ -475,9 +552,13 @@ class _Header extends StatelessWidget {
           style: AppTextStyles.body.copyWith(color: AppColors.textTertiary),
         ),
         const SizedBox(height: 16),
-        _SearchBox(),
+        _SearchBox(onTap: onSearchTap),
         const SizedBox(height: 14),
-        _CuisineChips(cuisines: home.cuisines),
+        _CuisineChips(
+          cuisines: home.cuisines,
+          selected: selectedCuisine,
+          onSelected: onCuisineSelected,
+        ),
       ],
     );
   }
@@ -542,6 +623,8 @@ class _CustomerPanel extends StatelessWidget {
     required this.onAddQuickItem,
     required this.onPlaceOrder,
     required this.onRateOrder,
+    required this.onCancelOrder,
+    required this.onAddAddress,
   });
 
   final _FigoHome home;
@@ -556,6 +639,8 @@ class _CustomerPanel extends StatelessWidget {
   final ValueChanged<_Restaurant> onAddQuickItem;
   final void Function(_FigoAddress address, String paymentMethod) onPlaceOrder;
   final void Function(_FigoOrder order, String target) onRateOrder;
+  final void Function(_FigoOrder order) onCancelOrder;
+  final VoidCallback onAddAddress;
 
   @override
   Widget build(BuildContext context) {
@@ -591,6 +676,7 @@ class _CustomerPanel extends StatelessWidget {
           paymentMethod: paymentMethod,
           onPaymentMethodChanged: onPaymentMethodChanged,
           onPlaceOrder: onPlaceOrder,
+          onAddAddress: onAddAddress,
         ),
         if (tracking != null) ...[
           const SizedBox(height: 18),
@@ -604,20 +690,35 @@ class _CustomerPanel extends StatelessWidget {
         _OrdersList(
           title: 'My orders',
           orders: orders,
-          actions: (order) => order.status == 'DELIVERED'
-              ? [
-                  OutlinedButton.icon(
-                    onPressed: () => onRateOrder(order, 'restaurant'),
-                    icon: const Icon(Icons.storefront_rounded, size: 16),
-                    label: const Text('Rate restaurant'),
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: () => onRateOrder(order, 'delivery'),
-                    icon: const Icon(Icons.delivery_dining_rounded, size: 16),
-                    label: const Text('Rate rider'),
-                  ),
-                ]
-              : const [],
+          actions: (order) {
+            if (order.status == 'DELIVERED') {
+              return [
+                OutlinedButton.icon(
+                  onPressed: () => onRateOrder(order, 'restaurant'),
+                  icon: const Icon(Icons.storefront_rounded, size: 16),
+                  label: const Text('Rate restaurant'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () => onRateOrder(order, 'delivery'),
+                  icon: const Icon(Icons.delivery_dining_rounded, size: 16),
+                  label: const Text('Rate rider'),
+                ),
+              ];
+            }
+            // Pre-kitchen statuses are customer-cancellable; the server
+            // is the final arbiter (409 once the restaurant is cooking).
+            if (const {'PLACED', 'PENDING_PAYMENT', 'CONFIRMED'}
+                .contains(order.status)) {
+              return [
+                OutlinedButton.icon(
+                  onPressed: () => onCancelOrder(order),
+                  icon: const Icon(Icons.cancel_outlined, size: 16),
+                  label: const Text('Cancel order'),
+                ),
+              ];
+            }
+            return const [];
+          },
         ),
       ],
     );
@@ -864,6 +965,7 @@ class _CartCard extends StatelessWidget {
     required this.paymentMethod,
     required this.onPaymentMethodChanged,
     required this.onPlaceOrder,
+    required this.onAddAddress,
   });
 
   final _FigoCart? cart;
@@ -872,6 +974,7 @@ class _CartCard extends StatelessWidget {
   final String paymentMethod;
   final ValueChanged<String> onPaymentMethodChanged;
   final void Function(_FigoAddress address, String paymentMethod) onPlaceOrder;
+  final VoidCallback onAddAddress;
 
   @override
   Widget build(BuildContext context) {
@@ -937,9 +1040,13 @@ class _CartCard extends StatelessWidget {
             }, style: AppTextStyles.bodySmall),
             const SizedBox(height: 12),
             if (checkoutAddress == null)
-              Text(
-                'Add a delivery address in account settings before checkout.',
-                style: AppTextStyles.bodySmall,
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: onAddAddress,
+                  icon: const Icon(Icons.add_location_alt_rounded, size: 18),
+                  label: const Text('Add delivery address'),
+                ),
               )
             else ...[
               Row(
@@ -957,6 +1064,14 @@ class _CartCard extends StatelessWidget {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
+                  ),
+                  TextButton(
+                    onPressed: onAddAddress,
+                    style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 6),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    child: const Text('New'),
                   ),
                 ],
               ),
@@ -1376,35 +1491,341 @@ class _ActionButton extends StatelessWidget {
   }
 }
 
-class _SearchBox extends StatelessWidget {
+/// Minimal address form matching food-service CreateAddress:
+/// address_line1 + city are required server-side; the rest optional.
+/// Pops with the request body, or null on dismiss.
+class _AddAddressSheet extends StatefulWidget {
+  const _AddAddressSheet();
+
+  @override
+  State<_AddAddressSheet> createState() => _AddAddressSheetState();
+}
+
+class _AddAddressSheetState extends State<_AddAddressSheet> {
+  final _label = TextEditingController(text: 'Home');
+  final _receiver = TextEditingController();
+  final _phone = TextEditingController();
+  final _line1 = TextEditingController();
+  final _line2 = TextEditingController();
+  final _city = TextEditingController();
+  final _postalCode = TextEditingController();
+  bool _isDefault = true;
+
+  @override
+  void dispose() {
+    for (final c in [
+      _label,
+      _receiver,
+      _phone,
+      _line1,
+      _line2,
+      _city,
+      _postalCode,
+    ]) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  void _submit() {
+    if (_line1.text.trim().isEmpty || _city.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Address line and city are required.')),
+      );
+      return;
+    }
+    Navigator.of(context).pop(<String, dynamic>{
+      'label': _label.text.trim(),
+      if (_receiver.text.trim().isNotEmpty)
+        'receiver_name': _receiver.text.trim(),
+      if (_phone.text.trim().isNotEmpty) 'phone': _phone.text.trim(),
+      'address_line1': _line1.text.trim(),
+      if (_line2.text.trim().isNotEmpty) 'address_line2': _line2.text.trim(),
+      'city': _city.text.trim(),
+      if (_postalCode.text.trim().isNotEmpty)
+        'postal_code': _postalCode.text.trim(),
+      'country': 'IN',
+      'is_default': _isDefault,
+    });
+  }
+
+  Widget _field(
+    TextEditingController controller,
+    String hint, {
+    TextInputType? keyboardType,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: TextField(
+        controller: controller,
+        keyboardType: keyboardType,
+        style: AppTextStyles.body,
+        decoration: InputDecoration(
+          hintText: hint,
+          hintStyle: AppTextStyles.body.copyWith(color: AppColors.textMuted),
+          filled: true,
+          fillColor: AppColors.bgCard,
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: const BorderSide(color: AppColors.borderSubtle),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Container(
-      height: 48,
-      padding: const EdgeInsets.symmetric(horizontal: 14),
-      decoration: BoxDecoration(
-        color: AppColors.bgSecondary,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppColors.borderSubtle),
+    return Padding(
+      padding: EdgeInsets.only(
+        left: 20,
+        right: 20,
+        top: 20,
+        bottom: 20 + MediaQuery.of(context).viewInsets.bottom,
       ),
-      child: Row(
-        children: [
-          const Icon(Icons.search_rounded, color: AppColors.textMuted),
-          const SizedBox(width: 10),
-          Text(
-            'Search biryani, dosa, meals',
-            style: AppTextStyles.body.copyWith(color: AppColors.textMuted),
-          ),
-        ],
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text('New delivery address', style: AppTextStyles.h3),
+            const SizedBox(height: 14),
+            _field(_label, 'Label (Home, Work…)'),
+            _field(_receiver, 'Receiver name'),
+            _field(_phone, 'Phone', keyboardType: TextInputType.phone),
+            _field(_line1, 'House / street *'),
+            _field(_line2, 'Area / landmark'),
+            _field(_city, 'City *'),
+            _field(_postalCode, 'PIN code', keyboardType: TextInputType.number),
+            SwitchListTile(
+              value: _isDefault,
+              onChanged: (v) => setState(() => _isDefault = v),
+              title: Text('Set as default', style: AppTextStyles.body),
+              contentPadding: EdgeInsets.zero,
+            ),
+            const SizedBox(height: 6),
+            FilledButton(
+              onPressed: _submit,
+              child: const Text('Save address'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SearchBox extends StatelessWidget {
+  const _SearchBox({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(14),
+      child: Container(
+        height: 48,
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+        decoration: BoxDecoration(
+          color: AppColors.bgSecondary,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: AppColors.borderSubtle),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.search_rounded, color: AppColors.textMuted),
+            const SizedBox(width: 10),
+            Text(
+              'Search biryani, dosa, meals',
+              style: AppTextStyles.body.copyWith(color: AppColors.textMuted),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Live search over GET /v1/food/search — one query returns matching
+/// restaurants AND dishes ({data: {restaurants, dishes}}).
+class _FigoSearchSheet extends ConsumerStatefulWidget {
+  const _FigoSearchSheet();
+
+  @override
+  ConsumerState<_FigoSearchSheet> createState() => _FigoSearchSheetState();
+}
+
+class _FigoSearchSheetState extends ConsumerState<_FigoSearchSheet> {
+  final _controller = TextEditingController();
+  Timer? _debounce;
+  bool _loading = false;
+  List<_Restaurant> _restaurants = const [];
+  List<Map<String, dynamic>> _dishes = const [];
+
+  @override
+  void dispose() {
+    _debounce?.cancel();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _onChanged(String value) {
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 350), () => _run(value));
+  }
+
+  Future<void> _run(String query) async {
+    final q = query.trim();
+    if (q.isEmpty) {
+      setState(() {
+        _restaurants = const [];
+        _dishes = const [];
+      });
+      return;
+    }
+    setState(() => _loading = true);
+    try {
+      final res = await ref.read(apiClientProvider).get(
+        '/v1/food/search',
+        queryParameters: {'q': q, 'limit': 20},
+      );
+      final data = _responseData(res.data);
+      if (!mounted) return;
+      setState(() {
+        _restaurants =
+            _itemsFromKey(data, 'restaurants').map(_Restaurant.fromJson).toList();
+        _dishes = _itemsFromKey(data, 'dishes');
+        _loading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding:
+          EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+      child: SizedBox(
+        height: MediaQuery.of(context).size.height * 0.75,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+              child: TextField(
+                controller: _controller,
+                autofocus: true,
+                onChanged: _onChanged,
+                onSubmitted: _run,
+                style: AppTextStyles.body,
+                decoration: InputDecoration(
+                  hintText: 'Search biryani, dosa, meals',
+                  hintStyle:
+                      AppTextStyles.body.copyWith(color: AppColors.textMuted),
+                  prefixIcon:
+                      const Icon(Icons.search_rounded, color: AppColors.textMuted),
+                  filled: true,
+                  fillColor: AppColors.bgCard,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(14),
+                    borderSide: const BorderSide(color: AppColors.borderSubtle),
+                  ),
+                ),
+              ),
+            ),
+            if (_loading) const LinearProgressIndicator(minHeight: 2),
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+                children: [
+                  if (_restaurants.isEmpty &&
+                      _dishes.isEmpty &&
+                      !_loading &&
+                      _controller.text.trim().isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 32),
+                      child: Center(
+                        child: Text(
+                          'No matches. Try another dish or restaurant.',
+                          style: AppTextStyles.bodySmall
+                              .copyWith(color: AppColors.textDim),
+                        ),
+                      ),
+                    ),
+                  if (_restaurants.isNotEmpty) ...[
+                    Text('Restaurants', style: AppTextStyles.h3),
+                    const SizedBox(height: 8),
+                    for (final r in _restaurants) ...[
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: const Icon(Icons.storefront_rounded,
+                            color: AppColors.textMuted),
+                        title: Text(r.name, style: AppTextStyles.body),
+                        subtitle: Text(
+                          r.cuisines.join(' - '),
+                          style: AppTextStyles.bodySmall
+                              .copyWith(color: AppColors.textTertiary),
+                        ),
+                        trailing: Text('★ ${r.avgRating.toStringAsFixed(1)}',
+                            style: AppTextStyles.labelSmall),
+                      ),
+                    ],
+                    const SizedBox(height: 12),
+                  ],
+                  if (_dishes.isNotEmpty) ...[
+                    Text('Dishes', style: AppTextStyles.h3),
+                    const SizedBox(height: 8),
+                    for (final dish in _dishes)
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: const Icon(Icons.restaurant_rounded,
+                            color: AppColors.textMuted),
+                        title: Text(
+                          dish['name']?.toString() ?? 'Dish',
+                          style: AppTextStyles.body,
+                        ),
+                        subtitle: Text(
+                          dish['restaurant_name']?.toString() ?? '',
+                          style: AppTextStyles.bodySmall
+                              .copyWith(color: AppColors.textTertiary),
+                        ),
+                        trailing: Text(
+                          _money(
+                            ((dish['discount_price'] ?? dish['base_price'])
+                                        as num?)
+                                    ?.toDouble() ??
+                                0,
+                          ),
+                          style: AppTextStyles.label,
+                        ),
+                      ),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
 }
 
 class _CuisineChips extends StatelessWidget {
-  const _CuisineChips({required this.cuisines});
+  const _CuisineChips({
+    required this.cuisines,
+    required this.selected,
+    required this.onSelected,
+  });
 
   final List<String> cuisines;
+  final String? selected;
+  final ValueChanged<String> onSelected;
 
   @override
   Widget build(BuildContext context) {
@@ -1413,15 +1834,34 @@ class _CuisineChips extends StatelessWidget {
       height: 38,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
-        itemBuilder: (context, index) => Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-          decoration: BoxDecoration(
-            color: AppColors.bgSecondary,
+        itemBuilder: (context, index) {
+          final cuisine = values[index];
+          final isActive = selected?.toLowerCase() == cuisine.toLowerCase();
+          return InkWell(
+            onTap: () => onSelected(cuisine),
             borderRadius: BorderRadius.circular(999),
-            border: Border.all(color: AppColors.borderSubtle),
-          ),
-          child: Text(values[index], style: AppTextStyles.labelSmall),
-        ),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+              decoration: BoxDecoration(
+                color: isActive
+                    ? AppColors.postbookPrimary.withValues(alpha: 0.18)
+                    : AppColors.bgSecondary,
+                borderRadius: BorderRadius.circular(999),
+                border: Border.all(
+                  color: isActive
+                      ? AppColors.postbookPrimary
+                      : AppColors.borderSubtle,
+                ),
+              ),
+              child: Text(
+                cuisine,
+                style: AppTextStyles.labelSmall.copyWith(
+                  color: isActive ? AppColors.postbookPrimary : null,
+                ),
+              ),
+            ),
+          );
+        },
         separatorBuilder: (_, _) => const SizedBox(width: 8),
         itemCount: values.length,
       ),

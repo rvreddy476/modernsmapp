@@ -26,6 +26,7 @@ type Store interface {
 	ListCuisines(ctx context.Context) ([]postgres.Cuisine, error)
 	ListDishCategories(ctx context.Context) ([]postgres.Cuisine, error)
 	ListRestaurants(ctx context.Context, filter postgres.RestaurantFilter) ([]postgres.RestaurantSummary, error)
+	SearchDishes(ctx context.Context, filter postgres.RestaurantFilter) ([]postgres.SearchDishResult, error)
 	GetRestaurant(ctx context.Context, id uuid.UUID) (*postgres.RestaurantDetail, error)
 	GetMenu(ctx context.Context, restaurantID uuid.UUID) ([]postgres.MenuCategory, error)
 	GetCart(ctx context.Context, userID uuid.UUID) (*postgres.Cart, error)
@@ -347,6 +348,10 @@ func (s *Service) Home(ctx context.Context, city string, latitude, longitude *fl
 
 func (s *Service) ListRestaurants(ctx context.Context, filter postgres.RestaurantFilter) ([]postgres.RestaurantSummary, error) {
 	return s.store.ListRestaurants(ctx, filter)
+}
+
+func (s *Service) SearchDishes(ctx context.Context, filter postgres.RestaurantFilter) ([]postgres.SearchDishResult, error) {
+	return s.store.SearchDishes(ctx, filter)
 }
 
 func (s *Service) ListCuisines(ctx context.Context) ([]postgres.Cuisine, error) {

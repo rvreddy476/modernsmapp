@@ -274,18 +274,29 @@ func (h *Handler) ListRestaurants(c *gin.Context) {
 }
 
 func (h *Handler) Search(c *gin.Context) {
+	limit := parseLimit(c.DefaultQuery("limit", "20"))
+	filter := postgres.RestaurantFilter{
+		Query: c.Query("q"),
+		City:  c.Query("city"),
+		Limit: limit,
+	}
 	restaurants, err := h.svc.ListRestaurants(c.Request.Context(), postgres.RestaurantFilter{
 		Query: c.Query("q"),
 		City:  c.Query("city"),
-		Limit: parseLimit(c.DefaultQuery("limit", "20")),
+		Limit: limit,
 	})
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "FOOD_SEARCH_FAILED", err.Error(), nil)
 		return
 	}
+	dishes, err := h.svc.SearchDishes(c.Request.Context(), filter)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "FOOD_DISH_SEARCH_FAILED", err.Error(), nil)
+		return
+	}
 	api.JSONWithContext(c.Request.Context(), c.Writer, http.StatusOK, map[string]any{
 		"restaurants": restaurants,
-		"dishes":      []any{},
+		"dishes":      dishes,
 	})
 }
 
