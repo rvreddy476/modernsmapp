@@ -118,6 +118,16 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
             final earningsData = _responseData(
               (await api.get('/v1/food/delivery/earnings')).data,
             );
+            // Dispatch offers are the only way work arrives (25s TTL) —
+            // surface the pending inbox so a rider can actually accept.
+            final offers = await _safeLoad<List<_DeliveryOffer>>(() async {
+              final data = _responseData(
+                (await api.get('/v1/food/delivery/offers/me')).data,
+              );
+              return _itemsFromKey(data, 'offers')
+                  .map(_DeliveryOffer.fromJson)
+                  .toList();
+            }, fallback: const []);
             final assignment = _DeliveryAssignment.fromJson(assignmentData);
             final trackingData = await _safeLoad<_AssignmentTracking?>(
               () async {
@@ -135,6 +145,7 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
               currentAssignment: assignment,
               earnings: _DeliveryEarnings.fromJson(earningsData),
               tracking: trackingData,
+              offers: offers,
             );
           }, fallback: const _DeliveryWorkspace());
     final admin = _role != _FigoRole.admin
@@ -358,6 +369,23 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
     await _runAction(() => _createAddress(body));
   }
 
+  Future<void> _setDeliveryAvailability(bool isOnline) async {
+    await ref.read(apiClientProvider).post(
+      '/v1/food/delivery/availability',
+      data: {'is_online': isOnline},
+    );
+  }
+
+  Future<void> _respondToOffer(_DeliveryOffer offer, bool accept) async {
+    final verb = accept ? 'accept' : 'reject';
+    final intent = 'offer-${offer.id}-$verb';
+    await ref.read(apiClientProvider).post(
+          '/v1/food/delivery/offers/${offer.id}/$verb',
+          options: _idempotent(intent),
+        );
+    _idemDone(intent);
+  }
+
   Future<void> _updateDeliveryLocation() async {
     final enabled = await Geolocator.isLocationServiceEnabled();
     if (!enabled) {
@@ -516,6 +544,10 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
         onAssignmentAction: (assignment, action) =>
             _runAction(() => _deliveryAssignmentAction(assignment, action)),
         onUpdateLocation: () => _runAction(_updateDeliveryLocation),
+        onAvailabilityChanged: (isOnline) =>
+            _runAction(() => _setDeliveryAvailability(isOnline)),
+        onOfferResponse: (offer, accept) =>
+            _runAction(() => _respondToOffer(offer, accept)),
       ),
       _FigoRole.admin => _AdminPanel(
         workspace: data.admin,
@@ -773,12 +805,16 @@ class _DeliveryPanel extends StatelessWidget {
     required this.workspace,
     required this.onAssignmentAction,
     required this.onUpdateLocation,
+    required this.onAvailabilityChanged,
+    required this.onOfferResponse,
   });
 
   final _DeliveryWorkspace workspace;
   final void Function(_DeliveryAssignment assignment, String action)
   onAssignmentAction;
   final VoidCallback onUpdateLocation;
+  final ValueChanged<bool> onAvailabilityChanged;
+  final void Function(_DeliveryOffer offer, bool accept) onOfferResponse;
 
   @override
   Widget build(BuildContext context) {
@@ -798,6 +834,38 @@ class _DeliveryPanel extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 14),
+        // Going online is a prerequisite for receiving dispatch offers —
+        // the server only fans offers out to online partners.
+        _Panel(
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      (workspace.profile?.isOnline ?? false)
+                          ? 'Online — receiving offers'
+                          : 'Offline',
+                      style: AppTextStyles.body,
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      'Toggle to start or stop receiving delivery offers.',
+                      style: AppTextStyles.bodySmall
+                          .copyWith(color: AppColors.textTertiary),
+                    ),
+                  ],
+                ),
+              ),
+              Switch(
+                value: workspace.profile?.isOnline ?? false,
+                onChanged: onAvailabilityChanged,
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 14),
         SizedBox(
           width: double.infinity,
           child: OutlinedButton.icon(
@@ -806,6 +874,43 @@ class _DeliveryPanel extends StatelessWidget {
             label: const Text('Update rider location'),
           ),
         ),
+        if (workspace.offers.isNotEmpty) ...[
+          const SizedBox(height: 14),
+          _SectionHeader(
+            title: 'New offers',
+            subtitle: '${workspace.offers.length} pending — expire fast',
+          ),
+          const SizedBox(height: 10),
+          for (final offer in workspace.offers) ...[
+            _Panel(
+              child: Row(
+                children: [
+                  const Icon(Icons.local_shipping_rounded,
+                      color: AppColors.textMuted),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      offer.distanceKm != null
+                          ? '${offer.distanceKm!.toStringAsFixed(1)} km pickup'
+                          : 'Delivery offer',
+                      style: AppTextStyles.body,
+                    ),
+                  ),
+                  OutlinedButton(
+                    onPressed: () => onOfferResponse(offer, false),
+                    child: const Text('Pass'),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton(
+                    onPressed: () => onOfferResponse(offer, true),
+                    child: const Text('Accept'),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 10),
+          ],
+        ],
         const SizedBox(height: 14),
         if (assignment == null)
           const _EmptyState(text: 'No active assignment right now.')
@@ -932,24 +1037,52 @@ class _AssignmentCard extends StatelessWidget {
             ),
           ],
           const SizedBox(height: 14),
+          // Only the transition(s) the server will actually allow from
+          // the current status (see food-service deliveryTransitionAllowed:
+          // CREATED/ASSIGNED -> ACCEPTED|REJECTED -> ARRIVED_AT_RESTAURANT
+          // -> PICKED_UP -> ARRIVED_AT_CUSTOMER -> DELIVERED). The old
+          // unconditional buttons let riders tap Delivered straight from
+          // PICKED_UP, which the server always rejected.
           Wrap(
             spacing: 8,
             runSpacing: 8,
-            children: [
-              _ActionButton('Accept', () => onAction(assignment, 'accept')),
-              _ActionButton(
-                'Arrived',
-                () => onAction(assignment, 'arrived-restaurant'),
-              ),
-              _ActionButton(
-                'Picked up',
-                () => onAction(assignment, 'picked-up'),
-              ),
-              _ActionButton(
-                'Delivered',
-                () => onAction(assignment, 'delivered'),
-              ),
-            ],
+            children: switch (assignment.status) {
+              'CREATED' || 'ASSIGNED' => [
+                  _ActionButton(
+                    'Accept',
+                    () => onAction(assignment, 'accept'),
+                  ),
+                  _ActionButton(
+                    'Reject',
+                    () => onAction(assignment, 'reject'),
+                  ),
+                ],
+              'ACCEPTED' => [
+                  _ActionButton(
+                    'Arrived at restaurant',
+                    () => onAction(assignment, 'arrived-restaurant'),
+                  ),
+                ],
+              'ARRIVED_AT_RESTAURANT' => [
+                  _ActionButton(
+                    'Picked up',
+                    () => onAction(assignment, 'picked-up'),
+                  ),
+                ],
+              'PICKED_UP' => [
+                  _ActionButton(
+                    'Arrived at customer',
+                    () => onAction(assignment, 'arrived-customer'),
+                  ),
+                ],
+              'ARRIVED_AT_CUSTOMER' => [
+                  _ActionButton(
+                    'Delivered',
+                    () => onAction(assignment, 'delivered'),
+                  ),
+                ],
+              _ => const <Widget>[],
+            },
           ),
         ],
       ),
@@ -2327,21 +2460,52 @@ class _DeliveryWorkspace {
     this.currentAssignment,
     this.earnings,
     this.tracking,
+    this.offers = const [],
   });
 
   final _DeliveryProfile? profile;
   final _DeliveryAssignment? currentAssignment;
   final _DeliveryEarnings? earnings;
   final _AssignmentTracking? tracking;
+  final List<_DeliveryOffer> offers;
 }
 
 class _DeliveryProfile {
-  const _DeliveryProfile({required this.status});
+  const _DeliveryProfile({required this.status, required this.isOnline});
 
   final String status;
+  final bool isOnline;
 
   factory _DeliveryProfile.fromJson(Map<String, dynamic> json) {
-    return _DeliveryProfile(status: json['status'] as String? ?? 'PENDING');
+    return _DeliveryProfile(
+      status: json['status'] as String? ?? 'PENDING',
+      isOnline: json['is_online'] as bool? ?? false,
+    );
+  }
+}
+
+/// A dispatch offer (25s TTL server-side). The partner must accept one
+/// to receive an assignment — offers are the ONLY way work arrives.
+class _DeliveryOffer {
+  const _DeliveryOffer({
+    required this.id,
+    required this.orderId,
+    required this.distanceKm,
+    required this.expiresAt,
+  });
+
+  final String id;
+  final String orderId;
+  final double? distanceKm;
+  final DateTime? expiresAt;
+
+  factory _DeliveryOffer.fromJson(Map<String, dynamic> json) {
+    return _DeliveryOffer(
+      id: json['id']?.toString() ?? '',
+      orderId: json['order_id']?.toString() ?? '',
+      distanceKm: (json['distance_km'] as num?)?.toDouble(),
+      expiresAt: DateTime.tryParse(json['expires_at']?.toString() ?? ''),
+    );
   }
 }
 
