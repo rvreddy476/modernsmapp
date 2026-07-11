@@ -28,6 +28,30 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
   /// Active cuisine chip; filters the nearby-restaurant list client-side.
   String? _cuisineFilter;
 
+  /// Fires one refresh just past the earliest pending offer's 25s TTL so
+  /// expired offers drop off the screen without user action.
+  Timer? _offerExpiryTimer;
+
+  @override
+  void dispose() {
+    _offerExpiryTimer?.cancel();
+    super.dispose();
+  }
+
+  void _scheduleOfferExpiryRefresh(List<_DeliveryOffer> offers) {
+    _offerExpiryTimer?.cancel();
+    _offerExpiryTimer = null;
+    final expiries = offers.map((o) => o.expiresAt).whereType<DateTime>();
+    if (expiries.isEmpty) return;
+    final earliest = expiries.reduce((a, b) => a.isBefore(b) ? a : b);
+    final delay =
+        earliest.difference(DateTime.now()) + const Duration(seconds: 1);
+    if (delay.isNegative) return; // already expired; next refresh clears it
+    _offerExpiryTimer = Timer(delay, () {
+      if (mounted) _retry();
+    });
+  }
+
   @override
   void initState() {
     super.initState();
@@ -140,6 +164,7 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
               },
               fallback: null,
             );
+            _scheduleOfferExpiryRefresh(offers);
             return _DeliveryWorkspace(
               profile: _DeliveryProfile.fromJson(profileData),
               currentAssignment: assignment,
@@ -447,6 +472,21 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
     // lag on status changes / substitutions / refund updates.
     ref.listen(foodOrderPushProvider, (prev, next) {
       next.whenData((_) => _retry());
+    });
+    // Dispatch offers expire 25s after minting — a rider must see them
+    // the moment they land, not on the next manual refresh.
+    ref.listen(foodDeliveryPushProvider, (prev, next) {
+      next.whenData((event) {
+        if (event.eventType == 'food.delivery.offered' && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('New delivery offer — accept before it expires!'),
+              duration: Duration(seconds: 4),
+            ),
+          );
+        }
+        _retry();
+      });
     });
 
     return Scaffold(
@@ -889,11 +929,24 @@ class _DeliveryPanel extends StatelessWidget {
                       color: AppColors.textMuted),
                   const SizedBox(width: 10),
                   Expanded(
-                    child: Text(
-                      offer.distanceKm != null
-                          ? '${offer.distanceKm!.toStringAsFixed(1)} km pickup'
-                          : 'Delivery offer',
-                      style: AppTextStyles.body,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          offer.distanceKm != null
+                              ? '${offer.distanceKm!.toStringAsFixed(1)} km pickup'
+                              : 'Delivery offer',
+                          style: AppTextStyles.body,
+                        ),
+                        if (offer.expiresAt != null &&
+                            offer.expiresAt!.isAfter(DateTime.now()))
+                          Text(
+                            'Expires in '
+                            '${offer.expiresAt!.difference(DateTime.now()).inSeconds}s',
+                            style: AppTextStyles.labelSmall
+                                .copyWith(color: AppColors.textTertiary),
+                          ),
+                      ],
                     ),
                   ),
                   OutlinedButton(

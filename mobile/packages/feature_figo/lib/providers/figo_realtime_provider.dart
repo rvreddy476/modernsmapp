@@ -47,17 +47,24 @@ final _foodRealtimeSessionProvider =
         ? rawTopics.whereType<String>().toList()
         : const <String>[];
     if (token.isEmpty || topics.isEmpty) return null;
-    // Only subscribe to per-order topics from this session. The
-    // restaurant + admin topics belong to other roles and would be
-    // rejected by the gateway's TOPIC_FORBIDDEN check anyway.
-    final orderTopics =
-        topics.where((t) => t.startsWith('food.order.')).toList();
-    if (orderTopics.isEmpty) return null;
+    // Subscribe to every topic the token GRANTS — the signed token is
+    // the gateway's authorization, so nothing here can be forbidden.
+    // That includes the self-scoped food.delivery_partner.{id}.assignments
+    // topic that carries 25s-TTL dispatch offers: without it a mobile
+    // rider only discovers offers on a manual refresh, which is slower
+    // than their TTL.
+    final grantedTopics = topics
+        .where((t) =>
+            t.startsWith('food.order.') ||
+            t.startsWith('food.restaurant.') ||
+            t.startsWith('food.delivery_partner.'))
+        .toList();
+    if (grantedTopics.isEmpty) return null;
     final auth = ref.read(authSessionProvider);
     final svc = RealtimeStreamService(
       auth: auth,
       token: token,
-      topics: orderTopics,
+      topics: grantedTopics,
     );
     svc.start();
     ref.onDispose(svc.dispose);
@@ -79,6 +86,25 @@ final foodOrderPushProvider =
   }
   await for (final frame in svc.events) {
     if (!frame.event.startsWith('food.order.')) continue;
+    yield FoodOrderEvent(eventType: frame.event, data: frame.data);
+  }
+});
+
+/// Streams delivery-dispatch events for the current user acting as a
+/// delivery partner — most importantly `food.delivery.offered`, which
+/// lands on food.delivery_partner.{id}.assignments the moment the 10s
+/// dispatch worker mints a 25s-TTL offer. The rider UI must react to
+/// this push: polling can't beat the TTL. (The events stream is a
+/// broadcast StreamController, so this coexists with the order stream
+/// on the same SSE session.)
+final foodDeliveryPushProvider =
+    StreamProvider.autoDispose<FoodOrderEvent>((ref) async* {
+  final svc = await ref.watch(_foodRealtimeSessionProvider.future);
+  if (svc == null) {
+    return;
+  }
+  await for (final frame in svc.events) {
+    if (!frame.event.startsWith('food.delivery.')) continue;
     yield FoodOrderEvent(eventType: frame.event, data: frame.data);
   }
 });

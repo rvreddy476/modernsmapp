@@ -76,7 +76,9 @@ void main() {
               'id': 'off1',
               'order_id': 'o77',
               'distance_km': 2.4,
-              'expires_at': '2026-07-12T10:00:25Z',
+              // Deterministically past: no expiry-refresh Timer gets
+              // scheduled, so pumpAndSettle/teardown stay clean.
+              'expires_at': '2020-01-01T00:00:25Z',
             },
           ],
         },
