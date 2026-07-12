@@ -2301,6 +2301,20 @@ func (s *Service) GetAddresses(ctx context.Context, userID uuid.UUID) ([]*postgr
 	return s.store.GetAddressesByUser(ctx, userID)
 }
 
+// ─── Wishlist ────────────────────────────────────────────────
+
+func (s *Service) GetWishlist(ctx context.Context, userID uuid.UUID) ([]postgres.WishlistEntry, error) {
+	return s.store.GetWishlistByUser(ctx, userID)
+}
+
+func (s *Service) AddToWishlist(ctx context.Context, userID, productID uuid.UUID) error {
+	return s.store.AddToWishlist(ctx, userID, productID)
+}
+
+func (s *Service) RemoveFromWishlist(ctx context.Context, userID, productID uuid.UUID) error {
+	return s.store.RemoveFromWishlist(ctx, userID, productID)
+}
+
 func (s *Service) UpdateAddress(ctx context.Context, id, userID uuid.UUID, addr *postgres.CustomerAddress) error {
 	return s.store.UpdateAddress(ctx, id, userID, addr)
 }

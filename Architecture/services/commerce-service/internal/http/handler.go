@@ -119,6 +119,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// ── Shipments + Invoices ─────────────────────────────────
 	h.RegisterShipmentRoutes(v1)
 
+	// ── Wishlist (customer) ───────────────────────────────────
+	h.RegisterWishlistRoutes(v1)
+
 	// ── Phase 5 — B2B / Organizations ─────────────────────────
 	h.RegisterOrganizationRoutes(v1)
 

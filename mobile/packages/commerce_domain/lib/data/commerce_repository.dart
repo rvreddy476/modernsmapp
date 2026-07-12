@@ -229,19 +229,46 @@ class CommerceRepository {
 
   // ─── Checkout & orders ───────────────────────────────────────────
 
-  /// Pre-checkout quote. Backend has no dedicated endpoint yet — we read the
-  /// cart and project from there. The shape matches the future server one
-  /// (subtotal/tax/shipping/discount/grand) so screens can swap callers.
+  /// Pre-checkout quote from POST /v1/commerce/checkout/quote (Phase 1.1
+  /// shipped — it returns the same pricing the immediately-following
+  /// Checkout call will produce, plus serviceability + COD eligibility).
+  /// Falls back to a client-side cart projection if the endpoint errors,
+  /// so the screen never blocks on the preview.
   Future<CheckoutQuote> checkoutQuote({
     required String addressId,
     required String paymentMethod,
+    String? couponCode,
   }) async {
-    final cart = await getCart();
-    return CheckoutQuote.fromCart(
-      cart: cart,
-      addressId: addressId,
-      paymentMethod: paymentMethod,
-    );
+    try {
+      final res = await _api.post(
+        '/v1/commerce/checkout/quote',
+        data: {
+          'address_id': addressId,
+          'payment_method': paymentMethod,
+          if (couponCode != null && couponCode.isNotEmpty)
+            'coupon_code': couponCode,
+        },
+      );
+      final data = Map<String, dynamic>.from(res.data['data'] as Map);
+      return CheckoutQuote(
+        cartId: '',
+        addressId: addressId,
+        paymentMethod: paymentMethod,
+        subtotal: (data['subtotal'] as num?)?.toDouble() ?? 0,
+        taxTotal: (data['tax'] as num?)?.toDouble() ?? 0,
+        shippingTotal: (data['shipping'] as num?)?.toDouble() ?? 0,
+        discountTotal: (data['coupon_discount'] as num?)?.toDouble() ?? 0,
+        grandTotal: (data['grand_total'] as num?)?.toDouble() ?? 0,
+        isCodAllowed: data['cod_eligible'] as bool? ?? true,
+      );
+    } catch (_) {
+      final cart = await getCart();
+      return CheckoutQuote.fromCart(
+        cart: cart,
+        addressId: addressId,
+        paymentMethod: paymentMethod,
+      );
+    }
   }
 
   /// Places an order from the current cart against the chosen address +

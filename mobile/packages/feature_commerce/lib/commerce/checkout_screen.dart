@@ -36,6 +36,10 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
   String _paymentMethod = 'upi';
   bool _placing = false;
 
+  /// Idempotency key for the in-flight checkout intent — minted once and
+  /// reused across retries so a timed-out attempt replays the SAME order.
+  String? _checkoutIdemKey;
+
   // Phase F4 mobile — B2B context. Null _selectedOrg means a retail
   // checkout; selecting an org unlocks PO / cost-center / invoice-
   // email fields + the "Pay on invoice (Net N)" payment method when
@@ -272,12 +276,16 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
     final repo = ref.read(commerceRepositoryProvider);
     final telemetry = ref.read(commerceTelemetryProvider);
     telemetry.checkoutStarted(grandTotal: cart.grandTotal);
+    // One key per checkout attempt, reused across retries: regenerating
+    // per tap turned a timeout+retry into a second order and a second
+    // charge. Cleared only after the server acknowledges the order.
+    _checkoutIdemKey ??=
+        'mobile_${DateTime.now().millisecondsSinceEpoch}_${identityHashCode(this)}';
     try {
       final order = await repo.placeOrder(
         addressId: addr.id,
         paymentMethod: _paymentMethod,
-        idempotencyKey:
-            'mobile_${DateTime.now().millisecondsSinceEpoch}_${addr.id}',
+        idempotencyKey: _checkoutIdemKey,
         // Phase F4 — B2B context is optional. The org selector only
         // renders when the buyer belongs to ≥1 org, so retail
         // checkouts pass nulls and the backend treats the order as
@@ -293,6 +301,9 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
             ? null
             : _invoiceEmailController.text.trim(),
       );
+      // Order exists server-side — the intent is spent. The payment leg
+      // is keyed by order.id, so a fresh checkout gets a fresh key.
+      _checkoutIdemKey = null;
 
       // Phase F4 — B2B-aware short-circuits:
       //   * awaiting_approval: order is parked until an org approver
