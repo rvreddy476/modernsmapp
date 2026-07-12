@@ -46,6 +46,13 @@ void main() {
       );
     }
 
+    // The Delivery chip only renders for server-granted capabilities.
+    when(() => api.get('/v1/food/me/capabilities')).thenAnswer(
+      (_) async => ok({
+        'data': {'is_customer': true, 'is_delivery_partner': true},
+      }),
+    );
+
     // Delivery workspace.
     when(() => api.get('/v1/food/delivery/profile')).thenAnswer(
       (_) async => ok({

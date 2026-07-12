@@ -80,11 +80,17 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
         final data = _responseData((await api.get('/v1/food/addresses')).data);
         return _items(data).map(_FigoAddress.fromJson).toList();
       }, fallback: const <_FigoAddress>[]),
+      _safeLoad<_FigoCapabilities>(() async {
+        final data =
+            _responseData((await api.get('/v1/food/me/capabilities')).data);
+        return _FigoCapabilities.fromJson(data);
+      }, fallback: const _FigoCapabilities()),
     ]);
     final home = results[0] as _FigoHome;
     final cart = results[1] as _FigoCart?;
     final orders = results[2] as List<_FigoOrder>;
     final addresses = results[3] as List<_FigoAddress>;
+    final capabilities = results[4] as _FigoCapabilities;
     const double walletBalance = 0;
 
     // Tracking + batch depend on the first order id — fetch them in
@@ -212,6 +218,7 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
       partnerRestaurants: partnerRestaurants,
       delivery: delivery,
       admin: admin,
+      capabilities: capabilities,
     );
   }
 
@@ -310,6 +317,28 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
           options: _idempotent(intent),
         );
     _idemDone(intent);
+  }
+
+  /// Quantity 0 removes the line (DELETE); otherwise PATCH the quantity.
+  Future<void> _updateCartItem(_CartItem item, int quantity) async {
+    final api = ref.read(apiClientProvider);
+    if (quantity <= 0) {
+      await api.delete('/v1/food/cart/items/${item.id}');
+    } else {
+      await api.patch(
+        '/v1/food/cart/items/${item.id}',
+        data: {'quantity': quantity},
+      );
+    }
+  }
+
+  /// Server-side validation + application in one call; the reloaded
+  /// cart carries the discounted totals.
+  Future<void> _applyCoupon(String code) async {
+    await ref.read(apiClientProvider).post(
+      '/v1/food/coupons/validate',
+      data: {'code': code},
+    );
   }
 
   Future<void> _cancelOrder(_FigoOrder order) async {
@@ -522,6 +551,7 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
                 const SizedBox(height: 18),
                 _RoleSelector(
                   selected: _role,
+                  capabilities: data.capabilities,
                   onSelected: (role) {
                     if (_role == role) return;
                     setState(() {
@@ -553,7 +583,11 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
                     .any((c) => c.toLowerCase() == cuisine.toLowerCase()))
                 .toList(),
           );
-    return switch (_role) {
+    // Coerce to customer when the server hasn't granted the selected
+    // role (e.g. capabilities landed after a stale selection).
+    final role =
+        data.capabilities.allows(_role) ? _role : _FigoRole.customer;
+    return switch (role) {
       _FigoRole.customer => _CustomerPanel(
         home: home,
         cart: data.cart,
@@ -573,6 +607,9 @@ class _FigoHomeScreenState extends ConsumerState<FigoHomeScreen> {
             _runAction(() => _rateOrder(order, target)),
         onCancelOrder: (order) => _runAction(() => _cancelOrder(order)),
         onAddAddress: _showAddAddressSheet,
+        onUpdateCartItem: (item, quantity) =>
+            _runAction(() => _updateCartItem(item, quantity)),
+        onApplyCoupon: (code) => _runAction(() => _applyCoupon(code)),
       ),
       _FigoRole.restaurant => _RestaurantPanel(
         restaurants: data.partnerRestaurants,
@@ -637,19 +674,28 @@ class _Header extends StatelessWidget {
 }
 
 class _RoleSelector extends StatelessWidget {
-  const _RoleSelector({required this.selected, required this.onSelected});
+  const _RoleSelector({
+    required this.selected,
+    required this.capabilities,
+    required this.onSelected,
+  });
 
   final _FigoRole selected;
+  final _FigoCapabilities capabilities;
   final ValueChanged<_FigoRole> onSelected;
 
   @override
   Widget build(BuildContext context) {
-    const entries = [
+    // Only workspaces the SERVER says this user holds (P0.5: a plain
+    // customer must never even see — let alone call — partner/delivery/
+    // admin surfaces).
+    final entries = [
       (_FigoRole.customer, Icons.shopping_bag_rounded, 'Customer'),
       (_FigoRole.restaurant, Icons.storefront_rounded, 'Partner'),
       (_FigoRole.delivery, Icons.delivery_dining_rounded, 'Delivery'),
       (_FigoRole.admin, Icons.admin_panel_settings_rounded, 'Admin'),
-    ];
+    ].where((entry) => capabilities.allows(entry.$1)).toList();
+    if (entries.length <= 1) return const SizedBox.shrink();
     return SizedBox(
       height: 42,
       child: ListView.separated(
@@ -697,6 +743,8 @@ class _CustomerPanel extends StatelessWidget {
     required this.onRateOrder,
     required this.onCancelOrder,
     required this.onAddAddress,
+    required this.onUpdateCartItem,
+    required this.onApplyCoupon,
   });
 
   final _FigoHome home;
@@ -713,6 +761,8 @@ class _CustomerPanel extends StatelessWidget {
   final void Function(_FigoOrder order, String target) onRateOrder;
   final void Function(_FigoOrder order) onCancelOrder;
   final VoidCallback onAddAddress;
+  final void Function(_CartItem item, int quantity) onUpdateCartItem;
+  final ValueChanged<String> onApplyCoupon;
 
   @override
   Widget build(BuildContext context) {
@@ -749,6 +799,8 @@ class _CustomerPanel extends StatelessWidget {
           onPaymentMethodChanged: onPaymentMethodChanged,
           onPlaceOrder: onPlaceOrder,
           onAddAddress: onAddAddress,
+          onUpdateCartItem: onUpdateCartItem,
+          onApplyCoupon: onApplyCoupon,
         ),
         if (tracking != null) ...[
           const SizedBox(height: 18),
@@ -1152,6 +1204,8 @@ class _CartCard extends StatelessWidget {
     required this.onPaymentMethodChanged,
     required this.onPlaceOrder,
     required this.onAddAddress,
+    required this.onUpdateCartItem,
+    required this.onApplyCoupon,
   });
 
   final _FigoCart? cart;
@@ -1161,6 +1215,8 @@ class _CartCard extends StatelessWidget {
   final ValueChanged<String> onPaymentMethodChanged;
   final void Function(_FigoAddress address, String paymentMethod) onPlaceOrder;
   final VoidCallback onAddAddress;
+  final void Function(_CartItem item, int quantity) onUpdateCartItem;
+  final ValueChanged<String> onApplyCoupon;
 
   @override
   Widget build(BuildContext context) {
@@ -1188,14 +1244,28 @@ class _CartCard extends StatelessWidget {
               Row(
                 children: [
                   Expanded(child: Text(item.name, style: AppTextStyles.body)),
-                  Text('x${item.quantity}', style: AppTextStyles.labelSmall),
-                  const SizedBox(width: 8),
+                  _QtyButton(
+                    icon: Icons.remove_rounded,
+                    onTap: () => onUpdateCartItem(item, item.quantity - 1),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    child: Text('${item.quantity}',
+                        style: AppTextStyles.labelSmall),
+                  ),
+                  _QtyButton(
+                    icon: Icons.add_rounded,
+                    onTap: () => onUpdateCartItem(item, item.quantity + 1),
+                  ),
+                  const SizedBox(width: 10),
                   Text(_money(item.lineTotal), style: AppTextStyles.label),
                 ],
               ),
               const SizedBox(height: 8),
             ],
           if (cart != null) ...[
+            const SizedBox(height: 4),
+            _CouponField(onApply: onApplyCoupon),
             const Divider(color: AppColors.borderSubtle),
             Row(
               children: [
@@ -1660,6 +1730,94 @@ class _SectionHeader extends StatelessWidget {
       children: [
         Expanded(child: Text(title, style: AppTextStyles.h2)),
         if (subtitle != null) Text(subtitle!, style: AppTextStyles.labelSmall),
+      ],
+    );
+  }
+}
+
+class _QtyButton extends StatelessWidget {
+  const _QtyButton({required this.icon, required this.onTap});
+
+  final IconData icon;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        width: 26,
+        height: 26,
+        decoration: BoxDecoration(
+          color: AppColors.bgSecondary,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: AppColors.borderSubtle),
+        ),
+        child: Icon(icon, size: 16, color: AppColors.textSecondary),
+      ),
+    );
+  }
+}
+
+/// Coupon entry: server-side validate+apply in one call
+/// (POST /v1/food/coupons/validate); the refreshed cart carries the
+/// discounted totals.
+class _CouponField extends StatefulWidget {
+  const _CouponField({required this.onApply});
+
+  final ValueChanged<String> onApply;
+
+  @override
+  State<_CouponField> createState() => _CouponFieldState();
+}
+
+class _CouponFieldState extends State<_CouponField> {
+  final _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final code = _controller.text.trim();
+    if (code.isEmpty) return;
+    widget.onApply(code);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(
+          child: TextField(
+            controller: _controller,
+            textCapitalization: TextCapitalization.characters,
+            onSubmitted: (_) => _submit(),
+            style: AppTextStyles.bodySmall,
+            decoration: InputDecoration(
+              hintText: 'Coupon code',
+              hintStyle:
+                  AppTextStyles.bodySmall.copyWith(color: AppColors.textMuted),
+              isDense: true,
+              filled: true,
+              fillColor: AppColors.bgSecondary,
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: const BorderSide(color: AppColors.borderSubtle),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        OutlinedButton(
+          onPressed: _submit,
+          child: const Text('Apply'),
+        ),
       ],
     );
   }
@@ -2206,6 +2364,7 @@ class _FigoSnapshot {
     required this.partnerRestaurants,
     required this.delivery,
     required this.admin,
+    this.capabilities = const _FigoCapabilities(),
   });
 
   final _FigoHome home;
@@ -2218,6 +2377,7 @@ class _FigoSnapshot {
   final List<_PartnerRestaurant> partnerRestaurants;
   final _DeliveryWorkspace delivery;
   final _AdminWorkspace admin;
+  final _FigoCapabilities capabilities;
 
   factory _FigoSnapshot.empty() {
     return const _FigoSnapshot(
@@ -2338,22 +2498,55 @@ class _FigoCart {
 
 class _CartItem {
   const _CartItem({
+    required this.id,
     required this.name,
     required this.quantity,
     required this.lineTotal,
   });
 
+  final String id;
   final String name;
   final int quantity;
   final double lineTotal;
 
   factory _CartItem.fromJson(Map<String, dynamic> json) {
     return _CartItem(
+      id: json['id']?.toString() ?? '',
       name: json['name'] as String? ?? 'Item',
       quantity: (json['quantity'] as num?)?.toInt() ?? 0,
       lineTotal: (json['line_total'] as num?)?.toDouble() ?? 0,
     );
   }
+}
+
+/// Server-declared roles (GET /me/capabilities). Drives which
+/// workspaces the role selector offers, replacing the blind client-side
+/// switcher — a plain customer never even sees partner/delivery/admin.
+class _FigoCapabilities {
+  const _FigoCapabilities({
+    this.isRestaurantOwner = false,
+    this.isDeliveryPartner = false,
+    this.isAdmin = false,
+  });
+
+  final bool isRestaurantOwner;
+  final bool isDeliveryPartner;
+  final bool isAdmin;
+
+  factory _FigoCapabilities.fromJson(Map<String, dynamic> json) {
+    return _FigoCapabilities(
+      isRestaurantOwner: json['is_restaurant_owner'] as bool? ?? false,
+      isDeliveryPartner: json['is_delivery_partner'] as bool? ?? false,
+      isAdmin: json['is_admin'] as bool? ?? false,
+    );
+  }
+
+  bool allows(_FigoRole role) => switch (role) {
+        _FigoRole.customer => true,
+        _FigoRole.restaurant => isRestaurantOwner,
+        _FigoRole.delivery => isDeliveryPartner,
+        _FigoRole.admin => isAdmin,
+      };
 }
 
 class _FigoAddress {

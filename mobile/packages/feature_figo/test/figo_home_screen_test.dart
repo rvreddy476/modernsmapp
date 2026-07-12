@@ -187,6 +187,79 @@ void main() {
     expect(addBtn, findsOneWidget);
   });
 
+  testWidgets('cart quantity controls PATCH and DELETE cart items',
+      (tester) async {
+    when(() => api.patch('/v1/food/cart/items/ci1', data: any(named: 'data')))
+        .thenAnswer((_) async => ok({'data': <String, dynamic>{}}));
+    when(() => api.delete('/v1/food/cart/items/ci1'))
+        .thenAnswer((_) async => ok({'data': <String, dynamic>{}}));
+    when(() => api.get('/v1/food/cart')).thenAnswer(
+      (_) async => ok({
+        'data': {
+          'items': [
+            {'id': 'ci1', 'name': 'Chicken Biryani', 'quantity': 1, 'line_total': 199},
+          ],
+          'totals': {'final_amount': 199},
+        },
+      }),
+    );
+
+    await pumpHome(tester);
+    await tester.ensureVisible(find.byIcon(Icons.add_rounded));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byIcon(Icons.add_rounded));
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pumpAndSettle();
+    final patched = verify(() => api.patch('/v1/food/cart/items/ci1',
+            data: captureAny(named: 'data')))
+        .captured
+        .single as Map<String, dynamic>;
+    expect(patched['quantity'], 2);
+
+    // Quantity 1 -> minus removes the line entirely.
+    await tester.ensureVisible(find.byIcon(Icons.remove_rounded));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byIcon(Icons.remove_rounded));
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pumpAndSettle();
+    verify(() => api.delete('/v1/food/cart/items/ci1')).called(1);
+  });
+
+  testWidgets('coupon Apply posts the code to /coupons/validate',
+      (tester) async {
+    when(() => api.post('/v1/food/coupons/validate', data: any(named: 'data')))
+        .thenAnswer((_) async => ok({'data': <String, dynamic>{}}));
+
+    await pumpHome(tester);
+    final couponField = find.widgetWithText(TextField, 'Coupon code');
+    await tester.ensureVisible(couponField);
+    await tester.pumpAndSettle();
+    await tester.enterText(couponField, 'figo50');
+    await tester.tap(find.text('Apply'));
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pumpAndSettle();
+
+    final sent = verify(() => api.post('/v1/food/coupons/validate',
+            data: captureAny(named: 'data')))
+        .captured
+        .single as Map<String, dynamic>;
+    expect(sent['code'], 'figo50');
+  });
+
+  testWidgets('role selector hides workspaces the server has not granted',
+      (tester) async {
+    // Catch-all 404s /me/capabilities -> customer-only -> no selector.
+    await pumpHome(tester);
+
+    expect(find.text('Partner'), findsNothing);
+    expect(find.text('Delivery'), findsNothing);
+    expect(find.text('Admin'), findsNothing);
+  });
+
   testWidgets('search box opens live search backed by /v1/food/search',
       (tester) async {
     when(() => api.get('/v1/food/search',
