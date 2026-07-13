@@ -49,18 +49,28 @@ BH=(-H "Authorization: Bearer $BTOK" -H "X-User-Id: $BUID")
 hdr "1. POSTBOOK — home feed (feed/post/user services)"
 classify "GET /v1/feed/home" "$(codeA "$GW/v1/feed/home?limit=10")"
 
-hdr "2. CHAT — multi-user: alice → bob, bob reads (chat-message-service)"
-# Real contract: POST /v1/chat/conversations/direct {other_user_id}; msg {type,text}
+hdr "2. CHAT — multi-user: connect → alice DM bob → bob reads"
+# DM permission (graph-service) defaults to connections_only, so strangers
+# are correctly blocked. Establish the connection first: alice requests,
+# bob accepts — then the DM is allowed. This proves graph↔chat integration.
+cr=$(codeA "$GW/v1/graph/connection-request" -X POST -H "Content-Type: application/json" -d "{\"user_id\":\"$BUID\"}")
+ca=$(codeB "$GW/v1/graph/connection-request/accept" -X POST -H "Content-Type: application/json" -d "{\"user_id\":\"$AUID\"}")
+case "$cr/$ca" in
+  20*/20*) ok "alice↔bob connected (request $cr / accept $ca)";;
+  *) skip "connection handshake ($cr/$ca) — chat DM will be permission-gated";;
+esac
+# Real contract: POST /v1/chat/conversations/direct {other_user_id} +
+# Idempotency-Key header; msg {type,text}.
 convo=$(curl -s -X POST "$GW/v1/chat/conversations/direct" "${AH[@]}" -H "Content-Type: application/json" \
-  -d "{\"other_user_id\":\"$BUID\"}" --max-time 15)
+  -H "Idempotency-Key: e2e-convo-$AUID-$BUID" -d "{\"other_user_id\":\"$BUID\"}" --max-time 15)
 CID=$(pluck "$convo" id)
 if [ -n "$CID" ]; then
   ok "alice created direct conversation (${CID:0:12}…)"
-  classify "alice sent message" "$(codeA "$GW/v1/chat/conversations/$CID/messages" -X POST -H "Content-Type: application/json" -d '{"type":"text","text":"hi bob — e2e"}')"
+  classify "alice sent message" "$(codeA "$GW/v1/chat/conversations/$CID/messages" -X POST -H "Content-Type: application/json" -H "Idempotency-Key: e2e-msg-$RANDOM" -d '{"type":"text","text":"hi bob — e2e"}')"
   grep -q "$CID" <<<"$(curl -s "$GW/v1/chat/conversations" "${BH[@]}" --max-time 15)" \
     && ok "bob sees the conversation (multi-user delivery ✓)" || bad "bob missing conversation"
 else
-  classify "create conversation" "$(codeA "$GW/v1/chat/conversations/direct" -X POST -H "Content-Type: application/json" -d "{\"other_user_id\":\"$BUID\"}")"
+  classify "create conversation" "$(codeA "$GW/v1/chat/conversations/direct" -X POST -H "Content-Type: application/json" -H "Idempotency-Key: e2e-convo2-$AUID" -d "{\"other_user_id\":\"$BUID\"}")"
   echo "    ↳ $(head -c140 <<<"$convo")"
 fi
 
@@ -82,9 +92,13 @@ classify "GET /v1/food/me/loyalty"      "$(codeA "$GW/v1/food/me/loyalty")"
 classify "GET /v1/food/search?q=biryani" "$(codeA "$GW/v1/food/search?q=biryani")"
 
 hdr "7. DATING — age-gate → profile → deck → spark A→B (dating-service)"
-# Security assertion: a profile WITHOUT birth_date must be refused 18+ (P0-5 fail-closed).
-gate=$(codeA "$GW/v1/dating/profile" -X POST -H "Content-Type: application/json" -d '{"display_name":"NoAge","gender":"female"}')
-[ "$gate" = "403" ] && ok "age-gate fires: no birth_date → 403 AGE_REQUIRED (fail-closed ✓)" || bad "age-gate NOT enforced (got $gate, expected 403)"
+# Security assertion on a FRESH user (a persisted birth_date would let a
+# partial update reuse it — the gate applies at activation, correctly —
+# so a throwaway account is the only clean test of fail-closed).
+read -r GTOK GUID <<<"$(account gate.$RANDOM.e2e@vchattest.local Gate)"
+gate=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $GTOK" -H "X-User-Id: $GUID" \
+  -X POST "$GW/v1/dating/profile" -H "Content-Type: application/json" -d '{"display_name":"NoAge","gender":"female"}' --max-time 15)
+[ "$gate" = "403" ] && ok "age-gate fires on fresh user: no birth_date → 403 AGE_REQUIRED (fail-closed ✓)" || bad "age-gate NOT enforced (got $gate, expected 403)"
 # Now a valid 18+ profile with birth_date.
 classify "alice profile upsert (18+)" "$(codeA "$GW/v1/dating/profile" -X POST -H "Content-Type: application/json" -d '{"display_name":"Alice","bio":"e2e","gender":"female","interested_in":["male"],"birth_date":"1995-06-15T00:00:00Z"}')"
 codeB "$GW/v1/dating/profile" -X POST -H "Content-Type: application/json" -d '{"display_name":"Bob","bio":"e2e","gender":"male","interested_in":["female"],"birth_date":"1994-03-10T00:00:00Z"}' >/dev/null
