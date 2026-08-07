@@ -15,14 +15,17 @@ const (
 	ReactionToggled     = "ReactionToggled"
 )
 
+const EventSchemaVersion = 1
+
 // EventEnvelope is the CloudEvents-style structure used on Kafka.
 type EventEnvelope struct {
-	EventID     string          `json:"event_id"`
-	EventType   string          `json:"event_type"`
-	OccurredAt  time.Time       `json:"occurred_at"`
-	TraceID     string          `json:"trace_id"`
-	ActorUserID *string         `json:"actor_user_id,omitempty"`
-	Payload     json.RawMessage `json:"payload"`
+	SchemaVersion int             `json:"schema_version"`
+	EventID       string          `json:"event_id"`
+	EventType     string          `json:"event_type"`
+	OccurredAt    time.Time       `json:"occurred_at"`
+	TraceID       string          `json:"trace_id"`
+	ActorUserID   *string         `json:"actor_user_id,omitempty"`
+	Payload       json.RawMessage `json:"payload"`
 }
 
 type ConversationCreatedPayload struct {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"math"
 	"time"
 
 	"github.com/identity-platform/auth-service/internal/store"
@@ -48,7 +49,14 @@ func (r *OutboxRelay) process(ctx context.Context) {
 	}
 	for _, e := range events {
 		if err := r.producer.PublishRaw(ctx, e.EventType, "", json.RawMessage(e.Payload)); err != nil {
-			r.log.Warn("failed to publish outbox event", "err", err, "event_id", e.ID, "event_type", e.EventType)
+			r.log.Warn("failed to publish outbox event", "err", err, "event_id", e.ID, "event_type", e.EventType, "retry_count", e.RetryCount)
+
+			// Exponential backoff (1s, 2s, 4s ... up to 64s)
+			exp := math.Min(float64(e.RetryCount), 6)
+			retryDelay := time.Duration(1<<int(exp)) * time.Second
+			if markErr := r.store.MarkOutboxEventFailed(ctx, e.ID, err.Error(), retryDelay); markErr != nil {
+				r.log.Warn("failed to mark outbox event failed", "err", markErr, "event_id", e.ID)
+			}
 			continue
 		}
 		if err := r.store.MarkOutboxEventPublished(ctx, e.ID); err != nil {

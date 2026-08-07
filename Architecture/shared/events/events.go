@@ -34,7 +34,7 @@ const (
 	FriendRequestAccepted = "FriendRequestAccepted" // payload: FriendRequestAcceptedPayload
 	FriendRequestDeclined = "FriendRequestDeclined" // payload: FriendRequestDeclinedPayload
 	FriendRemoved         = "FriendRemoved"         // payload: FriendRemovedPayload
-	UserBlocked           = "UserBlocked"            // payload: UserBlockedPayload
+	UserBlocked           = "UserBlocked"           // payload: UserBlockedPayload
 
 	GroupCreated      = "GroupCreated"      // payload: GroupCreatedPayload
 	GroupMemberJoined = "GroupMemberJoined" // payload: GroupMemberJoinedPayload
@@ -79,14 +79,17 @@ const (
 	LiveEnded   = "LiveEnded"   // payload: LiveEndedPayload
 )
 
+const EventSchemaVersion = 1
+
 // EventEnvelope is the CloudEvents-ish structure we use on Kafka.
 type EventEnvelope struct {
-	EventID     string          `json:"event_id"`
-	EventType   string          `json:"event_type"`
-	OccurredAt  time.Time       `json:"occurred_at"`
-	TraceID     string          `json:"trace_id"`
-	ActorUserID *string         `json:"actor_user_id,omitempty"`
-	Payload     json.RawMessage `json:"payload"`
+	SchemaVersion int             `json:"schema_version"`
+	EventID       string          `json:"event_id"`
+	EventType     string          `json:"event_type"`
+	OccurredAt    time.Time       `json:"occurred_at"`
+	TraceID       string          `json:"trace_id"`
+	ActorUserID   *string         `json:"actor_user_id,omitempty"`
+	Payload       json.RawMessage `json:"payload"`
 }
 
 // UserRegisteredPayload definition.
@@ -286,12 +289,12 @@ type BusinessReviewCreatedPayload struct {
 }
 
 type SubscriptionCreatedPayload struct {
-	SubscriptionID string  `json:"subscription_id"`
-	SubscriberID   string  `json:"subscriber_id"`
-	CreatorID      string  `json:"creator_id"`
-	TierName       string  `json:"tier_name"`
-	Price          float64 `json:"price"`
-	Currency       string  `json:"currency"`
+	SubscriptionID string    `json:"subscription_id"`
+	SubscriberID   string    `json:"subscriber_id"`
+	CreatorID      string    `json:"creator_id"`
+	TierName       string    `json:"tier_name"`
+	Price          float64   `json:"price"`
+	Currency       string    `json:"currency"`
 	CreatedAt      time.Time `json:"created_at"`
 }
 
@@ -454,11 +457,12 @@ func NewEnvelope(ctx context.Context, eventType string, actorUserID *string, pay
 	traceID := trace.TraceIDFrom(ctx)
 
 	return EventEnvelope{
-		EventID:     uuid.New().String(),
-		EventType:   eventType,
-		OccurredAt:  time.Now(),
-		TraceID:     traceID,
-		ActorUserID: actorUserID,
-		Payload:     payload,
+		SchemaVersion: EventSchemaVersion,
+		EventID:       uuid.New().String(),
+		EventType:     eventType,
+		OccurredAt:    time.Now(),
+		TraceID:       traceID,
+		ActorUserID:   actorUserID,
+		Payload:       payload,
 	}
 }

@@ -7,11 +7,11 @@ import (
 
 // EventType constants for identity-platform domain events.
 const (
-	UserRegistered     = "UserRegistered"     // payload: UserRegisteredPayload
-	UserLoggedIn       = "UserLoggedIn"       // payload: UserLoggedInPayload
-	UserProfileUpdated = "UserProfileUpdated" // payload: UserProfileUpdatedPayload
+	UserRegistered      = "UserRegistered"      // payload: UserRegisteredPayload
+	UserLoggedIn        = "UserLoggedIn"        // payload: UserLoggedInPayload
+	UserProfileUpdated  = "UserProfileUpdated"  // payload: UserProfileUpdatedPayload
 	UserSettingsUpdated = "UserSettingsUpdated" // payload: UserSettingsUpdatedPayload
-	UserSuspended      = "UserSuspended"      // payload: UserSuspendedPayload
+	UserSuspended       = "UserSuspended"       // payload: UserSuspendedPayload
 
 	// Social / relationship events
 	FollowCreated         = "FollowCreated"         // payload: FollowPayload
@@ -23,14 +23,17 @@ const (
 	UserUnblocked         = "UserUnblocked"         // payload: BlockPayload
 )
 
+const EventSchemaVersion = 1
+
 // EventEnvelope is the CloudEvents-style structure used on Kafka.
 type EventEnvelope struct {
-	EventID     string          `json:"event_id"`
-	EventType   string          `json:"event_type"`
-	OccurredAt  time.Time       `json:"occurred_at"`
-	TraceID     string          `json:"trace_id"`
-	ActorUserID *string         `json:"actor_user_id,omitempty"`
-	Payload     json.RawMessage `json:"payload"`
+	SchemaVersion int             `json:"schema_version"`
+	EventID       string          `json:"event_id"`
+	EventType     string          `json:"event_type"`
+	OccurredAt    time.Time       `json:"occurred_at"`
+	TraceID       string          `json:"trace_id"`
+	ActorUserID   *string         `json:"actor_user_id,omitempty"`
+	Payload       json.RawMessage `json:"payload"`
 }
 
 // UserRegisteredPayload is emitted by auth-service on new registration.

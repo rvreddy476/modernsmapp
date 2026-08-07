@@ -79,6 +79,7 @@ type Store interface {
 	InsertOutboxEventTx(ctx context.Context, tx pgx.Tx, eventType, partitionKey string, payload interface{}) error
 	FetchUnpublishedOutboxEvents(ctx context.Context, limit int) ([]store.OutboxEvent, error)
 	MarkOutboxEventPublished(ctx context.Context, id int64) error
+	MarkOutboxEventFailed(ctx context.Context, id int64, lastError string, retryDelay time.Duration) error
 }
 
 type Producer interface {

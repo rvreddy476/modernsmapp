@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	sharedEvents "github.com/identity-platform/shared/events"
 	"github.com/google/uuid"
+	sharedEvents "github.com/identity-platform/shared/events"
 	"github.com/segmentio/kafka-go"
 )
 
@@ -48,11 +48,12 @@ func (p *Producer) PublishUserProfileUpdated(ctx context.Context, userID uuid.UU
 
 	actorStr := userID.String()
 	envelope := sharedEvents.EventEnvelope{
-		EventID:     uuid.New().String(),
-		EventType:   sharedEvents.UserProfileUpdated,
-		OccurredAt:  time.Now(),
-		ActorUserID: &actorStr,
-		Payload:     payloadBytes,
+		SchemaVersion: sharedEvents.EventSchemaVersion,
+		EventID:       uuid.New().String(),
+		EventType:     sharedEvents.UserProfileUpdated,
+		OccurredAt:    time.Now(),
+		ActorUserID:   &actorStr,
+		Payload:       payloadBytes,
 	}
 
 	envelopeBytes, err := json.Marshal(envelope)
@@ -153,11 +154,12 @@ func (p *Producer) publishEvent(ctx context.Context, eventType string, messageKe
 	}
 
 	envelope := sharedEvents.EventEnvelope{
-		EventID:     uuid.New().String(),
-		EventType:   eventType,
-		OccurredAt:  time.Now(),
-		ActorUserID: actorStr,
-		Payload:     payloadBytes,
+		SchemaVersion: sharedEvents.EventSchemaVersion,
+		EventID:       uuid.New().String(),
+		EventType:     eventType,
+		OccurredAt:    time.Now(),
+		ActorUserID:   actorStr,
+		Payload:       payloadBytes,
 	}
 
 	envelopeBytes, err := json.Marshal(envelope)

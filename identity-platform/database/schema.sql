@@ -109,7 +109,10 @@ CREATE TABLE IF NOT EXISTS auth.outbox_events (
     partition_key   TEXT            NOT NULL DEFAULT '',
     payload         JSONB           NOT NULL,
     created_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
-    published_at    TIMESTAMPTZ
+    published_at    TIMESTAMPTZ,
+    retry_count     INT             NOT NULL DEFAULT 0,
+    last_error      TEXT,
+    next_attempt_at TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_unpublished ON auth.outbox_events(id) WHERE published_at IS NULL;
 

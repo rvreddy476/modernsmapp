@@ -41,11 +41,12 @@ func (p *Producer) PublishMessageDeleted(ctx context.Context, payload sharedEven
 func (p *Producer) PublishRaw(ctx context.Context, eventType string, partitionKey string, payloadBytes json.RawMessage) error {
 	actorStr := ""
 	envelope := sharedEvents.EventEnvelope{
-		EventID:     uuid.New().String(),
-		EventType:   eventType,
-		OccurredAt:  time.Now(),
-		ActorUserID: &actorStr,
-		Payload:     payloadBytes,
+		SchemaVersion: sharedEvents.EventSchemaVersion,
+		EventID:       uuid.New().String(),
+		EventType:     eventType,
+		OccurredAt:    time.Now(),
+		ActorUserID:   &actorStr,
+		Payload:       payloadBytes,
 	}
 	envelopeBytes, err := json.Marshal(envelope)
 	if err != nil {
@@ -64,11 +65,12 @@ func (p *Producer) publish(ctx context.Context, eventType string, actorID *strin
 	}
 
 	envelope := sharedEvents.EventEnvelope{
-		EventID:     uuid.New().String(),
-		EventType:   eventType,
-		OccurredAt:  time.Now(),
-		ActorUserID: actorID,
-		Payload:     payloadBytes,
+		SchemaVersion: sharedEvents.EventSchemaVersion,
+		EventID:       uuid.New().String(),
+		EventType:     eventType,
+		OccurredAt:    time.Now(),
+		ActorUserID:   actorID,
+		Payload:       payloadBytes,
 	}
 
 	envelopeBytes, err := json.Marshal(envelope)

@@ -70,10 +70,11 @@ type OTP struct {
 }
 
 type OutboxEvent struct {
-	ID        int64
-	EventType string
-	Payload   json.RawMessage
-	CreatedAt time.Time
+	ID         int64
+	EventType  string
+	Payload    json.RawMessage
+	CreatedAt  time.Time
+	RetryCount int
 }
 
 type Store struct {
@@ -619,9 +620,10 @@ func (s *Store) InsertOutboxEventTx(ctx context.Context, tx pgx.Tx, eventType, p
 
 func (s *Store) FetchUnpublishedOutboxEvents(ctx context.Context, limit int) ([]OutboxEvent, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, event_type, payload, created_at
+		SELECT id, event_type, payload, created_at, retry_count
 		FROM auth.outbox_events
 		WHERE published_at IS NULL
+		  AND (next_attempt_at IS NULL OR next_attempt_at <= NOW())
 		ORDER BY id ASC
 		LIMIT $1
 	`, limit)
@@ -633,7 +635,7 @@ func (s *Store) FetchUnpublishedOutboxEvents(ctx context.Context, limit int) ([]
 	var events []OutboxEvent
 	for rows.Next() {
 		var e OutboxEvent
-		if err := rows.Scan(&e.ID, &e.EventType, &e.Payload, &e.CreatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.EventType, &e.Payload, &e.CreatedAt, &e.RetryCount); err != nil {
 			return nil, err
 		}
 		events = append(events, e)
@@ -645,6 +647,17 @@ func (s *Store) MarkOutboxEventPublished(ctx context.Context, id int64) error {
 	_, err := s.db.Exec(ctx, `
 		UPDATE auth.outbox_events SET published_at = NOW() WHERE id = $1
 	`, id)
+	return err
+}
+
+func (s *Store) MarkOutboxEventFailed(ctx context.Context, id int64, lastError string, retryDelay time.Duration) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE auth.outbox_events
+		SET retry_count = retry_count + 1,
+		    last_error = $2,
+		    next_attempt_at = NOW() + $3::interval
+		WHERE id = $1
+	`, id, lastError, retryDelay.String())
 	return err
 }
 

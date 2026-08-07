@@ -48,13 +48,11 @@ func main() {
 		{"/v1/groups", env("GROUP_SERVICE_URL", "http://group-service:8090")},
 		{"/v1/reports", env("TRUST_SAFETY_SERVICE_URL", "http://trust-safety-service:8091")},
 		{"/v1/chat", env("MESSAGE_SERVICE_URL", "http://message-service:8092")},
-		{"/v1/analytics", env("ANALYTICS_SERVICE_URL", "http://analytics-service:8093")},
+		{"/v1/analytics", env("ANALYTICS_SERVICE_URL", "http://analytics-service:8094")},
 		{"/v1/flags", env("FLAGS_SERVICE_URL", "http://feature-flag-service:8095")},
 		{"/v1/admin", env("ADMIN_SERVICE_URL", "http://admin-service:8096")},
 		// Monetization service
 		{"/v1/monetization", env("MONETIZATION_SERVICE_URL", "http://monetization-service:8099")},
-		// Suggestion service
-		{"/v1/suggestions", env("SUGGESTION_SERVICE_URL", "http://suggestion-service:8100")},
 	}
 
 	var routes []route

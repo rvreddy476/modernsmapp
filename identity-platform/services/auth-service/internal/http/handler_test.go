@@ -94,6 +94,22 @@ func (s *stubAuthService) HandleOAuthToken(_ context.Context, _, _ string) (*ser
 	return nil, nil
 }
 
+func (s *stubAuthService) ForgotPassword(_ context.Context, _ string) error      { return nil }
+func (s *stubAuthService) ResetPassword(_ context.Context, _, _, _ string) error { return nil }
+
+func (s *stubAuthService) RequestEmailVerification(_ context.Context, _ uuid.UUID) error { return nil }
+func (s *stubAuthService) VerifyEmail(_ context.Context, _ uuid.UUID, _ string) error    { return nil }
+func (s *stubAuthService) RequestPhoneVerification(_ context.Context, _ uuid.UUID) error { return nil }
+func (s *stubAuthService) VerifyPhone(_ context.Context, _ uuid.UUID, _ string) error    { return nil }
+
+func (s *stubAuthService) ListTrustedDevices(_ context.Context, _ uuid.UUID) ([]store.TrustedDevice, error) {
+	return nil, nil
+}
+func (s *stubAuthService) TrustDevice(_ context.Context, _ uuid.UUID, _ string, _ *string) error {
+	return nil
+}
+func (s *stubAuthService) RemoveTrustedDevice(_ context.Context, _, _ uuid.UUID) error { return nil }
+
 func noopMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) { c.Next() }
 }
