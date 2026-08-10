@@ -94,6 +94,11 @@ func (s *Store) DeleteUploadCascade(ctx context.Context, postID, authorID uuid.U
 	if err != nil {
 		return 0, fmt.Errorf("post not found or not owned by user")
 	}
+	// M2-P0-2: deletion removes the post from public search. Emitted in
+	// this same transaction so the removal cannot be lost.
+	if err := BumpSearchRevAndEmitTx(ctx, tx, postID); err != nil {
+		return 0, fmt.Errorf("emit search eligibility on delete: %w", err)
+	}
 
 	// Cascade-delete crosspost links (table may not exist yet — use savepoint)
 	cascadeCount := 0
@@ -130,6 +135,12 @@ func (s *Store) DeleteUploadCascade(ctx context.Context, postID, authorID uuid.U
 			`, targetPostIDs)
 			if err == nil {
 				cascadeCount = int(tag.RowsAffected())
+				// M2-P0-2: each cascaded delete must leave public search.
+				for _, tid := range targetPostIDs {
+					if emitErr := BumpSearchRevAndEmitTx(ctx, tx, tid); emitErr != nil {
+						return 0, fmt.Errorf("emit search eligibility on cascade delete: %w", emitErr)
+					}
+				}
 			}
 		}
 		_, _ = tx.Exec(ctx, "RELEASE SAVEPOINT crosspost_cascade")

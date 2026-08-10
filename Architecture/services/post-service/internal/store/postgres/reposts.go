@@ -362,6 +362,12 @@ func (s *Store) GetRepostCount(ctx context.Context, postID uuid.UUID) (int, erro
 }
 
 func isUniqueViolation(err error) bool {
+	return IsUniqueViolation(err)
+}
+
+// IsUniqueViolation reports whether err is a Postgres unique/PK conflict.
+// Exported for the draft-publish idempotency fast path (P0-5).
+func IsUniqueViolation(err error) bool {
 	if err == nil {
 		return false
 	}

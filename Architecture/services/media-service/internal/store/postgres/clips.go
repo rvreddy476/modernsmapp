@@ -3,9 +3,11 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // MediaClip is one ordered segment in a multi-clip Flick.
@@ -28,8 +30,13 @@ type MediaSubtitle struct {
 	Source        string          `json:"source"`
 	Format        string          `json:"format"`
 	ContentURL    string          `json:"content_url"`
+	// Content is the inline transcript text. media_subtitles is the ONE
+	// canonical caption store, so the text lives here rather than in a
+	// parallel table (Module 1 fixes-v1 / Codex P0-2).
+	Content       string          `json:"content,omitempty"`
 	WordLevelJSON json.RawMessage `json:"word_level_json,omitempty"`
 	Confidence    *float32        `json:"confidence,omitempty"`
+	EditedByOwner bool            `json:"edited_by_owner"`
 	CreatedAt     time.Time       `json:"created_at"`
 }
 
@@ -79,18 +86,31 @@ func (s *MediaAssetStore) GetMediaClips(ctx context.Context, postID uuid.UUID) (
 
 // CreateSubtitle upserts a subtitle track for a media asset.
 func (s *MediaAssetStore) CreateSubtitle(ctx context.Context, sub *MediaSubtitle) (*MediaSubtitle, error) {
+	// An owner-corrected transcript is never clobbered by a later
+	// auto-generated run (Codex P0-2: owner correction must stick).
 	err := s.db.QueryRow(ctx, `
-		INSERT INTO media_subtitles (media_asset_id, language, source, format, content_url, word_level_json, confidence)
-		VALUES ($1,$2,$3,$4,$5,$6,$7)
+		INSERT INTO media_subtitles (media_asset_id, language, source, format, content_url, content, word_level_json, confidence, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
 		ON CONFLICT (media_asset_id, language) DO UPDATE
 		    SET content_url     = EXCLUDED.content_url,
+		        content         = EXCLUDED.content,
+		        source          = EXCLUDED.source,
 		        word_level_json = EXCLUDED.word_level_json,
-		        confidence      = EXCLUDED.confidence
-		RETURNING id, media_asset_id, language, source, format, content_url, word_level_json, confidence, created_at`,
+		        confidence      = EXCLUDED.confidence,
+		        updated_at      = NOW()
+		    WHERE media_subtitles.edited_by_owner = FALSE
+		RETURNING id, media_asset_id, language, source, format, content_url,
+		          COALESCE(content,''), word_level_json, confidence, edited_by_owner, created_at`,
 		sub.MediaAssetID, sub.Language, sub.Source, sub.Format, sub.ContentURL,
-		sub.WordLevelJSON, sub.Confidence,
+		sub.Content, sub.WordLevelJSON, sub.Confidence,
 	).Scan(&sub.ID, &sub.MediaAssetID, &sub.Language, &sub.Source, &sub.Format,
-		&sub.ContentURL, &sub.WordLevelJSON, &sub.Confidence, &sub.CreatedAt)
+		&sub.ContentURL, &sub.Content, &sub.WordLevelJSON, &sub.Confidence,
+		&sub.EditedByOwner, &sub.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The WHERE guard suppressed the update because the owner has
+		// edited this track. Return the existing row unchanged.
+		return s.getSubtitle(ctx, sub.MediaAssetID, sub.Language)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +120,8 @@ func (s *MediaAssetStore) CreateSubtitle(ctx context.Context, sub *MediaSubtitle
 // GetSubtitles returns all subtitle tracks for a media asset, ordered by language.
 func (s *MediaAssetStore) GetSubtitles(ctx context.Context, mediaAssetID uuid.UUID) ([]MediaSubtitle, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, media_asset_id, language, source, format, content_url, word_level_json, confidence, created_at
+		SELECT id, media_asset_id, language, source, format, content_url,
+		       COALESCE(content,''), word_level_json, confidence, edited_by_owner, created_at
 		FROM media_subtitles WHERE media_asset_id = $1 ORDER BY language ASC`, mediaAssetID)
 	if err != nil {
 		return nil, err
@@ -110,10 +131,29 @@ func (s *MediaAssetStore) GetSubtitles(ctx context.Context, mediaAssetID uuid.UU
 	for rows.Next() {
 		var sub MediaSubtitle
 		if err := rows.Scan(&sub.ID, &sub.MediaAssetID, &sub.Language, &sub.Source, &sub.Format,
-			&sub.ContentURL, &sub.WordLevelJSON, &sub.Confidence, &sub.CreatedAt); err != nil {
+			&sub.ContentURL, &sub.Content, &sub.WordLevelJSON, &sub.Confidence,
+			&sub.EditedByOwner, &sub.CreatedAt); err != nil {
 			return nil, err
 		}
 		subs = append(subs, sub)
 	}
 	return subs, rows.Err()
+}
+
+// getSubtitle reads one track (used when an upsert is suppressed because
+// the owner has edited it).
+func (s *MediaAssetStore) getSubtitle(ctx context.Context, mediaAssetID uuid.UUID, language string) (*MediaSubtitle, error) {
+	var sub MediaSubtitle
+	err := s.db.QueryRow(ctx, `
+		SELECT id, media_asset_id, language, source, format, content_url,
+		       COALESCE(content,''), word_level_json, confidence, edited_by_owner, created_at
+		FROM media_subtitles WHERE media_asset_id = $1 AND language = $2`,
+		mediaAssetID, language).
+		Scan(&sub.ID, &sub.MediaAssetID, &sub.Language, &sub.Source, &sub.Format,
+			&sub.ContentURL, &sub.Content, &sub.WordLevelJSON, &sub.Confidence,
+			&sub.EditedByOwner, &sub.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &sub, nil
 }

@@ -66,8 +66,13 @@ func (s *Service) CreateCrosspost(ctx context.Context, sourcePostID, userID uuid
 		if source.ContentType == "flick" || source.ContentType == "reel" {
 			embedContentType = "flick_embed"
 		}
+		// M2-P0-1: the embed post inherits the SOURCE post's moderation
+		// state. Hardcoding an approved-looking value here would let a
+		// flagged or pending post become searchable by crossposting it.
+		embedReview := source.ReviewStatus
 		go func() {
-			if err := s.producer.PublishPostCreated(context.Background(), link.TargetPostID, userID, source.Text, "public", embedContentType, 0); err != nil {
+			if err := s.producer.PublishPostCreated(context.Background(), link.TargetPostID, userID,
+				source.Text, "public", embedContentType, embedReview, 0); err != nil {
 				log.Printf("Warning: failed to publish embed post created event: %v", err)
 			}
 		}()

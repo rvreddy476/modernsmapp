@@ -74,6 +74,9 @@ func (s *Store) initIndices() {
 				"text":            { "type": "text" },
 				"hashtags":        { "type": "keyword" },
 				"visibility":      { "type": "keyword" },
+				"review_status":   { "type": "keyword" },
+				"search_rev":      { "type": "long" },
+				"removed":         { "type": "boolean" },
 				"like_count":      { "type": "long" },
 				"comment_count":   { "type": "long" },
 				"post_type":       { "type": "keyword" },
@@ -229,12 +232,21 @@ type UserDoc struct {
 }
 
 type PostDoc struct {
-	PostID          string    `json:"post_id"`
-	AuthorID        string    `json:"author_id"`
-	AuthorUsername  string    `json:"author_username,omitempty"`
-	Text            string    `json:"text"`
-	Hashtags        []string  `json:"hashtags,omitempty"`
-	Visibility      string    `json:"visibility,omitempty"`
+	PostID         string   `json:"post_id"`
+	AuthorID       string   `json:"author_id"`
+	AuthorUsername string   `json:"author_username,omitempty"`
+	Text           string   `json:"text"`
+	Hashtags       []string `json:"hashtags,omitempty"`
+	Visibility     string   `json:"visibility,omitempty"`
+	// ReviewStatus is the canonical moderation state (Module 2 M2-P0-1).
+	// Indexed so every query path can apply a mandatory
+	// review_status=approved filter as defence in depth — the index-time
+	// gate is the primary control, this is the backstop for any document
+	// written before the gate existed or by a future code path.
+	ReviewStatus string `json:"review_status,omitempty"`
+	// SearchRev is the monotonic eligibility revision this document was
+	// written at. Used to drop stale out-of-order transitions.
+	SearchRev       int64     `json:"search_rev,omitempty"`
 	LikeCount       int       `json:"like_count"`
 	CommentCount    int       `json:"comment_count"`
 	ShareCount      int       `json:"share_count,omitempty"`
@@ -510,16 +522,17 @@ func (s *Store) SearchUsers(ctx context.Context, query string, limit int) ([]Use
 	return s.execUserSearch(ctx, q)
 }
 
-func (s *Store) execUserSearch(ctx context.Context, query interface{}) ([]UserDoc, error) {
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(query); err != nil {
+func (s *Store) execUserSearch(ctx context.Context, query map[string]interface{}) ([]UserDoc, error) {
+	// M2-P0-4: encodeQuery injects the viewer's two-way block exclusion.
+	buf, err := encodeQuery(ctx, query, "user_id")
+	if err != nil {
 		return nil, err
 	}
 
 	res, err := s.client.Search(
 		s.client.Search.WithContext(ctx),
 		s.client.Search.WithIndex("users_v1"),
-		s.client.Search.WithBody(&buf),
+		s.client.Search.WithBody(buf),
 	)
 	if err != nil {
 		return nil, err
@@ -567,13 +580,47 @@ func (s *Store) SearchPosts(ctx context.Context, query string, limit int) ([]Pos
 // out of scope here — `public` is the only safe default for an
 // unauthenticated/cross-graph search endpoint. Feed-service handles
 // the richer per-viewer visibility model for ranked/home timelines.
+
+// publicApprovedFilter is the MANDATORY eligibility filter for every
+// post-returning query (Module 2 M2-P0-1 acceptance 4).
+//
+// The index-time gate in the consumer is the primary control; this is
+// defence in depth. It matters for two real cases: documents written
+// before the gate existed (see the reconciler), and any future code path
+// that writes a document without going through the consumer.
+//
+// `review_status` is written by the current indexer, so a document that
+// predates the field has no value and will NOT match the term filter —
+// i.e. legacy documents are excluded, which is the fail-closed direction.
+func publicApprovedFilter() []map[string]interface{} {
+	return []map[string]interface{}{
+		{"term": map[string]interface{}{"visibility": "public"}},
+		{"term": map[string]interface{}{"review_status": "approved"}},
+	}
+}
+
+// toIfaceSlice adapts the filter for query bodies that take []interface{}.
+func toIfaceSlice(in []map[string]interface{}) []interface{} {
+	out := make([]interface{}, 0, len(in))
+	for _, m := range in {
+		out = append(out, m)
+	}
+	return out
+}
+
+// publicApprovedFilterAny is the same filter in []map[string]any form for
+// the ranked multi-entity path.
+func publicApprovedFilterAny() []map[string]any {
+	return []map[string]any{
+		{"term": map[string]any{"visibility": "public"}},
+		{"term": map[string]any{"review_status": "approved"}},
+	}
+}
 func (s *Store) SearchPostsFiltered(ctx context.Context, query string, contentTypes []string, limit int) ([]PostDoc, error) {
 	mustClauses := []map[string]interface{}{
 		{"match": map[string]interface{}{"text": query}},
 	}
-	filter := []map[string]interface{}{
-		{"term": map[string]interface{}{"visibility": "public"}},
-	}
+	filter := publicApprovedFilter()
 	if len(contentTypes) > 0 {
 		filter = append(filter, map[string]interface{}{
 			"terms": map[string]interface{}{"content_type": contentTypes},
@@ -592,16 +639,17 @@ func (s *Store) SearchPostsFiltered(ctx context.Context, query string, contentTy
 	return s.execPostSearch(ctx, q)
 }
 
-func (s *Store) execPostSearch(ctx context.Context, query interface{}) ([]PostDoc, error) {
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(query); err != nil {
+func (s *Store) execPostSearch(ctx context.Context, query map[string]interface{}) ([]PostDoc, error) {
+	// M2-P0-4: encodeQuery injects the viewer's two-way block exclusion.
+	buf, err := encodeQuery(ctx, query, "author_id")
+	if err != nil {
 		return nil, err
 	}
 
 	res, err := s.client.Search(
 		s.client.Search.WithContext(ctx),
 		s.client.Search.WithIndex("posts_v1"),
-		s.client.Search.WithBody(&buf),
+		s.client.Search.WithBody(buf),
 	)
 	if err != nil {
 		return nil, err
@@ -652,12 +700,22 @@ func (s *Store) SearchHashtags(ctx context.Context, prefix string, limit int) ([
 	// Escape OpenSearch regex metacharacters before splicing into `include`.
 	escaped := regexEscape(prefix)
 
+	// Module 2 M2-P0-1: this aggregation runs over posts_v1 and previously
+	// had NO eligibility filter, so a private, pending, flagged, or
+	// rejected post's hashtags surfaced as discoverable suggestions —
+	// leaking the existence (and often the subject) of held content.
+	// The aggregation is now scoped to public+approved documents.
 	q := map[string]interface{}{
-		"size":    0, // No document hits needed, only aggregation results
+		"size":    0,    // No document hits needed, only aggregation results
 		"timeout": "2s", // MS1: bound cluster-side time
 		"query": map[string]interface{}{
-			"prefix": map[string]interface{}{
-				"hashtags": prefix,
+			"bool": map[string]interface{}{
+				"must": []interface{}{
+					map[string]interface{}{
+						"prefix": map[string]interface{}{"hashtags": prefix},
+					},
+				},
+				"filter": toIfaceSlice(publicApprovedFilter()),
 			},
 		},
 		"aggs": map[string]interface{}{
@@ -671,8 +729,10 @@ func (s *Store) SearchHashtags(ctx context.Context, prefix string, limit int) ([
 		},
 	}
 
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(q); err != nil {
+	// M2-P0-4: this aggregation runs over posts_v1, so blocked authors'
+	// posts must not contribute to the hashtag suggestions a viewer sees.
+	buf, err := encodeQuery(ctx, q, "author_id")
+	if err != nil {
 		return nil, err
 	}
 
@@ -684,7 +744,7 @@ func (s *Store) SearchHashtags(ctx context.Context, prefix string, limit int) ([
 	res, err := s.client.Search(
 		s.client.Search.WithContext(tCtx),
 		s.client.Search.WithIndex("posts_v1"),
-		s.client.Search.WithBody(&buf),
+		s.client.Search.WithBody(buf),
 	)
 	if err != nil {
 		return nil, err
@@ -790,7 +850,137 @@ func (s *Store) UniversalSearch(ctx context.Context, query string, searchType st
 	return result, nil
 }
 
+// Deprecated: TombstonePost writes UNCONDITIONALLY and must not be used
+// on any path that competes with the event consumer.
+//
+// It performs no revision comparison, so a caller has to read the current
+// revision first — and that read-then-write gap is exactly the race the
+// Codex review identified: a concurrent handler can apply a newer state
+// between the read and the write, and this call then overwrites it.
+//
+// Use ApplyPostProjection with Removed:true (or AutoRev:true when no
+// canonical revision is available). This is retained only because the
+// exported symbol may still be referenced by out-of-tree tooling.
+//
+// TombstonePost replaces a post document with a minimal removal marker
+// (Module 2 M2-P0-2).
+//
+// Why not just delete: the resurrection guard compares an incoming
+// event's revision against the revision stored on the document. A hard
+// delete erases that high-water mark, so a redelivered OLDER approval
+// then sees "nothing indexed", concludes it is a first-time approval, and
+// puts rejected or taken-down content back into public search. Automated
+// DLQ replay makes that reordering routine rather than theoretical.
+//
+// The tombstone keeps the revision and drops everything that could leak:
+// no text, no hashtags, no captions. It carries review_status="removed"
+// and visibility="removed", so the mandatory public filter
+// (visibility=public AND review_status=approved) already excludes it from
+// every query path — no query changes are required for it to be invisible.
+//
+// author_id is retained so author-scoped erasure still finds and hard-
+// deletes it.
+func (s *Store) TombstonePost(ctx context.Context, postID, authorID string, rev int64) error {
+	if postID == "" {
+		return nil
+	}
+	doc := map[string]any{
+		"post_id":       postID,
+		"search_rev":    rev,
+		"review_status": "removed",
+		"visibility":    "removed",
+		"removed":       true,
+	}
+	if authorID != "" {
+		doc["author_id"] = authorID
+	}
+	data, _ := json.Marshal(doc)
+	req := opensearchapi.IndexRequest{
+		Index:      "posts_v1",
+		DocumentID: postID,
+		Body:       bytes.NewReader(data),
+	}
+	res, err := req.Do(ctx, s.client)
+	if err != nil {
+		return fmt.Errorf("opensearch tombstone post %s: %w", postID, err)
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return fmt.Errorf("opensearch tombstone post %s: %s", postID, res.String())
+	}
+	return nil
+}
+
+// GetPostSearchRev returns the search_rev stored on the post document and
+// whether any document exists for that id (Module 2 M2-P0-2).
+//
+// This is the read side of the resurrection guard: an eligibility event is
+// applied only when its revision is strictly greater than the stored one.
+// Tombstones carry a revision too, so the mark survives removal.
+//
+// The `exists` flag distinguishes "no document at all" from "a legacy
+// document written before search_rev existed", which both report rev 0.
+// The reconciler needs that difference: the first needs no repair, the
+// second is exactly the drift it must remove.
+//
+// A transport/parse failure returns an error rather than 0 — treating an
+// unreadable state as "not indexed" would let a stale approval overwrite
+// a newer removal.
+func (s *Store) GetPostSearchRev(ctx context.Context, postID string) (int64, bool, error) {
+	req := opensearchapi.GetRequest{
+		Index:          "posts_v1",
+		DocumentID:     postID,
+		SourceIncludes: []string{"search_rev"},
+	}
+	res, err := req.Do(ctx, s.client)
+	if err != nil {
+		return 0, false, fmt.Errorf("opensearch get search_rev: %w", err)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode == 404 {
+		return 0, false, nil // not indexed
+	}
+	if res.IsError() {
+		return 0, false, fmt.Errorf("opensearch get search_rev: %s", res.String())
+	}
+
+	var body struct {
+		Found  bool `json:"found"`
+		Source struct {
+			SearchRev int64 `json:"search_rev"`
+		} `json:"_source"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		return 0, false, fmt.Errorf("opensearch decode search_rev: %w", err)
+	}
+	if !body.Found {
+		return 0, false, nil
+	}
+	return body.Source.SearchRev, true, nil
+}
+
+// RefreshPosts forces posts_v1 to make recent writes searchable
+// immediately, instead of waiting for the refresh interval.
+//
+// Intended for integration tests and for the reconciler, which needs to
+// observe its own repairs. Production write paths must NOT call this —
+// per-write refreshes are the classic way to melt an OpenSearch cluster.
+func (s *Store) RefreshPosts(ctx context.Context) error {
+	req := opensearchapi.IndicesRefreshRequest{Index: []string{"posts_v1"}}
+	res, err := req.Do(ctx, s.client)
+	if err != nil {
+		return fmt.Errorf("refresh posts_v1: %w", err)
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return fmt.Errorf("refresh posts_v1: %s", res.String())
+	}
+	return nil
+}
+
 // DeletePost removes a post document from the OpenSearch index.
+
 func (s *Store) DeletePost(ctx context.Context, postID string) error {
 	req := opensearchapi.DeleteRequest{
 		Index:      "posts_v1",
@@ -810,6 +1000,15 @@ func (s *Store) DeletePost(ctx context.Context, postID string) error {
 	return nil
 }
 
+// Deprecated: DeletePostsByAuthor hard-deletes and therefore ERASES the
+// revision barrier on every one of the author's posts at once, which is
+// how a stale PostCreated or approval could recreate a deleted account's
+// content (Codex review P0-7).
+//
+// Use EraseAuthorContent, which records a permanent author fence and
+// converts the posts into fence tombstones instead. Retained only so the
+// symbol does not disappear from any out-of-tree caller.
+//
 // DeletePostsByAuthor removes all post documents by a given author.
 func (s *Store) DeletePostsByAuthor(ctx context.Context, authorID string) error {
 	query := map[string]interface{}{
@@ -933,8 +1132,10 @@ func (s *Store) Autocomplete(ctx context.Context, prefix string, limit int) ([]A
 		"_source": []string{"user_id", "username", "display_name"},
 	}
 
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(query); err != nil {
+	// M2-P0-4: autocomplete is a search surface too — a blocked account
+	// must not resurface as a typeahead suggestion.
+	buf, err := encodeQuery(ctx, query, "user_id")
+	if err != nil {
 		return nil, err
 	}
 
@@ -947,7 +1148,7 @@ func (s *Store) Autocomplete(ctx context.Context, prefix string, limit int) ([]A
 	res, err := s.client.Search(
 		s.client.Search.WithContext(tCtx),
 		s.client.Search.WithIndex("users_v1"),
-		s.client.Search.WithBody(&buf),
+		s.client.Search.WithBody(buf),
 	)
 	if err != nil {
 		return nil, err
@@ -1021,29 +1222,34 @@ func (s *Store) AutocompleteMulti(ctx context.Context, prefix string, limit int)
 	return out, nil
 }
 
+// autocompleteHashtags suggests hashtags for a prefix.
+//
+// M2-P0-4: this used to read hashtags_v1 directly. That index is a
+// counter that only ever went UP — nothing decremented it on rejection,
+// takedown, visibility downgrade, edit, or deletion. So a hashtag from a
+// post that was approved once and then removed stayed in autocomplete
+// permanently, advertising the existence and subject of content the
+// system had already decided to hide. The counter also survived the post
+// being deleted outright.
+//
+// Rather than trying to make an increment-only counter reversible — which
+// means getting a decrement right on every removal path, forever — the
+// suggestion is now DERIVED from the same live aggregation over posts_v1
+// that SearchHashtags uses. There is no separate state to go stale: a tag
+// stops being suggested the instant its last eligible post document stops
+// existing, and the public-approved filter plus the viewer's block filter
+// both apply automatically because it is one query over the post index.
 func (s *Store) autocompleteHashtags(ctx context.Context, prefix string, limit int) ([]AutocompleteResult, error) {
 	p := strings.ToLower(strings.TrimSpace(prefix))
-	if len(p) < 1 {
+	if p == "" {
 		return nil, nil
 	}
-	q := map[string]any{
-		"size":    limit,
-		"timeout": "2s",
-		"query": map[string]any{
-			"prefix": map[string]any{"hashtag": map[string]any{"value": p}},
-		},
-		"sort":    []any{map[string]any{"engagement_score": map[string]any{"order": "desc"}}},
-		"_source": []string{"hashtag", "use_count"},
-	}
-	tCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-	docs, err := s.execGenericSearch(tCtx, IndexHashtags, q)
+	tags, err := s.SearchHashtags(ctx, p, limit)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]AutocompleteResult, 0, len(docs))
-	for _, d := range docs {
-		h, _ := d["hashtag"].(string)
+	out := make([]AutocompleteResult, 0, len(tags))
+	for _, h := range tags {
 		if h == "" {
 			continue
 		}
@@ -1109,6 +1315,7 @@ func (s *Store) GetPopularPosts(ctx context.Context, limit int) ([]PostDoc, erro
 			"bool": map[string]interface{}{
 				"filter": []interface{}{
 					map[string]interface{}{"term": map[string]interface{}{"visibility": "public"}},
+					map[string]interface{}{"term": map[string]interface{}{"review_status": "approved"}},
 				},
 			},
 		},
@@ -1124,16 +1331,18 @@ func (s *Store) GetPopularPosts(ctx context.Context, limit int) ([]PostDoc, erro
 }
 
 // execGenericSearch runs a search against the given index and returns raw _source maps.
-func (s *Store) execGenericSearch(ctx context.Context, index string, query interface{}) ([]map[string]any, error) {
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(query); err != nil {
+func (s *Store) execGenericSearch(ctx context.Context, index string, query map[string]interface{}) ([]map[string]any, error) {
+	// M2-P0-4: exclude blocked users using whichever field identifies the
+	// owning user in this index.
+	buf, err := encodeQuery(ctx, query, ownerFieldForIndex(index))
+	if err != nil {
 		return nil, err
 	}
 
 	res, err := s.client.Search(
 		s.client.Search.WithContext(ctx),
 		s.client.Search.WithIndex(index),
-		s.client.Search.WithBody(&buf),
+		s.client.Search.WithBody(buf),
 	)
 	if err != nil {
 		return nil, err
@@ -1307,10 +1516,18 @@ func (s *Store) IndexProductDoc(ctx context.Context, doc ProductDoc) error {
 
 // DeleteCommunity / DeleteChannel / DeleteProduct / DeleteHashtag —
 // idempotent removals (404 is not an error).
-func (s *Store) DeleteCommunity(ctx context.Context, id string) error { return s.deleteDoc(ctx, IndexCommunities, id) }
-func (s *Store) DeleteChannel(ctx context.Context, id string) error   { return s.deleteDoc(ctx, IndexChannels, id) }
-func (s *Store) DeleteProduct(ctx context.Context, id string) error   { return s.deleteDoc(ctx, IndexProducts, id) }
-func (s *Store) DeleteHashtag(ctx context.Context, id string) error   { return s.deleteDoc(ctx, IndexHashtags, id) }
+func (s *Store) DeleteCommunity(ctx context.Context, id string) error {
+	return s.deleteDoc(ctx, IndexCommunities, id)
+}
+func (s *Store) DeleteChannel(ctx context.Context, id string) error {
+	return s.deleteDoc(ctx, IndexChannels, id)
+}
+func (s *Store) DeleteProduct(ctx context.Context, id string) error {
+	return s.deleteDoc(ctx, IndexProducts, id)
+}
+func (s *Store) DeleteHashtag(ctx context.Context, id string) error {
+	return s.deleteDoc(ctx, IndexHashtags, id)
+}
 
 // indexDoc is the shared single-doc index helper.
 func (s *Store) indexDoc(ctx context.Context, index, id string, doc any) error {
@@ -1390,6 +1607,41 @@ func (s *Store) AddToEngagementScore(ctx context.Context, index, docID string, d
 		return fmt.Errorf("update engagement_score on %s/%s: %s", index, docID, res.String())
 	}
 	return nil
+}
+
+// PurgeLegacyHashtagIndex deletes every document in hashtags_v1 and
+// returns how many were removed (Module 2 M2-P0-4).
+//
+// The index is no longer read by any viewer-facing surface. It was an
+// increment-only counter with no removal path, so its contents are, by
+// definition, partly derived from content that has since been rejected,
+// hidden, or deleted. Purging it is the only way to assert that no stale
+// derived signal remains.
+func (s *Store) PurgeLegacyHashtagIndex(ctx context.Context) (int, error) {
+	body, _ := json.Marshal(map[string]any{
+		"query": map[string]any{"match_all": map[string]any{}},
+	})
+	res, err := s.client.DeleteByQuery(
+		[]string{IndexHashtags},
+		bytes.NewReader(body),
+		s.client.DeleteByQuery.WithContext(ctx),
+		s.client.DeleteByQuery.WithConflicts("proceed"),
+		s.client.DeleteByQuery.WithRefresh(true),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("purge hashtags_v1: %w", err)
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return 0, fmt.Errorf("purge hashtags_v1: %s", res.String())
+	}
+	var parsed struct {
+		Deleted int `json:"deleted"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&parsed); err != nil {
+		return 0, fmt.Errorf("decode purge result: %w", err)
+	}
+	return parsed.Deleted, nil
 }
 
 // IncrementHashtagUse increments a hashtag's use_count by 1 and its
@@ -1481,8 +1733,9 @@ func buildFunctionScoreQuery(entity, q string, opts RankedSearchOptions) map[str
 				"fields": []string{"text^3", "hashtags^2", "author_username"},
 			},
 		}
-		// Always exclude non-public posts (matches SearchPostsFiltered).
-		filter = append(filter, map[string]any{"term": map[string]any{"visibility": "public"}})
+		// Always exclude non-public and non-approved posts
+		// (matches SearchPostsFiltered).
+		filter = append(filter, publicApprovedFilterAny()...)
 		affinityField = "author_id"
 	case EntityUsers:
 		inner = map[string]any{
@@ -1589,6 +1842,17 @@ func (s *Store) RankedSearch(ctx context.Context, entity, q string, opts RankedS
 	if index == "" {
 		return nil, fmt.Errorf("unknown entity type %q", entity)
 	}
+
+	// M2-P0-4: hashtags are served from a live aggregation over posts_v1
+	// rather than the hashtags_v1 counter index, for the same reason
+	// autocomplete is. The counters were increment-only, so a tag from a
+	// rejected or deleted post kept ranking here forever. Deriving from
+	// the post index makes removal automatic and inherits both the
+	// public-approved filter and the viewer's block filter.
+	if entity == EntityHashtags {
+		return s.rankedHashtagSearch(ctx, q, opts)
+	}
+
 	query := buildFunctionScoreQuery(entity, q, opts)
 
 	docs, err := s.execGenericSearch(ctx, index, query)
@@ -1611,6 +1875,34 @@ func (s *Store) RankedSearch(ctx context.Context, entity, q string, opts RankedS
 		res.NextCursor = strconv.Itoa(from + limit)
 	}
 	return res, nil
+}
+
+// rankedHashtagSearch serves the hashtags entity from the safe posts_v1
+// aggregation, shaped like the other ranked entities so the multi-entity
+// response format is unchanged.
+//
+// Ordering is by eligible-post count descending, which is what the
+// hashtags_v1 engagement_score was approximating anyway — except that
+// this version goes back down when posts are removed.
+func (s *Store) rankedHashtagSearch(ctx context.Context, q string, opts RankedSearchOptions) (*RankedSearchResult, error) {
+	limit := opts.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	tags, err := s.SearchHashtags(ctx, q, limit)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]map[string]any, 0, len(tags))
+	for _, tag := range tags {
+		items = append(items, map[string]any{
+			"hashtag":        tag,
+			"hashtag_search": tag,
+		})
+	}
+	// The aggregation returns the top N in one shot; there is no stable
+	// deep-paging cursor for it, so no next cursor is advertised.
+	return &RankedSearchResult{Items: items}, nil
 }
 
 // SearchMessages searches messages within an optional conversation for the given user.

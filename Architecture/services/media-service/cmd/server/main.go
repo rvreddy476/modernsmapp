@@ -131,6 +131,16 @@ func main() {
 	mediaSvc.SetProducer(producer)
 	slog.Info("kafka producer initialized")
 
+	// Module 1 fixes-v1: durable caption worker. Claims media_caption_jobs
+	// with FOR UPDATE SKIP LOCKED (safe in every replica), persists the
+	// transcript to media_subtitles, and releases the voice safety gate on
+	// completion (or routes to manual review on terminal failure).
+	mediaSvc.StartCaptionWorker(ctx)
+
+	// LB-1 requirement 7: retry blob deletions whose object keys were
+	// durably recorded before the media rows were removed.
+	mediaSvc.StartBlobReclaimWorker(ctx)
+
 	// 7. Prometheus metrics
 	httpMetrics := metrics.NewHTTPMetrics("media-service")
 	dbMetrics := metrics.NewDBPoolMetrics("media-service", "postgres")
@@ -161,7 +171,27 @@ func main() {
 	}
 	authMW := mediaHttp.AuthMiddlewareWithKeys(jwtKeys)
 	optionalAuthMW := mediaHttp.OptionalAuthMiddlewareWithKeys(jwtKeys)
-	mediaHandler := mediaHttp.New(mediaSvc)
+	// Module 1 fixes-v3 / LB-1: wire the internal service key.
+	//
+	// This was declared on the handler but never called, so the internal
+	// orphan-delete route was registered with NO authentication at all —
+	// an unauthenticated destructive endpoint. Startup now refuses in
+	// production when the key is absent, rather than silently running
+	// without service-to-service authentication.
+	//
+	// Local development / tests: leaving INTERNAL_SERVICE_KEY empty is
+	// permitted OUTSIDE production, and in that case the destructive
+	// internal route is not registered at all (see RegisterRoutes). An
+	// empty credential therefore never produces a permissive endpoint.
+	internalServiceKey := os.Getenv("INTERNAL_SERVICE_KEY")
+	if internalServiceKey == "" {
+		if env("DEPLOY_ENV", "") == "production" {
+			slog.Error("media-service: INTERNAL_SERVICE_KEY is required in production (service-to-service authentication for destructive internal routes)")
+			os.Exit(1)
+		}
+		slog.Warn("media-service: INTERNAL_SERVICE_KEY not set — internal routes disabled (non-production only)")
+	}
+	mediaHandler := mediaHttp.New(mediaSvc).WithInternalKey(internalServiceKey)
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()

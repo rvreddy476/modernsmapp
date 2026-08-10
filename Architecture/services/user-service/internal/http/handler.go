@@ -162,6 +162,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	internal.POST("/dlq/:id/replay", h.ReplayDLQ)
 	// Projection health: master vs. local counts, reconcile + DLQ status.
 	internal.GET("/projection/health", h.ProjectionHealth)
+	// Module 1 P0-3: subscriber fan-out contract (internal-only —
+	// subscriber identities never reach a public route).
+	internal.GET("/channels/by-owner/:userId", h.GetChannelByOwner)
+	internal.GET("/channels/:channelId/subscriber-ids", h.ListSubscriberIDs)
+	internal.GET("/users/:userId/subscribed-owner-ids", h.ListSubscribedOwners)
 
 	v1 := r.Group("/v1/users")
 	{

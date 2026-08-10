@@ -13,6 +13,7 @@ import (
 	"github.com/atpost/notification-service/internal/http"
 	"github.com/atpost/notification-service/internal/push"
 	"github.com/atpost/notification-service/internal/service"
+	"github.com/atpost/notification-service/internal/subscribers"
 	"github.com/atpost/notification-service/database"
 	"github.com/atpost/notification-service/internal/store/postgres"
 	"github.com/atpost/notification-service/internal/store/scylla"
@@ -231,10 +232,34 @@ func main() {
 		notifSvc,
 		kafkaDialer,
 	)
-	// Attach graph-service client so PostCreated events fan out to followers.
+	// graph-service client — follower fan-out for live-started events.
 	graphURL := env("GRAPH_SERVICE_URL", "http://graph-service:8083")
 	consumer.WithGraph(graph.New(graphURL, internalKey))
 	slog.Info("graph client attached", "graph_url", graphURL)
+
+	// Module 1 P0-3: durable subscriber fan-out for uploads. Requires the
+	// Postgres store (job + dedup tables) and the internal user-service
+	// subscriber contract. Without both, upload notifications are skipped
+	// entirely — there is deliberately no follower fallback.
+	if pgStore != nil {
+		userURL := env("USER_SERVICE_URL", "http://user-service:8082")
+		fanout := service.NewSubscriberFanout(
+			notifSvc, pgStore, subscribers.New(userURL, internalKey),
+		)
+		// Per-recipient eligibility re-checked at delivery time (P1-8):
+		// blocks, followers-only access, deletion, and moderation state.
+		fanout.SetEligibilityDeps(
+			graphURL,
+			env("POST_SERVICE_URL", "http://post-service:8084"),
+			internalKey,
+		)
+		consumer.WithSubscriberFanout(fanout)
+		fanout.StartWorker(ctx)
+		slog.Info("subscriber fan-out worker started", "user_service_url", userURL)
+	} else {
+		slog.Warn("subscriber fan-out disabled: no Postgres store — upload notifications will not be delivered")
+	}
+
 	go consumer.Start(ctx)
 	slog.Info("kafka consumer started", "topic", "social.events.v1")
 

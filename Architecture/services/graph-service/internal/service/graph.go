@@ -112,11 +112,19 @@ func (s *Service) WithUserEnsurer(c *userclient.Client) *Service {
 }
 
 type Relationship struct {
-	Follows          bool   `json:"follows"`
-	FollowedBy       bool   `json:"followed_by"`
-	Blocked          bool   `json:"blocked"`
-	IsMuted          bool   `json:"is_muted"`
-	IsConnection     bool   `json:"is_connection"`
+	Follows    bool `json:"follows"`
+	FollowedBy bool `json:"followed_by"`
+	// Blocked: the target blocked the actor.
+	Blocked bool `json:"blocked"`
+	// BlockedBy: the actor blocked the target. Callers must check BOTH
+	// directions before granting access (fixes-v2 / Codex P1-6).
+	BlockedBy    bool `json:"blocked_by"`
+	IsMuted      bool `json:"is_muted"`
+	IsConnection bool `json:"is_connection"`
+	// IsCloseFriend: exact membership of the target's close-friends list,
+	// which is the audience for `trusted` / `close_friends` visibility.
+	// Do NOT substitute IsConnection — it is strictly broader.
+	IsCloseFriend    bool   `json:"is_close_friend"`
 	ConnectionStatus string `json:"connection_status"` // none, pending_sent, pending_received, accepted
 }
 
@@ -345,8 +353,10 @@ func (s *Service) GetRelationship(ctx context.Context, actorID, targetID uuid.UU
 		Follows:          full.Follows,
 		FollowedBy:       full.FollowedBy,
 		Blocked:          full.Blocked,
+		BlockedBy:        full.BlockedBy,
 		IsMuted:          full.IsMuted,
 		IsConnection:     full.IsConnection,
+		IsCloseFriend:    full.IsCloseFriend,
 		ConnectionStatus: connectionStatus,
 	}
 

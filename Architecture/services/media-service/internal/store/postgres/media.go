@@ -34,6 +34,10 @@ type MediaAsset struct {
 	DurationSeconds  *int           `json:"duration_seconds,omitempty"`
 	Blurhash         *string        `json:"blurhash,omitempty"`
 	AltText          string         `json:"alt_text"`
+	// AltDecorative marks media the author explicitly declared decorative
+	// — distinct from "not described yet" (Codex P1-7). Hydrated media
+	// carries it so every referencing surface can skip it correctly.
+	AltDecorative    bool           `json:"alt_decorative"`
 	OriginalURL      *string        `json:"original_url,omitempty"`
 	CdnURL           *string        `json:"cdn_url,omitempty"`
 	ThumbnailURL     *string        `json:"thumbnail_url,omitempty"`
@@ -58,9 +62,9 @@ type MediaVariant struct {
 // CreateMedia inserts a new media asset record.
 func (s *MediaAssetStore) CreateMedia(ctx context.Context, m *MediaAsset) error {
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO media_assets (id, uploader_id, file_type, media_subtype, mime_type, file_size_bytes, storage_bucket, storage_key, processing_status, alt_text, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
-	`, m.ID, m.UploaderID, m.FileType, m.MediaSubtype, m.MimeType, m.FileSizeBytes, m.StorageBucket, m.StorageKey, m.ProcessingStatus, m.AltText, m.CreatedAt)
+		INSERT INTO media_assets (id, uploader_id, file_type, media_subtype, mime_type, file_size_bytes, storage_bucket, storage_key, processing_status, alt_text, alt_decorative, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)
+	`, m.ID, m.UploaderID, m.FileType, m.MediaSubtype, m.MimeType, m.FileSizeBytes, m.StorageBucket, m.StorageKey, m.ProcessingStatus, m.AltText, m.AltDecorative, m.CreatedAt)
 	return err
 }
 
@@ -103,12 +107,12 @@ func (s *MediaAssetStore) GetMedia(ctx context.Context, id uuid.UUID) (*MediaAss
 	var m MediaAsset
 	err := s.db.QueryRow(ctx, `
 		SELECT id, uploader_id, file_type, media_subtype, mime_type, file_size_bytes, storage_bucket, storage_key, processing_status, COALESCE(moderation_status, 'pending'),
-		       width, height, duration_seconds, blurhash, alt_text, original_url, cdn_url, thumbnail_url,
+		       width, height, duration_seconds, blurhash, alt_text, COALESCE(alt_decorative,FALSE), original_url, cdn_url, thumbnail_url,
 		       COALESCE(hls_master_key, ''), is_vertical, created_at, updated_at
 		FROM media_assets WHERE id = $1
 	`, id).Scan(
 		&m.ID, &m.UploaderID, &m.FileType, &m.MediaSubtype, &m.MimeType, &m.FileSizeBytes, &m.StorageBucket, &m.StorageKey, &m.ProcessingStatus, &m.ModerationStatus,
-		&m.Width, &m.Height, &m.DurationSeconds, &m.Blurhash, &m.AltText, &m.OriginalURL, &m.CdnURL, &m.ThumbnailURL,
+		&m.Width, &m.Height, &m.DurationSeconds, &m.Blurhash, &m.AltText, &m.AltDecorative, &m.OriginalURL, &m.CdnURL, &m.ThumbnailURL,
 		&m.HLSMasterKey, &m.IsVertical, &m.CreatedAt, &m.UpdatedAt,
 	)
 	if err != nil {
@@ -195,7 +199,7 @@ func (s *MediaAssetStore) GetMediaBatch(ctx context.Context, ids []uuid.UUID) ([
 
 	rows, err := s.db.Query(ctx, `
 		SELECT id, uploader_id, file_type, media_subtype, mime_type, file_size_bytes, storage_bucket, storage_key, processing_status, COALESCE(moderation_status, 'pending'),
-		       width, height, duration_seconds, blurhash, alt_text, original_url, cdn_url, thumbnail_url,
+		       width, height, duration_seconds, blurhash, alt_text, COALESCE(alt_decorative,FALSE), original_url, cdn_url, thumbnail_url,
 		       COALESCE(hls_master_key, ''), is_vertical, created_at, updated_at
 		FROM media_assets WHERE id = ANY($1)
 	`, ids)
@@ -210,7 +214,7 @@ func (s *MediaAssetStore) GetMediaBatch(ctx context.Context, ids []uuid.UUID) ([
 		var m MediaAsset
 		if err := rows.Scan(
 			&m.ID, &m.UploaderID, &m.FileType, &m.MediaSubtype, &m.MimeType, &m.FileSizeBytes, &m.StorageBucket, &m.StorageKey, &m.ProcessingStatus, &m.ModerationStatus,
-			&m.Width, &m.Height, &m.DurationSeconds, &m.Blurhash, &m.AltText, &m.OriginalURL, &m.CdnURL, &m.ThumbnailURL,
+			&m.Width, &m.Height, &m.DurationSeconds, &m.Blurhash, &m.AltText, &m.AltDecorative, &m.OriginalURL, &m.CdnURL, &m.ThumbnailURL,
 			&m.HLSMasterKey, &m.IsVertical, &m.CreatedAt, &m.UpdatedAt,
 		); err != nil {
 			return nil, err
@@ -432,10 +436,23 @@ func (s *MediaAssetStore) UpdateMediaURLs(ctx context.Context, id uuid.UUID, ori
 // UpdateAltText sets the alt_text field for a media asset owned by uploaderID.
 // Returns pgx.ErrNoRows if the asset does not exist or is not owned by uploaderID.
 func (s *MediaAssetStore) UpdateAltText(ctx context.Context, id uuid.UUID, uploaderID uuid.UUID, altText string) error {
+	return s.UpdateAltTextWithDecorative(ctx, id, uploaderID, altText, false)
+}
+
+// UpdateAltTextWithDecorative sets the description and the decorative
+// marker together (Module 1 fixes-v1 / Codex P1-7). The two are mutually
+// exclusive: marking decorative clears any description, and supplying a
+// description clears the decorative marker — so "described" and
+// "intentionally undescribed" stay distinguishable after publish.
+func (s *MediaAssetStore) UpdateAltTextWithDecorative(ctx context.Context, id uuid.UUID, uploaderID uuid.UUID, altText string, decorative bool) error {
+	if decorative {
+		altText = ""
+	}
 	tag, err := s.db.Exec(ctx, `
-		UPDATE media_assets SET alt_text = $1, updated_at = NOW()
+		UPDATE media_assets
+		SET alt_text = $1, alt_decorative = $4, updated_at = NOW()
 		WHERE id = $2 AND uploader_id = $3
-	`, altText, id, uploaderID)
+	`, altText, id, uploaderID, decorative)
 	if err != nil {
 		return err
 	}

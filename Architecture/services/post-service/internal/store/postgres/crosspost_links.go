@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -190,12 +191,18 @@ func (s *Store) SoftDeleteCrosspostLink(ctx context.Context, id uuid.UUID) error
 	}
 
 	// Soft-delete the target embed post
-	_, err = tx.Exec(ctx, `
+	tag, err := tx.Exec(ctx, `
 		UPDATE posts SET deleted_at = NOW(), updated_at = NOW()
 		WHERE id = $1 AND deleted_at IS NULL
 	`, targetPostID)
 	if err != nil {
 		return err
+	}
+	// M2-P0-2: removal from public search, atomic with the delete.
+	if tag.RowsAffected() > 0 {
+		if err := BumpSearchRevAndEmitTx(ctx, tx, targetPostID); err != nil {
+			return fmt.Errorf("emit search eligibility on crosspost delete: %w", err)
+		}
 	}
 
 	return tx.Commit(ctx)

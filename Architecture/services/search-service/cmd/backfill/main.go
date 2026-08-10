@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/atpost/search-service/internal/store/search"
+	"github.com/atpost/shared/events"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -165,6 +166,25 @@ func limitClause(limit int, paramN int) string {
 
 // --- posts -----------------------------------------------------------------
 
+// backfillPosts rebuilds posts_v1 from Postgres, which is the source of
+// truth, and is ALSO the M2-P0-2 reconciler.
+//
+// It previously selected every non-deleted post and indexed it, ignoring
+// visibility and moderation state entirely. That made a rebuild a
+// re-exposure event: a post held at 'pending' by the Module 1 safety gate,
+// or a followers-only post, would be published to the public index by an
+// operator running a routine reindex.
+//
+// Now it walks the SAME eligibility predicate the consumer uses and
+// reconciles in both directions:
+//
+//	eligible   → upsert with the row's current review_status and search_rev
+//	ineligible → DELETE from the index (repairing drift left behind by a
+//	             lost, failed, or dead-lettered eligibility event)
+//
+// The ineligible→delete direction is what lets the post-cutover audit
+// assert zero ineligible indexed documents. Deletion is issued even in
+// -dry-run=false only; -dry-run reports what it would do.
 func backfillPosts(ctx context.Context, store *search.Store, dsn string, limit int, dry bool) (int, error) {
 	pool, err := connect(ctx, dsn, "POSTGRES_DSN")
 	if err != nil {
@@ -173,7 +193,12 @@ func backfillPosts(ctx context.Context, store *search.Store, dsn string, limit i
 	defer pool.Close()
 
 	args := []any{}
-	q := `SELECT id, author_id, text, visibility, created_at FROM posts WHERE deleted_at IS NULL ORDER BY created_at DESC`
+	q := `SELECT id, author_id, text, visibility,
+	             COALESCE(review_status, ''), COALESCE(search_rev, 1),
+	             COALESCE(content_type, ''), created_at,
+	             (deleted_at IS NOT NULL) AS is_deleted
+	      FROM posts
+	      ORDER BY created_at DESC`
 	if limit > 0 {
 		q += limitClause(limit, 1)
 		args = append(args, limit)
@@ -184,32 +209,108 @@ func backfillPosts(ctx context.Context, store *search.Store, dsn string, limit i
 	}
 	defer rows.Close()
 
-	count := 0
+	var indexed, removed, skipped int
 	for rows.Next() {
-		var id, authorID, text, visibility string
+		var id, authorID, text, visibility, reviewStatus, contentType string
+		var searchRev int64
 		var createdAt time.Time
-		if err := rows.Scan(&id, &authorID, &text, &visibility, &createdAt); err != nil {
-			return count, err
+		var isDeleted bool
+		if err := rows.Scan(&id, &authorID, &text, &visibility,
+			&reviewStatus, &searchRev, &contentType, &createdAt, &isDeleted); err != nil {
+			return indexed, err
 		}
-		doc := search.PostDoc{
-			PostID:     id,
-			AuthorID:   authorID,
-			Text:       text,
-			Visibility: visibility,
-			Hashtags:   extractHashtags(text),
-			CreatedAt:  createdAt,
-		}
-		if dry {
-			count++
+
+		// The one eligibility rule, shared with the consumer so the
+		// rebuild can never be more permissive than the live path.
+		if !events.SearchEligible(visibility, reviewStatus, isDeleted) {
+			if dry {
+				skipped++
+				continue
+			}
+			// Only repair actual drift. Writing a tombstone for every
+			// ineligible row would add a document for every private and
+			// pending post in the database — most of which were never
+			// indexed and need no marker. Checking existence first keeps
+			// the index proportional to public content.
+			_, exists, err := store.GetPostSearchRev(ctx, id)
+			if err != nil {
+				slog.Warn("backfill posts: reconcile read failed", "id", id, "err", err)
+				continue
+			}
+			if !exists {
+				skipped++
+				continue
+			}
+			// AutoRev, not a revision computed here. The reconciler races
+			// the live consumer by definition — it runs while events are
+			// still flowing — so computing "current+1" in this process and
+			// then writing would be the same compare-then-write race the
+			// consumer used to have. Letting OpenSearch stamp storedRev+1
+			// under the document lock means a repair can never clobber a
+			// newer transition that landed while we were deciding.
+			if err := store.ApplyPostProjection(ctx, search.PostProjection{
+				PostID:   id,
+				AutoRev:  true,
+				Removed:  true,
+				AuthorID: authorID,
+			}); err != nil {
+				slog.Warn("backfill posts: reconcile removal failed",
+					"id", id, "visibility", visibility,
+					"review_status", reviewStatus, "err", err)
+				continue
+			}
+			slog.Warn("backfill posts: removed ineligible indexed document",
+				"id", id, "visibility", visibility, "review_status", reviewStatus,
+				"deleted", isDeleted)
+			removed++
 			continue
 		}
-		if err := store.IndexPost(ctx, doc); err != nil {
+
+		if dry {
+			indexed++
+			continue
+		}
+
+		// Re-review v2 P0-1: this must go through the author-fence
+		// handshake, not the bare projection.
+		//
+		// The reconciler reads a PostgreSQL statement snapshot and writes
+		// long afterwards, which is the exact shape the fence exists to
+		// catch:
+		//
+		//	1. a public+approved row is not yet in posts_v1
+		//	2. backfill reads it as eligible
+		//	3. the account is deleted; the fence lands and the sweep runs,
+		//	   but the absent post is not in the sweep snapshot
+		//	4. backfill writes its stale row and creates a public document
+		//
+		// There is no per-post erasure marker to stop it — the post did
+		// not exist when the sweep ran — so only the author-level check
+		// plus recheck can. A bare ApplyPostProjection here resurrected a
+		// deleted account's content.
+		if err := store.IndexPostUnlessAuthorErased(ctx, search.PostProjection{
+			PostID: id,
+			Rev:    searchRev,
+			Doc: search.PostDoc{
+				PostID:       id,
+				AuthorID:     authorID,
+				Text:         text,
+				Visibility:   visibility,
+				ReviewStatus: reviewStatus,
+				SearchRev:    searchRev,
+				PostType:     contentType,
+				Hashtags:     extractHashtags(text),
+				CreatedAt:    createdAt,
+			},
+		}); err != nil {
 			slog.Warn("backfill posts: index failed", "id", id, "err", err)
 			continue
 		}
-		count++
+		indexed++
 	}
-	return count, rows.Err()
+	slog.Info("backfill posts: reconciled",
+		"indexed", indexed, "removed_ineligible", removed, "skipped_dry", skipped)
+	return indexed, rows.Err()
 }
 
 // --- users -----------------------------------------------------------------
@@ -281,62 +382,35 @@ func backfillUsers(ctx context.Context, store *search.Store, identityDSN, appDSN
 
 // --- hashtags --------------------------------------------------------------
 
+// backfillHashtags PURGES the legacy hashtags_v1 counter index.
+//
+// M2-P0-4: hashtags_v1 was an increment-only projection. Nothing
+// decremented it when a post was rejected, taken down, made private,
+// edited, or deleted, so a tag from a once-approved post stayed
+// discoverable forever — in autocomplete, in trending, and in the ranked
+// hashtag entity — pointing at content the system had already hidden.
+// Rebuilding it with correct counts would have fixed the snapshot and
+// left the same defect running the moment the next post was removed.
+//
+// So the counter index is no longer read by anything. Every viewer-facing
+// hashtag surface (SearchHashtags, autocomplete, the ranked hashtags
+// entity) now derives from a live aggregation over posts_v1, which is
+// reversible by construction. This step deletes the stale documents so
+// nothing can quietly start reading them again, and so an audit of the
+// index finds no residue of removed content.
 func backfillHashtags(ctx context.Context, store *search.Store, dsn string, limit int, dry bool) (int, error) {
-	pool, err := connect(ctx, dsn, "POSTGRES_DSN")
+	if dry {
+		slog.Info("backfill hashtags: dry run — would purge the legacy hashtags_v1 index")
+		return 0, nil
+	}
+	purged, err := store.PurgeLegacyHashtagIndex(ctx)
 	if err != nil {
 		return 0, err
 	}
-	defer pool.Close()
-
-	// Mine hashtags from all post text. We don't have a hashtags table
-	// per-se; instead we aggregate from posts.text via the same
-	// regex the consumer uses.
-	args := []any{}
-	q := `SELECT text FROM posts WHERE deleted_at IS NULL AND text LIKE '%#%'`
-	if limit > 0 {
-		q += limitClause(limit, 1)
-		args = append(args, limit)
-	}
-	rows, err := pool.Query(ctx, q, args...)
-	if err != nil {
-		return 0, err
-	}
-	defer rows.Close()
-
-	tagCounts := map[string]int{}
-	for rows.Next() {
-		var text string
-		if err := rows.Scan(&text); err != nil {
-			return 0, err
-		}
-		for _, t := range extractHashtags(text) {
-			tagCounts[t]++
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return 0, err
-	}
-
-	count := 0
-	now := time.Now().UTC()
-	for h, uses := range tagCounts {
-		if dry {
-			count++
-			continue
-		}
-		doc := search.HashtagDoc{
-			Hashtag:       h,
-			HashtagSearch: h,
-			UseCount:      uses,
-			CreatedAt:     now,
-		}
-		if err := store.IndexHashtag(ctx, doc); err != nil {
-			slog.Warn("backfill hashtags: index failed", "tag", h, "err", err)
-			continue
-		}
-		count++
-	}
-	return count, nil
+	slog.Info("backfill hashtags: purged legacy counter index",
+		"documents_removed", purged,
+		"note", "hashtag surfaces now derive from the posts_v1 aggregation")
+	return purged, nil
 }
 
 // --- products --------------------------------------------------------------

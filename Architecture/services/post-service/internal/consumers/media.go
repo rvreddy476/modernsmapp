@@ -69,6 +69,12 @@ func (c *MediaTranscodeConsumer) Close() error {
 }
 
 func (c *MediaTranscodeConsumer) handle(ctx context.Context, env *events.EventEnvelope) error {
+	// Module 1 fixes-v2 / Codex P0-2: media-service publishes a voice
+	// safety verdict, but nothing consumed it — so a voice post held at
+	// review_status='pending' had no path to ever become visible.
+	if env.EventType == events.MediaVoiceSafetyResolved {
+		return c.handleVoiceSafetyResolved(ctx, env)
+	}
 	if env.EventType != events.MediaTranscodeCompleted {
 		return nil
 	}
@@ -194,6 +200,69 @@ func lookupMediaDims(ctx context.Context, store *postgres.Store, mediaID uuid.UU
 // or a rejected content scan, 'approved' on a clean ready transcode. A post
 // that already has a terminal status (finalized at create time, or a manual
 // moderator decision) is left untouched.
+// handleVoiceSafetyResolved releases (or rejects) voice posts held at
+// review_status='pending' once media-service produces a terminal safety
+// verdict. Module 1 fixes-v2 / Codex P0-2 — previously the event was
+// published but nothing consumed it, so held voice posts never surfaced.
+//
+// Idempotent by construction: FlipReviewStatusFromPending only applies
+// from 'pending', so a duplicate delivery is a no-op.
+func (c *MediaTranscodeConsumer) handleVoiceSafetyResolved(ctx context.Context, env *events.EventEnvelope) error {
+	var p events.MediaVoiceSafetyResolvedPayload
+	if err := json.Unmarshal(env.Payload, &p); err != nil {
+		slog.Warn("voice safety consumer: bad payload", "error", err)
+		return nil // don't loop to DLQ on a malformed message
+	}
+	mediaID, err := uuid.Parse(p.MediaID)
+	if err != nil {
+		return nil
+	}
+
+	var decision string
+	switch p.ModerationStatus {
+	case "approved":
+		decision = "approved"
+	case "rejected":
+		decision = "rejected"
+	case "failed":
+		// No verdict was produced. Route to human review — never approve.
+		decision = "flagged"
+	default:
+		return nil // non-terminal status; wait for the real verdict
+	}
+
+	postIDs, err := c.store.PostIDsByMediaID(ctx, mediaID)
+	if err != nil {
+		// Retryable: returning the error redelivers the event.
+		return fmt.Errorf("voice safety: resolve posts for media %s: %w", mediaID, err)
+	}
+	for _, postID := range postIDs {
+		flipped, err := c.store.FlipReviewStatusFromPending(ctx, postID, decision)
+		if err != nil {
+			return fmt.Errorf("voice safety: flip review status for %s: %w", postID, err)
+		}
+		if !flipped {
+			continue // not pending — already resolved
+		}
+		confidence := 1.0
+		if err := c.store.InsertModerationReview(ctx, &postgres.ModerationReview{
+			ReelID:       postID,
+			ReviewerType: "auto",
+			Decision:     decision,
+			Confidence:   &confidence,
+		}); err != nil {
+			slog.Warn("voice safety: moderation review insert failed",
+				"post_id", postID, "error", err)
+		}
+		if c.rdb != nil {
+			c.rdb.Del(ctx, "post:"+postID.String())
+		}
+		slog.Info("voice safety: post gate resolved",
+			"post_id", postID, "media_id", mediaID, "decision", decision)
+	}
+	return nil
+}
+
 func (c *MediaTranscodeConsumer) finalizeReviewGate(ctx context.Context, mediaID uuid.UUID, p *events.MediaTranscodeCompletedPayload) {
 	var decision string
 	switch {

@@ -3,6 +3,7 @@ package events
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/atpost/shared/o11y/trace"
@@ -17,6 +18,10 @@ const (
 	PostCreated              = "PostCreated"              // payload: PostCreatedPayload
 	PostDeleted              = "PostDeleted"              // payload: PostDeletedPayload
 	PostContentTypeChanged   = "PostContentTypeChanged"   // payload: PostContentTypeChangedPayload
+	PostDistributionUpdated  = "PostDistributionUpdated"  // payload: PostDistributionUpdatedPayload
+	// PostSearchEligibilityChanged is the single contract for every change
+	// to a post's public-search eligibility (Module 2 M2-P0-2).
+	PostSearchEligibilityChanged = "PostSearchEligibilityChanged" // payload: PostSearchEligibilityChangedPayload
 	UserFollowed   = "UserFollowed"   // payload: UserFollowedPayload
 	UserUnfollowed = "UserUnfollowed" // payload: UserUnfollowedPayload
 
@@ -30,6 +35,10 @@ const (
 
 	MediaTranscodeRequested = "MediaTranscodeRequested" // payload: MediaTranscodeRequestedPayload
 	MediaTranscodeCompleted = "MediaTranscodeCompleted" // payload: MediaTranscodeCompletedPayload
+	// MediaVoiceSafetyResolved carries the terminal voice-safety verdict
+	// so post-service can release or reject a held voice post
+	// (Module 1 fixes-v2 / Codex P0-2). Payload: MediaVoiceSafetyResolvedPayload.
+	MediaVoiceSafetyResolved = "MediaVoiceSafetyResolved"
 
 	// Connection lifecycle (messaging/privacy spec v2 §7.1 — the canonical
 	// backend term is "connection", formerly "friend").
@@ -469,6 +478,127 @@ type PostCreatedPayload struct {
 	ContentType     string    `json:"content_type"`     // "post", "poll", "reel", "video"
 	DurationSeconds int       `json:"duration_seconds"` // 0 for non-video
 	CreatedAt       time.Time `json:"created_at"`
+
+	// Module 1 P0-1/P0-3 additive fields. Old producers omit them:
+	// nil MainFeed / nil NotifySubscribers = legacy behavior (both true).
+	MainFeed          *bool  `json:"main_feed,omitempty"`
+	NotifySubscribers *bool  `json:"notify_subscribers,omitempty"`
+	DistributionRev   int64  `json:"distribution_rev,omitempty"`
+	// ChannelID is the author's canonical broadcast channel when one
+	// exists — the subscriber fan-out key for PostTube uploads.
+	ChannelID string `json:"channel_id,omitempty"`
+
+	// ReviewStatus is the CANONICAL persisted moderation state of the post
+	// row at publish time (Module 2 M2-P0-1).
+	//
+	// FAIL-CLOSED CONTRACT — read this before changing anything:
+	// an empty/missing/unrecognized value means NOT ELIGIBLE for public
+	// surfaces. It does NOT mean "legacy, therefore approved". Codex
+	// explicitly rejected a legacy-permissive default because replayed
+	// events, partially-deployed producers, and malformed payloads would
+	// each reopen the exposure that this field exists to close.
+	ReviewStatus string `json:"review_status,omitempty"`
+
+	// SearchRev is the monotonic per-post search-eligibility revision.
+	// Consumers apply an update only when it is strictly newer than the
+	// revision they last applied, so replay and out-of-order delivery
+	// cannot resurrect content. Creation is always revision 1.
+	SearchRev int64 `json:"search_rev,omitempty"`
+}
+
+// PostSearchEligibilityChangedPayload is THE single contract for every
+// change to a post's public-search eligibility (Module 2 M2-P0-2).
+//
+// One event covers approval, rejection, flagging, needs-changes,
+// takedown, visibility change, and deletion, because search only cares
+// about the resulting eligibility — not which internal path produced it.
+// Every post-service path that mutates review_status or visibility MUST
+// publish this transactionally with the row change (via the outbox), so
+// no status-changing path can bypass the projection.
+//
+// Determinism (consumer side):
+//
+//	public + approved → idempotent upsert of the current document
+//	anything else     → idempotent removal
+//	deleted           → idempotent removal
+//
+// SearchRev is monotonic per post. A consumer MUST drop an event whose
+// SearchRev is not greater than the revision it has already applied —
+// that is what stops a late-delivered approval from resurrecting a post
+// that was subsequently rejected or taken down.
+type PostSearchEligibilityChangedPayload struct {
+	PostID     string `json:"post_id"`
+	AuthorID   string `json:"author_id"`
+	Visibility string `json:"visibility"`
+	// ReviewStatus is the canonical persisted value. Same fail-closed
+	// contract as PostCreatedPayload.ReviewStatus.
+	ReviewStatus string `json:"review_status"`
+	// Deleted short-circuits to removal regardless of the other fields.
+	Deleted bool `json:"deleted,omitempty"`
+	// SearchRev is the monotonic revision. Required; a zero value is
+	// treated as unusable and the consumer fails closed (removal).
+	SearchRev int64 `json:"search_rev"`
+
+	// Projection payload — the current canonical content, supplied so an
+	// approval can index without a synchronous read-back into
+	// post-service. Only meaningful when the post is eligible.
+	Text        string    `json:"text,omitempty"`
+	ContentType string    `json:"content_type,omitempty"`
+	CreatedAt   time.Time `json:"created_at,omitempty"`
+
+	ChangedAt time.Time `json:"changed_at"`
+}
+
+// SearchEligible is the ONE place the eligibility rule is expressed, so
+// producer and consumer cannot drift apart. Everything is normalized and
+// allowlisted; anything unrecognized is ineligible.
+//
+// Module 2 M2-P0-1 acceptance: "empty, missing, malformed, pending,
+// flagged, rejected, and needs_changes all fail closed."
+func SearchEligible(visibility, reviewStatus string, deleted bool) bool {
+	if deleted {
+		return false
+	}
+	// Allowlist, not denylist: a new visibility or review value added in
+	// future is ineligible until someone deliberately admits it here.
+	if normalizeEligibilityToken(visibility) != "public" {
+		return false
+	}
+	return normalizeEligibilityToken(reviewStatus) == "approved"
+}
+
+// normalizeEligibilityToken lowercases and trims a token for comparison.
+// Kept deliberately strict: no aliasing, no prefix matching.
+func normalizeEligibilityToken(s string) string {
+	return strings.ToLower(strings.TrimSpace(s))
+}
+
+// MediaVoiceSafetyResolvedPayload is the terminal verdict for a voice
+// asset's safety evaluation. ModerationStatus is one of:
+//
+//	approved — an evaluation ran and found the content safe
+//	rejected — an evaluation ran and found the content unsafe
+//	failed   — no verdict could be produced → manual review, NOT approval
+//
+// Consumers must be idempotent: the verdict may be delivered more than
+// once, and the post transition is guarded to only apply from 'pending'.
+type MediaVoiceSafetyResolvedPayload struct {
+	MediaID          string `json:"media_id"`
+	ModerationStatus string `json:"moderation_status"`
+}
+
+// PostDistributionUpdatedPayload is emitted (via the post-service outbox)
+// whenever a post's distribution policy changes after creation. Consumers
+// MUST treat DistributionRev monotonically: apply only if rev is greater
+// than the last rev seen for the post; otherwise drop as stale.
+type PostDistributionUpdatedPayload struct {
+	PostID            string    `json:"post_id"`
+	AuthorID          string    `json:"author_id"`
+	ContentType       string    `json:"content_type"`
+	MainFeed          bool      `json:"main_feed"`
+	NotifySubscribers bool      `json:"notify_subscribers"`
+	DistributionRev   int64     `json:"distribution_rev"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 type UserFollowedPayload struct {

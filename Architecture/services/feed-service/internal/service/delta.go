@@ -74,21 +74,35 @@ func (s *Service) ComputeFeedDelta(ctx context.Context, userID uuid.UUID, feedTy
 }
 
 // deltaHome counts new items in the user's home timeline since anchor.
+// Applies the social-home distribution exclusion (P0-1) and the viewer's
+// hidden long-video tier (P0-4) so the "N new posts" pill never counts
+// posts the page itself would not show.
 func (s *Service) deltaHome(ctx context.Context, userID uuid.UUID, since time.Time) (int, string, error) {
 	items, err := s.scyllaStore.GetHomeTimeline(ctx, userID, deltaMaxCount+1)
 	if err != nil {
 		return 0, "", err
 	}
 
-	count := 0
-	var newest string
+	fresh := make([]FeedItem, 0, len(items))
 	for _, item := range items {
 		if item.CreatedAt.After(since) {
-			count++
-			if newest == "" {
-				newest = item.PostID.String()
-			}
+			fresh = append(fresh, FeedItem{
+				PostID:      item.PostID,
+				AuthorID:    item.AuthorID,
+				CreatedAt:   item.CreatedAt,
+				ContentType: item.ContentType,
+			})
 		}
+	}
+	fresh = s.filterMainFeedExcluded(ctx, fresh)
+	if s.GetLongVideoFrequency(ctx, userID) == "hidden" {
+		fresh = s.applyLongVideoFrequency(fresh, "hidden", false)
+	}
+
+	count := len(fresh)
+	newest := ""
+	if count > 0 {
+		newest = fresh[0].PostID.String()
 	}
 	return count, newest, nil
 }

@@ -91,6 +91,12 @@ class SettingsScreen extends ConsumerWidget {
                   onTap: () => context.push('/settings/data-saver'),
                 ),
                 _SettingTile(
+                  icon: Icons.tune_outlined,
+                  title: 'Content preferences',
+                  subtitle: 'How often long videos appear in your feed',
+                  onTap: () => context.push('/settings/content-preferences'),
+                ),
+                _SettingTile(
                   icon: Icons.verified,
                   title: 'Get Verified',
                   subtitle: 'Apply for a verified badge',

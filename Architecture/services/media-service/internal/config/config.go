@@ -32,6 +32,27 @@ type Config struct {
 	ScannerEnabled  bool // env: MEDIA_SCANNER_ENABLED (default false)
 	ScannerAllowStub bool // env: MEDIA_SCANNER_ALLOW_STUB (default false; opt-in for dev/test)
 
+	// Transcription (Module 1 P0-6 / P0-9).
+	//
+	// Empty or "none" means no provider is wired: caption/transcript
+	// endpoints report status "unavailable" and never fabricate a
+	// completed transcript. Voice posts still work — they just publish
+	// without captions, and the safety gate falls back to the configured
+	// VoiceSafetyRequired policy below.
+	TranscriptProvider string // env: MEDIA_TRANSCRIPT_PROVIDER (default "")
+
+	// VoiceSafetyRequired gates public distribution of voice posts on a
+	// completed baseline safety pass (transcript + audio scan). Default
+	// true per Codex P0-6: "public distribution remains pending until
+	// baseline transcript/audio safety completes". Set false only in dev.
+	VoiceSafetyRequired bool // env: MEDIA_VOICE_SAFETY_REQUIRED (default true)
+
+	// VoiceSafetyBlocklist configures the transcript safety evaluator
+	// (comma/newline separated terms). When empty, NO evaluator is
+	// configured and every voice asset fails closed to manual review —
+	// availability is never treated as safety (fixes-v2 / Codex P0-2).
+	VoiceSafetyBlocklist string // env: MEDIA_VOICE_SAFETY_BLOCKLIST
+
 	// Observability
 	OTLPEndpoint   string // env: OTEL_EXPORTER_OTLP_ENDPOINT (default "http://jaeger:4318")
 }
@@ -52,6 +73,12 @@ func Load() *Config {
 
 		ScannerEnabled:   os.Getenv("MEDIA_SCANNER_ENABLED") == "true",
 		ScannerAllowStub: os.Getenv("MEDIA_SCANNER_ALLOW_STUB") == "true",
+
+		TranscriptProvider: os.Getenv("MEDIA_TRANSCRIPT_PROVIDER"),
+		// Default-on: absent env var means the safety gate applies.
+		VoiceSafetyRequired:  os.Getenv("MEDIA_VOICE_SAFETY_REQUIRED") != "false",
+		VoiceSafetyBlocklist: os.Getenv("MEDIA_VOICE_SAFETY_BLOCKLIST"),
+
 		OTLPEndpoint:     getEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://jaeger:4318"),
 	}
 }

@@ -163,6 +163,7 @@ import 'package:atpost_app/features/mopedu/partner/ride_navigation_screen.dart';
 import 'package:atpost_app/features/mopedu/ride_history_screen.dart';
 import 'package:atpost_app/features/mopedu/ride_summary_screen.dart';
 import 'package:atpost_app/features/mopedu/saved_places_screen.dart';
+import 'package:atpost_app/features/settings/content_preferences_screen.dart';
 import 'package:atpost_app/features/settings/data_saver_screen.dart';
 import 'package:atpost_app/features/settings/edit_profile_screen.dart';
 import 'package:atpost_app/features/settings/notification_settings_screen.dart';
@@ -1025,6 +1026,11 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: '/settings/data-saver',
             builder: (_, _) => const DataSaverScreen(),
+          ),
+          GoRoute(
+            // Module 1 P0-4: viewer long-video frequency.
+            path: '/settings/content-preferences',
+            builder: (_, _) => const ContentPreferencesScreen(),
           ),
           GoRoute(
             path: '/settings/verification',

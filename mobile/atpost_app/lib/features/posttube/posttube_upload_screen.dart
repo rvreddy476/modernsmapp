@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:atpost_app/core/errors/error_handler.dart';
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_app/features/create/widgets/distribution_sheet.dart';
 import 'package:atpost_app/providers/feed_provider.dart';
 import 'package:atpost_app/services/api_client.dart';
 import 'package:flutter/material.dart';
@@ -31,6 +32,12 @@ class _PosttubeUploadScreenState extends ConsumerState<PosttubeUploadScreen> {
   String _status = '';
   bool _isUploading = false;
   String? _error;
+
+  // Module 1 P0-2: creator publication choices. Held in state so they
+  // survive backgrounding and are reapplied verbatim on upload retry
+  // (previously visibility was hardcoded to 'public' with no controls).
+  // PostTube default = PostTube-only, subscribers notified.
+  DistributionChoices _distribution = DistributionChoices.posttubeDefaults();
 
   @override
   void dispose() {
@@ -102,13 +109,33 @@ class _PosttubeUploadScreenState extends ConsumerState<PosttubeUploadScreen> {
       // best-effort delete the orphan so storage drops immediately. The
       // 24h server-side GC sweep catches anything this misses.
       try {
-        await api.post('/v1/posts', data: {
-          'content_type': 'long_video',
-          'media_ids': [mediaId],
-          'title': _titleCtrl.text.trim(),
-          'text': fullText,
-          'visibility': 'public',
-        });
+        final scheduleAt = _distribution.scheduleAtUtcIso;
+        if (scheduleAt != null) {
+          // Scheduled publish (P0-5): the server holds the draft and
+          // publishes it at the due time, re-checking standing and
+          // moderation then. Times travel as UTC; the sheet shows local.
+          await api.post('/v1/posts/drafts', data: {
+            'post_type': 'video',
+            'schedule_at': scheduleAt,
+            'payload': {
+              'content_type': 'long_video',
+              'media_ids': [mediaId],
+              'title': _titleCtrl.text.trim(),
+              'text': fullText,
+              'visibility': _distribution.visibilityWire,
+              'distribution': _distribution.toPolicyJson(),
+            },
+          });
+        } else {
+          await api.post('/v1/posts', data: {
+            'content_type': 'long_video',
+            'media_ids': [mediaId],
+            'title': _titleCtrl.text.trim(),
+            'text': fullText,
+            'visibility': _distribution.visibilityWire,
+            'distribution': _distribution.toPolicyJson(),
+          });
+        }
       } catch (_) {
         unawaited(api.tryDeleteMedia(mediaId));
         rethrow;
@@ -205,11 +232,82 @@ class _PosttubeUploadScreenState extends ConsumerState<PosttubeUploadScreen> {
             ),
             const SizedBox(height: 20),
             _buildHashtagsSection(),
+            const SizedBox(height: 20),
+            _buildDistributionSection(),
             const SizedBox(height: 32),
             ElevatedButton(
               onPressed: _titleCtrl.text.trim().isNotEmpty ? _startResilientUpload : null,
-              child: const Text('Start Upload'),
+              child: Text(
+                _distribution.visibility == PublishVisibility.scheduled
+                    ? 'Upload & Schedule'
+                    : 'Start Upload',
+              ),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// P0-2: entry point to the publication choices. The summary line
+  /// always reflects the current choices so the creator can see where the
+  /// video will go without opening the sheet.
+  Widget _buildDistributionSection() {
+    final d = _distribution;
+    final visibilityLabel = switch (d.visibility) {
+      PublishVisibility.public => 'Public',
+      PublishVisibility.unlisted => 'Unlisted',
+      PublishVisibility.private => 'Private',
+      PublishVisibility.scheduled => 'Scheduled',
+    };
+    final destination = d.mainFeed ? 'PostTube + social feed' : 'PostTube only';
+    final notify = d.notifySubscribers ? 'subscribers notified' : 'no notification';
+
+    return InkWell(
+      onTap: () async {
+        final updated = await showDistributionSheet(
+          context,
+          surface: DistributionSurface.posttube,
+          initial: _distribution,
+        );
+        if (updated != null && mounted) {
+          setState(() => _distribution = updated);
+        }
+      },
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: AppColors.bgCard,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppColors.borderSubtle),
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Publishing options', style: AppTextStyles.bodyMedium),
+                  const SizedBox(height: 4),
+                  Text(
+                    '$visibilityLabel · $destination · $notify',
+                    style: AppTextStyles.bodySmall
+                        .copyWith(color: AppColors.textDim),
+                  ),
+                  if (d.visibility == PublishVisibility.scheduled &&
+                      d.scheduleAtLocal != null) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      'Publishes ${d.scheduleAtLocal}',
+                      style: AppTextStyles.bodySmall
+                          .copyWith(color: AppColors.textDim),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const Icon(Icons.chevron_right, color: AppColors.textDim),
           ],
         ),
       ),

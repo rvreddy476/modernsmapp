@@ -63,8 +63,40 @@ func (s *Service) SendEmail(ctx context.Context, to, htmlTemplate string, data a
 	})
 }
 
-// CreateNotification
+// CreateNotification creates a notification with a fresh random identity.
+// Use CreateNotificationIdempotent for any at-least-once path (retries,
+// resumable batches) where a duplicate row would be user-visible.
 func (s *Service) CreateNotification(ctx context.Context, userID, actorID uuid.UUID, notifType, entityType string, entityID uuid.UUID, deepLink string, createdAt time.Time) error {
+	return s.createNotification(ctx, userID, actorID, notifType, entityType, entityID, deepLink, createdAt, "")
+}
+
+// CreateNotificationIdempotent writes the inbox row under a deterministic
+// identity (Module 1 fixes-v1/v2, Codex P0-1).
+//
+// GUARANTEE, stated precisely:
+//
+//   - Inbox row: EXACTLY ONE per identity. The insert is a lightweight
+//     transaction (`IF NOT EXISTS`), so a retry neither duplicates the row
+//     nor rewrites mutable state — in particular it can no longer reset
+//     `is_read` on a notification the user has already read.
+//   - Realtime publish and device push: AT MOST ONCE. They run only on the
+//     attempt that actually created the row. A crash between the row
+//     insert and the transport therefore drops that transport for that
+//     recipient; the durable inbox row still exists and appears on the
+//     next fetch. This matches how the rest of the service already treats
+//     Redis/push (best-effort transports over a durable inbox) and is a
+//     deliberate trade: re-firing them would spam a user who has already
+//     been notified.
+//   - Clients additionally de-duplicate on the deterministic
+//     notification_id, and push carries a collapse key.
+//
+// `identity` must be stable for the logical delivery — the subscriber
+// fan-out uses "<post_id>:<user_id>:<type>".
+func (s *Service) CreateNotificationIdempotent(ctx context.Context, userID, actorID uuid.UUID, notifType, entityType string, entityID uuid.UUID, deepLink string, createdAt time.Time, identity string) error {
+	return s.createNotification(ctx, userID, actorID, notifType, entityType, entityID, deepLink, createdAt, identity)
+}
+
+func (s *Service) createNotification(ctx context.Context, userID, actorID uuid.UUID, notifType, entityType string, entityID uuid.UUID, deepLink string, createdAt time.Time, identity string) error {
 	id := uuid.New()
 
 	// 1. Save to Scylla (Inbox)
@@ -79,8 +111,26 @@ func (s *Service) CreateNotification(ctx context.Context, userID, actorID uuid.U
 		IsRead:         false,
 		CreatedAt:      createdAt,
 	}
+	if identity != "" {
+		// Deterministic clustering key + id ⇒ the insert is an upsert.
+		n.TS = scylla.DeterministicTS(createdAt, identity)
+		n.NotificationID = scylla.DeterministicNotificationID(identity)
+		id = n.NotificationID
+	}
 
-	if err := s.scyllaStore.CreateNotification(ctx, n); err != nil {
+	if identity != "" {
+		// Idempotent path: conditional insert. `applied=false` means this
+		// notification already exists, so every downstream side effect
+		// below must be skipped — otherwise a retry re-publishes realtime
+		// and re-sends push for a notification the user already has.
+		applied, err := s.scyllaStore.CreateNotificationIfNotExists(ctx, n)
+		if err != nil {
+			return fmt.Errorf("failed to create notification in scylla: %w", err)
+		}
+		if !applied {
+			return nil
+		}
+	} else if err := s.scyllaStore.CreateNotification(ctx, n); err != nil {
 		return fmt.Errorf("failed to create notification in scylla: %w", err)
 	}
 

@@ -64,6 +64,23 @@ func (p *Producer) PublishTranscodeCompletedWithURLs(
 	return p.publish(ctx, events.MediaTranscodeCompleted, nil, payload)
 }
 
+// PublishRawEvent publishes an already-marshalled payload under an
+// arbitrary event type. Used by the transcript request path (P0-9).
+func (p *Producer) PublishRawEvent(ctx context.Context, eventType, key string, payload []byte) error {
+	envelope := events.NewEnvelope(ctx, eventType, nil, payload)
+	envelopeBytes, err := json.Marshal(envelope)
+	if err != nil {
+		return fmt.Errorf("failed to marshal envelope: %w", err)
+	}
+	if key == "" {
+		key = envelope.EventID
+	}
+	return p.writer.WriteMessages(ctx, kafka.Message{
+		Key:   []byte(key),
+		Value: envelopeBytes,
+	})
+}
+
 func (p *Producer) publish(ctx context.Context, eventType string, actorID *uuid.UUID, payload interface{}) error {
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {

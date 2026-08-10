@@ -3,6 +3,7 @@ package events
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"regexp"
@@ -38,12 +39,13 @@ func extractHashtags(text string) []string {
 }
 
 type Consumer struct {
-	reader    *kafka.Reader
-	store     *search.Store
-	dlq       *kafka.Writer // optional; nil = log-only on failure
-	dlqTopic  string
-	groupID   string
-	topic     string
+	reader   *kafka.Reader
+	store    *search.Store
+	dlq      *kafka.Writer // optional; nil = log-only on failure
+	dlqTopic string
+	groupID  string
+	topic    string
+	retry    retryPolicy
 }
 
 func NewConsumer(brokers []string, groupID string, topic string, store *search.Store) *Consumer {
@@ -86,12 +88,46 @@ func NewConsumerWithDialer(brokers []string, groupID string, topic string, store
 		dlqTopic: dlqTopic,
 		groupID:  groupID,
 		topic:    topic,
+		retry:    defaultRetryPolicy(),
 	}
 }
 
+// Start consumes the topic until ctx is cancelled.
+//
+// M2-P0-3: this uses FetchMessage + explicit CommitMessages, NOT
+// ReadMessage. With a consumer group, kafka-go's ReadMessage commits the
+// offset before returning the message to the caller, so the previous loop
+// was committing every message before it had been processed. The comment
+// claiming shutdown left the offset uncommitted was simply wrong.
+//
+// The consequences were real losses, not theoretical ones: if the process
+// exited between ReadMessage and the projection write, or the retries
+// exhausted and the DLQ write then failed, the message was already
+// committed and never redelivered. For a takedown or a visibility
+// downgrade that means the content stays publicly searchable forever,
+// with nothing left in the system that would ever fix it.
+//
+// The offset is now committed only after the projection has been applied,
+// or after the message is durably handed off to the DLQ.
+//
+// RE-REVIEW P0-1 — NEVER FETCH PAST AN UNRESOLVED MESSAGE.
+//
+// Switching to FetchMessage was necessary but not sufficient. The loop
+// used to `continue` when both processing and the DLQ handoff failed,
+// which fetched the NEXT message from the same partition. Kafka offsets
+// are cumulative: committing offset N+1 implicitly commits N. So one
+// later success silently committed the failed removal too, and it was
+// never redelivered — the exact loss the FetchMessage change was meant
+// to prevent, reintroduced one line below it.
+//
+// The loop now blocks on the current message until it reaches a durable
+// outcome. Blocking a partition is a real cost: this consumer stops
+// making progress on that partition while it retries. That is the correct
+// trade for a stream carrying moderation decisions — falling behind is
+// visible and recoverable, dropping a takedown is neither.
 func (c *Consumer) Start(ctx context.Context) {
 	for {
-		m, err := c.reader.ReadMessage(ctx)
+		m, err := c.reader.FetchMessage(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				slog.Info("search consumer shutting down")
@@ -102,21 +138,102 @@ func (c *Consumer) Start(ctx context.Context) {
 			continue
 		}
 
-		if err := c.processMessage(ctx, m); err != nil {
-			slog.Error("failed to process message", "topic", m.Topic, "offset", m.Offset, "error", err)
-			c.sendToDLQ(ctx, m, err)
+		if !c.handleUntilDurable(ctx, m) {
+			// Shutdown, or the message could not be resolved. Either way
+			// the offset stays put and the message is redelivered.
+			return
+		}
+
+		if err := c.commit(ctx, m); err != nil {
+			// The projection is already applied and idempotent, so a
+			// failed commit costs a redelivery, not correctness.
+			slog.Error("search: offset commit failed; message will be redelivered",
+				"topic", m.Topic, "offset", m.Offset, "error", err)
 		}
 	}
 }
 
-// sendToDLQ best-effort writes a failed message to the DLQ topic so an
-// operator/sweeper can inspect it. We never block on DLQ failure —
-// the search index isn't critical-path durable storage.
-func (c *Consumer) sendToDLQ(ctx context.Context, m kafka.Message, processErr error) {
-	if c.dlq == nil {
-		return
+// handleUntilDurable processes one message, retrying in place until it
+// either succeeds or is durably dead-lettered. Reports whether the offset
+// may now advance.
+//
+// Returning false means "stop the loop entirely" rather than "skip this
+// message" — skipping is what caused the leapfrog.
+func (c *Consumer) handleUntilDurable(ctx context.Context, m kafka.Message) bool {
+	// Escalating pause between outer attempts. The inner retry ladder
+	// already covers short blips; this covers an outage long enough that
+	// the DLQ is unreachable too.
+	stall := 2 * time.Second
+	const maxStall = 60 * time.Second
+
+	for {
+		// M2-P0-2: retry in-process before dead-lettering. A transient
+		// OpenSearch failure must not be the reason a takedown or a
+		// visibility downgrade never reaches the index.
+		procErr := c.retry.retry(ctx, func() error { return c.processMessage(ctx, m) })
+		if procErr == nil {
+			return true
+		}
+		if ctx.Err() != nil {
+			// Shutting down mid-message. Do NOT commit — redelivery after
+			// restart is exactly what we want.
+			slog.Info("search consumer shutting down mid-message", "offset", m.Offset)
+			return false
+		}
+
+		slog.Error("failed to process message after retries",
+			"topic", m.Topic, "offset", m.Offset, "error", procErr)
+		IndexOpFailures.WithLabelValues(eventTypeOf(m)).Inc()
+
+		// A CONFIRMED durable handoff is the only thing that lets the
+		// offset advance.
+		if c.sendToDLQ(ctx, m, procErr) {
+			return true
+		}
+
+		slog.Error("search: DLQ handoff failed; holding the partition rather than "+
+			"advancing past an unresolved message",
+			"topic", m.Topic, "offset", m.Offset, "retry_in", stall)
+
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(stall):
+		}
+		if stall < maxStall {
+			stall *= 2
+			if stall > maxStall {
+				stall = maxStall
+			}
+		}
 	}
-	dlqCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+}
+
+// commit advances the consumer group past a message that has been fully
+// handled. It uses a background context so a cancelled request context
+// cannot abandon a commit for work that actually succeeded.
+func (c *Consumer) commit(ctx context.Context, m kafka.Message) error {
+	commitCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	return c.reader.CommitMessages(commitCtx, m)
+}
+
+// sendToDLQ writes a failed message to the DLQ topic and reports whether
+// the handoff is DURABLE.
+//
+// M2-P0-3: the return value matters. This used to be best-effort with no
+// result, and the caller committed the source offset regardless — so a
+// failed DLQ write meant the message was gone from both the source topic
+// and the DLQ. The caller now refuses to commit unless this returns true.
+//
+// When the DLQ is disabled (unit tests, or SEARCH_DLQ_TOPIC="-") there is
+// no durable destination, so this reports false and the message stays
+// uncommitted rather than being silently discarded.
+func (c *Consumer) sendToDLQ(ctx context.Context, m kafka.Message, processErr error) bool {
+	if c.dlq == nil {
+		return false
+	}
+	dlqCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 	headers := append(m.Headers,
 		kafka.Header{Key: "x-dlq-error", Value: []byte(processErr.Error())},
@@ -129,9 +246,10 @@ func (c *Consumer) sendToDLQ(ctx context.Context, m kafka.Message, processErr er
 		Headers: headers,
 	}); err != nil {
 		slog.Error("search: DLQ write failed", "error", err, "dlq_topic", c.dlqTopic)
-		return
+		return false
 	}
 	slog.Warn("search: message routed to DLQ", "dlq_topic", c.dlqTopic, "offset", m.Offset)
+	return true
 }
 
 func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
@@ -181,27 +299,92 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 			return err
 		}
 
-		hashtags := extractHashtags(p.Text)
+		// ── Module 2 M2-P0-1: the moderation gate ────────────────────
+		//
+		// Previously EVERY PostCreated was indexed immediately, with no
+		// regard for moderation state. A post held at 'pending' by the
+		// Module 1 video/voice safety gate — or 'flagged' by spam
+		// detection — became publicly findable, and its text was
+		// returned directly from the OpenSearch _source. That defeated
+		// the Module 1 guarantee at the search boundary.
+		//
+		// FAIL CLOSED: empty, missing, malformed, pending, flagged,
+		// rejected and needs_changes are all ineligible. An unknown
+		// value is ineligible. There is deliberately no "legacy means
+		// approved" path — Codex rejected it because replayed events and
+		// partially-deployed producers would reopen the exposure.
+		if !events.SearchEligible(p.Visibility, p.ReviewStatus, false) {
+			slog.Debug("search: post not eligible for public index",
+				"post_id", p.PostID, "visibility", p.Visibility,
+				"review_status", p.ReviewStatus)
+			// Not an error: this is the expected path for held content.
+			// Nothing is indexed and NO derived signal is emitted — in
+			// particular the hashtag counters below are skipped, so held
+			// content cannot influence autocomplete or trending.
+			return nil
+		}
 
-		if err := c.store.IndexPost(ctx, search.PostDoc{
-			PostID:     p.PostID,
-			AuthorID:   p.AuthorID,
-			Text:       p.Text,
-			Hashtags:   hashtags,
-			Visibility: p.Visibility,
-			CreatedAt:  p.CreatedAt,
-		}); err != nil {
+		rev := p.SearchRev
+		if rev <= 0 {
+			rev = 1 // creation baseline
+		}
+
+		// M2-P0-2: this used to be an unconditional IndexPost, which meant
+		// creation ignored the revision barrier entirely. A replayed
+		// PostCreated at rev 1 arriving after a rev-2 removal simply
+		// overwrote the tombstone with a public approved document — no
+		// concurrency required. It now goes through the same atomic
+		// compare-and-apply as every other write.
+		//
+		// M2-P0-7 / re-review P0-2: IndexPostUnlessAuthorErased wraps that
+		// with a fence check AND a recheck, so an account erased while
+		// this write is in flight cannot end up with a surviving post.
+		return c.store.IndexPostUnlessAuthorErased(ctx, search.PostProjection{
+			PostID: p.PostID,
+			Rev:    rev,
+			Doc: search.PostDoc{
+				PostID:       p.PostID,
+				AuthorID:     p.AuthorID,
+				Text:         p.Text,
+				Hashtags:     extractHashtags(p.Text),
+				Visibility:   p.Visibility,
+				ReviewStatus: p.ReviewStatus,
+				SearchRev:    rev,
+				CreatedAt:    p.CreatedAt,
+			},
+		})
+
+	case events.PostSearchEligibilityChanged:
+		// M2-P0-2: the single contract for approval, rejection, flagging,
+		// needs-changes, takedown, visibility change, and deletion.
+		var p events.PostSearchEligibilityChangedPayload
+		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
 			return err
 		}
-		// Mirror hashtag mentions into the hashtags_v1 index. Each tag's
-		// use_count + engagement_score bumps by 1. Failures are logged but
-		// not bubbled — a missed hashtag tick is acceptable, a missed
-		// post-index is not.
-		for _, h := range hashtags {
-			if err := c.store.IncrementHashtagUse(ctx, h); err != nil {
-				slog.Warn("search: hashtag increment failed", "tag", h, "err", err)
-			}
+		return c.applySearchEligibility(ctx, p)
+
+	case events.ContentTakenDown:
+		// M2-P0-2: an explicit takedown must leave the index even if the
+		// eligibility event is delayed or lost. Removal is idempotent.
+		var p events.ContentTakenDownPayload
+		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
+			return err
 		}
+		if !strings.EqualFold(p.EntityType, "post") {
+			return nil
+		}
+		// The takedown payload carries no revision. AutoRev has OpenSearch
+		// stamp storedRev+1 inside the same locked update that performs
+		// the removal, so the barrier is raised atomically — the previous
+		// read-then-write version could be overtaken between the two.
+		if err := c.store.ApplyPostProjection(ctx, search.PostProjection{
+			PostID:  p.EntityID,
+			AutoRev: true,
+			Removed: true,
+		}); err != nil {
+			return fmt.Errorf("takedown: remove post %s from index: %w", p.EntityID, err)
+		}
+		slog.Info("search: post removed by takedown", "post_id", p.EntityID)
 		return nil
 
 	case events.PostReacted:
@@ -253,20 +436,43 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		}
 		return c.store.AddToEngagementScore(ctx, search.IndexUsers, p.FolloweeID, -1)
 
+	// ── Legacy delete events (M2-P0-2) ───────────────────────────────
+	//
+	// These three are still produced by current post-service paths and
+	// used to call a hard DeletePost. A hard delete removes the document
+	// AND the revision stored on it, so it erased the resurrection
+	// barrier: any older approval or PostCreated still in flight would
+	// then recreate the post as public and approved.
+	//
+	// They now write a removal marker with AutoRev, which removes the
+	// content and RAISES the barrier in one atomic operation. That makes
+	// them safe to receive in any order relative to the canonical
+	// eligibility transition — arriving late is a no-op, arriving early
+	// is superseded by the higher canonical revision.
+
 	case events.PostDeleted:
 		var p events.PostDeletedPayload
 		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
 			return err
 		}
-		return c.store.DeletePost(ctx, p.PostID)
+		return c.store.ApplyPostProjection(ctx, search.PostProjection{
+			PostID: p.PostID, AutoRev: true, Removed: true,
+		})
 
 	case events.EventUserDeletionRequested:
 		var p events.UserDeletionRequestedPayload
 		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
 			return err
 		}
-		if err := c.store.DeletePostsByAuthor(ctx, p.UserID); err != nil {
-			slog.Error("search: failed to delete posts by author", "user_id", p.UserID, "error", err)
+		// M2-P0-7: erase the author's content behind a permanent fence
+		// instead of delete-by-query. Deleting was faster and strictly
+		// less safe — it destroyed every revision marker at once, so any
+		// stale event could recreate the erased account's posts.
+		//
+		// This error is returned, not logged and swallowed: a failed
+		// erasure must be retried and dead-lettered, not forgotten.
+		if err := c.store.EraseAuthorContent(ctx, p.UserID); err != nil {
+			return fmt.Errorf("erase author content %s: %w", p.UserID, err)
 		}
 		return c.store.DeleteUser(ctx, p.UserID)
 
@@ -275,18 +481,18 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
 			return err
 		}
-		// Delete the embed post from the search index
-		if err := c.store.DeletePost(ctx, p.TargetPostID); err != nil {
-			slog.Error("search: failed to delete crosspost target", "target_post_id", p.TargetPostID, "error", err)
-		}
-		return nil
+		return c.store.ApplyPostProjection(ctx, search.PostProjection{
+			PostID: p.TargetPostID, AutoRev: true, Removed: true,
+		})
 
 	case events.UploadDeleted:
 		var p events.UploadDeletedPayload
 		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
 			return err
 		}
-		return c.store.DeletePost(ctx, p.PostID)
+		return c.store.ApplyPostProjection(ctx, search.PostProjection{
+			PostID: p.PostID, AutoRev: true, Removed: true,
+		})
 
 	case events.HandleChanged:
 		var p events.HandleChangedPayload
@@ -479,4 +685,3 @@ func (c *Consumer) Close() error {
 	}
 	return c.reader.Close()
 }
-

@@ -40,9 +40,12 @@ class ApiClient {
       CsrfInterceptor(),
       ExpiredTokenInterceptor(_auth, _dio),
       LogInterceptor(
-        requestHeader: true,
-        requestBody: true,
-        responseHeader: true,
+        // Headers carry the Authorization bearer token and Set-Cookie, and
+        // request bodies carry login passwords — keep both out of logcat
+        // even in debug builds (device logs are readable by other tools).
+        requestHeader: false,
+        requestBody: false,
+        responseHeader: false,
         responseBody: false,
         error: true,
         logPrint: (obj) => AppLogger.debug(obj.toString(), tag: 'Network'),
@@ -173,8 +176,15 @@ class ApiClient {
   /// 3. Confirm (/v1/media/confirm)
   Future<String> uploadMedia(
     XFile file, {
-    required String type, // 'image' or 'video'
+    required String type, // 'image', 'video', or 'audio'
     void Function(int sent, int total)? onProgress,
+    // Module 1 P0-7: per-media description, stored on the canonical
+    // media asset so every surface referencing it inherits the alt text.
+    String? altText,
+    // Explicit "this image carries no information" marker. Persisted
+    // server-side and distinct from "not described yet", so screen
+    // readers skip it on every surface (fixes-v1 / Codex P1-7).
+    bool decorative = false,
   }) async {
     String step = 'init';
     String? presignedHost;
@@ -197,6 +207,8 @@ class ApiClient {
           'file_type': type,
           'mime_type': mimeType,
           'file_size_bytes': fileSize,
+          if (altText != null && altText.isNotEmpty) 'alt_text': altText,
+          if (decorative) 'decorative': true,
         },
       );
 
@@ -290,11 +302,11 @@ class ApiClient {
       for (var part = 1; part <= totalParts; part++) {
         final start = (part - 1) * chunkSize;
         final end = (start + chunkSize < fileSize) ? start + chunkSize : fileSize;
-        final bytes = <int>[];
+        final builder = BytesBuilder(copy: false);
         await for (final slice in fileData.openRead(start, end)) {
-          bytes.addAll(slice);
+          builder.add(slice);
         }
-        await _uploadPartWithRetry(uploadId, part, bytes);
+        await _uploadPartWithRetry(uploadId, part, builder.takeBytes());
         onProgress?.call(part, totalParts);
       }
 

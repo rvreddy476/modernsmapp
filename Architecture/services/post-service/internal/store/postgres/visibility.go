@@ -152,9 +152,28 @@ func UpdatePostVisibilityPolicy(ctx context.Context, db *pgxpool.Pool, postID uu
 		return uuid.Nil, err
 	}
 
-	_, err = db.Exec(ctx,
+	// M2-P0-2: a visibility change alters public-search eligibility, so
+	// the row change and the projection event must commit together.
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	tag, err := tx.Exec(ctx,
 		`UPDATE posts SET visibility = $1, visibility_policy_id = $2, updated_at = NOW() WHERE id = $3`,
 		in.Mode, policy.ID, postID,
 	)
-	return policy.ID, err
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if tag.RowsAffected() > 0 {
+		if err := BumpSearchRevAndEmitTx(ctx, tx, postID); err != nil {
+			return uuid.Nil, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return uuid.Nil, err
+	}
+	return policy.ID, nil
 }

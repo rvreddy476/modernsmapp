@@ -1,0 +1,273 @@
+name: Integration (OpenSearch)
+
+# Module 2 M2-P0-1 / M2-P0-2 / M2-P0-4 launch gate.
+#
+# Runs the search safety suite against a REAL OpenSearch:
+#
+#   1. one event per review state and visibility, proving that only
+#      public+approved content is retrievable through the real query path
+#      — including a legacy event carrying no review status at all, which
+#      must fail closed rather than being treated as approved;
+#   2. the approval → rejection → replayed-stale-approval sequence,
+#      proving the monotonic revision guard prevents resurrection;
+#   3. that a removal tombstone is invisible to public search and retains
+#      no post text, while still carrying the revision high-water mark;
+#   4. that a blocked author is excluded inside the query, so result pages
+#      stay full and pagination stays correct.
+#
+# These cannot be replaced by the fake-OpenSearch unit tests in the same
+# package. Those prove the control flow; only a real cluster proves the
+# documents we write are actually excluded by the real filters.
+
+# Trigger scope (review finding §6.7): the previous filter listed only
+# search-service, shared/events and this workflow, so a change to the
+# post-service transition producers, to feed-service block safety, or to
+# the graph-service relationship query could land without ever running the
+# safety gate — even though all three are part of the same guarantee.
+on:
+  pull_request:
+    paths:
+      - 'Architecture/services/search-service/**'
+      - 'Architecture/services/post-service/**'
+      - 'Architecture/services/feed-service/**'
+      - 'Architecture/services/graph-service/**'
+      - 'Architecture/shared/events/**'
+      - '.github/workflows/integration-opensearch.yml'
+  push:
+    branches: [main]
+
+jobs:
+  search-safety:
+    name: Search safety suite (live OpenSearch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      opensearch:
+        image: opensearchproject/opensearch:2.13.0
+        env:
+          discovery.type: single-node
+          plugins.security.disabled: 'true'
+          OPENSEARCH_INITIAL_ADMIN_PASSWORD: Str0ng!OpenSearch#2024
+          OPENSEARCH_JAVA_OPTS: -Xms512m -Xmx512m
+        ports:
+          - 9200:9200
+        options: >-
+          --health-cmd "curl -sf http://localhost:9200/_cluster/health || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 30
+
+    env:
+      OPENSEARCH_URL: http://localhost:9200
+      # Single-node: one shard, no replicas, and refresh immediately so
+      # the suite does not have to sleep between write and read.
+      OPENSEARCH_INDEX_SHARDS: '1'
+      OPENSEARCH_INDEX_REPLICAS: '0'
+      OPENSEARCH_INDEX_REFRESH: 1s
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'Architecture/go.work'
+          cache-dependency-path: 'Architecture/**/go.sum'
+
+      - name: Wait for OpenSearch
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf "$OPENSEARCH_URL/_cluster/health?wait_for_status=yellow&timeout=5s" >/dev/null; then
+              echo "OpenSearch is up."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::OpenSearch never became healthy."
+          exit 1
+
+      - name: Eligibility unit suite (fail-closed predicate)
+        working-directory: Architecture/shared
+        run: go test ./events/ -run SearchEligible -v -count=1
+
+      # -run OpenSearch covers both the original safety suite and the
+      # race/legacy-event/hashtag/erasure suites added after the review.
+      # The concurrency case runs 60 interleavings per invocation.
+      - name: Search safety suite (live OpenSearch)
+        working-directory: Architecture/services/search-service
+        run: go test -tags integration ./internal/events/ -run OpenSearch -v -count=1 -timeout 20m
+
+      - name: Block filter query-shape suite
+        working-directory: Architecture/services/search-service
+        run: go test ./internal/store/search/ -run 'EncodeQuery|OwnerField|BlockScope' -v -count=1
+
+      - name: Fail-closed middleware suite
+        working-directory: Architecture/services/search-service
+        run: go test ./internal/http/ -run ResolveBlockScope -v -count=1
+
+      - name: Feed surface block-safety guard
+        working-directory: Architecture/services/feed-service
+        run: go test ./internal/service/ -run 'FeedSurface|BlockFilter|ColdStart|GetBlockedAndMuted' -v -count=1
+
+  search-kafka-durability:
+    name: Kafka durability (live Redpanda + OpenSearch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    # Review finding P0-3. The consumer used ReadMessage, which commits the
+    # offset BEFORE the caller processes the message. A crash, or exhausted
+    # retries followed by a failed DLQ write, therefore lost the message
+    # permanently — and for a takedown or visibility downgrade, "lost"
+    # means the content stays publicly searchable with nothing left in the
+    # system that would ever repair it.
+    #
+    # This job proves the observable consequence is gone: a removal that
+    # was neither applied nor durably handed off comes back after restart.
+
+    services:
+      opensearch:
+        image: opensearchproject/opensearch:2.13.0
+        env:
+          discovery.type: single-node
+          plugins.security.disabled: 'true'
+          OPENSEARCH_INITIAL_ADMIN_PASSWORD: Str0ng!OpenSearch#2024
+          OPENSEARCH_JAVA_OPTS: -Xms512m -Xmx512m
+        ports:
+          - 9200:9200
+        options: >-
+          --health-cmd "curl -sf http://localhost:9200/_cluster/health || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 30
+
+      redpanda:
+        image: redpandadata/redpanda:v24.1.7
+        ports:
+          - 9092:9092
+        options: >-
+          --health-cmd "rpk cluster health -X brokers=localhost:9092 | grep -q 'Healthy:.*true'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 30
+
+    env:
+      OPENSEARCH_URL: http://localhost:9200
+      KAFKA_BROKERS: localhost:9092
+      OPENSEARCH_INDEX_SHARDS: '1'
+      OPENSEARCH_INDEX_REPLICAS: '0'
+      OPENSEARCH_INDEX_REFRESH: 1s
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'Architecture/go.work'
+          cache-dependency-path: 'Architecture/**/go.sum'
+
+      - name: Wait for OpenSearch
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf "$OPENSEARCH_URL/_cluster/health?wait_for_status=yellow&timeout=5s" >/dev/null; then
+              echo "OpenSearch is up."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::OpenSearch never became healthy."
+          exit 1
+
+      # Covers redelivery after restart, successful-commit advance, and the
+      # two leapfrog cases (main consumer and DLQ replayer) from re-review
+      # §9. Offsets are cumulative, so a later commit can silently commit
+      # an earlier failed removal; these prove it no longer can.
+      - name: Kafka offset durability suite
+        working-directory: Architecture/services/search-service
+        run: go test -tags integration ./internal/events/ -run Kafka -v -count=1 -timeout 25m
+
+  post-service-deletion-durability:
+    name: Account deletion durability (live Redpanda + PostgreSQL)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    # Re-review P0-5. post-service consumed account deletions with
+    # ReadMessage (offset committed before the handler ran) and only logged
+    # failures, so a transient PostgreSQL error left a deleted account's
+    # posts live in the canonical database with no redelivery. The search
+    # index fence does not cover this.
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: app
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+      redpanda:
+        image: redpandadata/redpanda:v24.1.7
+        ports:
+          - 9092:9092
+        options: >-
+          --health-cmd "rpk cluster health -X brokers=localhost:9092 | grep -q 'Healthy:.*true'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 30
+
+    env:
+      PGPASSWORD: postgres
+      PGHOST: localhost
+      PGPORT: '5432'
+      PGUSER: postgres
+      POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/app?sslmode=disable
+      KAFKA_BROKERS: localhost:9092
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'Architecture/go.work'
+          cache-dependency-path: 'Architecture/**/go.sum'
+
+      - name: Install psql client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Apply media-service schema
+        working-directory: Architecture
+        run: psql -d app -v ON_ERROR_STOP=1 -q -f services/media-service/database/setup.sql
+
+      - name: Apply post-service schema
+        working-directory: Architecture
+        run: psql -d app -v ON_ERROR_STOP=1 -q -f services/post-service/database/setup.sql
+
+      # post_outbox_events is created by migration 007, NOT by setup.sql, so
+      # the deletion suite cannot assert atomic outbox writes without the
+      # migrations applied. Several migrations depend on tables owned by
+      # other services (users, user_preferences) and fail here; that is
+      # pre-existing and out of scope, so failures are tolerated while the
+      # tables this suite needs are verified explicitly below.
+      - name: Apply post-service migrations (best effort)
+        working-directory: Architecture/services/post-service
+        run: |
+          for f in $(ls database/migrations/*.sql | sort); do
+            psql -d app -v ON_ERROR_STOP=1 -q -f "$f" || echo "skipped (cross-service dependency): $f"
+          done
+
+      - name: Verify tables the deletion suite depends on
+        run: |
+          psql -d app -v ON_ERROR_STOP=1 -c \
+            "SELECT 1 FROM information_schema.tables WHERE table_name='posts' HAVING count(*)=1;"
+          psql -d app -v ON_ERROR_STOP=1 -c \
+            "SELECT 1 FROM information_schema.tables WHERE table_name='post_outbox_events' HAVING count(*)=1;"
+
+      - name: Account deletion durability suite
+        working-directory: Architecture/services/post-service
+        run: go test -tags integration ./internal/events/ -run PostService -v -count=1 -timeout 20m

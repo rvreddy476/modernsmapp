@@ -3,7 +3,7 @@ import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/models/post.dart';
-import 'package:atpost_app/data/repositories/user_repository.dart';
+import 'package:atpost_app/data/repositories/channel_subscriptions_repository.dart';
 import 'package:atpost_app/services/api_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -29,11 +29,42 @@ class _PosttubeChannelScreenState extends ConsumerState<PosttubeChannelScreen> {
   bool _subscribed = false;
   bool _toggling = false;
   late Future<List<Post>> _videosFuture;
+  // Module 1 P0-3: subscribing targets the creator's CHANNEL, not the
+  // social graph. Null means the creator has no channel yet — the
+  // subscribe control is hidden rather than falling back to follow.
+  String? _channelId;
+  bool _loadingSubscription = true;
 
   @override
   void initState() {
     super.initState();
     _videosFuture = _loadVideos();
+    _loadSubscriptionState();
+  }
+
+  Future<void> _loadSubscriptionState() async {
+    final repo = ref.read(channelSubscriptionsRepositoryProvider);
+    try {
+      final channelId = await repo.channelIdForUser(widget.userId);
+      if (!mounted) return;
+      if (channelId == null) {
+        setState(() {
+          _channelId = null;
+          _loadingSubscription = false;
+        });
+        return;
+      }
+      final state = await repo.status(channelId);
+      if (!mounted) return;
+      setState(() {
+        _channelId = channelId;
+        _subscribed = state.subscribed;
+        _loadingSubscription = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _loadingSubscription = false);
+    }
   }
 
   Future<List<Post>> _loadVideos() async {
@@ -53,16 +84,17 @@ class _PosttubeChannelScreenState extends ConsumerState<PosttubeChannelScreen> {
   }
 
   Future<void> _toggleSubscribe() async {
-    if (_toggling) return;
+    final channelId = _channelId;
+    if (_toggling || channelId == null) return;
     setState(() => _toggling = true);
     final wasSubscribed = _subscribed;
     setState(() => _subscribed = !_subscribed);
     try {
-      final repo = ref.read(userRepositoryProvider);
+      final repo = ref.read(channelSubscriptionsRepositoryProvider);
       if (wasSubscribed) {
-        await repo.unfollowUser(widget.userId);
+        await repo.unsubscribe(channelId);
       } else {
-        await repo.followUser(widget.userId);
+        await repo.subscribe(channelId);
       }
     } catch (_) {
       if (!mounted) return;
@@ -147,11 +179,15 @@ class _PosttubeChannelScreenState extends ConsumerState<PosttubeChannelScreen> {
                           ],
                         ),
                       ),
-                      _SubscribeButton(
-                        subscribed: _subscribed,
-                        loading: _toggling,
-                        onTap: _toggleSubscribe,
-                      ),
+                      // Hidden while resolving, and when the creator has
+                      // no channel — subscribing must never silently
+                      // degrade into a social follow (P0-3).
+                      if (!_loadingSubscription && _channelId != null)
+                        _SubscribeButton(
+                          subscribed: _subscribed,
+                          loading: _toggling,
+                          onTap: _toggleSubscribe,
+                        ),
                     ],
                   ),
                 ),

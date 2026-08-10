@@ -121,6 +121,10 @@ func main() {
 	postSvc.SetGraphServiceURL(env("GRAPH_SERVICE_URL", "http://graph-service:8083"))
 	postSvc.SetMonetizationServiceURL(env("MONETIZATION_SERVICE_URL", "http://monetization-service:8099"))
 	postSvc.SetReviewerServiceURL(env("REVIEWER_SERVICE_URL", "http://reviewer-service:8120"))
+	postSvc.SetTrustSafetyURL(env("TRUST_SAFETY_SERVICE_URL", "http://trust-safety-service:8118"))
+	// Default ON: a scheduled post never publishes while author standing
+	// is unverifiable. Set DRAFT_REQUIRE_STANDING_CHECK=false only in dev.
+	postSvc.SetRequireStandingCheck(env("DRAFT_REQUIRE_STANDING_CHECK", "true") != "false")
 	postSvc.SetReviewAllVideos(env("REVIEW_ALL_VIDEOS", "false") == "true")
 	postSvc.SetInternalServiceKey(os.Getenv("INTERNAL_SERVICE_KEY"))
 
@@ -341,6 +345,20 @@ func main() {
 				return
 			case <-ticker.C:
 				engagement.CleanupEventLog(consumerCtx, dbPool, 48*time.Hour)
+				// P1-4: release media referenced only by long-deleted
+				// drafts BEFORE the rows are hard-deleted (the reference
+				// table is what identifies them).
+				if n, err := postSvc.CleanupOrphanDraftMedia(consumerCtx, 30*24*time.Hour, 200); err != nil {
+					slog.Error("orphan draft media cleanup error", "error", err)
+				} else if n > 0 {
+					slog.Info("released orphan draft media", "count", n)
+				}
+				// P0-5 retention: hard-delete drafts soft-deleted >30 days ago.
+				if n, err := pgStore.CleanupDeletedPostDrafts(consumerCtx, 30*24*time.Hour); err != nil {
+					slog.Error("post draft retention cleanup error", "error", err)
+				} else if n > 0 {
+					slog.Info("cleaned up deleted post drafts", "count", n)
+				}
 			}
 		}
 	}()
@@ -372,6 +390,7 @@ func main() {
 	r.GET("/metrics", metrics.Handler())
 	postHandler.RegisterRoutes(r)
 	postHandler.RegisterDraftRoutes(r)
+	postHandler.RegisterPostDraftRoutes(r)
 	postHandler.RegisterReelDiscoveryRoutes(r)
 	postHandler.RegisterReelEngagementRoutes(r)
 	postHandler.RegisterReelFeedRoutes(r)
@@ -397,9 +416,18 @@ func main() {
 			case <-ticker.C:
 				n, err := postSvc.PublishScheduledDrafts(consumerCtx)
 				if err != nil {
-					slog.Error("scheduled draft publish error", "error", err)
+					slog.Error("scheduled reel draft publish error", "error", err)
 				} else if n > 0 {
-					slog.Info("published scheduled drafts", "count", n)
+					slog.Info("published scheduled reel drafts", "count", n)
+				}
+				// Module 1 P0-5: generalized composer drafts share the tick.
+				// Both claim with FOR UPDATE SKIP LOCKED — safe to run in
+				// every replica.
+				n, err = postSvc.PublishScheduledPostDrafts(consumerCtx)
+				if err != nil {
+					slog.Error("scheduled post draft publish error", "error", err)
+				} else if n > 0 {
+					slog.Info("published scheduled post drafts", "count", n)
 				}
 			}
 		}

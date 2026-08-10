@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -36,17 +37,43 @@ type Service struct {
 	scanner   processing.Scanner
 	rdb       *redis.Client // optional, nil = skip rate limiting
 	captions  captions.Backend
+	// audioSafety evaluates voice recordings. Defaults to an evaluator
+	// that always reports "unavailable", so a missing configuration fails
+	// CLOSED to manual review rather than approving (fixes-v2 / P0-2).
+	audioSafety processing.AudioSafetyEvaluator
 }
 
 func New(pg *postgres.MediaAssetStore, blobStore *blob.Store) *Service {
+	cfg := config.Load()
 	s := &Service{
-		pgStore:   pg,
-		blobStore: blobStore,
-		cfg:       config.Load(),
-		scanner:   &processing.StubScanner{},
-		captions:  captions.SelectBackend(),
+		pgStore:     pg,
+		blobStore:   blobStore,
+		cfg:         cfg,
+		scanner:     &processing.StubScanner{},
+		captions:    captions.SelectBackend(),
+		audioSafety: selectAudioSafety(cfg),
 	}
 	s.logScannerPolicy()
+	return s
+}
+
+// selectAudioSafety picks the voice safety evaluator. With no blocklist
+// configured it returns UnavailableEvaluator, which never returns a safe
+// verdict — the deliberate opposite of the permissive image StubScanner.
+func selectAudioSafety(cfg *config.Config) processing.AudioSafetyEvaluator {
+	if cfg != nil && cfg.VoiceSafetyBlocklist != "" {
+		if e := processing.NewKeywordTranscriptEvaluator(cfg.VoiceSafetyBlocklist); e != nil {
+			slog.Info("voice safety: transcript evaluator configured", "evaluator", e.Name())
+			return e
+		}
+	}
+	slog.Warn("voice safety: no evaluator configured — every voice post will be held for manual review")
+	return processing.UnavailableEvaluator{}
+}
+
+// WithAudioSafety overrides the evaluator (tests / alternate providers).
+func (s *Service) WithAudioSafety(e processing.AudioSafetyEvaluator) *Service {
+	s.audioSafety = e
 	return s
 }
 
@@ -64,10 +91,11 @@ func NewWithConfig(pg *postgres.MediaAssetStore, blobStore *blob.Store, cfg *con
 		scanner = &processing.StubScanner{}
 	}
 	s := &Service{
-		pgStore:   pg,
-		blobStore: blobStore,
-		cfg:       cfg,
-		scanner:   scanner,
+		pgStore:     pg,
+		blobStore:   blobStore,
+		cfg:         cfg,
+		scanner:     scanner,
+		audioSafety: selectAudioSafety(cfg),
 	}
 	s.logScannerPolicy()
 	return s
@@ -160,13 +188,20 @@ func ValidateUpload(fileType, mediaSubtype, mimeType string, fileSizeBytes int64
 		if !validMimes[mimeType] {
 			return fmt.Errorf("invalid mime type for video: %s", mimeType)
 		}
+	case "audio":
+		// Voice posts (Module 1 P0-6). MIME is already checked against
+		// allowedAudioMIME by ValidateUploadMIME; this bounds the size.
+		// Duration is enforced server-side at confirm from ffprobe.
+		if fileSizeBytes > MaxVoiceSizeBytes {
+			return fmt.Errorf("audio size exceeds %d MB limit", MaxVoiceSizeBytes/(1024*1024))
+		}
 	default:
 		return fmt.Errorf("unknown file type: %s", fileType)
 	}
 	return nil
 }
 
-func (s *Service) InitUpload(ctx context.Context, userID uuid.UUID, fileType, mediaSubtype, mimeType string, fileSizeBytes int64, altText string) (*InitUploadResponse, error) {
+func (s *Service) InitUpload(ctx context.Context, userID uuid.UUID, fileType, mediaSubtype, mimeType string, fileSizeBytes int64, altText string, decorative bool) (*InitUploadResponse, error) {
 	// Absolute size cap (applies to all file types)
 	if err := ValidateUploadSize(fileSizeBytes); err != nil {
 		return nil, err
@@ -196,6 +231,10 @@ func (s *Service) InitUpload(ctx context.Context, userID uuid.UUID, fileType, me
 		return nil, err
 	}
 
+	// P1-7: decorative and a description are mutually exclusive.
+	if decorative {
+		altText = ""
+	}
 	media := &postgres.MediaAsset{
 		ID:               mediaID,
 		UploaderID:       userID,
@@ -207,6 +246,7 @@ func (s *Service) InitUpload(ctx context.Context, userID uuid.UUID, fileType, me
 		StorageKey:       storageKey,
 		ProcessingStatus: "pending_upload",
 		AltText:          altText,
+		AltDecorative:    decorative,
 		CreatedAt:        time.Now(),
 	}
 
@@ -246,6 +286,13 @@ func (s *Service) ConfirmUpload(ctx context.Context, mediaID uuid.UUID, userID u
 				_ = s.pgStore.UpdateStatus(ctx, mediaID, "rejected")
 				return nil, fmt.Errorf("invalid image file: magic bytes do not match declared MIME type")
 			}
+		case "audio":
+			// P0-6: a spoofed container (declared audio/*, actually
+			// something else) is rejected before any processing runs.
+			if _, valid := processing.ValidateAudioMagicBytes(headerData[:min(len(headerData), 64)]); !valid {
+				_ = s.pgStore.UpdateStatus(ctx, mediaID, "rejected")
+				return nil, fmt.Errorf("invalid audio file: magic bytes do not match declared MIME type")
+			}
 		}
 	}
 
@@ -271,6 +318,41 @@ func (s *Service) ConfirmUpload(ctx context.Context, mediaID uuid.UUID, userID u
 			return media, nil
 		}
 		media.ProcessingStatus = "ready"
+
+	case media.FileType == "audio":
+		// Voice posts (Module 1 P0-6): enforce the server-measured
+		// duration cap and build the waveform synchronously, then hold
+		// distribution until baseline safety completes.
+		if err := s.processVoice(ctx, media); err != nil {
+			media.ProcessingStatus = "rejected"
+			return nil, err
+		}
+		if err := s.pgStore.UpdateStatus(ctx, mediaID, "ready"); err != nil {
+			return nil, err
+		}
+		media.ProcessingStatus = "ready"
+
+		// Safety gate: 'pending' keeps the voice post out of public
+		// surfaces until the transcript/audio scan lands. With the gate
+		// disabled (dev) the asset is approved immediately.
+		safety := VoiceSafetyPending
+		if !s.cfg.VoiceSafetyRequired {
+			safety = VoiceSafetyApproved
+		}
+		if err := s.pgStore.SetMediaModerationStatus(ctx, mediaID, safety); err != nil {
+			slog.Warn("voice: failed to set moderation status", "media_id", mediaID, "error", err)
+		}
+		media.ModerationStatus = safety
+
+		// Durable caption request — persisted, then drained by the caption
+		// worker (no untracked goroutine). With no backend configured the
+		// asset is routed to manual review; it is never auto-approved.
+		// fixes-v2 / P1-4: an enqueue failure is now surfaced so the
+		// confirm fails and the client can retry, instead of silently
+		// leaving the media pending with no durable job.
+		if err := s.enqueueCaptionsForVoice(ctx, mediaID, media.UploaderID, ""); err != nil {
+			return nil, err
+		}
 
 	case media.FileType == "video":
 		// Set to processing — video transcoding is async
@@ -520,6 +602,101 @@ func (s *Service) BatchMediaURLs(ctx context.Context, ids []uuid.UUID) (map[uuid
 // ─── Delete ────────────────────────────────────────────────────────
 
 // DeleteMedia verifies ownership, removes blobs from storage, then deletes the DB record.
+// ErrMediaNotOrphaned is returned when an internal orphan-delete request
+// targets media that is still in use or too recent to reclaim.
+var ErrMediaNotOrphaned = errors.New("media is not orphaned")
+
+// orphanMinAge is the minimum age before an unreferenced asset may be
+// reclaimed. Protects an upload that is mid-flight between /confirm and
+// the post create that will attach it.
+const orphanMinAge = 24 * time.Hour
+
+// DeleteOrphanMedia deletes an asset on behalf of an internal caller
+// (fixes-v2 / Codex P1-5), re-verifying eligibility here rather than
+// trusting the caller:
+//
+//   - the asset must exist,
+//   - it must be older than orphanMinAge,
+//   - it must not be attached to any post.
+//
+// media-service does not own the posts table, so the post-attachment
+// check is delegated to the shared `post_media` table via the same
+// database. When that table is unreachable the delete is refused —
+// fail-closed, because deleting live media is unrecoverable.
+func (s *Service) DeleteOrphanMedia(ctx context.Context, mediaID uuid.UUID) error {
+	// Module 1 fixes-v3 / LB-1: the whole eligibility decision (age,
+	// published references, surviving-draft references) and the row
+	// deletion now happen in ONE transaction that locks the asset row,
+	// so a concurrent attach cannot slip between check and delete. See
+	// DeleteOrphanMediaAtomic for the locking rationale.
+	objectKeys, err := s.pgStore.DeleteOrphanMediaAtomic(ctx, mediaID, orphanMinAge)
+	switch {
+	case errors.Is(err, postgres.ErrMediaNotFound):
+		// Already reclaimed by an earlier attempt. Idempotent success:
+		// the caller's goal (asset gone) is satisfied.
+		slog.Info("orphan delete: media already absent", "media_id", mediaID)
+		return nil
+	case errors.Is(err, postgres.ErrMediaTooYoung):
+		return fmt.Errorf("%w: asset is younger than the reclaim window", ErrMediaNotOrphaned)
+	case errors.Is(err, postgres.ErrMediaStillReferenced):
+		return fmt.Errorf("%w: still attached to a post or surviving draft", ErrMediaNotOrphaned)
+	case err != nil:
+		return err
+	}
+
+	// Rows are gone and the object keys are durably recorded in
+	// media_blob_reclaim, so a failure below is retried by the sweeper
+	// rather than leaking the object forever.
+	s.reclaimBlobs(ctx, objectKeys)
+	slog.Info("orphan media reclaimed", "media_id", mediaID, "objects", len(objectKeys))
+	return nil
+}
+
+// reclaimBlobs deletes objects and clears their reclaim rows. Any failure
+// leaves the row in place for the sweeper to retry.
+func (s *Service) reclaimBlobs(ctx context.Context, objectKeys []string) {
+	for _, key := range objectKeys {
+		if key == "" {
+			continue
+		}
+		if err := s.blobStore.DeleteObject(ctx, key); err != nil {
+			slog.Warn("orphan delete: blob removal failed (will retry)", "key", key, "error", err)
+			_ = s.pgStore.RecordBlobReclaimFailure(ctx, key, err.Error())
+			continue
+		}
+		if err := s.pgStore.ClearBlobReclaim(ctx, key); err != nil {
+			slog.Warn("orphan delete: reclaim row cleanup failed", "key", key, "error", err)
+		}
+	}
+}
+
+// StartBlobReclaimWorker drains media_blob_reclaim. Without it a transient
+// S3/MinIO failure during orphan deletion would leak the object with no
+// record left to retry from (LB-1 requirement 7).
+func (s *Service) StartBlobReclaimWorker(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				keys, err := s.pgStore.PendingBlobReclaims(ctx, 200)
+				if err != nil {
+					slog.Error("blob reclaim: list failed", "error", err)
+					continue
+				}
+				if len(keys) == 0 {
+					continue
+				}
+				s.reclaimBlobs(ctx, keys)
+				slog.Info("blob reclaim sweep", "attempted", len(keys))
+			}
+		}
+	}()
+}
+
 func (s *Service) DeleteMedia(ctx context.Context, mediaID uuid.UUID, userID uuid.UUID) error {
 	// 1. Fetch and verify ownership
 	media, err := s.pgStore.GetMedia(ctx, mediaID)
@@ -615,6 +792,12 @@ func (s *Service) populateMediaURLs(ctx context.Context, media *postgres.MediaAs
 // Returns an error if the asset does not exist or is not owned by userID.
 func (s *Service) UpdateAltText(ctx context.Context, mediaID uuid.UUID, userID uuid.UUID, altText string) error {
 	return s.pgStore.UpdateAltText(ctx, mediaID, userID, altText)
+}
+
+// UpdateAltTextWithDecorative sets the description and decorative marker
+// together, owner-only (Codex P1-7).
+func (s *Service) UpdateAltTextWithDecorative(ctx context.Context, mediaID, userID uuid.UUID, altText string, decorative bool) error {
+	return s.pgStore.UpdateAltTextWithDecorative(ctx, mediaID, userID, altText, decorative)
 }
 
 // ─── Presigned Upload ──────────────────────────────────────────────

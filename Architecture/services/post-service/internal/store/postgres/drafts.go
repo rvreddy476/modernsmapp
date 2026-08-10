@@ -2,11 +2,22 @@ package postgres
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
+
+// prefixedDraftCols renders draftCols with a table alias for
+// UPDATE ... FROM ... RETURNING queries.
+func prefixedDraftCols(alias string) string {
+	parts := strings.Split(draftCols, ",")
+	for i, p := range parts {
+		parts[i] = alias + "." + strings.TrimSpace(p)
+	}
+	return strings.Join(parts, ", ")
+}
 
 // ReelDraft represents a reel draft row in the reel_drafts table.
 type ReelDraft struct {
@@ -245,6 +256,44 @@ func (s *Store) GetScheduledDrafts(ctx context.Context, now time.Time, limit int
 	}
 	defer rows.Close()
 	return scanDraftRows(rows)
+}
+
+// ClaimDueReelDrafts atomically claims due reel drafts (status draft →
+// publishing_pending) under FOR UPDATE SKIP LOCKED so concurrent worker
+// replicas never publish the same draft twice (Module 1 P0-5; Codex risk
+// #10: the previous list-then-publish loop was unsafe across replicas).
+// Drafts stuck in publishing_pending longer than staleAfter are reclaimed
+// (dead worker); the draft-id-as-post-id idempotency makes retries safe.
+func (s *Store) ClaimDueReelDrafts(ctx context.Context, now time.Time, staleAfter time.Duration, limit int) ([]ReelDraft, error) {
+	rows, err := s.db.Query(ctx, `
+		WITH due AS (
+			SELECT id FROM reel_drafts
+			WHERE (status = 'draft' AND schedule_at IS NOT NULL AND schedule_at <= $1)
+			   OR (status = 'publishing_pending' AND updated_at < $2)
+			ORDER BY schedule_at ASC
+			LIMIT $3
+			FOR UPDATE SKIP LOCKED
+		)
+		UPDATE reel_drafts d
+		SET status = 'publishing_pending', updated_at = NOW()
+		FROM due WHERE d.id = due.id
+		RETURNING `+prefixedDraftCols("d"),
+		now, now.Add(-staleAfter), limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanDraftRows(rows)
+}
+
+// ReleaseReelDraftClaim returns a claimed reel draft to 'draft' after a
+// transient publish failure so the next tick retries it.
+func (s *Store) ReleaseReelDraftClaim(ctx context.Context, draftID uuid.UUID) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE reel_drafts SET status = 'draft', updated_at = NOW()
+		 WHERE id = $1 AND status = 'publishing_pending'`, draftID)
+	return err
 }
 
 // MarkDraftPublished updates a draft's status to 'published' and links it to the post.

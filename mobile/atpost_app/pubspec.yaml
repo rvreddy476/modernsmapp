@@ -41,6 +41,10 @@ dependencies:
   face_verification: ^0.3.6
   google_mlkit_face_detection: ^0.13.2
   just_audio: ^0.9.40
+  # Voice posts (Module 1 P0-6). Capture only — playback uses just_audio.
+  record: ^5.1.2
+  # Temp directory for in-progress voice recordings.
+  path_provider: ^2.1.4
   video_thumbnail: ^0.5.3
   colorfilter_generator: ^0.0.8
   geolocator: ^12.0.0

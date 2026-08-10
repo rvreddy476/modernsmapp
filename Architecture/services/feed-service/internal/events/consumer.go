@@ -104,6 +104,9 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 	case events.PostContentTypeChanged:
 		return c.handlePostContentTypeChanged(ctx, envelope)
 
+	case events.PostDistributionUpdated:
+		return c.handlePostDistributionUpdated(ctx, envelope)
+
 	case events.UserFollowed:
 		return c.handleUserFollowed(ctx, envelope)
 
@@ -317,8 +320,55 @@ func (c *Consumer) handlePostCreated(ctx context.Context, envelope events.EventE
 		contentType = "post"
 	}
 
+	// P0-1: record the post's main-feed eligibility from the creation
+	// policy. Fan-out still happens for every post — PostTube surfaces
+	// (/feed/videos, /feed/watch) read the same home timeline, so a
+	// PostTube-only video must still reach it; the social-home read path
+	// filters against feed_distribution.
+	//
+	// fixes-v2 / Codex P1-2: write a row for EVERY post, not only
+	// policy-bearing ones. The row is the authoritative row-level
+	// provenance marker — "eligible because the producer said so" is now
+	// distinguishable from "no policy row exists". Producers that send no
+	// policy get main_feed=true, which preserves prior behavior while
+	// still recording that we saw the post.
+	mainFeed := true
+	if event.MainFeed != nil {
+		mainFeed = *event.MainFeed
+	}
+	rev := event.DistributionRev
+	if rev == 0 {
+		rev = 1
+	}
+	if err := c.service.RecordDistribution(ctx, postID, mainFeed, rev); err != nil {
+		// Fail the message so Kafka redelivers: losing this row would
+		// leak a PostTube-only video into social home.
+		return fmt.Errorf("record distribution for %s: %w", event.PostID, err)
+	}
+
 	fmt.Printf("Processing PostCreated: %s by %s type=%s\n", event.PostID, event.AuthorID, contentType)
 	return c.service.FanoutPost(ctx, postID, authorID, event.CreatedAt, contentType, event.Visibility)
+}
+
+// handlePostDistributionUpdated applies a post-creation policy change.
+// The store upsert is rev-guarded, so stale/replayed events are no-ops
+// (Codex P0-1: replay creates no duplicates; monotonic rev protection).
+func (c *Consumer) handlePostDistributionUpdated(ctx context.Context, envelope events.EventEnvelope) error {
+	var event events.PostDistributionUpdatedPayload
+	payloadBytes, _ := json.Marshal(envelope.Payload)
+	if err := json.Unmarshal(payloadBytes, &event); err != nil {
+		return err
+	}
+	postID, err := uuid.Parse(event.PostID)
+	if err != nil {
+		return err
+	}
+	if err := c.service.RecordDistribution(ctx, postID, event.MainFeed, event.DistributionRev); err != nil {
+		return fmt.Errorf("record distribution update for %s: %w", event.PostID, err)
+	}
+	log.Printf("Processing PostDistributionUpdated: post=%s main_feed=%v rev=%d",
+		event.PostID, event.MainFeed, event.DistributionRev)
+	return nil
 }
 
 func (c *Consumer) handlePostReacted(ctx context.Context, envelope events.EventEnvelope) error {

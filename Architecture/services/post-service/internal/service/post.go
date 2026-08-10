@@ -64,6 +64,10 @@ type Service struct {
 	graphServiceURL        string
 	monetizationServiceURL string
 	reviewerServiceURL     string
+	trustSafetyURL         string
+	// requireStandingCheck makes an unreachable trust-safety service block
+	// scheduled publication instead of letting it through (Codex P2-1).
+	requireStandingCheck bool
 	reviewAllVideos        bool
 	internalServiceKey     string
 	httpClient             *http.Client
@@ -335,6 +339,10 @@ type PostDetail struct {
 
 // CreatePostInput holds all fields for creating a new post.
 type CreatePostInput struct {
+	// PostID, when set, is used as the new post's id instead of a random
+	// UUID. Draft publishing passes the draft id here so a crash-retry
+	// hits the posts PK instead of double-publishing (P0-5 idempotency).
+	PostID          *uuid.UUID
 	AuthorID        uuid.UUID
 	Text            string
 	Visibility      string
@@ -373,6 +381,13 @@ type CreatePostInput struct {
 	CoverMediaID      *uuid.UUID
 	OriginalAudioVol  float32
 	OverlayAudioVol   float32
+	// Distribution is the raw policy document from the client (P0-1).
+	// nil = no policy = legacy behavior. Validated by ParseDistributionPolicy.
+	Distribution json.RawMessage
+	// LegacyDistribution carries explicitly-supplied pre-policy fields
+	// from old clients. When no typed policy is present these express the
+	// creator's real intent and are honored (Codex P1-1).
+	LegacyDistribution LegacyDistributionFields
 }
 
 // CreatePollInput holds poll creation data.
@@ -482,9 +497,41 @@ func DetectAndStoreMentions(ctx context.Context, postID uuid.UUID, postType stri
 const flickMaxDurationSeconds = 180
 
 // validContentTypes is the allowed set for content_type.
+// "voice" is Module 1 P0-6: a voice-only post (audio media + optional
+// text). Mixed voice carousels are deferred.
 var validContentTypes = map[string]bool{
 	"post": true, "poll": true, "reel": true, "video": true,
-	"flick": true, "long_video": true,
+	"flick": true, "long_video": true, "voice": true,
+}
+
+// isVoiceContentType reports whether a post is a voice post.
+func isVoiceContentType(ct string) bool { return ct == "voice" }
+
+// gateVoiceReviewStatus holds a voice post out of public surfaces until
+// media-service reports the baseline audio-safety pass complete
+// (Codex P0-6). A failed/unknown check holds 'pending' rather than
+// auto-approving; a rejected asset rejects the post.
+func (s *Service) gateVoiceReviewStatus(ctx context.Context, mediaID uuid.UUID) string {
+	procStatus, modStatus, err := s.getMediaModeration(ctx, mediaID)
+	if err != nil {
+		log.Printf("Warning: voice media safety check failed for %s, holding pending: %v", mediaID, err)
+		return "pending"
+	}
+	if procStatus == "rejected" || modStatus == "rejected" {
+		return "rejected"
+	}
+	if procStatus != "ready" {
+		return "pending"
+	}
+	switch modStatus {
+	case "approved":
+		return "approved"
+	case "failed":
+		// Safety pipeline failed → human review, never auto-approve.
+		return "flagged"
+	default:
+		return "pending"
+	}
 }
 
 // classifyVideoContentType returns "flick" or "long_video" based on duration and dimensions.
@@ -546,6 +593,14 @@ func normalizeLegacyContentType(contentType string) string {
 }
 
 func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*postgres.Post, error) {
+	// Validate the distribution policy up front so a malformed/unsupported
+	// policy fails the whole request (400) before any row is written —
+	// never silently ignored (Codex P0-1).
+	distPolicy, err := ParseDistributionPolicy(input.Distribution)
+	if err != nil {
+		return nil, err
+	}
+
 	contentType := input.ContentType
 	if contentType == "" {
 		contentType = "post"
@@ -627,8 +682,12 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		overlayVol = 1.0
 	}
 
+	newPostID := uuid.New()
+	if input.PostID != nil && *input.PostID != uuid.Nil {
+		newPostID = *input.PostID
+	}
 	p := &postgres.Post{
-		ID:                uuid.New(),
+		ID:                newPostID,
 		AuthorID:          input.AuthorID,
 		Text:              input.Text,
 		Visibility:        input.Visibility,
@@ -666,6 +725,26 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		OriginalAudioVol:  origVol,
 		OverlayAudioVol:   overlayVol,
 		CreatedAt:         time.Now(),
+	}
+
+	// Persist the validated policy verbatim; rev 1 marks "has a policy",
+	// rev 0 marks legacy rows that never carried one.
+	//
+	// P1-1: when there is no typed policy but the old client explicitly
+	// asked for a distribution outcome, materialize that intent into the
+	// canonical policy. Without this the row and the event would both
+	// fall back to "main_feed=true" and silently override the creator.
+	effectivePolicy := distPolicy
+	if effectivePolicy == nil {
+		effectivePolicy = PolicyFromLegacy(input.LegacyDistribution)
+	}
+	if effectivePolicy != nil {
+		stored, mErr := MarshalPolicy(effectivePolicy)
+		if mErr != nil {
+			return nil, mErr
+		}
+		p.Distribution = stored
+		p.DistributionRev = 1
 	}
 
 	// Attach media in a single round trip — audit H1.
@@ -722,6 +801,19 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 			hasVideo = true
 			break
 		}
+	}
+	// P0-6: locate the voice attachment (media_assets.file_type='audio'
+	// surfaces as kind "audio") and classify the post as a voice post.
+	var voiceMediaID uuid.UUID
+	for _, m := range p.Media {
+		if m.Kind == "audio" {
+			voiceMediaID = m.MediaID
+			break
+		}
+	}
+	if voiceMediaID != uuid.Nil && !hasVideo {
+		p.ContentType = "voice"
+		contentType = "voice"
 	}
 	if hasVideo {
 		if maxDuration > 0 {
@@ -798,6 +890,12 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	if reviewStatus == "approved" && isVideoContentType(p.ContentType) && videoMediaID != uuid.Nil {
 		reviewStatus = s.gateVideoReviewStatus(ctx, videoMediaID)
 	}
+	// P0-6: voice posts stay out of public surfaces until baseline audio
+	// safety completes. Same 'pending' mechanism as the video gate — the
+	// read filters already hide every non-approved post.
+	if reviewStatus == "approved" && isVoiceContentType(p.ContentType) && voiceMediaID != uuid.Nil {
+		reviewStatus = s.gateVoiceReviewStatus(ctx, voiceMediaID)
+	}
 	// Optional: send every video to human review, not just spam-flagged. Covers
 	// 'pending' (still transcoding) too — otherwise the transcode consumer would
 	// later flip pending→approved and publish it without review. The reviewer
@@ -808,7 +906,49 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	}
 	p.ReviewStatus = reviewStatus
 
-	if err := s.pgStore.CreatePost(ctx, p); err != nil {
+	// Build the PostCreated event BEFORE the insert so the outbox row
+	// commits in the same transaction as the post (Codex P0-1: event and
+	// row are atomic; closes the old commit→outbox dual-write window).
+	createEventType := ""
+	var createPayload interface{}
+	if s.producer != nil {
+		resolved := ResolveDistribution(effectivePolicy)
+		pc := events.PostCreatedPayload{
+			PostID:          p.ID.String(),
+			AuthorID:        p.AuthorID.String(),
+			Text:            p.Text,
+			Visibility:      p.Visibility,
+			ContentType:     p.ContentType,
+			DurationSeconds: maxDuration,
+			CreatedAt:       p.CreatedAt,
+			DistributionRev: p.DistributionRev,
+			// Module 2 M2-P0-1: carry the CANONICAL persisted moderation
+			// state so search can refuse to index held content. Without
+			// this, a post gated at 'pending' by the video/voice safety
+			// check was indexed and publicly findable immediately.
+			ReviewStatus: p.ReviewStatus,
+			// Creation is always revision 1; later transitions increment.
+			SearchRev: 1,
+		}
+		// Additive pointer fields: stamped whenever an intent exists —
+		// either a typed policy or explicit legacy fields (P1-1). Events
+		// for clients that expressed no opinion stay byte-compatible.
+		if effectivePolicy != nil {
+			mf, ns := resolved.MainFeed, resolved.NotifySubscribers
+			pc.MainFeed = &mf
+			pc.NotifySubscribers = &ns
+		}
+		// Subscriber fan-out key (P0-3): best-effort canonical channel
+		// lookup for video uploads. Empty on failure — the notification
+		// consumer treats a missing channel as "no subscriber fan-out".
+		if isVideoContentType(p.ContentType) {
+			pc.ChannelID = s.lookupChannelIDForUser(ctx, p.AuthorID)
+		}
+		createEventType = events.PostCreated
+		createPayload = pc
+	}
+
+	if err := s.pgStore.CreatePostWithEvent(ctx, p, createEventType, createPayload); err != nil {
 		return nil, err
 	}
 
@@ -878,27 +1018,9 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	// Invalidate author content counts cache
 	s.rdb.Del(ctx, fmt.Sprintf("post:author-counts:%s", input.AuthorID))
 
-	// Audit H4: route PostCreated through the outbox. The previous
-	// path was `go s.producer.PublishPostCreated(...)` — fire and
-	// forget; a crash in the goroutine window between row commit
-	// and Kafka publish silently dropped the event. Insert here
-	// synchronously so the outbox worker (StartOutboxWorker) picks
-	// it up on its next 5 s tick and PublishRaw's it to Kafka, with
-	// the unpublished row driving retry until success.
-	if s.producer != nil {
-		postCreated := events.PostCreatedPayload{
-			PostID:          p.ID.String(),
-			AuthorID:        p.AuthorID.String(),
-			Text:            p.Text,
-			Visibility:      p.Visibility,
-			ContentType:     p.ContentType,
-			DurationSeconds: maxDuration,
-			CreatedAt:       p.CreatedAt,
-		}
-		if err := s.pgStore.InsertOutboxEvent(ctx, events.PostCreated, "post", p.ID, postCreated); err != nil {
-			log.Printf("Warning: failed to enqueue PostCreated to outbox: %v", err)
-		}
-	}
+	// PostCreated now rides the same transaction as the post row (see
+	// CreatePostWithEvent above) — the outbox worker publishes it to
+	// Kafka on its next 5s tick with retry until success.
 
 	// Fire-and-forget: ephemeral Redis pub/sub for live signaling.
 	// Not durable — clients tolerate missing one notification and
@@ -2594,6 +2716,87 @@ func (s *Service) lookupUserByUsername(ctx context.Context, username string) (st
 	}
 	json.NewDecoder(resp.Body).Decode(&result) //nolint:errcheck
 	return result.UserID, nil
+}
+
+// lookupChannelIDForUser resolves the author's canonical broadcast channel
+// via user-service (internal contract, P0-3). Best-effort: returns "" on
+// any failure or when the user has no channel — consumers treat "" as
+// "no subscriber fan-out possible".
+func (s *Service) lookupChannelIDForUser(ctx context.Context, userID uuid.UUID) string {
+	if s.userServiceURL == "" {
+		return ""
+	}
+	url := fmt.Sprintf("%s/internal/channels/by-owner/%s", s.userServiceURL, userID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return ""
+	}
+	if s.internalServiceKey != "" {
+		req.Header.Set("X-Internal-Service-Key", s.internalServiceKey)
+	}
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	var result struct {
+		ChannelID string `json:"channel_id"`
+	}
+	json.NewDecoder(resp.Body).Decode(&result) //nolint:errcheck
+	return result.ChannelID
+}
+
+// UpdateDistribution replaces a post's distribution policy (owner-only).
+// The row update, the monotonic rev bump, and the PostDistributionUpdated
+// outbox event commit in one transaction. Returns the updated post.
+func (s *Service) UpdateDistribution(ctx context.Context, postID, actorID uuid.UUID, raw json.RawMessage) (*postgres.Post, error) {
+	policy, err := ParseDistributionPolicy(raw)
+	if err != nil {
+		return nil, err
+	}
+	if policy == nil {
+		// Explicitly clearing a policy back to legacy behavior is not a
+		// supported operation — reject rather than silently accept.
+		return nil, fmt.Errorf("%w: policy document required", ErrInvalidDistribution)
+	}
+	stored, err := MarshalPolicy(policy)
+	if err != nil {
+		return nil, err
+	}
+
+	// Fetch first for the event's content_type + existence/ownership
+	// pre-check (the UPDATE re-checks ownership atomically).
+	existing, err := s.pgStore.GetPost(ctx, postID)
+	if err != nil {
+		return nil, err
+	}
+	if existing == nil {
+		return nil, ErrPostNotFound
+	}
+	if existing.AuthorID != actorID {
+		return nil, ErrNotPostAuthor
+	}
+
+	resolved := ResolveDistribution(policy)
+	_, err = s.pgStore.UpdateDistribution(ctx, postID, actorID, stored,
+		func(rev int64) (string, interface{}) {
+			return events.PostDistributionUpdated, events.PostDistributionUpdatedPayload{
+				PostID:            postID.String(),
+				AuthorID:          actorID.String(),
+				ContentType:       existing.ContentType,
+				MainFeed:          resolved.MainFeed,
+				NotifySubscribers: resolved.NotifySubscribers,
+				DistributionRev:   rev,
+				UpdatedAt:         time.Now().UTC(),
+			}
+		})
+	if err != nil {
+		return nil, err
+	}
+	return s.pgStore.GetPost(ctx, postID)
 }
 
 // shouldRestrictToTrustedCircle returns true when the author has

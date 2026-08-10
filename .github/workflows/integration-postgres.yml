@@ -1,0 +1,170 @@
+name: Integration (PostgreSQL)
+
+# Module 1 LB-1 launch gate.
+#
+# Runs the media reference-integrity suite against a REAL PostgreSQL:
+#   1. applies media-service and post-service schemas to a fresh database;
+#   2. applies post-service migration 030 and asserts BOTH foreign keys
+#      exist with the correct shape (child/parent table, columns,
+#      ON DELETE RESTRICT, enforcement state) — not constraint names;
+#   3. proves migration 030 FAILS rather than silently no-oping when the
+#      media_assets parent is absent (the LB-1.1 regression);
+#   4. runs the concurrent attach-vs-delete race and proves the two
+#      operations never both succeed and no dangling reference remains.
+#
+# Step 3 is what stops the original defect from returning: a migration
+# that installs nothing must never be recorded as applied.
+
+on:
+  pull_request:
+    paths:
+      - 'Architecture/services/media-service/**'
+      - 'Architecture/services/post-service/**'
+      - 'Architecture/services/graph-service/**'
+      - '.github/workflows/integration-postgres.yml'
+  push:
+    branches: [main]
+
+jobs:
+  media-reference-integrity:
+    name: Media reference integrity (live PostgreSQL)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: app
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      PGPASSWORD: postgres
+      PGHOST: localhost
+      PGPORT: '5432'
+      PGUSER: postgres
+      POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/app?sslmode=disable
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'Architecture/go.work'
+          cache-dependency-path: 'Architecture/**/go.sum'
+
+      - name: Install psql client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      # ── Gate 1: fresh schema must bootstrap cleanly ──────────────────
+      # media-service first: post-service migration 030 depends on
+      # public.media_assets existing.
+      - name: Apply media-service schema
+        working-directory: Architecture
+        run: psql -d app -v ON_ERROR_STOP=1 -q -f services/media-service/database/setup.sql
+
+      - name: Apply post-service schema
+        working-directory: Architecture
+        run: psql -d app -v ON_ERROR_STOP=1 -q -f services/post-service/database/setup.sql
+
+      - name: Apply post-service migration 030 (media reference integrity)
+        working-directory: Architecture
+        run: psql -d app -v ON_ERROR_STOP=1 -f services/post-service/database/migrations/030_media_reference_integrity.sql
+
+      # ── Gate 2: the LB-1.1 regression must stay fixed ────────────────
+      # Migration 030 must FAIL when public.media_assets is absent. If it
+      # succeeds here, it would be recorded as applied while installing no
+      # constraint — the exact defect Codex re-review v3 rejected.
+      - name: Migration 030 must fail without media_assets
+        working-directory: Architecture
+        run: |
+          createdb app_noparent
+          psql -d app_noparent -v ON_ERROR_STOP=1 -q -f services/post-service/database/setup.sql
+          if psql -d app_noparent -v ON_ERROR_STOP=1 \
+               -f services/post-service/database/migrations/030_media_reference_integrity.sql; then
+            echo "::error::LB-1.1 REGRESSION — migration 030 succeeded without public.media_assets."
+            echo "It would be recorded as applied while installing no foreign key."
+            exit 1
+          fi
+          echo "OK: migration 030 correctly refused to run without its parent table."
+
+      # ── Gate 3: catalog assertions + concurrency proof ───────────────
+      - name: Assert foreign keys installed (catalog shape)
+        working-directory: Architecture/services/media-service
+        run: go test -tags integration ./internal/store/postgres/ -run MediaForeignKeys -v -count=1
+
+      - name: Orphan-delete integration suite
+        working-directory: Architecture/services/media-service
+        run: go test -tags integration ./internal/store/postgres/ -run Orphan -v -count=1
+
+      # The race is scheduling-dependent, so run it repeatedly. -count=5
+      # over 25 internal iterations is 125 attach-vs-delete contests.
+      - name: Concurrency race (repeat)
+        working-directory: Architecture/services/media-service
+        run: go test -tags integration ./internal/store/postgres/ -run ConcurrentAttachment -count=5
+
+  block-symmetry:
+    name: Block symmetry (live PostgreSQL)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # Module 2 M2-P0-3 launch gate.
+    #
+    # Blocking is symmetric for content visibility: if B blocks A, neither
+    # sees the other. graph-service previously returned only the viewer's
+    # OUTGOING block edges, so the person who pressed "block" got no
+    # protection from the person they blocked — their content still
+    # reached them through the feed and every search surface.
+    #
+    # This runs against real SQL because the fix IS the SQL. It also
+    # asserts the inverse property: muting must stay one-way, or anyone
+    # could silently remove themselves from someone else's feed.
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: graph
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      PGPASSWORD: postgres
+      PGHOST: localhost
+      PGPORT: '5432'
+      PGUSER: postgres
+      POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/graph?sslmode=disable
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'Architecture/go.work'
+          cache-dependency-path: 'Architecture/**/go.sum'
+
+      - name: Install psql client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Apply graph-service schema
+        working-directory: Architecture
+        run: psql -d graph -v ON_ERROR_STOP=1 -q -f services/graph-service/database/setup.sql
+
+      - name: Block symmetry + mute asymmetry suite
+        working-directory: Architecture/services/graph-service
+        run: go test -tags integration ./internal/store/ -run "Block|Mute" -v -count=1

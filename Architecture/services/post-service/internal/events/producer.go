@@ -29,7 +29,11 @@ func NewProducerWithDialer(brokers []string, topic string, dialer *kafka.Dialer)
 	return &Producer{writer: w}
 }
 
-func (p *Producer) PublishPostCreated(ctx context.Context, postID, authorID uuid.UUID, text, visibility, contentType string, durationSeconds int) error {
+// PublishPostCreated publishes a PostCreated event directly (not via the
+// outbox). Module 2 M2-P0-1: reviewStatus is REQUIRED and must be the
+// canonical persisted value of the row — search treats an empty value as
+// ineligible, so passing "" silently makes the post unsearchable.
+func (p *Producer) PublishPostCreated(ctx context.Context, postID, authorID uuid.UUID, text, visibility, contentType, reviewStatus string, durationSeconds int) error {
 	payload := events.PostCreatedPayload{
 		PostID:          postID.String(),
 		AuthorID:        authorID.String(),
@@ -38,6 +42,8 @@ func (p *Producer) PublishPostCreated(ctx context.Context, postID, authorID uuid
 		ContentType:     contentType,
 		DurationSeconds: durationSeconds,
 		CreatedAt:       time.Now(),
+		ReviewStatus:    reviewStatus,
+		SearchRev:       1,
 	}
 	return p.publish(ctx, events.PostCreated, &authorID, payload)
 }

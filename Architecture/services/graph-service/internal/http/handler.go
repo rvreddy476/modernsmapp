@@ -784,6 +784,15 @@ func (h *Handler) Unmute(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+// GetBlockedAndMuted returns the user IDs whose content must be withheld
+// from the given viewer: blocks in BOTH directions, plus the viewer's own
+// outgoing mutes. Reverse mutes are never included.
+//
+// There is deliberately no parameter to select a narrower set. An earlier
+// revision offered `include=blocks`, which search used in order to keep
+// muted accounts findable by name. That reversed the approved contract,
+// and — worse — it made "return fewer suppressions than the caller
+// probably needs" a one-word opt-in. Both callers now get the full set.
 func (h *Handler) GetBlockedAndMuted(c *gin.Context) {
 	userIDStr := c.Query("user_id")
 	userID, err := uuid.Parse(userIDStr)
@@ -791,6 +800,7 @@ func (h *Handler) GetBlockedAndMuted(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user_id", nil)
 		return
 	}
+
 	ids, err := h.svc.GetBlockedAndMuted(c.Request.Context(), userID)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)

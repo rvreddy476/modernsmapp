@@ -837,11 +837,18 @@ func (s *Store) CheckMute(ctx context.Context, muterID, mutedID uuid.UUID) (bool
 // by GetRelationshipFull. It carries everything service.GetRelationship
 // needs in a single DB round trip.
 type RelationshipFull struct {
-	Follows                  bool
-	FollowedBy               bool
-	Blocked                  bool
-	IsMuted                  bool
-	IsConnection             bool
+	Follows    bool
+	FollowedBy bool
+	// Blocked: the TARGET has blocked the actor.
+	Blocked bool
+	// BlockedBy: the ACTOR has blocked the target. Both directions must be
+	// consulted before granting access (fixes-v2 / Codex P1-6).
+	BlockedBy    bool
+	IsMuted      bool
+	IsConnection bool
+	// IsCloseFriend: the actor is in the TARGET's close-friends list —
+	// the exact audience for `trusted` / `close_friends` visibility.
+	IsCloseFriend             bool
 	ConnectionRequestSent     bool // actor → target row exists with status='pending'
 	ConnectionRequestReceived bool // target → actor row exists with status='pending'
 }
@@ -853,13 +860,24 @@ type RelationshipFull struct {
 // which is the dominant cost of the feed-hydration profile bar.
 func (s *Store) GetRelationshipFull(ctx context.Context, actorID, targetID uuid.UUID) (*RelationshipFull, error) {
 	connA, connB := normalizePair(actorID, targetID)
+	// Module 1 fixes-v2 / Codex P1-6:
+	//   * `Blocked` only reported target→actor. Callers (thread reads,
+	//     notification eligibility) documented "either direction" but got
+	//     one, so content could reach someone the viewer had blocked.
+	//     `BlockedBy` adds the actor→target direction.
+	//   * `IsCloseFriend` gives EXACT trusted/close-friends audience
+	//     membership. Callers previously approximated it with
+	//     `IsConnection`, which is a strictly broader relation and leaked
+	//     restricted threads to connected-but-not-trusted users.
 	row := s.db.QueryRow(ctx, `
 		SELECT
 			EXISTS(SELECT 1 FROM follows WHERE follower_id = $1 AND followee_id = $2),
 			EXISTS(SELECT 1 FROM follows WHERE follower_id = $2 AND followee_id = $1),
 			EXISTS(SELECT 1 FROM blocks  WHERE blocker_id  = $2 AND blocked_id  = $1),
+			EXISTS(SELECT 1 FROM blocks  WHERE blocker_id  = $1 AND blocked_id  = $2),
 			EXISTS(SELECT 1 FROM graph.mutes WHERE muter_id = $1 AND muted_id = $2),
 			EXISTS(SELECT 1 FROM connections WHERE user_a = $3 AND user_b = $4),
+			EXISTS(SELECT 1 FROM close_friends WHERE user_id = $2 AND friend_id = $1),
 			EXISTS(SELECT 1 FROM connection_requests WHERE sender_id = $1 AND receiver_id = $2 AND status = 'pending'),
 			EXISTS(SELECT 1 FROM connection_requests WHERE sender_id = $2 AND receiver_id = $1 AND status = 'pending')
 	`, actorID, targetID, connA, connB)
@@ -869,8 +887,10 @@ func (s *Store) GetRelationshipFull(ctx context.Context, actorID, targetID uuid.
 		&r.Follows,
 		&r.FollowedBy,
 		&r.Blocked,
+		&r.BlockedBy,
 		&r.IsMuted,
 		&r.IsConnection,
+		&r.IsCloseFriend,
 		&r.ConnectionRequestSent,
 		&r.ConnectionRequestReceived,
 	); err != nil {
@@ -879,10 +899,27 @@ func (s *Store) GetRelationshipFull(ctx context.Context, actorID, targetID uuid.
 	return &r, nil
 }
 
-// GetBlockedAndMuted returns all user IDs that the given user has blocked OR muted
+// GetBlockedAndMuted returns every user ID whose content must be withheld
+// from the given viewer: users the viewer blocked, users who blocked the
+// viewer, and users the viewer muted.
+//
+// Module 2 M2-P0-3 — blocking is SYMMETRIC for content visibility. This
+// previously returned only the viewer's outgoing edges (blocked_id where
+// blocker_id = viewer), so if B blocked A, B's posts still reached A
+// through the feed and every search surface. The person who blocked got
+// no protection from the person they blocked, which is precisely
+// backwards: the block exists to stop unwanted contact, and the blocked
+// party is the one it must constrain.
+//
+// Muting stays deliberately one-way. A mute is a personal preference
+// about one's own timeline, not a statement about the other person, and
+// making it symmetric would let anyone silently remove themselves from
+// someone else's feed.
 func (s *Store) GetBlockedAndMuted(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT blocked_id FROM blocks WHERE blocker_id = $1
+		UNION
+		SELECT blocker_id FROM blocks WHERE blocked_id = $1
 		UNION
 		SELECT muted_id FROM graph.mutes WHERE muter_id = $1
 	`, userID)
@@ -894,9 +931,48 @@ func (s *Store) GetBlockedAndMuted(ctx context.Context, userID uuid.UUID) ([]uui
 	for rows.Next() {
 		var id uuid.UUID
 		if err := rows.Scan(&id); err != nil {
-			continue
+			// A partial list is an under-filtered list, which silently
+			// shows blocked content. Fail the call so callers can fail
+			// closed rather than filtering with a truncated set.
+			return nil, fmt.Errorf("scan blocked-and-muted id: %w", err)
 		}
 		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate blocked-and-muted: %w", err)
+	}
+	return ids, nil
+}
+
+// GetBlockedBothWays returns every user ID in a block relationship with
+// the given user, in either direction, excluding mutes.
+//
+// NOTE: this is NOT the set any viewer-facing surface should use. Search
+// and the feed both need the blocks+mutes union from GetBlockedAndMuted;
+// filtering by blocks alone drops the viewer's own mute suppression,
+// which the approved Module 2 contract requires. This is kept only as a
+// building block for callers that genuinely need block state on its own
+// (relationship display, moderation tooling).
+func (s *Store) GetBlockedBothWays(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT blocked_id FROM blocks WHERE blocker_id = $1
+		UNION
+		SELECT blocker_id FROM blocks WHERE blocked_id = $1
+	`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan blocked id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate blocked ids: %w", err)
 	}
 	return ids, nil
 }

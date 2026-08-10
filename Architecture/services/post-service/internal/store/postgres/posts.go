@@ -55,6 +55,18 @@ type Post struct {
 	OverlayAudioVol    float32     `json:"overlay_audio_volume"`
 	TierRequiredID     *uuid.UUID  `json:"tier_required_id,omitempty"`
 	BodyRedacted       bool        `json:"body_redacted,omitempty"`
+	// Distribution is the typed, versioned scalar policy (Module 1 P0-1).
+	// NULL means "no policy — legacy behavior". DistributionRev increases
+	// monotonically on every policy change so consumers can drop stale
+	// out-of-order updates.
+	Distribution    json.RawMessage `json:"distribution,omitempty"`
+	DistributionRev int64           `json:"distribution_rev"`
+	// Thread fields (Module 1 P0-8). Root posts of a thread have
+	// ThreadRootID = own id and ThreadSeq = 0; standalone posts have all
+	// three NULL/0.
+	ThreadRootID    *uuid.UUID `json:"thread_root_id,omitempty"`
+	ThreadReplyToID *uuid.UUID `json:"thread_reply_to_id,omitempty"`
+	ThreadSeq       int        `json:"thread_seq,omitempty"`
 	CreatedAt      time.Time       `json:"created_at"`
 	UpdatedAt      time.Time       `json:"updated_at"`
 	Media          []PostMedia     `json:"media,omitempty"`
@@ -106,6 +118,8 @@ const postCols = `id, author_id, text, visibility, content_type, is_pinned,
 	recording_date, recording_location,
 	cover_media_id, original_audio_volume, overlay_audio_volume,
 	tier_required_id,
+	distribution, distribution_rev,
+	thread_root_id, thread_reply_to_id, thread_seq,
 	created_at, updated_at, review_status`
 
 func scanPost(row pgx.Row) (*Post, error) {
@@ -123,6 +137,8 @@ func scanPost(row pgx.Row) (*Post, error) {
 		&p.RecordingDate, &p.RecordingLocation,
 		&p.CoverMediaID, &p.OriginalAudioVol, &p.OverlayAudioVol,
 		&p.TierRequiredID,
+		&p.Distribution, &p.DistributionRev,
+		&p.ThreadRootID, &p.ThreadReplyToID, &p.ThreadSeq,
 		&p.CreatedAt, &p.UpdatedAt, &p.ReviewStatus,
 	)
 	if err != nil {
@@ -148,6 +164,8 @@ func scanPostRows(rows pgx.Rows) ([]Post, error) {
 			&p.RecordingDate, &p.RecordingLocation,
 			&p.CoverMediaID, &p.OriginalAudioVol, &p.OverlayAudioVol,
 			&p.TierRequiredID,
+			&p.Distribution, &p.DistributionRev,
+			&p.ThreadRootID, &p.ThreadReplyToID, &p.ThreadSeq,
 			&p.CreatedAt, &p.UpdatedAt, &p.ReviewStatus,
 		); err != nil {
 			return nil, err
@@ -221,6 +239,68 @@ func (s *Store) BatchGetMediaMetadata(ctx context.Context, ids []uuid.UUID) (map
 	return out, rows.Err()
 }
 
+// PostIDsByMediaID returns the (non-deleted) posts that attach a given
+// media asset. Used to release a held voice post once media-service
+// publishes its safety verdict (fixes-v2 / Codex P0-2).
+func (s *Store) PostIDsByMediaID(ctx context.Context, mediaID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT p.id
+		FROM post_media pm
+		JOIN posts p ON p.id = pm.post_id
+		WHERE pm.media_id = $1 AND p.deleted_at IS NULL`, mediaID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// MediaOwnership is the ownership + readiness view needed before a post
+// may attach a media asset (Module 1 fixes-v1 / Codex P1-6).
+type MediaOwnership struct {
+	UploaderID       uuid.UUID
+	Kind             string
+	ProcessingStatus string
+	ModerationStatus string
+}
+
+// BatchGetMediaOwnership returns ownership and state for the given media
+// in one round trip. Missing rows are simply absent from the map, which
+// callers treat as "does not exist".
+func (s *Store) BatchGetMediaOwnership(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]MediaOwnership, error) {
+	out := make(map[uuid.UUID]MediaOwnership, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT id, uploader_id, file_type,
+		       COALESCE(processing_status,''), COALESCE(moderation_status,'')
+		FROM media_assets WHERE id = ANY($1)`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("batch media ownership: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			id uuid.UUID
+			m  MediaOwnership
+		)
+		if err := rows.Scan(&id, &m.UploaderID, &m.Kind, &m.ProcessingStatus, &m.ModerationStatus); err != nil {
+			return nil, fmt.Errorf("batch media ownership scan: %w", err)
+		}
+		out[id] = m
+	}
+	return out, rows.Err()
+}
+
 // ResolveMediaDuration queries media_assets for the video duration in seconds.
 // Returns 0 if the media is not found, not a video, or duration is not yet set.
 func (s *Store) ResolveMediaDuration(ctx context.Context, mediaID uuid.UUID) int {
@@ -238,12 +318,38 @@ func (s *Store) ResolveMediaDuration(ctx context.Context, mediaID uuid.UUID) int
 
 // CreatePost inserts a post with optional media and poll in a single transaction.
 func (s *Store) CreatePost(ctx context.Context, p *Post) error {
+	return s.CreatePostWithEvent(ctx, p, "", nil)
+}
+
+// CreatePostWithEvent inserts a post (media, poll) and, when eventType is
+// non-empty, an outbox row in the SAME transaction — so the row commit and
+// its event are atomic (Codex P0-1: "policy change and event commit
+// atomically through outbox"; closes the historic dual-write window on
+// create too).
+func (s *Store) CreatePostWithEvent(ctx context.Context, p *Post, eventType string, eventPayload interface{}) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
 
+	if err := insertPostTx(ctx, tx, p); err != nil {
+		return err
+	}
+
+	// Atomic outbox event (optional).
+	if eventType != "" {
+		if err := InsertOutboxEventTx(ctx, tx, eventType, "post", p.ID, eventPayload); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit(ctx)
+}
+
+// insertPostTx writes one post row (+media, +poll) inside tx. Shared by
+// CreatePostWithEvent and CreateThread.
+func insertPostTx(ctx context.Context, tx pgx.Tx, p *Post) error {
 	reviewStatus := p.ReviewStatus
 	if reviewStatus == "" {
 		reviewStatus = "approved"
@@ -260,7 +366,7 @@ func (s *Store) CreatePost(ctx context.Context, p *Post) error {
 	if p.Tags == nil {
 		p.Tags = []string{}
 	}
-	_, err = tx.Exec(ctx, `
+	_, err := tx.Exec(ctx, `
 		INSERT INTO posts (id, author_id, text, visibility, content_type,
 			feeling, activity, activity_detail, rich_text,
 			no_comments, no_likes,
@@ -273,6 +379,8 @@ func (s *Store) CreatePost(ctx context.Context, p *Post) error {
 			recording_date, recording_location,
 			cover_media_id, original_audio_volume, overlay_audio_volume,
 			tier_required_id,
+			distribution, distribution_rev,
+			thread_root_id, thread_reply_to_id, thread_seq,
 			created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
 			$12, $13, $14, $15, $16, $17, $18, $19, $20,
@@ -283,7 +391,9 @@ func (s *Store) CreatePost(ctx context.Context, p *Post) error {
 			$35, $36,
 			$37, $38, $39,
 			$40,
-			$41, $41)
+			$41, $42,
+			$43, $44, $45,
+			$46, $46)
 	`, p.ID, p.AuthorID, p.Text, p.Visibility, p.ContentType,
 		p.Feeling, p.Activity, p.ActivityDetail, p.RichText,
 		p.NoComments, p.NoLikes,
@@ -296,6 +406,8 @@ func (s *Store) CreatePost(ctx context.Context, p *Post) error {
 		p.RecordingDate, p.RecordingLocation,
 		p.CoverMediaID, p.OriginalAudioVol, p.OverlayAudioVol,
 		p.TierRequiredID,
+		p.Distribution, p.DistributionRev,
+		p.ThreadRootID, p.ThreadReplyToID, p.ThreadSeq,
 		p.CreatedAt)
 	if err != nil {
 		return err
@@ -334,7 +446,118 @@ func (s *Store) CreatePost(ctx context.Context, p *Post) error {
 		}
 	}
 
+	return nil
+}
+
+// ThreadOutboxEvent pairs an outbox event with the thread entry it
+// belongs to (CreateThread emits one PostCreated per entry).
+type ThreadOutboxEvent struct {
+	EventType string
+	PostID    uuid.UUID
+	Payload   interface{}
+}
+
+// CreateThread inserts every thread entry, the idempotency marker, and
+// all outbox events in ONE transaction (Module 1 P0-8: atomic, ordered,
+// idempotent creation — a failure leaves no partially visible thread).
+// If idemKey was already used, ErrThreadIdemReplay is returned with the
+// existing root id so callers can resolve to the original thread.
+func (s *Store) CreateThread(ctx context.Context, posts []*Post, idemKey uuid.UUID, events []ThreadOutboxEvent) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	if idemKey != uuid.Nil {
+		tag, err := tx.Exec(ctx, `
+			INSERT INTO thread_idempotency (idempotency_key, root_post_id)
+			VALUES ($1, $2) ON CONFLICT (idempotency_key) DO NOTHING`,
+			idemKey, posts[0].ID)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			var existingRoot uuid.UUID
+			if err := tx.QueryRow(ctx,
+				`SELECT root_post_id FROM thread_idempotency WHERE idempotency_key = $1`,
+				idemKey).Scan(&existingRoot); err != nil {
+				return err
+			}
+			return &ThreadIdemReplayError{RootPostID: existingRoot}
+		}
+	}
+
+	for _, p := range posts {
+		if err := insertPostTx(ctx, tx, p); err != nil {
+			return err
+		}
+	}
+	for _, evt := range events {
+		if err := InsertOutboxEventTx(ctx, tx, evt.EventType, "post", evt.PostID, evt.Payload); err != nil {
+			return err
+		}
+	}
 	return tx.Commit(ctx)
+}
+
+// ThreadIdemReplayError signals an idempotent replay of a thread create.
+type ThreadIdemReplayError struct{ RootPostID uuid.UUID }
+
+func (e *ThreadIdemReplayError) Error() string {
+	return "thread already created: " + e.RootPostID.String()
+}
+
+// GetThreadPosts returns all visible entries of a thread ordered by
+// sequence. Same base read filters as every other post read (not
+// deleted, approved).
+func (s *Store) GetThreadPosts(ctx context.Context, rootID uuid.UUID) ([]Post, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT `+postCols+`
+		FROM posts
+		WHERE thread_root_id = $1 AND deleted_at IS NULL AND review_status = 'approved'
+		ORDER BY thread_seq ASC
+	`, rootID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanPostRows(rows)
+}
+
+// UpdateDistribution atomically replaces the distribution policy, bumps
+// distribution_rev, and writes the update event to the outbox in the same
+// transaction. Returns the new revision. ErrNoRows when the post doesn't
+// exist / is deleted / isn't owned by authorID (callers map to 404/403).
+func (s *Store) UpdateDistribution(ctx context.Context, postID, authorID uuid.UUID, policy json.RawMessage,
+	buildEvent func(rev int64) (eventType string, payload interface{})) (int64, error) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+
+	var rev int64
+	err = tx.QueryRow(ctx, `
+		UPDATE posts
+		SET distribution = $3,
+		    distribution_rev = distribution_rev + 1,
+		    updated_at = NOW()
+		WHERE id = $1 AND author_id = $2 AND deleted_at IS NULL
+		RETURNING distribution_rev
+	`, postID, authorID, policy).Scan(&rev)
+	if err != nil {
+		return 0, err
+	}
+
+	if buildEvent != nil {
+		eventType, payload := buildEvent(rev)
+		if err := InsertOutboxEventTx(ctx, tx, eventType, "post", postID, payload); err != nil {
+			return 0, err
+		}
+	}
+
+	return rev, tx.Commit(ctx)
 }
 
 func (s *Store) GetPost(ctx context.Context, id uuid.UUID) (*Post, error) {
@@ -714,10 +937,17 @@ func (s *Store) UpdatePostCoverMedia(ctx context.Context, postID uuid.UUID, cove
 }
 
 // PublishPost sets publish status and published_at on a post.
+// M2-P0-2: changes visibility → routed through the projection.
 func (s *Store) PublishPost(ctx context.Context, postID uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `
-		UPDATE posts SET visibility = 'public', updated_at = NOW() WHERE id = $1
-	`, postID)
+	_, err := s.WithSearchEligibilityTx(ctx, postID, func(ctx context.Context, tx pgx.Tx) (bool, error) {
+		tag, err := tx.Exec(ctx, `
+			UPDATE posts SET visibility = 'public', updated_at = NOW() WHERE id = $1
+		`, postID)
+		if err != nil {
+			return false, err
+		}
+		return tag.RowsAffected() > 0, nil
+	})
 	return err
 }
 
@@ -799,15 +1029,23 @@ func (s *Store) GetBookmarks(ctx context.Context, userID uuid.UUID, limit int, c
 // the post is currently 'pending'. The media-transcode consumer uses this
 // to finalize a video post's publish gate without clobbering a manual
 // moderator decision. Returns true when a row was updated.
+//
+// Module 2 M2-P0-2: routed through WithSearchEligibilityTx so the row
+// change and the search-projection event commit atomically. Every
+// review_status / visibility mutation in this file does the same — that
+// is what makes "no direct status-changing path may bypass the
+// projection" true by construction rather than by convention.
 func (s *Store) FlipReviewStatusFromPending(ctx context.Context, postID uuid.UUID, newStatus string) (bool, error) {
-	tag, err := s.db.Exec(ctx, `
-		UPDATE posts SET review_status = $2, updated_at = NOW()
-		WHERE id = $1 AND review_status = 'pending'
-	`, postID, newStatus)
-	if err != nil {
-		return false, err
-	}
-	return tag.RowsAffected() > 0, nil
+	return s.WithSearchEligibilityTx(ctx, postID, func(ctx context.Context, tx pgx.Tx) (bool, error) {
+		tag, err := tx.Exec(ctx, `
+			UPDATE posts SET review_status = $2, updated_at = NOW()
+			WHERE id = $1 AND review_status = 'pending'
+		`, postID, newStatus)
+		if err != nil {
+			return false, err
+		}
+		return tag.RowsAffected() > 0, nil
+	})
 }
 
 // SetReviewStatusFromFlagged flips a FLAGGED post to a terminal status. Used by
@@ -815,41 +1053,47 @@ func (s *Store) FlipReviewStatusFromPending(ctx context.Context, postID uuid.UUI
 // human. Scoped to review_status='flagged' so it can never override a human
 // moderator's or the pending-gate's decision.
 func (s *Store) SetReviewStatusFromFlagged(ctx context.Context, postID uuid.UUID, newStatus string) (bool, error) {
-	tag, err := s.db.Exec(ctx, `
-		UPDATE posts SET review_status = $2, updated_at = NOW()
-		WHERE id = $1 AND review_status = 'flagged'
-	`, postID, newStatus)
-	if err != nil {
-		return false, err
-	}
-	return tag.RowsAffected() > 0, nil
+	return s.WithSearchEligibilityTx(ctx, postID, func(ctx context.Context, tx pgx.Tx) (bool, error) {
+		tag, err := tx.Exec(ctx, `
+			UPDATE posts SET review_status = $2, updated_at = NOW()
+			WHERE id = $1 AND review_status = 'flagged'
+		`, postID, newStatus)
+		if err != nil {
+			return false, err
+		}
+		return tag.RowsAffected() > 0, nil
+	})
 }
 
 // ResubmitFromNeedsChanges flips a NEEDS_CHANGES post back to 'flagged' so it
 // re-enters human review (the creator edited per the super-admin's notes).
 func (s *Store) ResubmitFromNeedsChanges(ctx context.Context, postID uuid.UUID) (bool, error) {
-	tag, err := s.db.Exec(ctx, `
-		UPDATE posts SET review_status = 'flagged', updated_at = NOW()
-		WHERE id = $1 AND review_status = 'needs_changes'
-	`, postID)
-	if err != nil {
-		return false, err
-	}
-	return tag.RowsAffected() > 0, nil
+	return s.WithSearchEligibilityTx(ctx, postID, func(ctx context.Context, tx pgx.Tx) (bool, error) {
+		tag, err := tx.Exec(ctx, `
+			UPDATE posts SET review_status = 'flagged', updated_at = NOW()
+			WHERE id = $1 AND review_status = 'needs_changes'
+		`, postID)
+		if err != nil {
+			return false, err
+		}
+		return tag.RowsAffected() > 0, nil
+	})
 }
 
 // SetVisibilityFromStaged promotes a STAGED post to a new visibility (e.g.
 // 'public'). Scoped to visibility='staged' so the reviewer promotion worker can
 // only finalize the test-audience rollout, never change other visibilities.
 func (s *Store) SetVisibilityFromStaged(ctx context.Context, postID uuid.UUID, newVisibility string) (bool, error) {
-	tag, err := s.db.Exec(ctx, `
-		UPDATE posts SET visibility = $2, updated_at = NOW()
-		WHERE id = $1 AND visibility = 'staged'
-	`, postID, newVisibility)
-	if err != nil {
-		return false, err
-	}
-	return tag.RowsAffected() > 0, nil
+	return s.WithSearchEligibilityTx(ctx, postID, func(ctx context.Context, tx pgx.Tx) (bool, error) {
+		tag, err := tx.Exec(ctx, `
+			UPDATE posts SET visibility = $2, updated_at = NOW()
+			WHERE id = $1 AND visibility = 'staged'
+		`, postID, newVisibility)
+		if err != nil {
+			return false, err
+		}
+		return tag.RowsAffected() > 0, nil
+	})
 }
 
 func (s *Store) GetPostsByIDs(ctx context.Context, ids []uuid.UUID) ([]Post, error) {

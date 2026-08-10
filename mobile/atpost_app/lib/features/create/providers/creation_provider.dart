@@ -3,13 +3,16 @@ import 'package:atpost_app/services/api_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 
-enum PostType { text, photo, video, article, poll }
+enum PostType { text, photo, video, article, poll, voice }
 
 /// Maps PostType to backend content_type value
 String postTypeToContentType(PostType type) {
   switch (type) {
     case PostType.poll:
       return 'poll';
+    case PostType.voice:
+      // Module 1 P0-6: voice-only post (audio media + optional text).
+      return 'voice';
     default:
       return 'post';
   }
@@ -55,6 +58,17 @@ class CreationState {
   final Map<int, String> pollOptionErrors;
   final String? pollQuestionError;
 
+  /// Module 1 P0-7 — per-media alt text, keyed by index into [files].
+  /// An entry that is present but empty means the author explicitly
+  /// marked the image DECORATIVE (screen readers skip it); an absent
+  /// entry means "not described yet".
+  final Map<int, String> altTexts;
+
+  /// Indices the author marked decorative. Kept separate from an empty
+  /// alt text so "no description yet" and "intentionally no description"
+  /// stay distinguishable.
+  final Set<int> decorativeMedia;
+
   const CreationState({
     this.type = PostType.text,
     this.text = '',
@@ -73,6 +87,8 @@ class CreationState {
     this.backgroundIsDark = false,
     this.pollOptionErrors = const {},
     this.pollQuestionError,
+    this.altTexts = const {},
+    this.decorativeMedia = const {},
   });
 
   CreationState copyWith({
@@ -95,6 +111,8 @@ class CreationState {
     Map<int, String>? pollOptionErrors,
     String? pollQuestionError,
     bool clearPollQuestionError = false,
+    Map<int, String>? altTexts,
+    Set<int>? decorativeMedia,
   }) {
     return CreationState(
       type: type ?? this.type,
@@ -114,6 +132,8 @@ class CreationState {
       backgroundIsDark: clearBackground ? false : (backgroundIsDark ?? this.backgroundIsDark),
       pollOptionErrors: pollOptionErrors ?? this.pollOptionErrors,
       pollQuestionError: clearPollQuestionError ? null : (pollQuestionError ?? this.pollQuestionError),
+      altTexts: altTexts ?? this.altTexts,
+      decorativeMedia: decorativeMedia ?? this.decorativeMedia,
     );
   }
 }
@@ -137,7 +157,59 @@ class CreationNotifier extends StateNotifier<CreationState> {
       state = state.copyWith(files: [...state.files, ...newFiles]);
   void removeFile(int index) {
     final newFiles = List<XFile>.from(state.files)..removeAt(index);
-    state = state.copyWith(files: newFiles);
+    // Alt text is keyed by index, so removing a file must shift every
+    // later description down — otherwise descriptions silently attach to
+    // the wrong image (P0-7: each carousel item keeps ITS description).
+    final newAlts = <int, String>{};
+    state.altTexts.forEach((i, v) {
+      if (i < index) {
+        newAlts[i] = v;
+      } else if (i > index) {
+        newAlts[i - 1] = v;
+      }
+    });
+    final newDecorative = <int>{};
+    for (final i in state.decorativeMedia) {
+      if (i < index) {
+        newDecorative.add(i);
+      } else if (i > index) {
+        newDecorative.add(i - 1);
+      }
+    }
+    state = state.copyWith(
+      files: newFiles,
+      altTexts: newAlts,
+      decorativeMedia: newDecorative,
+    );
+  }
+
+  /// Sets (or clears) the description for one carousel item. Passing an
+  /// empty string clears it back to "not described".
+  void setAltText(int index, String value) {
+    final alts = Map<int, String>.from(state.altTexts);
+    final trimmed = value.trim();
+    if (trimmed.isEmpty) {
+      alts.remove(index);
+    } else {
+      alts[index] = trimmed;
+    }
+    // Describing an image clears the decorative marker — the two states
+    // are mutually exclusive.
+    final decorative = Set<int>.from(state.decorativeMedia)..remove(index);
+    state = state.copyWith(altTexts: alts, decorativeMedia: decorative);
+  }
+
+  /// Marks an item decorative (screen readers skip it) or undoes that.
+  void setDecorative(int index, bool decorative) {
+    final marks = Set<int>.from(state.decorativeMedia);
+    final alts = Map<int, String>.from(state.altTexts);
+    if (decorative) {
+      marks.add(index);
+      alts.remove(index);
+    } else {
+      marks.remove(index);
+    }
+    state = state.copyWith(altTexts: alts, decorativeMedia: marks);
   }
 
   void updatePollOption(int index, String value) {
@@ -315,7 +387,14 @@ class CreationNotifier extends StateNotifier<CreationState> {
         final file = files[i];
         final id = await _apiClient.uploadMedia(
           file,
-          type: _isVideoFile(file.path) ? 'video' : 'image',
+          type: state.type == PostType.voice
+              ? 'audio'
+              : (_isVideoFile(file.path) ? 'video' : 'image'),
+          // P0-7: the description (or the explicit decorative marker)
+          // travels with the upload, so it survives an upload retry
+          // without the author redoing it.
+          altText: state.altTexts[i],
+          decorative: state.decorativeMedia.contains(i),
           onProgress: (sent, total) {
             if (total <= 0 || files.isEmpty) return;
             final fileProgress = sent / total;

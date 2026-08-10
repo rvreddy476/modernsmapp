@@ -94,6 +94,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.POST("/:postId/tune", h.CreateTune)
 		v1.DELETE("/:postId/tune", h.DeleteTune)
 		v1.GET("/:postId/tune/me", h.GetTune)
+
+		// Distribution policy (Module 1 P0-1) — owner-only.
+		v1.PATCH("/:postId/distribution", h.UpdateDistribution)
+
+		// Threads (Module 1 P0-8).
+		v1.POST("/thread", h.CreateThread)
+		v1.GET("/:postId/thread", h.GetThread)
 	}
 
 	// Internal: reviewer-service ML pre-filter auto-resolves flagged content.
@@ -268,7 +275,12 @@ type CreatePostRequest struct {
 	LocationLng     *float64           `json:"location_lng"`
 	PostType        string             `json:"post_type"`
 	AppOrigin       string             `json:"app_origin"`
-	ShareToPostbook bool               `json:"share_to_postbook"`
+	// Presence-aware (fixes-v2 / Codex P1-1): a pointer distinguishes an
+	// omitted field from an explicit `false`, so an old client's explicit
+	// opt-out is honored. JSON compatibility is unchanged — the stored
+	// column stays a plain bool, defaulting to true when omitted, which
+	// matches the schema default.
+	ShareToPostbook *bool              `json:"share_to_postbook"`
 	// Reel metadata
 	Title             string   `json:"title"`
 	// M5: cap tags array to bound payload memory. 20 tags × 50 chars
@@ -283,6 +295,9 @@ type CreatePostRequest struct {
 	IsMadeForKids     bool     `json:"is_made_for_kids"`
 	License           string   `json:"license"`
 	AllowEmbedding    *bool    `json:"allow_embedding"`
+	// PublishToFeed / ShareToPostbook are the pre-policy distribution
+	// fields. Pointers so an EXPLICIT false from an old client is
+	// distinguishable from "absent" and is honored (Codex P1-1).
 	PublishToFeed     *bool    `json:"publish_to_feed"`
 	RemixSetting      string   `json:"remix_setting"`
 	CommentModeration string   `json:"comment_moderation"`
@@ -296,6 +311,27 @@ type CreatePostRequest struct {
 	// create. Used by the Flicks composer's audio browser. Optional —
 	// posts without background audio leave this empty.
 	AudioTrackID *string `json:"audio_track_id"`
+	// Distribution is the typed, versioned scalar policy (Module 1 P0-1):
+	// {"version":1,"main_feed":bool,"notify_subscribers":bool,
+	//  "create_reel_preview":bool}. Omitted = legacy behavior. Unknown
+	// fields, wrong version, or unsupported true flags → 400.
+	Distribution json.RawMessage `json:"distribution"`
+}
+
+// writeDistributionError maps distribution policy errors to their typed
+// HTTP responses; returns false when err is not a distribution error.
+func writeDistributionError(c *gin.Context, err error) bool {
+	switch {
+	case errors.Is(err, service.ErrUnsupportedDistribution):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest,
+			"UNSUPPORTED_DISTRIBUTION", err.Error(), nil)
+		return true
+	case errors.Is(err, service.ErrInvalidDistribution):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest,
+			"INVALID_DISTRIBUTION", err.Error(), nil)
+		return true
+	}
+	return false
 }
 
 func (h *Handler) CreatePost(c *gin.Context) {
@@ -360,6 +396,11 @@ func (h *Handler) CreatePost(c *gin.Context) {
 	if req.PublishToFeed != nil {
 		publishToFeed = *req.PublishToFeed
 	}
+	// share_to_postbook column default is TRUE; an omitted field keeps it.
+	shareToPostbook := true
+	if req.ShareToPostbook != nil {
+		shareToPostbook = *req.ShareToPostbook
+	}
 
 	input := &service.CreatePostInput{
 		AuthorID:          authorID,
@@ -378,7 +419,7 @@ func (h *Handler) CreatePost(c *gin.Context) {
 		LocationLng:       req.LocationLng,
 		PostType:          req.PostType,
 		AppOrigin:         req.AppOrigin,
-		ShareToPostbook:   req.ShareToPostbook,
+		ShareToPostbook:   shareToPostbook,
 		Title:             req.Title,
 		Tags:              req.Tags,
 		Category:          req.Category,
@@ -398,6 +439,14 @@ func (h *Handler) CreatePost(c *gin.Context) {
 		CoverMediaID:      coverMediaID,
 		OriginalAudioVol:  req.OriginalAudioVol,
 		OverlayAudioVol:   req.OverlayAudioVol,
+		Distribution:      req.Distribution,
+		// P1-1: forward the explicit legacy intent so an old client's
+		// `publish_to_feed:false` is honored instead of silently
+		// overridden by the canonical default.
+		LegacyDistribution: service.LegacyDistributionFields{
+			PublishToFeed:   req.PublishToFeed,
+			ShareToPostbook: req.ShareToPostbook,
+		},
 	}
 
 	if req.Poll != nil {
@@ -411,6 +460,9 @@ func (h *Handler) CreatePost(c *gin.Context) {
 
 	p, err := h.svc.CreatePost(c.Request.Context(), input)
 	if err != nil {
+		if writeDistributionError(c, err) {
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
@@ -432,6 +484,42 @@ func (h *Handler) CreatePost(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusCreated, p, nil)
+}
+
+// UpdateDistribution replaces a post's distribution policy (P0-1).
+// PATCH /v1/posts/:postId/distribution  body: {"version":1,...}
+// Owner-only. The row update + rev bump + outbox event are atomic.
+func (h *Handler) UpdateDistribution(c *gin.Context) {
+	actorID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
+		return
+	}
+	postID, err := uuid.Parse(c.Param("postId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
+		return
+	}
+	raw, err := c.GetRawData()
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "unreadable body", nil)
+		return
+	}
+
+	p, err := h.svc.UpdateDistribution(c.Request.Context(), postID, actorID, raw)
+	if err != nil {
+		switch {
+		case writeDistributionError(c, err):
+		case errors.Is(err, service.ErrPostNotFound):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "post not found", nil)
+		case errors.Is(err, service.ErrNotPostAuthor):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "not the post author", nil)
+		default:
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		}
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, p, nil)
 }
 
 func (h *Handler) GetPost(c *gin.Context) {
