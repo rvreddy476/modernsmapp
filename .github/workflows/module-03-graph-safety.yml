@@ -1,0 +1,186 @@
+name: Module 3 — Graph safety
+
+# Module 3 SR-2 / SR-3 launch gate, against a REAL PostgreSQL.
+#
+# WHY THIS RUNS LIVE AND NOT AGAINST A MOCK
+#
+# Every defect this gate covers was invisible to a mock:
+#
+#   * The pair advisory lock only serializes if BOTH sides take it. The first
+#     version took it in BlockAtomic only, so a concurrent follow walked
+#     straight past it. A mock would have "verified" the lock call and passed.
+#   * The block sweep named columns (`owner_id`, `member_id`) that do not
+#     exist in the real schema. Every one of those statements would have
+#     raised 42703 and aborted the block transaction in production. The
+#     previous live run missed it because migration 004 had not been applied,
+#     so those tables were ABSENT and the to_regclass probe skipped them —
+#     which is why the suite now builds the COMPLETE schema and refuses to run
+#     if a relationship table is missing.
+#   * The outbox relay's exactly-once property is FOR UPDATE SKIP LOCKED
+#     behaviour. There is nothing to test without a database.
+#
+# The negative controls below are the point of the job. A guard whose removal
+# does not fail a test is not a guard, and this suite had exactly that problem
+# in its previous form.
+
+on:
+  pull_request:
+    paths:
+      - 'Architecture/services/graph-service/**'
+      - 'identity-platform/services/profile-service/**'
+      - 'Architecture/services/user-service/**'
+      - '.github/workflows/module-03-graph-safety.yml'
+  push:
+    branches: [main]
+
+jobs:
+  graph-pair-safety:
+    name: Pair locking, block sweep and outbox relay (live PostgreSQL)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: m3graph
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      POSTGRES_DSN: postgres://postgres:postgres@127.0.0.1:5432/m3graph?sslmode=disable
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: false
+
+      - name: Build and vet
+        working-directory: Architecture/services/graph-service
+        run: |
+          go build ./...
+          go vet ./...
+          go vet -tags integration ./...
+
+      # SR-2 criterion 1. 1,000 randomized concurrent relationship creations
+      # racing a block, driven through the PRODUCTION store methods, asserted
+      # with no convergence pass in between. The suite fails if the racers were
+      # never actually rejected — a concurrency test in which the concurrency
+      # did not happen proves nothing.
+      - name: Pair atomicity and block sweep
+        working-directory: Architecture/services/graph-service
+        run: go test -tags integration -count=1 -v -timeout 15m ./internal/store/ -run 'TestPairAtomic'
+
+      - name: Outbox relay (lease, retry, exactly-once, parking)
+        working-directory: Architecture/services/graph-service
+        run: go test -tags integration -count=1 -v -timeout 10m ./internal/store/ -run 'TestRelay'
+
+      # SR-3. Every row in the retired profile.blocks table is a block a real
+      # user asked for and never received. Any-block-wins; absence is never an
+      # unblock.
+      - name: Legacy block reconciliation (any-block-wins)
+        working-directory: Architecture/services/graph-service
+        run: go test -tags integration -count=1 -v ./internal/store/ -run 'TestLegacyBlock'
+
+      # Module 1/2 contract: blocks are symmetric, mutes stay one-way. Runs
+      # against the same complete schema.
+      - name: Module 2 block-symmetry contract still holds
+        working-directory: Architecture/services/graph-service
+        run: go test -tags integration -count=1 -v ./internal/store/ -run 'TestBlocked|TestMute'
+
+      # ── NEGATIVE CONTROLS ────────────────────────────────────────────────
+      # Each removes one protection and REQUIRES the suite to fail. A control
+      # that still passes means the test was not testing the protection — the
+      # exact false positive this suite shipped with previously.
+      - name: Negative control — removing the pair advisory lock must FAIL
+        working-directory: Architecture/services/graph-service
+        run: |
+          set -euo pipefail
+          cp internal/store/pair_atomic.go /tmp/pair_atomic.go.bak
+          sed -i 's|SELECT pg_advisory_xact_lock($1)|SELECT 1|' internal/store/pair_atomic.go
+          if go test -tags integration -count=1 -timeout 10m ./internal/store/ -run 'TestPairAtomic_Concurrent'; then
+            echo "::error::The concurrency suite PASSED with the pair lock removed. It is not testing the lock."
+            cp /tmp/pair_atomic.go.bak internal/store/pair_atomic.go
+            exit 1
+          fi
+          cp /tmp/pair_atomic.go.bak internal/store/pair_atomic.go
+          echo "Negative control OK: removing the lock fails the suite."
+
+      - name: Negative control — the guessed close_friends column must FAIL
+        working-directory: Architecture/services/graph-service
+        run: |
+          set -euo pipefail
+          cp internal/store/pair_atomic.go /tmp/pair_atomic.go.bak
+          sed -i 's|WHERE (user_id = \$1 AND friend_id = \$2) OR (user_id = \$2 AND friend_id = \$1)|WHERE (owner_id = $1 AND friend_id = $2) OR (owner_id = $2 AND friend_id = $1)|' internal/store/pair_atomic.go
+          if go test -tags integration -count=1 ./internal/store/ -run 'TestPairAtomic_BlockSweeps'; then
+            echo "::error::The sweep suite PASSED with a non-existent column. The schema is incomplete again."
+            cp /tmp/pair_atomic.go.bak internal/store/pair_atomic.go
+            exit 1
+          fi
+          cp /tmp/pair_atomic.go.bak internal/store/pair_atomic.go
+          echo "Negative control OK: a wrong column name fails the suite."
+
+      - name: Negative control — removing relay leasing must FAIL
+        working-directory: Architecture/services/graph-service
+        run: |
+          set -euo pipefail
+          cp internal/store/outbox_relay.go /tmp/outbox_relay.go.bak
+          sed -i 's|FOR UPDATE SKIP LOCKED|-- lease removed|' internal/store/outbox_relay.go
+          sed -i 's|AND (leased_until IS NULL OR leased_until < NOW())|AND (leased_until IS NULL OR TRUE)|' internal/store/outbox_relay.go
+          if go test -tags integration -count=1 ./internal/store/ -run 'TestRelay_Concurrent'; then
+            echo "::error::The relay suite PASSED without leasing. Replicas would double-publish."
+            cp /tmp/outbox_relay.go.bak internal/store/outbox_relay.go
+            exit 1
+          fi
+          cp /tmp/outbox_relay.go.bak internal/store/outbox_relay.go
+          echo "Negative control OK: removing leasing fails the suite."
+
+      - name: Working tree is unchanged after the negative controls
+        run: |
+          if ! git diff --quiet; then
+            echo "::error::A negative control did not restore its file."
+            git diff --stat
+            exit 1
+          fi
+
+  canonical-ownership:
+    name: Canonical ownership and route retirement (SR-3)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: false
+
+      # profile-service kept its own follow/block tables. Nothing enforced
+      # them: a block written there left the user unprotected in feed, search
+      # and chat while `GET /me/blocks` read the same shadow table back and
+      # confirmed it.
+      - name: profile-service graph routes are retired and do not write
+        working-directory: identity-platform/services/profile-service
+        run: |
+          go build ./...
+          go test -count=1 -v ./internal/http/ -run 'RetiredGraphRoutes|EveryRetiredRoute|ProfileReadsStillWork'
+
+      - name: user-service duplicate profile write is retired
+        working-directory: Architecture/services/user-service
+        run: |
+          go build ./...
+          go test -count=1 -v ./internal/http/ -run 'RetiredUserProfileWrite|CanonicalProfileWriteRoute'
+
+      # The source guard is what makes a FUTURE second graph writer visible.
+      - name: graph-service refuses unattributed writers
+        working-directory: Architecture/services/graph-service
+        run: go test -count=1 -v ./internal/http/ -run 'StrictGuard|GuardDoesNotGate|PermissiveMode|ProfileServiceIsNot'

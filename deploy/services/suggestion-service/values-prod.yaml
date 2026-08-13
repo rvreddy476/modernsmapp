@@ -1,0 +1,83 @@
+# suggestion-service overrides for the prod environment.
+#
+# Module 3 LB-7. This directory did not exist, so there was nowhere to
+# configure GRAPH_SERVICE_URL — and suggestion-service returns an EMPTY list
+# from every surface when that dependency is unset. Block safety is
+# fail-closed by design (SR-7: the service used to recommend accounts the
+# viewer had blocked), so a missing manifest would have made "People you may
+# know" permanently empty in production rather than unsafe. Correct behaviour,
+# undeployable configuration.
+#
+# The atpost-service chart owns Deployment / Service / SA / ESO / HPA / PDB /
+# ServiceMonitor. Anything not listed here inherits the chart default. CI
+# rewrites image.tag on every push to main; never hand-edit it.
+
+service:
+  name: suggestion-service
+  port: 8100
+
+image:
+  repository: 123456789012.dkr.ecr.ap-south-1.amazonaws.com/atpost/suggestion-service
+  tag: latest # CI overrides via --set image.tag=<sha>
+
+replicaCount: 3
+hpa:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 12
+  targetCPUUtilizationPercentage: 65
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: 1500m
+    memory: 1Gi
+
+# IRSA only. No static AWS credentials are read by this service; the role
+# grants what the workload needs and nothing is stored in the manifest.
+serviceAccount:
+  irsaRoleArn: arn:aws:iam::123456789012:role/atpost-prod-suggestion-service-irsa
+
+externalSecret:
+  enabled: true
+  remoteKey: atpost/prod/suggestion-service
+  data:
+    # Datastores. suggestion-service reads BOTH the app database (candidates,
+    # cooldowns, impressions) and the identity database (profile enrichment).
+    - { secretKey: POSTGRES_DSN, remoteRef: postgres_dsn }
+    - { secretKey: IDENTITY_POSTGRES_DSN, remoteRef: identity_postgres_dsn }
+    - { secretKey: REDIS_ADDR, remoteRef: redis_addr }
+    - { secretKey: REDIS_PASSWORD, remoteRef: redis_password }
+    - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
+    - { secretKey: SCYLLA_HOSTS, remoteRef: scylla_hosts }
+    # Authenticates the outbound call to graph-service's blocked-and-muted
+    # endpoint, and gates this service's own /v1/suggestions routes.
+    - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
+
+env:
+  ENV: prod
+  LOG_LEVEL: info
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+
+  # ── Module 3 LB-7 / SR-7: block safety ──────────────────────────────────
+  #
+  # THIS IS NOT OPTIONAL. suggestion-service filters blocked accounts at
+  # egress by asking graph-service, and it is FAIL-CLOSED: if this URL is
+  # unset or graph-service is unreachable, every suggestion surface returns an
+  # empty list rather than an unfiltered one.
+  #
+  # That choice is deliberate. Before SR-7 the service filtered nothing for
+  # blocks — the cache-hit path returned before any filtering could run — so
+  # the platform recommended that you follow people you had blocked. An empty
+  # "People you may know" during an incident is a cosmetic degradation; an
+  # unfiltered one puts someone in front of an account they blocked.
+  GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083
+
+ingress:
+  enabled: false # internal-only — api-gateway is the external surface
+
+pdb:
+  enabled: true
+  minAvailable: 2

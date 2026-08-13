@@ -33,12 +33,28 @@ externalSecret:
     - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
     - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
     - { secretKey: JWT_KID, remoteRef: jwt_kid }
+    # Module 3 LB-3: the RETIRED profile.blocks table.
+    #
+    # profile-service kept its own block table that nothing enforced, so every
+    # row in it is a block a real user asked for and never received. The
+    # reconciler imports them under any-block-wins. WITHOUT this DSN the import
+    # does not run and those users stay unprotected in feed, search and chat —
+    # retiring the routes alone helps nobody who already pressed Block.
+    #
+    # It is a SECRET, not an env value: it is a database connection string.
+    - { secretKey: LEGACY_PROFILE_BLOCKS_DSN, remoteRef: legacy_profile_blocks_dsn }
     # Add per-service secrets here (POSTGRES_DSN, REDIS_ADDR,
     # KAFKA_BROKERS, SCYLLA_HOSTS, courier API keys, etc.).
 
 env:
   ENV: staging
   LOG_LEVEL: info
+  # Module 3 LB-3: refuse an unattributed graph mutation. The gateway stamps
+  # X-Graph-Write-Source on every proxied graph call and OVERWRITES any label a
+  # client supplies; approved internal callers stamp their own reviewed source.
+  # Setting this to "false" permits an unreviewed second graph writer — the
+  # exact class of defect that produced the shadow graph.
+  GRAPH_WRITE_SOURCE_STRICT: "true"
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
   # Add per-service inter-service URLs here. Common ones:
   #   USER_SERVICE_URL:  http://user-service.atpost.svc.cluster.local:8082

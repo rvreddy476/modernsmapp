@@ -30,16 +30,23 @@ externalSecret:
   enabled: true
   remoteKey: atpost/prod/trust-safety-service
   data:
+    - { secretKey: POSTGRES_DSN, remoteRef: postgres_dsn }
+    - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
     - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
     - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
     - { secretKey: JWT_KID, remoteRef: jwt_kid }
     - { secretKey: JWT_SECRET_PREVIOUS, remoteRef: jwt_secret_previous }
     - { secretKey: JWT_KID_PREVIOUS, remoteRef: jwt_kid_previous }
+    - { secretKey: STORY_MODERATION_HMAC_KEY, remoteRef: story_moderation_hmac_key }
+    - { secretKey: STORY_MODERATION_BLOCKLIST, remoteRef: story_moderation_blocklist }
+    - { secretKey: POST_MODERATION_HMAC_KEY, remoteRef: post_moderation_hmac_key }
 
 env:
   ENV: prod
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  STORY_MODERATION_POLICY_VERSION: story-keyword-v1
+  POST_SERVICE_URL: http://post-service.atpost.svc.cluster.local:8084
 
 ingress:
   enabled: false

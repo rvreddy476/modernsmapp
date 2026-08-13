@@ -1,0 +1,226 @@
+name: Module 6 - Creator analytics and ledger truth
+
+on:
+  pull_request:
+    paths:
+      - 'Architecture/services/analytics-service/**'
+      - 'Architecture/services/monetization-service/**'
+      - 'mobile/atpost_app/**'
+      - 'deploy/services/analytics-service/**'
+      - 'deploy/services/monetization-service/**'
+      - '.github/workflows/module-06-creator-truth.yml'
+  push:
+    branches: [main]
+
+jobs:
+  go-safety:
+    name: Go build, vet, unit and route contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.6'
+          cache-dependency-path: |
+            Architecture/services/analytics-service/go.sum
+            Architecture/services/monetization-service/go.sum
+      - name: Build and test services
+        shell: bash
+        run: |
+          set -euo pipefail
+          for service in analytics-service monetization-service; do
+            (cd "Architecture/services/$service" && go test ./... && go vet ./... && go build ./...)
+          done
+      - name: AWS identity and launch-flag manifest contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          for env in prod staging; do
+            analytics="deploy/services/analytics-service/values-$env.yaml"
+            money="deploy/services/monetization-service/values-$env.yaml"
+            grep -q 'INTERNAL_SERVICE_KEY' "$analytics"
+            grep -q 'POSTGRES_DSN' "$analytics"
+            grep -q 'KAFKA_BROKERS' "$analytics"
+            grep -q 'INTERNAL_SERVICE_KEY' "$money"
+            grep -q 'POSTGRES_DSN' "$money"
+            grep -q 'MONETIZATION_WRITES_ENABLED: "false"' "$money"
+            ! grep -q 'JWT_SECRET' "$analytics"
+            ! grep -q 'JWT_SECRET' "$money"
+          done
+
+  postgres-truth:
+    name: Canonical attribution, owner privacy and exact ledger (live PostgreSQL)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16.4
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      PGPASSWORD: postgres
+      PGHOST: localhost
+      PGPORT: '5432'
+      PGUSER: postgres
+      ANALYTICS_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/m6analytics?sslmode=disable
+      MONETIZATION_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/m6money?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.6'
+          cache-dependency-path: |
+            Architecture/services/analytics-service/go.sum
+            Architecture/services/monetization-service/go.sum
+      - name: Install PostgreSQL client and create isolated databases
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+          createdb m6analytics
+          createdb m6money
+      - name: Analytics durable attribution, aggregation and owner privacy
+        working-directory: Architecture/services/analytics-service
+        run: go test -tags integration ./internal/aggregation ./internal/service ./internal/http -count=1 -v
+      - name: Recorded ledger precision and disabled mutations
+        working-directory: Architecture/services/monetization-service
+        run: go test -tags integration ./internal/http -run LiveRecordedLedger -count=1 -v
+      - name: Negative control - trusting the claimed creator must fail
+        working-directory: Architecture/services/analytics-service
+        shell: bash
+        run: |
+          set -euo pipefail
+          file=internal/service/ingest.go
+          cp "$file" "$file.safe"
+          trap 'mv "$file.safe" "$file"' EXIT
+          sed -i 's/ownership.CreatorID.String()/payload.ClaimedCreator/' "$file"
+          if go test -tags integration ./internal/service -run LiveIngest -count=1 -v; then
+            echo "::error::$file attribution negative control passed"
+            exit 1
+          fi
+          echo "OK: trusting client creator attribution fails the live proof."
+      - name: Negative control - bypassing the financial gate must fail
+        working-directory: Architecture/services/monetization-service
+        shell: bash
+        run: |
+          set -euo pipefail
+          file=internal/http/handler.go
+          cp "$file" "$file.safe"
+          trap 'mv "$file.safe" "$file"' EXIT
+          sed -i '0,/if h.writesEnabled {/s//if true {/' "$file"
+          if go test ./internal/http -run LaunchBoundary -count=1 -v; then
+            echo "::error::$file launch-gate negative control passed"
+            exit 1
+          fi
+          echo "OK: bypassing the beta financial gate fails its unit proof."
+
+  kafka-ownership:
+    name: Canonical PostCreated ownership projection (live Redpanda)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16.4
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: analytics
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d analytics"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redpanda:
+        image: redpandadata/redpanda:v24.1.7
+        ports:
+          - 9092:9092
+        options: >-
+          --health-cmd "rpk cluster health -X brokers=localhost:9092 | grep -q 'Healthy:.*true'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      ANALYTICS_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/analytics?sslmode=disable
+      KAFKA_BROKERS: localhost:9092
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.6'
+          cache-dependency-path: Architecture/services/analytics-service/go.sum
+      - name: Project canonical ownership through the real broker
+        working-directory: Architecture/services/analytics-service
+        run: go test -tags integration ./internal/consumers -run LivePostCreated -count=1 -v -timeout 45s
+
+  runtime-images:
+    name: Runtime image - ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [analytics-service, monetization-service]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        run: docker build -f "Architecture/services/${{ matrix.service }}/Dockerfile" -t "atpost/m6-${{ matrix.service }}:ci" Architecture
+      - name: Missing production identity key must exit nonzero
+        shell: bash
+        run: |
+          set -euo pipefail
+          if timeout 15s docker run --rm -e ENV=prod "atpost/m6-${{ matrix.service }}:ci"; then
+            echo "::error::${{ matrix.service }} started without INTERNAL_SERVICE_KEY"
+            exit 1
+          fi
+
+  mobile-truth:
+    name: Studio uses real analytics and integer-paise ledger
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: mobile/atpost_app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.9'
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - name: Analyze Module 6 mobile surfaces
+        run: |
+          flutter analyze \
+            lib/core/config/environment.dart \
+            lib/data/repositories/analytics_repository.dart \
+            lib/data/repositories/monetization_repository.dart \
+            lib/data/models/monetization.dart \
+            lib/providers/monetization_provider.dart \
+            lib/features/monetization/monetization_dashboard_screen.dart \
+            lib/features/monetization/creator_analytics_screen.dart \
+            lib/features/monetization/payouts_screen.dart \
+            lib/features/profile/profile_detail_screen.dart
+      - name: No invented money or enabled financial action
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "monetizationWritesEnabled = bool.fromEnvironment" lib/core/config/environment.dart
+          grep -q "'MONETIZATION_WRITES_ENABLED'" lib/core/config/environment.dart
+          grep -q "defaultValue: false" lib/core/config/environment.dart
+          grep -q "/v1/monetization/creator-ledger" lib/data/repositories/monetization_repository.dart
+          ! grep -q "summary.thisMonth \*" lib/providers/monetization_provider.dart
+          ! grep -q "Withdraw" lib/features/monetization/monetization_dashboard_screen.dart
+          ! grep -q "Withdraw" lib/features/monetization/payouts_screen.dart
+      - run: flutter test --reporter expanded

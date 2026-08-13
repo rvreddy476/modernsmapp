@@ -30,6 +30,8 @@ externalSecret:
   enabled: true
   remoteKey: atpost/prod/admin-service
   data:
+    - { secretKey: POSTGRES_DSN, remoteRef: postgres_dsn }
+    - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
     - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
     - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
     - { secretKey: JWT_KID, remoteRef: jwt_kid }
@@ -40,6 +42,7 @@ env:
   ENV: prod
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  POST_SERVICE_URL: http://post-service.atpost.svc.cluster.local:8084
 
 ingress:
   enabled: false

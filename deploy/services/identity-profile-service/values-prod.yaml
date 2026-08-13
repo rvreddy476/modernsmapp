@@ -39,6 +39,13 @@ externalSecret:
 env:
   ENV: prod
   LOG_LEVEL: info
+  # ── Module 3 SR-4: block enforcement on profile surfaces ────────────────
+  # profile-service has no block table of its own (SR-3 removed that copy —
+  # nothing enforced it). Block denial means asking graph-service, which is
+  # canonical. Without this, authenticated profile reads are REFUSED rather
+  # than served unprotected, so an unset value is a visible outage, not a
+  # silent one where blocked users can read the profile of whoever blocked them.
+  GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
 
 ingress:

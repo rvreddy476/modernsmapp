@@ -39,6 +39,11 @@ externalSecret:
 
 env:
   ENV: staging
+  APP_ENV: staging
+  JWT_ISSUER: auth-service
+  JWT_AUDIENCE: atpost-api-staging
+  WS_ALLOW_QUERY_TOKEN: "false"
+  ALLOWED_ORIGINS: https://staging.cleestudio.com
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
   JWT_RS256_KID: rsa-1

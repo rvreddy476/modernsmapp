@@ -35,9 +35,17 @@ externalSecret:
     - { secretKey: JWT_KID, remoteRef: jwt_kid }
     - { secretKey: JWT_SECRET_PREVIOUS, remoteRef: jwt_secret_previous }
     - { secretKey: JWT_KID_PREVIOUS, remoteRef: jwt_kid_previous }
+    - { secretKey: JWT_PUBLIC_KEY_PEM, remoteRef: jwt_public_key_pem }
 
 env:
   ENV: prod
+  APP_ENV: production
+  JWT_ISSUER: auth-service
+  JWT_AUDIENCE: atpost-api
+  JWT_RS256_KID: rsa-1
+  GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083
+  MEDIA_SERVICE_URL: http://media-service.atpost.svc.cluster.local:8087
+  USER_SERVICE_URL: http://user-service.atpost.svc.cluster.local:8082
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
 

@@ -53,7 +53,7 @@ spec:
               {{- include "atpost-service.selectorLabels" . | nindent 14 }}
       containers:
         - name: {{ .Values.service.name }}
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ tpl .Values.image.repository . }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - name: http

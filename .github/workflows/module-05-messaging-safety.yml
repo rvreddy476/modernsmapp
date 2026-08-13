@@ -1,0 +1,310 @@
+name: Module 5 - Messaging safety
+
+# Launch gate for dependable DMs/groups. Calls intentionally remain disabled
+# until device-tested; this workflow also prevents an accidental client-side
+# re-enable from bypassing that release decision.
+on:
+  pull_request:
+    paths:
+      - 'chat-service/**'
+      - 'Architecture/services/group-service/**'
+      - 'Architecture/services/media-service/**'
+      - 'Architecture/services/dating-service/**'
+      - 'mobile/atpost_app/**'
+      - 'integration/contracts/edge-auth/**'
+      - 'deploy/services/**/values-*.yaml'
+      - '.github/workflows/module-05-messaging-safety.yml'
+  push:
+    branches: [main]
+
+jobs:
+  go-safety:
+    name: Go build, vet, unit and edge-auth contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.6'
+          cache-dependency-path: |
+            chat-service/**/go.sum
+            Architecture/services/group-service/go.sum
+            Architecture/services/media-service/go.sum
+            integration/contracts/edge-auth/go.sum
+      - name: Chat services
+        shell: bash
+        run: |
+          set -euo pipefail
+          for dir in \
+            chat-service/shared \
+            chat-service/services/message-service \
+            chat-service/services/ws-gateway \
+            chat-service/services/call-service; do
+            (cd "$dir" && go test ./... && go vet ./... && go build ./...)
+          done
+      - name: Group and media services
+        shell: bash
+        run: |
+          set -euo pipefail
+          for dir in Architecture/services/group-service Architecture/services/media-service; do
+            (cd "$dir" && go test ./... && go vet ./... && go build ./...)
+          done
+      - name: Real token mint-to-verifier contract
+        working-directory: integration/contracts/edge-auth
+        run: go test ./... -v -count=1
+      - name: AWS-only manifest safety contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          for env in prod staging; do
+            grep -q 'CALLS_ENABLED: "false"' "deploy/services/chat-call-service/values-$env.yaml"
+            grep -q 'GRAPH_SERVICE_URL:' "deploy/services/chat-call-service/values-$env.yaml"
+            grep -q 'INTERNAL_SERVICE_KEY' "deploy/services/chat-call-service/values-$env.yaml"
+            grep -q 'INTERNAL_SERVICE_KEY' "deploy/services/chat-message-service/values-$env.yaml"
+            grep -q 'MEDIA_SERVICE_URL:' "deploy/services/chat-message-service/values-$env.yaml"
+            grep -q 'CHAT_MESSAGE_SERVICE_URL:' "deploy/services/media-service/values-$env.yaml"
+            grep -q 'INTERNAL_SERVICE_KEY' "deploy/services/group-service/values-$env.yaml"
+          done
+
+  runtime-images:
+    name: Runtime image - ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: message-service
+            context: chat-service
+            file: chat-service/services/message-service/Dockerfile
+          - name: ws-gateway
+            context: chat-service
+            file: chat-service/services/ws-gateway/Dockerfile
+          - name: call-service-disabled
+            context: chat-service
+            file: chat-service/services/call-service/Dockerfile
+          - name: group-service
+            context: Architecture
+            file: Architecture/services/group-service/Dockerfile
+          - name: media-service
+            context: Architecture
+            file: Architecture/services/media-service/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          push: false
+          tags: atpost/module-05-${{ matrix.name }}:ci
+          cache-from: type=gha,scope=m5-${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=m5-${{ matrix.name }}
+
+  postgres-durability:
+    name: Delivery, group idempotency and media authority (live PostgreSQL)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16.4
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      PGPASSWORD: postgres
+      PGHOST: localhost
+      PGPORT: '5432'
+      PGUSER: postgres
+      CHAT_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/m5chat?sslmode=disable
+      GROUP_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/m5group?sslmode=disable
+      MEDIA_CHAT_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/m5media?sslmode=disable
+      REDIS_ADDR: localhost:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.6'
+          cache-dependency-path: |
+            chat-service/services/message-service/go.sum
+            Architecture/services/group-service/go.sum
+            Architecture/services/media-service/go.sum
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+      - name: Create isolated databases
+        run: |
+          createdb m5chat
+          createdb m5group
+          createdb m5media
+      - name: Message identity, repair, outbox and scheduled-send durability
+        working-directory: chat-service/services/message-service
+        run: |
+          go test -tags integration ./internal/store/postgres -run DeliveryIntent -v -count=1
+          go test -tags integration ./internal/service -run 'DeliveryRetry|ScheduledMessage' -v -count=1
+          go test -tags integration ./internal/http -run PrivateDerivedReads -v -count=1
+      - name: Personal-channel-only realtime (live Redis)
+        working-directory: chat-service/services/ws-gateway
+        run: go test -tags integration ./internal/http -run BetaSocketReceivesOnlyItsPersonalChannel -v -count=1
+      - name: Group creation survives restart
+        working-directory: Architecture/services/group-service
+        run: go test -tags integration ./internal/store -run CreateGroupIdempotency -v -count=1
+      - name: Canonical chat attachment authority
+        working-directory: Architecture/services/media-service
+        run: |
+          go test -tags integration ./internal/service -run ChatAttachment -v -count=1
+          go test -tags integration ./internal/http -run LiveChatAttachmentReservationHTTPContract -v -count=1
+
+  kafka-durability:
+    name: Safety consumers (live Redpanda + PostgreSQL)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16.4
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redpanda:
+        image: redpandadata/redpanda:v24.1.7
+        ports:
+          - 9092:9092
+        options: >-
+          --health-cmd "rpk cluster health -X brokers=localhost:9092 | grep -q 'Healthy:.*true'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      KAFKA_BROKERS: localhost:9092
+      PGPASSWORD: postgres
+      PGHOST: localhost
+      PGPORT: '5432'
+      PGUSER: postgres
+      CHAT_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/m5chat_events?sslmode=disable
+      GROUP_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/m5group_events?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.6'
+          cache-dependency-path: |
+            chat-service/services/message-service/go.sum
+            Architecture/services/group-service/go.sum
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+      - name: Create isolated consumer databases
+        run: |
+          createdb m5chat_events
+          createdb m5group_events
+      - name: Crash-before-effect must redeliver
+        working-directory: chat-service/services/message-service
+        run: go test -tags integration ./internal/events -run FetchedOffset -v -count=1 -timeout 3m
+      - name: Canonical block, identity and dating effects
+        working-directory: chat-service/services/message-service
+        run: go test -tags integration ./internal/events -run LiveConsumersApplyCanonicalPostgresEffects -v -count=1 -timeout 5m
+      - name: Canonical group account-deletion effects
+        working-directory: Architecture/services/group-service
+        run: go test -tags integration ./internal/events -run LiveDeletionConsumer -v -count=1 -timeout 5m
+      - name: Negative control - auto-commit must lose the event
+        working-directory: chat-service/services/message-service
+        shell: bash
+        run: |
+          set -euo pipefail
+          file=internal/events/social_consumer.go
+          cp "$file" "$file.safe"
+          trap 'mv "$file.safe" "$file"' EXIT
+          sed -i 's/FetchMessage(ctx)/ReadMessage(ctx)/' "$file"
+          if go test -tags integration ./internal/events -run FetchedOffset -v -count=1 -timeout 3m; then
+            echo "::error::$file negative control passed; the durability test is not load-bearing"
+            exit 1
+          fi
+          echo "OK: restoring auto-commit makes the live durability proof fail."
+
+  scylla-idempotency:
+    name: Message and inbox replay idempotency (live Scylla)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SCYLLA_HOST: localhost
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.6'
+          cache-dependency-path: chat-service/services/message-service/go.sum
+      - name: Start bounded Scylla
+        run: |
+          docker run -d --name m5-scylla -p 9042:9042 \
+            scylladb/scylla:5.4 \
+            --smp 1 --memory 750M --overprovisioned 1 --developer-mode 1
+          for i in $(seq 1 60); do
+            if docker exec m5-scylla cqlsh -e 'SELECT release_version FROM system.local' >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs m5-scylla
+          exit 1
+      - name: Replay the same reserved delivery twice
+        working-directory: chat-service/services/message-service
+        run: go test -tags integration ./internal/store/scylla -run MessageAndInboxReplay -v -count=1 -timeout 5m
+
+  mobile-truthfulness:
+    name: Calls remain disabled and changed Flutter surfaces compile
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: mobile/atpost_app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.9'
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - name: Module 5 Dart analysis
+        run: |
+          flutter analyze \
+            lib/app/router.dart \
+            lib/core/config/environment.dart \
+            lib/data/repositories/groups_repository.dart \
+            lib/features/call/call_overlay.dart \
+            lib/features/chat/chat_detail_screen.dart \
+            lib/features/groups/create_group_screen.dart \
+            lib/services/call_service.dart
+      - name: Calls cannot be accidentally enabled by source default
+        run: |
+          grep -q "bool.fromEnvironment('CALLS_ENABLED', defaultValue: false)" lib/core/config/environment.dart
+          grep -q "if (!Environment.callsEnabled)" lib/services/call_service.dart
+      - run: flutter test --reporter expanded

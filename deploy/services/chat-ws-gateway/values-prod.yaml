@@ -40,6 +40,11 @@ externalSecret:
 
 env:
   ENV: prod
+  APP_ENV: production
+  JWT_ISSUER: auth-service
+  JWT_AUDIENCE: atpost-api
+  WS_ALLOW_QUERY_TOKEN: "false"
+  ALLOWED_ORIGINS: https://cleestudio.com
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
   # RS256 key id — must match auth-service's JWT_RS256_KID.

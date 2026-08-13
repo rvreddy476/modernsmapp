@@ -41,6 +41,10 @@ externalSecret:
     - { secretKey: JWT_KID, remoteRef: jwt_kid }
     - { secretKey: JWT_SECRET_PREVIOUS, remoteRef: jwt_secret_previous }
     - { secretKey: JWT_KID_PREVIOUS, remoteRef: jwt_kid_previous }
+    - { secretKey: STORY_MODERATION_HMAC_KEY, remoteRef: story_moderation_hmac_key }
+    - { secretKey: STORY_MODERATION_HMAC_KEY_PREVIOUS, remoteRef: story_moderation_hmac_key_previous }
+    - { secretKey: POST_MODERATION_HMAC_KEY, remoteRef: post_moderation_hmac_key }
+    - { secretKey: POST_MODERATION_HMAC_KEY_PREVIOUS, remoteRef: post_moderation_hmac_key_previous }
 
 env:
   ENV: prod

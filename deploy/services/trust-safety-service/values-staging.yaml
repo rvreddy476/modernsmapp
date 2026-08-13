@@ -30,9 +30,14 @@ externalSecret:
   enabled: true
   remoteKey: atpost/staging/trust-safety-service
   data:
+    - { secretKey: POSTGRES_DSN, remoteRef: postgres_dsn }
+    - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
     - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
     - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
     - { secretKey: JWT_KID, remoteRef: jwt_kid }
+    - { secretKey: STORY_MODERATION_HMAC_KEY, remoteRef: story_moderation_hmac_key }
+    - { secretKey: STORY_MODERATION_BLOCKLIST, remoteRef: story_moderation_blocklist }
+    - { secretKey: POST_MODERATION_HMAC_KEY, remoteRef: post_moderation_hmac_key }
     # Add per-service secrets here (POSTGRES_DSN, REDIS_ADDR,
     # KAFKA_BROKERS, SCYLLA_HOSTS, courier API keys, etc.).
 
@@ -40,6 +45,8 @@ env:
   ENV: staging
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  STORY_MODERATION_POLICY_VERSION: story-keyword-v1
+  POST_SERVICE_URL: http://post-service.atpost.svc.cluster.local:8084
   # Add per-service inter-service URLs here. Common ones:
   #   USER_SERVICE_URL:  http://user-service.atpost.svc.cluster.local:8082
   #   GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083

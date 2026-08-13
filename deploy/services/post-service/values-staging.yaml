@@ -40,6 +40,9 @@ externalSecret:
     - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
     - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
     - { secretKey: JWT_KID, remoteRef: jwt_kid }
+    - { secretKey: STORY_MODERATION_HMAC_KEY, remoteRef: story_moderation_hmac_key }
+    - { secretKey: POST_MODERATION_HMAC_KEY, remoteRef: post_moderation_hmac_key }
+    - { secretKey: POST_MODERATION_HMAC_KEY_PREVIOUS, remoteRef: post_moderation_hmac_key_previous }
 
 env:
   ENV: staging

@@ -1,0 +1,176 @@
+name: Module 3 — Mobile
+
+# Module 3 SR-5 / SR-6 / SR-7 mobile gate.
+#
+# The mobile changes in Module 3 are all about the app telling the truth:
+#
+#   SR-5  The privacy screen offered a "Default post audience" of Public /
+#         Followers / Friends that the backend never enforced — and saved it
+#         to `PUT /v1/users/me/privacy`, a route that exists in no service, so
+#         every save failed.
+#
+#   SR-6  The signup screen sent no date of birth, which is exactly how the
+#         old age gate was bypassed: the server skipped the check when the
+#         field was absent. It also captured no consent.
+#
+#   SR-7  The profile "Report" button showed "Report submitted. We will review
+#         this profile." and made NO API call. Nothing was filed. Someone
+#         being harassed believed they had raised it.
+#
+# `flutter analyze` is a real gate here: while writing SR-5 it caught a
+# reference to a text style that does not exist on this project's theme.
+
+on:
+  pull_request:
+    paths:
+      - 'mobile/atpost_app/**'
+      - '.github/workflows/module-03-mobile.yml'
+  push:
+    branches: [main]
+
+jobs:
+  analyze:
+    name: Analyze and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    defaults:
+      run:
+        working-directory: mobile/atpost_app
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.9'
+          channel: stable
+          cache: true
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      # The Module 3 screens must be clean. The repository as a whole is NOT
+      # clean yet (45 pre-existing info/warning findings), so gating on a
+      # whole-project zero would fail for reasons unrelated to this module and
+      # would be turned off within a week. These four files are gated
+      # absolutely; the rest is reported below without failing.
+      - name: Module 3 screens must have no analyzer findings
+        run: |
+          flutter analyze \
+            lib/features/auth/register_screen.dart \
+            lib/features/settings/privacy_settings_screen.dart \
+            lib/features/profile/profile_detail_screen.dart
+
+      - name: Whole-project analysis (reported, not gating)
+        continue-on-error: true
+        run: flutter analyze
+
+      - name: Unit and widget tests
+        run: flutter test --reporter expanded
+
+      # ── Truthfulness checks ──────────────────────────────────────────────
+      # These assert on the SHIPPED STRINGS, because the defect in each case
+      # was a sentence the app showed that was not true.
+
+      - name: Registration sends date of birth and consent
+        run: |
+          set -euo pipefail
+          f=lib/features/auth/register_screen.dart
+          for field in "'dob'" "'accepted_terms'" "'terms_version'"; do
+            grep -q "$field" "$f" || {
+              echo "::error file=$f::Registration no longer sends $field. Omitting dob is exactly how the old age gate was bypassed."
+              exit 1
+            }
+          done
+          echo "OK: signup sends dob, accepted_terms and terms_version."
+
+      # These greps deliberately strip `//` comment lines first. The comments
+      # in these files QUOTE the removed strings to explain why they were
+      # removed, and a check that cannot tell code from prose fails on its own
+      # documentation — which is how such a check ends up disabled.
+      - name: No screen offers a private-account audience
+        run: |
+          set -euo pipefail
+          f=lib/features/settings/privacy_settings_screen.dart
+          code=$(grep -v '^\s*//' "$f")
+          if grep -q "_PostAudience" <<<"$code"; then
+            echo "::error file=$f::The post-audience selector is back. The backend does not enforce a non-public account, so the control is a false promise."
+            exit 1
+          fi
+          if grep -q "/v1/users/me/privacy" <<<"$code"; then
+            echo "::error file=$f::Saving to /v1/users/me/privacy again — that route exists in no service, so every save fails silently."
+            exit 1
+          fi
+          echo "OK: public-accounts-only, saving to a route that exists."
+
+      - name: Deletion messaging matches a disabled endpoint
+        run: |
+          set -euo pipefail
+          f=lib/features/settings/privacy_settings_screen.dart
+          code=$(grep -v '^\s*//' "$f")
+          # LB-6: the endpoint now mutates NOTHING (503). Any claim of erasure
+          # OR of deactivation is false.
+          for claim in "all your data will be deleted" "permanently delete your account" \
+                       "will be deactivated" "signed out everywhere"; do
+            if grep -qi "$claim" <<<"$code"; then
+              echo "::error file=$f::The app claims \"$claim\". Self-service deletion is disabled server-side and changes nothing."
+              exit 1
+            fi
+          done
+          grep -qi "not available yet" <<<"$code" || {
+            echo "::error file=$f::The copy no longer states that deletion is unavailable."
+            exit 1
+          }
+          echo "OK: deletion messaging matches what the backend actually does."
+
+      # LB-6: a failed request must NOT sign the user out. The old code caught
+      # every error and logged out regardless, so a request that never reached
+      # the server still ended the session — no effect on the server, total
+      # effect on the client.
+      - name: A failed deletion request does not log the user out
+        run: |
+          set -euo pipefail
+          f=lib/features/settings/privacy_settings_screen.dart
+          # The catch must bail out BEFORE logout(). Anchored on the sentinel
+          # comment rather than a brace-range: matching Dart blocks with a
+          # regex is fragile, and a fragile gate that fails on formatting gets
+          # deleted. The sentinel is stable and states the intent.
+          grep -q 'return; // stay signed in' "$f" || {
+            echo "::error file=$f::The deletion catch block no longer returns before logout(), so a failed request would still end the session."
+            exit 1
+          }
+          if grep -q 'Proceed with logout regardless' "$f"; then
+            echo "::error file=$f::The logout-regardless behaviour is back: a request that never reached the server would still sign the user out."
+            exit 1
+          fi
+          echo "OK: a failed deletion keeps the session."
+
+      - name: Data export shows no receipt on failure
+        run: |
+          set -euo pipefail
+          f=lib/features/settings/privacy_settings_screen.dart
+          if grep -q 'Best-effort; snackbar shown regardless' "$f"; then
+            echo "::error file=$f::The export still shows a receipt whether or not the request succeeded."
+            exit 1
+          fi
+          grep -q 'Could not request the export' "$f" || {
+            echo "::error file=$f::The export has no failure message, so a failed request is silent or reported as success."
+            exit 1
+          }
+          echo "OK: export reports failure as failure."
+
+      - name: Profile report actually files a report
+        run: |
+          set -euo pipefail
+          f=lib/features/profile/profile_detail_screen.dart
+          code=$(grep -v '^\s*//' "$f")
+          grep -q "submitReport" <<<"$code" || {
+            echo "::error file=$f::The profile report action does not call submitReport. It previously showed a success message and filed nothing."
+            exit 1
+          }
+          if grep -q "Report submitted. We will review this profile." <<<"$code"; then
+            echo "::error file=$f::The unconditional success message is back. It was shown whether or not anything was filed."
+            exit 1
+          fi
+          echo "OK: reporting is real and only claims success on success."

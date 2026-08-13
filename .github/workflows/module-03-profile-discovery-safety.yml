@@ -1,0 +1,194 @@
+name: Module 3 — Profile and discovery safety
+
+# Module 3 SR-4 / SR-5 / SR-7 launch gate.
+#
+# Three defects, all of them things a user could observe and none of them
+# caught by an existing test:
+#
+#   SR-4  `GET /v1/profiles/:userId` is UNAUTHENTICATED and serialised the
+#         stored profile directly, so anyone could enumerate user IDs and
+#         harvest exact dates of birth, gender and timezone. The batch
+#         endpoint returned a hundred of them per request. Nothing anywhere
+#         in profile-service consulted the block graph, so a blocked account
+#         could read the profile of the person who blocked them.
+#
+#   SR-5  `account_visibility` accepted "private", stored it, and no service
+#         read it. The account stayed followable and its posts still reached
+#         the public feed and search.
+#
+#   SR-7  suggestion-service filtered NOTHING for blocks — the comment claimed
+#         it did — and the cache-hit path returned before any filtering could
+#         run. The platform recommended that you follow people you had blocked.
+
+on:
+  pull_request:
+    paths:
+      - 'identity-platform/services/profile-service/**'
+      - 'identity-platform/services/user-service/**'
+      - 'Architecture/services/user-service/**'
+      - 'Architecture/services/suggestion-service/**'
+      - 'deploy/services/identity-profile-service/**'
+      - '.github/workflows/module-03-profile-discovery-safety.yml'
+  push:
+    branches: [main]
+
+jobs:
+  public-profile-privacy:
+    name: Public profile DTO and block denial (SR-4)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: false
+
+      - name: Build and vet
+        working-directory: identity-platform/services/profile-service
+        run: |
+          go build ./...
+          go vet ./...
+
+      # The leak assertion walks the RAW response body for the literal private
+      # values, so it catches a leak however it arrives — a re-added field, a
+      # struct embed, a new surface — not just the fields someone remembered
+      # to list.
+      - name: No private value appears in any public profile response
+        working-directory: identity-platform/services/profile-service
+        run: |
+          go test -count=1 -v ./internal/http/ \
+            -run 'PublicProfileResponse|PublicProfileType|OwnerStillSees|GeneralProfileUpdate'
+
+      - name: Block denial on every profile surface, failing closed
+        working-directory: identity-platform/services/profile-service
+        run: |
+          go test -count=1 -v ./internal/http/ \
+            -run 'BlockedViewer|BlockedEntries|BlockCheckFailure|UnconfiguredBlockChecker|AnonymousCallers'
+
+      # ── NEGATIVE CONTROLS ────────────────────────────────────────────────
+      - name: Negative control — serialising the stored profile must FAIL
+        working-directory: identity-platform/services/profile-service
+        run: |
+          set -euo pipefail
+          cp internal/http/handler.go /tmp/handler.go.bak
+          sed -i 's|api.JSON(c.Writer, http.StatusOK, ToPublicProfile(p), nil)|api.JSON(c.Writer, http.StatusOK, p, nil)|g' internal/http/handler.go
+          if go test -count=1 ./internal/http/ -run 'PublicProfileResponseContainsNoPrivateValues'; then
+            echo "::error::The leak test PASSED while the public route serialised the stored profile."
+            cp /tmp/handler.go.bak internal/http/handler.go
+            exit 1
+          fi
+          cp /tmp/handler.go.bak internal/http/handler.go
+          echo "Negative control OK."
+
+      - name: Working tree is unchanged after the negative control
+        run: |
+          if ! git diff --quiet; then
+            echo "::error::The negative control did not restore its file."
+            git diff --stat
+            exit 1
+          fi
+
+  public-accounts-only:
+    name: Private accounts are refused, not stored (SR-5)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: false
+
+      # A privacy control that records the user's choice and changes no
+      # behaviour is a false promise. Both user-services accept the field, so
+      # both must refuse it — enforcing in one would leave the other open.
+      - name: identity user-service refuses a non-public visibility
+        working-directory: identity-platform/services/user-service
+        run: |
+          go build ./...
+          go test -count=1 -v ./internal/http/ \
+            -run 'PrivateAccountIsRefused|PublicIsAccepted|OmittingAccountVisibility|AccountVisibilityRejectedPredicate'
+
+      - name: app user-service builds with the same refusal
+        working-directory: Architecture/services/user-service
+        run: |
+          go build ./...
+          go test -count=1 ./...
+
+      # SR-5: follow_requests must NOT be created. A table implying a
+      # privacy control the product does not have is worse than no table.
+      - name: migration 009 does not create follow_requests
+        run: |
+          set -euo pipefail
+          f=Architecture/services/graph-service/database/migrations/009_graph_outbox_and_follow_requests.sql
+          if grep -q 'CREATE TABLE IF NOT EXISTS follow_requests' "$f"; then
+            echo "::error file=$f::follow_requests is back. Launch is public-accounts-only; a pending-request table implies a control the product does not have."
+            exit 1
+          fi
+          echo "OK: follow_requests is not created."
+
+  suggestion-block-safety:
+    name: Suggestions never surface a blocked account (SR-7)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: false
+
+      - name: Build and vet
+        working-directory: Architecture/services/suggestion-service
+        run: |
+          go build ./...
+          go vet ./...
+
+      - name: Block filtering at egress, failing closed
+        working-directory: Architecture/services/suggestion-service
+        run: |
+          go test -count=1 -v ./internal/service/ \
+            -run 'BlockedCandidates|BlockLookupFailure|UnconfiguredBlockLookup|UnparseableCandidate|EmptyResponseSkips|BothBlockDirections'
+
+      # Filtering must run at EGRESS. The cache-hit path returns first, so a
+      # filter applied only during generation is bypassed on every cache hit.
+      - name: Every response path is filtered
+        working-directory: Architecture/services/suggestion-service
+        run: |
+          set -euo pipefail
+          # Four return paths must each filter: the cache hit, the candidate
+          # path, the popular-users fallback, and the interstitial surface.
+          # The cache hit is the one that matters most — it returns FIRST, so
+          # a filter applied only during generation never runs on it.
+          count=$(grep -c 'filterBlocked(ctx, viewerID' internal/service/suggestion.go || true)
+          if [ "$count" -lt 4 ]; then
+            echo "::error::Only $count of the 4 suggestion return paths call filterBlocked. An unfiltered path recommends accounts the viewer blocked."
+            exit 1
+          fi
+          echo "OK: all 4 return paths filter."
+
+      - name: Negative control — skipping the filter must FAIL
+        working-directory: Architecture/services/suggestion-service
+        run: |
+          set -euo pipefail
+          cp internal/service/block_safety.go /tmp/block_safety.go.bak
+          perl -0pi -e 's|(func \(s \*Service\) filterBlocked\(ctx context\.Context, viewerID uuid\.UUID, resp \*SuggestionsResponse\) \*SuggestionsResponse \{\n)|$1\treturn resp\n|' internal/service/block_safety.go
+          if go test -count=1 ./internal/service/ -run 'BlockedCandidates|BothBlockDirections'; then
+            echo "::error::The block-safety suite PASSED with filtering disabled."
+            cp /tmp/block_safety.go.bak internal/service/block_safety.go
+            exit 1
+          fi
+          cp /tmp/block_safety.go.bak internal/service/block_safety.go
+          echo "Negative control OK."
+
+      - name: Working tree is unchanged after the negative control
+        run: |
+          if ! git diff --quiet; then
+            echo "::error::The negative control did not restore its file."
+            git diff --stat
+            exit 1
+          fi

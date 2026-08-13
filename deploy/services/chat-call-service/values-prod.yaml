@@ -35,9 +35,18 @@ externalSecret:
     - { secretKey: JWT_KID, remoteRef: jwt_kid }
     - { secretKey: JWT_SECRET_PREVIOUS, remoteRef: jwt_secret_previous }
     - { secretKey: JWT_KID_PREVIOUS, remoteRef: jwt_kid_previous }
+    - { secretKey: JWT_PUBLIC_KEY_PEM, remoteRef: jwt_public_key_pem }
+    - { secretKey: LIVEKIT_API_KEY, remoteRef: livekit_api_key }
+    - { secretKey: LIVEKIT_API_SECRET, remoteRef: livekit_api_secret }
 
 env:
   ENV: prod
+  APP_ENV: production
+  JWT_ISSUER: auth-service
+  JWT_AUDIENCE: atpost-api
+  JWT_RS256_KID: rsa-1
+  CALLS_ENABLED: "false"
+  GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
 

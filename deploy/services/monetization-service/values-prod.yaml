@@ -31,13 +31,13 @@ externalSecret:
   remoteKey: atpost/prod/monetization-service
   data:
     - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
-    - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
-    - { secretKey: JWT_KID, remoteRef: jwt_kid }
-    - { secretKey: JWT_SECRET_PREVIOUS, remoteRef: jwt_secret_previous }
-    - { secretKey: JWT_KID_PREVIOUS, remoteRef: jwt_kid_previous }
+    - { secretKey: POSTGRES_DSN, remoteRef: postgres_dsn }
+    - { secretKey: REDIS_ADDR, remoteRef: redis_addr }
+    - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
 
 env:
   ENV: prod
+  MONETIZATION_WRITES_ENABLED: "false"
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
 

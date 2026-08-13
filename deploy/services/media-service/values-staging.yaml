@@ -10,7 +10,7 @@ service:
   port: 8087
 
 image:
-  repository: 123456789012.dkr.ecr.ap-south-1.amazonaws.com/atpost/media-service
+  repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/media-service'
   tag: latest # CI overrides via --set image.tag=<sha>
 
 replicaCount: 2
@@ -24,17 +24,24 @@ resources:
     memory: 512Mi
 
 serviceAccount:
-  irsaRoleArn: arn:aws:iam::123456789012:role/atpost-staging-media-service-irsa
+  irsaRoleArn: 'arn:aws:iam::{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}:role/atpost-staging-media-service-irsa'
 
 externalSecret:
   enabled: true
   remoteKey: atpost/staging/media-service
   data:
+    - { secretKey: POSTGRES_DSN, remoteRef: postgres_dsn }
+    - { secretKey: REDIS_ADDR, remoteRef: redis_addr }
+    - { secretKey: REDIS_PASSWORD, remoteRef: redis_password }
+    - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
     - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
     - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
     - { secretKey: JWT_KID, remoteRef: jwt_kid }
     # RS256 verification (public key); HS256 stays accepted in parallel.
     - { secretKey: JWT_PUBLIC_KEY_PEM, remoteRef: jwt_public_key_pem }
+    - { secretKey: MEDIA_CDN_BASE_URL, remoteRef: media_cdn_base_url }
+    - { secretKey: MEDIA_CLOUDFRONT_KEY_PAIR_ID, remoteRef: media_cloudfront_key_pair_id }
+    - { secretKey: MEDIA_CLOUDFRONT_PRIVATE_KEY, remoteRef: media_cloudfront_private_key }
     # Add remaining per-service secrets here (POSTGRES_DSN, REDIS_ADDR,
     # KAFKA_BROKERS, etc.).
 
@@ -43,6 +50,16 @@ env:
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
   JWT_RS256_KID: rsa-1
+  DEPLOY_ENV: staging
+  AWS_REGION: ap-south-1
+  AWS_EC2_METADATA_DISABLED: "true"
+  MEDIA_STORAGE_BACKEND: s3
+  S3_BUCKET: atpost-staging-media
+  MEDIA_SCANNER_ENABLED: "true"
+  MEDIA_SCANNER_ALLOW_STUB: "false"
+  MEDIA_SCANNER_BACKEND: rekognition
+  POST_SERVICE_URL: http://post-service.atpost.svc.cluster.local:8084
+  CHAT_MESSAGE_SERVICE_URL: http://chat-message-service.atpost.svc.cluster.local:8092
   # Add per-service inter-service URLs here. Common ones:
   #   USER_SERVICE_URL:  http://user-service.atpost.svc.cluster.local:8082
   #   GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083
@@ -52,3 +69,27 @@ env:
 # Internal-only — api-gateway is the external surface.
 ingress:
   enabled: false
+
+# Module 4 M4-P0-3 — the transcode worker.
+#
+# Before this block the worker was built by Dockerfile.worker and deployed
+# nowhere: the shared chart rendered one container from image.repository, which
+# is the SERVER image. On EKS that meant transcode jobs were produced and never
+# consumed — uploads never became playable, and because media safety is
+# fail-closed they never became publishable either. Silent and total.
+worker:
+  enabled: true
+  replicaCount: 1
+  image:
+    # A DIFFERENT repository from the server. This image carries ffmpeg and the
+    # worker binary; the server image carries neither.
+    repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/media-worker'
+    tag: latest # CI overrides via --set worker.image.tag=<sha>
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: 2
+      memory: 2Gi
+  scratchSizeLimit: 20Gi
