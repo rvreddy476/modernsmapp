@@ -15,15 +15,15 @@ const (
 	UserRegistered = "UserRegistered" // payload: UserRegisteredPayload
 	UserLoggedIn   = "UserLoggedIn"   // payload: UserLoggedInPayload
 
-	PostCreated              = "PostCreated"              // payload: PostCreatedPayload
-	PostDeleted              = "PostDeleted"              // payload: PostDeletedPayload
-	PostContentTypeChanged   = "PostContentTypeChanged"   // payload: PostContentTypeChangedPayload
-	PostDistributionUpdated  = "PostDistributionUpdated"  // payload: PostDistributionUpdatedPayload
+	PostCreated             = "PostCreated"             // payload: PostCreatedPayload
+	PostDeleted             = "PostDeleted"             // payload: PostDeletedPayload
+	PostContentTypeChanged  = "PostContentTypeChanged"  // payload: PostContentTypeChangedPayload
+	PostDistributionUpdated = "PostDistributionUpdated" // payload: PostDistributionUpdatedPayload
 	// PostSearchEligibilityChanged is the single contract for every change
 	// to a post's public-search eligibility (Module 2 M2-P0-2).
 	PostSearchEligibilityChanged = "PostSearchEligibilityChanged" // payload: PostSearchEligibilityChangedPayload
-	UserFollowed   = "UserFollowed"   // payload: UserFollowedPayload
-	UserUnfollowed = "UserUnfollowed" // payload: UserUnfollowedPayload
+	UserFollowed                 = "UserFollowed"                 // payload: UserFollowedPayload
+	UserUnfollowed               = "UserUnfollowed"               // payload: UserUnfollowedPayload
 
 	PostReacted        = "PostReacted"        // payload: PostReactedPayload
 	CommentReacted     = "CommentReacted"     // payload: CommentReactedPayload
@@ -323,15 +323,15 @@ const (
 
 	// Phase 1 (§17, P1-6) — additional dating notification events. See
 	// dating/PRODUCTION_GAP_ANALYSIS.md.
-	EventDatingMatchQuietNotify          = "dating.match.quiet_notify"
-	EventDatingSafeMeetReminder          = "dating.safe_meet.reminder"
-	EventDatingSafeMeetMissedCheckIn     = "dating.safe_meet.missed_check_in"
-	EventDatingSafetyPanicAcknowledged   = "dating.safety.panic.acknowledged"
-	EventDatingReportStatusUpdated       = "dating.report.status_updated"
-	EventDatingVerificationRejected      = "dating.verification.rejected"
-	EventDatingPhotoModerationRejected   = "dating.photo.moderation_rejected"
-	EventDatingPremiumPaymentFailure     = "dating.premium.payment_failure"
-	EventDatingUserBlocked               = "dating.user.blocked"
+	EventDatingMatchQuietNotify        = "dating.match.quiet_notify"
+	EventDatingSafeMeetReminder        = "dating.safe_meet.reminder"
+	EventDatingSafeMeetMissedCheckIn   = "dating.safe_meet.missed_check_in"
+	EventDatingSafetyPanicAcknowledged = "dating.safety.panic.acknowledged"
+	EventDatingReportStatusUpdated     = "dating.report.status_updated"
+	EventDatingVerificationRejected    = "dating.verification.rejected"
+	EventDatingPhotoModerationRejected = "dating.photo.moderation_rejected"
+	EventDatingPremiumPaymentFailure   = "dating.premium.payment_failure"
+	EventDatingUserBlocked             = "dating.user.blocked"
 	// Phase 1 — chat-side. Emitted by chat-service when a dating_match
 	// conversation receives a message. Notification-service consumes it
 	// to drive push when recipient isn't WS-connected.
@@ -481,9 +481,9 @@ type PostCreatedPayload struct {
 
 	// Module 1 P0-1/P0-3 additive fields. Old producers omit them:
 	// nil MainFeed / nil NotifySubscribers = legacy behavior (both true).
-	MainFeed          *bool  `json:"main_feed,omitempty"`
-	NotifySubscribers *bool  `json:"notify_subscribers,omitempty"`
-	DistributionRev   int64  `json:"distribution_rev,omitempty"`
+	MainFeed          *bool `json:"main_feed,omitempty"`
+	NotifySubscribers *bool `json:"notify_subscribers,omitempty"`
+	DistributionRev   int64 `json:"distribution_rev,omitempty"`
 	// ChannelID is the author's canonical broadcast channel when one
 	// exists — the subscriber fan-out key for PostTube uploads.
 	ChannelID string `json:"channel_id,omitempty"`
@@ -631,11 +631,11 @@ type PostDeletedPayload struct {
 // duration + dimensions on a video that was created with the
 // safe-fallback content_type before transcode.
 type PostContentTypeChangedPayload struct {
-	PostID       string    `json:"post_id"`
-	AuthorID     string    `json:"author_id"`
-	OldType      string    `json:"old_type"`
-	NewType      string    `json:"new_type"`
-	ChangedAt    time.Time `json:"changed_at"`
+	PostID    string    `json:"post_id"`
+	AuthorID  string    `json:"author_id"`
+	OldType   string    `json:"old_type"`
+	NewType   string    `json:"new_type"`
+	ChangedAt time.Time `json:"changed_at"`
 }
 
 type UserDeletionRequestedPayload struct {
@@ -1092,10 +1092,10 @@ type LiveStreamStartedPayload struct {
 }
 
 type LiveStreamEndedPayload struct {
-	StreamID    string    `json:"stream_id"`
-	CreatorID   string    `json:"creator_id"`
-	EndedAt     time.Time `json:"ended_at"`
-	ViewerPeak  int       `json:"viewer_peak"`
+	StreamID   string    `json:"stream_id"`
+	CreatorID  string    `json:"creator_id"`
+	EndedAt    time.Time `json:"ended_at"`
+	ViewerPeak int       `json:"viewer_peak"`
 }
 
 type LiveStreamVODReadyPayload struct {
@@ -1517,4 +1517,58 @@ func NewEnvelope(ctx context.Context, eventType string, actorUserID *string, pay
 		ActorUserID: actorUserID,
 		Payload:     payload,
 	}
+}
+
+// ── Module 4 M4-P0-4 — story moderation contract ───────────────────────────
+//
+// post-service emits StoryModerationRequested from the SAME transaction that
+// creates the pending story, so a story can never exist without a request.
+// trust-safety-service evaluates it and emits StoryModerationDecided.
+// post-service applies the decision, and only it owns story publication state —
+// trust-safety owns the evidence, not the row.
+const (
+	StoryModerationRequested = "StoryModerationRequested"
+	StoryModerationDecided   = "StoryModerationDecided"
+)
+
+// StoryModerationRequestedPayload is the immutable snapshot under review.
+//
+// ContentRevision is what makes a decision safe to apply late: it pins the
+// decision to the exact content that was evaluated, so a decision that arrives
+// after the story changed cannot approve what is there now.
+type StoryModerationRequestedPayload struct {
+	StoryID         string `json:"story_id"`
+	AuthorID        string `json:"author_id"`
+	MediaID         string `json:"media_id"`
+	MediaType       string `json:"media_type"`
+	Caption         string `json:"caption"`
+	ContentRevision int64  `json:"content_revision"`
+}
+
+// Story moderation terminal states. There is no "approved by default": a
+// decision must be one of these three, and anything else is refused by the
+// applying store.
+const (
+	StoryDecisionApproved     = "approved"
+	StoryDecisionRejected     = "rejected"
+	StoryDecisionManualReview = "manual_review"
+)
+
+// StoryModerationDecidedPayload is the terminal decision.
+//
+// DecisionID makes application idempotent and auditable; PolicyVersion records
+// which ruleset produced it, so a later policy change does not silently
+// reinterpret old evidence.
+type StoryModerationDecidedPayload struct {
+	StoryID         string `json:"story_id"`
+	ContentRevision int64  `json:"content_revision"`
+	Decision        string `json:"decision"`
+	Reason          string `json:"reason,omitempty"`
+	DecisionID      string `json:"decision_id"`
+	PolicyVersion   string `json:"policy_version"`
+	Issuer          string `json:"issuer"`
+	Purpose         string `json:"purpose"`
+	IssuedAtUnix    int64  `json:"issued_at_unix"`
+	ExpiresAtUnix   int64  `json:"expires_at_unix"`
+	Capability      string `json:"capability"`
 }
