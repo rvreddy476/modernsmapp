@@ -10,7 +10,7 @@ service:
   port: 8117
 
 image:
-  repository: 123456789012.dkr.ecr.ap-south-1.amazonaws.com/atpost/live-service-v2
+  repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/live-service-v2'
   tag: latest # CI overrides via --set image.tag=<sha>
 
 replicaCount: 2
@@ -24,7 +24,7 @@ resources:
     memory: 512Mi
 
 serviceAccount:
-  irsaRoleArn: arn:aws:iam::123456789012:role/atpost-staging-live-service-v2-irsa
+  irsaRoleArn: 'arn:aws:iam::{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}:role/atpost-staging-live-service-v2-irsa'
 
 externalSecret:
   enabled: true

@@ -17,7 +17,7 @@ service:
   port: 8100
 
 image:
-  repository: 123456789012.dkr.ecr.ap-south-1.amazonaws.com/atpost/suggestion-service
+  repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/suggestion-service'
   tag: latest # CI overrides via --set image.tag=<sha>
 
 replicaCount: 3
@@ -38,7 +38,7 @@ resources:
 # IRSA only. No static AWS credentials are read by this service; the role
 # grants what the workload needs and nothing is stored in the manifest.
 serviceAccount:
-  irsaRoleArn: arn:aws:iam::123456789012:role/atpost-prod-suggestion-service-irsa
+  irsaRoleArn: 'arn:aws:iam::{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}:role/atpost-prod-suggestion-service-irsa'
 
 externalSecret:
   enabled: true

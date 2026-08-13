@@ -10,7 +10,7 @@ service:
   port: 8092
 
 image:
-  repository: 123456789012.dkr.ecr.ap-south-1.amazonaws.com/atpost/chat-message-service
+  repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/chat-message-service'
   tag: latest # CI overrides via --set image.tag=<sha>
 
 replicaCount: 2
@@ -24,7 +24,7 @@ resources:
     memory: 512Mi
 
 serviceAccount:
-  irsaRoleArn: arn:aws:iam::123456789012:role/atpost-staging-chat-message-service-irsa
+  irsaRoleArn: 'arn:aws:iam::{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}:role/atpost-staging-chat-message-service-irsa'
 
 externalSecret:
   enabled: true
