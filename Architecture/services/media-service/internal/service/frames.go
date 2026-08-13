@@ -13,8 +13,8 @@ import (
 
 // FrameExtractionResponse contains presigned URLs for extracted frames.
 type FrameExtractionResponse struct {
-	MediaID uuid.UUID      `json:"media_id"`
-	Frames  []FrameResult  `json:"frames"`
+	MediaID uuid.UUID     `json:"media_id"`
+	Frames  []FrameResult `json:"frames"`
 }
 
 // FrameResult represents a single extracted frame with its URL.

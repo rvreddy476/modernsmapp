@@ -81,3 +81,21 @@ CREATE TABLE IF NOT EXISTS suggestion_dismiss_patterns (
     last_dismissed  TIMESTAMPTZ DEFAULT now(),
     PRIMARY KEY (viewer_id, signal_type)
 );
+
+-- Module 3 CLB-1 — durable consumer inbox.
+--
+-- Kafka delivery of graph safety events is at-least-once. The consumer inserts
+-- the event id here in the SAME transaction as the UserBlocked effect, so
+-- "already applied" and "the effect exists" are one committed fact. A replay
+-- conflicts and does nothing; a failed effect leaves no row and is redelivered.
+--
+-- event_id is the graph outbox ROW id, not a per-publish uuid — that is what
+-- makes a redelivery recognisable.
+CREATE TABLE IF NOT EXISTS suggestion_consumer_inbox (
+    event_id    TEXT PRIMARY KEY,
+    event_type  VARCHAR(48) NOT NULL,
+    applied_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_consumer_inbox_applied
+    ON suggestion_consumer_inbox (applied_at);

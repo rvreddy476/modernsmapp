@@ -51,21 +51,21 @@ func TestJWTKeySetSecretFor(t *testing.T) {
 func TestVerifyJWTRequiresHS256Alg(t *testing.T) {
 	keys := jwtKeySet{activeKID: "v1", activeSecret: "secret"}
 	payload := map[string]any{
-		"sub": "user-1",
+		"sub": "55555555-5555-4555-8555-555555555555",
 		"exp": time.Now().Add(time.Hour).Unix(),
 	}
 
 	valid := signJWT(t, map[string]any{"alg": "HS256", "kid": "v1"}, payload, keys.activeSecret)
-	userID, _, _, err := verifyJWT(valid, keys)
+	userID, _, _, err := verifyJWT(valid, keys, devTestPolicy())
 	if err != nil {
 		t.Fatalf("valid HS256 token rejected: %v", err)
 	}
-	if userID != "user-1" {
-		t.Fatalf("userID=%q want user-1", userID)
+	if userID != "55555555-5555-4555-8555-555555555555" {
+		t.Fatalf("userID=%q want 55555555-5555-4555-8555-555555555555", userID)
 	}
 
 	missingAlg := signJWT(t, map[string]any{"kid": "v1"}, payload, keys.activeSecret)
-	if _, _, _, err := verifyJWT(missingAlg, keys); err == nil {
+	if _, _, _, err := verifyJWT(missingAlg, keys, devTestPolicy()); err == nil {
 		t.Fatal("token with missing alg should be rejected")
 	}
 }

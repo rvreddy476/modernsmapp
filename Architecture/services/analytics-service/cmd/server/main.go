@@ -7,13 +7,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/analytics-service/database"
 	"github.com/atpost/analytics-service/internal/aggregation"
 	"github.com/atpost/analytics-service/internal/consumers"
 	httpHandler "github.com/atpost/analytics-service/internal/http"
 	"github.com/atpost/analytics-service/internal/reconcile"
 	"github.com/atpost/analytics-service/internal/scoring"
 	"github.com/atpost/analytics-service/internal/service"
-	"github.com/atpost/analytics-service/database"
 	pgstore "github.com/atpost/analytics-service/internal/store/postgres"
 	scyllaStore "github.com/atpost/analytics-service/internal/store/scylla"
 	"github.com/atpost/shared/health"
@@ -39,6 +39,12 @@ func main() {
 	scyllaHosts := os.Getenv("SCYLLA_HOSTS")
 	kafkaBrokers := os.Getenv("KAFKA_BROKERS")
 	kafkaTopic := "social.events.v1"
+	environment := strings.ToLower(strings.TrimSpace(env("ENV", "development")))
+	internalKey := strings.TrimSpace(os.Getenv("INTERNAL_SERVICE_KEY"))
+	if (environment == "prod" || environment == "production" || environment == "staging") && internalKey == "" {
+		slog.Error("INTERNAL_SERVICE_KEY is required outside development")
+		os.Exit(1)
+	}
 
 	ctx := context.Background()
 
@@ -152,7 +158,10 @@ func main() {
 	store := pgstore.New(dbPool)
 	aggStore := pgstore.NewAggregateStore(dbPool)
 	svc := service.New(ctx, store, kafkaWriter)
-	handler := httpHandler.New(svc, rdb)
+	creatorSvc := service.NewCreatorService(aggStore)
+	handler := httpHandler.New(svc, rdb).
+		WithCreatorService(creatorSvc).
+		WithInternalKey(internalKey)
 	dashHandler := httpHandler.NewDashboardHandler(aggStore).WithWatchStore(watchStore)
 
 	workerCtx, workerCancel := context.WithCancel(ctx)
@@ -167,6 +176,10 @@ func main() {
 
 	// 10b. Start engagement consumer for CQS recalculation on likes/comments
 	if kafkaBrokers != "" {
+		ownershipConsumer := consumers.NewContentOwnershipConsumer(store)
+		go ownershipConsumer.Start(workerCtx, strings.Split(kafkaBrokers, ","), kafkaTopic, kafkaDialer)
+		slog.Info("content ownership projection consumer started")
+
 		engagementConsumer := consumers.NewEngagementConsumer(dbPool, rdb)
 		go engagementConsumer.Start(workerCtx, strings.Split(kafkaBrokers, ","), kafkaTopic, kafkaDialer)
 		slog.Info("engagement analytics consumer started")

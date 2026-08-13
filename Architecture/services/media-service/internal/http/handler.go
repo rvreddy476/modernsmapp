@@ -50,7 +50,15 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, optionalAuthMW gin.Handl
 		// (The internal orphan-delete route is registered separately
 		// below, under its own authenticated group.)
 
-		// Read endpoints — public (media URLs need to be accessible for rendering)
+		// Read endpoints.
+		//
+		// M4-P0-5: these were registered as PUBLIC with the note that "media
+		// URLs need to be accessible for rendering". They still are, for public
+		// media — but every response now goes through the delivery Gate, which
+		// authorizes protected assets against the content that references them
+		// and returns a bounded signed URL. No authMW here is deliberate: an
+		// anonymous caller may render a public avatar and fails the Gate for
+		// anything else.
 		v1.POST("/batch", h.BatchMediaURLs)
 		v1.GET("/:mediaId", h.GetMedia)
 		v1.GET("/:mediaId/status", h.GetMediaStatus)
@@ -74,10 +82,41 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, optionalAuthMW gin.Handl
 		internal.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
 		{
 			internal.DELETE("/orphan/:mediaId", h.DeleteOrphanMedia)
+			internal.POST("/chat-attachment/reserve", h.ReserveChatAttachment)
 		}
 	} else {
 		slog.Warn("media-service: INTERNAL_SERVICE_KEY not set — the internal orphan-delete route is NOT registered; draft-media reclamation is disabled")
 	}
+}
+
+type reserveChatAttachmentRequest struct {
+	ReferenceID string `json:"reference_id" binding:"required"`
+	UploaderID  string `json:"uploader_id" binding:"required"`
+	MediaID     string `json:"media_id" binding:"required"`
+}
+
+func (h *Handler) ReserveChatAttachment(c *gin.Context) {
+	var body reserveChatAttachmentRequest
+	if c.ShouldBindJSON(&body) != nil {
+		c.Status(http.StatusBadRequest)
+		return
+	}
+	referenceID, referenceErr := uuid.Parse(body.ReferenceID)
+	uploaderID, uploaderErr := uuid.Parse(body.UploaderID)
+	mediaID, mediaErr := uuid.Parse(body.MediaID)
+	if referenceErr != nil || uploaderErr != nil || mediaErr != nil {
+		c.Status(http.StatusForbidden)
+		return
+	}
+	if err := h.svc.ReserveChatAttachment(c.Request.Context(), referenceID, uploaderID, mediaID); err != nil {
+		if errors.Is(err, service.ErrChatAttachmentDenied) {
+			c.Status(http.StatusForbidden)
+			return
+		}
+		c.Status(http.StatusServiceUnavailable)
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 
 func (h *Handler) HealthCheck(c *gin.Context) {
@@ -91,7 +130,7 @@ type InitUploadRequest struct {
 	FileSizeBytes int64  `json:"file_size_bytes" binding:"required,min=1"`
 	AltText       string `json:"alt_text"`
 	// Decorative marks the upload as carrying no information (P1-7).
-	Decorative    bool   `json:"decorative"`
+	Decorative bool `json:"decorative"`
 }
 
 func (h *Handler) InitUpload(c *gin.Context) {
@@ -194,9 +233,9 @@ func (h *Handler) GetMediaURL(c *gin.Context) {
 		return
 	}
 
-	res, err := h.svc.GetMediaURL(c.Request.Context(), mediaID)
+	res, err := h.svc.GetMediaURL(c.Request.Context(), deliveryViewer(c), mediaID)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found", nil)
+		writeDeliveryError(c, err)
 		return
 	}
 
@@ -212,9 +251,9 @@ func (h *Handler) GetMediaVariantURL(c *gin.Context) {
 	}
 
 	variant := c.Param("variant")
-	url, err := h.svc.GetMediaVariantURL(c.Request.Context(), mediaID, variant)
+	url, err := h.svc.GetMediaVariantURL(c.Request.Context(), deliveryViewer(c), mediaID, variant)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
+		writeDeliveryError(c, err)
 		return
 	}
 
@@ -242,9 +281,9 @@ func (h *Handler) BatchMediaURLs(c *gin.Context) {
 		ids = append(ids, id)
 	}
 
-	res, err := h.svc.BatchMediaURLs(c.Request.Context(), ids)
+	res, err := h.svc.BatchMediaURLs(c.Request.Context(), deliveryViewer(c), ids)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		writeDeliveryError(c, err)
 		return
 	}
 
@@ -306,9 +345,9 @@ func (h *Handler) ServeMedia(c *gin.Context) {
 		return
 	}
 
-	imgURL, err := h.svc.GetMediaVariantURL(c.Request.Context(), mediaID, "original")
+	imgURL, err := h.svc.GetMediaVariantURL(c.Request.Context(), deliveryViewer(c), mediaID, "original")
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found", nil)
+		writeDeliveryError(c, err)
 		return
 	}
 
@@ -324,9 +363,9 @@ func (h *Handler) ServeMediaVariant(c *gin.Context) {
 	}
 
 	variant := c.Param("variant")
-	imgURL, err := h.svc.GetMediaVariantURL(c.Request.Context(), mediaID, variant)
+	imgURL, err := h.svc.GetMediaVariantURL(c.Request.Context(), deliveryViewer(c), mediaID, variant)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
+		writeDeliveryError(c, err)
 		return
 	}
 

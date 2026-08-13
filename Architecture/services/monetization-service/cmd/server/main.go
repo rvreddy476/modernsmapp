@@ -22,6 +22,7 @@ import (
 	"github.com/atpost/shared/transport"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -32,6 +33,17 @@ func main() {
 	port := env("HTTP_PORT", "8099")
 	pgDSN := os.Getenv("POSTGRES_DSN")
 	redisAddr := os.Getenv("REDIS_ADDR")
+	environment := strings.ToLower(strings.TrimSpace(env("ENV", "development")))
+	internalKey := strings.TrimSpace(os.Getenv("INTERNAL_SERVICE_KEY"))
+	writesEnabled, err := strconv.ParseBool(env("MONETIZATION_WRITES_ENABLED", "false"))
+	if err != nil {
+		slog.Error("invalid MONETIZATION_WRITES_ENABLED", "error", err)
+		os.Exit(1)
+	}
+	if (environment == "prod" || environment == "production" || environment == "staging") && internalKey == "" {
+		slog.Error("INTERNAL_SERVICE_KEY is required outside development")
+		os.Exit(1)
+	}
 
 	// 3. Database
 	ctx := context.Background()
@@ -63,18 +75,23 @@ func main() {
 	}
 	slog.Info("monetization schema ready")
 
-	// 4. Redis
-	rdb, err := transport.NewRedisClientFromEnv(redisAddr)
-	if err != nil {
-		slog.Error("failed to configure redis client", "error", err)
-		os.Exit(1)
+	// 4. Redis is required only when financial mutations/workers are enabled.
+	// The Module 6 read-only creator ledger remains available during a Redis or
+	// Kafka outage because PostgreSQL is its sole authority.
+	var rdb *redis.Client
+	if writesEnabled {
+		rdb, err = transport.NewRedisClientFromEnv(redisAddr)
+		if err != nil {
+			slog.Error("failed to configure redis client", "error", err)
+			os.Exit(1)
+		}
+		if err := rdb.Ping(ctx).Err(); err != nil {
+			slog.Error("redis ping failed", "error", err)
+			os.Exit(1)
+		}
+		defer rdb.Close()
+		slog.Info("connected to redis")
 	}
-	if err := rdb.Ping(ctx).Err(); err != nil {
-		slog.Error("redis ping failed", "error", err)
-		os.Exit(1)
-	}
-	defer rdb.Close()
-	slog.Info("connected to redis")
 
 	// W2 — schema is fully owned by setup.sql via BootstrapSchema above.
 	// The previous ensureSchema() duplicated all of setup.sql's DDL and
@@ -91,32 +108,37 @@ func main() {
 	// 6. Health checker
 	checker := health.New("monetization-service")
 	checker.Register("postgres", health.PingCheck(dbPool))
-	checker.Register("redis", health.RedisPingCheck(func(ctx context.Context) error {
-		return rdb.Ping(ctx).Err()
-	}))
+	if rdb != nil {
+		checker.Register("redis", health.RedisPingCheck(func(ctx context.Context) error {
+			return rdb.Ping(ctx).Err()
+		}))
+	}
 
 	// 7. Dependencies
 	monetizationStore := postgres.New(dbPool)
 	monetizationSvc := service.New(monetizationStore, rdb).
 		WithCreatorFundConfig(loadCreatorFundConfig())
-	monetizationHandler := http.New(monetizationSvc)
+	monetizationHandler := http.New(monetizationSvc).
+		WithInternalKey(internalKey).
+		WithWritesEnabled(writesEnabled)
 
 	// 7a. Kafka producer + background workers
-	kafkaBrokers := strings.Split(env("KAFKA_BROKERS", "localhost:9092"), ",")
-	kafkaTopic := env("KAFKA_MONETIZATION_TOPIC", events.TopicMonetization)
-	kafkaDialer, err := transport.KafkaDialerFromEnv()
-	if err != nil {
-		slog.Error("failed to configure kafka dialer", "error", err)
-		os.Exit(1)
+	if writesEnabled {
+		kafkaBrokers := strings.Split(env("KAFKA_BROKERS", "localhost:9092"), ",")
+		kafkaTopic := env("KAFKA_MONETIZATION_TOPIC", events.TopicMonetization)
+		kafkaDialer, err := transport.KafkaDialerFromEnv()
+		if err != nil {
+			slog.Error("failed to configure kafka dialer", "error", err)
+			os.Exit(1)
+		}
+		monetizationProducer := events.NewProducerWithDialer(kafkaBrokers, kafkaTopic, kafkaDialer)
+		defer monetizationProducer.Close()
+		monetizationSvc.WithEntitlementPublisher(monetizationProducer)
+		go workers.StartAll(ctx, monetizationStore, monetizationProducer, monetizationSvc)
+		slog.Warn("financial mutation workers enabled")
+	} else {
+		slog.Info("financial mutation workers disabled for beta")
 	}
-	monetizationProducer := events.NewProducerWithDialer(kafkaBrokers, kafkaTopic, kafkaDialer)
-	defer monetizationProducer.Close()
-
-	// Tier 1a: producer is also the entitlement-publisher seam, used
-	// by Subscribe/Unsubscribe to invalidate post-service's cache.
-	monetizationSvc.WithEntitlementPublisher(monetizationProducer)
-
-	go workers.StartAll(ctx, monetizationStore, monetizationProducer, monetizationSvc)
 
 	// 8. Gin with middleware stack
 	gin.SetMode(gin.ReleaseMode)
@@ -135,7 +157,9 @@ func main() {
 		Port:            port,
 		ShutdownTimeout: 10 * time.Second,
 		OnShutdown: func() {
-			rdb.Close()
+			if rdb != nil {
+				rdb.Close()
+			}
 			dbPool.Close()
 			slog.Info("cleanup completed")
 		},

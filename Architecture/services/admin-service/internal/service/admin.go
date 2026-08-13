@@ -3,7 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"strings"
 	"time"
 
@@ -11,6 +11,11 @@ import (
 	"github.com/atpost/shared/events"
 	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
+)
+
+var (
+	ErrCanonicalModerationRequired = errors.New("content moderation must use the canonical owner service")
+	ErrSuspensionUnavailable       = errors.New("user suspension is unavailable until every enforcement surface participates")
 )
 
 type Service struct {
@@ -43,6 +48,10 @@ func NewWithDialer(store *postgres.Store, kafkaBrokers string, dialer *kafka.Dia
 
 // TakedownContent
 func (s *Service) TakedownContent(ctx context.Context, actor string, entityType, entityID, reason string) error {
+	// This legacy path only removed search projection while leaving the
+	// canonical post approved and feed-readable. Never report false success.
+	return ErrCanonicalModerationRequired
+	/* unreachable legacy implementation retained temporarily for migration:
 	// 1. Audit Log
 	if err := s.store.LogAction(ctx, actor, "TAKEDOWN", entityType, entityID, map[string]string{"reason": reason}); err != nil {
 		return fmt.Errorf("audit log failed: %w", err)
@@ -56,11 +65,13 @@ func (s *Service) TakedownContent(ctx context.Context, actor string, entityType,
 		AdminID:    actor,
 		DeletedAt:  time.Now(),
 	}
-	return s.emitEvent(ctx, events.ContentTakenDown, entityID, payload)
+	return s.emitEvent(ctx, events.ContentTakenDown, entityID, payload) */
 }
 
 // SuspendUser
 func (s *Service) SuspendUser(ctx context.Context, actor string, userID uuid.UUID, until time.Time, reason string) error {
+	return ErrSuspensionUnavailable
+	/* unreachable legacy implementation retained temporarily for migration:
 	// 1. Store Suspension
 	if err := s.store.SuspendUser(ctx, userID, until, reason); err != nil {
 		return fmt.Errorf("db failed: %w", err)
@@ -80,7 +91,7 @@ func (s *Service) SuspendUser(ctx context.Context, actor string, userID uuid.UUI
 		AdminID:     actor,
 		SuspendedAt: time.Now(),
 	}
-	return s.emitEvent(ctx, events.UserSuspended, userID.String(), payload)
+	return s.emitEvent(ctx, events.UserSuspended, userID.String(), payload) */
 }
 
 // GetDashboard returns aggregate stats for the admin dashboard.
@@ -100,6 +111,8 @@ func (s *Service) ListSuspensions(ctx context.Context, limit, offset int) ([]pos
 
 // UnsuspendUser removes a user's suspension and logs the action.
 func (s *Service) UnsuspendUser(ctx context.Context, actor string, userID uuid.UUID) error {
+	return ErrSuspensionUnavailable
+	/* unreachable legacy implementation retained temporarily for migration:
 	if err := s.store.UnsuspendUser(ctx, userID); err != nil {
 		return fmt.Errorf("unsuspend failed: %w", err)
 	}
@@ -115,7 +128,7 @@ func (s *Service) UnsuspendUser(ctx context.Context, actor string, userID uuid.U
 		AdminID:       actor,
 		UnsuspendedAt: time.Now(),
 	}
-	return s.emitEvent(ctx, events.UserUnsuspended, userID.String(), payload)
+	return s.emitEvent(ctx, events.UserUnsuspended, userID.String(), payload) */
 }
 
 // ListReports returns paginated reports, optionally filtered by status.

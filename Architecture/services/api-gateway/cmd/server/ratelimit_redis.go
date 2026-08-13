@@ -29,10 +29,10 @@ import (
 // could brick all client traffic during a Redis incident.
 
 type redisRateLimiter struct {
-	rdb    *redis.Client
-	ipMax  int
+	rdb     *redis.Client
+	ipMax   int
 	userMax int
-	window time.Duration
+	window  time.Duration
 }
 
 func newRedisRateLimiter(rdb *redis.Client, ipMax, userMax int, window time.Duration) *redisRateLimiter {

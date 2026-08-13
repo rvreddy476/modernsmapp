@@ -5,7 +5,26 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/atpost/api-gateway/pkg/edgeheaders"
+	"github.com/atpost/api-gateway/pkg/tokenpolicy"
 )
+
+// devTestPolicy is the development-shaped policy these gateway tests run
+// under: HS256 permitted, no issuer/audience pinning. The production rules
+// (RS256-only, mandatory iss/aud/sid/typ) are proven in
+// pkg/tokenpolicy/policy_test.go, which is where the policy itself now lives —
+// the root .gitignore's bare `server` rule makes any NEW file under
+// cmd/server/ untracked, so the policy source cannot live here. It is under
+// pkg/ rather than internal/ so auth-service can import the REAL verifier for
+// the mint↔verify contract test.
+func devTestPolicy() tokenpolicy.Policy {
+	return tokenpolicy.Policy{
+		Production: false,
+		AllowHS256: true,
+		ClockSkew:  60 * time.Second,
+	}
+}
 
 // These tests pin the gateway's #1 security invariant: the trusted identity
 // headers (X-User-Id, X-Scopes, X-Internal-Service-Key, ...) can ONLY be set by
@@ -26,7 +45,7 @@ func captureHandler(got *map[string]string) http.Handler {
 
 func TestGatewayStripsSpoofedIdentityHeadersWhenUnauthenticated(t *testing.T) {
 	var got map[string]string
-	mw := jwtExtractMiddleware(jwtKeySet{activeKID: "v1", activeSecret: "secret"}, captureHandler(&got))
+	mw := jwtExtractMiddleware(jwtKeySet{activeKID: "v1", activeSecret: "secret"}, devTestPolicy(), captureHandler(&got))
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/anything", nil)
 	// Attacker forges identity + scope + the internal-service key, no token.
@@ -47,11 +66,11 @@ func TestGatewayStripsSpoofedIdentityHeadersWhenUnauthenticated(t *testing.T) {
 func TestGatewayIgnoresClientScopesWithLowPrivToken(t *testing.T) {
 	keys := jwtKeySet{activeKID: "v1", activeSecret: "secret"}
 	var got map[string]string
-	mw := jwtExtractMiddleware(keys, captureHandler(&got))
+	mw := jwtExtractMiddleware(keys, devTestPolicy(), captureHandler(&got))
 
 	// A genuine ordinary-user token that carries NO scopes claim.
 	token := signJWT(t, map[string]any{"alg": "HS256", "kid": "v1"}, map[string]any{
-		"user_id": "real-user",
+		"user_id": "11111111-1111-4111-8111-111111111111",
 		"exp":     time.Now().Add(time.Hour).Unix(),
 	}, keys.activeSecret)
 
@@ -61,8 +80,8 @@ func TestGatewayIgnoresClientScopesWithLowPrivToken(t *testing.T) {
 
 	mw.ServeHTTP(httptest.NewRecorder(), req)
 
-	if got["X-User-Id"] != "real-user" {
-		t.Fatalf("X-User-Id=%q want real-user (from token)", got["X-User-Id"])
+	if got["X-User-Id"] != "11111111-1111-4111-8111-111111111111" {
+		t.Fatalf("X-User-Id=%q want 11111111-1111-4111-8111-111111111111 (from token)", got["X-User-Id"])
 	}
 	if got["X-Scopes"] != "" {
 		t.Fatalf("forged X-Scopes survived: %q (privilege escalation)", got["X-Scopes"])
@@ -72,11 +91,11 @@ func TestGatewayIgnoresClientScopesWithLowPrivToken(t *testing.T) {
 func TestGatewayHonoursScopesFromVerifiedToken(t *testing.T) {
 	keys := jwtKeySet{activeKID: "v1", activeSecret: "secret"}
 	var got map[string]string
-	mw := jwtExtractMiddleware(keys, captureHandler(&got))
+	mw := jwtExtractMiddleware(keys, devTestPolicy(), captureHandler(&got))
 
 	// A real admin token: the scopes claim was stamped server-side at mint.
 	token := signJWT(t, map[string]any{"alg": "HS256", "kid": "v1"}, map[string]any{
-		"user_id": "admin-user",
+		"user_id": "22222222-2222-4222-8222-222222222222",
 		"scopes":  "admin moderator",
 		"exp":     time.Now().Add(time.Hour).Unix(),
 	}, keys.activeSecret)
@@ -89,5 +108,39 @@ func TestGatewayHonoursScopesFromVerifiedToken(t *testing.T) {
 
 	if got["X-Scopes"] != "admin moderator" {
 		t.Fatalf("X-Scopes=%q want %q (only the token's scopes, not the forged one)", got["X-Scopes"], "admin moderator")
+	}
+}
+
+// Module 3 LB-3 — the graph write-source label must be stripped like any other
+// trusted header, and re-stamped by the gateway on graph routes.
+//
+// graph-service refuses a mutating request whose source is not an approved
+// caller. That is only attribution if a CLIENT cannot supply the value: if a
+// forged label survives, any caller claims to be `api-gateway` and the guard
+// becomes decoration.
+func TestGraphWriteSourceIsStrippedAndRestamped(t *testing.T) {
+	var got map[string]string
+	mw := jwtExtractMiddleware(
+		jwtKeySet{activeKID: "v1", activeSecret: "secret"},
+		devTestPolicy(),
+		captureHandler(&got),
+	)
+
+	// A graph mutation: the forged label must be replaced with the gateway's.
+	req := httptest.NewRequest(http.MethodPost, "/v1/graph/block", nil)
+	req.Header.Set(edgeheaders.GraphWriteSourceHeader, "trust-safety-service")
+	mw.ServeHTTP(httptest.NewRecorder(), req)
+	if got[edgeheaders.GraphWriteSourceHeader] != edgeheaders.GatewayWriteSource {
+		t.Fatalf("graph route: source=%q, want %q — a forged attribution survived",
+			got[edgeheaders.GraphWriteSourceHeader], edgeheaders.GatewayWriteSource)
+	}
+
+	// A non-graph route: the forged label must be stripped and NOT replaced.
+	req = httptest.NewRequest(http.MethodPost, "/v1/posts", nil)
+	req.Header.Set(edgeheaders.GraphWriteSourceHeader, "trust-safety-service")
+	mw.ServeHTTP(httptest.NewRecorder(), req)
+	if got[edgeheaders.GraphWriteSourceHeader] != "" {
+		t.Fatalf("non-graph route: source=%q survived; a client-supplied label "+
+			"reached the upstream service", got[edgeheaders.GraphWriteSourceHeader])
 	}
 }

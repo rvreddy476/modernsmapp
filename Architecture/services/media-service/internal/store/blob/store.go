@@ -10,15 +10,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/media-service/internal/delivery"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
 type Store struct {
-	client       *minio.Client
-	core         *minio.Core   // low-level client — exposes the multipart upload API
+	client        *minio.Client
+	core          *minio.Core   // low-level client — exposes the multipart upload API
 	presignClient *minio.Client // separate client for presigned URL generation (uses public endpoint)
-	bucket       string
+	bucket        string
 	// cdnBaseURL, when set (MEDIA_CDN_BASE_URL), fronts object reads with
 	// a CDN so bytes are served from the edge instead of MinIO directly.
 	cdnBaseURL string
@@ -26,6 +27,54 @@ type Store struct {
 
 func New(endpoint, accessKey, secretKey, bucket string, useSSL bool) (*Store, error) {
 	return NewWithPublicEndpoint(endpoint, accessKey, secretKey, bucket, useSSL, "")
+}
+
+// NewS3IRSA configures the existing S3-compatible client for AWS S3 using an
+// EKS web-identity credential only. It deliberately refuses static keys and
+// does not fall back to the node instance profile.
+func NewS3IRSA(region, bucket string) (*Store, error) {
+	if strings.TrimSpace(region) == "" || strings.TrimSpace(bucket) == "" {
+		return nil, fmt.Errorf("s3/irsa: AWS_REGION and S3_BUCKET are required")
+	}
+	if os.Getenv("AWS_ACCESS_KEY_ID") != "" || os.Getenv("AWS_SECRET_ACCESS_KEY") != "" {
+		return nil, fmt.Errorf("s3/irsa: static AWS credentials are forbidden")
+	}
+	if os.Getenv("AWS_WEB_IDENTITY_TOKEN_FILE") == "" || os.Getenv("AWS_ROLE_ARN") == "" {
+		return nil, fmt.Errorf("s3/irsa: AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN are required; node-role fallback is forbidden")
+	}
+
+	endpoint := "s3." + region + ".amazonaws.com"
+	creds := credentials.NewIAM("")
+	client, err := minio.New(endpoint, &minio.Options{
+		Creds:  creds,
+		Secure: true,
+		Region: region,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("configure S3 client: %w", err)
+	}
+	core, err := minio.NewCore(endpoint, &minio.Options{
+		Creds:  creds,
+		Secure: true,
+		Region: region,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("configure S3 multipart client: %w", err)
+	}
+	// Production infrastructure owns bucket creation, public-access blocking,
+	// KMS and OAC. The application verifies access but never mutates policy.
+	if exists, err := client.BucketExists(context.Background(), bucket); err != nil {
+		return nil, fmt.Errorf("verify S3 bucket: %w", err)
+	} else if !exists {
+		return nil, fmt.Errorf("S3 bucket %q does not exist", bucket)
+	}
+	return &Store{
+		client:        client,
+		core:          core,
+		presignClient: client,
+		bucket:        bucket,
+		cdnBaseURL:    strings.TrimRight(os.Getenv("MEDIA_CDN_BASE_URL"), "/"),
+	}, nil
 }
 
 func NewWithPublicEndpoint(endpoint, accessKey, secretKey, bucket string, useSSL bool, publicEndpoint string) (*Store, error) {
@@ -83,22 +132,39 @@ func NewWithPublicEndpoint(endpoint, accessKey, secretKey, bucket string, useSSL
 	}
 
 	return &Store{
-		client:       minioClient,
-		core:         core,
+		client:        minioClient,
+		core:          core,
 		presignClient: presignClient,
-		bucket:       bucket,
-		cdnBaseURL:   strings.TrimRight(os.Getenv("MEDIA_CDN_BASE_URL"), "/"),
+		bucket:        bucket,
+		cdnBaseURL:    strings.TrimRight(os.Getenv("MEDIA_CDN_BASE_URL"), "/"),
 	}, nil
 }
 
-// ObjectURL returns a URL for reading objectKey. When a CDN base is
-// configured (MEDIA_CDN_BASE_URL) it returns a stable CDN-fronted URL so
-// bytes are served from the edge; otherwise it falls back to a short-lived
-// presigned URL straight from the object store.
+// ObjectURL returns a URL for reading objectKey.
+//
+// Module 4 M4-P0-5 — THIS FUNCTION USED TO PUBLISH PROTECTED BYTES.
+//
+// It previously returned `<cdnBaseURL>/<bucket>/<objectKey>` for ANY key
+// whenever MEDIA_CDN_BASE_URL was set. That URL is stable, unauthenticated and
+// permanent, so every content-level authorization in the platform governed only
+// the JSON: the bytes stayed reachable to anyone who had ever seen the link,
+// and stayed reachable after a block, a takedown or a deletion.
+//
+// A stable URL is now issued ONLY for keys in the public prefix. A protected
+// key must go through delivery.Signer.SignProtected, which requires content
+// authorization first and bounds the URL to a short TTL. Returning an error is
+// deliberate: the caller has to decide, and there is no fallback that quietly
+// serves the bytes anyway.
 func (s *Store) ObjectURL(ctx context.Context, objectKey string, expiry time.Duration) (string, error) {
+	if delivery.ClassForKey(objectKey) != delivery.ClassPublic {
+		return "", fmt.Errorf(
+			"blob: %q is protected; use the authorized signed-delivery path rather than a stable URL",
+			objectKey)
+	}
 	if s.cdnBaseURL != "" {
 		return s.cdnBaseURL + "/" + s.bucket + "/" + objectKey, nil
 	}
+	// No CDN configured: a bounded presigned URL is still bounded.
 	u, err := s.GeneratePresignedGetURL(ctx, objectKey, expiry)
 	if err != nil {
 		return "", err

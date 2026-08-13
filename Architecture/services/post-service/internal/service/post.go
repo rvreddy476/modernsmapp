@@ -68,9 +68,15 @@ type Service struct {
 	// requireStandingCheck makes an unreachable trust-safety service block
 	// scheduled publication instead of letting it through (Codex P2-1).
 	requireStandingCheck bool
-	reviewAllVideos        bool
-	internalServiceKey     string
-	httpClient             *http.Client
+	reviewAllVideos      bool
+	internalServiceKey   string
+	httpClient           *http.Client
+
+	// storyAudience resolves story audiences server-side (M4-P0-1). A nil
+	// value fails closed with an unresolved error rather than degrading to an
+	// empty relationship set, so an unwired deployment denies rather than
+	// leaks.
+	storyAudience *StoryAudience
 
 	// Sharded post_engagement_counts counters. Each replaces a hot-row
 	// UPDATE on post_engagement_counts.<col> = <col> + 1 — at celebrity-
@@ -233,6 +239,18 @@ func (s *Service) AutoResolveFlagged(ctx context.Context, postID uuid.UUID, stat
 		_ = s.rdb.Del(ctx, "post:body:"+postID.String()).Err()
 	}
 	return ok, err
+}
+
+func (s *Service) GetModerationSubject(ctx context.Context, postID uuid.UUID) (*postgres.ModerationSubject, error) {
+	return s.pgStore.GetModerationSubject(ctx, postID)
+}
+
+func (s *Service) ModeratePost(ctx context.Context, in postgres.ModeratePostInput) (*postgres.ModerationDecision, error) {
+	decision, err := s.pgStore.ModeratePost(ctx, in)
+	if err == nil && decision.Changed && s.rdb != nil {
+		_ = s.rdb.Del(ctx, "post:body:"+in.PostID.String()).Err()
+	}
+	return decision, err
 }
 
 // Resubmit lets the creator send an edited post (in 'needs_changes' after a
@@ -2151,52 +2169,20 @@ func (s *Service) GetCommentsAroundPG(ctx context.Context, postID, commentID uui
 
 // CreateStoryInput holds fields for creating a story.
 type CreateStoryInput struct {
-	AuthorID       uuid.UUID
-	MediaURL       string
+	AuthorID uuid.UUID
+	// MediaID is the canonical asset. M4-P0-4 removed the MediaURL field
+	// entirely rather than deprecating it: a field that still exists is a
+	// field a caller can still populate.
+	MediaID        uuid.UUID
 	MediaType      string
 	Caption        string
 	Visibility     string
 	IsHighlight    bool
 	HighlightGroup *string
+	IdempotencyKey string
 }
 
 // CreateStory creates a new ephemeral story with 24h expiry.
-func (s *Service) CreateStory(ctx context.Context, input *CreateStoryInput) (*postgres.Story, error) {
-	visibility := input.Visibility
-	if visibility == "" {
-		visibility = "followers"
-	}
-
-	story := &postgres.Story{
-		ID:             uuid.New(),
-		AuthorID:       input.AuthorID,
-		MediaURL:       input.MediaURL,
-		MediaType:      input.MediaType,
-		Caption:        input.Caption,
-		Visibility:     visibility,
-		ViewCount:      0,
-		ExpiresAt:      time.Now().Add(24 * time.Hour),
-		IsHighlight:    input.IsHighlight,
-		HighlightGroup: input.HighlightGroup,
-		CreatedAt:      time.Now(),
-	}
-
-	if err := s.pgStore.CreateStory(ctx, story); err != nil {
-		return nil, err
-	}
-
-	// Publish story created event
-	if s.producer != nil {
-		go func() {
-			bgCtx := context.Background()
-			if err := s.producer.PublishStoryCreated(bgCtx, story.ID, story.AuthorID, story.MediaType); err != nil {
-				log.Printf("Warning: failed to publish story.created event: %v", err)
-			}
-		}()
-	}
-
-	return story, nil
-}
 
 // GetStory returns a single story by ID.
 func (s *Service) GetStory(ctx context.Context, storyID uuid.UUID) (*postgres.Story, error) {

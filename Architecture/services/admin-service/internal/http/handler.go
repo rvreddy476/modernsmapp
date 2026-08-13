@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -126,11 +127,14 @@ func (h *Handler) TakedownContent(c *gin.Context) {
 		return
 	}
 
-	// In V1, we assume the API Key user is "system-admin"
-	adminActor := "system-admin"
+	adminActor := c.GetHeader("X-User-Id")
 
 	if err := h.svc.TakedownContent(c.Request.Context(), adminActor, req.EntityType, req.EntityID, req.Reason); err != nil {
 		slog.Error("Takedown error", "error", err)
+		if errors.Is(err, service.ErrCanonicalModerationRequired) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "CANONICAL_MODERATION_REQUIRED", "Use the content owner's canonical moderation endpoint", nil)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Takedown failed", nil)
 		return
 	}
@@ -161,10 +165,14 @@ func (h *Handler) SuspendUser(c *gin.Context) {
 		return
 	}
 
-	adminActor := "system-admin"
+	adminActor := c.GetHeader("X-User-Id")
 
 	if err := h.svc.SuspendUser(c.Request.Context(), adminActor, userID, req.Until, req.Reason); err != nil {
 		slog.Error("Suspend error", "error", err)
+		if errors.Is(err, service.ErrSuspensionUnavailable) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable, "SUSPENSION_UNAVAILABLE", err.Error(), nil)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Suspension failed", nil)
 		return
 	}
@@ -270,10 +278,14 @@ func (h *Handler) UnsuspendUser(c *gin.Context) {
 		return
 	}
 
-	adminActor := "system-admin"
+	adminActor := c.GetHeader("X-User-Id")
 
 	if err := h.svc.UnsuspendUser(c.Request.Context(), adminActor, userID); err != nil {
 		slog.Error("Unsuspend error", "error", err)
+		if errors.Is(err, service.ErrSuspensionUnavailable) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable, "SUSPENSION_UNAVAILABLE", err.Error(), nil)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Unsuspend failed", nil)
 		return
 	}

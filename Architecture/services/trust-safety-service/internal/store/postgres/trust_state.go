@@ -57,13 +57,13 @@ func (s *TrustStateStore) GetTrustState(ctx context.Context, userID uuid.UUID) (
 // TrustRecomputeInput is the per-user signal bundle the recompute job derives
 // locally before applying the §10.1 formula.
 type TrustRecomputeInput struct {
-	UserID              uuid.UUID
-	AccountAgeDays      int
-	ReportsReceived     int
-	BlocksReceived      int
-	ReportsUpheld30d    int
-	ReportsPending30d   int
-	BlocksReceived30d   int
+	UserID            uuid.UUID
+	AccountAgeDays    int
+	ReportsReceived   int
+	BlocksReceived    int
+	ReportsUpheld30d  int
+	ReportsPending30d int
+	BlocksReceived30d int
 }
 
 // ListTrustStateUserIDs returns the user IDs that currently have a trust-state

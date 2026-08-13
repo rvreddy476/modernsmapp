@@ -31,11 +31,11 @@ const (
 )
 
 var allowedVideoMIME = map[string]bool{
-	"video/mp4":          true,
-	"video/quicktime":    true,
-	"video/webm":         true,
-	"video/x-msvideo":    true,
-	"video/x-matroska":   true,
+	"video/mp4":        true,
+	"video/quicktime":  true,
+	"video/webm":       true,
+	"video/x-msvideo":  true,
+	"video/x-matroska": true,
 }
 
 var allowedImageMIME = map[string]bool{
@@ -50,17 +50,17 @@ var allowedImageMIME = map[string]bool{
 // (Module 1 P0-6). Anything not listed is rejected at init — the client
 // cannot widen it by declaring a different type.
 var allowedAudioMIME = map[string]bool{
-	"audio/mp4":    true, // .m4a — iOS/Android recorder default
-	"audio/m4a":    true,
-	"audio/aac":    true,
-	"audio/mpeg":   true, // .mp3
-	"audio/ogg":    true,
-	"audio/opus":   true,
-	"audio/wav":    true,
-	"audio/x-wav":  true,
-	"audio/webm":   true,
-	"audio/flac":   true,
-	"audio/amr":    true, // low-end Android voice recorders
+	"audio/mp4":   true, // .m4a — iOS/Android recorder default
+	"audio/m4a":   true,
+	"audio/aac":   true,
+	"audio/mpeg":  true, // .mp3
+	"audio/ogg":   true,
+	"audio/opus":  true,
+	"audio/wav":   true,
+	"audio/x-wav": true,
+	"audio/webm":  true,
+	"audio/flac":  true,
+	"audio/amr":   true, // low-end Android voice recorders
 }
 
 // ValidateUploadMIME checks that contentType is in the allow-list for the given

@@ -15,8 +15,8 @@ type EngagementEvent struct {
 	EventType string `json:"event_type"` // e.g. "engagement.post.liked"
 
 	// Ordering
-	ActionTS  time.Time `json:"action_ts"`    // wall-clock captured inside Lua script
-	UserSeqNo int64     `json:"user_seq_no"`  // per-user monotonic counter (Redis INCR)
+	ActionTS  time.Time `json:"action_ts"`   // wall-clock captured inside Lua script
+	UserSeqNo int64     `json:"user_seq_no"` // per-user monotonic counter (Redis INCR)
 
 	// Payload
 	PostID     uuid.UUID `json:"post_id"`
@@ -29,7 +29,7 @@ type EngagementEvent struct {
 
 	// Optional payload for comments/replies
 	CommentBody string `json:"comment_body,omitempty"`
-	ShareType   string `json:"share_type,omitempty"`  // "repost", "quote", "external"
+	ShareType   string `json:"share_type,omitempty"` // "repost", "quote", "external"
 	QuoteText   string `json:"quote_text,omitempty"`
 
 	// Schema

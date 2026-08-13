@@ -174,7 +174,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/:userId", h.GetUser)
 		v1.GET("/:userId/channels", h.GetUserChannels)
 		v1.GET("/:userId/links", h.GetUserLinks)
-		v1.PUT("/me", h.UpdateMe)
+		// SR-3: RETIRED — profile-service is the canonical writer for these
+		// fields. See retired_profile_routes.go. The GET stays: a read is a
+		// projection, and only the write created the divergence.
+		v1.PUT("/me", retiredProfileWrite)
 		v1.GET("/me", h.GetMe)
 		v1.PUT("/me/links", h.UpdateMyLinks)
 		v1.GET("/me/settings", h.GetMySettings)
@@ -471,6 +474,15 @@ func (h *Handler) UpdateMySettings(c *gin.Context) {
 	var req store.UserSettings
 	if err := c.ShouldBindJSON(&req); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
+		return
+	}
+
+	// SR-5: public accounts only. See public_accounts_only.go — storing
+	// "private" here protected nobody, because the follow path never read it.
+	if AccountVisibilityRejected(req.AccountVisibility) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest,
+			"UNSUPPORTED_ACCOUNT_VISIBILITY", PublicAccountsOnlyMessage,
+			map[string]any{"supported": []string{SupportedAccountVisibility}})
 		return
 	}
 	req.UserID = userID

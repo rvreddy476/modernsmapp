@@ -19,11 +19,11 @@ type LuaToggleResult struct {
 
 // CommentReactionResult holds the result from a comment like/dislike toggle with mutual exclusion.
 type CommentReactionResult struct {
-	IsSet        bool  // true = created, false = removed
-	LikeCount    int64 // updated like counter
-	DislikeCount int64 // updated dislike counter
-	Seq          int64
-	ActionTS     int64
+	IsSet           bool  // true = created, false = removed
+	LikeCount       int64 // updated like counter
+	DislikeCount    int64 // updated dislike counter
+	Seq             int64
+	ActionTS        int64
 	OppositeRemoved bool // true if the opposite reaction was removed (e.g. dislike removed when liking)
 }
 

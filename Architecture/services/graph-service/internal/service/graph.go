@@ -147,16 +147,21 @@ func (s *Service) Follow(ctx context.Context, followerID, followeeID uuid.UUID) 
 		return ErrRateLimited
 	}
 
-	blocked, err := s.store.CheckBlock(ctx, followeeID, followerID)
+	// SR-2: the block check and the insert happen together, inside the pair
+	// lock, in FollowAtomic.
+	//
+	// Previously this was CheckBlock followed by an unlocked CreateFollow.
+	// Two defects in three lines: the check was one-directional (it asked
+	// only whether the followee had blocked the follower, so a user could
+	// follow someone they had themselves blocked), and the gap between the
+	// check and the insert was a TOCTOU window a concurrent Block walked
+	// straight through — leaving a live follow edge across a block, which
+	// feed and search then correctly serve.
+	inserted, err := s.store.FollowAtomic(ctx, followerID, followeeID)
 	if err != nil {
-		return err
-	}
-	if blocked {
-		return fmt.Errorf("cannot follow: blocked")
-	}
-
-	inserted, err := s.store.CreateFollow(ctx, followerID, followeeID)
-	if err != nil {
+		if errors.Is(err, store.ErrBlockedPair) {
+			return fmt.Errorf("cannot follow: blocked")
+		}
 		return err
 	}
 
@@ -172,10 +177,20 @@ func (s *Service) Follow(ctx context.Context, followerID, followeeID uuid.UUID) 
 	s.invalidateRel(ctx, followerID, followeeID)
 	s.invalidateCounts(ctx, followerID, followeeID)
 
-	// Audit CG3: publish asynchronously so the follow ack doesn't wait
-	// on the Kafka broker. A 50-200 ms WriteMessages ACK was on the
-	// critical path of every follow request.
-	s.publishUserFollowedAsync(followerID, followeeID)
+	// LB-2: the direct publish is REMOVED for this transition.
+	//
+	// FollowAtomic writes the event to the outbox in the same transaction as
+	// the edge, and the relay delivers it. Publishing again here produced TWO
+	// Kafka messages for one state change, with different event IDs and
+	// different payload shapes, so a consumer had no way to tell they were the
+	// same event. "At least once with dedupe on (actor, target, pair_seq)" is
+	// only true if every copy carries that sequence — the direct publish did
+	// not, so it defeated the dedupe contract it was supposed to be a latency
+	// optimisation for.
+	//
+	// The relay drains continuously and only sleeps when the backlog is empty,
+	// so the latency this replaced is a poll interval, not a broker round trip
+	// on the request path.
 	return nil
 }
 
@@ -224,42 +239,64 @@ func (s *Service) adjustCount(ctx context.Context, c *counters.Counter, userID u
 	}
 }
 
+// Block severs every relationship between the pair atomically.
+//
+// M3-P0-6: this used to be a sequence of independent statements with the
+// connection-removal error discarded and the safety event published from a
+// fire-and-forget goroutine. That allowed a concurrent follow to survive a
+// block, a partial failure to report success, and the downstream event to be
+// lost entirely with nothing recording that it was owed.
+//
+// Now a single transaction, taken under a deterministic per-pair advisory
+// lock, performs every removal and writes the outbox row before committing.
+// The commit is the success boundary: after it, the block is real AND the
+// event is guaranteed to be delivered by the relay.
 func (s *Service) Block(ctx context.Context, blockerID, blockedID uuid.UUID) error {
-	if err := s.store.CreateBlock(ctx, blockerID, blockedID); err != nil {
+	res, err := s.store.BlockAtomic(ctx, blockerID, blockedID)
+	if err != nil {
 		return err
 	}
-	// Severing both follow directions on block must also decrement the
-	// corresponding follower/following counts. We mirror the Unfollow
-	// path so a block on a celebrity doesn't leave the count off-by-N.
-	if removed, err := s.store.DeleteFollow(ctx, blockedID, blockerID); err == nil && removed {
+
+	// Counter adjustments follow the committed truth. They are deliberately
+	// OUTSIDE the transaction: counters are reconcilable and must not hold a
+	// pair lock open, whereas edge correctness is not reconcilable and must
+	// be synchronous.
+	if res.RemovedFollowReverse {
 		s.adjustCount(ctx, s.followingCounter, blockedID, "following_count", -1)
 		s.adjustCount(ctx, s.followerCounter, blockerID, "follower_count", -1)
 	}
-	if removed, err := s.store.DeleteFollow(ctx, blockerID, blockedID); err == nil && removed {
+	if res.RemovedFollowForward {
 		s.adjustCount(ctx, s.followingCounter, blockerID, "following_count", -1)
 		s.adjustCount(ctx, s.followerCounter, blockedID, "follower_count", -1)
 	}
-
-	// Also remove the connection if one exists.
-	s.store.RemoveConnection(ctx, blockerID, blockedID)
 
 	s.invalidateRel(ctx, blockerID, blockedID)
 	s.invalidateRel(ctx, blockedID, blockerID)
 	s.invalidateCounts(ctx, blockerID, blockedID)
 
-	s.publishUserBlockedAsync(blockerID, blockedID)
+	// LB-2: the direct publish is REMOVED. BlockAtomic wrote the canonical
+	// event to the outbox in the same transaction; publishing again here
+	// produced a SECOND Kafka message for one state change, with a different
+	// event id and a different payload shape, which a consumer cannot
+	// recognise as the same event. That defeated the (actor, target,
+	// pair_seq) dedupe contract the outbox exists to provide.
 	return nil
 }
 
 // Unblock removes a block. The block event consumers (chat-service severs
 // active conversations on block) need the matching unblock signal.
 func (s *Service) Unblock(ctx context.Context, blockerID, blockedID uuid.UUID) error {
-	if err := s.store.DeleteBlock(ctx, blockerID, blockedID); err != nil {
+	// SR-2: the unblock event is recorded in the same transaction as the
+	// delete. chat-service severs active conversations on block; if the
+	// unblock event is lost, that sever is permanent and the users cannot
+	// talk again even though the block is gone.
+	if err := s.store.UnblockAtomic(ctx, blockerID, blockedID); err != nil {
 		return err
 	}
 	s.invalidateRel(ctx, blockerID, blockedID)
 	s.invalidateRel(ctx, blockedID, blockerID)
-	s.publishUserUnblockedAsync(blockerID, blockedID)
+	// LB-2: removed for the same reason as the block path — UnblockAtomic
+	// already wrote the canonical event durably.
 	return nil
 }
 
@@ -268,19 +305,6 @@ func (s *Service) Unblock(ctx context.Context, blockerID, blockedID uuid.UUID) e
 // ack the user action immediately. If the broker is slow or unavailable
 // the failure is logged and the durable downstream path (counter
 // reconciliation + outbox replay) closes the gap.
-func (s *Service) publishUserFollowedAsync(followerID, followeeID uuid.UUID) {
-	if s.producer == nil {
-		return
-	}
-	go func() {
-		pubCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := s.producer.PublishUserFollowed(pubCtx, followerID, followeeID); err != nil {
-			log.Printf("[graph] async PublishUserFollowed failed: %v", err)
-		}
-	}()
-}
-
 func (s *Service) publishUserUnfollowedAsync(followerID, followeeID uuid.UUID) {
 	if s.producer == nil {
 		return
@@ -290,32 +314,6 @@ func (s *Service) publishUserUnfollowedAsync(followerID, followeeID uuid.UUID) {
 		defer cancel()
 		if err := s.producer.PublishUserUnfollowed(pubCtx, followerID, followeeID); err != nil {
 			log.Printf("[graph] async PublishUserUnfollowed failed: %v", err)
-		}
-	}()
-}
-
-func (s *Service) publishUserBlockedAsync(blockerID, blockedID uuid.UUID) {
-	if s.producer == nil {
-		return
-	}
-	go func() {
-		pubCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := s.producer.PublishUserBlocked(pubCtx, blockerID, blockedID); err != nil {
-			log.Printf("[graph] async PublishUserBlocked failed: %v", err)
-		}
-	}()
-}
-
-func (s *Service) publishUserUnblockedAsync(blockerID, blockedID uuid.UUID) {
-	if s.producer == nil {
-		return
-	}
-	go func() {
-		pubCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := s.producer.PublishUserUnblocked(pubCtx, blockerID, blockedID); err != nil {
-			log.Printf("[graph] async PublishUserUnblocked failed: %v", err)
 		}
 	}()
 }
@@ -445,7 +443,11 @@ func (s *Service) SendConnectionRequest(ctx context.Context, senderID, receiverI
 		return ErrRateLimited
 	}
 
-	// Check not blocked
+	// SR-2: the authoritative, symmetric block check now happens inside the
+	// pair lock in SendConnectionRequestAtomic / AcceptConnectionRequestAtomic
+	// below. This early check stays as a cheap rejection so an obviously
+	// blocked request does not pay for a transaction — it is an optimisation,
+	// NOT the guarantee.
 	blocked, err := s.store.CheckBlock(ctx, receiverID, senderID)
 	if err != nil {
 		return err
@@ -473,7 +475,10 @@ func (s *Service) SendConnectionRequest(ctx context.Context, senderID, receiverI
 		return err
 	}
 	if reverseStatus == "pending_sent" {
-		if err := s.store.AcceptConnectionRequest(ctx, receiverID, senderID); err != nil {
+		if err := s.store.AcceptConnectionRequestAtomic(ctx, receiverID, senderID); err != nil {
+			if errors.Is(err, store.ErrBlockedPair) {
+				return fmt.Errorf("cannot connect: blocked")
+			}
 			return err
 		}
 		s.invalidateRel(ctx, senderID, receiverID)
@@ -487,7 +492,10 @@ func (s *Service) SendConnectionRequest(ctx context.Context, senderID, receiverI
 		return nil
 	}
 
-	if err := s.store.SendConnectionRequest(ctx, senderID, receiverID, source, message); err != nil {
+	if err := s.store.SendConnectionRequestAtomic(ctx, senderID, receiverID, source, message); err != nil {
+		if errors.Is(err, store.ErrBlockedPair) {
+			return fmt.Errorf("cannot send connection request: blocked")
+		}
 		return err
 	}
 
@@ -503,15 +511,23 @@ func (s *Service) SendConnectionRequest(ctx context.Context, senderID, receiverI
 }
 
 func (s *Service) AcceptConnectionRequest(ctx context.Context, senderID, receiverID uuid.UUID) error {
-	if err := s.store.AcceptConnectionRequest(ctx, senderID, receiverID); err != nil {
+	// SR-2: accepting is a relationship CREATION that happens long after the
+	// request was sent, so a block may have landed in between. It runs under
+	// the pair lock with a post-lock symmetric block re-check.
+	if err := s.store.AcceptConnectionRequestAtomic(ctx, senderID, receiverID); err != nil {
+		if errors.Is(err, store.ErrBlockedPair) {
+			return fmt.Errorf("cannot accept: blocked")
+		}
 		return err
 	}
 
 	// FB model: becoming friends auto-follows both ways so each side
 	// sees the other's posts and shows "Following". Idempotent inserts;
-	// counters bump only on genuinely new rows.
+	// counters bump only on genuinely new rows. These go through the atomic
+	// path too — an auto-follow is still a follow, and a block committed
+	// between the accept and these inserts must stop them.
 	for _, pair := range [][2]uuid.UUID{{senderID, receiverID}, {receiverID, senderID}} {
-		inserted, err := s.store.CreateFollow(ctx, pair[0], pair[1])
+		inserted, err := s.store.FollowAtomic(ctx, pair[0], pair[1])
 		if err != nil {
 			log.Printf("[graph] auto-follow on friendship accept failed: %v", err)
 			continue
@@ -646,9 +662,12 @@ func (s *Service) GetBlockedAndMuted(ctx context.Context, userID uuid.UUID) ([]u
 }
 
 func (s *Service) GetRelationshipBatch(ctx context.Context, viewerID uuid.UUID, targetIDs []uuid.UUID) (map[uuid.UUID]store.Relationship, error) {
-	if len(targetIDs) > 100 {
-		targetIDs = targetIDs[:100]
-	}
+	// M4-P0-1: this used to truncate to the first 100 targets and return
+	// normally. Every target past the cap came back absent from the map,
+	// which callers read as "no relationship" — so a viewer blocked by the
+	// 101st author was reported unblocked. Silent truncation of a safety
+	// answer is worse than no answer; the store now rejects an oversized
+	// batch and the caller chunks.
 	return s.store.GetRelationshipBatch(ctx, viewerID, targetIDs)
 }
 
@@ -728,7 +747,10 @@ func (s *Service) AddCloseFriend(ctx context.Context, userID, friendID uuid.UUID
 			log.Printf("[graph] EnsureUser(%s) failed, proceeding: %v", friendID, err)
 		}
 	}
-	if err := s.store.AddCloseFriend(ctx, userID, friendID, "manual"); err != nil {
+	if err := s.store.AddCloseFriendAtomic(ctx, userID, friendID, "manual"); err != nil {
+		if errors.Is(err, store.ErrBlockedPair) {
+			return fmt.Errorf("cannot add close friend: blocked")
+		}
 		if isForeignKeyViolation(err) {
 			// Connection exists but the user projection hasn't caught up.
 			return ErrUserUnavailable
@@ -790,7 +812,8 @@ func (s *Service) DeleteCircle(ctx context.Context, circleID, ownerID uuid.UUID)
 }
 
 func (s *Service) AddCircleMember(ctx context.Context, circleID, ownerID, userID uuid.UUID) error {
-	// Verify circle belongs to owner
+	// Verify circle belongs to owner. Ownership is re-verified inside the
+	// transaction too — this read is only a cheap early rejection.
 	c, err := s.store.GetCircle(ctx, circleID, ownerID)
 	if err != nil {
 		return err
@@ -798,7 +821,16 @@ func (s *Service) AddCircleMember(ctx context.Context, circleID, ownerID, userID
 	if c == nil {
 		return fmt.Errorf("circle not found")
 	}
-	return s.store.AddCircleMember(ctx, circleID, userID)
+	// SR-2: a circle is an AUDIENCE. A membership row that survives a block
+	// keeps the blocked person able to see circle-visibility content, so the
+	// insert runs under the pair lock with a post-lock block check.
+	if err := s.store.AddCircleMemberAtomic(ctx, circleID, ownerID, userID); err != nil {
+		if errors.Is(err, store.ErrBlockedPair) {
+			return fmt.Errorf("cannot add circle member: blocked")
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *Service) RemoveCircleMember(ctx context.Context, circleID, ownerID, userID uuid.UUID) error {
@@ -832,7 +864,15 @@ func (s *Service) UpsertRelationshipLabel(ctx context.Context, userID, targetID 
 	if !validLabels[label] {
 		return fmt.Errorf("invalid label: must be one of best_friend, family, colleague, classmate, acquaintance")
 	}
-	return s.store.UpsertRelationshipLabel(ctx, userID, targetID, label)
+	// SR-2: labels are pair state. Creating one across a block re-establishes
+	// a relationship the blocker severed.
+	if err := s.store.UpsertRelationshipLabelAtomic(ctx, userID, targetID, label); err != nil {
+		if errors.Is(err, store.ErrBlockedPair) {
+			return fmt.Errorf("cannot label: blocked")
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *Service) DeleteRelationshipLabel(ctx context.Context, userID, targetID uuid.UUID) error {
@@ -848,10 +888,21 @@ func (s *Service) ListRelationshipLabels(ctx context.Context, userID uuid.UUID) 
 // ═══════════════════════════════════════════════════════════
 
 func (s *Service) AddFavorite(ctx context.Context, userID, targetID uuid.UUID) error {
-	// Cache invalidation for feed ranker
+	// SR-2: the durable write happens FIRST, under the pair lock.
+	//
+	// This used to populate the Redis set the feed ranker reads and only then
+	// attempt the insert. On any rejection — including a blocked pair — the
+	// cache entry survived, so the feed kept pinning an account the database
+	// had refused to favourite. Cache after commit, never before.
+	if err := s.store.AddFavoriteAtomic(ctx, userID, targetID); err != nil {
+		if errors.Is(err, store.ErrBlockedPair) {
+			return fmt.Errorf("cannot favourite: blocked")
+		}
+		return err
+	}
 	s.rdb.SAdd(ctx, fmt.Sprintf("favorites:%s", userID.String()), targetID.String())
 	s.rdb.Expire(ctx, fmt.Sprintf("favorites:%s", userID.String()), 24*time.Hour)
-	return s.store.AddFavorite(ctx, userID, targetID)
+	return nil
 }
 
 func (s *Service) RemoveFavorite(ctx context.Context, userID, targetID uuid.UUID) error {

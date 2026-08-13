@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/atpost/shared/events"
@@ -12,10 +13,23 @@ import (
 	"github.com/segmentio/kafka-go"
 )
 
+var ErrActiveReportExists = postgres.ErrActiveReportExists
+
 var validEntityTypes = map[string]bool{
 	"user":    true,
 	"post":    true,
 	"comment": true,
+}
+
+var legacyEntityTypeAliases = map[string]string{
+	"reel":  "post",
+	"video": "post",
+}
+
+var legacyReportReasonAliases = map[string]string{
+	"hate_speech": "hate_abuse",
+	"violence":    "violence_threat",
+	"nudity":      "sexual_content",
 }
 
 // validReportCategories is the report category/reason allowlist from
@@ -45,9 +59,10 @@ var validTransitions = map[string][]string{
 }
 
 type Service struct {
-	store       *postgres.ReportStore
-	extras      *postgres.TrustExtrasStore
-	kafkaWriter *kafka.Writer
+	store          *postgres.ReportStore
+	extras         *postgres.TrustExtrasStore
+	kafkaWriter    *kafka.Writer
+	postModeration PostModerationClient
 }
 
 func New(store *postgres.ReportStore, kafkaWriter *kafka.Writer) *Service {
@@ -55,6 +70,7 @@ func New(store *postgres.ReportStore, kafkaWriter *kafka.Writer) *Service {
 }
 
 func (s *Service) FileReport(ctx context.Context, reporterID, entityID uuid.UUID, entityType, reason, details string) (*postgres.Report, error) {
+	entityType, reason = NormalizeReportInput(entityType, reason)
 	// 1. Validate entityType
 	if !validEntityTypes[entityType] {
 		return nil, fmt.Errorf("invalid entity_type: %s (must be user, post, or comment)", entityType)
@@ -65,16 +81,8 @@ func (s *Service) FileReport(ctx context.Context, reporterID, entityID uuid.UUID
 		return nil, fmt.Errorf("invalid reason: %s (must be one of the 12 spec report categories)", reason)
 	}
 
-	// 2. Check for duplicate open report
-	isDup, err := s.store.CheckDuplicate(ctx, reporterID, entityID)
-	if err != nil {
-		return nil, fmt.Errorf("duplicate check failed: %w", err)
-	}
-	if isDup {
-		return nil, fmt.Errorf("you have already filed an open report for this entity")
-	}
-
-	// 3. Create report
+	// The database partial unique index is the concurrency-safe duplicate
+	// boundary. A preflight SELECT cannot protect multiple replicas.
 	report := &postgres.Report{
 		ID:         uuid.New(),
 		ReporterID: reporterID,
@@ -117,8 +125,26 @@ func (s *Service) FileReport(ctx context.Context, reporterID, entityID uuid.UUID
 	return report, nil
 }
 
+// NormalizeReportInput keeps already-released clients functional while all
+// durable storage and new clients use the canonical policy vocabulary.
+func NormalizeReportInput(entityType, reason string) (string, string) {
+	entityType = strings.ToLower(strings.TrimSpace(entityType))
+	reason = strings.ToLower(strings.TrimSpace(reason))
+	if canonical, ok := legacyEntityTypeAliases[entityType]; ok {
+		entityType = canonical
+	}
+	if canonical, ok := legacyReportReasonAliases[reason]; ok {
+		reason = canonical
+	}
+	return entityType, reason
+}
+
 func (s *Service) ListReports(ctx context.Context, limit, offset int) ([]postgres.Report, error) {
 	return s.store.GetReports(ctx, limit, offset)
+}
+
+func (s *Service) ListOwnReports(ctx context.Context, reporterID uuid.UUID, limit, offset int) ([]postgres.Report, error) {
+	return s.store.GetReportsByReporter(ctx, reporterID, limit, offset)
 }
 
 func (s *Service) GetReport(ctx context.Context, reportIDStr string) (*postgres.Report, error) {

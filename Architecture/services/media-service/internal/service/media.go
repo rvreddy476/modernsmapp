@@ -10,6 +10,7 @@ import (
 
 	"github.com/atpost/media-service/internal/captions"
 	"github.com/atpost/media-service/internal/config"
+	"github.com/atpost/media-service/internal/delivery"
 	mediaEvents "github.com/atpost/media-service/internal/events"
 	"github.com/atpost/media-service/internal/processing"
 	"github.com/atpost/media-service/internal/store/blob"
@@ -20,11 +21,11 @@ import (
 
 // Size limits per subtype/file_type
 const (
-	MaxImageSize  int64 = 20 * 1024 * 1024  // 20 MB
+	MaxImageSize  int64 = 20 * 1024 * 1024       // 20 MB
 	MaxVideoSize  int64 = 2 * 1024 * 1024 * 1024 // 2 GB
-	MaxAvatarSize int64 = 10 * 1024 * 1024  // 10 MB
-	MaxCoverSize  int64 = 10 * 1024 * 1024  // 10 MB
-	MaxGIFSize    int64 = 15 * 1024 * 1024  // 15 MB
+	MaxAvatarSize int64 = 10 * 1024 * 1024       // 10 MB
+	MaxCoverSize  int64 = 10 * 1024 * 1024       // 10 MB
+	MaxGIFSize    int64 = 15 * 1024 * 1024       // 15 MB
 
 	defaultURLExpiry = 15 * time.Minute
 )
@@ -41,6 +42,31 @@ type Service struct {
 	// that always reports "unavailable", so a missing configuration fails
 	// CLOSED to manual review rather than approving (fixes-v2 / P0-2).
 	audioSafety processing.AudioSafetyEvaluator
+	// gate authorizes and signs every byte-delivery URL (M4-P0-5).
+	//
+	// Nil is NOT permissive: URLFor on a nil gate returns an unresolved error,
+	// so an unwired deployment denies protected media instead of falling back
+	// to the stable public URL this item exists to remove.
+	gate *delivery.Gate
+}
+
+// WithDeliveryGate wires byte-delivery authorization. Called from main.go.
+func (s *Service) WithDeliveryGate(g *delivery.Gate) *Service {
+	s.gate = g
+	return s
+}
+
+// deliveryURL resolves one object key for one viewer.
+//
+// Every media read path goes through here. Previously each one called
+// blobStore.ObjectURL directly, which returned a stable unauthenticated CDN URL
+// for any key — so authorization existed only on the JSON and never on the
+// bytes.
+func (s *Service) deliveryURL(ctx context.Context, viewerID, mediaID uuid.UUID, objectKey string) (string, error) {
+	if s.gate == nil {
+		return "", fmt.Errorf("%w: delivery gate not configured", delivery.ErrDeliveryUnresolved)
+	}
+	return s.gate.URLFor(ctx, viewerID.String(), mediaID.String(), objectKey)
 }
 
 func New(pg *postgres.MediaAssetStore, blobStore *blob.Store) *Service {
@@ -95,6 +121,7 @@ func NewWithConfig(pg *postgres.MediaAssetStore, blobStore *blob.Store, cfg *con
 		blobStore:   blobStore,
 		cfg:         cfg,
 		scanner:     scanner,
+		captions:    captions.SelectBackend(),
 		audioSafety: selectAudioSafety(cfg),
 	}
 	s.logScannerPolicy()
@@ -355,17 +382,13 @@ func (s *Service) ConfirmUpload(ctx context.Context, mediaID uuid.UUID, userID u
 		}
 
 	case media.FileType == "video":
-		// Set to processing — video transcoding is async
-		if err := s.pgStore.UpdateStatus(ctx, mediaID, "processing"); err != nil {
+		// State and work intent are one PostgreSQL commit. Kafka is drained
+		// from the outbox, so confirm never succeeds after merely hoping a
+		// direct publish worked.
+		if err := s.pgStore.QueueTranscode(ctx, media); err != nil {
 			return nil, err
 		}
 		media.ProcessingStatus = "processing"
-		// Emit MediaTranscodeRequested to Kafka for the worker to pick up
-		if s.producer != nil {
-			if err := s.producer.PublishTranscodeRequested(ctx, media.ID, media.UploaderID, media.StorageKey, media.MimeType); err != nil {
-				slog.Warn("Failed to publish transcode event", "media_id", media.ID, "error", err)
-			}
-		}
 	}
 
 	return media, nil
@@ -373,6 +396,7 @@ func (s *Service) ConfirmUpload(ctx context.Context, mediaID uuid.UUID, userID u
 
 // processImage handles synchronous image processing (resize + upload variants).
 func (s *Service) processImage(ctx context.Context, media *postgres.MediaAsset) error {
+	moderationStatus := "manual_review"
 	// Content safety scan for images.
 	//
 	// Audit H8: previously this block "skipped" the scan on download
@@ -417,6 +441,7 @@ func (s *Service) processImage(ctx context.Context, media *postgres.MediaAsset) 
 			_ = s.pgStore.UpdateStatus(ctx, media.ID, "rejected")
 			return fmt.Errorf("media rejected: %s", result.Reason)
 		}
+		moderationStatus = "passed"
 	}
 
 	outputs, meta, err := processing.ProcessImage(
@@ -452,6 +477,10 @@ func (s *Service) processImage(ctx context.Context, media *postgres.MediaAsset) 
 	if err := s.pgStore.InsertVariants(ctx, variants); err != nil {
 		return fmt.Errorf("insert variants: %w", err)
 	}
+	if err := s.pgStore.UpdateMediaModerationStatus(ctx, media.ID, moderationStatus); err != nil {
+		return fmt.Errorf("persist image moderation verdict: %w", err)
+	}
+	media.ModerationStatus = moderationStatus
 
 	// Populate URL fields
 	s.populateMediaURLs(ctx, media, variants)
@@ -491,56 +520,63 @@ type MediaURLResponse struct {
 	HLSURL   string            `json:"hls_url,omitempty"`
 }
 
-// GetMediaURL generates presigned GET URLs for a media item and all its variants.
-func (s *Service) GetMediaURL(ctx context.Context, mediaID uuid.UUID) (*MediaURLResponse, error) {
+// GetMediaURL returns authorized delivery URLs for a media item and all its
+// variants.
+//
+// M4-P0-5 — this takes a viewer now. It previously took only a media id and
+// handed back stable CDN URLs for every key, so the caller's identity never
+// entered the decision at all.
+//
+// Signing errors are RETURNED rather than skipped. The old loop used
+// `if err == nil { variants[name] = url }`, which meant a misconfiguration
+// produced a 200 with an empty variant map — indistinguishable from media that
+// had not finished processing, and impossible to alert on.
+func (s *Service) GetMediaURL(ctx context.Context, viewerID, mediaID uuid.UUID) (*MediaURLResponse, error) {
 	media, err := s.pgStore.GetMediaWithVariants(ctx, mediaID)
 	if err != nil {
 		return nil, err
 	}
-
-	expiry := 15 * time.Minute
-	variants := make(map[string]string)
-
-	// Original
-	if origURL, err := s.blobStore.ObjectURL(ctx, media.StorageKey, expiry); err == nil {
-		variants["original"] = origURL
+	if s.gate == nil {
+		return nil, fmt.Errorf("%w: delivery gate not configured", delivery.ErrDeliveryUnresolved)
 	}
 
-	// Each variant
+	keys := map[string]string{"original": media.StorageKey}
 	for _, v := range media.Variants {
-		if vURL, err := s.blobStore.ObjectURL(ctx, v.ObjectKey, expiry); err == nil {
-			variants[v.Name] = vURL
-		}
+		keys[v.Name] = v.ObjectKey
+	}
+	if media.HLSMasterKey != "" {
+		keys["hls"] = media.HLSMasterKey
 	}
 
-	response := &MediaURLResponse{
+	// One authorization for the asset, then every key signed.
+	urls, err := s.gate.URLsForAsset(ctx, viewerID.String(), mediaID.String(), keys)
+	if err != nil {
+		return nil, err
+	}
+
+	hlsURL := urls["hls"]
+	delete(urls, "hls")
+
+	return &MediaURLResponse{
 		MediaID:  media.ID,
 		FileType: media.FileType,
 		Status:   media.ProcessingStatus,
 		Width:    media.Width,
 		Height:   media.Height,
 		Blurhash: media.Blurhash,
-		Variants: variants,
-	}
-
-	// Include HLS URL when available
-	if media.HLSMasterKey != "" {
-		if hlsURL, err := s.blobStore.ObjectURL(ctx, media.HLSMasterKey, expiry); err == nil {
-			response.HLSURL = hlsURL
-		}
-	}
-
-	return response, nil
+		Variants: urls,
+		HLSURL:   hlsURL,
+	}, nil
 }
 
-// GetMediaVariantURL generates a presigned GET URL for a specific variant.
-func (s *Service) GetMediaVariantURL(ctx context.Context, mediaID uuid.UUID, variant string) (string, error) {
+// GetMediaVariantURL returns an authorized delivery URL for one variant.
+func (s *Service) GetMediaVariantURL(ctx context.Context, viewerID, mediaID uuid.UUID, variant string) (string, error) {
 	if variant == "original" {
 		media, err := s.pgStore.GetMedia(ctx, mediaID)
 		if err != nil {
 			return "", err
 		}
-		return s.blobStore.ObjectURL(ctx, media.StorageKey, 15*time.Minute)
+		return s.deliveryURL(ctx, viewerID, mediaID, media.StorageKey)
 	}
 
 	variants, err := s.pgStore.GetVariants(ctx, mediaID)
@@ -549,16 +585,34 @@ func (s *Service) GetMediaVariantURL(ctx context.Context, mediaID uuid.UUID, var
 	}
 	for _, v := range variants {
 		if v.Name == variant {
-			return s.blobStore.ObjectURL(ctx, v.ObjectKey, 15*time.Minute)
+			return s.deliveryURL(ctx, viewerID, mediaID, v.ObjectKey)
 		}
 	}
 	return "", fmt.Errorf("variant %q not found", variant)
 }
 
-// BatchMediaURLs returns presigned URLs for multiple media items.
-func (s *Service) BatchMediaURLs(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]*MediaURLResponse, error) {
+// BatchMediaURLs returns authorized delivery URLs for multiple media items.
+//
+// M4-P0-5 — a batch is where an authorization bypass is most valuable to an
+// attacker: one request, fifty ids, and before this every one came back with a
+// stable URL regardless of who asked.
+//
+// A media item this viewer may not have is OMITTED from the result rather than
+// failing the whole batch. That is deliberate and it is not error-swallowing:
+// the batch is a rendering convenience over a mixed set (a feed page contains
+// other people's media), so one denied item must not blank the page. The
+// omission is indistinguishable from "no such media", which keeps the batch
+// from being used to enumerate what exists.
+//
+// An UNRESOLVED item fails the whole call, because that is an outage rather
+// than an answer, and silently dropping it would render a feed with holes and
+// no indication anything went wrong.
+func (s *Service) BatchMediaURLs(ctx context.Context, viewerID uuid.UUID, ids []uuid.UUID) (map[uuid.UUID]*MediaURLResponse, error) {
 	if len(ids) > 50 {
 		return nil, fmt.Errorf("batch limit is 50 media items")
+	}
+	if s.gate == nil {
+		return nil, fmt.Errorf("%w: delivery gate not configured", delivery.ErrDeliveryUnresolved)
 	}
 
 	medias, err := s.pgStore.GetMediaBatch(ctx, ids)
@@ -566,34 +620,36 @@ func (s *Service) BatchMediaURLs(ctx context.Context, ids []uuid.UUID) (map[uuid
 		return nil, err
 	}
 
-	expiry := 15 * time.Minute
 	result := make(map[uuid.UUID]*MediaURLResponse, len(medias))
-
 	for _, m := range medias {
-		variants := make(map[string]string)
-		if origURL, err := s.blobStore.ObjectURL(ctx, m.StorageKey, expiry); err == nil {
-			variants["original"] = origURL
-		}
+		keys := map[string]string{"original": m.StorageKey}
 		for _, v := range m.Variants {
-			if vURL, err := s.blobStore.ObjectURL(ctx, v.ObjectKey, expiry); err == nil {
-				variants[v.Name] = vURL
-			}
+			keys[v.Name] = v.ObjectKey
 		}
-		resp := &MediaURLResponse{
+		if m.HLSMasterKey != "" {
+			keys["hls"] = m.HLSMasterKey
+		}
+
+		urls, err := s.gate.URLsForAsset(ctx, viewerID.String(), m.ID.String(), keys)
+		if err != nil {
+			if errors.Is(err, delivery.ErrDeliveryDenied) {
+				continue // resolved no — omit, do not fail the page
+			}
+			return nil, err // unresolved — surface the outage
+		}
+
+		hlsURL := urls["hls"]
+		delete(urls, "hls")
+		result[m.ID] = &MediaURLResponse{
 			MediaID:  m.ID,
 			FileType: m.FileType,
 			Status:   m.ProcessingStatus,
 			Width:    m.Width,
 			Height:   m.Height,
 			Blurhash: m.Blurhash,
-			Variants: variants,
+			Variants: urls,
+			HLSURL:   hlsURL,
 		}
-		if m.HLSMasterKey != "" {
-			if hlsURL, err := s.blobStore.ObjectURL(ctx, m.HLSMasterKey, expiry); err == nil {
-				resp.HLSURL = hlsURL
-			}
-		}
-		result[m.ID] = resp
 	}
 
 	return result, nil

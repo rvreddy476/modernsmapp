@@ -55,6 +55,18 @@ CREATE INDEX IF NOT EXISTS idx_transcoding_jobs_media ON transcoding_jobs(media_
 -- migration 008: per-asset content-moderation verdict (video frame scan).
 ALTER TABLE media_assets ADD COLUMN IF NOT EXISTS moderation_status TEXT NOT NULL DEFAULT 'pending';
 
+-- Media-owned canonical reference for chat attachments. The restrictive FK
+-- is the serialization mechanism for attach versus physical delete: a send
+-- cannot validate an asset and then leave a dangling reference.
+CREATE TABLE IF NOT EXISTS media_chat_attachment_reservations (
+    reference_id UUID PRIMARY KEY,
+    media_id UUID NOT NULL REFERENCES media_assets(id) ON DELETE RESTRICT,
+    uploader_id UUID NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_media_chat_attachment_media
+    ON media_chat_attachment_reservations(media_id);
+
 -- migration 002 backfill: vertical orientation flag for reels rendering.
 ALTER TABLE media_assets ADD COLUMN IF NOT EXISTS is_vertical BOOLEAN NOT NULL DEFAULT FALSE;
 

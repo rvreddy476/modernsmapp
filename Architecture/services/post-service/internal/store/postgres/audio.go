@@ -25,8 +25,8 @@ type AudioTrack struct {
 	// reuse-by-default UX). CreatorUserID identifies the rights
 	// owner — anyone can use a public track in their own post; a
 	// private track requires CreatorUserID == actor.
-	IsPublic       bool       `json:"is_public"`
-	CreatorUserID  *uuid.UUID `json:"creator_user_id,omitempty"`
+	IsPublic      bool       `json:"is_public"`
+	CreatorUserID *uuid.UUID `json:"creator_user_id,omitempty"`
 }
 
 // CreateAudioTrack inserts a new audio track record.

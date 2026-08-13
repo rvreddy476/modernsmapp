@@ -13,48 +13,48 @@ import (
 )
 
 type Post struct {
-	ID             uuid.UUID       `json:"id"`
-	AuthorID       uuid.UUID       `json:"author_id"`
-	Text           string          `json:"text"`
-	Visibility     string          `json:"visibility"`
-	ContentType    string          `json:"content_type"`
-	IsPinned       bool            `json:"is_pinned"`
-	Feeling        *string         `json:"feeling,omitempty"`
-	Activity       *string         `json:"activity,omitempty"`
-	ActivityDetail *string         `json:"activity_detail,omitempty"`
-	RichText       json.RawMessage `json:"rich_text,omitempty"`
-	NoComments     bool            `json:"no_comments"`
-	NoLikes        bool            `json:"no_likes"`
-	Hashtags       []string        `json:"hashtags,omitempty"`
-	Mentions       []uuid.UUID     `json:"mentions,omitempty"`
-	LocationName   *string         `json:"location_name,omitempty"`
-	LocationLat    *float64        `json:"location_lat,omitempty"`
-	LocationLng    *float64        `json:"location_lng,omitempty"`
-	PostType       string          `json:"post_type"`
-	AppOrigin       string          `json:"app_origin"`
-	ShareToPostbook bool            `json:"share_to_postbook"`
-	ReviewStatus   string          `json:"review_status"` // "approved", "flagged", "rejected"
-	Title              string      `json:"title,omitempty"`
-	Tags               []string    `json:"tags,omitempty"`
-	Category           string      `json:"category,omitempty"`
-	Language           string      `json:"language,omitempty"`
-	SEOTitle           string      `json:"seo_title,omitempty"`
-	PaidPromotion      bool        `json:"paid_promotion"`
-	AlteredContent     bool        `json:"altered_content"`
-	IsMadeForKids      bool        `json:"is_made_for_kids"`
-	License            string      `json:"license,omitempty"`
-	AllowEmbedding     bool        `json:"allow_embedding"`
-	PublishToFeed      bool        `json:"publish_to_feed"`
-	RemixSetting       string      `json:"remix_setting,omitempty"`
-	CommentModeration  string      `json:"comment_moderation,omitempty"`
-	CommentAccess      string      `json:"comment_access,omitempty"`
-	RecordingDate      *time.Time  `json:"recording_date,omitempty"`
-	RecordingLocation  string      `json:"recording_location,omitempty"`
-	CoverMediaID       *uuid.UUID  `json:"cover_media_id,omitempty"`
-	OriginalAudioVol   float32     `json:"original_audio_volume"`
-	OverlayAudioVol    float32     `json:"overlay_audio_volume"`
-	TierRequiredID     *uuid.UUID  `json:"tier_required_id,omitempty"`
-	BodyRedacted       bool        `json:"body_redacted,omitempty"`
+	ID                uuid.UUID       `json:"id"`
+	AuthorID          uuid.UUID       `json:"author_id"`
+	Text              string          `json:"text"`
+	Visibility        string          `json:"visibility"`
+	ContentType       string          `json:"content_type"`
+	IsPinned          bool            `json:"is_pinned"`
+	Feeling           *string         `json:"feeling,omitempty"`
+	Activity          *string         `json:"activity,omitempty"`
+	ActivityDetail    *string         `json:"activity_detail,omitempty"`
+	RichText          json.RawMessage `json:"rich_text,omitempty"`
+	NoComments        bool            `json:"no_comments"`
+	NoLikes           bool            `json:"no_likes"`
+	Hashtags          []string        `json:"hashtags,omitempty"`
+	Mentions          []uuid.UUID     `json:"mentions,omitempty"`
+	LocationName      *string         `json:"location_name,omitempty"`
+	LocationLat       *float64        `json:"location_lat,omitempty"`
+	LocationLng       *float64        `json:"location_lng,omitempty"`
+	PostType          string          `json:"post_type"`
+	AppOrigin         string          `json:"app_origin"`
+	ShareToPostbook   bool            `json:"share_to_postbook"`
+	ReviewStatus      string          `json:"review_status"` // "approved", "flagged", "rejected"
+	Title             string          `json:"title,omitempty"`
+	Tags              []string        `json:"tags,omitempty"`
+	Category          string          `json:"category,omitempty"`
+	Language          string          `json:"language,omitempty"`
+	SEOTitle          string          `json:"seo_title,omitempty"`
+	PaidPromotion     bool            `json:"paid_promotion"`
+	AlteredContent    bool            `json:"altered_content"`
+	IsMadeForKids     bool            `json:"is_made_for_kids"`
+	License           string          `json:"license,omitempty"`
+	AllowEmbedding    bool            `json:"allow_embedding"`
+	PublishToFeed     bool            `json:"publish_to_feed"`
+	RemixSetting      string          `json:"remix_setting,omitempty"`
+	CommentModeration string          `json:"comment_moderation,omitempty"`
+	CommentAccess     string          `json:"comment_access,omitempty"`
+	RecordingDate     *time.Time      `json:"recording_date,omitempty"`
+	RecordingLocation string          `json:"recording_location,omitempty"`
+	CoverMediaID      *uuid.UUID      `json:"cover_media_id,omitempty"`
+	OriginalAudioVol  float32         `json:"original_audio_volume"`
+	OverlayAudioVol   float32         `json:"overlay_audio_volume"`
+	TierRequiredID    *uuid.UUID      `json:"tier_required_id,omitempty"`
+	BodyRedacted      bool            `json:"body_redacted,omitempty"`
 	// Distribution is the typed, versioned scalar policy (Module 1 P0-1).
 	// NULL means "no policy — legacy behavior". DistributionRev increases
 	// monotonically on every policy change so consumers can drop stale
@@ -64,13 +64,13 @@ type Post struct {
 	// Thread fields (Module 1 P0-8). Root posts of a thread have
 	// ThreadRootID = own id and ThreadSeq = 0; standalone posts have all
 	// three NULL/0.
-	ThreadRootID    *uuid.UUID `json:"thread_root_id,omitempty"`
-	ThreadReplyToID *uuid.UUID `json:"thread_reply_to_id,omitempty"`
-	ThreadSeq       int        `json:"thread_seq,omitempty"`
-	CreatedAt      time.Time       `json:"created_at"`
-	UpdatedAt      time.Time       `json:"updated_at"`
-	Media          []PostMedia     `json:"media,omitempty"`
-	Poll           *PollData       `json:"poll,omitempty"`
+	ThreadRootID    *uuid.UUID  `json:"thread_root_id,omitempty"`
+	ThreadReplyToID *uuid.UUID  `json:"thread_reply_to_id,omitempty"`
+	ThreadSeq       int         `json:"thread_seq,omitempty"`
+	CreatedAt       time.Time   `json:"created_at"`
+	UpdatedAt       time.Time   `json:"updated_at"`
+	Media           []PostMedia `json:"media,omitempty"`
+	Poll            *PollData   `json:"poll,omitempty"`
 }
 
 type PostMedia struct {
@@ -314,7 +314,6 @@ func (s *Store) ResolveMediaDuration(ctx context.Context, mediaID uuid.UUID) int
 	}
 	return *dur
 }
-
 
 // CreatePost inserts a post with optional media and poll in a single transaction.
 func (s *Store) CreatePost(ctx context.Context, p *Post) error {

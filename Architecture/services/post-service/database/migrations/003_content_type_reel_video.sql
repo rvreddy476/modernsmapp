@@ -16,6 +16,25 @@ WHERE pm.post_id = p.id
   AND ma.duration_seconds IS NOT NULL;
 
 -- Step 2: Enforce content_type enum
+--
+-- DROP-IF-EXISTS FIRST. This is not defensive noise; without it a fresh
+-- database can never finish bootstrapping.
+--
+-- setup.sql runs before the migrations and already creates chk_content_type
+-- (with the modern 8-value taxonomy, see setup.sql "Idempotent: drop-if-exists
+-- then re-add"). A bare ADD CONSTRAINT here then fails with SQLSTATE 42710
+-- "constraint already exists", migrationrunner aborts the whole bootstrap,
+-- post-service exits, and it fails identically on every restart — so a NEW
+-- environment (staging, prod, DR) could never bring post-service up at all.
+-- Existing environments are unaffected because they applied 003 historically,
+-- before setup.sql gained the constraint, which is why this never showed up
+-- in a warm database.
+--
+-- Migration 021 and setup.sql already use exactly this pattern; 003 was the
+-- one that did not. Re-adding the narrow 4-value set here is correct: the
+-- migrations run in order and 021 widens it again to the current taxonomy.
+ALTER TABLE posts DROP CONSTRAINT IF EXISTS chk_content_type;
+
 ALTER TABLE posts
     ADD CONSTRAINT chk_content_type
     CHECK (content_type IN ('post', 'poll', 'reel', 'video'));

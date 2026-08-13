@@ -18,11 +18,23 @@ type Service struct {
 	store       *store.Store
 	scyllaStore *store.ScyllaStore
 	rdb         *redis.Client
+	// SR-7: the canonical block set, read from graph-service. Nil means block
+	// safety is NOT running — filterBlocked then returns an empty list rather
+	// than an unfiltered one, because an unfiltered list recommends accounts
+	// the viewer has blocked. See block_safety.go.
+	blocks BlockLookup
 }
 
 // New creates a new Service.
 func New(s *store.Store, rdb *redis.Client) *Service {
 	return &Service{store: s, rdb: rdb}
+}
+
+// WithBlockLookup wires block safety onto every suggestion surface. Without
+// it, every surface returns empty rather than unfiltered.
+func (s *Service) WithBlockLookup(b BlockLookup) *Service {
+	s.blocks = b
+	return s
 }
 
 // SetScyllaStore sets the optional ScyllaDB store for pair signals.
@@ -114,7 +126,12 @@ func (s *Service) GetSuggestions(ctx context.Context, viewerID uuid.UUID, suggTy
 			resp := s.paginateItems(items, suggType, offset, limit)
 			resp.Surface = surface
 			resp.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
-			return resp, nil
+			// SR-7: the cache-hit path returns FIRST, so a filter applied only
+			// during generation would be bypassed on every cache hit. A block
+			// landing after this entry was written had no effect until the TTL
+			// expired — the platform kept recommending an account the viewer
+			// had blocked. Filtering happens here, at egress, on every path.
+			return s.filterBlocked(ctx, viewerID, resp), nil
 		}
 	}
 
@@ -139,7 +156,12 @@ func (s *Service) GetSuggestions(ctx context.Context, viewerID uuid.UUID, suggTy
 		return s.getPopularFallback(ctx, viewerID, suggType, limit, surface)
 	}
 
-	// 4.5. Filter out existing friends, blocked users, and self
+	// 4.5. Filter out existing friends and self.
+	//
+	// SR-7: this comment used to claim it also filtered blocked users. It did
+	// not — there was no block lookup anywhere in this service. Blocks are now
+	// filtered at egress in filterBlocked, which covers every return path
+	// including the cache hit above.
 	friendIDs, _ := s.store.GetFriendIDs(ctx, viewerID)
 	friendSet := make(map[uuid.UUID]bool, len(friendIDs)+1)
 	friendSet[viewerID] = true
@@ -164,7 +186,7 @@ func (s *Service) GetSuggestions(ctx context.Context, viewerID uuid.UUID, suggTy
 	resp := s.paginateItems(items, suggType, offset, limit)
 	resp.Surface = surface
 	resp.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
-	return resp, nil
+	return s.filterBlocked(ctx, viewerID, resp), nil
 }
 
 // GetInterstitialSuggestions returns contextual suggestions after an action.
@@ -241,12 +263,15 @@ func (s *Service) GetInterstitialSuggestions(ctx context.Context, viewerID uuid.
 		items = append(items, item)
 	}
 
-	return &SuggestionsResponse{
+	// SR-7: the interstitial surface fires immediately after an action — it is
+	// the one most likely to show a stale candidate, because it is built from
+	// mutual-friend lookups rather than the cached list.
+	return s.filterBlocked(ctx, viewerID, &SuggestionsResponse{
 		Type:        "friend",
 		Items:       items,
 		Surface:     "interstitial",
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
-	}, nil
+	}), nil
 }
 
 // LogImpressions records suggestion impressions.
@@ -357,7 +382,12 @@ func (s *Service) RecordAction(ctx context.Context, viewerID uuid.UUID, req *Act
 }
 
 // CreateCooldownFromEvent creates a cooldown triggered by an event (not direct API).
-func (s *Service) CreateCooldownFromEvent(ctx context.Context, viewerID, candidateID uuid.UUID, cooldownType string) {
+//
+// CLB-1: this used to discard CreateCooldown's error. Its callers are consumer
+// handlers, and the consumer loop now declines to commit the offset when a
+// handler returns an error — so a swallowed failure here is the difference
+// between a redelivery that repairs the cooldown and one that never happens.
+func (s *Service) CreateCooldownFromEvent(ctx context.Context, viewerID, candidateID uuid.UUID, cooldownType string) error {
 	var cooldownUntil *time.Time
 	switch cooldownType {
 	case "decline":
@@ -379,7 +409,7 @@ func (s *Service) CreateCooldownFromEvent(ctx context.Context, viewerID, candida
 		CooldownType:  cooldownType,
 		CooldownUntil: cooldownUntil,
 	}
-	s.store.CreateCooldown(ctx, cd)
+	return s.store.CreateCooldown(ctx, cd)
 }
 
 // InvalidateCache removes cached suggestions for a user.
@@ -524,12 +554,15 @@ func (s *Service) getPopularFallback(ctx context.Context, viewerID uuid.UUID, su
 		items = append(items, item)
 	}
 
-	return &SuggestionsResponse{
+	// SR-7: the popular-users fallback is the path a NEW account hits, and it
+	// excluded only friends and followees. Nothing stopped it from
+	// recommending a popular account the viewer had blocked.
+	return s.filterBlocked(ctx, viewerID, &SuggestionsResponse{
 		Type:        suggType,
 		Items:       items,
 		Surface:     surface,
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
-	}, nil
+	}), nil
 }
 
 // ─── Cursor helpers ──────────────────────────────────────────

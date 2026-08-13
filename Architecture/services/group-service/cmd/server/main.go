@@ -95,6 +95,7 @@ func main() {
 	// 7. Dependencies
 	groupStore := store.New(dbPool)
 	groupSvc := service.New(groupStore, rdb, msgURL, postURL, userURL, jwtSecret)
+	groupSvc.SetInternalServiceKey(os.Getenv("INTERNAL_SERVICE_KEY"))
 
 	// 8. Kafka producer
 	kafkaDialer, err := transport.KafkaDialerFromEnv()
@@ -119,7 +120,12 @@ func main() {
 	// internal service key. The handler supports the middleware but
 	// main.go previously never wired the env var, so direct callers
 	// could spoof X-User-Id and impersonate any user.
-	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
+	key := os.Getenv("INTERNAL_SERVICE_KEY")
+	if key == "" && isProduction() {
+		slog.Error("INTERNAL_SERVICE_KEY is required in production; group handlers trust gateway identity headers")
+		os.Exit(1)
+	}
+	if key != "" {
 		groupHandler.WithInternalKey(key)
 		slog.Info("group-service: internal-service-key gate enabled")
 	} else {
@@ -162,6 +168,20 @@ func env(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func isProduction() bool {
+	for _, key := range []string{"APP_ENV", "ENVIRONMENT", "ENV"} {
+		switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+		case "prod", "production":
+			return true
+		case "":
+			continue
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 func collectDBPoolStats(ctx context.Context, pool *pgxpool.Pool, m *metrics.DBPoolMetrics) {

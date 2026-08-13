@@ -29,13 +29,13 @@ func New(db *pgxpool.Pool) *Store {
 
 // DashboardStats holds aggregate counts for the admin dashboard.
 type DashboardStats struct {
-	TotalUsers          int `json:"total_users"`
-	ActiveUsersToday    int `json:"active_users_today"`
-	TotalPosts          int `json:"total_posts"`
-	OpenReports         int `json:"open_reports"`
-	ActiveSuspensions   int `json:"active_suspensions"`
-	TakedownsLast7d     int `json:"takedowns_last_7d"`
-	NewUsersLast7d      int `json:"new_users_last_7d"`
+	TotalUsers            int `json:"total_users"`
+	ActiveUsersToday      int `json:"active_users_today"`
+	TotalPosts            int `json:"total_posts"`
+	OpenReports           int `json:"open_reports"`
+	ActiveSuspensions     int `json:"active_suspensions"`
+	TakedownsLast7d       int `json:"takedowns_last_7d"`
+	NewUsersLast7d        int `json:"new_users_last_7d"`
 	ReportsResolvedLast7d int `json:"reports_resolved_last_7d"`
 }
 

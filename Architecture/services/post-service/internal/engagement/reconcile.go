@@ -16,9 +16,9 @@ import (
 // Reconciler corrects Redis engagement counters from authoritative ScyllaDB
 // and PostgreSQL sources. Runs periodically for posts in the hot:posts set.
 type Reconciler struct {
-	rdb     *redis.Client
-	scylla  *gocql.Session
-	pg      *pgxpool.Pool
+	rdb    *redis.Client
+	scylla *gocql.Session
+	pg     *pgxpool.Pool
 }
 
 // NewReconciler creates a new counter reconciliation worker.

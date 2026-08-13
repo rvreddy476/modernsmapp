@@ -1,11 +1,13 @@
 package http
 
 import (
+	"errors"
 	"log"
 	"net/http"
 	"strconv"
 
 	"github.com/atpost/analytics-service/internal/service"
+	pgstore "github.com/atpost/analytics-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
 	sharedmiddleware "github.com/atpost/shared/middleware"
 	"github.com/gin-gonic/gin"
@@ -48,7 +50,6 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.POST("/events", h.IngestEvents)
 		v1.GET("/content/:contentId/views", h.GetContentViews)
 		v1.GET("/creator/me", h.GetMyCreatorStats)
-		v1.GET("/creator/:userId", h.GetCreatorStats)
 	}
 }
 
@@ -109,17 +110,20 @@ func (h *Handler) IngestEvents(c *gin.Context) {
 	}
 
 	userID := c.GetHeader("X-User-Id")
-	sessionID := c.GetHeader("X-Session-Id")
-
-	// Async ingest
-	if err := h.svc.IngestEvents(c.Request.Context(), userID, sessionID, req.Events); err != nil {
+	result, err := h.svc.IngestEvents(c.Request.Context(), userID, req.Events)
+	if err != nil {
 		log.Printf("Ingest error: %v", err)
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Ingestion failed", nil)
+		if errors.Is(err, pgstore.ErrContentNotProjected) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnprocessableEntity, "CONTENT_NOT_READY", "Content analytics is not ready yet", nil)
+			return
+		}
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ANALYTICS_EVENT", err.Error(), nil)
 		return
 	}
 
-	// 202 Accepted because processing is async
-	api.JSON(c.Writer, http.StatusAccepted, map[string]string{"status": "accepted"}, nil)
+	// The event is already durable; 202 describes downstream aggregation,
+	// not an in-memory acceptance queue.
+	api.JSON(c.Writer, http.StatusAccepted, result, nil)
 }
 
 // GetContentViews returns real-time view counts for a specific content item.

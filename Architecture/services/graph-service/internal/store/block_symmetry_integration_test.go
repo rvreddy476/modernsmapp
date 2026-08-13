@@ -4,7 +4,6 @@ package store
 
 import (
 	"context"
-	"os"
 	"testing"
 
 	"github.com/google/uuid"
@@ -23,18 +22,12 @@ import (
 //
 //	POSTGRES_DSN=postgres://... go test -tags integration ./internal/store/ -run Block -v
 
+// SR-2: delegate to graphPool so the Module 2 suite runs against the same
+// COMPLETE schema as the Module 3 suite. Its own bare pgxpool.New assumed the
+// database was already migrated; when it was not, these tests failed on a
+// missing table rather than proving anything about block symmetry.
 func testPool(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	dsn := os.Getenv("POSTGRES_DSN")
-	if dsn == "" {
-		t.Skip("POSTGRES_DSN not set")
-	}
-	pool, err := pgxpool.New(context.Background(), dsn)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
+	return graphPool(t)
 }
 
 // seedBlock inserts blocker → blocked and removes it afterwards.

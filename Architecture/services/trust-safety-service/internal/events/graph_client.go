@@ -59,6 +59,11 @@ func (c *GraphClient) FilterConnectionRequest(ctx context.Context, senderID, rec
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Internal-Service-Key", c.internalKey)
+	// Module 3 LB-3: attribute this graph mutation. graph-service refuses an
+	// unattributed write, and the shared internal key authenticates without
+	// distinguishing callers — the source label is what makes an unreviewed
+	// graph writer visible.
+	req.Header.Set("X-Graph-Write-Source", "trust-safety-service")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

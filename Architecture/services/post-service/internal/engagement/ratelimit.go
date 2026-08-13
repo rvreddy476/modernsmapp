@@ -58,11 +58,11 @@ func (rl *RateLimiter) Allow(ctx context.Context, key string, limit int, window 
 
 // Predefined rate limit configurations per the spec
 var (
-	LikeLimitPerHour       = 120
-	CommentLimitPerMin     = 10
-	ShareLimitPerHour      = 30
-	BookmarkLimitPerHour   = 200
-	ReplyLimitPerHour      = 20
+	LikeLimitPerHour        = 120
+	CommentLimitPerMin      = 10
+	ShareLimitPerHour       = 30
+	BookmarkLimitPerHour    = 200
+	ReplyLimitPerHour       = 20
 	CommentLikeLimitPerHour = 120
 	CrosspostLimitPerHour   = 5
 )

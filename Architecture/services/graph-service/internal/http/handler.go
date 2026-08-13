@@ -2,6 +2,7 @@ package http
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -19,6 +20,19 @@ import (
 type Handler struct {
 	svc         *service.Service
 	internalKey string
+	// SR-3: when true, a mutating request from an unrecognised caller is
+	// refused rather than logged. See canonical_guard.go.
+	strictWriteSource bool
+	warn              func(string, ...any)
+}
+
+// WithCanonicalWriteSource enables the source guard on mutating routes.
+// strict=false is a rollout aid only — it logs unknown callers and lets them
+// through, which means the duplicate-writer hole is still open.
+func (h *Handler) WithCanonicalWriteSource(strict bool, warn func(string, ...any)) *Handler {
+	h.strictWriteSource = strict
+	h.warn = warn
+	return h
 }
 
 func New(svc *service.Service) *Handler {
@@ -39,6 +53,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	}
 
 	v1 := r.Group("/v1/graph")
+	// SR-3: attribute every mutating graph write to a named caller. The
+	// internal key authenticates but is shared, so it cannot tell one service
+	// from another — this is what makes a second, unreviewed graph writer
+	// visible instead of silent.
+	v1.Use(RequireCanonicalWriteSource(h.strictWriteSource, h.warn))
 	{
 		v1.POST("/follow", h.Follow)
 		v1.POST("/unfollow", h.Unfollow)
@@ -1167,11 +1186,24 @@ func (h *Handler) GetRelationshipBatch(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid viewer_id", nil)
 		return
 	}
+	// M4-P0-1: an unparseable target used to be skipped silently. The caller
+	// then received a map with no entry for it, which every existing consumer
+	// reads as "no relationship" — i.e. no block, no restriction. A malformed
+	// identifier must fail the request, not quietly widen an audience.
+	if len(req.TargetIDs) > store.MaxRelationshipBatch {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BATCH_TOO_LARGE",
+			fmt.Sprintf("at most %d target_ids per call", store.MaxRelationshipBatch), nil)
+		return
+	}
 	targetIDs := make([]uuid.UUID, 0, len(req.TargetIDs))
 	for _, id := range req.TargetIDs {
-		if uid, err := uuid.Parse(id); err == nil {
-			targetIDs = append(targetIDs, uid)
+		uid, err := uuid.Parse(id)
+		if err != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID",
+				"Invalid target_id", nil)
+			return
 		}
+		targetIDs = append(targetIDs, uid)
 	}
 	result, err := h.svc.GetRelationshipBatch(c.Request.Context(), viewerID, targetIDs)
 	if err != nil {

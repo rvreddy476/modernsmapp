@@ -329,13 +329,13 @@ func (m *mockStore) GetDonationsByFundraiser(_ context.Context, _ uuid.UUID, _, 
 // Since the real service.Service uses *postgres.Store (a concrete type), we
 // duplicate only the logic we need to test here for unit coverage.
 
-// TestGetWallet_AutoCreates verifies that GetWallet creates a wallet if none exists.
-func TestGetWallet_AutoCreates(t *testing.T) {
+// TestGetWallet_DoesNotAutoCreate verifies that a read returns an explicit
+// empty view without creating durable financial state.
+func TestGetWallet_DoesNotAutoCreate(t *testing.T) {
 	ctx := context.Background()
 	store := newMockStore()
 	userID := uuid.New()
 
-	// First call — wallet does not exist; EnsureWallet is called.
 	wallet, err := getWallet(ctx, store, userID)
 	if err != nil {
 		t.Fatalf("GetWallet returned error: %v", err)
@@ -347,13 +347,11 @@ func TestGetWallet_AutoCreates(t *testing.T) {
 		t.Fatalf("expected wallet.UserID=%v, got %v", userID, wallet.UserID)
 	}
 
-	// Second call — wallet already exists.
-	wallet2, err := getWallet(ctx, store, userID)
-	if err != nil {
-		t.Fatalf("second GetWallet call returned error: %v", err)
+	if wallet.HasActivity {
+		t.Fatal("empty view must report has_activity=false")
 	}
-	if wallet2.UserID != userID {
-		t.Fatalf("expected wallet.UserID=%v on second call, got %v", userID, wallet2.UserID)
+	if _, exists := store.wallets[userID]; exists {
+		t.Fatal("GetWallet created durable state")
 	}
 }
 
@@ -364,10 +362,11 @@ func getWallet(ctx context.Context, store *mockStore, userID uuid.UUID) (*postgr
 		return nil, err
 	}
 	if wallet == nil {
-		wallet, err = store.EnsureWallet(ctx, userID)
-		if err != nil {
-			return nil, err
-		}
+		return &postgres.Wallet{
+			UserID:      userID,
+			Currency:    "INR",
+			HasActivity: false,
+		}, nil
 	}
 	return wallet, nil
 }

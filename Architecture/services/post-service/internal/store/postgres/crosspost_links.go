@@ -13,13 +13,13 @@ import (
 
 // CrosspostLink represents an active cross-post between modules.
 type CrosspostLink struct {
-	ID            uuid.UUID  `json:"id"`
-	SourceModule  string     `json:"source_module"`
-	SourcePostID  uuid.UUID  `json:"source_post_id"`
-	TargetModule  string     `json:"target_module"`
-	TargetPostID  uuid.UUID  `json:"target_post_id"`
-	CreatedAt     time.Time  `json:"created_at"`
-	DeletedAt     *time.Time `json:"deleted_at,omitempty"`
+	ID           uuid.UUID  `json:"id"`
+	SourceModule string     `json:"source_module"`
+	SourcePostID uuid.UUID  `json:"source_post_id"`
+	TargetModule string     `json:"target_module"`
+	TargetPostID uuid.UUID  `json:"target_post_id"`
+	CreatedAt    time.Time  `json:"created_at"`
+	DeletedAt    *time.Time `json:"deleted_at,omitempty"`
 }
 
 const crosspostLinkCols = `id, source_module, source_post_id, target_module, target_post_id, created_at, deleted_at`

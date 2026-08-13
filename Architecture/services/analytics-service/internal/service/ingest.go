@@ -3,190 +3,177 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"log"
-	"sync"
+	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/atpost/analytics-service/internal/model"
 	"github.com/atpost/analytics-service/internal/store/postgres"
-	"github.com/atpost/shared/events"
 	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
 )
 
+const (
+	maxClientEventAge = 24 * time.Hour
+	maxClockSkew      = 5 * time.Minute
+	maxVideoDuration  = 12 * time.Hour
+)
+
 type EventDTO struct {
+	EventID   string          `json:"event_id" binding:"required"`
 	Type      string          `json:"type" binding:"required"`
 	Payload   json.RawMessage `json:"payload" binding:"required"`
 	Timestamp time.Time       `json:"timestamp" binding:"required"`
 }
 
+type IngestResult struct {
+	Accepted  int `json:"accepted"`
+	Duplicate int `json:"duplicate"`
+}
+
 type IngestService struct {
-	store         *postgres.Store
-	kafkaWriter   *kafka.Writer // publishes video events to Kafka
-	eventChan     chan postgres.Event
-	batchSize     int
-	flushInterval time.Duration
-	stopCh        chan struct{}
-	wg            sync.WaitGroup
+	store *postgres.Store
+	now   func() time.Time
 }
 
-func New(ctx context.Context, store *postgres.Store, kafkaWriter *kafka.Writer) *IngestService {
-	svc := &IngestService{
-		store:         store,
-		kafkaWriter:   kafkaWriter,
-		eventChan:     make(chan postgres.Event, 10000), // Buffer for burst
-		batchSize:     100,                              // Configurable
-		flushInterval: 2 * time.Second,
-		stopCh:        make(chan struct{}),
+// New keeps the historical signature so callers do not need a coordinated
+// change. Client analytics is now durably written to PostgreSQL before the
+// request succeeds; Kafka/Scylla are optional downstream accelerators and are
+// deliberately not part of the acceptance proof.
+func New(_ context.Context, store *postgres.Store, _ *kafka.Writer) *IngestService {
+	return &IngestService{store: store, now: time.Now}
+}
+
+func (s *IngestService) Stop() {}
+
+type playEndPayload struct {
+	ContentID      string  `json:"content_id"`
+	SessionID      string  `json:"session_id"`
+	WatchedMSTotal int64   `json:"watched_ms_total"`
+	DurationMS     int64   `json:"content_duration_ms"`
+	LoopCount      int     `json:"loop_count"`
+	EndReason      string  `json:"end_reason"`
+	Surface        string  `json:"surface"`
+	PercentViewed  float64 `json:"percent_viewed"`
+	ClaimedCreator string  `json:"creator_id"`
+	ClaimedViewer  string  `json:"viewer_id"`
+}
+
+// IngestEvents accepts only the launch view-completion event. Attribution is
+// rebuilt from the gateway actor and the canonical PostCreated ownership
+// projection; client creator/viewer fields are never persisted.
+func (s *IngestService) IngestEvents(ctx context.Context, userID string, dtos []EventDTO) (IngestResult, error) {
+	actorID, err := uuid.Parse(strings.TrimSpace(userID))
+	if err != nil || actorID == uuid.Nil {
+		return IngestResult{}, errors.New("invalid authenticated actor")
 	}
-	svc.wg.Add(1)
-	go svc.processLoop(ctx)
-	return svc
-}
+	if len(dtos) == 0 || len(dtos) > 200 {
+		return IngestResult{}, errors.New("event batch must contain 1 to 200 events")
+	}
 
-// Stop signals the processLoop to stop and waits for it to drain remaining events.
-func (s *IngestService) Stop() {
-	close(s.stopCh)
-	s.wg.Wait()
-}
-
-func (s *IngestService) IngestEvents(ctx context.Context, userID, sessionID string, dtos []EventDTO) error {
-	// Parse IDs
-	uID, _ := uuid.Parse(userID)
-	sID, _ := uuid.Parse(sessionID)
-
-	receivedAt := time.Now()
-
+	now := s.now().UTC()
+	accepted := make([]postgres.Event, 0, len(dtos))
 	for _, dto := range dtos {
-		s.eventChan <- postgres.Event{
-			ID:         uuid.New(),
-			UserID:     uID,
-			SessionID:  sID,
-			Type:       dto.Type,
-			Payload:    []byte(dto.Payload),
-			Timestamp:  dto.Timestamp,
-			ReceivedAt: receivedAt,
+		if len(dto.EventID) < 16 || len(dto.EventID) > 128 {
+			return IngestResult{}, errors.New("invalid event_id")
 		}
-	}
-	return nil
-}
-
-func (s *IngestService) processLoop(ctx context.Context) {
-	defer s.wg.Done()
-
-	var batch []postgres.Event
-	ticker := time.NewTicker(s.flushInterval)
-	defer ticker.Stop()
-
-	flush := func() {
-		if len(batch) > 0 {
-			if err := s.store.InsertBatch(ctx, batch); err != nil {
-				log.Printf("Error inserting batch: %v", err)
-			}
-
-			// Publish video events to Kafka for real-time processing
-			if s.kafkaWriter != nil {
-				s.publishVideoEvents(batch)
-			}
-
-			batch = nil
+		if dto.Type != model.EventPlayEnd {
+			return IngestResult{}, fmt.Errorf("unsupported client analytics event: %s", dto.Type)
 		}
-	}
-
-	for {
-		select {
-		case <-s.stopCh:
-			// Drain remaining events
-			for {
-				select {
-				case e := <-s.eventChan:
-					batch = append(batch, e)
-					if len(batch) >= s.batchSize {
-						flush()
-					}
-				default:
-					flush()
-					return
-				}
-			}
-		case e := <-s.eventChan:
-			batch = append(batch, e)
-			if len(batch) >= s.batchSize {
-				flush()
-			}
-		case <-ticker.C:
-			flush()
-		}
-	}
-}
-
-// publishVideoEvents filters the batch for video analytics events and publishes them
-// to Kafka as EventEnvelope messages for the VideoViewConsumer.
-func (s *IngestService) publishVideoEvents(batch []postgres.Event) {
-	var messages []kafka.Message
-	for _, e := range batch {
-		if !model.VideoEventNames[e.Type] {
-			continue
+		when := dto.Timestamp.UTC()
+		if when.IsZero() || when.Before(now.Add(-maxClientEventAge)) || when.After(now.Add(maxClockSkew)) {
+			return IngestResult{}, errors.New("event timestamp outside accepted window")
 		}
 
-		// Map the analytics event type to the shared event type constant
-		eventType := mapToSharedEventType(e.Type)
-		if eventType == "" {
-			continue
+		var payload playEndPayload
+		if err := json.Unmarshal(dto.Payload, &payload); err != nil {
+			return IngestResult{}, errors.New("invalid play_end payload")
+		}
+		contentID, err := uuid.Parse(payload.ContentID)
+		if err != nil || contentID == uuid.Nil {
+			return IngestResult{}, errors.New("invalid content_id")
+		}
+		sessionID, err := uuid.Parse(payload.SessionID)
+		if err != nil || sessionID == uuid.Nil {
+			return IngestResult{}, errors.New("invalid session_id")
+		}
+		if payload.DurationMS <= 0 || time.Duration(payload.DurationMS)*time.Millisecond > maxVideoDuration {
+			return IngestResult{}, errors.New("invalid content duration")
+		}
+		if payload.WatchedMSTotal < 0 || payload.WatchedMSTotal > payload.DurationMS*10 {
+			return IngestResult{}, errors.New("invalid watched duration")
+		}
+		if payload.LoopCount < 0 || payload.LoopCount > 20 {
+			return IngestResult{}, errors.New("invalid loop count")
 		}
 
-		actorID := e.UserID.String()
-		envelope := events.NewEnvelope(context.Background(), eventType, &actorID, e.Payload)
-		envelope.EventID = e.ID.String()
-		envelope.OccurredAt = e.Timestamp
-
-		data, err := json.Marshal(envelope)
+		ownership, err := s.store.GetContentOwnership(ctx, contentID)
 		if err != nil {
-			log.Printf("[IngestService] marshal envelope error: %v", err)
-			continue
+			return IngestResult{}, err
 		}
-
-		messages = append(messages, kafka.Message{
-			Key:   []byte(envelope.EventID),
-			Value: data,
+		percentViewed := float64(payload.WatchedMSTotal) / float64(payload.DurationMS) * 100
+		if percentViewed > 100 {
+			percentViewed = 100
+		}
+		isDisplayView := model.IsDisplayView(
+			ownership.ContentType,
+			payload.DurationMS,
+			payload.WatchedMSTotal,
+			percentViewed,
+			payload.LoopCount,
+		)
+		surface := normalizeSurface(payload.Surface)
+		sanitized, err := json.Marshal(map[string]any{
+			"content_id":          contentID.String(),
+			"creator_id":          ownership.CreatorID.String(),
+			"content_type":        ownership.ContentType,
+			"session_id":          sessionID.String(),
+			"watched_ms_total":    payload.WatchedMSTotal,
+			"content_duration_ms": payload.DurationMS,
+			"percent_viewed":      percentViewed,
+			"loop_count":          payload.LoopCount,
+			"end_reason":          normalizeEndReason(payload.EndReason),
+			"surface":             surface,
+			"is_display_view":     isDisplayView,
+		})
+		if err != nil {
+			return IngestResult{}, err
+		}
+		accepted = append(accepted, postgres.Event{
+			ID:            uuid.New(),
+			ClientEventID: dto.EventID,
+			UserID:        actorID,
+			SessionID:     sessionID,
+			ContentID:     contentID,
+			Type:          model.EventPlayEnd,
+			Payload:       sanitized,
+			Timestamp:     when,
+			ReceivedAt:    now,
 		})
 	}
 
-	if len(messages) == 0 {
-		return
+	inserted, err := s.store.InsertAcceptedBatch(ctx, accepted)
+	if err != nil {
+		return IngestResult{}, err
 	}
+	return IngestResult{Accepted: inserted, Duplicate: len(accepted) - inserted}, nil
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := s.kafkaWriter.WriteMessages(ctx, messages...); err != nil {
-		log.Printf("[IngestService] kafka publish error (%d messages): %v", len(messages), err)
+func normalizeSurface(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "feed", "posttube", "profile", "search", "channel":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return "other"
 	}
 }
 
-// mapToSharedEventType converts a client-side event name (e.g. "play_start")
-// to the shared events constant (e.g. events.VideoPlayStart).
-func mapToSharedEventType(clientType string) string {
-	switch clientType {
-	case model.EventImpression:
-		return events.VideoImpression
-	case model.EventPlayStart:
-		return events.VideoPlayStart
-	case model.EventWatchHeartbeat:
-		return events.VideoHeartbeat
-	case model.EventMilestone:
-		return events.VideoMilestone
-	case model.EventPlayEnd:
-		return events.VideoPlayEnd
-	case model.EventFollowFromContent:
-		return events.VideoFollowFromContent
-	case model.EventNotInterested:
-		return events.VideoNotInterested
-	case model.EventReport:
-		return events.VideoReport
-	case model.EventBlockCreator:
-		return events.VideoBlockCreator
+func normalizeEndReason(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "ended", "swipe_next", "paused", "backgrounded", "error":
+		return strings.ToLower(strings.TrimSpace(value))
 	default:
-		return ""
+		return "other"
 	}
 }

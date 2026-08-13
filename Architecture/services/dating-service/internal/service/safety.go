@@ -214,6 +214,10 @@ func (s *Service) Block(ctx context.Context, userID, targetID uuid.UUID) error {
 			}
 			req.Header.Set("Content-Type", "application/json")
 			req.ContentLength = int64(len(body))
+			// Module 3 LB-3: attribute this graph mutation. Every approved
+			// caller stamps its OWN reviewed source; the gateway overwrites
+			// any label arriving from a client, so this cannot be forged.
+			req.Header.Set("X-Graph-Write-Source", "dating-service")
 			if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
 				req.Header.Set("X-Internal-Key", key)
 			}

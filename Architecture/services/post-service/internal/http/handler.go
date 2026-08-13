@@ -16,16 +16,18 @@ import (
 	"github.com/atpost/post-service/internal/streamhub"
 	"github.com/atpost/shared/api"
 	sharedmiddleware "github.com/atpost/shared/middleware"
+	"github.com/atpost/shared/moderationcap"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
 type Handler struct {
-	svc         *service.Service
-	rdb         *redis.Client
-	hub         *streamhub.Hub
-	internalKey string
+	svc                *service.Service
+	rdb                *redis.Client
+	hub                *streamhub.Hub
+	internalKey        string
+	moderationVerifier *moderationcap.Verifier
 }
 
 func New(svc *service.Service, rdb *redis.Client) *Handler {
@@ -45,6 +47,11 @@ func (h *Handler) WithStreamHub(hub *streamhub.Hub) *Handler {
 // service-to-service requests via the X-Internal-Service-Key header.
 func (h *Handler) WithInternalKey(key string) *Handler {
 	h.internalKey = key
+	return h
+}
+
+func (h *Handler) WithModerationVerifier(verifier *moderationcap.Verifier) *Handler {
+	h.moderationVerifier = verifier
 	return h
 }
 
@@ -83,6 +90,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.POST("/:postId/bookmark", h.ToggleBookmark)
 		v1.DELETE("/:postId/bookmark", h.RemoveBookmark)
 		v1.POST("/:postId/resubmit", h.Resubmit)
+		v1.POST("/:postId/moderation", h.ModeratePost)
 		v1.GET("/:postId/poll", h.GetPoll)
 		v1.POST("/:postId/vote", h.CastVote)
 
@@ -107,6 +115,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// Gateway blocks /internal/ from non-admins; direct service calls carry the key.
 	r.POST("/v1/posts/internal/review-status", h.SetReviewStatusInternal)
 	r.POST("/v1/posts/internal/visibility", h.SetVisibilityInternal)
+	r.GET("/v1/posts/internal/moderation-subject/:postId", h.GetModerationSubjectInternal)
+	r.POST("/v1/posts/internal/moderation", h.ModeratePostInternal)
 
 	// Events
 	r.POST("/v1/events", h.CreateEvent)
@@ -114,11 +124,22 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	r.POST("/v1/events/:eventId/rsvp", h.RSVPEvent)
 	r.GET("/v1/events/:eventId/rsvps", h.GetEventRSVPs)
 
+	// M4-P0-5 — the content-authority answer for byte delivery.
+	//
+	// Registered outside the /v1/stories group on purpose: it is not a story
+	// surface (the story route inventory would otherwise demand a viewer
+	// policy for it), and media-service is its only intended caller. The
+	// internal-key middleware applied to all /v1 routes above is what gates it.
+	r.POST("/v1/internal/media-access", h.MediaAccess)
+
 	// Stories
 	stories := r.Group("/v1/stories")
 	{
 		stories.POST("", h.CreateStory)
 		stories.GET("/feed", h.GetStoriesFeed)
+		// Owner-only truthful state. Registered before /:storyId so "mine" is
+		// not captured as a story id.
+		stories.GET("/mine", h.GetMyStoryStatus)
 		stories.GET("/author/:authorId", h.GetStoriesByAuthor)
 		stories.GET("/:storyId", h.GetStory)
 		stories.DELETE("/:storyId", h.DeleteStory)
@@ -261,52 +282,52 @@ type CreatePostRequest struct {
 		AllowUsers []string `json:"allow_users,omitempty"`
 		DenyUsers  []string `json:"deny_users,omitempty"`
 	} `json:"visibility_policy,omitempty"`
-	ContentType     string             `json:"content_type"`
-	MediaIDs        []string           `json:"media_ids"`
-	Feeling         *string            `json:"feeling"`
-	Activity        *string            `json:"activity"`
-	ActivityDetail  *string            `json:"activity_detail"`
-	RichText        json.RawMessage    `json:"rich_text"`
-	Poll            *CreatePollRequest `json:"poll"`
-	NoComments      bool               `json:"no_comments"`
-	NoLikes         bool               `json:"no_likes"`
-	LocationName    *string            `json:"location_name"`
-	LocationLat     *float64           `json:"location_lat"`
-	LocationLng     *float64           `json:"location_lng"`
-	PostType        string             `json:"post_type"`
-	AppOrigin       string             `json:"app_origin"`
+	ContentType    string             `json:"content_type"`
+	MediaIDs       []string           `json:"media_ids"`
+	Feeling        *string            `json:"feeling"`
+	Activity       *string            `json:"activity"`
+	ActivityDetail *string            `json:"activity_detail"`
+	RichText       json.RawMessage    `json:"rich_text"`
+	Poll           *CreatePollRequest `json:"poll"`
+	NoComments     bool               `json:"no_comments"`
+	NoLikes        bool               `json:"no_likes"`
+	LocationName   *string            `json:"location_name"`
+	LocationLat    *float64           `json:"location_lat"`
+	LocationLng    *float64           `json:"location_lng"`
+	PostType       string             `json:"post_type"`
+	AppOrigin      string             `json:"app_origin"`
 	// Presence-aware (fixes-v2 / Codex P1-1): a pointer distinguishes an
 	// omitted field from an explicit `false`, so an old client's explicit
 	// opt-out is honored. JSON compatibility is unchanged — the stored
 	// column stays a plain bool, defaulting to true when omitted, which
 	// matches the schema default.
-	ShareToPostbook *bool              `json:"share_to_postbook"`
+	ShareToPostbook *bool `json:"share_to_postbook"`
 	// Reel metadata
-	Title             string   `json:"title"`
+	Title string `json:"title"`
 	// M5: cap tags array to bound payload memory. 20 tags × 50 chars
 	// is the upper bound for legitimate use cases (most reels carry
 	// 3-5 tags); larger arrays are either spam or accidents.
-	Tags              []string `json:"tags" binding:"max=20,dive,max=50"`
-	Category          string   `json:"category"`
-	Language          string   `json:"language"`
-	SEOTitle          string   `json:"seo_title"`
-	PaidPromotion     bool     `json:"paid_promotion"`
-	AlteredContent    bool     `json:"altered_content"`
-	IsMadeForKids     bool     `json:"is_made_for_kids"`
-	License           string   `json:"license"`
-	AllowEmbedding    *bool    `json:"allow_embedding"`
+	Tags           []string `json:"tags" binding:"max=20,dive,max=50"`
+	Category       string   `json:"category"`
+	Language       string   `json:"language"`
+	SEOTitle       string   `json:"seo_title"`
+	PaidPromotion  bool     `json:"paid_promotion"`
+	AlteredContent bool     `json:"altered_content"`
+	IsMadeForKids  bool     `json:"is_made_for_kids"`
+	License        string   `json:"license"`
+	AllowEmbedding *bool    `json:"allow_embedding"`
 	// PublishToFeed / ShareToPostbook are the pre-policy distribution
 	// fields. Pointers so an EXPLICIT false from an old client is
 	// distinguishable from "absent" and is honored (Codex P1-1).
-	PublishToFeed     *bool    `json:"publish_to_feed"`
-	RemixSetting      string   `json:"remix_setting"`
-	CommentModeration string   `json:"comment_moderation"`
-	CommentAccess     string   `json:"comment_access"`
-	RecordingDate     *string  `json:"recording_date"`
-	RecordingLocation string   `json:"recording_location"`
-	CoverMediaID      *string  `json:"cover_media_id"`
-	OriginalAudioVol  float32  `json:"original_audio_volume"`
-	OverlayAudioVol   float32  `json:"overlay_audio_volume"`
+	PublishToFeed     *bool   `json:"publish_to_feed"`
+	RemixSetting      string  `json:"remix_setting"`
+	CommentModeration string  `json:"comment_moderation"`
+	CommentAccess     string  `json:"comment_access"`
+	RecordingDate     *string `json:"recording_date"`
+	RecordingLocation string  `json:"recording_location"`
+	CoverMediaID      *string `json:"cover_media_id"`
+	OriginalAudioVol  float32 `json:"original_audio_volume"`
+	OverlayAudioVol   float32 `json:"overlay_audio_volume"`
 	// AudioTrackID attaches a track from /v1/audio/tracks to the post on
 	// create. Used by the Flicks composer's audio browser. Optional —
 	// posts without background audio leave this empty.
@@ -1418,138 +1439,6 @@ func (h *Handler) BatchGetPosts(c *gin.Context) {
 // Story Handlers
 // ============================================================
 
-type CreateStoryRequest struct {
-	MediaURL       string  `json:"media_url" binding:"required"`
-	MediaType      string  `json:"media_type" binding:"required,oneof=image video"`
-	Caption        string  `json:"caption"`
-	Visibility     string  `json:"visibility" binding:"required,oneof=public followers close_friends"`
-	IsHighlight    bool    `json:"is_highlight"`
-	HighlightGroup *string `json:"highlight_group"`
-}
-
-func (h *Handler) CreateStory(c *gin.Context) {
-	authorIDStr := c.GetHeader("X-User-Id")
-	authorID, err := uuid.Parse(authorIDStr)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
-		return
-	}
-
-	var req CreateStoryRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
-		return
-	}
-
-	story, err := h.svc.CreateStory(c.Request.Context(), &service.CreateStoryInput{
-		AuthorID:       authorID,
-		MediaURL:       req.MediaURL,
-		MediaType:      req.MediaType,
-		Caption:        req.Caption,
-		Visibility:     req.Visibility,
-		IsHighlight:    req.IsHighlight,
-		HighlightGroup: req.HighlightGroup,
-	})
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-
-	api.JSON(c.Writer, http.StatusCreated, story, nil)
-}
-
-func (h *Handler) GetStory(c *gin.Context) {
-	storyIDStr := c.Param("storyId")
-	storyID, err := uuid.Parse(storyIDStr)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid story ID", nil)
-		return
-	}
-
-	story, err := h.svc.GetStory(c.Request.Context(), storyID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-	if story == nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Story not found", nil)
-		return
-	}
-
-	api.JSON(c.Writer, http.StatusOK, story, nil)
-}
-
-func (h *Handler) GetStoriesFeed(c *gin.Context) {
-	// The followed user IDs come as a comma-separated query param set by the API gateway
-	// or the client passes them explicitly.
-	followedStr := c.DefaultQuery("followed_ids", "")
-	if followedStr == "" {
-		userIDStr := c.GetHeader("X-User-Id")
-		if userIDStr == "" {
-			api.JSON(c.Writer, http.StatusOK, []postgres.Story{}, nil)
-			return
-		}
-
-		userID, err := uuid.Parse(userIDStr)
-		if err != nil {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
-			return
-		}
-
-		stories, err := h.svc.GetStoriesFeedForUser(c.Request.Context(), userID)
-		if err != nil {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-			return
-		}
-		if stories == nil {
-			stories = []postgres.Story{}
-		}
-
-		api.JSON(c.Writer, http.StatusOK, stories, nil)
-		return
-	}
-
-	parts := strings.Split(followedStr, ",")
-	var followedIDs []uuid.UUID
-	for _, p := range parts {
-		id, err := uuid.Parse(strings.TrimSpace(p))
-		if err != nil {
-			continue
-		}
-		followedIDs = append(followedIDs, id)
-	}
-
-	stories, err := h.svc.GetStoriesFeed(c.Request.Context(), followedIDs)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-	if stories == nil {
-		stories = []postgres.Story{}
-	}
-
-	api.JSON(c.Writer, http.StatusOK, stories, nil)
-}
-
-func (h *Handler) GetStoriesByAuthor(c *gin.Context) {
-	authorID, err := uuid.Parse(c.Param("authorId"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid author ID", nil)
-		return
-	}
-
-	stories, err := h.svc.GetStoriesByAuthor(c.Request.Context(), authorID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-	if stories == nil {
-		stories = []postgres.Story{}
-	}
-
-	api.JSON(c.Writer, http.StatusOK, stories, nil)
-}
-
 func (h *Handler) DeleteStory(c *gin.Context) {
 	authorIDStr := c.GetHeader("X-User-Id")
 	authorID, err := uuid.Parse(authorIDStr)
@@ -1575,22 +1464,6 @@ func (h *Handler) DeleteStory(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "deleted"}, nil)
-}
-
-func (h *Handler) ViewStory(c *gin.Context) {
-	storyIDStr := c.Param("storyId")
-	storyID, err := uuid.Parse(storyIDStr)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid story ID", nil)
-		return
-	}
-
-	if err := h.svc.ViewStory(c.Request.Context(), storyID); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "viewed"}, nil)
 }
 
 // ============================================================

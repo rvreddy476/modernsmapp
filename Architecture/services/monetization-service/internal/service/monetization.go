@@ -68,18 +68,20 @@ func (s *Service) publishEntitlementChanged(ctx context.Context, subscriptionID,
 // Wallet
 // ---------------------------------------------------------------------------
 
-// GetWallet returns the wallet for a user, auto-creating it on first access.
+// GetWallet returns the creator ledger without mutating financial state. A
+// creator with no recorded activity receives an explicit zero-value view; the
+// first financial write (when separately launched) creates the durable row.
 func (s *Service) GetWallet(ctx context.Context, userID uuid.UUID) (*postgres.Wallet, error) {
 	wallet, err := s.store.GetWallet(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
 	if wallet == nil {
-		// Auto-create wallet on first access
-		wallet, err = s.store.EnsureWallet(ctx, userID)
-		if err != nil {
-			return nil, err
-		}
+		return &postgres.Wallet{
+			UserID:      userID,
+			Currency:    "INR",
+			HasActivity: false,
+		}, nil
 	}
 	return wallet, nil
 }

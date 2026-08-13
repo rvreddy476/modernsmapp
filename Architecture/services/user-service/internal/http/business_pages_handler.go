@@ -36,20 +36,20 @@ type CreatePageRequest struct {
 const maxPagesPerUser = 20 // spec §12 ownership cap
 
 type UpdatePageRequest struct {
-	PageName      string  `json:"page_name"`
-	Category      string  `json:"category"`
-	Description   string  `json:"description"`
-	Address       string  `json:"address"`
+	PageName      string   `json:"page_name"`
+	Category      string   `json:"category"`
+	Description   string   `json:"description"`
+	Address       string   `json:"address"`
 	Lat           *float64 `json:"lat"`
 	Lng           *float64 `json:"lng"`
-	Phone         string  `json:"phone"`
-	Whatsapp      string  `json:"whatsapp"`
-	BusinessEmail string  `json:"business_email"`
-	Website       string  `json:"website"`
-	PriceRange    string  `json:"price_range"`
-	BookingURL    string  `json:"booking_url"`
-	CoverMediaID  string  `json:"cover_media_id"`
-	AvatarMediaID string  `json:"avatar_media_id"`
+	Phone         string   `json:"phone"`
+	Whatsapp      string   `json:"whatsapp"`
+	BusinessEmail string   `json:"business_email"`
+	Website       string   `json:"website"`
+	PriceRange    string   `json:"price_range"`
+	BookingURL    string   `json:"booking_url"`
+	CoverMediaID  string   `json:"cover_media_id"`
+	AvatarMediaID string   `json:"avatar_media_id"`
 }
 
 func (h *Handler) CreateBusinessPage(c *gin.Context) {
@@ -110,13 +110,13 @@ func (h *Handler) CreateBusinessPage(c *gin.Context) {
 
 // PageActions is the computed capability set returned with a page (spec §6.10).
 type PageActions struct {
-	CanFollow         bool `json:"canFollow"`
-	CanUnfollow       bool `json:"canUnfollow"`
-	CanManage         bool `json:"canManage"`
-	CanMessage        bool `json:"canMessage"`
-	CanAddFriend      bool `json:"canAddFriend"` // ALWAYS false on a page
-	CanEdit           bool `json:"canEdit"`
-	CanUploadDocument bool `json:"canUploadDocument"`
+	CanFollow          bool `json:"canFollow"`
+	CanUnfollow        bool `json:"canUnfollow"`
+	CanManage          bool `json:"canManage"`
+	CanMessage         bool `json:"canMessage"`
+	CanAddFriend       bool `json:"canAddFriend"` // ALWAYS false on a page
+	CanEdit            bool `json:"canEdit"`
+	CanUploadDocument  bool `json:"canUploadDocument"`
 	CanSubmitForReview bool `json:"canSubmitForReview"`
 }
 

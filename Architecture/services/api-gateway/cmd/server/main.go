@@ -2,11 +2,7 @@ package main
 
 import (
 	"context"
-	"crypto/hmac"
 	"crypto/rsa"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -27,6 +23,9 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	"golang.org/x/time/rate"
+
+	"github.com/atpost/api-gateway/pkg/edgeheaders"
+	"github.com/atpost/api-gateway/pkg/tokenpolicy"
 )
 
 type route struct {
@@ -86,6 +85,22 @@ func main() {
 		slog.Info("RS256 token verification enabled", "kid", env("JWT_RS256_KID", "rsa-1"))
 	}
 
+	// M3-P0-2: load and validate the edge token policy. In production this
+	// REFUSES TO START without an issuer, an audience and RS256 key material.
+	// A gateway that boots with a weak token policy is worse than one that
+	// does not boot: the weakness is silent and platform-wide, because every
+	// downstream service trusts the identity headers this process emits.
+	tokenPolicy, policyErr := tokenpolicy.LoadFromEnv()
+	if policyErr != nil {
+		slog.Error("refusing to start: unsafe edge token policy", "error", policyErr)
+		os.Exit(1)
+	}
+	slog.Info("edge token policy loaded",
+		"production", tokenPolicy.Production,
+		"hs256_accepted", tokenPolicy.AllowHS256,
+		"issuers", len(tokenPolicy.AllowedIssuers),
+		"query_token_paths", len(tokenPolicy.QueryTokenPaths))
+
 	routeDefs := []struct {
 		prefix string
 		target string
@@ -122,6 +137,7 @@ func main() {
 		{"/v1/search", env("SEARCH_SERVICE_URL", "http://search-service:8089")},
 		{"/v1/groups", env("GROUP_SERVICE_URL", "http://group-service:8090")},
 		{"/v1/reports", env("TRUST_SAFETY_SERVICE_URL", "http://trust-safety-service:8091")},
+		{"/v1/appeals", env("TRUST_SAFETY_SERVICE_URL", "http://trust-safety-service:8091")},
 		{"/v1/reviewer", env("REVIEWER_SERVICE_URL", "http://reviewer-service:8120")},
 		{"/v1/grievances", env("TRUST_SAFETY_SERVICE_URL", "http://trust-safety-service:8091")},
 		{"/v1/ws", env("WS_GATEWAY_URL", "http://ws-gateway:8093")},
@@ -209,6 +225,7 @@ func main() {
 	// scraping /metrics on the gateway also exposes its own HTTP-side
 	// counters once we wrap upstream calls.
 	promHandler := promhttp.Handler()
+	reviewerPublicEnabled := strings.EqualFold(env("REVIEWER_PUBLIC_ENABLED", "false"), "true")
 
 	coreHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if handleProbe(w, r, len(routes)) {
@@ -217,6 +234,9 @@ func main() {
 		// Prometheus scrape endpoint.
 		if r.URL.Path == "/metrics" {
 			promHandler.ServeHTTP(w, r)
+			return
+		}
+		if serveReviewerLaunchGate(w, r, reviewerPublicEnabled) {
 			return
 		}
 
@@ -258,7 +278,7 @@ func main() {
 	// is opened on every request. The span name is just the method;
 	// downstream services produce the more specific route names.
 	tracedCore := otelhttp.NewHandler(
-		requestIDMiddleware(jwtExtractMiddleware(jwtKeys, rateLimitHandler(requireAdminForInternalPaths(injectInternalKeyMiddleware(internalKey, coreHandler))))),
+		requestIDMiddleware(jwtExtractMiddleware(jwtKeys, tokenPolicy, rateLimitHandler(requireAdminForInternalPaths(injectInternalKeyMiddleware(internalKey, coreHandler))))),
 		"api-gateway",
 		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
 			return r.Method + " " + r.URL.Path
@@ -288,6 +308,16 @@ func main() {
 	log.Fatal(http.ListenAndServe(":"+port, recoveryHandler))
 }
 
+func serveReviewerLaunchGate(w http.ResponseWriter, r *http.Request, enabled bool) bool {
+	if enabled || (r.URL.Path != "/v1/reviewer" && !strings.HasPrefix(r.URL.Path, "/v1/reviewer/")) {
+		return false
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_, _ = w.Write([]byte(`{"error":{"code":"REVIEWER_PROGRAM_UNAVAILABLE","message":"The community reviewer program is not available at launch"}}`))
+	return true
+}
+
 // jwtExtractMiddleware inspects the Authorization: Bearer <token> header,
 // verifies the JWT signature using jwtSecret (HMAC-SHA256), and propagates the
 // trusted identity headers X-User-Id, X-Verified-User-Id, X-Scopes, and
@@ -298,6 +328,11 @@ func main() {
 // jwtKeySet — C7. Active is used for signing (auth-service only); both are
 // accepted on verify so a kid rotation has a window where prior tokens stay
 // valid. A token with no `kid` header (legacy, pre-C7) falls back to active.
+// Module 3 SR-1: the key set and the verifier moved to internal/tokenpolicy.
+// jwtKeySet remains as a lowercase-field shim so the tracked gateway tests and
+// the wiring below read unchanged, but there is exactly one implementation of
+// the verification rules, and auth-service's contract test exercises it
+// directly rather than a second copy.
 type jwtKeySet struct {
 	activeKID      string
 	activeSecret   string
@@ -309,33 +344,21 @@ type jwtKeySet struct {
 	rsaKeys map[string]*rsa.PublicKey
 }
 
-func (k jwtKeySet) secretFor(kid string) (string, bool) {
-	if kid == "" || kid == k.activeKID {
-		return k.activeSecret, true
+func (k jwtKeySet) toKeySet() tokenpolicy.KeySet {
+	return tokenpolicy.KeySet{
+		ActiveKID:      k.activeKID,
+		ActiveSecret:   k.activeSecret,
+		PreviousKID:    k.previousKID,
+		PreviousSecret: k.previousSecret,
+		RSAKeys:        k.rsaKeys,
 	}
-	if k.previousSecret != "" && kid == k.previousKID {
-		return k.previousSecret, true
-	}
-	return "", false
 }
+
+func (k jwtKeySet) secretFor(kid string) (string, bool) { return k.toKeySet().SecretFor(kid) }
 
 // rsaFor returns the RSA public key for a kid. A token with no kid resolves to
 // the sole configured key when exactly one exists (common single-key setup).
-func (k jwtKeySet) rsaFor(kid string) (*rsa.PublicKey, bool) {
-	if len(k.rsaKeys) == 0 {
-		return nil, false
-	}
-	if kid != "" {
-		pub, ok := k.rsaKeys[kid]
-		return pub, ok
-	}
-	if len(k.rsaKeys) == 1 {
-		for _, pub := range k.rsaKeys {
-			return pub, true
-		}
-	}
-	return nil, false
-}
+func (k jwtKeySet) rsaFor(kid string) (*rsa.PublicKey, bool) { return k.toKeySet().RSAFor(kid) }
 
 // trustedIdentityHeaders are headers that ONLY the gateway is allowed to set,
 // derived from a verified token (or a configured secret). They are spoofable if
@@ -349,7 +372,20 @@ var trustedIdentityHeaders = []string{
 	"X-Scopes",
 	"X-Device-Id",
 	"X-Internal-Service-Key",
+	// Module 3 LB-3: the graph write-source label.
+	//
+	// graph-service refuses a mutating request whose source is not an approved
+	// caller. That is only attribution if the label cannot be supplied by a
+	// client — otherwise any caller can claim to be `api-gateway` and the guard
+	// becomes decoration. It belongs in this list for the same reason
+	// X-Scopes does: the gateway is the only thing allowed to set it.
+	graphWriteSourceHeader,
 }
+
+// The header constants and the stamping rule live in pkg/edgeheaders so they
+// are TRACKED — a new file under cmd/server/ is invisible to git (.gitignore
+// bare `server` rule) and would be missing from a clean checkout.
+const graphWriteSourceHeader = edgeheaders.GraphWriteSourceHeader
 
 func stripInboundIdentityHeaders(r *http.Request) {
 	for _, h := range trustedIdentityHeaders {
@@ -357,7 +393,10 @@ func stripInboundIdentityHeaders(r *http.Request) {
 	}
 }
 
-func jwtExtractMiddleware(keys jwtKeySet, next http.Handler) http.Handler {
+// stampGraphWriteSource delegates to the tracked package. See LB-3 there.
+func stampGraphWriteSource(r *http.Request) { edgeheaders.StampGraphWriteSource(r) }
+
+func jwtExtractMiddleware(keys jwtKeySet, policy tokenpolicy.Policy, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// SECURITY: delete any client-supplied copy of the gateway-controlled
 		// identity headers up front. From here on these headers can ONLY be set
@@ -365,6 +404,11 @@ func jwtExtractMiddleware(keys jwtKeySet, next http.Handler) http.Handler {
 		// including the no-token path below — so an unauthenticated request can
 		// never smuggle an identity or scope past the edge.
 		stripInboundIdentityHeaders(r)
+
+		// LB-3: attribute graph mutations to this gateway. Runs immediately
+		// after the strip so a forged inbound label is overwritten, never
+		// trusted.
+		stampGraphWriteSource(r)
 
 		// Resolve JWT from one of (in priority order):
 		//   1. Authorization: Bearer header   — mobile + REST callers
@@ -380,16 +424,23 @@ func jwtExtractMiddleware(keys jwtKeySet, next http.Handler) http.Handler {
 			token = strings.TrimPrefix(authHeader, "Bearer ")
 		} else if c, err := r.Cookie("access_token"); err == nil && c.Value != "" {
 			token = c.Value
-		} else if q := r.URL.Query().Get("access_token"); q != "" {
-			token = q
-		} else if q := r.URL.Query().Get("token"); q != "" {
-			token = q
+		} else if policy.QueryTokenAllowed(r.URL.Path) {
+			// M3-P0-2: query-string tokens are accepted ONLY on an explicit
+			// path allowlist (realtime upgrades that cannot set a header).
+			// Previously every route accepted ?access_token= / ?token=, so a
+			// credential could be captured from access logs, browser history,
+			// analytics beacons and Referer headers on ordinary REST calls.
+			if q := r.URL.Query().Get("access_token"); q != "" {
+				token = q
+			} else if q := r.URL.Query().Get("token"); q != "" {
+				token = q
+			}
 		}
 		if token == "" {
 			next.ServeHTTP(w, r)
 			return
 		}
-		userID, scopes, deviceID, err := verifyJWT(token, keys)
+		userID, scopes, deviceID, err := verifyJWT(token, keys, policy)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
@@ -410,96 +461,20 @@ func jwtExtractMiddleware(keys jwtKeySet, next http.Handler) http.Handler {
 	})
 }
 
-// verifyJWT validates an HS256 JWT against the configured key set, checks
-// expiry, and returns the user ID, scopes, and device ID from the claims.
-// C7: the `kid` header selects the secret so a rotation window can accept
-// both old and new signatures simultaneously.
-func verifyJWT(tokenStr string, keys jwtKeySet) (userID, scopes, deviceID string, err error) {
-	parts := strings.Split(tokenStr, ".")
-	if len(parts) != 3 {
-		return "", "", "", &jwtError{"malformed token"}
+// verifyJWT validates a JWT against the configured key set and the edge token
+// policy, returning the user ID, scopes and device ID from the claims.
+//
+// Module 3 SR-1: the body moved to internal/tokenpolicy.Verify. The gateway
+// and auth-service now share ONE definition of what a valid access token is —
+// previously the only cross-service check possible was a reimplementation
+// inside a test, which proves the reimplementation and not the contract.
+func verifyJWT(tokenStr string, keys jwtKeySet, policy tokenpolicy.Policy) (userID, scopes, deviceID string, err error) {
+	id, vErr := tokenpolicy.Verify(tokenStr, keys.toKeySet(), policy, time.Now())
+	if vErr != nil {
+		return "", "", "", vErr
 	}
-
-	// Pick the secret by `kid` (C7). Tokens without a `kid` fall back to
-	// the active secret so legacy tokens minted before C7 still verify.
-	headerRaw, hdrErr := base64.RawURLEncoding.DecodeString(parts[0])
-	if hdrErr != nil {
-		return "", "", "", &jwtError{"invalid header encoding"}
-	}
-	var header struct {
-		Alg string `json:"alg"`
-		Kid string `json:"kid"`
-	}
-	if jsonErr := json.Unmarshal(headerRaw, &header); jsonErr != nil {
-		return "", "", "", &jwtError{"invalid header JSON"}
-	}
-	// Decode signature bytes (shared by both algorithms).
-	signingInput := parts[0] + "." + parts[1]
-	actualSig, decErr := base64.RawURLEncoding.DecodeString(parts[2])
-	if decErr != nil {
-		return "", "", "", &jwtError{"invalid signature encoding"}
-	}
-
-	// Verify per the pinned algorithm. Only HS256 and RS256 are accepted (no
-	// `none`, no alg-confusion). RS256 is preferred: the gateway holds only the
-	// public key and can verify but never mint. HS256 stays accepted in parallel
-	// so long-lived tokens minted before the RS256 cutover keep working.
-	switch header.Alg {
-	case "HS256":
-		secret, ok := keys.secretFor(header.Kid)
-		if !ok {
-			return "", "", "", &jwtError{"unknown kid"}
-		}
-		mac := hmac.New(sha256.New, []byte(secret))
-		mac.Write([]byte(signingInput))
-		if !hmac.Equal(mac.Sum(nil), actualSig) {
-			return "", "", "", &jwtError{"signature verification failed"}
-		}
-	case "RS256":
-		pub, ok := keys.rsaFor(header.Kid)
-		if !ok {
-			return "", "", "", &jwtError{"unknown kid"}
-		}
-		if vErr := verifyRS256(signingInput, actualSig, pub); vErr != nil {
-			return "", "", "", &jwtError{"signature verification failed"}
-		}
-	default:
-		return "", "", "", &jwtError{"unsupported jwt algorithm"}
-	}
-
-	// Decode payload.
-	data, decErr := base64.RawURLEncoding.DecodeString(parts[1])
-	if decErr != nil {
-		return "", "", "", &jwtError{"invalid payload encoding"}
-	}
-
-	var claims struct {
-		Sub      string `json:"sub"`
-		UserID   string `json:"user_id"`
-		Exp      int64  `json:"exp"`
-		Scopes   string `json:"scopes"`
-		DeviceID string `json:"device_id"`
-	}
-	if jsonErr := json.Unmarshal(data, &claims); jsonErr != nil {
-		return "", "", "", &jwtError{"invalid payload JSON"}
-	}
-
-	// Check expiry when exp claim is present.
-	if claims.Exp != 0 && time.Now().Unix() > claims.Exp {
-		return "", "", "", &jwtError{"token expired"}
-	}
-
-	userID = claims.UserID
-	if userID == "" {
-		userID = claims.Sub
-	}
-	return userID, claims.Scopes, claims.DeviceID, nil
+	return id.UserID, id.Scopes, id.DeviceID, nil
 }
-
-// jwtError is a simple error type for JWT validation failures.
-type jwtError struct{ msg string }
-
-func (e *jwtError) Error() string { return "jwt: " + e.msg }
 
 func isAllowedOrigin(origin string, allowed []string) bool {
 	for _, a := range allowed {

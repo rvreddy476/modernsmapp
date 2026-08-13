@@ -22,13 +22,13 @@ func (h *Handler) RegisterAudioRoutes(r *gin.Engine) {
 }
 
 type CreateAudioTrackRequest struct {
-	Title          string     `json:"title" binding:"required"`
-	Artist         string     `json:"artist"`
-	DurationMs     int        `json:"duration_ms"`
-	MediaID        string     `json:"media_id" binding:"required"`
-	OriginalPostID *string    `json:"original_post_id"`
-	Genre          string     `json:"genre"`
-	IsOriginal     *bool      `json:"is_original"`
+	Title          string  `json:"title" binding:"required"`
+	Artist         string  `json:"artist"`
+	DurationMs     int     `json:"duration_ms"`
+	MediaID        string  `json:"media_id" binding:"required"`
+	OriginalPostID *string `json:"original_post_id"`
+	Genre          string  `json:"genre"`
+	IsOriginal     *bool   `json:"is_original"`
 }
 
 func (h *Handler) CreateAudioTrack(c *gin.Context) {
