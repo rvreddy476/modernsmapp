@@ -1,4 +1,3 @@
-import 'dart:math';
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/models/monetization.dart';
@@ -88,7 +87,7 @@ class MonetizationDashboardScreen extends ConsumerWidget {
           const SizedBox(height: 24),
           _buildQuickActions(context),
           const SizedBox(height: 24),
-          _buildRecentActivity(data.payouts),
+          _buildLaunchStatus(data.earnings),
           const SizedBox(height: 100), // Space for bottom scroll
         ],
       ),
@@ -96,23 +95,38 @@ class MonetizationDashboardScreen extends ConsumerWidget {
   }
 
   Widget _buildEarningsSummary(EarningsSummary earnings) {
-    return Row(
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Expanded(
-          child: _GlassStatCard(
-            label: 'Earnings',
-            value: earnings.formattedThisMonth,
-            color: AppColors.postbookPrimary,
-          ),
+        Row(
+          children: [
+            Expanded(
+              child: _GlassStatCard(
+                label: 'Available (recorded)',
+                value: earnings.formattedAvailable,
+                color: AppColors.postbookPrimary,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _GlassStatCard(
+                label: 'Pending payout',
+                value: earnings.formattedPending,
+                color: AppColors.posttubePrimary,
+              ),
+            ),
+          ],
         ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: _GlassStatCard(
-            label: 'Pending',
-            value: earnings.formattedPending,
-            color: AppColors.posttubePrimary,
-          ),
+        const SizedBox(height: 12),
+        Text(
+          'Lifetime recorded: ${earnings.formattedLifetime}',
+          style: AppTextStyles.bodySmall.copyWith(color: Colors.white54),
         ),
+        if (earnings.updatedAt != null)
+          Text(
+            'Ledger updated ${earnings.updatedAt!.toLocal()}',
+            style: AppTextStyles.labelTiny.copyWith(color: Colors.white30),
+          ),
       ],
     ).animate().fadeIn().slideY(begin: 0.1, end: 0);
   }
@@ -121,7 +135,7 @@ class MonetizationDashboardScreen extends ConsumerWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('Revenue Growth', style: AppTextStyles.h2),
+        Text('Content views', style: AppTextStyles.h2),
         const SizedBox(height: 16),
         RepaintBoundary(
           child: Container(
@@ -145,45 +159,35 @@ class MonetizationDashboardScreen extends ConsumerWidget {
       children: [
         Text('Quick Actions', style: AppTextStyles.h2),
         const SizedBox(height: 16),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            _ActionPill(
-              icon: Icons.layers_outlined,
-              label: 'Tiers',
-              onTap: () => context.push('/monetization/tiers'),
-            ),
-            _ActionPill(
-              icon: Icons.insights,
-              label: 'Analytics',
-              onTap: () => context.push('/monetization/analytics'),
-            ),
-            _ActionPill(
-              icon: Icons.account_balance_wallet,
-              label: 'Withdraw',
-              onTap: () => context.push('/monetization/payouts'),
-            ),
-          ],
+        Align(
+          alignment: Alignment.centerLeft,
+          child: _ActionPill(
+            icon: Icons.insights,
+            label: 'Analytics',
+            onTap: () => context.push('/monetization/analytics'),
+          ),
         ),
       ],
     );
   }
 
-  Widget _buildRecentActivity(List<PayoutRecord> payouts) {
+  Widget _buildLaunchStatus(EarningsSummary earnings) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('Recent Payouts', style: AppTextStyles.h2),
+        Text('Beta availability', style: AppTextStyles.h2),
         const SizedBox(height: 16),
-        if (payouts.isEmpty)
-          Center(
-            child: Text(
-              'No recent payouts',
-              style: AppTextStyles.bodySmall.copyWith(color: Colors.white24),
-            ),
-          )
-        else
-          ...payouts.take(3).map((p) => _PayoutGlassTile(payout: p)),
+        Text(
+          !earnings.hasActivity
+              ? 'No recorded earnings yet. Analytics remains available while '
+                    'money products are closed.'
+              : earnings.isFrozen
+              ? 'This ledger is read-only and currently frozen.'
+              : 'Amounts shown come from the recorded creator ledger. '
+                    'Withdrawals, memberships, tips, and creator-fund actions '
+                    'are not launched in this beta.',
+          style: AppTextStyles.bodySmall.copyWith(color: Colors.white54),
+        ),
       ],
     );
   }
@@ -280,65 +284,6 @@ class _ActionPill extends StatelessWidget {
           Text(
             label,
             style: AppTextStyles.labelTiny.copyWith(color: Colors.white38),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _PayoutGlassTile extends StatelessWidget {
-  final PayoutRecord payout;
-  const _PayoutGlassTile({required this.payout});
-
-  @override
-  Widget build(BuildContext context) {
-    final isCompleted = payout.status == 'completed';
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.02),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
-      ),
-      child: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: (isCompleted ? Colors.green : Colors.amber).withValues(alpha: 
-                0.1,
-              ),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Icon(
-              isCompleted ? Icons.check : Icons.access_time,
-              color: isCompleted ? Colors.green : Colors.amber,
-              size: 18,
-            ),
-          ),
-          const SizedBox(width: 16),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Payout ID: ${payout.id.substring(0, min(8, payout.id.length))}',
-                  style: AppTextStyles.label.copyWith(color: Colors.white70),
-                ),
-                Text(
-                  payout.status.toUpperCase(),
-                  style: AppTextStyles.labelTiny.copyWith(
-                    color: Colors.white24,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          Text(
-            '₹${payout.amount.toStringAsFixed(0)}',
-            style: AppTextStyles.h3.copyWith(color: Colors.white),
           ),
         ],
       ),

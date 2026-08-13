@@ -1,7 +1,9 @@
+import 'package:atpost_app/core/config/environment.dart';
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/data/repositories/chat_repository.dart';
+import 'package:atpost_app/data/repositories/post_repository.dart';
 import 'package:atpost_app/data/repositories/user_repository.dart';
 import 'package:atpost_app/features/monetization/widgets/tier_picker_sheet.dart';
 import 'package:atpost_app/features/monetization/widgets/tip_sheet.dart';
@@ -49,11 +51,7 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
     }
   }
 
-  void _showProfileOptions(
-    BuildContext context,
-    WidgetRef ref,
-    String userId,
-  ) {
+  void _showProfileOptions(BuildContext context, WidgetRef ref, String userId) {
     final isMuted = ref.read(muteStateProvider(userId));
     final isBlocked = ref.read(blockStateProvider(userId));
 
@@ -80,7 +78,9 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
               ),
               ListTile(
                 leading: Icon(
-                  isMuted ? Icons.volume_up_outlined : Icons.volume_off_outlined,
+                  isMuted
+                      ? Icons.volume_up_outlined
+                      : Icons.volume_off_outlined,
                   color: AppColors.textSecondary,
                 ),
                 title: Text(
@@ -108,9 +108,7 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
                           content: Text(
-                            isMuted
-                                ? 'User unmuted.'
-                                : 'User muted.',
+                            isMuted ? 'User unmuted.' : 'User muted.',
                           ),
                         ),
                       );
@@ -158,9 +156,7 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
                           content: Text(
-                            isBlocked
-                                ? 'User unblocked.'
-                                : 'User blocked.',
+                            isBlocked ? 'User unblocked.' : 'User blocked.',
                           ),
                         ),
                       );
@@ -186,15 +182,18 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
                   'Report this profile for violating guidelines',
                   style: AppTextStyles.labelSmall,
                 ),
-                onTap: () {
+                // Module 3 M3-P0-8 / SR-7: this used to close the sheet and
+                // show "Report submitted. We will review this profile." while
+                // making NO API call whatsoever. Nothing was filed, nothing was
+                // reviewed, and the reporter was told otherwise — a user being
+                // harassed believed they had raised it and moved on.
+                //
+                // It now asks for a reason and files a real report against
+                // POST /v1/reports (entity_type "user"), and only claims
+                // success when the call succeeds.
+                onTap: () async {
                   Navigator.of(ctx).pop();
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text(
-                        'Report submitted. We will review this profile.',
-                      ),
-                    ),
-                  );
+                  await _reportProfile(userId);
                 },
               ),
             ],
@@ -202,6 +201,84 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
         ),
       ),
     );
+  }
+
+  /// Module 3 M3-P0-8 / SR-7 — a real profile report.
+  ///
+  /// The reasons match what trust-safety-service accepts. A free-text-only
+  /// report is harder to triage and slower to act on, and the delay is the
+  /// cost the person being harassed pays.
+  static const _reportReasons = <String, String>{
+    'harassment': 'Harassment or bullying',
+    'spam': 'Spam or scam',
+    'impersonation': 'Pretending to be someone else',
+    'hate_abuse': 'Hate speech',
+    'sexual_content': 'Nudity or sexual content',
+    'self_harm': 'Self-harm or suicide',
+    'other': 'Something else',
+  };
+
+  Future<void> _reportProfile(String userId) async {
+    final reason = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: AppColors.bgCard,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 20, 20, 4),
+              child: Text('Report this profile', style: AppTextStyles.h3),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+              child: Text(
+                'Tell us what is wrong so the safety team can act on it.',
+                style: AppTextStyles.bodySmall.copyWith(
+                  color: AppColors.textSecondary,
+                ),
+              ),
+            ),
+            for (final entry in _reportReasons.entries)
+              ListTile(
+                title: Text(entry.value, style: AppTextStyles.body),
+                onTap: () => Navigator.of(ctx).pop(entry.key),
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+
+    if (reason == null || !mounted) return;
+
+    try {
+      await ref
+          .read(postRepositoryProvider)
+          .submitReport(targetType: 'user', targetId: userId, reason: reason);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Report sent. The safety team will review it.'),
+        ),
+      );
+    } catch (_) {
+      // SR-7: a failure must be reported as a failure. Claiming success on a
+      // failed call is what the old code did unconditionally, and it left the
+      // reporter believing the platform had been told.
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Could not send the report. Please check your connection and try again.',
+          ),
+        ),
+      );
+    }
   }
 
   @override
@@ -413,15 +490,15 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
                           Expanded(
                             child: _ConnectionButton(userId: widget.userId),
                           ),
-                          if (user.isVerified) ...[
+                          if (user.isVerified &&
+                              Environment.monetizationWritesEnabled) ...[
                             const SizedBox(width: 8),
                             GestureDetector(
                               onTap: () async {
                                 // Tier 3c: open the tier picker. The
                                 // sheet returns the chosen tier ID on
                                 // success.
-                                final pickedTierId =
-                                    await TierPickerSheet.show(
+                                final pickedTierId = await TierPickerSheet.show(
                                   context,
                                   creatorId: widget.userId,
                                 );

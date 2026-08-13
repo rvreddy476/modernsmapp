@@ -92,10 +92,26 @@ class MonetizationRepository {
 
   MonetizationRepository(this._api);
 
-  /// Fetch earnings summary for the current user (analytics-side data).
+  /// Fetch the authoritative creator ledger. Analytics is never a money
+  /// source; the standard API envelope is unwrapped explicitly.
   Future<EarningsSummary> getEarningsSummary() async {
-    final response = await _api.get('/v1/analytics/creator/me');
-    return EarningsSummary.fromJson(response.data as Map<String, dynamic>);
+    final response = await _api.get('/v1/monetization/creator-ledger');
+    final root = Map<String, dynamic>.from(response.data as Map);
+    final data = root['data'];
+    if (data is! Map) {
+      throw const FormatException('Creator ledger response has no data object');
+    }
+    return EarningsSummary.fromJson(Map<String, dynamic>.from(data));
+  }
+
+  Future<CreatorAnalytics> getCreatorAnalytics({String period = '30d'}) async {
+    final response = await _api.get(
+      '/v1/analytics/creator/me',
+      queryParameters: {'period': period},
+    );
+    final root = Map<String, dynamic>.from(response.data as Map);
+    final data = root['data'] is Map ? root['data'] as Map : root;
+    return CreatorAnalytics.fromJson(Map<String, dynamic>.from(data));
   }
 
   /// Phase F1.1 — re-pointed from the retired `/v1/shop/payouts` to the
@@ -103,7 +119,10 @@ class MonetizationRepository {
   /// response shape changed: each row is now an order item with gross
   /// / commission / fee / TDS / net broken out instead of a single
   /// aggregated payout transaction.
-  Future<List<SellerEarning>> getSellerEarnings({int limit = 50, int offset = 0}) async {
+  Future<List<SellerEarning>> getSellerEarnings({
+    int limit = 50,
+    int offset = 0,
+  }) async {
     final response = await _api.get(
       '/v1/commerce/seller/earnings',
       queryParameters: {'limit': limit, 'offset': offset},
@@ -115,21 +134,17 @@ class MonetizationRepository {
         .toList();
   }
 
-  /// Legacy-shape adapter so the monetization dashboard (which still
-  /// renders PayoutRecord rows) keeps working without a UI rewrite.
-  /// Each commerce earning row collapses into a PayoutRecord with the
-  /// net amount + delivered_at + payment_method. Will be removed once
-  /// the dashboard migrates to the richer SellerEarning view.
+  /// Read-only payout history from the same authoritative creator ledger.
   Future<List<PayoutRecord>> getPayouts() async {
-    final earnings = await getSellerEarnings(limit: 100);
-    return earnings
-        .map((e) => PayoutRecord(
-              id: e.orderItemId,
-              amount: e.netAmount,
-              status: e.status.isEmpty ? 'pending' : e.status,
-              createdAt: e.deliveredAt ?? DateTime.now(),
-              method: e.paymentMethod,
-            ))
+    final response = await _api.get('/v1/monetization/payouts');
+    final root = Map<String, dynamic>.from(response.data as Map);
+    final rows = root['data'] as List<dynamic>? ?? const [];
+    return rows
+        .map(
+          (row) => PayoutRecord.fromLedgerJson(
+            Map<String, dynamic>.from(row as Map),
+          ),
+        )
         .toList();
   }
 
@@ -137,13 +152,9 @@ class MonetizationRepository {
   Future<List<Map<String, dynamic>>> getEarningsHistory({
     String period = '30d',
   }) async {
-    final response = await _api.get(
-      '/v1/analytics/creator/me',
-      queryParameters: {'period': period},
-    );
-    final history = (response.data['history'] as List<dynamic>?) ?? [];
-    return history
-        .map((e) => Map<String, dynamic>.from(e as Map))
+    final analytics = await getCreatorAnalytics(period: period);
+    return analytics.dailyStats
+        .map((row) => <String, dynamic>{'date': row.date, 'views': row.views})
         .toList();
   }
 
@@ -187,10 +198,7 @@ class MonetizationRepository {
   }) async {
     final res = await _api.get(
       '/v1/monetization/entitlements',
-      queryParameters: {
-        'creator_id': creatorId,
-        'tier_id': ?tierId,
-      },
+      queryParameters: {'creator_id': creatorId, 'tier_id': ?tierId},
     );
     return Entitlement.fromJson(
       Map<String, dynamic>.from(res.data['data'] as Map),

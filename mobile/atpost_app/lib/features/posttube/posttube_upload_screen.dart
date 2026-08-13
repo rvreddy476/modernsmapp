@@ -17,7 +17,8 @@ class PosttubeUploadScreen extends ConsumerStatefulWidget {
   const PosttubeUploadScreen({super.key});
 
   @override
-  ConsumerState<PosttubeUploadScreen> createState() => _PosttubeUploadScreenState();
+  ConsumerState<PosttubeUploadScreen> createState() =>
+      _PosttubeUploadScreenState();
 }
 
 class _PosttubeUploadScreenState extends ConsumerState<PosttubeUploadScreen> {
@@ -31,6 +32,7 @@ class _PosttubeUploadScreenState extends ConsumerState<PosttubeUploadScreen> {
   double _uploadProgress = 0.0;
   String _status = '';
   bool _isUploading = false;
+  bool _alteredContent = false;
   String? _error;
 
   // Module 1 P0-2: creator publication choices. Held in state so they
@@ -75,7 +77,8 @@ class _PosttubeUploadScreenState extends ConsumerState<PosttubeUploadScreen> {
       final api = ref.read(apiClientProvider);
 
       void onProgress(int sent, int total) {
-        if (mounted && total > 0) setState(() => _uploadProgress = sent / total);
+        if (mounted && total > 0)
+          setState(() => _uploadProgress = sent / total);
       }
 
       // Large videos take the resumable (chunked) path so a dropped
@@ -114,27 +117,35 @@ class _PosttubeUploadScreenState extends ConsumerState<PosttubeUploadScreen> {
           // Scheduled publish (P0-5): the server holds the draft and
           // publishes it at the due time, re-checking standing and
           // moderation then. Times travel as UTC; the sheet shows local.
-          await api.post('/v1/posts/drafts', data: {
-            'post_type': 'video',
-            'schedule_at': scheduleAt,
-            'payload': {
+          await api.post(
+            '/v1/posts/drafts',
+            data: {
+              'post_type': 'video',
+              'schedule_at': scheduleAt,
+              'payload': {
+                'content_type': 'long_video',
+                'media_ids': [mediaId],
+                'title': _titleCtrl.text.trim(),
+                'text': fullText,
+                'visibility': _distribution.visibilityWire,
+                'distribution': _distribution.toPolicyJson(),
+                'altered_content': _alteredContent,
+              },
+            },
+          );
+        } else {
+          await api.post(
+            '/v1/posts',
+            data: {
               'content_type': 'long_video',
               'media_ids': [mediaId],
               'title': _titleCtrl.text.trim(),
               'text': fullText,
               'visibility': _distribution.visibilityWire,
               'distribution': _distribution.toPolicyJson(),
+              'altered_content': _alteredContent,
             },
-          });
-        } else {
-          await api.post('/v1/posts', data: {
-            'content_type': 'long_video',
-            'media_ids': [mediaId],
-            'title': _titleCtrl.text.trim(),
-            'text': fullText,
-            'visibility': _distribution.visibilityWire,
-            'distribution': _distribution.toPolicyJson(),
-          });
+          );
         }
       } catch (_) {
         unawaited(api.tryDeleteMedia(mediaId));
@@ -155,7 +166,9 @@ class _PosttubeUploadScreenState extends ConsumerState<PosttubeUploadScreen> {
       ref.invalidate(reelFeedProvider);
       try {
         await ref.read(homeFeedProvider.notifier).fetchFirstPage();
-      } catch (_) {/* non-fatal */}
+      } catch (_) {
+        /* non-fatal */
+      }
     } catch (e, st) {
       final exception = ErrorHandler.handle(e, st);
       if (mounted) {
@@ -174,7 +187,10 @@ class _PosttubeUploadScreenState extends ConsumerState<PosttubeUploadScreen> {
       appBar: AppBar(
         backgroundColor: Colors.black,
         title: const Text('New Video'),
-        leading: IconButton(icon: const Icon(Icons.close), onPressed: () => context.pop()),
+        leading: IconButton(
+          icon: const Icon(Icons.close),
+          onPressed: () => context.pop(),
+        ),
       ),
       body: _buildCurrentStep(),
     );
@@ -194,16 +210,28 @@ class _PosttubeUploadScreenState extends ConsumerState<PosttubeUploadScreen> {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          const Icon(Icons.cloud_upload_outlined, size: 80, color: Colors.white24),
+          const Icon(
+            Icons.cloud_upload_outlined,
+            size: 80,
+            color: Colors.white24,
+          ),
           const SizedBox(height: 24),
           ElevatedButton.icon(
             onPressed: () async {
-              final picked = await ImagePicker().pickVideo(source: ImageSource.gallery);
-              if (picked != null) setState(() { _videoFile = picked; _step = 1; });
+              final picked = await ImagePicker().pickVideo(
+                source: ImageSource.gallery,
+              );
+              if (picked != null)
+                setState(() {
+                  _videoFile = picked;
+                  _step = 1;
+                });
             },
             icon: const Icon(Icons.video_library),
             label: const Text('Select Video'),
-            style: ElevatedButton.styleFrom(backgroundColor: AppColors.posttubePrimary),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.posttubePrimary,
+            ),
           ),
         ],
       ),
@@ -233,10 +261,24 @@ class _PosttubeUploadScreenState extends ConsumerState<PosttubeUploadScreen> {
             const SizedBox(height: 20),
             _buildHashtagsSection(),
             const SizedBox(height: 20),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _alteredContent,
+              onChanged: (value) => setState(() => _alteredContent = value),
+              secondary: const Icon(
+                Icons.auto_awesome_outlined,
+                color: Colors.amber,
+              ),
+              title: const Text('AI-generated or significantly altered'),
+              subtitle: const Text('Adds a visible disclosure for viewers.'),
+            ),
+            const SizedBox(height: 12),
             _buildDistributionSection(),
             const SizedBox(height: 32),
             ElevatedButton(
-              onPressed: _titleCtrl.text.trim().isNotEmpty ? _startResilientUpload : null,
+              onPressed: _titleCtrl.text.trim().isNotEmpty
+                  ? _startResilientUpload
+                  : null,
               child: Text(
                 _distribution.visibility == PublishVisibility.scheduled
                     ? 'Upload & Schedule'
@@ -261,7 +303,9 @@ class _PosttubeUploadScreenState extends ConsumerState<PosttubeUploadScreen> {
       PublishVisibility.scheduled => 'Scheduled',
     };
     final destination = d.mainFeed ? 'PostTube + social feed' : 'PostTube only';
-    final notify = d.notifySubscribers ? 'subscribers notified' : 'no notification';
+    final notify = d.notifySubscribers
+        ? 'subscribers notified'
+        : 'no notification';
 
     return InkWell(
       onTap: () async {
@@ -292,16 +336,18 @@ class _PosttubeUploadScreenState extends ConsumerState<PosttubeUploadScreen> {
                   const SizedBox(height: 4),
                   Text(
                     '$visibilityLabel · $destination · $notify',
-                    style: AppTextStyles.bodySmall
-                        .copyWith(color: AppColors.textDim),
+                    style: AppTextStyles.bodySmall.copyWith(
+                      color: AppColors.textDim,
+                    ),
                   ),
                   if (d.visibility == PublishVisibility.scheduled &&
                       d.scheduleAtLocal != null) ...[
                     const SizedBox(height: 2),
                     Text(
                       'Publishes ${d.scheduleAtLocal}',
-                      style: AppTextStyles.bodySmall
-                          .copyWith(color: AppColors.textDim),
+                      style: AppTextStyles.bodySmall.copyWith(
+                        color: AppColors.textDim,
+                      ),
                     ),
                   ],
                 ],
@@ -320,7 +366,11 @@ class _PosttubeUploadScreenState extends ConsumerState<PosttubeUploadScreen> {
       children: [
         const Text(
           'Hashtags',
-          style: TextStyle(color: Colors.white54, fontSize: 12, fontWeight: FontWeight.w600),
+          style: TextStyle(
+            color: Colors.white54,
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+          ),
         ),
         const SizedBox(height: 8),
         if (_hashtags.isNotEmpty)
@@ -329,9 +379,18 @@ class _PosttubeUploadScreenState extends ConsumerState<PosttubeUploadScreen> {
             runSpacing: 4,
             children: _hashtags.map((tag) {
               return Chip(
-                label: Text(tag, style: const TextStyle(color: Colors.white, fontSize: 12)),
-                backgroundColor: AppColors.posttubePrimary.withValues(alpha: 0.25),
-                deleteIcon: const Icon(Icons.close, size: 14, color: Colors.white54),
+                label: Text(
+                  tag,
+                  style: const TextStyle(color: Colors.white, fontSize: 12),
+                ),
+                backgroundColor: AppColors.posttubePrimary.withValues(
+                  alpha: 0.25,
+                ),
+                deleteIcon: const Icon(
+                  Icons.close,
+                  size: 14,
+                  color: Colors.white54,
+                ),
                 onDeleted: () => _removeHashtag(tag),
                 side: BorderSide.none,
                 visualDensity: VisualDensity.compact,
@@ -355,8 +414,15 @@ class _PosttubeUploadScreenState extends ConsumerState<PosttubeUploadScreen> {
                     borderRadius: BorderRadius.circular(10),
                     borderSide: BorderSide.none,
                   ),
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                  prefixIcon: const Icon(Icons.tag, color: Colors.white38, size: 18),
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 10,
+                  ),
+                  prefixIcon: const Icon(
+                    Icons.tag,
+                    color: Colors.white38,
+                    size: 18,
+                  ),
                 ),
               ),
             ),
@@ -364,12 +430,22 @@ class _PosttubeUploadScreenState extends ConsumerState<PosttubeUploadScreen> {
             GestureDetector(
               onTap: () => _addHashtag(_hashtagCtrl.text),
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 10,
+                ),
                 decoration: BoxDecoration(
                   color: AppColors.posttubePrimary,
                   borderRadius: BorderRadius.circular(10),
                 ),
-                child: const Text('Add', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 13)),
+                child: const Text(
+                  'Add',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 13,
+                  ),
+                ),
               ),
             ),
           ],
@@ -388,18 +464,35 @@ class _PosttubeUploadScreenState extends ConsumerState<PosttubeUploadScreen> {
             if (_error != null) ...[
               const Icon(Icons.error_outline, color: Colors.red, size: 60),
               const SizedBox(height: 16),
-              Text(_error!, style: const TextStyle(color: Colors.redAccent), textAlign: TextAlign.center),
+              Text(
+                _error!,
+                style: const TextStyle(color: Colors.redAccent),
+                textAlign: TextAlign.center,
+              ),
               const SizedBox(height: 24),
-              ElevatedButton(onPressed: _startResilientUpload, child: const Text('Retry')),
+              ElevatedButton(
+                onPressed: _startResilientUpload,
+                child: const Text('Retry'),
+              ),
             ] else ...[
-              CircularProgressIndicator(value: _uploadProgress, color: AppColors.posttubePrimary, strokeWidth: 8),
+              CircularProgressIndicator(
+                value: _uploadProgress,
+                color: AppColors.posttubePrimary,
+                strokeWidth: 8,
+              ),
               const SizedBox(height: 24),
-              Text('${(_uploadProgress * 100).toInt()}%', style: AppTextStyles.h1),
+              Text(
+                '${(_uploadProgress * 100).toInt()}%',
+                style: AppTextStyles.h1,
+              ),
               const SizedBox(height: 8),
               Text(_status, style: AppTextStyles.bodySmall),
               if (!_isUploading) ...[
                 const SizedBox(height: 32),
-                ElevatedButton(onPressed: () => context.go('/posttube'), child: const Text('Finish')),
+                ElevatedButton(
+                  onPressed: () => context.go('/posttube'),
+                  child: const Text('Finish'),
+                ),
               ],
             ],
           ],

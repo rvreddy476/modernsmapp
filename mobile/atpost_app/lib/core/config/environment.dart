@@ -31,12 +31,31 @@ class Environment {
     defaultValue: '',
   );
 
+  /// Launch kill switch. Calls stay absent from the client unless a release
+  /// is explicitly built after real-device/network verification.
+  static const bool callsEnabled = bool.fromEnvironment(
+    'CALLS_ENABLED',
+    defaultValue: false,
+  );
+
+  /// Financial mutations remain hidden until the separate KYC, tax,
+  /// provider, reconciliation, fraud, and operations checkpoint passes.
+  static const bool monetizationWritesEnabled = bool.fromEnvironment(
+    'MONETIZATION_WRITES_ENABLED',
+    defaultValue: false,
+  );
+
+  /// Public crowd moderation stays hidden until reviewer vetting, durable
+  /// canonical effects, fraud controls, and payout reconciliation pass.
+  static const bool reviewerPublicEnabled = bool.fromEnvironment(
+    'REVIEWER_PUBLIC_ENABLED',
+    defaultValue: false,
+  );
+
   /// Set to a domain (e.g. "cleestudio.com") to use external HTTPS endpoints.
   /// Leave null for local development with direct service ports.
   static String? externalDomain = _resolveExternalDomain();
-  static String? pulseBaseUrlOverride = _trimOrNull(
-    _configuredPulseBaseUrl,
-  );
+  static String? pulseBaseUrlOverride = _trimOrNull(_configuredPulseBaseUrl);
 
   // Android debug defaults to adb-reversed localhost on a physical device.
   // Override with ATPOST_DIRECT_HOST=10.0.2.2 when targeting an emulator.

@@ -42,6 +42,7 @@ class GroupsRepository {
   }
 
   Future<Group> createGroup({
+    required String idempotencyKey,
     required String name,
     required String description,
     required String privacy,
@@ -54,6 +55,7 @@ class GroupsRepository {
     final response = await _api.post(
       '/v1/groups',
       data: {
+        'idempotency_key': idempotencyKey,
         'name': name,
         'description': description,
         'privacy': privacy,
@@ -245,8 +247,7 @@ class GroupsRepository {
       'category': ?category,
       'location': ?location,
     };
-    final response =
-        await _api.patch('/v1/groups/$groupId', data: payload);
+    final response = await _api.patch('/v1/groups/$groupId', data: payload);
     final data = response.data;
     if (data is Map<String, dynamic>) {
       final inner = data['data'] as Map<String, dynamic>? ?? data;

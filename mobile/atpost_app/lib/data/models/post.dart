@@ -28,6 +28,7 @@ class Post {
   // the backend has stripped text/media/poll for this caller.
   final String? tierRequiredId;
   final bool bodyRedacted;
+  final bool alteredContent;
 
   const Post({
     required this.id,
@@ -54,6 +55,7 @@ class Post {
     this.poll,
     this.tierRequiredId,
     this.bodyRedacted = false,
+    this.alteredContent = false,
   });
 
   factory Post.fromJson(Map<String, dynamic> json) {
@@ -89,6 +91,7 @@ class Post {
             : null,
         tierRequiredId: json['tier_required_id']?.toString(),
         bodyRedacted: _toBool(json['body_redacted']),
+        alteredContent: _toBool(json['altered_content']),
       );
     } catch (e, st) {
       AppLogger.error('Post.fromJson failed: $e', error: e, stackTrace: st);
@@ -132,6 +135,9 @@ class Post {
       activityDetail: activityDetail,
       locationName: locationName,
       poll: poll,
+      tierRequiredId: tierRequiredId,
+      bodyRedacted: bodyRedacted,
+      alteredContent: alteredContent,
     );
   }
 
@@ -168,6 +174,9 @@ class Post {
       'activity_detail': activityDetail,
       'location_name': locationName,
       'poll': poll?.toJson(),
+      'tier_required_id': tierRequiredId,
+      'body_redacted': bodyRedacted,
+      'altered_content': alteredContent,
     };
   }
 }
@@ -272,15 +281,17 @@ class Comment {
       id: (json['id'] ?? json['comment_id'] ?? '').toString(),
       postId: (json['post_id'] ?? '').toString(),
       authorId: (json['user_id'] ?? json['author_id'] ?? '').toString(),
-      authorName: (json['user_display_name'] ??
-              json['author_name'] ??
-              json['username'] ??
-              json['display_name'])
-          ?.toString(),
-      authorAvatar: (json['user_avatar_url'] ??
-              json['author_avatar'] ??
-              json['avatar_url'])
-          ?.toString(),
+      authorName:
+          (json['user_display_name'] ??
+                  json['author_name'] ??
+                  json['username'] ??
+                  json['display_name'])
+              ?.toString(),
+      authorAvatar:
+          (json['user_avatar_url'] ??
+                  json['author_avatar'] ??
+                  json['avatar_url'])
+              ?.toString(),
       text: (json['text'] ?? '').toString(),
       likeCount: _toInt(json['like_count']),
       createdAt: _parseDate(json['created_at']),

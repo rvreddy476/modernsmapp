@@ -208,6 +208,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
                         if (_showBackgroundPicker)
                           _buildBackgroundPicker(state),
                         if (state.files.isNotEmpty) _buildMediaGrid(state),
+                        _buildProvenanceDisclosure(state),
                         const SizedBox(height: 120), // Space for toolbar
                       ],
                     ),
@@ -232,6 +233,33 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
             colors: [Color(0xFF0F111A), Color(0xFF090A11), Color(0xFF141726)],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildProvenanceDisclosure(CreationState state) {
+    return Container(
+      margin: const EdgeInsets.only(top: 18),
+      decoration: BoxDecoration(
+        color: AppColors.bgCard,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.borderSubtle),
+      ),
+      child: SwitchListTile(
+        value: state.alteredContent,
+        onChanged: (value) =>
+            ref.read(creationProvider.notifier).setAlteredContent(value),
+        secondary: const Icon(Icons.auto_awesome_outlined, color: Colors.amber),
+        title: Text(
+          'AI-generated or significantly altered',
+          style: AppTextStyles.body,
+        ),
+        subtitle: Text(
+          'Adds a visible disclosure for viewers. It does not reduce reach.',
+          style: AppTextStyles.bodySmall.copyWith(
+            color: AppColors.textSecondary,
           ),
         ),
       ),
@@ -270,7 +298,9 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
                         await ref
                             .read(homeFeedProvider.notifier)
                             .fetchFirstPage();
-                      } catch (_) {/* non-fatal */}
+                      } catch (_) {
+                        /* non-fatal */
+                      }
                     }
                     if (success && mounted) context.pop();
                     if (!success && mounted) {
@@ -480,8 +510,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
   /// marker so an author can say "this image carries no information"
   /// rather than being nagged forever or leaving it ambiguous.
   Future<void> _editAltText(int index, CreationState state) async {
-    final controller =
-        TextEditingController(text: state.altTexts[index] ?? '');
+    final controller = TextEditingController(text: state.altTexts[index] ?? '');
     var decorative = state.decorativeMedia.contains(index);
 
     final saved = await showModalBottomSheet<bool>(
@@ -507,8 +536,9 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
               const SizedBox(height: 6),
               Text(
                 'Helps people using screen readers understand your post.',
-                style:
-                    AppTextStyles.bodySmall.copyWith(color: AppColors.textDim),
+                style: AppTextStyles.bodySmall.copyWith(
+                  color: AppColors.textDim,
+                ),
               ),
               const SizedBox(height: 12),
               TextField(
@@ -529,12 +559,15 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
                   decorative = v ?? false;
                   if (decorative) controller.clear();
                 }),
-                title: Text('This image is decorative',
-                    style: AppTextStyles.bodyMedium),
+                title: Text(
+                  'This image is decorative',
+                  style: AppTextStyles.bodyMedium,
+                ),
                 subtitle: Text(
                   'Screen readers will skip it.',
-                  style: AppTextStyles.bodySmall
-                      .copyWith(color: AppColors.textDim),
+                  style: AppTextStyles.bodySmall.copyWith(
+                    color: AppColors.textDim,
+                  ),
                 ),
               ),
               const SizedBox(height: 8),
@@ -605,8 +638,11 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
                       color: Colors.black54,
                       shape: BoxShape.circle,
                     ),
-                    child:
-                        const Icon(Icons.close, size: 14, color: Colors.white),
+                    child: const Icon(
+                      Icons.close,
+                      size: 14,
+                      color: Colors.white,
+                    ),
                   ),
                 ),
               ),
@@ -619,7 +655,9 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
                   onTap: () => _editAltText(index, state),
                   child: Container(
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 8, vertical: 4),
+                      horizontal: 8,
+                      vertical: 4,
+                    ),
                     decoration: BoxDecoration(
                       color: described || decorative
                           ? AppColors.posttubePrimary
@@ -697,7 +735,9 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
               padding: const EdgeInsets.only(top: 6, left: 4),
               child: Text(
                 qErr,
-                style: AppTextStyles.labelSmall.copyWith(color: Colors.redAccent),
+                style: AppTextStyles.labelSmall.copyWith(
+                  color: Colors.redAccent,
+                ),
               ),
             ),
           const SizedBox(height: 16),
@@ -706,73 +746,74 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
             style: AppTextStyles.label.copyWith(color: Colors.white70),
           ),
           const SizedBox(height: 8),
-          ...state.pollOptions.asMap().entries.map(
-            (e) {
-              final err = state.pollOptionErrors[e.key];
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    TextField(
-                      onChanged: (v) {
-                        ref
-                            .read(creationProvider.notifier)
-                            .updatePollOption(e.key, v);
-                        // Clear inline errors as the user fixes them.
-                        ref.read(creationProvider.notifier).clearPollErrors();
-                      },
-                      style: AppTextStyles.body,
-                      decoration: InputDecoration(
-                        hintText: 'Option ${e.key + 1}',
-                        filled: true,
-                        fillColor: Colors.white.withValues(alpha: 0.05),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: err != null
-                              ? const BorderSide(color: Colors.redAccent)
-                              : BorderSide.none,
+          ...state.pollOptions.asMap().entries.map((e) {
+            final err = state.pollOptionErrors[e.key];
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  TextField(
+                    onChanged: (v) {
+                      ref
+                          .read(creationProvider.notifier)
+                          .updatePollOption(e.key, v);
+                      // Clear inline errors as the user fixes them.
+                      ref.read(creationProvider.notifier).clearPollErrors();
+                    },
+                    style: AppTextStyles.body,
+                    decoration: InputDecoration(
+                      hintText: 'Option ${e.key + 1}',
+                      filled: true,
+                      fillColor: Colors.white.withValues(alpha: 0.05),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: err != null
+                            ? const BorderSide(color: Colors.redAccent)
+                            : BorderSide.none,
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: err != null
+                            ? const BorderSide(color: Colors.redAccent)
+                            : BorderSide.none,
+                      ),
+                      suffixIcon: state.pollOptions.length > 2
+                          ? IconButton(
+                              icon: const Icon(
+                                Icons.remove_circle_outline,
+                                color: Colors.redAccent,
+                                size: 20,
+                              ),
+                              onPressed: () => ref
+                                  .read(creationProvider.notifier)
+                                  .removePollOption(e.key),
+                            )
+                          : null,
+                    ),
+                  ),
+                  if (err != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4, left: 4),
+                      child: Text(
+                        err,
+                        style: AppTextStyles.labelSmall.copyWith(
+                          color: Colors.redAccent,
                         ),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: err != null
-                              ? const BorderSide(color: Colors.redAccent)
-                              : BorderSide.none,
-                        ),
-                        suffixIcon: state.pollOptions.length > 2
-                            ? IconButton(
-                                icon: const Icon(
-                                  Icons.remove_circle_outline,
-                                  color: Colors.redAccent,
-                                  size: 20,
-                                ),
-                                onPressed: () => ref
-                                    .read(creationProvider.notifier)
-                                    .removePollOption(e.key),
-                              )
-                            : null,
                       ),
                     ),
-                    if (err != null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 4, left: 4),
-                        child: Text(
-                          err,
-                          style: AppTextStyles.labelSmall
-                              .copyWith(color: Colors.redAccent),
-                        ),
-                      ),
-                  ],
-                ),
-              );
-            },
-          ),
+                ],
+              ),
+            );
+          }),
           if (state.pollQuestionError != null)
             Padding(
               padding: const EdgeInsets.only(bottom: 8, left: 4),
               child: Text(
                 state.pollQuestionError!,
-                style: AppTextStyles.labelSmall.copyWith(color: Colors.redAccent),
+                style: AppTextStyles.labelSmall.copyWith(
+                  color: Colors.redAccent,
+                ),
               ),
             ),
           if (state.pollOptions.length < 5)
@@ -845,7 +886,9 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
               Icons.palette_outlined,
               'Design',
               Colors.amberAccent,
-              () => setState(() => _showBackgroundPicker = !_showBackgroundPicker),
+              () => setState(
+                () => _showBackgroundPicker = !_showBackgroundPicker,
+              ),
             ),
             _ToolbarIcon(
               Icons.movie_edit,
@@ -933,24 +976,28 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
               spacing: 6,
               runSpacing: 6,
               children: state.tags
-                  .map((t) => Chip(
-                        label: Text(
-                          '#$t',
-                          style: AppTextStyles.labelSmall.copyWith(
-                            color: Colors.lightBlueAccent,
-                          ),
+                  .map(
+                    (t) => Chip(
+                      label: Text(
+                        '#$t',
+                        style: AppTextStyles.labelSmall.copyWith(
+                          color: Colors.lightBlueAccent,
                         ),
-                        backgroundColor: Colors.lightBlueAccent.withValues(alpha: 0.1),
-                        side: BorderSide(
-                          color: Colors.lightBlueAccent.withValues(alpha: 0.3),
-                        ),
-                        deleteIcon: const Icon(Icons.close, size: 14),
-                        deleteIconColor: Colors.lightBlueAccent,
-                        onDeleted: () =>
-                            ref.read(creationProvider.notifier).removeTag(t),
-                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        visualDensity: VisualDensity.compact,
-                      ))
+                      ),
+                      backgroundColor: Colors.lightBlueAccent.withValues(
+                        alpha: 0.1,
+                      ),
+                      side: BorderSide(
+                        color: Colors.lightBlueAccent.withValues(alpha: 0.3),
+                      ),
+                      deleteIcon: const Icon(Icons.close, size: 14),
+                      deleteIconColor: Colors.lightBlueAccent,
+                      onDeleted: () =>
+                          ref.read(creationProvider.notifier).removeTag(t),
+                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      visualDensity: VisualDensity.compact,
+                    ),
+                  )
                   .toList(),
             ),
           ],
@@ -988,7 +1035,11 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
         children: [
           Row(
             children: [
-              const Icon(Icons.palette_outlined, color: Colors.amberAccent, size: 16),
+              const Icon(
+                Icons.palette_outlined,
+                color: Colors.amberAccent,
+                size: 16,
+              ),
               const SizedBox(width: 6),
               Text(
                 'Background',
@@ -1015,8 +1066,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
                 icon: const Icon(Icons.close, size: 18, color: Colors.white54),
                 padding: EdgeInsets.zero,
                 constraints: const BoxConstraints(),
-                onPressed: () =>
-                    setState(() => _showBackgroundPicker = false),
+                onPressed: () => setState(() => _showBackgroundPicker = false),
               ),
             ],
           ),
@@ -1049,7 +1099,8 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
                         radius: radius,
                         start: start,
                         arcSpan: arcSpan,
-                        selected: state.backgroundColor?.toUpperCase() ==
+                        selected:
+                            state.backgroundColor?.toUpperCase() ==
                             swatches[i].hex.toUpperCase(),
                         disabled: disabled,
                       ),
@@ -1058,7 +1109,10 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
                       left: arcWidth / 2 - 16,
                       top: arcHeight - 4,
                       child: _swatchButton(
-                        const _Swatch(hex: 'transparent', label: 'No background'),
+                        const _Swatch(
+                          hex: 'transparent',
+                          label: 'No background',
+                        ),
                         selected: state.backgroundColor == null,
                         disabled: disabled,
                       ),
@@ -1109,7 +1163,11 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
     return value == null ? Colors.white12 : Color(value);
   }
 
-  Widget _swatchButton(_Swatch swatch, {required bool selected, required bool disabled}) {
+  Widget _swatchButton(
+    _Swatch swatch, {
+    required bool selected,
+    required bool disabled,
+  }) {
     final isNone = swatch.hex == 'transparent';
     return GestureDetector(
       onTap: disabled

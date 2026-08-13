@@ -26,6 +26,58 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
   bool _obscurePassword = true;
   bool _obscureConfirm = true;
 
+  // Module 3 M3-P0-3 / SR-6 — date of birth and consent are now REQUIRED.
+  //
+  // The backend age gate was 13 and was skipped entirely when no date of birth
+  // was supplied — and this screen supplied none, so every account it created
+  // bypassed the check. There was no consent capture at all.
+  //
+  // The gate is now 18 and mandatory. India's DPDP Act requires verifiable
+  // parental consent to process the data of anyone under 18, and this platform
+  // has no such flow, so it cannot lawfully onboard a minor.
+  DateTime? _dob;
+  bool _acceptedTerms = false;
+
+  /// Must match service.CurrentTermsVersion in auth-service. The server
+  /// rejects a mismatch, so a stale client fails loudly rather than recording
+  /// consent to a text the user never saw.
+  static const _termsVersion = '2026-08-01';
+  static const _minimumAge = 18;
+
+  /// Completed years, computed the same way the server does: an explicit
+  /// month/day comparison, not a division by 365.25, because on a legal
+  /// boundary a one-day error admits someone the platform cannot onboard.
+  int _ageInYears(DateTime born, DateTime now) {
+    var years = now.year - born.year;
+    if (now.month < born.month || (now.month == born.month && now.day < born.day)) {
+      years--;
+    }
+    return years;
+  }
+
+  Future<void> _pickDateOfBirth() async {
+    final now = DateTime.now();
+    // Open the picker at the earliest allowed date rather than today, so the
+    // user is not scrolling back eighteen years from a default that can never
+    // be valid.
+    final initial = DateTime(now.year - _minimumAge, now.month, now.day);
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _dob ?? initial,
+      firstDate: DateTime(now.year - 120),
+      lastDate: now,
+      helpText: 'Select your date of birth',
+    );
+    if (picked != null) {
+      setState(() => _dob = picked);
+    }
+  }
+
+  String _formatDob(DateTime d) =>
+      '${d.year.toString().padLeft(4, '0')}-'
+      '${d.month.toString().padLeft(2, '0')}-'
+      '${d.day.toString().padLeft(2, '0')}';
+
   @override
   void dispose() {
     _displayNameController.dispose();
@@ -46,6 +98,17 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
     if (password.isEmpty) return 'Password is required.';
     if (password.length < 8) return 'Password must be at least 8 characters.';
     if (password != confirm) return 'Passwords do not match.';
+
+    // SR-6. These are checked here only so the user gets an immediate answer;
+    // the server enforces the same rules and is the authority. A client-side
+    // check alone would be trivially bypassed.
+    if (_dob == null) return 'Date of birth is required.';
+    if (_ageInYears(_dob!, DateTime.now()) < _minimumAge) {
+      return 'You must be at least $_minimumAge years old to create an account.';
+    }
+    if (!_acceptedTerms) {
+      return 'You must accept the Terms of Service and Privacy Policy.';
+    }
     return null;
   }
 
@@ -75,6 +138,11 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
               'password': _passwordController.text,
               'first_name': firstName,
               'last_name': lastName,
+              // SR-6: the server requires all three. `dob` was previously
+              // omitted, which skipped the age gate entirely.
+              'dob': _formatDob(_dob!),
+              'accepted_terms': _acceptedTerms,
+              'terms_version': _termsVersion,
             },
           );
 
@@ -214,6 +282,83 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                   onTap: () =>
                       setState(() => _obscureConfirm = !_obscureConfirm),
                 ),
+              ),
+
+              const SizedBox(height: 16),
+
+              // SR-6: date of birth. Required, and the 18+ rule is stated
+              // before the user picks rather than after they are rejected.
+              _buildLabel('Date of birth'),
+              const SizedBox(height: 6),
+              InkWell(
+                onTap: _loading ? null : _pickDateOfBirth,
+                borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
+                child: InputDecorator(
+                  decoration: InputDecoration(
+                    filled: true,
+                    fillColor: AppColors.bgSecondary,
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 16,
+                    ),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
+                      borderSide: BorderSide(color: AppColors.borderSubtle),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
+                      borderSide: BorderSide(color: AppColors.borderSubtle),
+                    ),
+                    suffixIcon: const Icon(
+                      Icons.calendar_today_outlined,
+                      size: 18,
+                      color: AppColors.textMuted,
+                    ),
+                  ),
+                  child: Text(
+                    _dob == null ? 'Select your date of birth' : _formatDob(_dob!),
+                    style: AppTextStyles.body.copyWith(
+                      color: _dob == null
+                          ? AppColors.textMuted
+                          : AppColors.textPrimary,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'You must be at least $_minimumAge to use atPost.',
+                style: AppTextStyles.bodySmall.copyWith(
+                  color: AppColors.textSecondary,
+                ),
+              ),
+
+              const SizedBox(height: 16),
+
+              // SR-6: explicit consent. Unchecked by default — a pre-ticked
+              // box is not consent, and the server refuses a registration
+              // whose accepted_terms is false.
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Checkbox(
+                    value: _acceptedTerms,
+                    onChanged: _loading
+                        ? null
+                        : (v) => setState(() => _acceptedTerms = v ?? false),
+                  ),
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.only(top: 12),
+                      child: Text(
+                        'I agree to the Terms of Service and the Privacy Policy.',
+                        style: AppTextStyles.bodySmall.copyWith(
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
               ),
 
               const SizedBox(height: 32),

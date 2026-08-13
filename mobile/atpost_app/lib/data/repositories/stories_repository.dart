@@ -1,4 +1,4 @@
-import 'package:atpost_app/core/config/environment.dart';
+
 import 'package:atpost_app/data/models/story.dart';
 import 'package:atpost_app/services/api_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -32,19 +32,37 @@ class StoriesRepository {
     return Story.fromJson(legacyResponse.data['data'] as Map<String, dynamic>);
   }
 
+  /// Creates a story and returns its id.
+  ///
+  /// Module 4 M4-P0-6. Two changes to the request, both required by the
+  /// backend contract:
+  ///
+  ///  * `media_id` replaces `media_url`. The server resolves the canonical
+  ///    asset itself and verifies the caller owns it, so a client-built URL is
+  ///    no longer accepted — it never proved anything about ownership.
+  ///  * `visibility` is the creator's choice. It used to be hardcoded to
+  ///    'public', which silently published every story to everyone regardless
+  ///    of what the user believed they were sharing.
+  ///
+  /// The response is 202: the story exists but is NOT yet visible to anyone
+  /// else. Callers must surface the pending state rather than implying the
+  /// story is live.
   Future<String> createStory({
     required String mediaId,
     required String mediaType,
+    required StoryAudience audience,
     String? text,
+    String? idempotencyKey,
     List<StoryInteractive> interactives = const [],
   }) async {
     final response = await _api.post(
       '/v1/stories',
       data: {
-        'media_url': _mediaUrl(mediaId),
+        'media_id': mediaId,
         'media_type': mediaType,
         'caption': text,
-        'visibility': 'public',
+        'visibility': audience.wireValue,
+        'idempotency_key': ?idempotencyKey,
       },
     );
     final data = response.data['data'];
@@ -168,14 +186,51 @@ List<Story> _groupFlatStories(List<dynamic> rawItems) {
   }).toList();
 }
 
-String _mediaUrl(String mediaId) {
-  final trimmed = mediaId.trim();
-  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-    return trimmed;
-  }
-  return '${Environment.apiBaseUrl}/v1/media/$trimmed/serve';
-}
+// _mediaUrl was removed with M4-P0-6. The client no longer constructs a media
+// URL for story creation: it sends the canonical media_id and the server
+// resolves and authorizes delivery itself. A client-built URL asserted nothing
+// about ownership and could not be authorized.
 
 final storiesRepositoryProvider = Provider<StoriesRepository>((ref) {
   return StoriesRepository(ref.watch(apiClientProvider));
 });
+
+/// Who a story is shared with.
+///
+/// Module 4 M4-P0-6. The wire values match the server's closed set exactly; an
+/// unrecognised visibility is denied server-side rather than defaulted to
+/// visible, so a typo here fails closed rather than over-sharing.
+enum StoryAudience {
+  /// Anyone signed in who is not blocked.
+  public,
+
+  /// Accounts that follow the author.
+  followers,
+
+  /// Only accounts the author has put on their close friends list.
+  closeFriends,
+}
+
+extension StoryAudienceWire on StoryAudience {
+  String get wireValue {
+    switch (this) {
+      case StoryAudience.public:
+        return 'public';
+      case StoryAudience.followers:
+        return 'followers';
+      case StoryAudience.closeFriends:
+        return 'close_friends';
+    }
+  }
+
+  String get label {
+    switch (this) {
+      case StoryAudience.public:
+        return 'Everyone';
+      case StoryAudience.followers:
+        return 'Followers';
+      case StoryAudience.closeFriends:
+        return 'Close friends';
+    }
+  }
+}

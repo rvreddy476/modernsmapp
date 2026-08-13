@@ -1,35 +1,66 @@
 import 'package:atpost_app/core/utils/app_logger.dart';
 
-/// Production-ready Earnings Summary model.
+/// A strict view of the authoritative creator ledger. Money stays in integer
+/// paise; malformed responses throw instead of masquerading as zero.
 class EarningsSummary {
-  final double thisMonth;
-  final int totalSubscribers;
-  final double pendingPayout;
+  final int availablePaise;
+  final int pendingPayoutPaise;
+  final int lifetimeEarningsPaise;
   final String currency;
+  final bool isFrozen;
+  final bool hasActivity;
+  final DateTime? updatedAt;
 
   const EarningsSummary({
-    this.thisMonth = 0.0,
-    this.totalSubscribers = 0,
-    this.pendingPayout = 0.0,
-    this.currency = '₹',
+    this.availablePaise = 0,
+    this.pendingPayoutPaise = 0,
+    this.lifetimeEarningsPaise = 0,
+    this.currency = 'INR',
+    this.isFrozen = false,
+    this.hasActivity = false,
+    this.updatedAt,
   });
 
   factory EarningsSummary.fromJson(Map<String, dynamic> json) {
-    try {
-      return EarningsSummary(
-        thisMonth: _toDouble(json['earnings_this_month']),
-        totalSubscribers: _toInt(json['total_subscribers']),
-        pendingPayout: _toDouble(json['pending_payout']),
-        currency: (json['currency'] ?? '₹').toString(),
-      );
-    } catch (e, st) {
-      AppLogger.error('EarningsSummary.fromJson failed', error: e, stackTrace: st);
-      return const EarningsSummary();
+    int requiredPaise(String key) {
+      final value = json[key];
+      if (value is int) return value;
+      if (value is num && value == value.roundToDouble()) return value.toInt();
+      throw FormatException('Missing or invalid $key');
     }
+
+    final currency = json['currency'];
+    final updated = json['updated_at'];
+    final hasActivity = json['has_activity'];
+    if (currency is! String || currency.length != 3 || hasActivity is! bool) {
+      throw const FormatException('Invalid creator ledger metadata');
+    }
+    final updatedAt = updated is String ? DateTime.tryParse(updated) : null;
+    if (hasActivity && updatedAt == null) {
+      throw const FormatException('Invalid creator ledger updated_at');
+    }
+    return EarningsSummary(
+      availablePaise: requiredPaise('balance_paise'),
+      pendingPayoutPaise: requiredPaise('pending_payout_paise'),
+      lifetimeEarningsPaise: requiredPaise('lifetime_earnings_paise'),
+      currency: currency,
+      isFrozen: json['is_frozen'] == true,
+      hasActivity: hasActivity,
+      updatedAt: updatedAt,
+    );
   }
 
-  String get formattedThisMonth => '$currency${thisMonth.toStringAsFixed(0)}';
-  String get formattedPending => '$currency${pendingPayout.toStringAsFixed(0)}';
+  String get _symbol => currency == 'INR' ? '₹' : currency;
+  String _format(int paise) => '$_symbol ${(paise / 100).toStringAsFixed(2)}';
+  String get formattedAvailable => _format(availablePaise);
+  String get formattedPending => _format(pendingPayoutPaise);
+  String get formattedLifetime => _format(lifetimeEarningsPaise);
+
+  // Compatibility getters for older read-only widgets in this launch pass.
+  double get thisMonth => lifetimeEarningsPaise / 100;
+  double get pendingPayout => pendingPayoutPaise / 100;
+  int get totalSubscribers => 0;
+  String get formattedThisMonth => formattedLifetime;
 }
 
 /// Production-ready Payout record model.
@@ -77,7 +108,9 @@ class SellerEarning {
         orderNumber: (json['order_number'] ?? '').toString(),
         productTitle: (json['product_title'] ?? '').toString(),
         sku: (json['sku'] ?? '').toString(),
-        quantity: (json['quantity'] is num) ? (json['quantity'] as num).toInt() : 0,
+        quantity: (json['quantity'] is num)
+            ? (json['quantity'] as num).toInt()
+            : 0,
         grossAmount: _toDouble(json['gross_amount']),
         commissionAmount: _toDouble(json['commission_amount']),
         platformFee: _toDouble(json['platform_fee']),
@@ -90,7 +123,11 @@ class SellerEarning {
             : null,
       );
     } catch (e, st) {
-      AppLogger.error('SellerEarning.fromJson failed', error: e, stackTrace: st);
+      AppLogger.error(
+        'SellerEarning.fromJson failed',
+        error: e,
+        stackTrace: st,
+      );
       return const SellerEarning(
         orderItemId: 'err',
         orderId: '',
@@ -135,8 +172,27 @@ class PayoutRecord {
       );
     } catch (e, st) {
       AppLogger.error('PayoutRecord.fromJson failed', error: e, stackTrace: st);
-      return PayoutRecord(id: 'err', amount: 0, status: 'error', createdAt: DateTime.now());
+      return PayoutRecord(
+        id: 'err',
+        amount: 0,
+        status: 'error',
+        createdAt: DateTime.now(),
+      );
     }
+  }
+
+  factory PayoutRecord.fromLedgerJson(Map<String, dynamic> json) {
+    final amount = json['amount_paise'];
+    if (amount is! num) {
+      throw const FormatException('Invalid payout amount_paise');
+    }
+    return PayoutRecord(
+      id: (json['id'] ?? '').toString(),
+      amount: amount.toInt() / 100,
+      status: (json['status'] ?? 'pending').toString().toLowerCase(),
+      createdAt: _parseDate(json['created_at']),
+      method: json['reference_type']?.toString(),
+    );
   }
 }
 
@@ -196,12 +252,6 @@ double _toDouble(dynamic data) {
   if (data is int) return data.toDouble();
   if (data is String) return double.tryParse(data) ?? 0.0;
   return 0.0;
-}
-
-int _toInt(dynamic data) {
-  if (data is int) return data;
-  if (data is String) return int.tryParse(data) ?? 0;
-  return 0;
 }
 
 DateTime _parseDate(dynamic data) {

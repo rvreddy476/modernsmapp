@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:atpost_app/core/config/environment.dart';
 import 'package:atpost_app/data/models/commerce.dart';
 import 'package:atpost_app/features/channels/channels_list_screen.dart';
 import 'package:atpost_app/features/channels/channel_detail_screen.dart';
@@ -269,24 +270,24 @@ class _AuthRouterRefresh extends ChangeNotifier {
     timer = Timer(timeout, () {
       if (!completer.isCompleted) {
         cleanup();
-        completer.completeError(
-          TimeoutException('redirect deadline', timeout),
-        );
+        completer.completeError(TimeoutException('redirect deadline', timeout));
       }
     });
     _redirectDeadlines.add(timer);
 
-    future.then((_) {
-      if (!completer.isCompleted) {
-        cleanup();
-        completer.complete();
-      }
-    }).catchError((Object e) {
-      if (!completer.isCompleted) {
-        cleanup();
-        completer.completeError(e);
-      }
-    });
+    future
+        .then((_) {
+          if (!completer.isCompleted) {
+            cleanup();
+            completer.complete();
+          }
+        })
+        .catchError((Object e) {
+          if (!completer.isCompleted) {
+            cleanup();
+            completer.completeError(e);
+          }
+        });
 
     return completer.future;
   }
@@ -449,6 +450,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           ),
           GoRoute(
             path: '/call',
+            redirect: (context, state) =>
+                Environment.callsEnabled ? null : '/chat',
             builder: (context, state) => const CallScreen(),
           ),
           // Follow-Only Public Pages
@@ -462,9 +465,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           ),
           GoRoute(
             path: '/page/:handle',
-            builder: (context, state) => PageDetailScreen(
-              handle: state.pathParameters['handle'] ?? '',
-            ),
+            builder: (context, state) =>
+                PageDetailScreen(handle: state.pathParameters['handle'] ?? ''),
           ),
           GoRoute(
             path: '/posttube',
@@ -485,10 +487,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           ),
           // Brand sweep 2026-04-30: legacy /flicks/* paths redirect to /reels/*
           // for 30 days while clients on older builds finish rolling forward.
-          GoRoute(
-            path: '/flicks/editor',
-            redirect: (_, _) => '/reels/editor',
-          ),
+          GoRoute(path: '/flicks/editor', redirect: (_, _) => '/reels/editor'),
           GoRoute(
             path: '/flicks/caption',
             redirect: (_, _) => '/reels/caption',
@@ -521,15 +520,13 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           ),
           GoRoute(
             path: '/commerce/product/:id',
-            builder: (context, state) => ProductDetailScreen(
-              productId: state.pathParameters['id']!,
-            ),
+            builder: (context, state) =>
+                ProductDetailScreen(productId: state.pathParameters['id']!),
           ),
           GoRoute(
             path: '/commerce/product/:id/reviews',
-            builder: (context, state) => ProductReviewsScreen(
-              productId: state.pathParameters['id']!,
-            ),
+            builder: (context, state) =>
+                ProductReviewsScreen(productId: state.pathParameters['id']!),
           ),
           GoRoute(
             path: '/commerce/cart',
@@ -574,9 +571,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           ),
           GoRoute(
             path: '/commerce/orders/:id/return',
-            builder: (context, state) => ReturnRequestScreen(
-              orderId: state.pathParameters['id']!,
-            ),
+            builder: (context, state) =>
+                ReturnRequestScreen(orderId: state.pathParameters['id']!),
           ),
           GoRoute(
             path: '/commerce/returns',
@@ -584,9 +580,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           ),
           GoRoute(
             path: '/commerce/returns/:id',
-            builder: (context, state) => ReturnDetailScreen(
-              returnId: state.pathParameters['id']!,
-            ),
+            builder: (context, state) =>
+                ReturnDetailScreen(returnId: state.pathParameters['id']!),
           ),
           GoRoute(
             path: '/commerce/products/:id/review',
@@ -611,9 +606,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           ),
           GoRoute(
             path: '/commerce/search',
-            builder: (context, state) => SearchScreen(
-              initialQuery: state.uri.queryParameters['q'],
-            ),
+            builder: (context, state) =>
+                SearchScreen(initialQuery: state.uri.queryParameters['q']),
           ),
           // Seller surface — dashboard + product management. The "My
           // orders" tile reuses the existing customer order list
@@ -630,9 +624,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           ),
           GoRoute(
             path: '/seller/products/:id/variants',
-            builder: (context, state) => SellerVariantsScreen(
-              productId: state.pathParameters['id']!,
-            ),
+            builder: (context, state) =>
+                SellerVariantsScreen(productId: state.pathParameters['id']!),
           ),
           GoRoute(
             path: '/seller/orders',
@@ -651,26 +644,19 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             builder: (_, _) => const SellerBulkImportScreen(),
           ),
           // Phase F4 mobile — RFQ buyer flow.
-          GoRoute(
-            path: '/rfq',
-            builder: (_, _) => const RFQListScreen(),
-          ),
+          GoRoute(path: '/rfq', builder: (_, _) => const RFQListScreen()),
           GoRoute(
             path: '/rfq/new',
             builder: (context, state) {
               final sellerId = state.uri.queryParameters['seller_id'] ?? '';
               final variantId = state.uri.queryParameters['variant_id'] ?? '';
-              return RFQNewScreen(
-                sellerId: sellerId,
-                variantId: variantId,
-              );
+              return RFQNewScreen(sellerId: sellerId, variantId: variantId);
             },
           ),
           GoRoute(
             path: '/rfq/:id',
-            builder: (context, state) => RFQDetailScreen(
-              rfqId: state.pathParameters['id']!,
-            ),
+            builder: (context, state) =>
+                RFQDetailScreen(rfqId: state.pathParameters['id']!),
           ),
           GoRoute(
             path: '/figo',
@@ -681,10 +667,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             builder: (context, state) => const FigoRewardsScreen(),
           ),
           // Phase 2 Sprint 1 — consumer wallet (BC of partner-bank PPI).
-          GoRoute(
-            path: '/wallet',
-            builder: (_, _) => const WalletHomeScreen(),
-          ),
+          GoRoute(path: '/wallet', builder: (_, _) => const WalletHomeScreen()),
           GoRoute(
             path: '/wallet/top-up',
             builder: (_, _) => const WalletTopUpScreen(),
@@ -730,14 +713,14 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           ),
           GoRoute(
             path: '/billpay/category/:id',
-            builder: (context, state) => BillPayCategoryScreen(
-              categoryId: state.pathParameters['id']!,
-            ),
+            builder: (context, state) =>
+                BillPayCategoryScreen(categoryId: state.pathParameters['id']!),
           ),
           GoRoute(
             path: '/billpay/add-account',
             builder: (context, state) => BillPayAddAccountScreen(
-              providerId: state.uri.queryParameters['providerId'] ??
+              providerId:
+                  state.uri.queryParameters['providerId'] ??
                   state.uri.queryParameters['provider'] ??
                   '',
             ),
@@ -758,9 +741,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           ),
           GoRoute(
             path: '/billpay/payments/:id',
-            builder: (context, state) => BillPayReceiptScreen(
-              paymentId: state.pathParameters['id']!,
-            ),
+            builder: (context, state) =>
+                BillPayReceiptScreen(paymentId: state.pathParameters['id']!),
           ),
           GoRoute(
             path: '/billpay/reminders',
@@ -798,9 +780,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           ),
           GoRoute(
             path: '/pulse/matches',
-            builder: (context, state) => MatchInboxScreen(
-              initialTab: state.uri.queryParameters['tab'],
-            ),
+            builder: (context, state) =>
+                MatchInboxScreen(initialTab: state.uri.queryParameters['tab']),
           ),
           // Sprint 3: deep-link target for `dating.spark.matched` push —
           // opens the inbox positioned on the right tab. The S1 matches
@@ -812,9 +793,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           ),
           GoRoute(
             path: '/pulse/matches/:matchId',
-            builder: (context, state) => MatchInboxScreen(
-              initialTab: state.uri.queryParameters['tab'],
-            ),
+            builder: (context, state) =>
+                MatchInboxScreen(initialTab: state.uri.queryParameters['tab']),
           ),
           GoRoute(
             path: '/pulse/profile',
@@ -895,10 +875,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           ),
           // Legacy /postmatch/* redirects (30-day deprecation window from
           // Sprint 1 ship). Remove after confirming no inbound deep links.
-          GoRoute(
-            path: '/postmatch',
-            redirect: (_, _) => '/pulse',
-          ),
+          GoRoute(path: '/postmatch', redirect: (_, _) => '/pulse'),
           GoRoute(
             path: '/postmatch/onboarding',
             redirect: (_, _) => '/pulse/onboarding',
@@ -951,19 +928,15 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             ),
           ),
           // Live streaming v2 (LiveKit / live-service-v2).
-          GoRoute(
-            path: '/live/v2',
-            builder: (_, _) => const LiveListScreen(),
-          ),
+          GoRoute(path: '/live/v2', builder: (_, _) => const LiveListScreen()),
           GoRoute(
             path: '/live/v2/new',
             builder: (_, _) => const GoLiveScreen(),
           ),
           GoRoute(
             path: '/live/v2/:streamId',
-            builder: (context, state) => LiveViewerScreen(
-              streamId: state.pathParameters['streamId']!,
-            ),
+            builder: (context, state) =>
+                LiveViewerScreen(streamId: state.pathParameters['streamId']!),
           ),
           GoRoute(
             path: '/live/v2/:streamId/broadcast',
@@ -1036,10 +1009,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             path: '/settings/verification',
             builder: (_, _) => const VerificationScreen(),
           ),
-          GoRoute(
-            path: '/services',
-            builder: (_, _) => const ServicesScreen(),
-          ),
+          GoRoute(path: '/services', builder: (_, _) => const ServicesScreen()),
           GoRoute(
             path: '/services/:slug',
             builder: (context, state) =>
@@ -1097,9 +1067,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           // Sprint 3 — Mopedu customer safety surfaces.
           GoRoute(
             path: '/mopedu/safety',
-            builder: (_, _) => const MopeduGate(
-              child: mopedu_safety.SafetyCenterScreen(),
-            ),
+            builder: (_, _) =>
+                const MopeduGate(child: mopedu_safety.SafetyCenterScreen()),
           ),
           GoRoute(
             path: '/mopedu/complaints',
@@ -1113,9 +1082,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           // whole point of the safety share flow.
           GoRoute(
             path: '/mopedu/share/:token',
-            builder: (context, state) => SharedRideViewerScreen(
-              token: state.pathParameters['token']!,
-            ),
+            builder: (context, state) =>
+                SharedRideViewerScreen(token: state.pathParameters['token']!),
           ),
           // Sprint 2 — Mopedu partner side. Partner routes are gated too
           // because we are not recruiting partners in any city outside
@@ -1124,33 +1092,26 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           // Mopedu Partner".
           GoRoute(
             path: '/mopedu/partner',
-            builder: (_, _) => const MopeduGate(
-              child: PartnerLandingScreen(),
-            ),
+            builder: (_, _) => const MopeduGate(child: PartnerLandingScreen()),
           ),
           GoRoute(
             path: '/mopedu/partner/onboarding',
-            builder: (_, _) => const MopeduGate(
-              child: PartnerOnboardingScreen(),
-            ),
+            builder: (_, _) =>
+                const MopeduGate(child: PartnerOnboardingScreen()),
           ),
           GoRoute(
             path: '/mopedu/partner/dashboard',
-            builder: (_, _) => const MopeduGate(
-              child: PartnerDashboardScreen(),
-            ),
+            builder: (_, _) =>
+                const MopeduGate(child: PartnerDashboardScreen()),
           ),
           GoRoute(
             path: '/mopedu/partner/earnings',
-            builder: (_, _) => const MopeduGate(
-              child: PartnerEarningsScreen(),
-            ),
+            builder: (_, _) => const MopeduGate(child: PartnerEarningsScreen()),
           ),
           GoRoute(
             path: '/mopedu/partner/subscription',
-            builder: (_, _) => const MopeduGate(
-              child: PartnerSubscriptionScreen(),
-            ),
+            builder: (_, _) =>
+                const MopeduGate(child: PartnerSubscriptionScreen()),
           ),
           // Sprint 4 — partner polish.
           GoRoute(
@@ -1163,16 +1124,12 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           ),
           GoRoute(
             path: '/mopedu/partner/referral',
-            builder: (_, _) => const MopeduGate(
-              child: PartnerReferralScreen(),
-            ),
+            builder: (_, _) => const MopeduGate(child: PartnerReferralScreen()),
           ),
           GoRoute(
             path: '/mopedu/partner/rides/:id',
             builder: (context, state) => MopeduGate(
-              child: RideNavigationScreen(
-                rideId: state.pathParameters['id']!,
-              ),
+              child: RideNavigationScreen(rideId: state.pathParameters['id']!),
             ),
           ),
           GoRoute(
@@ -1201,9 +1158,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           ),
           GoRoute(
             path: '/hashtag/:tag',
-            builder: (context, state) => HashtagScreen(
-              tag: state.pathParameters['tag'] ?? '',
-            ),
+            builder: (context, state) =>
+                HashtagScreen(tag: state.pathParameters['tag'] ?? ''),
           ),
           GoRoute(
             path: '/search/results',
@@ -1229,8 +1185,9 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           ),
           GoRoute(
             path: '/reviewer/feedback/:contentId',
-            builder: (context, state) =>
-                NeedsChangesScreen(contentId: state.pathParameters['contentId']!),
+            builder: (context, state) => NeedsChangesScreen(
+              contentId: state.pathParameters['contentId']!,
+            ),
           ),
           GoRoute(
             path: '/channels',
@@ -1323,9 +1280,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           ),
           GoRoute(
             path: '/qa/profile/:userId',
-            builder: (context, state) => QaProfileScreen(
-              userId: state.pathParameters['userId']!,
-            ),
+            builder: (context, state) =>
+                QaProfileScreen(userId: state.pathParameters['userId']!),
           ),
           GoRoute(
             path: '/upload/progress',

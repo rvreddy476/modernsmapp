@@ -19,7 +19,14 @@ String postTypeToContentType(PostType type) {
 }
 
 const _videoExtensions = {
-  '.mp4', '.mov', '.m4v', '.webm', '.avi', '.mkv', '.3gp', '.hevc',
+  '.mp4',
+  '.mov',
+  '.m4v',
+  '.webm',
+  '.avi',
+  '.mkv',
+  '.3gp',
+  '.hevc',
 };
 
 /// Detects video files by extension. Covers iOS (.mov), Android (.mp4),
@@ -50,10 +57,12 @@ class CreationState {
   final bool isGeneratingAi;
   final double uploadProgress;
   final String? error;
+
   /// Optional solid background for text-only posts (matches web composer).
   /// Sent as `rich_text.background` + a derived `text_color`.
   final String? backgroundColor;
   final bool backgroundIsDark;
+
   /// Per-option errors keyed by option index. Cleared on edit.
   final Map<int, String> pollOptionErrors;
   final String? pollQuestionError;
@@ -68,6 +77,7 @@ class CreationState {
   /// alt text so "no description yet" and "intentionally no description"
   /// stay distinguishable.
   final Set<int> decorativeMedia;
+  final bool alteredContent;
 
   const CreationState({
     this.type = PostType.text,
@@ -89,6 +99,7 @@ class CreationState {
     this.pollQuestionError,
     this.altTexts = const {},
     this.decorativeMedia = const {},
+    this.alteredContent = false,
   });
 
   CreationState copyWith({
@@ -113,6 +124,7 @@ class CreationState {
     bool clearPollQuestionError = false,
     Map<int, String>? altTexts,
     Set<int>? decorativeMedia,
+    bool? alteredContent,
   }) {
     return CreationState(
       type: type ?? this.type,
@@ -128,12 +140,19 @@ class CreationState {
       isGeneratingAi: isGeneratingAi ?? this.isGeneratingAi,
       uploadProgress: uploadProgress ?? this.uploadProgress,
       error: error,
-      backgroundColor: clearBackground ? null : (backgroundColor ?? this.backgroundColor),
-      backgroundIsDark: clearBackground ? false : (backgroundIsDark ?? this.backgroundIsDark),
+      backgroundColor: clearBackground
+          ? null
+          : (backgroundColor ?? this.backgroundColor),
+      backgroundIsDark: clearBackground
+          ? false
+          : (backgroundIsDark ?? this.backgroundIsDark),
       pollOptionErrors: pollOptionErrors ?? this.pollOptionErrors,
-      pollQuestionError: clearPollQuestionError ? null : (pollQuestionError ?? this.pollQuestionError),
+      pollQuestionError: clearPollQuestionError
+          ? null
+          : (pollQuestionError ?? this.pollQuestionError),
       altTexts: altTexts ?? this.altTexts,
       decorativeMedia: decorativeMedia ?? this.decorativeMedia,
+      alteredContent: alteredContent ?? this.alteredContent,
     );
   }
 }
@@ -149,6 +168,8 @@ class CreationNotifier extends StateNotifier<CreationState> {
   void setText(String text) => state = state.copyWith(text: text);
   void setVisibility(PostVisibility visibility) =>
       state = state.copyWith(visibility: visibility);
+  void setAlteredContent(bool value) =>
+      state = state.copyWith(alteredContent: value);
   void setMood(String? mood) => state = state.copyWith(mood: mood);
   void setLocation(String? location) =>
       state = state.copyWith(location: location);
@@ -247,7 +268,9 @@ class CreationNotifier extends StateNotifier<CreationState> {
   ///   "  #Design ! " → "design".
   static String _normalizeTag(String raw) {
     final stripped = raw.trim().replaceFirst(RegExp(r'^#+'), '');
-    return stripped.replaceAll(RegExp(r'[^\p{L}\p{N}_]', unicode: true), '').toLowerCase();
+    return stripped
+        .replaceAll(RegExp(r'[^\p{L}\p{N}_]', unicode: true), '')
+        .toLowerCase();
   }
 
   /// Accept user input with or without #, split on whitespace/commas,
@@ -299,7 +322,9 @@ class CreationNotifier extends StateNotifier<CreationState> {
         }
       }
     }
-    final validCount = trimmed.where((t) => t.isNotEmpty && optionErrors[trimmed.indexOf(t)] == null).length;
+    final validCount = trimmed
+        .where((t) => t.isNotEmpty && optionErrors[trimmed.indexOf(t)] == null)
+        .length;
     final hasQuestion = state.text.trim().isNotEmpty;
 
     final missingQuestion = !hasQuestion;
@@ -316,7 +341,8 @@ class CreationNotifier extends StateNotifier<CreationState> {
 
     String banner;
     if (missingQuestion && missingOptions) {
-      banner = 'Please provide the poll question and at least two poll options.';
+      banner =
+          'Please provide the poll question and at least two poll options.';
     } else if (missingQuestion) {
       banner = 'Please enter poll question.';
     } else if (missingOptions) {
@@ -334,7 +360,8 @@ class CreationNotifier extends StateNotifier<CreationState> {
   }
 
   void clearPollErrors() {
-    if (state.pollOptionErrors.isEmpty && state.pollQuestionError == null) return;
+    if (state.pollOptionErrors.isEmpty && state.pollQuestionError == null)
+      return;
     state = state.copyWith(
       pollOptionErrors: const {},
       clearPollQuestionError: true,
@@ -432,7 +459,9 @@ class CreationNotifier extends StateNotifier<CreationState> {
       final wireText = (state.text.trim() + tagSuffix).trim();
 
       Map<String, dynamic>? richText;
-      if (state.backgroundColor != null && state.files.isEmpty && state.type != PostType.poll) {
+      if (state.backgroundColor != null &&
+          state.files.isEmpty &&
+          state.type != PostType.poll) {
         richText = {
           'background': state.backgroundColor,
           'text_color': state.backgroundIsDark ? '#ffffff' : '#111111',
@@ -449,6 +478,7 @@ class CreationNotifier extends StateNotifier<CreationState> {
         locationName: state.location,
         poll: pollPayload,
         richText: richText,
+        alteredContent: state.alteredContent,
       );
 
       reset();

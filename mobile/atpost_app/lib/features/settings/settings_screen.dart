@@ -115,7 +115,9 @@ class SettingsScreen extends ConsumerWidget {
                   subtitle: 'Request an export of all your account data',
                   onTap: () async {
                     try {
-                      await ref.read(userRepositoryProvider).requestDataExport();
+                      await ref
+                          .read(userRepositoryProvider)
+                          .requestDataExport();
                       if (!context.mounted) return;
                       showDialog(
                         context: context,
@@ -169,8 +171,8 @@ class SettingsScreen extends ConsumerWidget {
                 ),
                 _SettingTile(
                   icon: Icons.savings_outlined,
-                  title: 'Monetization',
-                  subtitle: 'Creator earnings, tiers, and payouts',
+                  title: 'Creator Studio',
+                  subtitle: 'Performance and recorded earnings',
                   onTap: () => context.push('/monetization'),
                 ),
                 _SettingTile(

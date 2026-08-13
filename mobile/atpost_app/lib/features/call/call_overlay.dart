@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:atpost_app/core/theme/app_colors.dart';
+import 'package:atpost_app/core/config/environment.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
 import 'package:atpost_app/services/call_service.dart';
 import 'package:flutter/material.dart';
@@ -56,6 +57,7 @@ class _CallOverlayState extends ConsumerState<CallOverlay> {
 
   @override
   Widget build(BuildContext context) {
+    if (!Environment.callsEnabled) return const SizedBox.shrink();
     final callInfo = ref.watch(callProvider);
     if (callInfo == null) return const SizedBox.shrink();
 
@@ -385,7 +387,7 @@ class _CallOverlayState extends ConsumerState<CallOverlay> {
     if (info.remoteVideoTrack != null) {
       return lk.VideoTrackRenderer(
         info.remoteVideoTrack!,
-        fit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+        fit: lk.VideoViewFit.cover,
       );
     }
 
@@ -399,7 +401,7 @@ class _CallOverlayState extends ConsumerState<CallOverlay> {
     if (info.localVideoTrack != null) {
       return lk.VideoTrackRenderer(
         info.localVideoTrack!,
-        fit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+        fit: lk.VideoViewFit.cover,
         mirrorMode: lk.VideoViewMirrorMode.mirror,
       );
     }

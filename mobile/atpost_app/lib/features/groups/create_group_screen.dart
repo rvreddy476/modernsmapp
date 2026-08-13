@@ -21,6 +21,8 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
   String _privacy = 'public';
   bool _isMature = false;
   bool _submitting = false;
+  late final String _idempotencyKey =
+      'group-${DateTime.now().microsecondsSinceEpoch}-${identityHashCode(this)}';
 
   @override
   void dispose() {
@@ -44,14 +46,18 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
     if (description.length < 10) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-            content: Text('Please add a longer description (10+ chars).')),
+          content: Text('Please add a longer description (10+ chars).'),
+        ),
       );
       return;
     }
 
     setState(() => _submitting = true);
     try {
-      final group = await ref.read(groupsRepositoryProvider).createGroup(
+      final group = await ref
+          .read(groupsRepositoryProvider)
+          .createGroup(
+            idempotencyKey: _idempotencyKey,
             name: name,
             description: description,
             privacy: _privacy,
@@ -80,8 +86,10 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
         elevation: 0,
         leading: IconButton(
           onPressed: () => context.pop(),
-          icon: const Icon(Icons.arrow_back_rounded,
-              color: AppColors.textPrimary),
+          icon: const Icon(
+            Icons.arrow_back_rounded,
+            color: AppColors.textPrimary,
+          ),
         ),
         title: Text('Create Space', style: AppTextStyles.h2),
       ),
@@ -101,14 +109,13 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
                       width: double.infinity,
                       padding: const EdgeInsets.all(16),
                       decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(AppSpacing.radiusXL),
+                        borderRadius: BorderRadius.circular(
+                          AppSpacing.radiusXL,
+                        ),
                         gradient: const LinearGradient(
                           begin: Alignment.topLeft,
                           end: Alignment.bottomRight,
-                          colors: [
-                            Color(0x33FF6B35),
-                            Color(0x334ECDC4),
-                          ],
+                          colors: [Color(0x33FF6B35), Color(0x334ECDC4)],
                         ),
                         border: Border.all(color: AppColors.borderMedium),
                       ),
@@ -199,8 +206,9 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
                       padding: const EdgeInsets.all(14),
                       decoration: BoxDecoration(
                         color: AppColors.bgCard,
-                        borderRadius:
-                            BorderRadius.circular(AppSpacing.radiusLarge),
+                        borderRadius: BorderRadius.circular(
+                          AppSpacing.radiusLarge,
+                        ),
                         border: Border.all(
                           color: _isMature
                               ? AppColors.statusError.withValues(alpha: 0.4)
@@ -213,7 +221,9 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
                             padding: const EdgeInsets.all(6),
                             decoration: BoxDecoration(
                               color: _isMature
-                                  ? AppColors.statusError.withValues(alpha: 0.15)
+                                  ? AppColors.statusError.withValues(
+                                      alpha: 0.15,
+                                    )
                                   : AppColors.bgCard,
                               borderRadius: BorderRadius.circular(8),
                             ),
@@ -230,12 +240,15 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text('Mature content (18+)',
-                                    style: AppTextStyles.label),
+                                Text(
+                                  'Mature content (18+)',
+                                  style: AppTextStyles.label,
+                                ),
                                 Text(
                                   'Mark this space as containing adult content',
-                                  style: AppTextStyles.labelSmall
-                                      .copyWith(color: AppColors.textMuted),
+                                  style: AppTextStyles.labelSmall.copyWith(
+                                    color: AppColors.textMuted,
+                                  ),
                                 ),
                               ],
                             ),
@@ -347,8 +360,7 @@ class _PrivacyOption extends StatelessWidget {
             Icon(
               icon,
               size: 18,
-              color:
-                  isSelected ? AppColors.textPrimary : AppColors.textMuted,
+              color: isSelected ? AppColors.textPrimary : AppColors.textMuted,
             ),
             const SizedBox(width: 10),
             Expanded(
@@ -356,9 +368,12 @@ class _PrivacyOption extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(title, style: AppTextStyles.label),
-                  Text(subtitle,
-                      style: AppTextStyles.labelSmall
-                          .copyWith(color: AppColors.textMuted)),
+                  Text(
+                    subtitle,
+                    style: AppTextStyles.labelSmall.copyWith(
+                      color: AppColors.textMuted,
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -394,7 +409,9 @@ class _LivePreview extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final displayName = name.isEmpty ? 'Space Name' : name;
-    final displayDesc = description.isEmpty ? 'Description will appear here…' : description;
+    final displayDesc = description.isEmpty
+        ? 'Description will appear here…'
+        : description;
 
     return Container(
       margin: const EdgeInsets.fromLTRB(0, 16, 16, 24),
@@ -409,7 +426,9 @@ class _LivePreview extends StatelessWidget {
         children: [
           Text(
             'Preview',
-            style: AppTextStyles.labelSmall.copyWith(color: AppColors.textMuted),
+            style: AppTextStyles.labelSmall.copyWith(
+              color: AppColors.textMuted,
+            ),
           ),
           const SizedBox(height: 10),
           // Cover placeholder
@@ -437,11 +456,8 @@ class _LivePreview extends StatelessWidget {
                 ),
                 child: Center(
                   child: Text(
-                    displayName.isNotEmpty
-                        ? displayName[0].toUpperCase()
-                        : 'S',
-                    style: AppTextStyles.label
-                        .copyWith(color: Colors.white),
+                    displayName.isNotEmpty ? displayName[0].toUpperCase() : 'S',
+                    style: AppTextStyles.label.copyWith(color: Colors.white),
                   ),
                 ),
               ),
@@ -466,14 +482,11 @@ class _LivePreview extends StatelessWidget {
                 color: privacy == 'public'
                     ? AppColors.statusSuccess
                     : privacy == 'restricted'
-                        ? AppColors.statusWarning
-                        : AppColors.statusError,
+                    ? AppColors.statusWarning
+                    : AppColors.statusError,
               ),
               if (isMature)
-                _PreviewBadge(
-                  label: '18+',
-                  color: AppColors.statusError,
-                ),
+                _PreviewBadge(label: '18+', color: AppColors.statusError),
             ],
           ),
           const SizedBox(height: 6),
@@ -481,8 +494,9 @@ class _LivePreview extends StatelessWidget {
             displayDesc,
             maxLines: 3,
             overflow: TextOverflow.ellipsis,
-            style: AppTextStyles.labelSmall
-                .copyWith(color: AppColors.textMuted),
+            style: AppTextStyles.labelSmall.copyWith(
+              color: AppColors.textMuted,
+            ),
           ),
         ],
       ),
