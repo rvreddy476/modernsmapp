@@ -157,3 +157,25 @@ worker:
   livenessProbe: {}
   nodeSelector: {}
   tolerations: []
+
+# Cross-service schema ordering (release-gate finding, Module 7 verification).
+#
+# Tables this service's migrations reference but ANOTHER service owns. When
+# non-empty, an init container waits for each to exist before the app starts.
+#
+# EMPTY BY DEFAULT: a service with no cross-service dependency renders exactly
+# what it rendered before this block existed. Only the two tier-2 services
+# declare anything.
+#
+#   tier 1 (owners, no dependencies): user-service, media-service, feed-service
+#   tier 2 (declare below):           post-service, graph-service
+#
+# Verified on a virgin database: tier 1 then tier 2 bootstraps in a single pass
+# with no retries. Previously post-service failed six identical times.
+schemaDependencies: []
+# Image providing psql. Pinned rather than :latest so the gate cannot change
+# under a redeploy.
+schemaDependencyImage: postgres:16-alpine
+# Bounded wait. Long enough for a cold environment where the owner is still
+# migrating, short enough that a genuinely missing owner fails visibly.
+schemaDependencyTimeoutSeconds: 300

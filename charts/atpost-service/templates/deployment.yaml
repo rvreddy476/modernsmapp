@@ -51,6 +51,74 @@ spec:
           labelSelector:
             matchLabels:
               {{- include "atpost-service.selectorLabels" . | nindent 14 }}
+      {{- if .Values.schemaDependencies }}
+      # Cross-service schema ordering gate.
+      #
+      # A few services own tables that other services' migrations reference:
+      # user-service owns `users`, media-service owns `media_assets`,
+      # feed-service owns `user_preferences`. A service whose migrations touch
+      # those cannot bootstrap until the owner has created them.
+      #
+      # Without this gate a fresh environment still CONVERGES — the dependent
+      # service crash-loops until the owners finish — but it converges through
+      # CrashLoopBackOff, which fires alarms and looks identical to a genuine
+      # failure during every new-environment build. This turns "eventually
+      # works, noisily" into "waits, quietly".
+      #
+      # It is a WAIT, not a migration runner: each service still owns and
+      # applies its own schema. This only refuses to start the app container
+      # until its declared parents exist, so no service ever creates another
+      # service's tables.
+      initContainers:
+        - name: await-schema-dependencies
+          image: {{ .Values.schemaDependencyImage | quote }}
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              missing=""
+              # Bounded: fail rather than hang forever, so a genuinely absent
+              # owner surfaces as a pod failure with a named table instead of
+              # an init container that waits until someone notices.
+              deadline=$(( $(date +%s) + {{ .Values.schemaDependencyTimeoutSeconds }} ))
+              while :; do
+                missing=""
+                for t in {{ join " " .Values.schemaDependencies }}; do
+                  if ! psql "$POSTGRES_DSN" -tAc "SELECT to_regclass('$t') IS NOT NULL" 2>/dev/null | grep -q '^t$'; then
+                    missing="$missing $t"
+                  fi
+                done
+                [ -z "$missing" ] && break
+                if [ "$(date +%s)" -ge "$deadline" ]; then
+                  echo "timed out waiting for schema dependencies:$missing" >&2
+                  echo "these tables are owned by other services; check they are deployed" >&2
+                  exit 1
+                fi
+                echo "waiting for schema dependencies:$missing"
+                sleep 5
+              done
+              echo "all schema dependencies present"
+          envFrom:
+            {{- range .Values.envFrom }}
+            - {{ .kind }}Ref:
+                name: {{ .name }}
+            {{- end }}
+            {{- if .Values.externalSecret.enabled }}
+            - secretRef:
+                name: {{ include "atpost-service.name" . }}
+            {{- end }}
+          env:
+            {{- range $k, $v := .Values.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      {{- end }}
       containers:
         - name: {{ .Values.service.name }}
           image: "{{ tpl .Values.image.repository . }}:{{ .Values.image.tag }}"

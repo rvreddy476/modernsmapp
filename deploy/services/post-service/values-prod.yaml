@@ -61,3 +61,12 @@ ingress:
 pdb:
   enabled: true
   minAvailable: 4 # tolerate one AZ loss without unfreezing the cluster
+
+# post-service migrations reference tables owned by other services:
+#   media_assets     -> media-service   (003_content_type_reel_video.sql)
+#   user_preferences -> feed-service    (009_crosspost_v2.sql)
+#   users            -> user-service    (010_postbook_features.sql)
+schemaDependencies:
+  - media_assets
+  - user_preferences
+  - users

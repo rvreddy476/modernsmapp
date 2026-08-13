@@ -65,3 +65,7 @@ env:
 # Internal-only — api-gateway is the external surface.
 ingress:
   enabled: false
+
+# graph-service migrations reference users, owned by user-service.
+schemaDependencies:
+  - users
