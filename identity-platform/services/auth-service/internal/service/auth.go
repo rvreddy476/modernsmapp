@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/atpost/identity-auth-service/pkg/accesstoken"
 	"log/slog"
 	"math/big"
 	"net"
@@ -38,6 +39,31 @@ type Service struct {
 	// accessSigningKey, when non-nil, switches access-token signing to RS256.
 	// Loaded from cfg.AccessTokenPrivateKeyPEM at construction; nil → HS256.
 	accessSigningKey *rsa.PrivateKey
+	// SR-6: email delivery. Before this existed, verification and
+	// password-reset codes were generated, stored, and sent NOWHERE — account
+	// recovery silently did not work. Nil means unconfigured, and the callers
+	// return an error rather than reporting a send that did not happen.
+	email EmailSender
+}
+
+// EmailSender delivers a security email. Mirrors internal/email.Sender so the
+// service package does not depend on the AWS SDK.
+type EmailSender interface {
+	Send(ctx context.Context, msg EmailMessage) error
+}
+
+// EmailMessage is one outbound message.
+type EmailMessage struct {
+	To       string
+	Subject  string
+	TextBody string
+}
+
+// WithEmailSender wires delivery. Without it, ForgotPassword and email
+// verification report failure instead of pretending to have sent something.
+func (s *Service) WithEmailSender(sender EmailSender) *Service {
+	s.email = sender
+	return s
 }
 
 type Store interface {
@@ -98,6 +124,18 @@ type Store interface {
 	LinkOAuthProvider(ctx context.Context, userID uuid.UUID, provider string) error
 	// Cross-schema transactional inserts
 	CreateUserRecordTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error
+	// LB-5: pending activation, versioned consent, and atomic recovery.
+	SetAccountPendingTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error
+	RecordConsentTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID, c store.RegistrationConsent) error
+	ActivateVerifiedAccount(ctx context.Context, userID uuid.UUID) error
+	IsAccountPendingVerification(ctx context.Context, userID uuid.UUID) (bool, error)
+	ConsumeRecoveryAndSetPassword(ctx context.Context, userID uuid.UUID, otpKey, purpose string, verify func(string) bool, newPasswordHash string) error
+	// CLB-3: the credential that lets a PENDING account finish signing up.
+	// Verify and resend are public routes, so the account they act on must be
+	// named by something the server issued rather than by the caller.
+	CreateVerificationTransaction(ctx context.Context, userID uuid.UUID, purpose string, ttl time.Duration) (*store.VerificationTransaction, error)
+	LookupVerificationTransaction(ctx context.Context, token, purpose string) (uuid.UUID, error)
+	ConsumeVerificationTransaction(ctx context.Context, token, purpose string) (uuid.UUID, error)
 	CreateProfileTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID, displayName, firstName, lastName, dob, gender string) error
 	// Outbox
 	InsertOutboxEventTx(ctx context.Context, tx pgx.Tx, eventType, partitionKey string, payload interface{}) error
@@ -171,6 +209,20 @@ type AuthResponse struct {
 	// caller can offer (e.g. ["email_otp","totp"]).
 	RequiresStepUp bool     `json:"requires_step_up,omitempty"`
 	StepUpMethods  []string `json:"step_up_methods,omitempty"`
+	// LB-5: registration no longer returns a session. The account is created
+	// PENDING and a verification email is sent; the client must complete
+	// verification before it has any credential. An unverified address must
+	// never be a usable identity.
+	RequiresVerification bool `json:"requires_verification,omitempty"`
+	// CLB-3: the credential that lets a pending account finish signing up.
+	//
+	// This is NOT a session. It authorises submitting or re-requesting a
+	// verification code for ONE account, and nothing else. Without it the
+	// pending state LB-5 introduced had no exit: verify and resend both
+	// required a verified bearer session, which a pending account by
+	// definition does not have.
+	VerificationToken     string     `json:"verification_token,omitempty"`
+	VerificationExpiresAt *time.Time `json:"verification_expires_at,omitempty"`
 }
 
 type AccessClaims struct {
@@ -181,6 +233,14 @@ type AccessClaims struct {
 	// ordinary users. The gateway reads this claim — NOT a client header — to
 	// authorize admin/internal surfaces.
 	Scopes string `json:"scopes,omitempty"`
+	// TokenType distinguishes an access token from a refresh token.
+	//
+	// Module 3 SR-1: the gateway rejects any token whose type is not an access
+	// token, because a refresh credential presented as a bearer token must not
+	// authenticate an API call. That check is only meaningful if the mint side
+	// actually stamps the claim — an absent `typ` is indistinguishable from a
+	// refresh token that omits it.
+	TokenType string `json:"typ"`
 }
 
 // RequestOTP generates and saves an OTP.
@@ -318,39 +378,25 @@ func validatePassword(pw string) error {
 	return nil
 }
 
-// minimumAgeYears is the hard floor for self-service registration.
-// India's DPDP Act additionally requires verifiable parental consent for
-// users under 18 — that consent flow is a separate effort; this gate is
-// the absolute minimum age, enforced whenever a date of birth is supplied.
-const minimumAgeYears = 13
-
-// validateMinimumAge rejects registrations below minimumAgeYears. An
-// absent DOB is not enforced here (the registration form may not collect
-// one); a malformed DOB is rejected outright.
-func validateMinimumAge(dob string) error {
-	if strings.TrimSpace(dob) == "" {
-		return nil
-	}
-	born, err := time.Parse("2006-01-02", dob)
-	if err != nil {
-		return fmt.Errorf("invalid date of birth")
-	}
-	now := time.Now()
-	age := now.Year() - born.Year()
-	if now.YearDay() < born.YearDay() {
-		age--
-	}
-	if age < minimumAgeYears {
-		return fmt.Errorf("you must be at least %d years old to register", minimumAgeYears)
-	}
-	return nil
+// RegisterWithPassword delegates to the consent-aware launch registration
+// path below; the old optional 13+ helper has been removed.
+func (s *Service) RegisterWithPassword(ctx context.Context, phone, email, password, firstName, lastName, dob, gender string) (*AuthResponse, error) {
+	return s.RegisterWithConsent(ctx, phone, email, password, firstName, lastName, dob, gender,
+		RegistrationConsent{})
 }
 
-func (s *Service) RegisterWithPassword(ctx context.Context, phone, email, password, firstName, lastName, dob, gender string) (*AuthResponse, error) {
+// RegisterWithConsent is the registration entry point.
+//
+// SR-6: the age gate was 13 AND was skipped entirely when no date of birth was
+// supplied — and `dob` was an optional request field, so any client could
+// bypass it by omission. There was no consent capture at all. Both are now
+// mandatory and enforced here, at the service layer, so a second handler
+// cannot reintroduce the bypass.
+func (s *Service) RegisterWithConsent(ctx context.Context, phone, email, password, firstName, lastName, dob, gender string, consent RegistrationConsent) (*AuthResponse, error) {
 	if err := validatePassword(password); err != nil {
 		return nil, err
 	}
-	if err := validateMinimumAge(dob); err != nil {
+	if err := CheckRegistrationEligibility(dob, consent, time.Now()); err != nil {
 		return nil, err
 	}
 
@@ -402,49 +448,68 @@ func (s *Service) RegisterWithPassword(ctx context.Context, phone, email, passwo
 		return nil, fmt.Errorf("failed to insert outbox event: %w", err)
 	}
 
+	// LB-5: the account is created PENDING, and the versioned consent is
+	// recorded, both inside this transaction.
+	//
+	// Previously the account was created ACTIVE and this function returned
+	// access and refresh tokens immediately, with no verification challenge
+	// sent — so someone else's email address became a working account and the
+	// real owner was never contacted. The accepted terms version was checked
+	// in memory and discarded, leaving no record of what anyone agreed to.
+	if err := s.store.SetAccountPendingTx(ctx, tx, user.ID); err != nil {
+		return nil, fmt.Errorf("failed to mark account pending: %w", err)
+	}
+	var declaredDOB *time.Time
+	if parsed, perr := ParseDOB(dob, time.Now()); perr == nil {
+		declaredDOB = &parsed
+	}
+	if err := s.store.RecordConsentTx(ctx, tx, user.ID, store.RegistrationConsent{
+		TermsVersion:    consent.Version,
+		AcceptedTerms:   consent.Accepted,
+		AcceptedPrivacy: consent.Accepted,
+		DeclaredDOB:     declaredDOB,
+	}); err != nil {
+		return nil, fmt.Errorf("failed to record consent: %w", err)
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	sessionID := uuid.New()
-	refreshToken, err := generateOpaqueToken(32)
+	// LB-5: send the verification challenge, and issue NO session.
+	//
+	// A send failure fails the registration response rather than leaving the
+	// user with an account they can never activate and no way to know why. The
+	// account row survives — the address is claimed — and resend-verification
+	// is the recovery path.
+	if err := s.RequestEmailVerification(ctx, user.ID); err != nil {
+		s.log.Error("registration: verification email not sent", "err", err, "user_id", user.ID)
+		return nil, fmt.Errorf("account created but the verification email could not be sent: %w", err)
+	}
+
+	// CLB-3: issue the verification transaction.
+	//
+	// The code goes to the mailbox; this goes to the client. Neither alone
+	// activates anything — the client must present both, and the credential
+	// names which account without the client being able to choose it. Before
+	// this, the code had nowhere to be submitted: verify and resend sat behind
+	// the auth middleware and derived the user from X-User-Id, which only a
+	// verified session produces.
+	vt, err := s.store.CreateVerificationTransaction(ctx, user.ID,
+		store.VerificationPurposeEmail, store.VerificationTransactionTTL)
 	if err != nil {
-		return nil, err
+		s.log.Error("registration: verification transaction not issued", "err", err, "user_id", user.ID)
+		return nil, fmt.Errorf("account created but verification could not be started: %w", err)
 	}
 
-	sess := &store.Session{
-		ID:           sessionID,
-		UserID:       user.ID,
-		RefreshToken: hashToken(refreshToken),
-		DeviceID:     "web",
-		Platform:     "web",
-		IP:           "",
-		UserAgent:    "",
-		CreatedAt:    time.Now(),
-		ExpiresAt:    time.Now().Add(s.cfg.RefreshTokenTTL),
-	}
-
-	if err := s.store.CreateSession(ctx, sess); err != nil {
-		return nil, err
-	}
-
-	accessToken, err := s.generateAccessToken(ctx, user.ID, sessionID)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := s.producer.PublishUserLoggedIn(ctx, user.ID, sessionID, "web", "web", ""); err != nil {
-		s.log.Warn("failed to publish user logged in event", "err", err, "user_id", user.ID, "session_id", sessionID)
-	}
-
+	// No tokens. The caller must verify first — that is the whole point of a
+	// pending account. Returning a session here would mean an unverified
+	// address is a usable identity.
 	return &AuthResponse{
-		Tokens: TokenPair{
-			AccessToken:  accessToken,
-			RefreshToken: refreshToken,
-			ExpiresAt:    time.Now().Add(s.cfg.AccessTokenTTL),
-		},
-		User:      user,
-		SessionID: sessionID,
+		User:                  user,
+		RequiresVerification:  true,
+		VerificationToken:     vt.Token,
+		VerificationExpiresAt: &vt.ExpiresAt,
 	}, nil
 }
 
@@ -469,8 +534,49 @@ func (s *Service) LoginWithPassword(ctx context.Context, identifier, password, d
 		return nil, errors.New("user has no password set (try OTP login)")
 	}
 
+	// LB-5: an unverified account must not be able to log in.
+	//
+	// Registration creates the account PENDING and issues no session. Without
+	// this check the pending state would be decorative: a caller could simply
+	// register and then log in, and an unverified email address would still be
+	// a usable identity.
+	//
+	// CLB-3 — THE PASSWORD IS CHECKED FIRST, AND THAT IS THE SECURE ORDER.
+	//
+	// This check used to run BEFORE the password comparison, on the reasoning
+	// that it avoided leaking whether the password was right. It leaked more
+	// than it saved: anyone could learn "this address has a pending account
+	// here" by submitting any password at all, and — worse — a real user who
+	// closed the app after registering had NO way back. The verification
+	// transaction was gone with the process, and resend needed a session they
+	// could never get.
+	//
+	// With the password checked first, a wrong password is the same generic
+	// "invalid credentials" whether the account is pending, active, or absent,
+	// and a user who proves they own the account gets a fresh verification
+	// transaction instead of a dead end. No session is issued either way.
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
 		return nil, errors.New("invalid credentials")
+	}
+
+	if pending, perr := s.store.IsAccountPendingVerification(ctx, user.ID); perr != nil {
+		return nil, fmt.Errorf("check account status: %w", perr)
+	} else if pending {
+		vt, verr := s.store.CreateVerificationTransaction(ctx, user.ID,
+			store.VerificationPurposeEmail, store.VerificationTransactionTTL)
+		if verr != nil {
+			s.log.Error("pending login: verification transaction not issued",
+				"err", verr, "user_id", user.ID)
+			return nil, ErrEmailNotVerified
+		}
+		// A resumption path, not a session: no access token, no refresh token,
+		// no session row.
+		return &AuthResponse{
+			User:                  user,
+			RequiresVerification:  true,
+			VerificationToken:     vt.Token,
+			VerificationExpiresAt: &vt.ExpiresAt,
+		}, ErrEmailNotVerified
 	}
 
 	// Route through createSessionForUser so both the 2FA gate (A6) and
@@ -560,12 +666,12 @@ func (s *Service) RefreshSession(ctx context.Context, refreshToken, ip, userAgen
 		_ = s.store.RevokeSession(ctx, sess.ID)
 		_ = s.store.RecordLoginAnomaly(ctx, sess.UserID, "session_revoked",
 			ip, userAgent, sess.DeviceID, "", 90, true, map[string]any{
-				"reason":        "refresh_fingerprint_mismatch",
-				"original_ip":   sess.IP,
-				"original_ua":   sess.UserAgent,
-				"presented_ip":  ip,
-				"presented_ua":  userAgent,
-				"session_id":    sess.ID.String(),
+				"reason":       "refresh_fingerprint_mismatch",
+				"original_ip":  sess.IP,
+				"original_ua":  sess.UserAgent,
+				"presented_ip": ip,
+				"presented_ua": userAgent,
+				"session_id":   sess.ID.String(),
 			})
 		slog.Warn("auth: refresh denied — fingerprint mismatch",
 			"user_id", sess.UserID, "session_id", sess.ID,
@@ -602,8 +708,8 @@ func (s *Service) RefreshSession(ctx context.Context, refreshToken, ip, userAgen
 	if ipChanged && !subnetChanged && !uaChanged {
 		_ = s.store.RecordLoginAnomaly(ctx, sess.UserID, "new_ip",
 			ip, userAgent, sess.DeviceID, "", 40, false, map[string]any{
-				"original_ip":  sess.IP,
-				"session_id":   sess.ID.String(),
+				"original_ip": sess.IP,
+				"session_id":  sess.ID.String(),
 			})
 	}
 
@@ -697,37 +803,41 @@ func (s *Service) generateOTP() (string, error) {
 }
 
 func (s *Service) generateAccessToken(ctx context.Context, userID, sessionID uuid.UUID) (string, error) {
-	now := time.Now()
-	claims := AccessClaims{
-		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   userID.String(),
-			Issuer:    "auth-service",
-			IssuedAt:  jwt.NewNumericDate(now),
-			NotBefore: jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(now.Add(s.cfg.AccessTokenTTL)),
-		},
-		SessionID: sessionID.String(),
-		// Resolve scopes server-side (env allowlist ∪ DB roles). A client can
-		// never influence this — it is bound to the user id in the signed token.
-		Scopes: s.resolveScopes(ctx, userID),
-	}
+	// Module 3 LB-1 — the claim set is a CONTRACT with the API gateway's
+	// verifier, and it now lives in pkg/accesstoken so the contract can be
+	// tested against BOTH real implementations without either deployable
+	// service depending on the other. See that package's doc comment.
+	//
+	// Scopes are resolved here, server-side (env allowlist ∪ DB roles),
+	// because that requires the store. A client can never influence them —
+	// they are bound to the user id inside the signature.
+	return accesstoken.Mint(
+		s.accessTokenConfig(),
+		s.accessSigningKey,
+		userID,
+		sessionID,
+		s.resolveScopes(ctx, userID),
+		time.Now(),
+	)
+}
 
-	// RS256 when a private key is configured (verifiers hold only the public
-	// key and cannot mint). Otherwise HS256 with the shared secret as before.
-	if s.accessSigningKey != nil {
-		token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-		token.Header["kid"] = s.cfg.AccessTokenRS256KID
-		return token.SignedString(s.accessSigningKey)
+// accessTokenConfig maps service configuration onto the minter.
+func (s *Service) accessTokenConfig() accesstoken.Config {
+	return accesstoken.Config{
+		Issuer:      s.cfg.JWTIssuer,
+		Audience:    s.cfg.JWTAudience,
+		TTL:         s.cfg.AccessTokenTTL,
+		RS256KID:    s.cfg.AccessTokenRS256KID,
+		HS256KID:    s.cfg.JWTKID,
+		HS256Secret: s.cfg.JWTSecret,
 	}
+}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	// C7: stamp `kid` so the verifier can pick the right secret during
-	// rotation. Old (pre-C7) tokens omit `kid` and fall back to the
-	// active secret on the verifier side.
-	if s.cfg.JWTKID != "" {
-		token.Header["kid"] = s.cfg.JWTKID
-	}
-	return token.SignedString([]byte(s.cfg.JWTSecret))
+// AccessTokenConfigForContract exposes the exact configuration mapping the
+// production mint path uses, so the CI-only edge-auth contract module can
+// prove the real claim set rather than a restatement of it.
+func (s *Service) AccessTokenConfigForContract() accesstoken.Config {
+	return s.accessTokenConfig()
 }
 
 func generateOpaqueToken(length int) (string, error) {
@@ -931,22 +1041,68 @@ func (s *Service) ForgotPassword(ctx context.Context, identifier string) error {
 		return fmt.Errorf("failed to generate otp: %w", err)
 	}
 
-	// Use phone as OTP key; fall back to email
-	otpKey := user.Phone
-	if otpKey == "" && user.Email != nil {
-		otpKey = *user.Email
+	// SR-6: recovery is EMAIL ONLY at launch.
+	//
+	// This used to prefer the phone as the OTP key and then send nothing at
+	// all — there was no delivery mechanism in the service. The result was a
+	// "Forgot password" that returned 200 while no code ever arrived: account
+	// recovery did not exist. SMS is not wired either, so a phone-keyed code
+	// would still be undeliverable.
+	if user.Email == nil || strings.TrimSpace(*user.Email) == "" {
+		// Same silent return as the unknown-user case: revealing that an
+		// account exists but has no email is still an account oracle.
+		s.log.Warn("password reset requested for an account with no email address",
+			"user_id", user.ID)
+		return nil
 	}
-	if otpKey == "" {
-		return errors.New("user has no phone or email")
+	otpKey := *user.Email
+
+	if err := s.store.SaveOTP(ctx, otpKey, otp, "password_reset", s.cfg.OTPExpiry); err != nil {
+		return fmt.Errorf("save reset code: %w", err)
 	}
 
-	s.log.Debug("password reset otp generated", "identifier", maskPhone(identifier))
-	return s.store.SaveOTP(ctx, otpKey, otp, "password_reset", s.cfg.OTPExpiry)
+	if s.email == nil {
+		// Report the failure rather than returning success. A caller that
+		// treats this as sent tells the user their code is on the way.
+		return errors.New("password reset requires email delivery, which is not configured")
+	}
+	if err := s.email.Send(ctx, EmailMessage{
+		To:      otpKey,
+		Subject: "Your atPost password reset code",
+		TextBody: fmt.Sprintf(
+			"Your password reset code is %s.\n\n"+
+				"It expires in %d minutes. If you did not request a password reset, "+
+				"you can ignore this email — your password has not been changed.\n",
+			otp, int(s.cfg.OTPExpiry.Minutes())),
+	}); err != nil {
+		return fmt.Errorf("send reset code: %w", err)
+	}
+	s.log.Info("password reset code sent", "user_id", user.ID)
+	return nil
 }
 
-// ResetPassword verifies the OTP and sets a new password.
+// ResetPassword consumes the one-time code, sets the new password, and revokes
+// every session — atomically.
+//
+// LB-5, two defects:
+//
+//  1. THE KEY MISMATCH. ForgotPassword stores the code under the EMAIL
+//     (recovery is email-only at launch; SMS does not exist). This function
+//     looked up `user.Phone` first and only fell back to email when the phone
+//     was empty. So any account with BOTH a phone and an email could never
+//     find its own emailed code: recovery was broken for exactly the users
+//     most likely to have completed a full profile.
+//
+//  2. THE ORDERING. The code was deleted BEFORE the new password was
+//     validated, so a weak-password rejection left the user with a consumed
+//     code and no way to retry. And the password was committed BEFORE
+//     sessions were revoked, so a failure in between left the account with a
+//     new password and the attacker's session still live — the opposite of
+//     what a reset is for.
+//
+// Everything now happens in one transaction, and the password is validated
+// and hashed BEFORE the code is consumed.
 func (s *Service) ResetPassword(ctx context.Context, identifier, code, newPassword string) error {
-	// Find user
 	user, err := s.store.GetUserByPhone(ctx, identifier)
 	if err != nil {
 		return err
@@ -961,69 +1117,48 @@ func (s *Service) ResetPassword(ctx context.Context, identifier, code, newPasswo
 		return errors.New("invalid credentials")
 	}
 
-	// Verify OTP
-	otpKey := user.Phone
-	if otpKey == "" && user.Email != nil {
-		otpKey = *user.Email
-	}
-
-	otp, err := s.store.GetOTP(ctx, otpKey, "password_reset")
-	if err != nil {
-		return err
-	}
-	if otp == nil {
-		return errors.New("invalid or expired code")
-	}
-	if otp.Attempts >= s.cfg.OTPMaxAttempts {
-		return errors.New("too many attempts")
-	}
-
-	if err := bcrypt.CompareHashAndPassword([]byte(otp.Hash), []byte(code)); err != nil {
-		s.store.IncrementOTPAttempts(ctx, otp.ID)
-		return errors.New("invalid or expired code")
-	}
-
-	_ = s.store.DeleteOTP(ctx, otp.ID)
-
-	// Validate new password policy
+	// Validate and hash BEFORE consuming anything. A rejected password must
+	// leave the code usable.
 	if err := validatePassword(newPassword); err != nil {
 		return err
 	}
-
-	// Hash new password and update
 	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), s.cfg.BcryptCost)
 	if err != nil {
 		return err
 	}
 
-	if err := s.store.UpdatePassword(ctx, user.ID, string(hash)); err != nil {
+	// Recovery is EMAIL-ONLY, matching ForgotPassword. Keying off the phone
+	// here is what broke recovery for every user who had both.
+	if user.Email == nil || strings.TrimSpace(*user.Email) == "" {
+		return errors.New("invalid credentials")
+	}
+	otpKey := *user.Email
+
+	// One transaction: consume the code, set the password, revoke sessions.
+	err = s.store.ConsumeRecoveryAndSetPassword(
+		ctx, user.ID, otpKey, "password_reset",
+		func(storedHash string) bool {
+			return bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(code)) == nil
+		},
+		string(hash),
+	)
+	if err != nil {
+		if errors.Is(err, store.ErrRecoveryCodeInvalid) {
+			return errors.New("invalid or expired code")
+		}
 		return err
 	}
 
-	// A16: wipe any in-flight pending-2FA sessions for this user. An
-	// attacker that already cleared step 1 (password) and is sitting on
-	// a pending_token in the 5-min Redis TTL must not be allowed to
-	// complete step 2 with credentials we just rotated. Best-effort —
-	// runs before session revoke so that even a Redis error here still
-	// gets the session-revoke attempt below.
+	// A16: wipe any in-flight pending-2FA sessions. An attacker who already
+	// cleared step 1 and is sitting on a pending_token within its Redis TTL
+	// must not complete step 2 with credentials that were just rotated.
+	//
+	// This is deliberately AFTER the transaction and best-effort: it lives in
+	// Redis, cannot join a Postgres transaction, and a failure here must not
+	// roll back a completed password reset. The durable revocation already
+	// committed above, so a stale pending token cannot mint a session that
+	// survives refresh.
 	s.InvalidatePending2FASessions(ctx, user.ID)
-
-	// Revoke all existing sessions for security. Audit A4: previously
-	// the error was silently dropped (`s.store.RevokeAllSessions(...)`
-	// with no error capture), so a Postgres blip during the revoke
-	// would leave the attacker's session alive even after the user
-	// successfully reset their password — defeating the whole purpose
-	// of the reset. Now we surface the error: the password is already
-	// new (the attacker's stale token still won't pass refresh, since
-	// refresh checks revoked_at), but ops sees the failure and the
-	// caller knows to retry the revocation.
-	if revoked, err := s.store.RevokeAllSessions(ctx, user.ID); err != nil {
-		s.log.Error("password reset: failed to revoke sessions — user should be advised to log out everywhere",
-			"err", err, "user_id", user.ID)
-		return fmt.Errorf("password updated but session revocation failed: %w", err)
-	} else {
-		s.log.Info("password reset: revoked active sessions", "user_id", user.ID, "revoked", revoked)
-	}
 
 	s.log.Info("password reset successful", "user_id", user.ID)
 	return nil
@@ -1052,11 +1187,98 @@ func (s *Service) RequestEmailVerification(ctx context.Context, userID uuid.UUID
 		return fmt.Errorf("failed to generate otp: %w", err)
 	}
 
-	return s.store.SaveOTP(ctx, *user.Email, otp, "email_verify", s.cfg.OTPExpiry)
+	if err := s.store.SaveOTP(ctx, *user.Email, otp, "email_verify", s.cfg.OTPExpiry); err != nil {
+		return fmt.Errorf("save verification code: %w", err)
+	}
+
+	// LB-5: this SAVED the code and returned. It never sent anything, so no
+	// verification email has ever been delivered by this service — and
+	// registration created the account active anyway, which is why nobody
+	// noticed. Now the account stays pending until this arrives, so a silent
+	// failure here would lock the user out permanently. It is reported.
+	if s.email == nil {
+		return errors.New("email verification requires email delivery, which is not configured")
+	}
+	if err := s.email.Send(ctx, EmailMessage{
+		To:      *user.Email,
+		Subject: "Verify your atPost email address",
+		TextBody: fmt.Sprintf(
+			"Your verification code is %s.\n\n"+
+				"It expires in %d minutes. Enter it in the app to finish setting up "+
+				"your account.\n\nIf you did not create an atPost account, you can "+
+				"ignore this email — the address will not be used.\n",
+			otp, int(s.cfg.OTPExpiry.Minutes())),
+	}); err != nil {
+		return fmt.Errorf("send verification code: %w", err)
+	}
+	s.log.Info("verification code sent", "user_id", user.ID)
+	return nil
 }
 
 // VerifyEmail checks the OTP and marks the user's email as verified.
+// VerifyEmailWithTransaction is the public verification entry point.
+//
+// CLB-3: the account is named by the SERVER-ISSUED credential, never by the
+// caller. A public route that accepted a user id would let anyone grind codes
+// against any account they can name; this way the only accounts an attacker
+// can attempt are the ones they were handed a credential for.
+//
+// Ordering matters and is deliberate:
+//
+//  1. look the credential up WITHOUT consuming it, so a mistyped code does not
+//     burn the user's only way back in;
+//  2. check the code, which is where the attempt counter and the OTP expiry
+//     do their work;
+//  3. consume the credential ATOMICALLY, so a replay of a correct submission
+//     cannot re-enter the activation path;
+//  4. activate, which is itself one-time.
+//
+// A wrong purpose, an expired credential, a forged one, or one belonging to
+// another user all fail at step 1 with the same error — there is nothing for
+// an attacker to learn from the difference.
+func (s *Service) VerifyEmailWithTransaction(ctx context.Context, transaction, code string) error {
+	userID, err := s.store.LookupVerificationTransaction(ctx, transaction, store.VerificationPurposeEmail)
+	if err != nil {
+		return err
+	}
+
+	if err := s.verifyEmailCode(ctx, userID, code); err != nil {
+		return err
+	}
+
+	// Spend the credential. If a concurrent request already did, this one
+	// matches no row and stops here rather than activating a second time.
+	if _, err := s.store.ConsumeVerificationTransaction(ctx, transaction, store.VerificationPurposeEmail); err != nil {
+		return err
+	}
+
+	return s.activateVerifiedAccount(ctx, userID)
+}
+
+// ResendVerificationWithTransaction re-sends the code for the account the
+// credential names. It does NOT consume the credential: a user waiting on a
+// slow mail provider may legitimately ask more than once, and burning their
+// only credential on a resend would recreate the dead end this fixes.
+func (s *Service) ResendVerificationWithTransaction(ctx context.Context, transaction string) error {
+	userID, err := s.store.LookupVerificationTransaction(ctx, transaction, store.VerificationPurposeEmail)
+	if err != nil {
+		return err
+	}
+	return s.RequestEmailVerification(ctx, userID)
+}
+
+// VerifyEmail verifies by user id. CLB-3 moved the public entry point to
+// VerifyEmailWithTransaction; this remains the internal form, callable only
+// where the user id is already established by the server.
 func (s *Service) VerifyEmail(ctx context.Context, userID uuid.UUID, code string) error {
+	if err := s.verifyEmailCode(ctx, userID, code); err != nil {
+		return err
+	}
+	return s.activateVerifiedAccount(ctx, userID)
+}
+
+// verifyEmailCode checks the emailed code and consumes it on success.
+func (s *Service) verifyEmailCode(ctx context.Context, userID uuid.UUID, code string) error {
 	user, err := s.store.GetUserByID(ctx, userID)
 	if err != nil {
 		return err
@@ -1082,7 +1304,25 @@ func (s *Service) VerifyEmail(ctx context.Context, userID uuid.UUID, code string
 	}
 
 	_ = s.store.DeleteOTP(ctx, otp.ID)
-	return s.store.MarkEmailVerified(ctx, userID)
+	return nil
+}
+
+// activateVerifiedAccount performs the one-time pending → active transition.
+//
+// LB-5: registration creates the account pending and issues no session, so
+// this is the transition that makes it usable. ActivateVerifiedAccount only
+// promotes a row that is still pending, which is what makes it one-time: a
+// replay finds an active account and changes nothing.
+func (s *Service) activateVerifiedAccount(ctx context.Context, userID uuid.UUID) error {
+	if err := s.store.ActivateVerifiedAccount(ctx, userID); err != nil {
+		if errors.Is(err, store.ErrAccountNotPending) {
+			// Already active. The code was valid and is now consumed; report
+			// success rather than an error the user cannot act on.
+			return s.store.MarkEmailVerified(ctx, userID)
+		}
+		return fmt.Errorf("activate account: %w", err)
+	}
+	return nil
 }
 
 // RequestPhoneVerification sends a verification OTP to the user's phone.

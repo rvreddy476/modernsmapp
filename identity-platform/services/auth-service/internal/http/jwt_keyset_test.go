@@ -13,11 +13,11 @@ func TestJWTKeySetSecretFor(t *testing.T) {
 		PreviousSecret: "old",
 	}
 	cases := []struct {
-		name     string
-		keys     JWTKeySet
-		kid      string
-		wantOK   bool
-		wantSec  string
+		name    string
+		keys    JWTKeySet
+		kid     string
+		wantOK  bool
+		wantSec string
 	}{
 		{"empty kid falls back to active", full, "", true, "new"},
 		{"matching active kid picks active", full, "v2", true, "new"},

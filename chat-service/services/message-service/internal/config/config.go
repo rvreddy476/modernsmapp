@@ -7,20 +7,21 @@ import (
 )
 
 type Config struct {
-	HTTPPort             string
-	PostgresDSN          string
-	ScyllaHosts          []string
-	ScyllaKeyspace       string
-	RedisAddr            string
-	KafkaBrokers         []string
-	KafkaTopic           string
-	JWTSecret            string
+	HTTPPort       string
+	PostgresDSN    string
+	ScyllaHosts    []string
+	ScyllaKeyspace string
+	RedisAddr      string
+	KafkaBrokers   []string
+	KafkaTopic     string
+	JWTSecret      string
 	// C7 — kid + previous-secret rotation knobs.
 	JWTKID               string
 	JWTSecretPrevious    string
 	JWTKIDPrevious       string
 	UserServiceURL       string
 	GraphServiceURL      string
+	MediaServiceURL      string
 	InternalServiceKey   string
 	TrustedProxies       []string
 	OutboxPollInterval   time.Duration
@@ -48,6 +49,7 @@ func Load() *Config {
 		JWTKIDPrevious:       getEnv("JWT_KID_PREVIOUS", ""),
 		UserServiceURL:       getEnv("USER_SERVICE_URL", "http://user-service:8082"),
 		GraphServiceURL:      getEnv("GRAPH_SERVICE_URL", "http://graph-service:8083"),
+		MediaServiceURL:      getEnv("MEDIA_SERVICE_URL", "http://media-service:8087"),
 		InternalServiceKey:   getEnv("INTERNAL_SERVICE_KEY", ""),
 		TrustedProxies:       splitAndClean(getEnv("TRUSTED_PROXIES", "")),
 		OutboxPollInterval:   getEnvDuration("OUTBOX_POLL_INTERVAL", 1*time.Second),

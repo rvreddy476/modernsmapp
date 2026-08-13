@@ -38,6 +38,10 @@ type AuthService interface {
 	RequestOTP(ctx context.Context, phone, purpose string) error
 	VerifyOTP(ctx context.Context, phone, code, purpose, deviceID, platform, ip, userAgent string) (*service.AuthResponse, error)
 	RegisterWithPassword(ctx context.Context, phone, email, password, firstName, lastName, dob, gender string) (*service.AuthResponse, error)
+	// SR-6: registration now requires a date of birth and an explicit,
+	// versioned consent. RegisterWithPassword is kept for existing internal
+	// callers and delegates here with an empty consent, which fails the gate.
+	RegisterWithConsent(ctx context.Context, phone, email, password, firstName, lastName, dob, gender string, consent service.RegistrationConsent) (*service.AuthResponse, error)
 	LoginWithPassword(ctx context.Context, identifier, password, deviceID, platform, ip, userAgent string) (*service.AuthResponse, error)
 	RefreshSession(ctx context.Context, refreshToken, ip, userAgent string) (*service.AuthResponse, error)
 	IssueSessionForUser(ctx context.Context, userID uuid.UUID, deviceID, platform, ip, userAgent string) (*service.AuthResponse, error)
@@ -69,6 +73,11 @@ type AuthService interface {
 	// Email/Phone verification
 	RequestEmailVerification(ctx context.Context, userID uuid.UUID) error
 	VerifyEmail(ctx context.Context, userID uuid.UUID, code string) error
+	// CLB-3: the public, transaction-scoped forms. The handler must NOT be
+	// able to name an account itself — these take the server-issued
+	// credential, and the user id is derived from it.
+	VerifyEmailWithTransaction(ctx context.Context, transaction, code string) error
+	ResendVerificationWithTransaction(ctx context.Context, transaction string) error
 	RequestPhoneVerification(ctx context.Context, userID uuid.UUID) error
 	VerifyPhone(ctx context.Context, userID uuid.UUID, code string) error
 	// Trusted devices
@@ -104,8 +113,12 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 	v1 := r.Group("/v1/auth")
 	{
 		// Public routes
-		v1.POST("/request-otp", middleware.OTPRateLimit(h.rdb), h.RequestOTP)
-		v1.POST("/verify-otp", middleware.LoginRateLimit(h.rdb), h.VerifyOTP)
+		// SR-6: RETIRED. These generated a code, stored it, and sent nothing —
+		// there is no SMS integration in this service, so the code could never
+		// arrive. The rate limiters stay in front of them so a client looping
+		// on the 410 still cannot hammer Redis. See retired_sms_routes.go.
+		v1.POST("/request-otp", middleware.OTPRateLimit(h.rdb), retiredSMSRoute)
+		v1.POST("/verify-otp", middleware.LoginRateLimit(h.rdb), retiredSMSRoute)
 		// H2 (arch review): /register is direct password signup. Without a
 		// limit an attacker can spam-create accounts to exhaust handle/email
 		// namespace or burn captcha quotas. Reuse the login limiter (10/IP
@@ -156,6 +169,28 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 		v1.POST("/forgot-password", middleware.PasswordResetRateLimit(h.rdb), h.ForgotPassword)
 		v1.POST("/reset-password", middleware.PasswordResetRateLimit(h.rdb), h.ResetPassword)
 
+		// CLB-3: email verification is PUBLIC and credential-scoped.
+		//
+		// These sat under the authenticated+CSRF group and derived the user
+		// from X-User-Id. Only a verified bearer session causes that header to
+		// be set, and registration deliberately issues none — so a pending
+		// user could receive a code and had no route to submit it, and no way
+		// to ask for another. The signup loop ended there for every user.
+		//
+		// They are not "unauthenticated": each call must present the opaque,
+		// short-lived verification transaction the server issued to that one
+		// account (see internal/store/verification_transaction.go). A raw user
+		// id is not accepted, so being public does not mean being addressable
+		// by account.
+		//
+		// Rate limiting is the OTP limiter — the same one guarding every other
+		// code-sending path, so this cannot be turned into a mail-flood or a
+		// code-grinding surface.
+		v1.POST("/verify-email", middleware.OTPRateLimit(h.rdb), h.VerifyEmail)
+		v1.POST("/resend-verification", middleware.OTPRateLimit(h.rdb), h.ResendVerification)
+		// SR-6: RETIRED — no SMS delivery, so no phone code can arrive.
+		v1.POST("/verify-phone", retiredSMSRoute)
+
 		// Token introspection — auth only (no CSRF; safe GET used by server-side proxies)
 		v1.GET("/me", authMW, h.Me)
 
@@ -180,10 +215,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 			protected.POST("/2fa/verify-setup", h.Verify2FASetup)
 			protected.POST("/2fa/disable", h.Disable2FA)
 
-			// Email/Phone verification (protected)
-			protected.POST("/verify-email", h.VerifyEmail)
-			protected.POST("/verify-phone", h.VerifyPhone)
-			protected.POST("/resend-verification", h.ResendVerification)
+			// CLB-3: verify-email / verify-phone / resend-verification moved
+			// to the public, transaction-scoped group above. A pending account
+			// has no session, so requiring one here made them unreachable.
 
 			// Trusted devices (protected)
 			protected.GET("/trusted-devices", h.ListTrustedDevices)
@@ -377,13 +411,25 @@ func (h *Handler) VerifyOTP(c *gin.Context) {
 }
 
 type RegisterRequest struct {
+	// Phone is accepted but is no longer sufficient on its own — see the
+	// EMAIL_REQUIRED check in Register. SMS delivery does not exist, so a
+	// phone-only account could never be verified or recovered.
 	Phone     string `json:"phone"`
 	Email     string `json:"email"`
 	Password  string `json:"password" binding:"required"`
 	FirstName string `json:"first_name"`
 	LastName  string `json:"last_name"`
-	DOB       string `json:"dob"`
-	Gender    string `json:"gender"`
+	// DOB is MANDATORY (SR-6). It was optional, and the age check returned nil
+	// when it was absent, so omitting the field bypassed the gate entirely.
+	DOB    string `json:"dob"`
+	Gender string `json:"gender"`
+	// AcceptedTerms must be explicitly true. A bool defaulting to false means a
+	// client that omits it is refused — a consent that defaults to granted is
+	// not consent.
+	AcceptedTerms bool `json:"accepted_terms"`
+	// TermsVersion records WHICH text the user was shown, so a later audit can
+	// answer that question from data rather than from a deployment timeline.
+	TermsVersion string `json:"terms_version"`
 }
 
 func (h *Handler) Register(c *gin.Context) {
@@ -394,8 +440,14 @@ func (h *Handler) Register(c *gin.Context) {
 		return
 	}
 
-	if req.Phone == "" && req.Email == "" {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "Either phone or email must be provided", nil, nil)
+	// SR-6: EMAIL is the launch identifier. Phone registration is retired
+	// because no SMS delivery exists — a phone-only account could never
+	// receive a verification or recovery code, so it could never be recovered.
+	if req.Email == "" {
+		api.Error(c.Writer, http.StatusBadRequest, "EMAIL_REQUIRED",
+			"An email address is required. Phone registration is not available: "+
+				"SMS delivery is not enabled, so a phone-only account could never "+
+				"receive a verification or password-reset code.", nil, nil)
 		return
 	}
 
@@ -404,20 +456,40 @@ func (h *Handler) Register(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.svc.RegisterWithPassword(c.Request.Context(), req.Phone, req.Email, req.Password, req.FirstName, req.LastName, req.DOB, req.Gender)
+	resp, err := h.svc.RegisterWithConsent(c.Request.Context(), req.Phone, req.Email, req.Password,
+		req.FirstName, req.LastName, req.DOB, req.Gender,
+		service.RegistrationConsent{
+			Accepted: req.AcceptedTerms,
+			Version:  req.TermsVersion,
+		})
 	if err != nil {
 		h.log.Error("registration failed", "err", err, "phone", maskPhone(req.Phone), "email", maskEmail(req.Email), "request_id", RequestIDFromContext(c))
-		if errors.Is(err, store.ErrUserExists) {
+		switch {
+		case errors.Is(err, store.ErrUserExists):
 			api.Error(c.Writer, http.StatusConflict, "USER_EXISTS", "User already exists", nil, nil)
-		} else if errors.Is(err, service.ErrPasswordTooShort) || errors.Is(err, service.ErrPasswordTooWeak) {
+		case errors.Is(err, service.ErrPasswordTooShort) || errors.Is(err, service.ErrPasswordTooWeak):
 			api.Error(c.Writer, http.StatusUnprocessableEntity, "WEAK_PASSWORD", err.Error(), nil, nil)
-		} else {
+		// SR-6: the age and consent failures carry their own codes and the
+		// real reason. A generic "Registration failed" would leave a user
+		// retrying a form that can never succeed.
+		case errors.Is(err, service.ErrUnderage):
+			api.Error(c.Writer, http.StatusUnprocessableEntity, "UNDERAGE", err.Error(), nil, nil)
+		case errors.Is(err, service.ErrDOBRequired) || errors.Is(err, service.ErrDOBMalformed) ||
+			errors.Is(err, service.ErrDOBInFuture):
+			api.Error(c.Writer, http.StatusUnprocessableEntity, "INVALID_DOB", err.Error(), nil, nil)
+		case errors.Is(err, service.ErrConsentRequired) || errors.Is(err, service.ErrConsentVersionMismatch):
+			api.Error(c.Writer, http.StatusUnprocessableEntity, "CONSENT_REQUIRED", err.Error(),
+				map[string]any{"current_terms_version": service.CurrentTermsVersion}, nil)
+		default:
 			api.Error(c.Writer, http.StatusBadRequest, "REGISTRATION_FAILED", "Registration failed", nil, nil)
 		}
 		return
 	}
 
-	h.setAuthCookies(c, resp.Tokens)
+	// LB-5: registration issues NO session, so there are no cookies to set.
+	// The account is pending until the emailed code is verified — calling
+	// setAuthCookies here would write empty credentials and, worse, imply the
+	// client is signed in.
 	api.JSON(c.Writer, http.StatusCreated, resp, nil)
 }
 
@@ -454,6 +526,32 @@ func (h *Handler) Login(c *gin.Context) {
 
 	resp, err := h.svc.LoginWithPassword(c.Request.Context(), identifier, req.Password, req.DeviceID, req.Platform, c.ClientIP(), c.Request.UserAgent())
 	if err != nil {
+		// LB-5: a pending (unverified) account. Distinct from bad credentials
+		// so the client can offer "resend verification" instead of showing
+		// "wrong password" to someone whose password is correct.
+		if errors.Is(err, service.ErrEmailNotVerified) {
+			// CLB-3: the resumption path a user who closed the app needs.
+			//
+			// The password has already been checked, so this response is only
+			// reachable by someone who owns the account. It carries a FRESH
+			// verification transaction and no session at all — the client can
+			// finish signing up with it, and it is useless for anything else.
+			// Without this the pending state was a dead end: the credential
+			// from registration was gone with the process, and both verify and
+			// resend needed a session the account cannot have.
+			details := map[string]any{
+				"verify_via": "POST /v1/auth/verify-email",
+				"resend_via": "POST /v1/auth/resend-verification",
+			}
+			if resp != nil && resp.VerificationToken != "" {
+				details[VerificationTransactionField] = resp.VerificationToken
+				if resp.VerificationExpiresAt != nil {
+					details["verification_expires_at"] = *resp.VerificationExpiresAt
+				}
+			}
+			api.Error(c.Writer, http.StatusForbidden, "EMAIL_NOT_VERIFIED", err.Error(), details, nil)
+			return
+		}
 		// A13 — anomaly step-up required. The service has already
 		// stashed the pending session + dispatched the email-OTP if
 		// applicable. Render a 200 with the step-up envelope so the
@@ -659,14 +757,23 @@ func (h *Handler) DeleteAccount(c *gin.Context) {
 		return
 	}
 
-	if err := h.svc.DeleteAccount(c.Request.Context(), userID); err != nil {
-		h.log.Error("delete account failed", "err", err, "user_id", userID, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
-		return
-	}
+	// LB-6: this endpoint makes NO mutation.
+	//
+	// It previously called DeleteAccount, which marked the account
+	// `pending_deletion` and emitted `user.deletion_requested`. Nothing in
+	// this repository purges a pending_deletion account, but that event does
+	// reach other services — so some could erase their slice while the rest
+	// of the data stays, producing PARTIAL IRREVERSIBLE erasure. That is
+	// worse than either finishing the pipeline or not starting it.
+	//
+	// The user stays signed in: revoking sessions here would be a real,
+	// user-visible effect on an endpoint that is meant to do nothing.
+	h.log.Info("self-service deletion requested while disabled",
+		"user_id", userID, "request_id", RequestIDFromContext(c))
 
-	h.clearAuthCookies(c)
-	api.JSON(c.Writer, http.StatusOK, gin.H{"status": "ok", "message": "Account scheduled for deletion in 30 days"}, nil)
+	api.Error(c.Writer, http.StatusServiceUnavailable,
+		DeletionUnavailableCode, DeletionUnavailableMessage,
+		CurrentDeletionDetails(), nil)
 }
 
 // --- Password Reset ---
@@ -718,25 +825,33 @@ func (h *Handler) ResetPassword(c *gin.Context) {
 
 // --- Email/Phone Verification ---
 
+// VerificationTransactionField is the request key carrying the server-issued
+// verification credential. Named so tests can assert on the exact contract
+// rather than a string literal that could drift.
+const VerificationTransactionField = "verification_token"
+
 type VerifyEmailRequest struct {
-	Code string `json:"code" binding:"required"`
+	// CLB-3: the account is named by this server-issued credential.
+	//
+	// There is deliberately NO user_id field. On a public route a
+	// caller-supplied id would let anyone grind codes against any account they
+	// can name, which is exactly the shape this endpoint must not have.
+	VerificationToken string `json:"verification_token" binding:"required"`
+	Code              string `json:"code" binding:"required"`
 }
 
 func (h *Handler) VerifyEmail(c *gin.Context) {
-	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
-	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid user ID", nil, nil)
-		return
-	}
-
 	var req VerifyEmailRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
 		return
 	}
 
-	if err := h.svc.VerifyEmail(c.Request.Context(), userID, req.Code); err != nil {
-		h.log.Warn("email verification failed", "err", err, "user_id", userID, "request_id", RequestIDFromContext(c))
+	if err := h.svc.VerifyEmailWithTransaction(c.Request.Context(), req.VerificationToken, req.Code); err != nil {
+		// One response for every failure — invalid credential, wrong purpose,
+		// expired, replayed, wrong code. Distinguishing them would let a
+		// caller probe which credentials and accounts exist.
+		h.log.Warn("email verification failed", "err", err, "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusBadRequest, "VERIFY_FAILED", "Email verification failed", nil, nil)
 		return
 	}
@@ -772,34 +887,34 @@ func (h *Handler) VerifyPhone(c *gin.Context) {
 
 type ResendVerificationRequest struct {
 	Type string `json:"type" binding:"required"` // "email" or "phone"
+	// CLB-3: as on VerifyEmailRequest, there is deliberately no user_id.
+	VerificationToken string `json:"verification_token" binding:"required"`
 }
 
 func (h *Handler) ResendVerification(c *gin.Context) {
-	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
-	if err != nil {
-		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing or invalid user ID", nil, nil)
-		return
-	}
-
 	var req ResendVerificationRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
 		return
 	}
 
+	// CLB-3: resend is the recovery path for a user whose first email never
+	// arrived, so it must work with NO session — but it must still be scoped
+	// to one account by a credential the server issued, not by a user id the
+	// caller picked.
 	switch req.Type {
 	case "email":
-		if err := h.svc.RequestEmailVerification(c.Request.Context(), userID); err != nil {
-			h.log.Error("resend email verification failed", "err", err, "user_id", userID, "request_id", RequestIDFromContext(c))
-			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to send verification", nil, nil)
+		if err := h.svc.ResendVerificationWithTransaction(c.Request.Context(), req.VerificationToken); err != nil {
+			h.log.Warn("resend email verification failed", "err", err, "request_id", RequestIDFromContext(c))
+			api.Error(c.Writer, http.StatusBadRequest, "VERIFY_FAILED", "Could not resend verification", nil, nil)
 			return
 		}
 	case "phone":
-		if err := h.svc.RequestPhoneVerification(c.Request.Context(), userID); err != nil {
-			h.log.Error("resend phone verification failed", "err", err, "user_id", userID, "request_id", RequestIDFromContext(c))
-			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to send verification", nil, nil)
-			return
-		}
+		// SR-6: no SMS delivery exists, so a phone code can never arrive.
+		// Reporting success here would be a lie the user acts on.
+		api.Error(c.Writer, http.StatusGone, "SMS_UNAVAILABLE",
+			"Phone verification is unavailable; verify by email", nil, nil)
+		return
 	default:
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "type must be email or phone", nil, nil)
 		return

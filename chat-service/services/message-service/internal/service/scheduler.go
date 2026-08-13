@@ -5,6 +5,8 @@ import (
 	"time"
 )
 
+const scheduledMessageMaxAttempts = 5
+
 // StartScheduledMessageWorker polls every 30s for due scheduled messages
 // and sends them through the normal SendMessage pipeline.
 // Stops when ctx is cancelled.
@@ -30,7 +32,9 @@ func (s *Service) processScheduledMessages(ctx context.Context) {
 		_, sendErr := s.SendMessage(ctx, msg.SenderID, msg.ConversationID, msg.Type,
 			derefStr(msg.Content), msg.MediaID, "scheduled-"+msg.ID.String())
 		if sendErr != nil {
-			_ = s.extrasStore().MarkScheduledMessageSent(ctx, msg.ID)
+			if err := s.extrasStore().RecordScheduledMessageFailure(ctx, msg.ID, sendErr.Error(), scheduledMessageMaxAttempts); err != nil {
+				s.log.Error("failed to record scheduled message retry", "message_id", msg.ID, "err", err)
+			}
 			continue
 		}
 		_ = s.extrasStore().MarkScheduledMessageSent(ctx, msg.ID)

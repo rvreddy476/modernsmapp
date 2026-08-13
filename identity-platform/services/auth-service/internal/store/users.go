@@ -40,21 +40,21 @@ type User struct {
 }
 
 type Session struct {
-	ID                uuid.UUID  `json:"id"`
-	UserID            uuid.UUID  `json:"user_id"`
-	RefreshToken      string     `json:"refresh_token"`
-	DeviceID          string     `json:"device_id"`
-	Platform          string     `json:"platform"`
-	IP                string     `json:"ip"`
-	UserAgent         string     `json:"user_agent"`
-	IsActive          bool       `json:"is_active"`
-	CreatedAt         time.Time  `json:"created_at"`
-	ExpiresAt         time.Time  `json:"expires_at"`
-	RevokedAt         *time.Time `json:"revoked_at,omitempty"`
-	FamilyID          *uuid.UUID `json:"family_id,omitempty"`
-	anomalyFlagged    bool
-	LastRefreshAt     *time.Time `json:"last_refresh_at,omitempty"`
-	LastRefreshIP     string     `json:"last_refresh_ip,omitempty"`
+	ID             uuid.UUID  `json:"id"`
+	UserID         uuid.UUID  `json:"user_id"`
+	RefreshToken   string     `json:"refresh_token"`
+	DeviceID       string     `json:"device_id"`
+	Platform       string     `json:"platform"`
+	IP             string     `json:"ip"`
+	UserAgent      string     `json:"user_agent"`
+	IsActive       bool       `json:"is_active"`
+	CreatedAt      time.Time  `json:"created_at"`
+	ExpiresAt      time.Time  `json:"expires_at"`
+	RevokedAt      *time.Time `json:"revoked_at,omitempty"`
+	FamilyID       *uuid.UUID `json:"family_id,omitempty"`
+	anomalyFlagged bool
+	LastRefreshAt  *time.Time `json:"last_refresh_at,omitempty"`
+	LastRefreshIP  string     `json:"last_refresh_ip,omitempty"`
 }
 
 // AnomalyFlagged returns the persisted anomaly flag. Lowercase field
@@ -74,18 +74,18 @@ type TrustedDevice struct {
 // LoginAnomaly is one row of auth.login_anomalies. Industry-standard
 // audit trail backing the in-app security inbox + ops review queue.
 type LoginAnomaly struct {
-	ID             uuid.UUID              `json:"id"`
-	UserID         uuid.UUID              `json:"user_id"`
-	AnomalyType    string                 `json:"anomaly_type"`
-	IP             string                 `json:"ip,omitempty"`
-	UserAgent      string                 `json:"user_agent,omitempty"`
-	DeviceID       string                 `json:"device_id,omitempty"`
-	CountryCode    string                 `json:"country_code,omitempty"`
-	Metadata       map[string]any         `json:"metadata,omitempty"`
-	RiskScore      int                    `json:"risk_score"`
-	Challenged     bool                   `json:"challenged"`
-	AcknowledgedAt *time.Time             `json:"acknowledged_at,omitempty"`
-	OccurredAt     time.Time              `json:"occurred_at"`
+	ID             uuid.UUID      `json:"id"`
+	UserID         uuid.UUID      `json:"user_id"`
+	AnomalyType    string         `json:"anomaly_type"`
+	IP             string         `json:"ip,omitempty"`
+	UserAgent      string         `json:"user_agent,omitempty"`
+	DeviceID       string         `json:"device_id,omitempty"`
+	CountryCode    string         `json:"country_code,omitempty"`
+	Metadata       map[string]any `json:"metadata,omitempty"`
+	RiskScore      int            `json:"risk_score"`
+	Challenged     bool           `json:"challenged"`
+	AcknowledgedAt *time.Time     `json:"acknowledged_at,omitempty"`
+	OccurredAt     time.Time      `json:"occurred_at"`
 }
 
 type OTP struct {
@@ -298,11 +298,22 @@ func (s *Store) SoftDeleteUser(ctx context.Context, userID uuid.UUID) error {
 	}
 	defer tx.Rollback(ctx)
 
+	// SR-7: `scheduled_purge_date` is no longer set.
+	//
+	// It used to be NOW() + 30 days, and nothing in this repository ever read
+	// it: there is no purge worker and no consumer of
+	// `user.deletion_requested` that erases anything. A date in that column is
+	// a commitment the platform does not keep, and a future operator reading
+	// the table would reasonably conclude the purge had run.
+	//
+	// The status stays `pending_deletion` because that IS what the account is:
+	// deactivated and awaiting a manual erasure process. The user-facing
+	// message now says exactly that (see internal/http/deletion_truth.go).
 	_, err = tx.Exec(ctx, `
 		UPDATE auth.users
 		SET account_status = 'pending_deletion',
 		    deletion_requested_at = NOW(),
-		    scheduled_purge_date = NOW() + INTERVAL '30 days',
+		    scheduled_purge_date = NULL,
 		    updated_at = NOW()
 		WHERE user_id = $1
 	`, userID)

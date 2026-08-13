@@ -1,7 +1,10 @@
 package config
 
 import (
+	"encoding/json"
+	"errors"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -16,11 +19,11 @@ type Config struct {
 	KafkaAnalyticsTopic    string
 	JWTSecret              string
 	// C7 — kid + previous-secret rotation knobs.
-	JWTKID                 string
-	JWTSecretPrevious      string
-	JWTKIDPrevious         string
-	TrustedProxies         []string
-	OutboxPollInterval     time.Duration
+	JWTKID             string
+	JWTSecretPrevious  string
+	JWTKIDPrevious     string
+	TrustedProxies     []string
+	OutboxPollInterval time.Duration
 
 	// SFU provider (LiveKit)
 	LiveKitHost      string
@@ -33,6 +36,9 @@ type Config struct {
 	InviteExpirySeconds    int
 	MaxCallDurationMinutes int
 	ReconnectGraceSeconds  int
+	CallsEnabled           bool
+	GraphServiceURL        string
+	InternalServiceKey     string
 }
 
 func Load() *Config {
@@ -58,7 +64,62 @@ func Load() *Config {
 		InviteExpirySeconds:    getEnvInt("INVITE_EXPIRY_SECONDS", 60),
 		MaxCallDurationMinutes: getEnvInt("MAX_CALL_DURATION_MINUTES", 240),
 		ReconnectGraceSeconds:  getEnvInt("RECONNECT_GRACE_SECONDS", 30),
+		CallsEnabled:           getEnvBool("CALLS_ENABLED", false),
+		GraphServiceURL:        strings.TrimSpace(os.Getenv("GRAPH_SERVICE_URL")),
+		InternalServiceKey:     strings.TrimSpace(os.Getenv("INTERNAL_SERVICE_KEY")),
 	}
+}
+
+// ValidateCallEnablement ensures the launch kill switch cannot be turned on
+// into an abuse-prone stub configuration. Disabled calls require no provider.
+func (c *Config) ValidateCallEnablement() error {
+	if !c.CallsEnabled {
+		return nil
+	}
+	switch {
+	case c.GraphServiceURL == "":
+		return errors.New("GRAPH_SERVICE_URL is required when calls are enabled")
+	case c.InternalServiceKey == "":
+		return errors.New("INTERNAL_SERVICE_KEY is required when calls are enabled")
+	case strings.TrimSpace(c.LiveKitHost) == "":
+		return errors.New("LIVEKIT_HOST is required when calls are enabled")
+	case strings.TrimSpace(c.LiveKitAPIKey) == "":
+		return errors.New("LIVEKIT_API_KEY is required when calls are enabled")
+	case strings.TrimSpace(c.LiveKitAPISecret) == "":
+		return errors.New("LIVEKIT_API_SECRET is required when calls are enabled")
+	case !containsTURNRelay(c.ICEServersJSON):
+		return errors.New("ICE_SERVERS_JSON must contain a TURN or TURNS relay when calls are enabled")
+	}
+	return nil
+}
+
+func containsTURNRelay(raw string) bool {
+	var servers []struct {
+		URLs any `json:"urls"`
+	}
+	if json.Unmarshal([]byte(raw), &servers) != nil {
+		return false
+	}
+	for _, server := range servers {
+		switch urls := server.URLs.(type) {
+		case string:
+			if isTURNURL(urls) {
+				return true
+			}
+		case []any:
+			for _, candidate := range urls {
+				if url, ok := candidate.(string); ok && isTURNURL(url) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func isTURNURL(raw string) bool {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	return strings.HasPrefix(value, "turn:") || strings.HasPrefix(value, "turns:")
 }
 
 func getEnv(key, def string) string {
@@ -111,4 +172,16 @@ func getEnvInt(key string, def int) int {
 		return n
 	}
 	return def
+}
+
+func getEnvBool(key string, def bool) bool {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return def
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return def
+	}
+	return parsed
 }

@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/atpost/identity-auth-service/internal/config"
 	"github.com/atpost/identity-auth-service/internal/store"
-	"github.com/alicebob/miniredis/v2"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -330,10 +330,10 @@ func (f *fakeAnomalyStore) SoftDeleteUser(_ context.Context, _ uuid.UUID) error 
 func (f *fakeAnomalyStore) UpdatePassword(_ context.Context, _ uuid.UUID, _ string) error {
 	return nil
 }
-func (f *fakeAnomalyStore) MarkEmailVerified(_ context.Context, _ uuid.UUID) error { return nil }
-func (f *fakeAnomalyStore) MarkPhoneVerified(_ context.Context, _ uuid.UUID) error { return nil }
+func (f *fakeAnomalyStore) MarkEmailVerified(_ context.Context, _ uuid.UUID) error      { return nil }
+func (f *fakeAnomalyStore) MarkPhoneVerified(_ context.Context, _ uuid.UUID) error      { return nil }
 func (f *fakeAnomalyStore) GrantRole(_ context.Context, _, _ uuid.UUID, _ string) error { return nil }
-func (f *fakeAnomalyStore) RevokeRole(_ context.Context, _ uuid.UUID, _ string) error    { return nil }
+func (f *fakeAnomalyStore) RevokeRole(_ context.Context, _ uuid.UUID, _ string) error   { return nil }
 func (f *fakeAnomalyStore) RolesForUser(_ context.Context, _ uuid.UUID) ([]string, error) {
 	return nil, nil
 }
@@ -438,3 +438,37 @@ func (f *fakeAnomalyStore) GetUnusedRecoveryCodes(_ context.Context, _ uuid.UUID
 	return nil, nil
 }
 func (f *fakeAnomalyStore) MarkRecoveryCodeUsed(_ context.Context, _ uuid.UUID) error { return nil }
+
+// LB-5 store additions: pending activation, versioned consent and atomic
+// recovery. The fake implements them as no-ops; the behaviour they encode is
+// tested against live PostgreSQL in internal/store, because it is transaction
+// semantics — exactly what a fake cannot prove.
+func (f *fakeAnomalyStore) SetAccountPendingTx(_ context.Context, _ pgx.Tx, _ uuid.UUID) error {
+	return nil
+}
+func (f *fakeAnomalyStore) RecordConsentTx(_ context.Context, _ pgx.Tx, _ uuid.UUID, _ store.RegistrationConsent) error {
+	return nil
+}
+func (f *fakeAnomalyStore) ActivateVerifiedAccount(_ context.Context, _ uuid.UUID) error { return nil }
+func (f *fakeAnomalyStore) IsAccountPendingVerification(_ context.Context, _ uuid.UUID) (bool, error) {
+	return false, nil
+}
+func (f *fakeAnomalyStore) ConsumeRecoveryAndSetPassword(_ context.Context, _ uuid.UUID, _, _ string, _ func(string) bool, _ string) error {
+	return nil
+}
+
+// CLB-3: the verification-transaction surface. This fake never issues one —
+// the pending path is proved against live PostgreSQL in
+// internal/store/verification_transaction_integration_test.go and end to end
+// through the real HTTP boundary in internal/http/signup_journey_test.go.
+func (f *fakeAnomalyStore) CreateVerificationTransaction(_ context.Context, _ uuid.UUID, _ string, _ time.Duration) (*store.VerificationTransaction, error) {
+	return &store.VerificationTransaction{Token: "fake-transaction", ExpiresAt: time.Now().Add(time.Hour)}, nil
+}
+
+func (f *fakeAnomalyStore) LookupVerificationTransaction(_ context.Context, _, _ string) (uuid.UUID, error) {
+	return uuid.Nil, store.ErrVerificationTransactionInvalid
+}
+
+func (f *fakeAnomalyStore) ConsumeVerificationTransaction(_ context.Context, _, _ string) (uuid.UUID, error) {
+	return uuid.Nil, store.ErrVerificationTransactionInvalid
+}

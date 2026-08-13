@@ -107,6 +107,25 @@ func main() {
 		logger.Warn("profile-service: INTERNAL_SERVICE_KEY not set — every endpoint is unauthenticated. Do not run this configuration in production.")
 	}
 
+	// Module 3 SR-4 — block enforcement on profile surfaces.
+	//
+	// Nothing here consulted the block graph: a blocked account could open the
+	// profile of the person who blocked them and read it, every time. SR-3
+	// removed this service's own block table (nobody enforced it), so
+	// enforcement means asking graph-service, which is canonical.
+	//
+	// Unconfigured is NOT a degraded mode — the handler refuses authenticated
+	// profile reads rather than serving them unprotected.
+	if graphURL := os.Getenv("GRAPH_SERVICE_URL"); graphURL != "" {
+		profileHandler.WithBlockChecker(
+			http.NewGraphBlockChecker(graphURL, os.Getenv("INTERNAL_SERVICE_KEY")))
+		logger.Info("profile-service: block denial enabled", "graph_service_url", graphURL)
+	} else {
+		logger.Error("profile-service: GRAPH_SERVICE_URL not set — block enforcement " +
+			"cannot run, so authenticated profile reads will be REFUSED. Set it, or " +
+			"blocked users would be able to read the profile of whoever blocked them.")
+	}
+
 	// 3b. Kafka consumer (inbox-dedup enabled)
 	consumer := events.NewConsumerWithDialer(cfg.KafkaBrokers, cfg.KafkaTopic, cfg.KafkaGroupID, kafkaDialer, dbPool, profileSvc, logger)
 	defer func() {

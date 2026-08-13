@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/identity-shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
-	"github.com/atpost/identity-shared/api"
 )
 
 const (

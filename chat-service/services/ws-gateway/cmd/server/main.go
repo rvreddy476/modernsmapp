@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/rsa"
 	"log/slog"
 	"net/http"
 	"os"
@@ -10,8 +9,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/atpost/chat-shared/transport"
+	"github.com/atpost/chat-shared/accessauth"
 	"github.com/atpost/chat-shared/logging"
+	"github.com/atpost/chat-shared/transport"
 	"github.com/atpost/chat-ws-gateway/internal/config"
 	httpapi "github.com/atpost/chat-ws-gateway/internal/http"
 )
@@ -40,32 +40,33 @@ func main() {
 	}
 	logger.Info("connected to Redis")
 
+	authKeys, authPolicy, err := accessauth.LoadFromEnv()
+	if err != nil {
+		logger.Error("refusing to start with unsafe access-token policy", "err", err)
+		os.Exit(1)
+	}
+	if err := cfg.ValidateProduction(authPolicy.Production); err != nil {
+		logger.Error("refusing to start with unsafe websocket policy", "err", err)
+		os.Exit(1)
+	}
 	jwtKeys := httpapi.JWTKeySet{
 		ActiveKID:      cfg.JWTKID,
 		ActiveSecret:   cfg.JWTSecret,
 		PreviousKID:    cfg.JWTKIDPrevious,
 		PreviousSecret: cfg.JWTSecretPrevious,
-	}
-	// Optional RS256 verification (additive): load auth-service's public key.
-	if cfg.JWTPublicKeyPEM != "" {
-		pub, perr := httpapi.ParseRSAPublicKeyPEM(cfg.JWTPublicKeyPEM)
-		if perr != nil {
-			logger.Error("failed to parse JWT_PUBLIC_KEY_PEM", "err", perr)
-			os.Exit(1)
-		}
-		jwtKeys.RSAKeys = map[string]*rsa.PublicKey{cfg.JWTRS256KID: pub}
-		logger.Info("RS256 token verification enabled", "kid", cfg.JWTRS256KID)
+		RSAKeys:        authKeys.RSAKeys,
+		Policy:         authPolicy,
 	}
 
 	server := httpapi.NewServer(rdb, logger, httpapi.ServerOptions{
-		JWTSecret: cfg.JWTSecret,
-		JWTKeys:   jwtKeys,
-		AllowedOrigins: cfg.AllowedOrigins,
+		JWTSecret:       cfg.JWTSecret,
+		JWTKeys:         jwtKeys,
+		AllowedOrigins:  cfg.AllowedOrigins,
 		AllowQueryToken: cfg.WSAllowQueryToken,
-		WriteWait:      cfg.WSWriteWait,
-		PongWait:       cfg.WSPongWait,
-		PingPeriod:     cfg.WSPingPeriod,
-		MaxMessageSize: cfg.WSMaxMessageSize,
+		WriteWait:       cfg.WSWriteWait,
+		PongWait:        cfg.WSPongWait,
+		PingPeriod:      cfg.WSPingPeriod,
+		MaxMessageSize:  cfg.WSMaxMessageSize,
 	})
 
 	httpServer := &http.Server{

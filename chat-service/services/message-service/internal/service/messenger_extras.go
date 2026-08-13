@@ -47,6 +47,7 @@ type MessengerExtrasStore interface {
 	CancelScheduledMessage(ctx context.Context, id, senderID uuid.UUID) error
 	GetPendingScheduledMessages(ctx context.Context, before time.Time, limit int) ([]postgres.ScheduledMessage, error)
 	MarkScheduledMessageSent(ctx context.Context, id uuid.UUID) error
+	RecordScheduledMessageFailure(ctx context.Context, id uuid.UUID, failure string, maxAttempts int) error
 	ListScheduledMessages(ctx context.Context, conversationID, senderID uuid.UUID) ([]postgres.ScheduledMessage, error)
 	// Translations
 	UpsertMessageTranslation(ctx context.Context, t *postgres.MessageTranslation) error
@@ -376,8 +377,19 @@ func (s *Service) ListScheduledMessagesSvc(ctx context.Context, userID, convID u
 
 // --- Translations ---
 
-func (s *Service) GetTranslation(ctx context.Context, messageID uuid.UUID, targetLang string) (*postgres.MessageTranslation, error) {
-	return s.extrasStore().GetMessageTranslation(ctx, messageID, targetLang)
+func (s *Service) GetTranslation(ctx context.Context, userID, messageID uuid.UUID, targetLang string) (*postgres.MessageTranslation, error) {
+	translation, err := s.extrasStore().GetMessageTranslation(ctx, messageID, targetLang)
+	if err != nil || translation == nil {
+		return translation, err
+	}
+	member, err := s.convStore.CheckMembership(ctx, translation.ConversationID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if !member {
+		return nil, nil
+	}
+	return translation, nil
 }
 
 func (s *Service) CreateTranslation(ctx context.Context, t *postgres.MessageTranslation) error {
@@ -386,14 +398,35 @@ func (s *Service) CreateTranslation(ctx context.Context, t *postgres.MessageTran
 
 // --- Threads ---
 
-func (s *Service) GetOrCreateThreadSvc(ctx context.Context, convID, parentMessageID uuid.UUID) (*postgres.MessageThread, error) {
+func (s *Service) GetOrCreateThreadSvc(ctx context.Context, userID, convID, parentMessageID uuid.UUID) (*postgres.MessageThread, error) {
+	member, err := s.convStore.CheckMembership(ctx, convID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if !member {
+		return nil, nil
+	}
 	return s.extrasStore().GetOrCreateThread(ctx, convID, parentMessageID)
 }
 
-func (s *Service) GetThreadSvc(ctx context.Context, convID, parentMessageID uuid.UUID) (*postgres.MessageThread, error) {
+func (s *Service) GetThreadSvc(ctx context.Context, userID, convID, parentMessageID uuid.UUID) (*postgres.MessageThread, error) {
+	member, err := s.convStore.CheckMembership(ctx, convID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if !member {
+		return nil, nil
+	}
 	return s.extrasStore().GetThread(ctx, convID, parentMessageID)
 }
 
-func (s *Service) ListThreadsSvc(ctx context.Context, convID uuid.UUID) ([]postgres.MessageThread, error) {
+func (s *Service) ListThreadsSvc(ctx context.Context, userID, convID uuid.UUID) ([]postgres.MessageThread, error) {
+	member, err := s.convStore.CheckMembership(ctx, convID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if !member {
+		return nil, nil
+	}
 	return s.extrasStore().ListConversationThreads(ctx, convID)
 }

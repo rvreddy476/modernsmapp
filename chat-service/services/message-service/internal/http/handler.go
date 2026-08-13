@@ -37,6 +37,9 @@ type ChatService interface {
 	// P0-3 dating-match internal entry points.
 	CreateDatingMatchConversation(ctx context.Context, userA, userB, matchID uuid.UUID) (*service.ConversationResponse, error)
 	CloseDatingMatchConversation(ctx context.Context, matchID uuid.UUID) error
+	ManagedAddGroupMember(ctx context.Context, conversationID, userID uuid.UUID) error
+	ManagedRemoveGroupMember(ctx context.Context, conversationID, userID uuid.UUID) error
+	ViewerMayAccessChatMedia(ctx context.Context, viewerID, mediaID uuid.UUID) (bool, error)
 
 	// Conversation settings
 	GetSettings(ctx context.Context, userID, convID uuid.UUID) (*store.ConversationSettings, error)
@@ -67,10 +70,10 @@ type ChatService interface {
 	CancelScheduledMessageSvc(ctx context.Context, userID, msgID uuid.UUID) error
 	ListScheduledMessagesSvc(ctx context.Context, userID, convID uuid.UUID) ([]store.ScheduledMessage, error)
 	// Translation
-	GetTranslation(ctx context.Context, messageID uuid.UUID, targetLang string) (*store.MessageTranslation, error)
+	GetTranslation(ctx context.Context, userID, messageID uuid.UUID, targetLang string) (*store.MessageTranslation, error)
 	// Threads
-	GetOrCreateThreadSvc(ctx context.Context, convID, parentMessageID uuid.UUID) (*store.MessageThread, error)
-	ListThreadsSvc(ctx context.Context, convID uuid.UUID) ([]store.MessageThread, error)
+	GetOrCreateThreadSvc(ctx context.Context, userID, convID, parentMessageID uuid.UUID) (*store.MessageThread, error)
+	ListThreadsSvc(ctx context.Context, userID, convID uuid.UUID) ([]store.MessageThread, error)
 }
 
 type Handler struct {
@@ -99,6 +102,14 @@ func (h *Handler) WithInternalServiceKey(key string) *Handler {
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
+	internal := r.Group("/internal/v1/chat")
+	internal.POST("/media-access", h.ChatMediaAccess)
+	managedGroups := internal.Group("/groups")
+	{
+		managedGroups.POST("/conversations", h.CreateManagedGroupConversation)
+		managedGroups.POST("/conversations/:id/members", h.AddManagedGroupMember)
+		managedGroups.DELETE("/conversations/:id/members/:userId", h.RemoveManagedGroupMember)
+	}
 	v1 := r.Group("/v1/chat")
 	{
 		v1.GET("/health", h.Health)
@@ -173,6 +184,131 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/conversations/:id/threads/:parentMessageId", h.GetOrCreateThread)
 		v1.GET("/conversations/:id/threads", h.ListConversationThreads)
 	}
+}
+
+type chatMediaAccessRequest struct {
+	ViewerID string `json:"viewer_id" binding:"required"`
+	MediaID  string `json:"media_id" binding:"required"`
+}
+
+func (h *Handler) ChatMediaAccess(c *gin.Context) {
+	if !h.authorizeManagedGroup(c) {
+		return
+	}
+	var body chatMediaAccessRequest
+	if c.ShouldBindJSON(&body) != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"allowed": false})
+		return
+	}
+	viewerID, viewerErr := uuid.Parse(body.ViewerID)
+	mediaID, mediaErr := uuid.Parse(body.MediaID)
+	if viewerErr != nil || mediaErr != nil {
+		c.JSON(http.StatusForbidden, gin.H{"allowed": false})
+		return
+	}
+	allowed, err := h.svc.ViewerMayAccessChatMedia(c.Request.Context(), viewerID, mediaID)
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"allowed": false})
+		return
+	}
+	if !allowed {
+		c.JSON(http.StatusForbidden, gin.H{"allowed": false})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"allowed": true})
+}
+
+type managedGroupConversationRequest struct {
+	CreatorUserID string `json:"creator_user_id" binding:"required"`
+	GroupID       string `json:"group_id" binding:"required"`
+	Title         string `json:"title" binding:"required"`
+}
+
+func (h *Handler) CreateManagedGroupConversation(c *gin.Context) {
+	if !h.authorizeManagedGroup(c) {
+		return
+	}
+	var body managedGroupConversationRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "invalid managed group request", nil, nil)
+		return
+	}
+	// Reparse after binding; the helper only performs the internal-key check.
+	creatorID, err := uuid.Parse(body.CreatorUserID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "invalid creator_user_id", nil, nil)
+		return
+	}
+	groupID, err := uuid.Parse(body.GroupID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "invalid group_id", nil, nil)
+		return
+	}
+	conversation, err := h.svc.CreateGroupConversation(c.Request.Context(), creatorID, body.Title, []uuid.UUID{creatorID}, "managed-group-"+groupID.String())
+	if err != nil {
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "managed group conversation failed", nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusCreated, conversation, nil)
+}
+
+func (h *Handler) authorizeManagedGroup(c *gin.Context) bool {
+	if h.internalServiceKey == "" || c.GetHeader("X-Internal-Service-Key") != h.internalServiceKey {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "internal service key required", nil, nil)
+		return false
+	}
+	return true
+}
+
+type managedMemberRequest struct {
+	UserID string `json:"user_id" binding:"required"`
+}
+
+func (h *Handler) AddManagedGroupMember(c *gin.Context) {
+	if !h.authorizeManagedGroup(c) {
+		return
+	}
+	conversationID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "invalid conversation id", nil, nil)
+		return
+	}
+	var body managedMemberRequest
+	if c.ShouldBindJSON(&body) != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "invalid managed member request", nil, nil)
+		return
+	}
+	userID, err := uuid.Parse(body.UserID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "invalid user_id", nil, nil)
+		return
+	}
+	if err := h.svc.ManagedAddGroupMember(c.Request.Context(), conversationID, userID); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "managed member add failed", nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "member added"}, nil)
+}
+
+func (h *Handler) RemoveManagedGroupMember(c *gin.Context) {
+	if !h.authorizeManagedGroup(c) {
+		return
+	}
+	conversationID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "invalid conversation id", nil, nil)
+		return
+	}
+	userID, err := uuid.Parse(c.Param("userId"))
+	if err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "invalid user id", nil, nil)
+		return
+	}
+	if err := h.svc.ManagedRemoveGroupMember(c.Request.Context(), conversationID, userID); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "managed member removal failed", nil, nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "member removed"}, nil)
 }
 
 func (h *Handler) Health(c *gin.Context) {

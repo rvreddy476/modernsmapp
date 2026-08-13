@@ -42,7 +42,7 @@ func TestParseAndValidateJWT_ExpiredToken(t *testing.T) {
 	secret := []byte("test-secret")
 	token := buildHS256Token(t, secret, map[string]any{
 		"sub": "7d16ea6b-8799-4289-a4dc-fd77fb2d9dd8",
-		"exp": time.Now().Add(-1 * time.Minute).Unix(),
+		"exp": time.Now().Add(-2 * time.Minute).Unix(),
 	})
 
 	if _, err := parseAndValidateJWT(token, secret); err == nil {

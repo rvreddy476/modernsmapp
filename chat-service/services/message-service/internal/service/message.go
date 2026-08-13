@@ -162,6 +162,7 @@ type Service struct {
 	pollInterval       time.Duration
 	userServiceURL     string
 	graphServiceURL    string
+	mediaServiceURL    string
 	internalServiceKey string
 	httpClient         *http.Client
 }
@@ -214,10 +215,10 @@ func New(convStore ConversationStore, msgStore MessageStore, rdb *redis.Client, 
 // realtime architecture rules — large groups get count-only to avoid
 // leaking a viewer list.
 type ConversationPresence struct {
-	ActiveCount  int64    `json:"active_count"`
-	ActiveUsers  []string `json:"active_users,omitempty"`
-	TypingUsers  []string `json:"typing_users,omitempty"`
-	IsBigGroup   bool     `json:"is_big_group"`
+	ActiveCount int64    `json:"active_count"`
+	ActiveUsers []string `json:"active_users,omitempty"`
+	TypingUsers []string `json:"typing_users,omitempty"`
+	IsBigGroup  bool     `json:"is_big_group"`
 }
 
 // GetConversationPresence returns who's actively viewing convID right
@@ -269,6 +270,10 @@ func (s *Service) SetUserDirectory(userServiceURL, internalServiceKey string) {
 // checks (spec §9.8). Without it, DM gating fails closed (see checkMessagePermission).
 func (s *Service) SetGraphService(graphServiceURL string) {
 	s.graphServiceURL = strings.TrimRight(graphServiceURL, "/")
+}
+
+func (s *Service) SetMediaService(mediaServiceURL string) {
+	s.mediaServiceURL = strings.TrimRight(mediaServiceURL, "/")
 }
 
 // checkRateLimit enforces a per-user chat rate limit (spec §10.4). It returns
@@ -557,6 +562,33 @@ func (s *Service) AddMember(ctx context.Context, userID, conversationID, targetU
 	return nil
 }
 
+// ManagedAddGroupMember is the narrow group-service reconciliation path.
+// Authentication is enforced by the exact /internal route; group-service is
+// authoritative for social-group membership, so chat must not re-evaluate a
+// chat-admin role that can drift from it.
+func (s *Service) ManagedAddGroupMember(ctx context.Context, conversationID, userID uuid.UUID) error {
+	conversation, err := s.convStore.GetConversation(ctx, conversationID)
+	if err != nil {
+		return err
+	}
+	if conversation == nil || conversation.Type != "group" {
+		return errors.New("managed group conversation not found")
+	}
+	return s.convStore.AddMember(ctx, conversationID, userID, "member")
+}
+
+func (s *Service) ManagedRemoveGroupMember(ctx context.Context, conversationID, userID uuid.UUID) error {
+	conversation, err := s.convStore.GetConversation(ctx, conversationID)
+	if err != nil {
+		return err
+	}
+	if conversation == nil || conversation.Type != "group" {
+		return errors.New("managed group conversation not found")
+	}
+	_, err = s.convStore.RemoveMember(ctx, conversationID, userID)
+	return err
+}
+
 func (s *Service) RemoveMember(ctx context.Context, userID, conversationID, targetUserID uuid.UUID) error {
 	conv, err := s.convStore.GetConversation(ctx, conversationID)
 	if err != nil {
@@ -657,6 +689,9 @@ func (s *Service) UpdateTitle(ctx context.Context, userID, conversationID uuid.U
 // --- Messages ---
 
 func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.UUID, msgType, text string, mediaID *uuid.UUID, idempotencyKey string) (*MessageResponse, error) {
+	if strings.TrimSpace(idempotencyKey) == "" {
+		return nil, ErrIdempotencyKeyRequired
+	}
 	ok, err := s.convStore.CheckMembership(ctx, conversationID, userID)
 	if err != nil {
 		return nil, err
@@ -664,7 +699,6 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 	if !ok {
 		return nil, errors.New("not a conversation member")
 	}
-
 	// P0-3 dating-match send gate: reject sends to a closed dating
 	// conversation (match unmatched / expired / one side blocked /
 	// paused / suspended). The closed_at flag is flipped by the
@@ -687,6 +721,10 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 		Text           string     `json:"text"`
 		MediaID        *uuid.UUID `json:"media_id,omitempty"`
 	}{UserID: userID, ConversationID: conversationID, Type: msgType, Text: text, MediaID: mediaID}
+	requestHash, err := hashRequestPayload(req)
+	if err != nil {
+		return nil, err
+	}
 	return withIdempotency(ctx, s, idempotencyKey, req, func() (*MessageResponse, error) {
 		// DM rate limit (spec §10.4): cap message sends per user per window.
 		// Inside the idempotency closure so a 429 releases the key and an
@@ -736,6 +774,59 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 		now := time.Now()
 		msgID := uuid.New()
 		bucket := now.UTC().Format("200601")
+		members, err := s.convStore.GetMembers(ctx, conversationID)
+		if err != nil {
+			return nil, err
+		}
+		var requestReceiverID *uuid.UUID
+		if firstRequestMessage {
+			for _, member := range members {
+				if member.UserID != userID {
+					receiver := member.UserID
+					requestReceiverID = &receiver
+					break
+				}
+			}
+		}
+		sourceApp := "chat"
+		var matchID *uuid.UUID
+		if meta != nil && meta.SourceApp != "" {
+			sourceApp = meta.SourceApp
+			matchID = meta.MatchID
+		}
+		if mediaID != nil {
+			// The reference is stable across retries but opaque outside this
+			// service. media-service atomically validates and pins the asset
+			// before any cross-store message mutation starts.
+			referenceID := uuid.NewSHA1(uuid.NameSpaceURL, []byte("atpost-chat-attachment:"+userID.String()+":"+idempotencyKey))
+			if err := s.reserveChatAttachment(ctx, referenceID, userID, *mediaID); err != nil {
+				return nil, err
+			}
+		}
+		intent, err := s.deliveryStore().ReserveMessageDeliveryIntent(ctx, postgres.MessageDeliveryIntent{
+			IdempotencyKey:    idempotencyKey,
+			RequestHash:       requestHash,
+			ConversationID:    conversationID,
+			SenderID:          userID,
+			MessageID:         msgID,
+			Bucket:            bucket,
+			MessageTS:         now,
+			MessageType:       msgType,
+			MessageText:       text,
+			MediaID:           mediaID,
+			MemberIDs:         activeMemberIDs(members),
+			FirstRequest:      firstRequestMessage,
+			RequestReceiverID: requestReceiverID,
+			SourceApp:         sourceApp,
+			MatchID:           matchID,
+		})
+		if err != nil {
+			if errors.Is(err, postgres.ErrDeliveryIntentConflict) {
+				return nil, ErrIdempotencyConflict
+			}
+			return nil, err
+		}
+		now, msgID, bucket = intent.MessageTS, intent.MessageID, intent.Bucket
 
 		msg := &scylla.Message{
 			ConversationID: conversationID,
@@ -751,118 +842,9 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 		}
 
 		l := s.log.With("conversation_id", conversationID, "sender_id", userID, "msg_id", msgID)
-
-		// 1. Persist to ScyllaDB
-		if err := s.msgStore.CreateMessage(ctx, msg); err != nil {
-			l.Error("failed to save message to scylladb", "err", err)
+		if err := s.completeMessageDelivery(ctx, intent); err != nil {
+			l.Error("message delivery is pending durable repair", "err", err)
 			return nil, err
-		}
-
-		// 2. Touch conversation timestamp
-		_ = s.convStore.TouchConversation(ctx, conversationID, now)
-
-		// 3. Update inbox projection for all members (async)
-		members, _ := s.convStore.GetMembers(ctx, conversationID)
-		go func() {
-			for _, m := range members {
-				if err := s.msgStore.UpsertInbox(context.Background(), m.UserID, conversationID, userID, text, now); err != nil {
-					l.Warn("failed to upsert inbox", "err", err, "member_id", m.UserID)
-				}
-			}
-		}()
-
-		// 4. Outbox event — critical synchronous handoff.
-		//
-		// Audit H5: this previously discarded the error with `_ =`. A
-		// transient Postgres blip would silently drop the downstream
-		// notification path (push, email) — the recipient would see the
-		// message only if they were already connected via Redis pub/sub.
-		//
-		// Now: retry briefly to absorb transient failures, then log
-		// CRITICAL if the row never lands. We still return success to
-		// the sender because Scylla has durably persisted the message;
-		// the alternative (failing the request) would create a duplicate
-		// on retry because the idempotency key gets released on error
-		// and a fresh msgID is generated.
-		recipientIDs := make([]string, 0, len(members))
-		for _, m := range members {
-			if m.UserID != userID {
-				recipientIDs = append(recipientIDs, m.UserID.String())
-			}
-		}
-		outboxPayload := sharedEvents.MessageCreatedPayload{
-			MessageID:      msgID.String(),
-			ConversationID: conversationID.String(),
-			SenderID:       userID.String(),
-			Type:           msgType,
-			RecipientIDs:   recipientIDs,
-			CreatedAt:      now,
-		}
-		var outboxErr error
-		for attempt := 0; attempt < 3; attempt++ {
-			outboxErr = s.convStore.InsertOutboxEvent(ctx, sharedEvents.MessageCreated, outboxPayload)
-			if outboxErr == nil {
-				break
-			}
-			if attempt < 2 {
-				time.Sleep(time.Duration(100*(attempt+1)) * time.Millisecond)
-			}
-		}
-		if outboxErr != nil {
-			l.Error("CRITICAL: outbox insert failed for chat message — downstream notifications will be lost",
-				"err", outboxErr)
-		}
-
-		// 4a. Dating-match send: emit a chat.dating.message.new outbox
-		// event per recipient so notification-service can drive push for
-		// recipients who aren't WS-connected. Phase 1 §1. The main
-		// MessageCreated outbox row already runs above; this is a
-		// dating-specific second event with the match_id + preview that
-		// the dating notification path needs.
-		if meta != nil && meta.SourceApp == "dating" && meta.MatchID != nil {
-			preview := text
-			if len(preview) > 140 {
-				// Conservative preview cap — push payloads are size
-				// constrained on iOS, and we don't want full PII in the
-				// Kafka log of a sensitive conversation.
-				preview = preview[:140]
-			}
-			for _, recipientID := range recipientIDs {
-				dpayload := sharedEvents.ChatDatingMessageNewPayload{
-					ConversationID: conversationID.String(),
-					MatchID:        meta.MatchID.String(),
-					SenderID:       userID.String(),
-					RecipientID:    recipientID,
-					MessagePreview: preview,
-					SentAt:         now,
-				}
-				if err := s.convStore.InsertOutboxEvent(ctx, sharedEvents.ChatDatingMessageNew, dpayload); err != nil {
-					l.Warn("dating outbox insert failed", "err", err, "recipient_id", recipientID)
-				}
-			}
-		}
-
-		// 4b. Message-request first message: store it as the request preview
-		// and emit MessageRequestCreated so notify routes it to the
-		// recipient's Requests folder (spec §3.3, §18.2).
-		if firstRequestMessage {
-			if err := s.convStore.SetMessageRequestPreview(ctx, conversationID, text); err != nil {
-				l.Warn("failed to set message request preview", "err", err)
-			}
-			var receiverID uuid.UUID
-			for _, m := range members {
-				if m.UserID != userID {
-					receiverID = m.UserID
-					break
-				}
-			}
-			_ = s.convStore.InsertOutboxEvent(ctx, sharedEvents.MessageRequestCreated, sharedEvents.MessageRequestPayload{
-				ConversationID: conversationID.String(),
-				SenderID:       userID.String(),
-				ReceiverID:     receiverID.String(),
-				Preview:        text,
-				OccurredAt:     now,
-			})
 		}
 
 		// 5. Real-time delivery via Redis pub/sub to all members (best-effort).

@@ -201,6 +201,11 @@ func (s *Store) ListUsers(ctx context.Context, limit, offset int) ([]User, int, 
 // caches (spec §6.2) can be keyed by it — a privacy change invalidates a
 // stale cache on the next read without an explicit delete.
 func (s *Store) UpdateSettings(ctx context.Context, settings *UserSettings) (*UserSettings, error) {
+	// SR-5: the column can only ever hold a value the platform enforces. See
+	// account_visibility.go — a stored "private" that nothing honours is the
+	// false promise this removes.
+	settings.AccountVisibility = ClampAccountVisibility(settings.AccountVisibility)
+
 	var us UserSettings
 	row := s.db.QueryRow(ctx, `
 		UPDATE usr.user_settings SET

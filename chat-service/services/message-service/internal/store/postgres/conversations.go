@@ -348,8 +348,8 @@ func (s *ConversationStore) SeverDirectConversation(ctx context.Context, blocker
 	tag, err := tx.Exec(ctx, `
 		UPDATE chat.conversation_members
 		SET left_at = NOW()
-		WHERE conversation_id = $1 AND user_id = $2 AND left_at IS NULL
-	`, conversationID, blockerID)
+		WHERE conversation_id = $1 AND user_id = ANY($2::uuid[]) AND left_at IS NULL
+	`, conversationID, []uuid.UUID{blockerID, blockedID})
 	if err != nil {
 		return false, err
 	}
@@ -486,7 +486,11 @@ func (s *ConversationStore) CheckMembership(ctx context.Context, conversationID,
 }
 
 func (s *ConversationStore) GetMembers(ctx context.Context, conversationID uuid.UUID) ([]Member, error) {
-	rows, err := s.db.Query(ctx, `SELECT user_id, role, joined_at FROM chat.conversation_members WHERE conversation_id = $1`, conversationID)
+	rows, err := s.db.Query(ctx, `
+		SELECT user_id, role, joined_at
+		FROM chat.conversation_members
+		WHERE conversation_id = $1 AND left_at IS NULL
+	`, conversationID)
 	if err != nil {
 		return nil, err
 	}

@@ -7,11 +7,11 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"github.com/atpost/identity-shared/api"
 	"github.com/atpost/identity-user-service/internal/service"
 	"github.com/atpost/identity-user-service/internal/store"
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 type Handler struct {
@@ -300,6 +300,16 @@ func (h *Handler) UpdateMySettings(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		h.log.Warn("invalid request payload", "err", err, "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+
+	// SR-5: public accounts only. Storing "private" here changed nothing —
+	// the follow path never read it — so the user was shown a privacy control
+	// that did not protect them. Refuse it rather than store a false promise.
+	if req.AccountVisibility != nil && AccountVisibilityRejected(*req.AccountVisibility) {
+		api.Error(c.Writer, http.StatusBadRequest, "UNSUPPORTED_ACCOUNT_VISIBILITY",
+			PublicAccountsOnlyMessage,
+			map[string]any{"supported": []string{SupportedAccountVisibility}}, nil)
 		return
 	}
 

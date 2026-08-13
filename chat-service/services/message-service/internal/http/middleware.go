@@ -1,17 +1,13 @@
 package http
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/json"
-	"errors"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
 	"strings"
 	"time"
 
+	"github.com/atpost/chat-shared/accessauth"
 	"github.com/atpost/chat-shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -116,10 +112,13 @@ func CORSMiddleware() gin.HandlerFunc {
 // window can verify both old and new tokens. Pre-C7 tokens (no kid) fall
 // back to the active secret.
 type JWTKeySet struct {
-	ActiveKID      string
-	ActiveSecret   string
-	PreviousKID    string
-	PreviousSecret string
+	ActiveKID          string
+	ActiveSecret       string
+	PreviousKID        string
+	PreviousSecret     string
+	AccessKeys         accessauth.KeySet
+	Policy             accessauth.Policy
+	InternalServiceKey string
 }
 
 func (k JWTKeySet) secretFor(kid string) ([]byte, bool) {
@@ -150,7 +149,14 @@ func AuthMiddlewareWithKeys(keys JWTKeySet, log *slog.Logger) gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		if strings.TrimSpace(keys.ActiveSecret) == "" {
+		if strings.HasPrefix(c.Request.URL.Path, "/internal/v1/chat/") &&
+			keys.InternalServiceKey != "" &&
+			c.GetHeader("X-Internal-Service-Key") == keys.InternalServiceKey {
+			c.Next()
+			return
+		}
+		resolved := keys.accessKeys()
+		if strings.TrimSpace(resolved.ActiveSecret) == "" && len(resolved.RSAKeys) == 0 {
 			api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Authentication not configured", nil, nil)
 			c.Abort()
 			return
@@ -182,82 +188,26 @@ func parseAndValidateJWT(token string, secret []byte) (string, error) {
 }
 
 func parseAndValidateJWTWithKeys(token string, keys JWTKeySet) (string, error) {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return "", errors.New("invalid token format")
-	}
-
-	headerRaw, err := base64.RawURLEncoding.DecodeString(parts[0])
+	identity, err := accessauth.Verify(token, keys.accessKeys(), keys.accessPolicy(), time.Now())
 	if err != nil {
-		return "", errors.New("invalid token header")
+		return "", err
 	}
-	payloadRaw, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return "", errors.New("invalid token payload")
-	}
-	signatureRaw, err := base64.RawURLEncoding.DecodeString(parts[2])
-	if err != nil {
-		return "", errors.New("invalid token signature")
-	}
-
-	var header map[string]any
-	if err := json.Unmarshal(headerRaw, &header); err != nil {
-		return "", errors.New("invalid token header json")
-	}
-	alg, _ := header["alg"].(string)
-	if alg != "HS256" {
-		return "", errors.New("unsupported jwt algorithm")
-	}
-	kid, _ := header["kid"].(string)
-	secret, ok := keys.secretFor(kid)
-	if !ok {
-		return "", errors.New("unknown kid")
-	}
-
-	signingInput := parts[0] + "." + parts[1]
-	mac := hmac.New(sha256.New, secret)
-	_, _ = mac.Write([]byte(signingInput))
-	expected := mac.Sum(nil)
-	if !hmac.Equal(signatureRaw, expected) {
-		return "", errors.New("invalid token signature")
-	}
-
-	var payload map[string]any
-	if err := json.Unmarshal(payloadRaw, &payload); err != nil {
-		return "", errors.New("invalid token payload json")
-	}
-
-	nowUnix := time.Now().Unix()
-	if exp, ok := readNumericClaim(payload["exp"]); ok && nowUnix >= exp {
-		return "", errors.New("token expired")
-	}
-	if nbf, ok := readNumericClaim(payload["nbf"]); ok && nowUnix < nbf {
-		return "", errors.New("token not active yet")
-	}
-
-	userID, _ := payload["sub"].(string)
-	if userID == "" {
-		userID, _ = payload["user_id"].(string)
-	}
-	if userID == "" {
-		return "", errors.New("missing subject claim")
-	}
-	return userID, nil
+	return identity.UserID, nil
 }
 
-func readNumericClaim(raw any) (int64, bool) {
-	switch v := raw.(type) {
-	case float64:
-		return int64(v), true
-	case int64:
-		return v, true
-	case json.Number:
-		n, err := v.Int64()
-		if err != nil {
-			return 0, false
-		}
-		return n, true
-	default:
-		return 0, false
+func (k JWTKeySet) accessKeys() accessauth.KeySet {
+	if k.AccessKeys.ActiveSecret != "" || len(k.AccessKeys.RSAKeys) > 0 {
+		return k.AccessKeys
 	}
+	return accessauth.KeySet{
+		ActiveKID: k.ActiveKID, ActiveSecret: k.ActiveSecret,
+		PreviousKID: k.PreviousKID, PreviousSecret: k.PreviousSecret,
+	}
+}
+
+func (k JWTKeySet) accessPolicy() accessauth.Policy {
+	if k.Policy.Production || len(k.Policy.AllowedIssuers) > 0 || k.Policy.RequiredAudience != "" || k.Policy.AllowHS256 {
+		return k.Policy
+	}
+	return accessauth.Policy{AllowHS256: true, ClockSkew: time.Minute}
 }

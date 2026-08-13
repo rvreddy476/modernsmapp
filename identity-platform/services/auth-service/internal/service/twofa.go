@@ -23,11 +23,11 @@ var (
 )
 
 const (
-	pendingSessionPrefix     = "2fa:pending:"
-	pendingByUserSetPrefix   = "2fa:pending_by_user:"
-	recoveryCodesPrefix      = "2fa:recovery:"
-	pendingSessionTTL        = 5 * time.Minute
-	recoveryCodeCount        = 8
+	pendingSessionPrefix   = "2fa:pending:"
+	pendingByUserSetPrefix = "2fa:pending_by_user:"
+	recoveryCodesPrefix    = "2fa:recovery:"
+	pendingSessionTTL      = 5 * time.Minute
+	recoveryCodeCount      = 8
 )
 
 // TwoFASetupResponse is returned when a user initiates 2FA setup.
@@ -318,7 +318,6 @@ func (s *Service) InvalidatePending2FASessions(ctx context.Context, userID uuid.
 			"user_id", userID, "count", len(tokens))
 	}
 }
-
 
 // generateRecoveryCodes generates random base32-encoded recovery codes with 128-bit entropy.
 func generateRecoveryCodes(count int) ([]string, error) {

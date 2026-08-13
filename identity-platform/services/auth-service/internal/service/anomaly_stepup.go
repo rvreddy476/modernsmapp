@@ -33,11 +33,11 @@ import (
 const (
 	// pendingAnomalyPrefix namespaces the step-up tokens so they cannot
 	// collide with `2fa:pending:` from the 2FA path.
-	pendingAnomalyPrefix      = "anomaly:pending:"
-	pendingAnomalyByUserSet   = "anomaly:pending_by_user:"
-	pendingAnomalyTTL         = 5 * time.Minute
-	anomalyStepUpOTPPurpose   = "anomaly_step_up"
-	anomalyStepUpOTPRedisKey  = "anomaly:stepup_otp:" // legacy fallback (unused)
+	pendingAnomalyPrefix     = "anomaly:pending:"
+	pendingAnomalyByUserSet  = "anomaly:pending_by_user:"
+	pendingAnomalyTTL        = 5 * time.Minute
+	anomalyStepUpOTPPurpose  = "anomaly_step_up"
+	anomalyStepUpOTPRedisKey = "anomaly:stepup_otp:" // legacy fallback (unused)
 )
 
 // anomalyStepUpMethod enumerates which step-up channels are available

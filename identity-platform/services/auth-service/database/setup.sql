@@ -264,3 +264,83 @@ ALTER TABLE auth.sessions
 -- session is its own "family" — first rotation forks new IDs.
 UPDATE auth.sessions SET family_id = session_id WHERE family_id IS NULL;
 CREATE INDEX IF NOT EXISTS idx_sessions_family ON auth.sessions(family_id) WHERE family_id IS NOT NULL;
+-- Module 3 M3-P0-3 / LB-5 — consent record and pending activation.
+--
+-- WHAT WAS MISSING
+--
+-- Registration validated an accepted terms VERSION in memory and then threw it
+-- away. `auth.users` has consent_terms / consent_privacy / consent_age
+-- booleans, and registration never wrote them — so after the fact there was no
+-- way to answer "did this user accept anything, and which text?" for any
+-- account. Under the DPDP Act the answer to that question is the lawful basis
+-- for processing, and a boolean with no version cannot answer it either.
+--
+-- Registration also created the account ACTIVE and returned access and refresh
+-- tokens immediately, without sending any verification challenge. So an
+-- address could be registered without its owner ever being contacted: someone
+-- else's email became a working account, and the real owner never learned.
+
+-- Versioned consent record. One row per acceptance, never updated — a consent
+-- history is evidence, and evidence that can be edited in place is not
+-- evidence. A user who re-accepts a newer version gets a second row.
+CREATE TABLE IF NOT EXISTS auth.registration_consents (
+    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id        UUID        NOT NULL REFERENCES auth.users(user_id) ON DELETE CASCADE,
+    terms_version  TEXT        NOT NULL,
+    -- What the user actually agreed to, recorded separately so a future
+    -- change to one does not retroactively imply the others.
+    accepted_terms   BOOLEAN   NOT NULL DEFAULT FALSE,
+    accepted_privacy BOOLEAN   NOT NULL DEFAULT FALSE,
+    -- The 18+ self-declaration. Stored alongside the date of birth that
+    -- justified it, so an audit does not have to re-derive the age from a
+    -- profile row that may have been edited since.
+    declared_dob   DATE,
+    accepted_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    -- Provenance for a disputed acceptance.
+    ip             TEXT,
+    user_agent     TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_registration_consents_user
+    ON auth.registration_consents (user_id, accepted_at DESC);
+
+-- Pending activation.
+--
+-- `account_status` already exists and defaults to 'active'. Registration now
+-- writes 'pending_verification' instead, and successful one-time email
+-- verification promotes it to 'active'. No session is issued in between.
+--
+-- The CHECK is deliberately NOT added: account_status is a free-text column
+-- with existing values across environments, and a constraint added here would
+-- fail the migration on any row this module did not create. The allowed set is
+-- enforced in code (internal/store) where it can be reasoned about.
+CREATE INDEX IF NOT EXISTS idx_users_pending_verification
+    ON auth.users (created_at)
+    WHERE account_status = 'pending_verification';
+
+-- Module 3 CLB-3 — verification transactions.
+--
+-- Registration creates a PENDING account and issues no session, so the user
+-- has no credential the auth middleware would accept — which is why
+-- /verify-email and /resend-verification cannot live behind it. This table
+-- holds the short-lived, opaque, single-purpose credential that authorises
+-- exactly those two calls and nothing else.
+--
+-- Only the SHA-256 digest is stored: a database dump does not yield usable
+-- credentials. See internal/store/verification_transaction.go for why a fast
+-- digest is correct here and bcrypt is not.
+CREATE TABLE IF NOT EXISTS auth.verification_transactions (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id     UUID NOT NULL,
+    purpose     VARCHAR(32) NOT NULL,
+    token_hash  TEXT NOT NULL UNIQUE,
+    expires_at  TIMESTAMPTZ NOT NULL,
+    consumed_at TIMESTAMPTZ,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_verification_tx_user
+    ON auth.verification_transactions (user_id, purpose);
+
+CREATE INDEX IF NOT EXISTS idx_verification_tx_expiry
+    ON auth.verification_transactions (expires_at);

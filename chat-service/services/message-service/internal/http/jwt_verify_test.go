@@ -15,21 +15,21 @@ import (
 func TestParseAndValidateJWTValidHS256(t *testing.T) {
 	keys := JWTKeySet{ActiveKID: "v1", ActiveSecret: "secret"}
 	tok := signJWT(t, map[string]any{"alg": "HS256", "kid": "v1"},
-		map[string]any{"sub": "user-1", "exp": time.Now().Add(time.Hour).Unix()},
+		map[string]any{"sub": "11111111-1111-4111-8111-111111111111", "exp": time.Now().Add(time.Hour).Unix()},
 		keys.ActiveSecret)
 	got, err := parseAndValidateJWTWithKeys(tok, keys)
 	if err != nil {
 		t.Fatalf("valid HS256 token rejected: %v", err)
 	}
-	if got != "user-1" {
-		t.Fatalf("userID=%q want user-1", got)
+	if got != "11111111-1111-4111-8111-111111111111" {
+		t.Fatalf("unexpected userID=%q", got)
 	}
 }
 
 func TestParseAndValidateJWTRejectsAlgConfusion(t *testing.T) {
 	keys := JWTKeySet{ActiveKID: "v1", ActiveSecret: "secret"}
 	tok := signJWT(t, map[string]any{"alg": "none", "kid": "v1"},
-		map[string]any{"sub": "user-1", "exp": time.Now().Add(time.Hour).Unix()},
+		map[string]any{"sub": "11111111-1111-4111-8111-111111111111", "exp": time.Now().Add(time.Hour).Unix()},
 		keys.ActiveSecret)
 	if _, err := parseAndValidateJWTWithKeys(tok, keys); err == nil {
 		t.Fatal(`token with alg="none" should be rejected`)
@@ -39,7 +39,7 @@ func TestParseAndValidateJWTRejectsAlgConfusion(t *testing.T) {
 func TestParseAndValidateJWTRejectsUnknownKid(t *testing.T) {
 	keys := JWTKeySet{ActiveKID: "v1", ActiveSecret: "secret"}
 	tok := signJWT(t, map[string]any{"alg": "HS256", "kid": "v9"},
-		map[string]any{"sub": "user-1", "exp": time.Now().Add(time.Hour).Unix()},
+		map[string]any{"sub": "11111111-1111-4111-8111-111111111111", "exp": time.Now().Add(time.Hour).Unix()},
 		keys.ActiveSecret)
 	if _, err := parseAndValidateJWTWithKeys(tok, keys); err == nil {
 		t.Fatal("token with unknown kid should be rejected")
@@ -54,21 +54,21 @@ func TestParseAndValidateJWTRotationWindow(t *testing.T) {
 		PreviousSecret: "old",
 	}
 	tok := signJWT(t, map[string]any{"alg": "HS256", "kid": "v1"},
-		map[string]any{"sub": "user-1", "exp": time.Now().Add(time.Hour).Unix()},
+		map[string]any{"sub": "11111111-1111-4111-8111-111111111111", "exp": time.Now().Add(time.Hour).Unix()},
 		"old")
 	got, err := parseAndValidateJWTWithKeys(tok, keys)
 	if err != nil {
 		t.Fatalf("previous-kid token in rotation window rejected: %v", err)
 	}
-	if got != "user-1" {
-		t.Fatalf("userID=%q want user-1", got)
+	if got != "11111111-1111-4111-8111-111111111111" {
+		t.Fatalf("unexpected userID=%q", got)
 	}
 }
 
 func TestParseAndValidateJWTRejectsExpired(t *testing.T) {
 	keys := JWTKeySet{ActiveKID: "v1", ActiveSecret: "secret"}
 	tok := signJWT(t, map[string]any{"alg": "HS256", "kid": "v1"},
-		map[string]any{"sub": "user-1", "exp": time.Now().Add(-time.Minute).Unix()},
+		map[string]any{"sub": "11111111-1111-4111-8111-111111111111", "exp": time.Now().Add(-2 * time.Minute).Unix()},
 		keys.ActiveSecret)
 	if _, err := parseAndValidateJWTWithKeys(tok, keys); err == nil {
 		t.Fatal("expired token should be rejected")
@@ -78,7 +78,7 @@ func TestParseAndValidateJWTRejectsExpired(t *testing.T) {
 func TestParseAndValidateJWTRejectsBadSignature(t *testing.T) {
 	keys := JWTKeySet{ActiveKID: "v1", ActiveSecret: "secret"}
 	tok := signJWT(t, map[string]any{"alg": "HS256", "kid": "v1"},
-		map[string]any{"sub": "user-1", "exp": time.Now().Add(time.Hour).Unix()},
+		map[string]any{"sub": "11111111-1111-4111-8111-111111111111", "exp": time.Now().Add(time.Hour).Unix()},
 		"wrong-secret")
 	if _, err := parseAndValidateJWTWithKeys(tok, keys); err == nil {
 		t.Fatal("token signed with the wrong secret should be rejected")

@@ -82,7 +82,7 @@ func (c *SocialConsumer) Start(ctx context.Context) {
 		}
 	}()
 	for {
-		m, err := c.reader.ReadMessage(ctx)
+		m, err := c.reader.FetchMessage(ctx)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				c.log.Info("social consumer context closed")
@@ -93,77 +93,110 @@ func (c *SocialConsumer) Start(ctx context.Context) {
 			continue
 		}
 
-		var envelope socialEnvelope
-		if err := json.Unmarshal(m.Value, &envelope); err != nil {
-			c.log.Warn("error unmarshalling social event", "err", err)
-			continue
+		if err := c.handleUntilDurable(ctx, m); err != nil {
+			return
 		}
-
-		switch envelope.EventType {
-		case socialConnectionAccepted:
-			c.handleConnectionAccepted(ctx, envelope.Payload)
-		case socialUserBlocked:
-			c.handleUserBlocked(ctx, envelope.Payload)
+		if err := c.reader.CommitMessages(ctx, m); err != nil {
+			c.log.Error("failed to commit durable social event", "err", err)
 		}
 	}
 }
 
+func (c *SocialConsumer) handleUntilDurable(ctx context.Context, message kafka.Message) error {
+	for {
+		err := c.processMessage(ctx, message)
+		if err == nil {
+			return nil
+		}
+		var poison permanentEventError
+		if errors.As(err, &poison) {
+			c.log.Warn("discarding permanently invalid social event", "err", err)
+			return nil
+		}
+		c.log.Error("social event not durable; partition remains blocked", "err", err)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
+}
+
+func (c *SocialConsumer) processMessage(ctx context.Context, message kafka.Message) error {
+	var envelope socialEnvelope
+	if err := json.Unmarshal(message.Value, &envelope); err != nil {
+		return permanentEventError{err}
+	}
+	switch envelope.EventType {
+	case socialConnectionAccepted:
+		return c.handleConnectionAccepted(ctx, envelope.Payload)
+	case socialUserBlocked:
+		return c.handleUserBlocked(ctx, envelope.Payload)
+	default:
+		return nil
+	}
+}
+
+type permanentEventError struct{ error }
+
 // handleConnectionAccepted auto-promotes the pair's pending message-request
 // conversation once they become connections (spec §16.6).
-func (c *SocialConsumer) handleConnectionAccepted(ctx context.Context, payload json.RawMessage) {
+func (c *SocialConsumer) handleConnectionAccepted(ctx context.Context, payload json.RawMessage) error {
 	var p connectionAcceptedPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
 		c.log.Warn("error unmarshalling connection accepted payload", "err", err)
-		return
+		return permanentEventError{err}
 	}
 
 	senderID, err := uuid.Parse(p.SenderID)
 	if err != nil {
 		c.log.Warn("invalid sender id in connection accepted event", "sender_id", p.SenderID)
-		return
+		return permanentEventError{err}
 	}
 	receiverID, err := uuid.Parse(p.ReceiverID)
 	if err != nil {
 		c.log.Warn("invalid receiver id in connection accepted event", "receiver_id", p.ReceiverID)
-		return
+		return permanentEventError{err}
 	}
 
 	promoted, err := c.store.PromoteRequestConversationByPair(ctx, senderID, receiverID)
 	if err != nil {
 		c.log.Error("failed to auto-promote request conversation", "err", err, "sender_id", senderID, "receiver_id", receiverID)
-		return
+		return err
 	}
 	if promoted {
 		c.log.Info("auto-promoted message request to conversation on connection", "sender_id", senderID, "receiver_id", receiverID)
 	}
+	return nil
 }
 
 // handleUserBlocked severs the blocker from the direct conversation they share
 // with the blocked user (spec §16.1).
-func (c *SocialConsumer) handleUserBlocked(ctx context.Context, payload json.RawMessage) {
+func (c *SocialConsumer) handleUserBlocked(ctx context.Context, payload json.RawMessage) error {
 	var p userBlockedPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
 		c.log.Warn("error unmarshalling user blocked payload", "err", err)
-		return
+		return permanentEventError{err}
 	}
 
 	blockerID, err := uuid.Parse(p.BlockerID)
 	if err != nil {
 		c.log.Warn("invalid blocker id in user blocked event", "blocker_id", p.BlockerID)
-		return
+		return permanentEventError{err}
 	}
 	blockedID, err := uuid.Parse(p.BlockedID)
 	if err != nil {
 		c.log.Warn("invalid blocked id in user blocked event", "blocked_id", p.BlockedID)
-		return
+		return permanentEventError{err}
 	}
 
 	severed, err := c.store.SeverDirectConversation(ctx, blockerID, blockedID)
 	if err != nil {
 		c.log.Error("failed to sever direct conversation on block", "err", err, "blocker_id", blockerID, "blocked_id", blockedID)
-		return
+		return err
 	}
 	if severed {
 		c.log.Info("severed direct conversation on block", "blocker_id", blockerID, "blocked_id", blockedID)
 	}
+	return nil
 }

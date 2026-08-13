@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"strconv"
 	"strings"
@@ -15,41 +16,59 @@ type Config struct {
 	RedisAddr        string
 	JWTSecret        string
 	// C7 — kid + previous-secret rotation knobs. See aws_prep_sprint_2026_06.
-	JWTKID           string
+	JWTKID            string
 	JWTSecretPrevious string
 	JWTKIDPrevious    string
 	// RS256 (optional, additive): public key + kid to verify RS256 tokens.
-	JWTPublicKeyPEM  string
-	JWTRS256KID      string
-	AllowedOrigins   []string
+	JWTPublicKeyPEM   string
+	JWTRS256KID       string
+	AllowedOrigins    []string
 	WSAllowQueryToken bool
-	WSWriteWait      time.Duration
-	WSPongWait       time.Duration
-	WSPingPeriod     time.Duration
-	WSMaxMessageSize int64
+	WSWriteWait       time.Duration
+	WSPongWait        time.Duration
+	WSPingPeriod      time.Duration
+	WSMaxMessageSize  int64
+}
+
+func (c *Config) ValidateProduction(production bool) error {
+	if !production {
+		return nil
+	}
+	if c.WSAllowQueryToken {
+		return errors.New("WS_ALLOW_QUERY_TOKEN must be false in production")
+	}
+	if len(c.AllowedOrigins) == 0 {
+		return errors.New("ALLOWED_ORIGINS is required in production")
+	}
+	for _, origin := range c.AllowedOrigins {
+		if origin == "*" {
+			return errors.New("wildcard ALLOWED_ORIGINS is forbidden in production")
+		}
+	}
+	return nil
 }
 
 func Load() *Config {
 	pongWait := getEnvDuration("WS_PONG_WAIT", 60*time.Second)
 	pingPeriod := getEnvDuration("WS_PING_PERIOD", (pongWait*9)/10)
 	return &Config{
-		HTTPPort:         getEnv("HTTP_PORT", "8093"),
-		HTTPReadTimeout:  getEnvDuration("HTTP_READ_TIMEOUT", 15*time.Second),
-		HTTPWriteTimeout: getEnvDuration("HTTP_WRITE_TIMEOUT", 15*time.Second),
-		HTTPIdleTimeout:  getEnvDuration("HTTP_IDLE_TIMEOUT", 60*time.Second),
-		RedisAddr:        getEnv("REDIS_ADDR", "localhost:6379"),
-		JWTSecret:        getEnv("JWT_SECRET", ""),
+		HTTPPort:          getEnv("HTTP_PORT", "8093"),
+		HTTPReadTimeout:   getEnvDuration("HTTP_READ_TIMEOUT", 15*time.Second),
+		HTTPWriteTimeout:  getEnvDuration("HTTP_WRITE_TIMEOUT", 15*time.Second),
+		HTTPIdleTimeout:   getEnvDuration("HTTP_IDLE_TIMEOUT", 60*time.Second),
+		RedisAddr:         getEnv("REDIS_ADDR", "localhost:6379"),
+		JWTSecret:         getEnv("JWT_SECRET", ""),
 		JWTKID:            getEnv("JWT_KID", "v1"),
 		JWTSecretPrevious: getEnv("JWT_SECRET_PREVIOUS", ""),
 		JWTKIDPrevious:    getEnv("JWT_KID_PREVIOUS", ""),
-		JWTPublicKeyPEM:  getEnv("JWT_PUBLIC_KEY_PEM", ""),
-		JWTRS256KID:      getEnv("JWT_RS256_KID", "rsa-1"),
-		AllowedOrigins:   splitAndClean(getEnv("ALLOWED_ORIGINS", "")),
+		JWTPublicKeyPEM:   getEnv("JWT_PUBLIC_KEY_PEM", ""),
+		JWTRS256KID:       getEnv("JWT_RS256_KID", "rsa-1"),
+		AllowedOrigins:    splitAndClean(getEnv("ALLOWED_ORIGINS", "")),
 		WSAllowQueryToken: getEnvBool("WS_ALLOW_QUERY_TOKEN", true),
-		WSWriteWait:      getEnvDuration("WS_WRITE_WAIT", 10*time.Second),
-		WSPongWait:       pongWait,
-		WSPingPeriod:     pingPeriod,
-		WSMaxMessageSize: getEnvInt64("WS_MAX_MESSAGE_SIZE", 64*1024),
+		WSWriteWait:       getEnvDuration("WS_WRITE_WAIT", 10*time.Second),
+		WSPongWait:        pongWait,
+		WSPingPeriod:      pingPeriod,
+		WSMaxMessageSize:  getEnvInt64("WS_MAX_MESSAGE_SIZE", 64*1024),
 	}
 }
 

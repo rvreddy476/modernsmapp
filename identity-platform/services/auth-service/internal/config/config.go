@@ -1,6 +1,8 @@
 package config
 
 import (
+	"errors"
+	"github.com/atpost/identity-auth-service/pkg/appenv"
 	"os"
 	"strconv"
 	"strings"
@@ -9,42 +11,61 @@ import (
 
 // Config holds runtime configuration sourced from environment variables.
 type Config struct {
-	HTTPPort                 string
-	PostgresDSN              string
-	RedisAddr                string
-	KafkaBrokers             []string
-	KafkaTopic               string
-	OTPBypassCode            string
-	OTPDigits                int
-	OTPExpiry                time.Duration
-	OTPMaxAttempts           int
+	HTTPPort       string
+	PostgresDSN    string
+	RedisAddr      string
+	KafkaBrokers   []string
+	KafkaTopic     string
+	OTPBypassCode  string
+	OTPDigits      int
+	OTPExpiry      time.Duration
+	OTPMaxAttempts int
 	// BcryptCost is the bcrypt work factor used for password hashing.
 	// Audit A9: default was bcrypt.DefaultCost (10), but under high
 	// login load this was the throughput bottleneck. Make it tunable
 	// so production can dial up the cost for sensitive deploys (12+)
 	// and CI / test can dial down to 4 for fast suites. 10 is the
 	// safe default for everyone else.
-	BcryptCost               int
-	AccessTokenTTL           time.Duration
-	RefreshTokenTTL          time.Duration
-	JWTSecret                string
+	BcryptCost      int
+	AccessTokenTTL  time.Duration
+	RefreshTokenTTL time.Duration
+	JWTSecret       string
 	// C7: JWT key versioning. JWTKID is stamped into the `kid` header of
 	// every minted access token so future verification can pick the right
 	// secret. JWTSecretPrevious + JWTKIDPrevious allow rolling rotation:
 	// during the cutover, both kids verify; once tokens minted with the
 	// old kid have expired (≤ AccessTokenTTL), the previous can be
 	// unset. Tokens with no `kid` (legacy) fall back to JWTSecret.
-	JWTKID                   string
-	JWTSecretPrevious        string
-	JWTKIDPrevious           string
-	CookieDomain             string
-	CookieSecure             bool
-	TrustedProxies           []string
-	InternalServiceKey       string
-	TwoFAIssuer              string
-	FrontendURL              string
-	OAuth                    *OAuthConfig
-	RateLimitEnabled         bool
+	JWTKID            string
+	JWTSecretPrevious string
+	JWTKIDPrevious    string
+	// Module 3 SR-1: the API gateway is the platform's authentication
+	// boundary and now enforces iss/aud/typ/sid on every access token. Those
+	// claims have to be MINTED here or no real token from this service passes
+	// the gateway. The issuer was previously a hardcoded string in the mint
+	// path and there was no audience at all, which meant a token minted for
+	// one environment authenticated against another.
+	//
+	// JWTIssuer must match the gateway's JWT_ISSUER allowlist and
+	// JWTAudience must match the gateway's JWT_AUDIENCE exactly.
+	JWTIssuer   string
+	JWTAudience string
+	// Production is derived from APP_ENV/ENVIRONMENT and hardens minting the
+	// same way it hardens verification: RS256 only, audience mandatory.
+	Production         bool
+	CookieDomain       string
+	CookieSecure       bool
+	TrustedProxies     []string
+	InternalServiceKey string
+	TwoFAIssuer        string
+	FrontendURL        string
+	OAuth              *OAuthConfig
+	// OAuthNewAccountEnabled gates only account creation. Existing linked
+	// accounts may still sign in and verified active accounts may link a
+	// provider. Launch defaults false because OAuth does not yet collect the
+	// exact DOB + versioned consent bundle required by password registration.
+	OAuthNewAccountEnabled bool
+	RateLimitEnabled       bool
 	// LoginAnomalyEnforce controls A13 anomaly enforcement at login.
 	// Allowed values:
 	//   "shadow"  — log anomaly + issue session (legacy behaviour, default).
@@ -162,6 +183,7 @@ func Load() *Config {
 		TwoFAIssuer:              getEnv("TWOFA_ISSUER", "AtPost"),
 		FrontendURL:              getEnv("FRONTEND_URL", "http://localhost:3000"),
 		OAuth:                    LoadOAuth(),
+		OAuthNewAccountEnabled:   getEnvBool("OAUTH_NEW_ACCOUNT_ENABLED", false),
 		RateLimitEnabled:         getEnvBool("RATE_LIMIT_ENABLED", true),
 		LoginAnomalyEnforce:      strings.ToLower(getEnv("LOGIN_ANOMALY_ENFORCE", "shadow")),
 		MiniAppSessionTTL:        getEnvDuration("MINI_APP_SESSION_TTL", 5*time.Minute),
@@ -173,12 +195,49 @@ func Load() *Config {
 		ScopeSuperadminUserIDs:   splitToSet(getEnv("SUPERADMIN_USER_IDS", "")),
 		AccessTokenPrivateKeyPEM: getEnv("JWT_PRIVATE_KEY_PEM", ""),
 		AccessTokenRS256KID:      getEnv("JWT_RS256_KID", "rsa-1"),
+		JWTIssuer:                getEnv("JWT_ISSUER", "auth-service"),
+		JWTAudience:              getEnv("JWT_AUDIENCE", "atpost-api"),
+		Production:               IsProductionEnv(),
 		RequireMFAForPrivileged:  getEnvBool("REQUIRE_MFA_FOR_PRIVILEGED", false),
 		WebAuthnRPID:             getEnv("WEBAUTHN_RP_ID", "localhost"),
 		WebAuthnRPDisplayName:    getEnv("WEBAUTHN_RP_NAME", "atPost"),
 		WebAuthnRPOrigins:        splitAndClean(getEnv("WEBAUTHN_RP_ORIGINS", "http://localhost:3000")),
 	}
 	return cfg
+}
+
+// IsProductionEnv delegates to pkg/appenv, which is importable by the CI-only
+// edge-auth contract module so the gateway and this service can be driven from
+// the same environment. See that package for why they must agree.
+func IsProductionEnv() bool { return appenv.IsProduction() }
+
+// ValidateForProduction fails closed on token-minting configuration.
+//
+// Module 3 SR-1. Minting is the mirror of verification: the gateway refuses to
+// start without JWT_ISSUER, JWT_AUDIENCE and an RS256 public key, so this
+// service must refuse to start without the matching issuer, audience and
+// RS256 *private* key. Starting with HS256 in production would mean every
+// holder of the shared secret — every verifier — can mint platform
+// identities, and starting without an audience would mean tokens minted for
+// staging authenticate against production.
+func (c *Config) ValidateForProduction() error {
+	if !c.Production {
+		return nil
+	}
+	if strings.TrimSpace(c.JWTIssuer) == "" {
+		return errors.New("JWT_ISSUER must be set in production; the gateway pins the issuer " +
+			"and an unset value mints tokens no edge will accept")
+	}
+	if strings.TrimSpace(c.JWTAudience) == "" {
+		return errors.New("JWT_AUDIENCE must be set in production; without it a token minted " +
+			"for another audience of this platform authenticates here")
+	}
+	if strings.TrimSpace(c.AccessTokenPrivateKeyPEM) == "" {
+		return errors.New("JWT_PRIVATE_KEY_PEM must be set in production: access tokens must be " +
+			"RS256-signed. With HS256 the verifying gateway holds the signing secret and can " +
+			"mint identities rather than merely verify them")
+	}
+	return nil
 }
 
 // splitToSet parses a comma-separated env value into a set of trimmed,

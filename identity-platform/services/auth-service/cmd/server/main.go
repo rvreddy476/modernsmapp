@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"github.com/atpost/identity-auth-service/internal/email"
 	"log/slog"
 	"net/http"
 	"os"
@@ -28,6 +29,22 @@ func main() {
 	cfg := config.Load()
 	logger := logging.New("auth-service")
 	slog.SetDefault(logger)
+
+	// Module 3 SR-1: refuse to start on unsafe token-minting configuration.
+	// This mirrors the gateway, which refuses to start without an issuer, an
+	// audience and RS256 key material. Both halves must fail closed: a service
+	// that mints HS256 tokens in production hands its verifiers the power to
+	// mint identities, and a service that mints without an audience produces
+	// tokens that authenticate against the wrong environment.
+	if err := cfg.ValidateForProduction(); err != nil {
+		logger.Error("refusing to start: unsafe access-token configuration", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("access-token minting policy",
+		"production", cfg.Production,
+		"issuer", cfg.JWTIssuer,
+		"audience", cfg.JWTAudience,
+		"rs256", cfg.AccessTokenPrivateKeyPEM != "")
 
 	// Phase F3.7 — wire OpenTelemetry. The gateway already injects
 	// `traceparent` headers, so spans created here link back to the
@@ -140,6 +157,25 @@ func main() {
 	}
 
 	authSvc := service.New(authStore, authProducer, cfg, logger, rdb, miniAppSessionSigner)
+
+	// Module 3 SR-6 — email delivery.
+	//
+	// Verification and password-reset codes were generated, stored, and sent
+	// NOWHERE: this service had no delivery mechanism at all, so "Forgot
+	// password" returned 200 and no code ever arrived. Account recovery did
+	// not work.
+	//
+	// In production this REFUSES TO START when SES is unconfigured. That is
+	// deliberate: a no-op sender returns nil from every Send, so the service
+	// would report healthy while dropping every recovery email — the same
+	// failure, reintroduced through configuration. Credentials come from the
+	// SDK default chain (IRSA in-cluster); no static AWS key is read anywhere.
+	emailSender, err := email.NewSender(ctx, email.LoadConfigFromEnv(cfg.Production), logger)
+	if err != nil {
+		logger.Error("refusing to start: email delivery is not configured", "error", err)
+		os.Exit(1)
+	}
+	authSvc.WithEmailSender(emailSenderAdapter{emailSender})
 	authHandler := internalhttp.New(authSvc, cfg, logger, rdb)
 	authHandler.SetWebAuthnStore(authStore) // credential store for the passkey ceremony
 
@@ -219,4 +255,19 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// emailSenderAdapter bridges internal/email.Sender to service.EmailSender.
+//
+// SR-6: the service package deliberately declares its own narrow interface
+// rather than importing internal/email, so the AWS SDK stays out of the
+// service's dependency graph and its tests need no AWS types to run.
+type emailSenderAdapter struct{ s email.Sender }
+
+func (a emailSenderAdapter) Send(ctx context.Context, msg service.EmailMessage) error {
+	return a.s.Send(ctx, email.Message{
+		To:       msg.To,
+		Subject:  msg.Subject,
+		TextBody: msg.TextBody,
+	})
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/atpost/chat-message-service/internal/service"
 	pgStore "github.com/atpost/chat-message-service/internal/store/postgres"
 	scyllaStore "github.com/atpost/chat-message-service/internal/store/scylla"
+	"github.com/atpost/chat-shared/accessauth"
 	"github.com/atpost/chat-shared/logging"
 	"github.com/atpost/chat-shared/transport"
 	"github.com/gin-gonic/gin"
@@ -29,6 +30,16 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	authKeys, authPolicy, err := accessauth.LoadFromEnv()
+	if err != nil {
+		logger.Error("refusing to start with unsafe access-token policy", "err", err)
+		os.Exit(1)
+	}
+	if authPolicy.Production && cfg.InternalServiceKey == "" {
+		logger.Error("INTERNAL_SERVICE_KEY is required in production")
+		os.Exit(1)
+	}
 
 	// 1. Postgres
 	poolCfg, err := pgxpool.ParseConfig(cfg.PostgresDSN)
@@ -110,6 +121,7 @@ func main() {
 	svc := service.New(convStore, msgStore, rdb, producer, logger, cfg.OutboxPollInterval)
 	svc.SetUserDirectory(cfg.UserServiceURL, cfg.InternalServiceKey)
 	svc.SetGraphService(cfg.GraphServiceURL)
+	svc.SetMediaService(cfg.MediaServiceURL)
 	handler := http.New(svc, logger).WithInternalServiceKey(cfg.InternalServiceKey)
 
 	// 6. Identity Event Consumer (background)
@@ -129,6 +141,7 @@ func main() {
 
 	// 7. Outbox Relay (background)
 	go svc.StartOutboxRelay(ctx)
+	go svc.StartMessageDeliveryRepairWorker(ctx)
 
 	// 8. Scheduled Message Worker (background)
 	go svc.StartScheduledMessageWorker(ctx)
@@ -140,10 +153,13 @@ func main() {
 	r.Use(http.RecoveryMiddleware(logger))
 	r.Use(http.CORSMiddleware())
 	r.Use(http.AuthMiddlewareWithKeys(http.JWTKeySet{
-		ActiveKID:      cfg.JWTKID,
-		ActiveSecret:   cfg.JWTSecret,
-		PreviousKID:    cfg.JWTKIDPrevious,
-		PreviousSecret: cfg.JWTSecretPrevious,
+		ActiveKID:          cfg.JWTKID,
+		ActiveSecret:       cfg.JWTSecret,
+		PreviousKID:        cfg.JWTKIDPrevious,
+		PreviousSecret:     cfg.JWTSecretPrevious,
+		AccessKeys:         authKeys,
+		Policy:             authPolicy,
+		InternalServiceKey: cfg.InternalServiceKey,
 	}, logger))
 
 	proxies := cfg.TrustedProxies

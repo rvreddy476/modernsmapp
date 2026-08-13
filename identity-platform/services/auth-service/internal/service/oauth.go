@@ -40,6 +40,8 @@ const (
 // without string-matching the error.
 var ErrOAuthNeedsVerification = errors.New("oauth provider did not assert email_verified — complete signup required")
 
+var ErrOAuthNewAccountDisabled = errors.New("new OAuth account creation is unavailable; register with date of birth and consent first")
+
 // OAuthPendingResponse is the structured payload returned to the
 // caller when the OAuth flow stalls awaiting OTP confirmation. The
 // frontend uses pending_token to call /v1/auth/oauth/complete-signup.
@@ -233,6 +235,14 @@ func (s *Service) loginOrRegisterOAuth(ctx context.Context, provider string, inf
 		return &OAuthCallbackResult{Auth: auth}, nil
 	}
 
+	// Module 7: both new-account branches below bypass the launch eligibility
+	// contract (exact DOB, 18+, and versioned terms/privacy/age consent). Keep
+	// existing OAuth login/linking above, but stop before stashing a pending
+	// ticket or writing any user/profile/outbox/session row.
+	if !s.cfg.OAuthNewAccountEnabled {
+		return nil, ErrOAuthNewAccountDisabled
+	}
+
 	// No matching user. A5: only auto-create when the provider has
 	// affirmatively asserted the email belongs to the OAuth subject.
 	// Otherwise stash the claims and return a pending-signup ticket
@@ -371,6 +381,9 @@ func (s *Service) fetchPendingOAuthClaims(ctx context.Context, token string) (*p
 // and bypass code all apply). The returned message tells the UI to
 // prompt the user for the code.
 func (s *Service) CompleteOAuthSignup(ctx context.Context, pendingToken, phone string) error {
+	if !s.cfg.OAuthNewAccountEnabled {
+		return ErrOAuthNewAccountDisabled
+	}
 	phone = strings.TrimSpace(phone)
 	if pendingToken == "" || phone == "" {
 		return errors.New("pending_token and phone are required")
@@ -425,6 +438,9 @@ func (s *Service) CompleteOAuthSignup(ctx context.Context, pendingToken, phone s
 // OAuth identity is linked at creation. The pending Redis token is
 // consumed.
 func (s *Service) VerifyOAuthSignup(ctx context.Context, pendingToken, otpCode, deviceID, platform, ip, userAgent string) (*AuthResponse, error) {
+	if !s.cfg.OAuthNewAccountEnabled {
+		return nil, ErrOAuthNewAccountDisabled
+	}
 	if pendingToken == "" || otpCode == "" {
 		return nil, errors.New("pending_token and otp are required")
 	}
@@ -747,10 +763,10 @@ func (s *Service) fetchAppleUserInfo(_ context.Context, token *oauth2.Token) (*O
 	// confirmed the address; relay addresses (`@privaterelay.appleid.com`)
 	// are also always verified. We honour whatever Apple says.
 	var claims struct {
-		Email             string          `json:"email"`
-		Sub               string          `json:"sub"`
-		EmailVerified     json.RawMessage `json:"email_verified"`
-		IsPrivateEmail    json.RawMessage `json:"is_private_email"`
+		Email          string          `json:"email"`
+		Sub            string          `json:"sub"`
+		EmailVerified  json.RawMessage `json:"email_verified"`
+		IsPrivateEmail json.RawMessage `json:"is_private_email"`
 	}
 	if err := json.Unmarshal(payload, &claims); err != nil {
 		return nil, fmt.Errorf("failed to parse Apple id_token claims: %w", err)
@@ -789,4 +805,3 @@ func splitName(name string) (string, string) {
 	}
 	return parts[0], ""
 }
-

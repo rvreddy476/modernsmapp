@@ -18,14 +18,20 @@ import (
 )
 
 type ServerOptions struct {
-	JWTSecret      string
+	JWTSecret string
 	// JWTKeys (C7) — optional. When ActiveSecret is set, takes precedence
 	// over JWTSecret and enables kid-aware verification (including the
 	// previous secret during rotation). When unset, JWTSecret is used as
 	// the only active secret with no kid binding.
-	JWTKeys        JWTKeySet
-	AllowedOrigins []string
+	JWTKeys         JWTKeySet
+	AllowedOrigins  []string
 	AllowQueryToken bool
+
+	// EnableScopedRooms is reserved for the future owner-issued room
+	// entitlement protocol. It MUST remain false until every client-selected
+	// post/call/live/group channel is checked against its owning service.
+	// Public beta deliberately exposes only chat:<authenticated-user-id>.
+	EnableScopedRooms bool
 
 	// AllowAllOriginsForDev opts into the "no policy" mode where any
 	// browser origin is accepted. Audit H10: the previous default
@@ -182,16 +188,12 @@ func (s *Server) handleWS(w nethttp.ResponseWriter, r *nethttp.Request) {
 	if err := s.pres.SetUserOnline(ctx, userID.String()); err != nil {
 		s.log.Warn("failed to set presence on connect", "err", err, "user_id", userID)
 	}
-	// Broadcast online status to the presence channel so other connected users can react.
-	s.rdb.Publish(ctx, "presence:updates", fmt.Sprintf(`{"user_id":"%s","online":true}`, userID.String()))
-
 	// Clear presence when the connection closes.
 	defer func() {
 		delCtx := context.Background()
 		if err := s.pres.ClearUserOnline(delCtx, userID.String()); err != nil {
 			s.log.Warn("failed to clear presence on disconnect", "err", err, "user_id", userID)
 		}
-		s.rdb.Publish(delCtx, "presence:updates", fmt.Sprintf(`{"user_id":"%s","online":false}`, userID.String()))
 	}()
 
 	// Subscribe to chat messages, new posts, post interaction updates,
@@ -201,7 +203,11 @@ func (s *Server) handleWS(w nethttp.ResponseWriter, r *nethttp.Request) {
 	// (notification-service /v1/notifications/stream) per README §1
 	// and §17. Keeping the subscription here would burn Redis fan-out
 	// bandwidth per connected client with no consumer.
-	pubsub := s.rdb.Subscribe(ctx, chatChannel, "feed:new_post", "feed:post_update", "presence:updates")
+	// Privacy boundary: the public-beta gateway subscribes only to the
+	// authenticated user's personal channel. Global feed/presence channels and
+	// client-selected rooms previously let any connected account observe data
+	// unrelated to its feed, block, visibility, or membership policy.
+	pubsub := s.rdb.Subscribe(ctx, chatChannel)
 	defer func() {
 		_ = pubsub.Close()
 	}()
@@ -301,6 +307,11 @@ func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *
 			continue
 		}
 		msgType, _ := envelope["type"].(string)
+		if !s.opts.EnableScopedRooms && isScopedRoomFrame(msgType) {
+			s.log.Warn("realtime client-selected room frame rejected",
+				"user_id", userID, "type", msgType)
+			continue
+		}
 
 		// Handle room subscriptions (dynamic per-post and per-call channels)
 		switch msgType {
@@ -521,6 +532,18 @@ func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *
 			continue
 		}
 	}
+}
+
+func isScopedRoomFrame(msgType string) bool {
+	switch msgType {
+	case "conversation.enter", "conversation.heartbeat", "conversation.leave",
+		"typing.start", "typing.started", "subscribe_post", "unsubscribe_post",
+		"subscribe_call", "unsubscribe_call", "subscribe_live_stream",
+		"unsubscribe_live_stream", "subscribe_update", "unsubscribe_update",
+		"subscribe_group_post", "unsubscribe_group_post", "group_post_typing":
+		return true
+	}
+	return directSignalingTypes[msgType] || roomSignalingTypes[msgType]
 }
 
 func (s *Server) redisLoop(
