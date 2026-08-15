@@ -336,8 +336,16 @@ services:
       RATE_LIMIT_ENABLED: "false"
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
-      # Dev: tokens never expire — no more surprise logouts
-      ACCESS_TOKEN_TTL: "8760h"
+      # Encrypts stored TOTP (2FA) secrets. Must be exactly 64 hex chars
+      # (32 bytes, AES-256) — see identity-platform/shared/crypto/secret_box.go.
+      # Unset, the service logs "2FA secrets stored in plaintext" and carries on,
+      # which is tolerable on a laptop and not tolerable once the stack is
+      # reachable from the internet. Generate with: openssl rand -hex 32
+      TOTP_ENCRYPTION_KEY: ${TOTP_ENCRYPTION_KEY:-}
+      # Dev default is a year so laptop sessions don't expire mid-work. Override
+      # it in .env (e.g. ACCESS_TOKEN_TTL=24h) whenever this stack is exposed
+      # publicly — a leaked year-long token is a year-long compromise.
+      ACCESS_TOKEN_TTL: ${ACCESS_TOKEN_TTL:-8760h}
       REFRESH_TOKEN_TTL: "87600h"
       # Authorization scopes are now resolved SERVER-SIDE from these allowlists
       # and stamped into the signed access token. The gateway authorizes admin /
