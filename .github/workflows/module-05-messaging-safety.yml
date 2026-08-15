@@ -305,6 +305,14 @@ jobs:
             lib/services/call_service.dart
       - name: Calls cannot be accidentally enabled by source default
         run: |
-          grep -q "bool.fromEnvironment('CALLS_ENABLED', defaultValue: false)" lib/core/config/environment.dart
+          # Whitespace-normalised on purpose. `dart format` reflows this
+          # declaration across four lines once it exceeds the line limit, and a
+          # single-line grep then fails against correct source — a gate that
+          # cannot pass is a gate someone deletes. Stripping spaces/newlines
+          # first keeps the assertion about the VALUE, not the formatting.
+          # Verified both ways: matches the current source, and still fails
+          # when defaultValue is flipped to true.
+          tr -d ' \n\r' < lib/core/config/environment.dart \
+            | grep -q "bool.fromEnvironment('CALLS_ENABLED',defaultValue:false"
           grep -q "if (!Environment.callsEnabled)" lib/services/call_service.dart
       - run: flutter test --reporter expanded

@@ -221,6 +221,14 @@ jobs:
           grep -q "defaultValue: false" lib/core/config/environment.dart
           grep -q "/v1/monetization/creator-ledger" lib/data/repositories/monetization_repository.dart
           ! grep -q "summary.thisMonth \*" lib/providers/monetization_provider.dart
-          ! grep -q "Withdraw" lib/features/monetization/monetization_dashboard_screen.dart
-          ! grep -q "Withdraw" lib/features/monetization/payouts_screen.dart
+          # Match an actionable control, not the word. The dashboard tells the
+          # user in plain copy that "Withdrawals, memberships, tips, and
+          # creator-fund actions are not launched in this beta" — prose that
+          # says the feature is ABSENT tripped a bare `! grep -q "Withdraw"`,
+          # so this gate failed against correct source. The risk being gated is
+          # a tappable withdraw control, so assert on button labels and
+          # handlers. Verified both ways: ignores the existing copy, and still
+          # catches an injected ElevatedButton(onPressed: ..., 'Withdraw').
+          ! grep -qE "Text\('Withdraw|onPressed[^)]*[Ww]ithdraw" lib/features/monetization/monetization_dashboard_screen.dart
+          ! grep -qE "Text\('Withdraw|onPressed[^)]*[Ww]ithdraw" lib/features/monetization/payouts_screen.dart
       - run: flutter test --reporter expanded
