@@ -5,10 +5,13 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/atpost/identity-auth-service/internal/config"
 	"github.com/atpost/identity-auth-service/internal/middleware"
@@ -417,8 +420,10 @@ type RegisterRequest struct {
 	Phone     string `json:"phone"`
 	Email     string `json:"email"`
 	Password  string `json:"password" binding:"required"`
-	FirstName string `json:"first_name"`
-	LastName  string `json:"last_name"`
+	// Mandatory. See validatePersonName and the checks in Register: binding
+	// alone would accept a string of spaces, so both are re-checked there.
+	FirstName string `json:"first_name" binding:"required"`
+	LastName  string `json:"last_name" binding:"required"`
 	// DOB is MANDATORY (SR-6). It was optional, and the age check returned nil
 	// when it was absent, so omitting the field bypassed the gate entirely.
 	DOB    string `json:"dob"`
@@ -430,6 +435,31 @@ type RegisterRequest struct {
 	// TermsVersion records WHICH text the user was shown, so a later audit can
 	// answer that question from data rather than from a deployment timeline.
 	TermsVersion string `json:"terms_version"`
+}
+
+// validatePersonName enforces what a human name may contain.
+//
+// Unicode letters, not ASCII: the product is India-first, so Devanagari,
+// Telugu and Tamil names must pass exactly as Latin ones do. Spaces, hyphens
+// and apostrophes are allowed for "O'Brien", "Devi Prasad", "Anne-Marie".
+//
+// Digits are rejected deliberately. A name field accepting "user123" is how
+// people end up putting handles in it, and the handle is a separate,
+// uniqueness-checked concept.
+func validatePersonName(name string) error {
+	const maxLen = 50
+	if utf8.RuneCountInString(name) > maxLen {
+		return fmt.Errorf("name must be %d characters or fewer", maxLen)
+	}
+	for _, r := range name {
+		switch {
+		case unicode.IsLetter(r), unicode.IsSpace(r), r == '-', r == '\'':
+			continue
+		default:
+			return errors.New("name may contain letters, spaces, hyphens and apostrophes only")
+		}
+	}
+	return nil
 }
 
 func (h *Handler) Register(c *gin.Context) {
@@ -453,6 +483,37 @@ func (h *Handler) Register(c *gin.Context) {
 
 	if req.Password == "" {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "Password cannot be empty", nil, nil)
+		return
+	}
+
+	// Real first and last names are MANDATORY.
+	//
+	// They were previously optional, which is why accounts exist with no name
+	// at all and the app falls back to showing "anonymous". Validated here
+	// rather than by binding tags alone, because `binding:"required"` accepts
+	// a string of spaces.
+	//
+	// Distinct codes per field so the client can mark the offending input
+	// instead of showing one message for both.
+	req.FirstName = strings.TrimSpace(req.FirstName)
+	req.LastName = strings.TrimSpace(req.LastName)
+
+	if req.FirstName == "" {
+		api.Error(c.Writer, http.StatusUnprocessableEntity, "FIRST_NAME_REQUIRED",
+			"First name is required.", nil, nil)
+		return
+	}
+	if req.LastName == "" {
+		api.Error(c.Writer, http.StatusUnprocessableEntity, "LAST_NAME_REQUIRED",
+			"Last name is required.", nil, nil)
+		return
+	}
+	if err := validatePersonName(req.FirstName); err != nil {
+		api.Error(c.Writer, http.StatusUnprocessableEntity, "NAME_INVALID", err.Error(), nil, nil)
+		return
+	}
+	if err := validatePersonName(req.LastName); err != nil {
+		api.Error(c.Writer, http.StatusUnprocessableEntity, "NAME_INVALID", err.Error(), nil, nil)
 		return
 	}
 

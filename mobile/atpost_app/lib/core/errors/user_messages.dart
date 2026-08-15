@@ -29,6 +29,10 @@ class UserMessages {
         'Please choose a longer password — at least 8 characters, with a number.',
     'EMAIL_REQUIRED': 'Please enter your email address.',
     'INVALID_EMAIL': 'That email address does not look right.',
+    'FIRST_NAME_REQUIRED': 'Please enter your first name.',
+    'LAST_NAME_REQUIRED': 'Please enter your last name.',
+    'NAME_INVALID':
+        'Please use letters only in your name — no numbers or symbols.',
 
     // ── Verification ────────────────────────────────────────────────────
     'EMAIL_NOT_VERIFIED':
