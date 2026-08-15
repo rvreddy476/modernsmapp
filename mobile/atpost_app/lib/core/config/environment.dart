@@ -31,6 +31,51 @@ class Environment {
     defaultValue: '',
   );
 
+  // ── Cloudflare Access service token ────────────────────────────────────
+  //
+  // Only needed when the API is reached through a hostname sitting behind
+  // Cloudflare Access (api.cleestudio.com during testing). Access authenticates
+  // humans with a browser login and a cookie; an app making HTTP calls cannot
+  // complete that flow and receives the HTML login page instead of JSON. A
+  // service token is the machine equivalent: two headers Cloudflare accepts in
+  // place of the browser session.
+  //
+  // This is NOT app authentication. It answers "may this client reach the
+  // server at all"; the user is still identified by the normal access token.
+  //
+  // Both default to empty, so builds that talk to localhost — the usual case —
+  // send no extra headers and behave exactly as before.
+  //
+  // TESTING ONLY. A secret compiled into a mobile binary can be extracted from
+  // the package; this is acceptable for private builds on known devices and is
+  // not a launch mechanism. At launch the API is public and protected by our
+  // own auth, and these stay unset.
+  static const String _cfAccessClientId = String.fromEnvironment(
+    'CF_ACCESS_CLIENT_ID',
+    defaultValue: '',
+  );
+  static const String _cfAccessClientSecret = String.fromEnvironment(
+    'CF_ACCESS_CLIENT_SECRET',
+    defaultValue: '',
+  );
+
+  /// Headers that get a non-browser client past Cloudflare Access.
+  ///
+  /// Empty unless BOTH halves are configured — sending one without the other
+  /// is never valid, and a half-configured build should fail loudly at the
+  /// Access login page rather than look like a server bug.
+  static Map<String, String> get accessServiceTokenHeaders {
+    final id = _cfAccessClientId.trim();
+    final secret = _cfAccessClientSecret.trim();
+    if (id.isEmpty || secret.isEmpty) return const {};
+    return {'CF-Access-Client-Id': id, 'CF-Access-Client-Secret': secret};
+  }
+
+  /// True when this build carries an Access service token. Safe to log —
+  /// reports only presence, never the values.
+  static bool get hasAccessServiceToken =>
+      accessServiceTokenHeaders.isNotEmpty;
+
   /// Launch kill switch. Calls stay absent from the client unless a release
   /// is explicitly built after real-device/network verification.
   static const bool callsEnabled = bool.fromEnvironment(

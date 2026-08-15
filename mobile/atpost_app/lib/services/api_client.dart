@@ -28,6 +28,11 @@ class ApiClient {
           headers: {
             'Content-Type': 'application/json',
             'Accept': 'application/json',
+            // Empty unless this build was given a Cloudflare Access service
+            // token, so localhost builds are unaffected. Without it, a build
+            // pointed at an Access-protected hostname gets the HTML login page
+            // in place of every JSON response.
+            ...Environment.accessServiceTokenHeaders,
           },
         ),
       ) {
@@ -35,6 +40,11 @@ class ApiClient {
       'Configured API base URL: ${Environment.apiBaseUrl}',
       tag: _tag,
     );
+    // Presence only — never the token values. Worth logging because the
+    // failure it causes (HTML where JSON belongs) is otherwise baffling.
+    if (Environment.hasAccessServiceToken) {
+      AppLogger.info('Cloudflare Access service token: configured', tag: _tag);
+    }
     _dio.interceptors.addAll([
       AuthInterceptor(_auth),
       CsrfInterceptor(),
