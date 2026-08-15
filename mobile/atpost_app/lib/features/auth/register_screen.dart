@@ -175,8 +175,11 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
           context,
           'Account created. We sent a 6-digit code to $email — enter it to finish.',
         );
+        final vt = data['verification_token'] as String? ?? '';
         context.go(
-          '/verify-otp?id=${Uri.encodeQueryComponent(email)}&mode=register',
+          '/verify-otp?id=${Uri.encodeQueryComponent(email)}'
+          '&mode=register'
+          '&vt=${Uri.encodeQueryComponent(vt)}',
         );
         return;
       }

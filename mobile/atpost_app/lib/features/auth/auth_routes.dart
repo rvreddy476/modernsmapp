@@ -24,6 +24,9 @@ class AuthRoutes {
           builder: (context, state) => OtpVerifyScreen(
             identifier: state.uri.queryParameters['id'] ?? '',
             mode: state.uri.queryParameters['mode'] ?? 'login',
+            // Set only by the signup flow; its presence selects the email
+            // endpoint over the retired SMS one.
+            verificationToken: state.uri.queryParameters['vt'] ?? '',
           ),
         ),
         GoRoute(

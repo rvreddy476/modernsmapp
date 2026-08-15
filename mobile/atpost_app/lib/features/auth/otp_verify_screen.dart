@@ -13,12 +13,18 @@ import 'package:go_router/go_router.dart';
 
 class OtpVerifyScreen extends ConsumerStatefulWidget {
   final String identifier;
-  final String mode; // 'login' | 'reset'
+  final String mode; // 'login' | 'reset' | 'register'
+
+  /// Present only for email verification after signup. The server keys that
+  /// flow on this token rather than on the address, so without it the screen
+  /// falls back to the legacy SMS endpoint.
+  final String verificationToken;
 
   const OtpVerifyScreen({
     super.key,
     required this.identifier,
     required this.mode,
+    this.verificationToken = '',
   });
 
   @override
@@ -119,13 +125,31 @@ class _OtpVerifyScreenState extends ConsumerState<OtpVerifyScreen> {
         connectTimeout: const Duration(seconds: 10),
       ));
 
-      final response = await dio.post(
-        '${Environment.authPath}/verify-otp',
-        data: {
-          'identifier': widget.identifier,
-          'code': otp,
-        },
-      );
+      // Email signup and the legacy SMS flow are DIFFERENT endpoints.
+      //
+      // /verify-otp is a retired SMS route: SR-6 removed SMS entirely, and the
+      // server now answers it 410 Gone. Every code typed here failed for that
+      // reason alone — the code was fine, the endpoint was dead.
+      //
+      // Email verification is /verify-email, and it is keyed by the
+      // verification_token handed back at registration, NOT by the address.
+      final isEmailVerification = widget.verificationToken.isNotEmpty;
+
+      final response = isEmailVerification
+          ? await dio.post(
+              '${Environment.authPath}/verify-email',
+              data: {
+                'verification_token': widget.verificationToken,
+                'code': otp,
+              },
+            )
+          : await dio.post(
+              '${Environment.authPath}/verify-otp',
+              data: {
+                'identifier': widget.identifier,
+                'code': otp,
+              },
+            );
 
       if (!mounted) return;
 
