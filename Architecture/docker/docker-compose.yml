@@ -237,6 +237,18 @@ services:
       OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
     ports:
       - "9200:9200"
+    # OpenSearch needs 30-60s before it serves, and the container reports
+    # "started" almost immediately. Consumers that only wait for service_started
+    # therefore race it. search-service fails CLOSED when its safety indices are
+    # unreachable ("safety index unavailable; refusing to start"), which is the
+    # correct behaviour — so without a real readiness probe it simply exits 1 on
+    # every cold boot of the stack.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
     deploy:
       resources:
         limits:
@@ -472,6 +484,18 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
     ports:
       - "8083:8083"
+    # Cross-service schema ordering, compose edition.
+    #
+    # graph-service migration 004 references public.users, which user-service
+    # owns. depends_on only waits for the CONTAINER, not for that service's
+    # migrations, so on a fresh volume graph-service can reach postgres before
+    # `users` exists and exits 1 with SQLSTATE 42P01.
+    #
+    # Kubernetes already handles this: deploy/services/graph-service/values-*.yaml
+    # declares `schemaDependencies: [users]`, and the chart's init container
+    # blocks until the table appears. Compose has no init container, so retrying
+    # is how it converges here — noisier than the Helm gate, same end state.
+    restart: on-failure
     depends_on:
       postgres:
         condition: service_healthy
@@ -535,6 +559,18 @@ services:
       REVIEWER_SERVICE_URL: http://reviewer-service:8120
       REVIEW_ALL_VIDEOS: "true"
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      # Moderation capability HMAC keys.
+      #
+      # trust-safety-service ISSUES these capabilities and post-service VERIFIES
+      # them, so the two services must hold byte-identical keys or every
+      # capability fails verification. Both blocks reference the same variable
+      # with the same default, so they cannot drift apart.
+      #
+      # The services refuse to start below 32 bytes (correctly — a short HMAC key
+      # is forgeable). Without these set, post-service and trust-safety-service
+      # exit 1 on boot and the local stack has no moderation path at all.
+      STORY_MODERATION_HMAC_KEY: ${STORY_MODERATION_HMAC_KEY:-local_dev_story_moderation_hmac_key_change_me}
+      POST_MODERATION_HMAC_KEY: ${POST_MODERATION_HMAC_KEY:-local_dev_post_moderation_hmac_key_change_me}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
       # Migration runner baseline knob — leave default ("false") so new migration
       # files added to database/migrations/ get applied on next boot. Set to
@@ -544,6 +580,11 @@ services:
       SCHEMA_MIGRATIONS_BASELINE: ${SCHEMA_MIGRATIONS_BASELINE:-false}
     ports:
       - "8084:8084"
+    # Same cross-service schema ordering as graph-service, and a longer list:
+    # deploy/services/post-service/values-*.yaml declares schemaDependencies
+    # [media_assets, user_preferences, users], owned by media-service,
+    # feed-service and user-service respectively. Retry until they exist.
+    restart: on-failure
     depends_on:
       postgres:
         condition: service_healthy
@@ -761,11 +802,14 @@ services:
       IDENTITY_KAFKA_TOPIC: identity.events.v1
     ports:
       - "8089:8089"
+    # Wait for OpenSearch to actually serve, not merely to have started —
+    # search-service refuses to boot without its safety indices.
+    restart: on-failure
     depends_on:
       postgres:
         condition: service_healthy
       opensearch:
-        condition: service_started
+        condition: service_healthy
       redpanda:
         condition: service_started
     deploy:
@@ -787,6 +831,10 @@ services:
       POSTGRES_DSN: *app_postgres_dsn
       KAFKA_BROKERS: redpanda:9092
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      # Must stay byte-identical to post-service's keys — this service issues the
+      # capabilities that post-service verifies. See the note in post-service.
+      STORY_MODERATION_HMAC_KEY: ${STORY_MODERATION_HMAC_KEY:-local_dev_story_moderation_hmac_key_change_me}
+      POST_MODERATION_HMAC_KEY: ${POST_MODERATION_HMAC_KEY:-local_dev_post_moderation_hmac_key_change_me}
     ports:
       - "8091:8091"
     depends_on:
