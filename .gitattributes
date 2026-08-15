@@ -1,0 +1,18 @@
+# Shell scripts MUST keep LF endings, even when checked out on Windows.
+#
+# Without this, git's core.autocrlf=true rewrites every *.sh to CRLF on
+# checkout. Linux containers then read the trailing \r as part of the last
+# token on the line, and the script dies in ways that read as nonsense:
+#
+#   /init-topics.sh: line 2: set: pipefail: invalid option name
+#
+# That exact failure meant `redpanda-init` silently created no Kafka topics
+# in the local stack, so every consumer had nothing to consume. It never
+# reproduced in CI, because CI checks out on Linux and gets LF anyway —
+# the whole class of bug is invisible to the pipeline and only ever bites
+# a developer on Windows.
+#
+# Scoped deliberately to *.sh rather than a blanket `* text=auto eol=lf`:
+# the goal is to protect files that a Linux shell executes, not to
+# renormalise the entire tree.
+*.sh text eol=lf
