@@ -1,7 +1,9 @@
 import 'package:atpost_app/core/config/environment.dart';
+import 'package:atpost_app/core/errors/error_handler.dart';
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_app/core/widgets/app_toast.dart';
 import 'package:atpost_app/services/api_client.dart';
 import 'package:atpost_app/services/auth_service.dart';
 import 'package:dio/dio.dart';
@@ -159,32 +161,44 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
 
       if (!mounted) return;
 
+      // A new account is created PENDING. The server returns empty tokens and
+      // requires_verification=true until the emailed code is entered, so
+      // treating registration as a completed sign-in set an empty session and
+      // dropped the user on a home screen that could not load anything —
+      // with nothing on screen explaining that a code was waiting for them.
+      final requiresVerification =
+          data['requires_verification'] == true || token.isEmpty;
+
+      if (requiresVerification) {
+        final email = _emailController.text.trim();
+        AppToast.success(
+          context,
+          'Account created. We sent a 6-digit code to $email — enter it to finish.',
+        );
+        context.go(
+          '/verify-otp?id=${Uri.encodeQueryComponent(email)}&mode=register',
+        );
+        return;
+      }
+
       ref
           .read(authServiceProvider)
           .setSession(userId: userId, token: token, refreshToken: refreshToken);
 
+      AppToast.success(context, 'Welcome to atPost!');
       context.go('/');
     } on DioException catch (e) {
       if (!mounted) return;
-      // Backend returns `{"error":{"code":"WEAK_PASSWORD","message":"..."}}`
-      // — the old `as String?` cast was silently swallowing the
-      // nested message and showing a generic fallback. Unwrap properly.
-      final body = e.response?.data;
-      final rawErr = body is Map ? body['error'] : null;
-      final message = rawErr is Map
-          ? (rawErr['message'] as String? ?? rawErr['code'] as String?)
-          : rawErr is String
-              ? rawErr
-              : (body is Map ? body['message'] as String? : null);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(message ?? 'Registration failed. Please try again.'),
-        ),
-      );
+      // One line, because the mapping now lives in UserMessages: server code
+      // first ("USER_EXISTS" -> "This email is already registered"), then
+      // status, then the server's own sentence. The previous unwrapping here
+      // surfaced whatever the backend happened to say, including bare codes.
+      AppToast.error(context, ErrorHandler.userMessageFor(e));
     } catch (_) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Registration failed. Please try again.')),
+      AppToast.error(
+        context,
+        'We could not create your account. Please try again.',
       );
     } finally {
       if (mounted) setState(() => _loading = false);

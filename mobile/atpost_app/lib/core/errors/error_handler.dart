@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:atpost_app/core/errors/app_exception.dart';
+import 'package:atpost_app/core/errors/user_messages.dart';
 import 'package:atpost_app/core/utils/app_logger.dart';
 import 'package:dio/dio.dart';
 
@@ -133,6 +134,18 @@ class ErrorHandler {
         originalError: error,
         stackTrace: stackTrace,
       ),
+      // 409 previously had no case and fell through to the `_` arm, so
+      // "this email is already registered" — an ordinary, expected outcome —
+      // was reported to the user as a NETWORK failure. It is a validation
+      // conflict: the request was understood and refused for a reason the
+      // user can act on.
+      409 => ValidationException(
+        message: serverMessage,
+        statusCode: statusCode,
+        originalError: error,
+        stackTrace: stackTrace,
+        fieldErrors: _extractFieldErrors(error),
+      ),
       404 => NotFoundException(
         message: serverMessage,
         statusCode: statusCode,
@@ -153,6 +166,31 @@ class ErrorHandler {
       ),
     };
   }
+
+  /// The backend's machine-readable error code, e.g. `CONSENT_REQUIRED`.
+  ///
+  /// This is the field that lets the UI say something specific. It was being
+  /// discarded entirely, which is why every failure looked the same.
+  static String? extractServerCode(DioException error) {
+    final data = error.response?.data;
+    if (data is Map<String, dynamic>) {
+      final nested = data['error'];
+      if (nested is Map<String, dynamic>) {
+        final code = nested['code'];
+        if (code is String && code.isNotEmpty) return code;
+      }
+      final topLevel = data['code'];
+      if (topLevel is String && topLevel.isNotEmpty) return topLevel;
+    }
+    return null;
+  }
+
+  /// The sentence to actually show a person, for any Dio failure.
+  static String userMessageFor(DioException error) => UserMessages.resolve(
+        code: extractServerCode(error),
+        statusCode: error.response?.statusCode,
+        serverMessage: _extractServerMessage(error),
+      );
 
   static String _extractServerMessage(DioException error) {
     final data = error.response?.data;
