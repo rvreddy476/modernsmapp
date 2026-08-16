@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      Phase 0 declares only what the scaffold actually uses.
+
+      Permissions are added in the phase that needs them, never speculatively:
+        POST_NOTIFICATIONS                      -> Phase 8 (push)
+        CAMERA / RECORD_AUDIO                   -> Phase 5 (capture)
+        FOREGROUND_SERVICE*  / WAKE_LOCK        -> Phase 10 (calling, finding F3)
+      Declaring them early costs install-time trust for no benefit.
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <application
+        android:name=".UsApplication"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Us.Splash"
+        android:enableOnBackInvokedCallback="true">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:configChanges="orientation|screenSize|smallestScreenSize|keyboardHidden|keyboard|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.Us.Splash">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!--
+              App Links (profile / post / reel / chat / share tokens) arrive in
+              Phase 9 together with assetlinks.json. Finding F4.
+            -->
+        </activity>
+    </application>
+
+</manifest>

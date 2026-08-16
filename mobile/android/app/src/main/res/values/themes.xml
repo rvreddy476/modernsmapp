@@ -1,0 +1,18 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Splash theme. Painted by the system before any Compose frame exists,
+      so it must match the app background exactly or the launch flashes.
+    -->
+    <style name="Theme.Us.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/us_background</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_splash_logo</item>
+        <item name="postSplashScreenTheme">@style/Theme.Us</item>
+    </style>
+
+    <style name="Theme.Us" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/us_background</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>

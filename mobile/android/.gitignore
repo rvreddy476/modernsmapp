@@ -1,0 +1,19 @@
+*.iml
+.gradle/
+.kotlin/
+local.properties
+.idea/
+.DS_Store
+build/
+captures/
+.externalNativeBuild
+.cxx
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# Never commit these. Signing material and Firebase config arrive with
+# Phase 8 / the Play track and belong in CI secrets, not the repo.
+google-services.json
+keystore.properties

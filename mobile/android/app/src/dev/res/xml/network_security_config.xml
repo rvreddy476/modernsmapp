@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  DEV FLAVOR ONLY. Overrides the strict policy in src/main/res/xml/.
+Cleartext is permitted for loopback and the emulator host alias, and
+  nothing else: the local backend runs plain HTTP on :8080 / :8093, reached
+  from a physical device through `adb reverse`.
+
+  Everything not listed here still falls under the strict base-config, so a
+  dev build cannot silently send cleartext to a real host either.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <domain-config cleartextTrafficPermitted="true">
+        <!-- Physical device via `adb reverse tcp:8080 tcp:8080`. -->
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+        <!-- Host loopback as seen from an Android emulator. -->
+        <domain includeSubdomains="false">10.0.2.2</domain>
+    </domain-config>
+</network-security-config>
