@@ -37,6 +37,7 @@ class AndroidComposeConventionPlugin : Plugin<Project> {
             add("implementation", libs.findLibrary("compose-ui-graphics").get())
             add("implementation", libs.findLibrary("compose-ui-tooling-preview").get())
             add("implementation", libs.findLibrary("compose-material3").get())
+            add("implementation", libs.findLibrary("compose-material-icons-core").get())
             add("implementation", libs.findLibrary("androidx-lifecycle-runtime-compose").get())
 
             // ui-tooling is debug-only: it drags the whole preview/inspector

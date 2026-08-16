@@ -109,6 +109,12 @@ compose-ui-tooling-preview         = { module = "androidx.compose.ui:ui-tooling-
 compose-ui-test-junit4             = { module = "androidx.compose.ui:ui-test-junit4" }
 compose-ui-test-manifest           = { module = "androidx.compose.ui:ui-test-manifest" }
 compose-material3                  = { module = "androidx.compose.material3:material3" }
+# Icons. CORE only, never `material-icons-extended`: extended carries several
+# thousand vectors and adds megabytes to the APK for a handful of glyphs, and
+# it is not fully removed by R8 because the icons are resolved as properties.
+# Material 3 stopped depending on this transitively, so it is declared here.
+# When the brand gets its own icon set, this is the single place it is replaced.
+compose-material-icons-core        = { module = "androidx.compose.material:material-icons-core" }
 
 # ── DI ─────────────────────────────────────────────────────────────────
 hilt-android                       = { module = "com.google.dagger:hilt-android", version.ref = "hilt" }

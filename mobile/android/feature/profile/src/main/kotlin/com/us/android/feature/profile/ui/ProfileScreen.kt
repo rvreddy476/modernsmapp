@@ -23,7 +23,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.component.UsButton
+import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
+import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.model.PersonalProfile
 import com.us.android.core.model.Profile
@@ -42,16 +44,17 @@ import com.us.android.core.ui.UsStatRow
  * Everything that renders is a stateless composable below it, which is what
  * makes the screen previewable in every state and screenshot-testable without
  * a ViewModel, a DI graph, or a network fake.
+ *
+ * [onBack] is null when this screen is a tab root and non-null when it was
+ * pushed onto the stack. The top bar renders a back control only in the second
+ * case — a tab root with a back arrow sends the user somewhere they did not
+ * come from.
  */
-// No `onBack` parameter yet, deliberately. There is no top app bar in the
-// design system, and this screen is reached only via system back today. A back
-// affordance lands with the shell's top bar rather than as a one-off control
-// here — an unused callback threaded through the navigation graph is dead API
-// that reads as though the feature is wired up when it is not.
 @Composable
 fun ProfileScreen(
     onOpenFollowers: (userId: String) -> Unit,
     onOpenFollowing: (userId: String) -> Unit,
+    onBack: (() -> Unit)? = null,
     viewModel: ProfileViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -63,6 +66,7 @@ fun ProfileScreen(
         onDismissActionError = viewModel::dismissActionError,
         onOpenFollowers = onOpenFollowers,
         onOpenFollowing = onOpenFollowing,
+        onBack = onBack,
     )
 }
 
@@ -77,26 +81,43 @@ internal fun ProfileContent(
     onOpenFollowers: (userId: String) -> Unit,
     onOpenFollowing: (userId: String) -> Unit,
     modifier: Modifier = Modifier,
+    onBack: (() -> Unit)? = null,
 ) {
-    when (state) {
-        is ProfileUiState.Loading -> UsLoadingState(modifier = modifier, label = "Loading profile")
+    UsScaffold(
+        modifier = modifier,
+        // The title tracks the loaded profile. While loading it stays generic
+        // rather than flashing a placeholder name that then changes.
+        topBar = { UsTopBar(title = state.title(), onBack = onBack) },
+        applyPageGutter = false,
+    ) { padding ->
+        when (state) {
+            is ProfileUiState.Loading -> UsLoadingState(
+                modifier = Modifier.padding(padding),
+                label = "Loading profile",
+            )
 
-        is ProfileUiState.Error -> UsErrorState(
-            message = state.message,
-            modifier = modifier,
-            onRetry = if (state.retryable) onRetry else null,
-        )
+            is ProfileUiState.Error -> UsErrorState(
+                message = state.message,
+                modifier = Modifier.padding(padding),
+                onRetry = if (state.retryable) onRetry else null,
+            )
 
-        is ProfileUiState.Content -> LoadedProfile(
-            state = state,
-            onFollowToggle = onFollowToggle,
-            onBlockToggle = onBlockToggle,
-            onDismissActionError = onDismissActionError,
-            onOpenFollowers = onOpenFollowers,
-            onOpenFollowing = onOpenFollowing,
-            modifier = modifier,
-        )
+            is ProfileUiState.Content -> LoadedProfile(
+                state = state,
+                onFollowToggle = onFollowToggle,
+                onBlockToggle = onBlockToggle,
+                onDismissActionError = onDismissActionError,
+                onOpenFollowers = onOpenFollowers,
+                onOpenFollowing = onOpenFollowing,
+                modifier = Modifier.padding(padding),
+            )
+        }
     }
+}
+
+private fun ProfileUiState.title(): String = when (this) {
+    is ProfileUiState.Content -> if (profile.isOwnProfile) "My profile" else profile.nameForDisplay
+    else -> "Profile"
 }
 
 @Composable

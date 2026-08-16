@@ -23,6 +23,22 @@ import kotlinx.serialization.Serializable
 data class ProfileRoute(val userId: String? = null)
 
 /**
+ * The signed-in user's own profile, as a tab root.
+ *
+ * A separate route from [ProfileRoute] rather than `ProfileRoute(null)`, for
+ * one concrete reason: the shell decides bottom-bar visibility and back
+ * behaviour from the destination. If both the Me tab and a pushed profile were
+ * the same route type, that decision would have to inspect a navigation
+ * *argument*, and a pushed profile with a null id would silently behave like a
+ * tab root.
+ *
+ * Both routes render the same screen. The ViewModel reads the `userId`
+ * argument, finds none here, and loads `/v1/profiles/me`.
+ */
+@Serializable
+data object OwnProfileRoute
+
+/**
  * Registers the profile destination.
  *
  * The feature exposes a `NavGraphBuilder` extension rather than its route
@@ -34,8 +50,28 @@ data class ProfileRoute(val userId: String? = null)
 fun NavGraphBuilder.profileScreen(
     onOpenFollowers: (userId: String) -> Unit,
     onOpenFollowing: (userId: String) -> Unit,
+    onBack: () -> Unit,
 ) {
     composable<ProfileRoute> {
+        ProfileScreen(
+            onOpenFollowers = onOpenFollowers,
+            onOpenFollowing = onOpenFollowing,
+            onBack = onBack,
+        )
+    }
+}
+
+/**
+ * Registers the Me tab.
+ *
+ * No `onBack`: this is a tab root, and the top bar renders no back control
+ * when none is supplied.
+ */
+fun NavGraphBuilder.ownProfileScreen(
+    onOpenFollowers: (userId: String) -> Unit,
+    onOpenFollowing: (userId: String) -> Unit,
+) {
+    composable<OwnProfileRoute> {
         ProfileScreen(
             onOpenFollowers = onOpenFollowers,
             onOpenFollowing = onOpenFollowing,
