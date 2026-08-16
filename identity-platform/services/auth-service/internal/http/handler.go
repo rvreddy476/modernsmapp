@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/atpost/identity-auth-service/internal/config"
 	"github.com/atpost/identity-auth-service/internal/middleware"
+	"github.com/atpost/identity-auth-service/internal/rollout"
 	"github.com/atpost/identity-auth-service/internal/service"
 	"github.com/atpost/identity-auth-service/internal/store"
 	"github.com/atpost/identity-shared/api"
@@ -30,12 +32,20 @@ const (
 )
 
 type Handler struct {
-	svc     AuthService
-	cfg     *config.Config
-	log     *slog.Logger
-	rdb     *redis.Client
-	waStore WebAuthnStore // set via SetWebAuthnStore; used only by the webauthn-tagged ceremony
+	svc   AuthService
+	cfg   *config.Config
+	log   *slog.Logger
+	rdb   *redis.Client
+	flags *rollout.Flags
+	// idempotency backs the Idempotency middleware. Nil disables replay, which
+	// is what unit tests that do not exercise it get.
+	idempotency idempotencyStore
+	waStore     WebAuthnStore // set via SetWebAuthnStore; used only by the webauthn-tagged ceremony
 }
+
+// SetIdempotencyStore installs the replay store. Separate from New so tests
+// can construct a Handler without one.
+func (h *Handler) SetIdempotencyStore(s idempotencyStore) { h.idempotency = s }
 
 type AuthService interface {
 	RequestOTP(ctx context.Context, phone, purpose string) error
@@ -109,7 +119,14 @@ func New(svc AuthService, cfg *config.Config, logger *slog.Logger, rdb *redis.Cl
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Handler{svc: svc, cfg: cfg, log: logger, rdb: rdb}
+	// Rollout flags are resolved per request from Redis with a short cache, so
+	// an operator can flip enforcement off without a redeploy. Defaults come
+	// from config so a Redis outage cannot change behaviour in either
+	// direction. See internal/rollout.
+	flags := rollout.New(rdb, logger, map[string]bool{
+		rollout.FlagRegisterRequireGender: cfg.RegisterRequireGender,
+	})
+	return &Handler{svc: svc, cfg: cfg, log: logger, rdb: rdb, flags: flags}
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) {
@@ -126,7 +143,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 		// limit an attacker can spam-create accounts to exhaust handle/email
 		// namespace or burn captcha quotas. Reuse the login limiter (10/IP
 		// /15min, 5/identifier/15min) — same abuse surface.
-		v1.POST("/register", middleware.LoginRateLimit(h.rdb), h.Register)
+		// Idempotency runs BEFORE the rate limiter: a client replaying a
+		// request it never saw the response to should get its original result
+		// back, not be counted again toward a limit it did not knowingly spend.
+		v1.POST("/register",
+			Idempotency(h.idempotency, "POST /v1/auth/register", h.log),
+			middleware.LoginRateLimit(h.rdb),
+			h.Register)
 		v1.POST("/login", middleware.LoginRateLimit(h.rdb), h.Login)
 		// H2: refresh-token flood is unlikely (long opaque tokens) but a
 		// stolen refresh could DoS the service before fingerprint mismatch
@@ -417,9 +440,9 @@ type RegisterRequest struct {
 	// Phone is accepted but is no longer sufficient on its own — see the
 	// EMAIL_REQUIRED check in Register. SMS delivery does not exist, so a
 	// phone-only account could never be verified or recovered.
-	Phone     string `json:"phone"`
-	Email     string `json:"email"`
-	Password  string `json:"password" binding:"required"`
+	Phone    string `json:"phone"`
+	Email    string `json:"email"`
+	Password string `json:"password" binding:"required"`
 	// Mandatory. See validatePersonName and the checks in Register: binding
 	// alone would accept a string of spaces, so both are re-checked there.
 	FirstName string `json:"first_name" binding:"required"`
@@ -443,9 +466,18 @@ type RegisterRequest struct {
 // Telugu and Tamil names must pass exactly as Latin ones do. Spaces, hyphens
 // and apostrophes are allowed for "O'Brien", "Devi Prasad", "Anne-Marie".
 //
+// unicode.IsMark is required, and its absence was a real defect. IsLetter
+// covers Unicode category L only; Indic vowel signs (matras), viramas and
+// nuktas are category M. Without IsMark this function accepted the consonant
+// stems of an Indic name and rejected its vowels — "रघुवरन" failed on U+0941,
+// "ரகுவரன்" on U+0BC1 — so only mark-free names such as "कमल" got through.
+// Since first and last name became mandatory, that blocked most Devanagari,
+// Telugu and Tamil speakers from registering under their real name at all.
+//
 // Digits are rejected deliberately. A name field accepting "user123" is how
 // people end up putting handles in it, and the handle is a separate,
-// uniqueness-checked concept.
+// uniqueness-checked concept. Widening to category M does not widen to
+// symbols, digits or emoji — see TestValidatePersonName.
 func validatePersonName(name string) error {
 	const maxLen = 50
 	if utf8.RuneCountInString(name) > maxLen {
@@ -453,13 +485,35 @@ func validatePersonName(name string) error {
 	}
 	for _, r := range name {
 		switch {
-		case unicode.IsLetter(r), unicode.IsSpace(r), r == '-', r == '\'':
+		case unicode.IsLetter(r), unicode.IsMark(r), unicode.IsSpace(r), r == '-', r == '\'':
 			continue
 		default:
 			return errors.New("name may contain letters, spaces, hyphens and apostrophes only")
 		}
 	}
 	return nil
+}
+
+// genderValues is the closed set a registration may record.
+//
+// Stored tokens, deliberately lowercase and stable. Display wording lives in
+// the clients; changing "Others" to "Prefer to self-describe" must never
+// change what is already in the database.
+var genderValues = []string{"male", "female", "other"}
+
+func allowedGenders() []string {
+	out := make([]string, len(genderValues))
+	copy(out, genderValues)
+	return out
+}
+
+func isAllowedGender(v string) bool {
+	for _, allowed := range genderValues {
+		if v == allowed {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Handler) Register(c *gin.Context) {
@@ -514,6 +568,40 @@ func (h *Handler) Register(c *gin.Context) {
 	}
 	if err := validatePersonName(req.LastName); err != nil {
 		api.Error(c.Writer, http.StatusUnprocessableEntity, "NAME_INVALID", err.Error(), nil, nil)
+		return
+	}
+
+	// Gender: expand/contract rollout.
+	//
+	// The column is `gender TEXT DEFAULT ''` with no enum and no CHECK, so
+	// nothing below the API enforces anything. "Required" enforced only in one
+	// app is not required at all — a second client, or a direct API call,
+	// walks straight past it.
+	//
+	// EXPAND (flag off, the default): an absent gender is accepted, but a
+	// supplied one must be valid. Clients can start sending the field before
+	// anything depends on it, and existing clients that omit it keep working.
+	//
+	// CONTRACT (flag on): absence is rejected too.
+	//
+	// The split matters because promoting an optional field to required is a
+	// breaking change for every client that predates it — including the
+	// Flutter app, which sends no gender at all. Enforcing both halves at once
+	// takes those clients down with no way back short of a redeploy.
+	req.Gender = strings.ToLower(strings.TrimSpace(req.Gender))
+	if req.Gender == "" {
+		if h.flags.Enabled(c.Request.Context(), rollout.FlagRegisterRequireGender) {
+			api.Error(c.Writer, http.StatusUnprocessableEntity, "GENDER_REQUIRED",
+				"Gender is required.",
+				map[string]any{"allowed": allowedGenders()}, nil)
+			return
+		}
+	} else if !isAllowedGender(req.Gender) {
+		// Enforced in BOTH phases. Accepting arbitrary text into a column that
+		// will later be constrained just moves the problem to the backfill.
+		api.Error(c.Writer, http.StatusUnprocessableEntity, "GENDER_INVALID",
+			"Gender must be one of the supported values.",
+			map[string]any{"allowed": allowedGenders()}, nil)
 		return
 	}
 
@@ -966,6 +1054,23 @@ func (h *Handler) ResendVerification(c *gin.Context) {
 	switch req.Type {
 	case "email":
 		if err := h.svc.ResendVerificationWithTransaction(c.Request.Context(), req.VerificationToken); err != nil {
+			// A quota denial is NOT folded into VERIFY_FAILED. The generic
+			// error exists so an attacker cannot distinguish an invalid token
+			// from a wrong code; a rate limit reveals nothing about the token
+			// (you must already hold a valid one to be counted), and telling a
+			// legitimate user "wait" rather than "that failed" is the
+			// difference between waiting and retrying in a loop.
+			if throttled, ok := service.AsThrottled(err); ok {
+				retryAfter := int(throttled.RetryAfter.Seconds())
+				if retryAfter < 1 {
+					retryAfter = 1
+				}
+				c.Header("Retry-After", strconv.Itoa(retryAfter))
+				api.Error(c.Writer, http.StatusTooManyRequests, "RATE_LIMITED",
+					"Too many verification emails requested. Please wait before trying again.",
+					map[string]any{"retry_after_seconds": retryAfter}, nil)
+				return
+			}
 			h.log.Warn("resend email verification failed", "err", err, "request_id", RequestIDFromContext(c))
 			api.Error(c.Writer, http.StatusBadRequest, "VERIFY_FAILED", "Could not resend verification", nil, nil)
 			return

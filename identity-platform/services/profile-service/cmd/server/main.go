@@ -8,7 +8,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/gin-gonic/gin"
+	"github.com/atpost/identity-profile-service/database"
 	"github.com/atpost/identity-profile-service/internal/config"
 	"github.com/atpost/identity-profile-service/internal/events"
 	"github.com/atpost/identity-profile-service/internal/http"
@@ -17,7 +17,10 @@ import (
 	"github.com/atpost/identity-shared/logging"
 	sharedmiddleware "github.com/atpost/identity-shared/middleware"
 	tracepkg "github.com/atpost/identity-shared/o11y/trace"
+	"github.com/atpost/identity-shared/store/schemabootstrap"
+	"github.com/atpost/identity-shared/store/schemaguard"
 	"github.com/atpost/identity-shared/transport"
+	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -62,6 +65,37 @@ func main() {
 		logger.Error("database ping failed", "err", err)
 		os.Exit(1)
 	}
+
+	// Create the schema this service owns.
+	//
+	// profile-service had no schema file at all and relied entirely on a
+	// boot-time migration runner pointed at a directory that was disabled
+	// because its contents could not execute. The result: six of the ten
+	// tables this service queries existed in NO environment, and the service
+	// reported healthy while answering 500 on every request that touched them
+	// (/stats, /links, /about, /modules, /profile-links, /handle-history).
+	//
+	// This is strictly additive, idempotent DDL — it creates what is missing
+	// and never alters or drops. Changes that need a decision about existing
+	// data belong in the deployment pipeline.
+	if err := schemabootstrap.Apply(ctx, dbPool, database.SetupSQL); err != nil {
+		logger.Error("failed to bootstrap profile schema", "err", err)
+		os.Exit(1)
+	}
+	logger.Info("profile schema ready")
+
+	// Verify every object this build depends on actually exists.
+	//
+	// The bootstrap above only creates what this service owns; profile.profiles
+	// comes from auth-service. Fatal on purpose: a service running against a
+	// schema it cannot rely on does not degrade, it corrupts — and "reports
+	// healthy, returns 500" is precisely the state this check ends.
+	if err := schemaguard.Verify(ctx, dbPool, "profile-service", store.SchemaRequirements); err != nil {
+		logger.Error("schema precondition failed", "err", err)
+		os.Exit(1)
+	}
+	logger.Info("schema preconditions verified", "objects", len(store.SchemaRequirements))
+
 	logger.Info("connected to Postgres")
 
 	// 2. Redis

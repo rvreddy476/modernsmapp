@@ -344,3 +344,115 @@ CREATE INDEX IF NOT EXISTS idx_verification_tx_user
 
 CREATE INDEX IF NOT EXISTS idx_verification_tx_expiry
     ON auth.verification_transactions (expires_at);
+
+
+-- ---------------------------------------------------------------------------
+-- Added 2026-08-16. These two tables previously existed ONLY in
+-- identity-platform/database/migrations/ and were applied to the local
+-- database by hand, so every FRESH environment came up without them and
+-- registration broke on the first signup.
+--
+-- The boot-time schema precondition check (identity-shared/store/schemaguard)
+-- found this by refusing to start against an empty database. Both blocks below
+-- are copied from migrations 016 and 017 and are idempotent, so re-applying
+-- them against a database that already has them is a no-op.
+-- ---------------------------------------------------------------------------
+
+-- 016 — durable verification-email delivery jobs
+--
+-- WHY
+--
+-- Registration used to commit the account and THEN send the verification
+-- email, outside the transaction:
+--
+--     tx.Commit()
+--     if err := RequestEmailVerification(...); err != nil { return err }
+--
+-- A mail-provider blip therefore produced a committed account whose owner saw
+-- "registration failed", with nothing anywhere that would ever retry the send.
+-- The account existed, the address was claimed, and the only route forward was
+-- for the user to guess that signing in would hand them a fresh verification
+-- token.
+--
+-- This table makes the send a durable unit of work enqueued INSIDE the
+-- registration transaction. Either the account and its pending email both
+-- exist, or neither does. A relay drains the queue with backoff.
+--
+-- The job deliberately carries NO code. auth.otp_codes stores only a hash, so
+-- a code cannot be recovered for a retry anyway — and a queue row holding a
+-- live credential would be a secret at rest for no benefit. The relay calls
+-- the normal issue-and-send path, which mints a fresh code.
+
+CREATE TABLE IF NOT EXISTS auth.email_delivery_jobs (
+    id              BIGSERIAL PRIMARY KEY,
+    user_id         UUID        NOT NULL REFERENCES auth.users(user_id) ON DELETE CASCADE,
+    -- 'email_verify' today. A column rather than a constant so password-reset
+    -- and step-up mail can share the queue without another migration.
+    purpose         TEXT        NOT NULL,
+    attempts        INT         NOT NULL DEFAULT 0,
+    next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    sent_at         TIMESTAMPTZ,
+    last_error      TEXT
+);
+
+-- PARTIAL index: the relay only ever asks for unsent, due work. Indexing the
+-- whole table would grow without bound as sent rows accumulate, while the
+-- working set stays small.
+CREATE INDEX IF NOT EXISTS idx_email_delivery_jobs_due
+    ON auth.email_delivery_jobs (next_attempt_at)
+    WHERE sent_at IS NULL;
+
+-- Supports the "does this user already have work queued" check and the
+-- per-user cleanup path.
+CREATE INDEX IF NOT EXISTS idx_email_delivery_jobs_user
+    ON auth.email_delivery_jobs (user_id)
+    WHERE sent_at IS NULL;
+
+COMMENT ON TABLE auth.email_delivery_jobs IS
+    'Durable queue for security emails enqueued transactionally with the domain write. Carries no credential; the relay re-issues.';
+
+-- 017 — idempotency keys for client-retryable writes
+--
+-- WHY
+--
+-- POST /v1/auth/register has no idempotency key, so a client that times out
+-- mid-write cannot safely retry: it cannot distinguish "not created" from
+-- "created, response lost". Today that is masked by the unique constraint on
+-- email — but a collision is not idempotency. It returns USER_EXISTS to a user
+-- who never saw a successful registration, which reads as "someone already
+-- took my address".
+--
+-- With this table a repeat of the SAME request returns the ORIGINAL response.
+--
+-- request_hash exists to catch key reuse with different content. Silently
+-- returning the first response for a different body would be worse than any
+-- error: the caller would believe a request succeeded that was never
+-- processed.
+--
+-- The stored response is a completed HTTP result, not domain state. It expires
+-- (see expires_at) because an idempotency key is a retry window, not an audit
+-- log — the account row is the durable record.
+
+CREATE TABLE IF NOT EXISTS auth.idempotency_keys (
+    -- Scope is (endpoint, key): the same key on a different endpoint is a
+    -- different operation, and callers should not have to coordinate a global
+    -- namespace.
+    endpoint      TEXT        NOT NULL,
+    idempotency_key TEXT      NOT NULL,
+    -- SHA-256 of the canonical request body. Same key + different hash is a
+    -- client bug and must be reported, never silently replayed.
+    request_hash  TEXT        NOT NULL,
+    status_code   INT         NOT NULL,
+    response_body BYTEA       NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at    TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (endpoint, idempotency_key)
+);
+
+-- Supports expiry sweeps without scanning the table.
+CREATE INDEX IF NOT EXISTS idx_idempotency_keys_expiry
+    ON auth.idempotency_keys (expires_at);
+
+COMMENT ON TABLE auth.idempotency_keys IS
+    'Short-lived record of completed responses so a client retry replays the original result instead of duplicating the write.';

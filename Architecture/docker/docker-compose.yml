@@ -335,6 +335,13 @@ services:
       JWT_SECRET: ${JWT_SECRET:-local_dev_jwt_change_me}
       RATE_LIMIT_ENABLED: "false"
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      # No SCHEMA_MIGRATIONS_* knobs here, deliberately. As of 2026-08-16
+      # auth-service does not migrate its own database: schema is owned by the
+      # deployment pipeline, and the service VERIFIES its preconditions at boot
+      # (identity-shared/store/schemaguard) and refuses to start when the
+      # pipeline has not run. See internal/store/requirements.go for the list
+      # and prompt/audit-...-scale-readiness.md D11 for why. identity-user and
+      # identity-profile do the same.
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
       # Encrypts stored TOTP (2FA) secrets. Must be exactly 64 hex chars
       # (32 bytes, AES-256) — see identity-platform/shared/crypto/secret_box.go.
@@ -366,6 +373,20 @@ services:
       REQUIRE_MFA_FOR_PRIVILEGED: ${REQUIRE_MFA_FOR_PRIVILEGED:-false}
     ports:
       - "8081:8081"
+    # identity-auth provisions the shared identity base tables (auth.*, plus
+    # profile.profiles and usr.* — see services/auth-service/database/setup.sql).
+    # identity-user and identity-profile assert those objects at boot and refuse
+    # to start without them, so they wait on this healthcheck rather than racing
+    # it on a fresh database.
+    healthcheck:
+      # /v1/auth/health, not /health — the route is registered inside the
+      # versioned group. Bare /health answers 404 on this service, and a
+      # healthcheck that can never pass would deadlock everything waiting on it.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8081/v1/auth/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
     depends_on:
       postgres:
         condition: service_healthy
@@ -398,12 +419,22 @@ services:
       # Gates /v1/users/* (incl. the privacy-settings endpoint the graph
       # permission resolver reads). The api-gateway injects this key.
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      # No SCHEMA_MIGRATIONS_* knobs here, deliberately. As of 2026-08-16 this
+      # service does not migrate its own database: it applies its own additive
+      # schema file (services/*/database/setup.sql) and then VERIFIES its
+      # preconditions via identity-shared/store/schemaguard, refusing to start
+      # when an object it depends on is absent. Schema changes that need a
+      # decision about existing data belong in the deployment pipeline.
     ports:
       - "8110:8110"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      # Waits for auth-service, which provisions the shared identity base
+      # tables this service asserts at boot and refuses to start without.
+      identity-auth:
         condition: service_healthy
     deploy:
       resources:
@@ -425,12 +456,22 @@ services:
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
       JWT_SECRET: ${JWT_SECRET:-local_dev_jwt_change_me}
+      # No SCHEMA_MIGRATIONS_* knobs here, deliberately. As of 2026-08-16 this
+      # service does not migrate its own database: it applies its own additive
+      # schema file (services/*/database/setup.sql) and then VERIFIES its
+      # preconditions via identity-shared/store/schemaguard, refusing to start
+      # when an object it depends on is absent. Schema changes that need a
+      # decision about existing data belong in the deployment pipeline.
     ports:
       - "8098:8098"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      # Waits for auth-service, which provisions the shared identity base
+      # tables this service asserts at boot and refuses to start without.
+      identity-auth:
         condition: service_healthy
     deploy:
       resources:

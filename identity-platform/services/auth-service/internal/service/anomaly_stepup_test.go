@@ -424,6 +424,12 @@ func (f *fakeAnomalyStore) CreateUserRecordTx(_ context.Context, _ pgx.Tx, _ uui
 func (f *fakeAnomalyStore) CreateProfileTx(_ context.Context, _ pgx.Tx, _ uuid.UUID, _, _, _, _, _ string) error {
 	return nil
 }
+func (f *fakeAnomalyStore) EnqueueEmailJobTx(_ context.Context, _ pgx.Tx, _ uuid.UUID, _ string) error {
+	return nil
+}
+func (f *fakeAnomalyStore) MarkUserEmailJobsSent(_ context.Context, _ uuid.UUID) error {
+	return nil
+}
 func (f *fakeAnomalyStore) InsertOutboxEventTx(_ context.Context, _ pgx.Tx, _, _ string, _ interface{}) error {
 	return nil
 }

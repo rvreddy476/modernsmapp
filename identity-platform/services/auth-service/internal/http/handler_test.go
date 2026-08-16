@@ -285,7 +285,7 @@ func TestRegisterIssuesNoSessionUntilVerified(t *testing.T) {
 	h.RegisterRoutes(r, noopMiddleware(), noopMiddleware())
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register",
-		bytes.NewBufferString(`{"email":"a@b.com","password":"secret","dob":"1990-01-01","accepted_terms":true,"terms_version":"`+service.CurrentTermsVersion+`"}`))
+		bytes.NewBufferString(validRegistrationBody()))
 	req.Header.Set("Content-Type", "application/json")
 	resp := httptest.NewRecorder()
 	r.ServeHTTP(resp, req)
@@ -319,9 +319,8 @@ func TestRegisterForwardsConsentToTheService(t *testing.T) {
 	h := New(stub, &config.Config{}, nil, nil)
 	h.RegisterRoutes(r, noopMiddleware(), noopMiddleware())
 
-	body := `{"email":"a@b.com","password":"secret","dob":"1990-01-01",` +
-		`"accepted_terms":true,"terms_version":"` + service.CurrentTermsVersion + `"}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", bytes.NewBufferString(body))
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register",
+		bytes.NewBufferString(validRegistrationBody()))
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(httptest.NewRecorder(), req)
 

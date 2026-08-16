@@ -20,6 +20,10 @@ type Config struct {
 	OTPDigits      int
 	OTPExpiry      time.Duration
 	OTPMaxAttempts int
+
+	// RegisterRequireGender is the boot default for the gender expand/contract
+	// rollout. See internal/rollout.FlagRegisterRequireGender.
+	RegisterRequireGender bool
 	// BcryptCost is the bcrypt work factor used for password hashing.
 	// Audit A9: default was bcrypt.DefaultCost (10), but under high
 	// login load this was the throughput bottleneck. Make it tunable
@@ -160,15 +164,20 @@ func (c *Config) ScopesForUser(userID string) string {
 // Load reads configuration from environment variables and applies sensible defaults for local development.
 func Load() *Config {
 	cfg := &Config{
-		HTTPPort:                 getEnv("HTTP_PORT", "8081"),
-		PostgresDSN:              getEnv("DATABASE_URL", getEnv("POSTGRES_DSN", "")),
-		RedisAddr:                getEnv("REDIS_ADDR", "localhost:6379"),
-		KafkaBrokers:             splitAndClean(getEnv("KAFKA_BROKERS", "localhost:9092")),
-		KafkaTopic:               getEnv("KAFKA_TOPIC", "identity.events.v1"),
-		OTPBypassCode:            getEnv("OTP_BYPASS_CODE", ""),
-		OTPDigits:                getEnvInt("OTP_DIGITS", 6),
-		OTPExpiry:                getEnvDuration("OTP_EXPIRY", 5*time.Minute),
-		OTPMaxAttempts:           getEnvInt("OTP_MAX_ATTEMPTS", 5),
+		HTTPPort:       getEnv("HTTP_PORT", "8081"),
+		PostgresDSN:    getEnv("DATABASE_URL", getEnv("POSTGRES_DSN", "")),
+		RedisAddr:      getEnv("REDIS_ADDR", "localhost:6379"),
+		KafkaBrokers:   splitAndClean(getEnv("KAFKA_BROKERS", "localhost:9092")),
+		KafkaTopic:     getEnv("KAFKA_TOPIC", "identity.events.v1"),
+		OTPBypassCode:  getEnv("OTP_BYPASS_CODE", ""),
+		OTPDigits:      getEnvInt("OTP_DIGITS", 6),
+		OTPExpiry:      getEnvDuration("OTP_EXPIRY", 5*time.Minute),
+		OTPMaxAttempts: getEnvInt("OTP_MAX_ATTEMPTS", 5),
+		// Boot default for the gender rollout flag. OFF is deliberate: it is
+		// the expand phase, and it is also the safe state to restart into if a
+		// rollback is in progress. Redis (`flag:register_require_gender`)
+		// overrides this at runtime without a redeploy.
+		RegisterRequireGender:    getEnvBool("REGISTER_REQUIRE_GENDER", false),
 		BcryptCost:               getEnvInt("BCRYPT_COST", 10),
 		AccessTokenTTL:           getEnvDuration("ACCESS_TOKEN_TTL", 15*time.Minute),
 		RefreshTokenTTL:          getEnvDuration("REFRESH_TOKEN_TTL", 30*24*time.Hour),

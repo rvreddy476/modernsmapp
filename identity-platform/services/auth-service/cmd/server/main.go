@@ -20,6 +20,7 @@ import (
 	"github.com/atpost/identity-shared/logging"
 	sharedmiddleware "github.com/atpost/identity-shared/middleware"
 	tracepkg "github.com/atpost/identity-shared/o11y/trace"
+	"github.com/atpost/identity-shared/store/schemaguard"
 	"github.com/atpost/identity-shared/transport"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -101,6 +102,27 @@ func main() {
 	}
 	logger.Info("auth schema ready")
 
+	// Verify the schema this build depends on actually exists.
+	//
+	// Schema changes are owned by the deployment pipeline and executed against
+	// the server deliberately. This service does NOT migrate its own database:
+	// during a rolling deploy every replica would race to mutate schema, and a
+	// change that needs judgement would be applied by whichever pod won.
+	//
+	// So the application does the opposite job — it asserts the pipeline has
+	// already run, and refuses to start when it has not. Fatal on purpose: a
+	// service running against a schema it cannot rely on does not degrade, it
+	// corrupts.
+	//
+	// This also closes a real incident. This database once carried a migration
+	// ledger claiming seventeen applied migrations whose objects were provably
+	// absent — a ledger records a claim, whereas this reads the catalog.
+	if err := schemaguard.Verify(ctx, dbPool, "auth-service", store.SchemaRequirements); err != nil {
+		logger.Error("schema precondition failed", "err", err)
+		os.Exit(1)
+	}
+	logger.Info("schema preconditions verified", "objects", len(store.SchemaRequirements))
+
 	logger.Info("connected to Postgres")
 
 	// 2. Redis
@@ -178,10 +200,29 @@ func main() {
 	authSvc.WithEmailSender(emailSenderAdapter{emailSender})
 	authHandler := internalhttp.New(authSvc, cfg, logger, rdb)
 	authHandler.SetWebAuthnStore(authStore) // credential store for the passkey ceremony
+	// Replay store for Idempotency-Key. Optional per request; when a client
+	// sends one, a retry of the same body returns the ORIGINAL response
+	// instead of colliding on the email unique constraint.
+	authHandler.SetIdempotencyStore(authStore)
 
 	// 4. Outbox Relay
 	relay := events.NewOutboxRelay(authStore, authProducer, logger, 1*time.Second)
 	go relay.Start(ctx)
+
+	// 4b. Verification-email relay.
+	//
+	// Drains auth.email_delivery_jobs, which registration writes inside its
+	// own transaction (migration 016). Without this, a mail-provider outage
+	// during signup left a committed account that nobody would ever contact.
+	// The send closure re-issues a fresh code — the queue row holds no
+	// credential, because auth.otp_codes stores only a hash.
+	emailRelay := service.NewEmailJobRelay(
+		authStore,
+		authSvc.RequestEmailVerification,
+		logger,
+		10*time.Second,
+	)
+	go emailRelay.Start(ctx)
 
 	// 5. Server
 	r := gin.New()

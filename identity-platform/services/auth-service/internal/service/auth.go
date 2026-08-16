@@ -44,7 +44,15 @@ type Service struct {
 	// recovery silently did not work. Nil means unconfigured, and the callers
 	// return an error rather than reporting a send that did not happen.
 	email EmailSender
+	// throttle enforces abuse limits keyed on server-resolved identities.
+	// See throttle.go — the HTTP middleware cannot do this because it runs
+	// before the verification token is exchanged for a user id.
+	throttle Throttle
 }
+
+// SetThrottle installs the abuse limiter. Separate from New so tests can
+// inject a deterministic fake without widening the constructor.
+func (s *Service) SetThrottle(t Throttle) { s.throttle = t }
 
 // EmailSender delivers a security email. Mirrors internal/email.Sender so the
 // service package does not depend on the AWS SDK.
@@ -137,6 +145,12 @@ type Store interface {
 	LookupVerificationTransaction(ctx context.Context, token, purpose string) (uuid.UUID, error)
 	ConsumeVerificationTransaction(ctx context.Context, token, purpose string) (uuid.UUID, error)
 	CreateProfileTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID, displayName, firstName, lastName, dob, gender string) error
+
+	// Durable verification-email delivery (migration 016). Enqueued inside the
+	// registration transaction so the account and the obligation to contact
+	// its owner commit together.
+	EnqueueEmailJobTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID, purpose string) error
+	MarkUserEmailJobsSent(ctx context.Context, userID uuid.UUID) error
 	// Outbox
 	InsertOutboxEventTx(ctx context.Context, tx pgx.Tx, eventType, partitionKey string, payload interface{}) error
 	FetchUnpublishedOutboxEvents(ctx context.Context, limit int) ([]store.OutboxEvent, error)
@@ -164,6 +178,7 @@ func New(store Store, producer Producer, cfg *config.Config, logger *slog.Logger
 		log:                  logger,
 		rdb:                  rdb,
 		miniAppSessionSigner: miniAppSessionSigner,
+		throttle:             NewRedisThrottle(rdb),
 	}
 	// Opt-in RS256 access-token signing. Reuses the same PEM parser as the
 	// mini-app signer. A parse failure is fatal: misconfiguring the signing key
@@ -472,19 +487,36 @@ func (s *Service) RegisterWithConsent(ctx context.Context, phone, email, passwor
 		return nil, fmt.Errorf("failed to record consent: %w", err)
 	}
 
+	// Enqueue the verification email INSIDE the transaction.
+	//
+	// This is the durability half of the fix: the account row and the
+	// obligation to contact its owner commit together. Either both exist or
+	// neither does, so there is no window in which an account is created that
+	// nobody will ever be told about.
+	if err := s.store.EnqueueEmailJobTx(ctx, tx, user.ID, store.EmailJobPurposeVerify); err != nil {
+		return nil, fmt.Errorf("failed to enqueue verification email: %w", err)
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	// LB-5: send the verification challenge, and issue NO session.
+	// Fast path: try to send immediately so the common case is instant.
 	//
-	// A send failure fails the registration response rather than leaving the
-	// user with an account they can never activate and no way to know why. The
-	// account row survives — the address is claimed — and resend-verification
-	// is the recovery path.
+	// A failure here is NOT fatal any more. It used to return an error, which
+	// meant a mail-provider blip produced a committed account whose owner saw
+	// "registration failed" — with nothing that would ever retry. The job is
+	// already durably queued, so the relay owns delivery from here and the
+	// registration is reported honestly as the success it is.
 	if err := s.RequestEmailVerification(ctx, user.ID); err != nil {
-		s.log.Error("registration: verification email not sent", "err", err, "user_id", user.ID)
-		return nil, fmt.Errorf("account created but the verification email could not be sent: %w", err)
+		s.log.Warn("registration: immediate verification send failed — relay will retry",
+			"event", "email_immediate_send_failed",
+			"user_id", user.ID, "err", err)
+	} else if err := s.store.MarkUserEmailJobsSent(ctx, user.ID); err != nil {
+		// Worst case the relay sends a second code. A duplicate email is a
+		// far smaller failure than a silently undelivered one.
+		s.log.Warn("verification sent but job not marked — relay may resend",
+			"event", "email_job_mark_failed", "user_id", user.ID, "err", err)
 	}
 
 	// CLB-3: issue the verification transaction.
@@ -1264,6 +1296,20 @@ func (s *Service) ResendVerificationWithTransaction(ctx context.Context, transac
 	if err != nil {
 		return err
 	}
+
+	// Per-ACCOUNT quota, checked after the token is exchanged for a user id.
+	//
+	// Without this the only cap on resend was the per-IP limiter, because
+	// OTPRateLimit derives its strong caps from a `phone` field that this
+	// route does not carry. That left two abuse paths open: flooding a
+	// third party's inbox (burning this domain's sending reputation for every
+	// user), and denying verification indefinitely — each resend replaces the
+	// stored OTP, so an attacker resending faster than the victim reads mail
+	// keeps the victim's code permanently stale.
+	if err := s.checkResendQuota(ctx, userID); err != nil {
+		return err
+	}
+
 	return s.RequestEmailVerification(ctx, userID)
 }
 

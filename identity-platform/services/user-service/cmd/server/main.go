@@ -11,7 +11,10 @@ import (
 	"github.com/atpost/identity-shared/logging"
 	sharedmiddleware "github.com/atpost/identity-shared/middleware"
 	tracepkg "github.com/atpost/identity-shared/o11y/trace"
+	"github.com/atpost/identity-shared/store/schemabootstrap"
+	"github.com/atpost/identity-shared/store/schemaguard"
 	"github.com/atpost/identity-shared/transport"
+	"github.com/atpost/identity-user-service/database"
 	"github.com/atpost/identity-user-service/internal/config"
 	"github.com/atpost/identity-user-service/internal/events"
 	"github.com/atpost/identity-user-service/internal/http"
@@ -62,6 +65,29 @@ func main() {
 		logger.Error("database ping failed", "err", err)
 		os.Exit(1)
 	}
+
+	// Create the schema this service owns.
+	//
+	// usr.inbox_events was defined in 006_inbox_events.sql and applied nowhere:
+	// the boot-time migration runner this service relied on was pointed at a
+	// disabled directory, because that directory's contents could not execute.
+	// Strictly additive, idempotent DDL — changes that need a decision about
+	// existing data belong in the deployment pipeline.
+	if err := schemabootstrap.Apply(ctx, dbPool, database.SetupSQL); err != nil {
+		logger.Error("failed to bootstrap user schema", "err", err)
+		os.Exit(1)
+	}
+	logger.Info("user schema ready")
+
+	// Verify every object this build depends on actually exists. usr.users and
+	// usr.user_settings come from auth-service, so this service cannot create
+	// them and must not assume them. Fatal on purpose.
+	if err := schemaguard.Verify(ctx, dbPool, "user-service", store.SchemaRequirements); err != nil {
+		logger.Error("schema precondition failed", "err", err)
+		os.Exit(1)
+	}
+	logger.Info("schema preconditions verified", "objects", len(store.SchemaRequirements))
+
 	logger.Info("connected to Postgres")
 
 	// 2. Redis
