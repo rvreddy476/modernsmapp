@@ -22,6 +22,8 @@ import com.us.android.core.model.SessionState
 import com.us.android.feature.auth.login.LoginRoute
 import com.us.android.feature.auth.register.RegisterRoute
 import com.us.android.feature.auth.verify.VerifyEmailRoute
+import com.us.android.feature.profile.navigation.navigateToOwnProfile
+import com.us.android.feature.profile.navigation.profileScreen
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -116,8 +118,22 @@ fun UsNavHost(
         composable<HomeRoute> {
             // Placeholder until the tab shell lands. The design-system gallery
             // remains reachable here so the tokens stay reviewable on device.
-            DesignSystemGalleryScreen()
+            DesignSystemGalleryScreen(
+                onOpenOwnProfile = { navController.navigateToOwnProfile() },
+            )
         }
+
+        // The profile vertical slice. Registered through the feature's own
+        // NavGraphBuilder extension, so `:app` never imports its screens or
+        // ViewModels — it supplies only the destinations profile navigates to.
+        profileScreen(
+            // Followers and following lists are not built yet. The graph
+            // endpoints are verified, but their two pagination DTOs differ
+            // (offset returns a bare list, cursor returns {items, next_cursor})
+            // and that belongs with the paging work rather than here.
+            onOpenFollowers = {},
+            onOpenFollowing = {},
+        )
     }
 }
 

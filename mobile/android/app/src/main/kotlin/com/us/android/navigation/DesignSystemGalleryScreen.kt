@@ -46,7 +46,7 @@ import com.us.android.core.designsystem.theme.UsTheme
  * the tab shell.
  */
 @Composable
-fun DesignSystemGalleryScreen() {
+fun DesignSystemGalleryScreen(onOpenOwnProfile: () -> Unit = {}) {
     val scroll = rememberScrollState()
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("short") }
@@ -60,29 +60,9 @@ fun DesignSystemGalleryScreen() {
         ) {
             Header()
 
-            SectionTitle("Brand gradients")
-            GradientRow("CTA", UsTheme.extended.ctaGradient)
-            GradientRow("Postbook", UsTheme.extended.postbookGradient)
-            GradientRow("Postgram", UsTheme.extended.postgramGradient)
-            GradientRow("Posttube", UsTheme.extended.posttubeGradient)
+            ScreenLinks(onOpenOwnProfile = onOpenOwnProfile)
 
-            SectionTitle("Story ring")
-            Box(
-                modifier = Modifier
-                    .size(72.dp)
-                    .clip(CircleShape)
-                    .background(UsTheme.extended.storyRingGradient)
-                    .padding(3.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.background),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    text = "US",
-                    style = MaterialTheme.typography.titleLarge,
-                    color = UsTheme.extended.textPrimary,
-                )
-            }
+            BrandSection()
 
             SectionTitle("Text ramp (7 steps)")
             TextRamp()
@@ -152,6 +132,51 @@ private fun Header() {
         text = "Phase 0 scaffold · ${BuildConfig.ENVIRONMENT} · ${BuildConfig.API_BASE_URL}",
         style = MaterialTheme.typography.labelMedium,
         color = UsTheme.extended.textDim,
+    )
+}
+
+/** Brand gradients and the story ring — the tokens Material 3 has no slot for. */
+@Composable
+private fun BrandSection() {
+    SectionTitle("Brand gradients")
+    GradientRow("CTA", UsTheme.extended.ctaGradient)
+    GradientRow("Postbook", UsTheme.extended.postbookGradient)
+    GradientRow("Postgram", UsTheme.extended.postgramGradient)
+    GradientRow("Posttube", UsTheme.extended.posttubeGradient)
+
+    SectionTitle("Story ring")
+    Box(
+        modifier = Modifier
+            .size(72.dp)
+            .clip(CircleShape)
+            .background(UsTheme.extended.storyRingGradient)
+            .padding(3.dp)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.background),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = "US",
+            style = MaterialTheme.typography.titleLarge,
+            color = UsTheme.extended.textPrimary,
+        )
+    }
+}
+
+/**
+ * Temporary entry points to real screens.
+ *
+ * The profile slice has no home in the navigation graph until the tab shell
+ * lands, and an unreachable screen is an untested one. This block goes away
+ * with the gallery itself.
+ */
+@Composable
+private fun ScreenLinks(onOpenOwnProfile: () -> Unit) {
+    SectionTitle("Screens")
+    UsButton(
+        text = "Open my profile",
+        onClick = onOpenOwnProfile,
+        modifier = Modifier.fillMaxWidth(),
     )
 }
 

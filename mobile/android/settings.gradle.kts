@@ -51,3 +51,10 @@ include(":core:auth")
 
 // ── Phase 2 modules ────────────────────────────────────────────────────
 include(":feature:auth")
+
+// ── Phase 6 modules (profile vertical slice) ───────────────────────────
+// :core:ui holds product-neutral composites assembled from design-system
+// primitives. It arrives with the first feature that needs them rather than
+// as an empty framework built ahead of a consumer.
+include(":core:ui")
+include(":feature:profile")
