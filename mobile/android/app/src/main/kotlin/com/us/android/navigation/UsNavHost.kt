@@ -27,6 +27,8 @@ import com.us.android.core.model.SessionState
 import com.us.android.feature.auth.login.LoginRoute
 import com.us.android.feature.auth.register.RegisterRoute
 import com.us.android.feature.auth.verify.VerifyEmailRoute
+import com.us.android.feature.post.navigation.postScreen
+import com.us.android.feature.profile.navigation.navigateToProfile
 import com.us.android.feature.profile.navigation.ownProfileScreen
 import com.us.android.feature.profile.navigation.profileScreen
 import kotlinx.serialization.Serializable
@@ -227,6 +229,14 @@ private fun NavGraphBuilder.tabDestinations(navController: NavHostController) {
         onOpenFollowers = {},
         onOpenFollowing = {},
         onBack = { navController.popBackStack() },
+    )
+
+    // Post detail. Cross-feature navigation is resolved here: :feature:post
+    // hands back an author id and :app decides that opens a profile. Neither
+    // feature imports the other, so each stays testable alone.
+    postScreen(
+        onBack = { navController.popBackStack() },
+        onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
     )
 }
 

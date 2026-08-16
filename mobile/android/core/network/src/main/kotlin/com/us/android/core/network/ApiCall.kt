@@ -58,6 +58,31 @@ suspend inline fun <T> apiCall(
 ): AppResult<T> = apiCall(errorMapper, { it }, block)
 
 /**
+ * [apiCall] for endpoints that answer `204 No Content` with an empty body.
+ *
+ * These genuinely exist on this platform — `DELETE /v1/posts/:id/repost` and
+ * both graph mute routes were captured returning `204` with
+ * `Content-Length: 0`. They cannot go through [apiCall]: there is no envelope
+ * to deserialize, and treating the absent `data` as a malformed response would
+ * turn every successful delete into a failure.
+ *
+ * The endpoint must declare a `Unit` return type so Retrofit skips body
+ * conversion. Failures still arrive as `HttpException` and map normally.
+ */
+@Suppress("TooGenericExceptionCaught")
+suspend inline fun noContentApiCall(
+    errorMapper: ErrorMapper,
+    crossinline block: suspend () -> Unit,
+): AppResult<Unit> = try {
+    block()
+    AppResult.Success(Unit)
+} catch (e: CancellationException) {
+    throw e
+} catch (e: Throwable) {
+    AppResult.Failure(errorMapper.map(e))
+}
+
+/**
  * [apiCall] for cursor-paginated list endpoints, folding `meta.next_cursor`
  * into the result so callers never touch the envelope.
  */

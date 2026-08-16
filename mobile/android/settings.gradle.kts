@@ -58,3 +58,4 @@ include(":feature:auth")
 // as an empty framework built ahead of a consumer.
 include(":core:ui")
 include(":feature:profile")
+include(":feature:post")
