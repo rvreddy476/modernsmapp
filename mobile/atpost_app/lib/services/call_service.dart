@@ -495,7 +495,7 @@ class CallNotifier extends StateNotifier<CallInfo?> {
           senderId: '',
           targetUserId: state!.peerId,
           callId: state!.callId,
-          candidate: candidate.toMap(),
+          candidate: Map<String, dynamic>.from(candidate.toMap()),
         ),
       );
     };

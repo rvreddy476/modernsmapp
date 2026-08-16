@@ -3,9 +3,11 @@ import 'package:atpost_app/core/errors/error_handler.dart';
 import 'package:atpost_app/core/theme/app_colors.dart';
 import 'package:atpost_app/core/theme/app_spacing.dart';
 import 'package:atpost_app/core/theme/app_text_styles.dart';
+import 'package:atpost_app/core/utils/validators.dart';
 import 'package:atpost_app/core/widgets/app_toast.dart';
 import 'package:atpost_app/services/api_client.dart';
 import 'package:atpost_app/services/auth_service.dart';
+import 'package:atpost_app/shared/widgets/v_input_field.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -19,39 +21,34 @@ class RegisterScreen extends ConsumerStatefulWidget {
 }
 
 class _RegisterScreenState extends ConsumerState<RegisterScreen> {
-  final _displayNameController = TextEditingController();
+  final _firstNameController = TextEditingController();
+  final _lastNameController = TextEditingController();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   final _confirmPasswordController = TextEditingController();
+
+  // Field error states
+  String? _firstNameError;
+  String? _lastNameError;
+  String? _emailError;
+  String? _passwordError;
+  String? _confirmPasswordError;
+  String? _dobError;
 
   bool _loading = false;
   bool _obscurePassword = true;
   bool _obscureConfirm = true;
 
-  // Module 3 M3-P0-3 / SR-6 — date of birth and consent are now REQUIRED.
-  //
-  // The backend age gate was 13 and was skipped entirely when no date of birth
-  // was supplied — and this screen supplied none, so every account it created
-  // bypassed the check. There was no consent capture at all.
-  //
-  // The gate is now 18 and mandatory. India's DPDP Act requires verifiable
-  // parental consent to process the data of anyone under 18, and this platform
-  // has no such flow, so it cannot lawfully onboard a minor.
   DateTime? _dob;
   bool _acceptedTerms = false;
 
-  /// Must match service.CurrentTermsVersion in auth-service. The server
-  /// rejects a mismatch, so a stale client fails loudly rather than recording
-  /// consent to a text the user never saw.
   static const _termsVersion = '2026-08-01';
   static const _minimumAge = 18;
 
-  /// Completed years, computed the same way the server does: an explicit
-  /// month/day comparison, not a division by 365.25, because on a legal
-  /// boundary a one-day error admits someone the platform cannot onboard.
   int _ageInYears(DateTime born, DateTime now) {
     var years = now.year - born.year;
-    if (now.month < born.month || (now.month == born.month && now.day < born.day)) {
+    if (now.month < born.month ||
+        (now.month == born.month && now.day < born.day)) {
       years--;
     }
     return years;
@@ -59,19 +56,31 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
 
   Future<void> _pickDateOfBirth() async {
     final now = DateTime.now();
-    // Open the picker at the earliest allowed date rather than today, so the
-    // user is not scrolling back eighteen years from a default that can never
-    // be valid.
     final initial = DateTime(now.year - _minimumAge, now.month, now.day);
     final picked = await showDatePicker(
       context: context,
       initialDate: _dob ?? initial,
       firstDate: DateTime(now.year - 120),
       lastDate: now,
-      helpText: 'Select your date of birth',
+      builder: (context, child) {
+        return Theme(
+          data: Theme.of(context).copyWith(
+            colorScheme: const ColorScheme.dark(
+              primary: AppColors.postbookPrimary,
+              onPrimary: Colors.white,
+              surface: AppColors.bgTertiary,
+              onSurface: Colors.white,
+            ),
+          ),
+          child: child!,
+        );
+      },
     );
     if (picked != null) {
-      setState(() => _dob = picked);
+      setState(() {
+        _dob = picked;
+        _dobError = null;
+      });
     }
   }
 
@@ -82,76 +91,70 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
 
   @override
   void dispose() {
-    _displayNameController.dispose();
+    _firstNameController.dispose();
+    _lastNameController.dispose();
     _emailController.dispose();
     _passwordController.dispose();
     _confirmPasswordController.dispose();
     super.dispose();
   }
 
-  String? _validate() {
-    final displayName = _displayNameController.text.trim();
-    final email = _emailController.text.trim();
-    final password = _passwordController.text;
-    final confirm = _confirmPasswordController.text;
+  bool _validate() {
+    setState(() {
+      _firstNameError = Validators.required(_firstNameController.text, 'First Name');
+      _lastNameError = Validators.required(_lastNameController.text, 'Last Name');
 
-    if (displayName.isEmpty) return 'Display name is required.';
-    if (email.isEmpty) return 'Email is required.';
-    if (password.isEmpty) return 'Password is required.';
-    if (password.length < 8) return 'Password must be at least 8 characters.';
-    if (password != confirm) return 'Passwords do not match.';
+      _emailError = Validators.email(_emailController.text);
+      _passwordError = Validators.password(_passwordController.text);
+      _confirmPasswordError = Validators.confirmPassword(
+        _confirmPasswordController.text,
+        _passwordController.text,
+      );
 
-    // SR-6. These are checked here only so the user gets an immediate answer;
-    // the server enforces the same rules and is the authority. A client-side
-    // check alone would be trivially bypassed.
-    if (_dob == null) return 'Date of birth is required.';
-    if (_ageInYears(_dob!, DateTime.now()) < _minimumAge) {
-      return 'You must be at least $_minimumAge years old to create an account.';
-    }
-    if (!_acceptedTerms) {
-      return 'You must accept the Terms of Service and Privacy Policy.';
-    }
-    return null;
+      if (_dob == null) {
+        _dobError = 'Date of birth is required';
+      } else if (_ageInYears(_dob!, DateTime.now()) < _minimumAge) {
+        _dobError = 'You must be at least $_minimumAge years old';
+      } else {
+        _dobError = null;
+      }
+    });
+
+    return _firstNameError == null &&
+        _lastNameError == null &&
+        _emailError == null &&
+        _passwordError == null &&
+        _confirmPasswordError == null &&
+        _dobError == null &&
+        _acceptedTerms;
   }
 
   Future<void> _submit() async {
-    final error = _validate();
-    if (error != null) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(error)));
+    if (!_validate()) {
+      if (!_acceptedTerms) {
+        AppToast.error(context, 'Please accept the Terms and Privacy Policy');
+      }
       return;
     }
 
     setState(() => _loading = true);
 
     try {
-      // Split display name into first/last for backend
-      final nameParts = _displayNameController.text.trim().split(RegExp(r'\s+'));
-      final firstName = nameParts.first;
-      final lastName = nameParts.length > 1 ? nameParts.sublist(1).join(' ') : '';
-
-      final response = await ref
-          .read(apiClientProvider)
-          .post(
-            '${Environment.authPath}/register',
-            data: {
-              'email': _emailController.text.trim(),
-              'password': _passwordController.text,
-              'first_name': firstName,
-              'last_name': lastName,
-              // SR-6: the server requires all three. `dob` was previously
-              // omitted, which skipped the age gate entirely.
-              'dob': _formatDob(_dob!),
-              'accepted_terms': _acceptedTerms,
-              'terms_version': _termsVersion,
-            },
-          );
+      final response = await ref.read(apiClientProvider).post(
+        '${Environment.authPath}/register',
+        data: {
+          'email': _emailController.text.trim(),
+          'password': _passwordController.text,
+          'first_name': _firstNameController.text.trim(),
+          'last_name': _lastNameController.text.trim(),
+          'dob': _formatDob(_dob!),
+          'accepted_terms': _acceptedTerms,
+          'terms_version': _termsVersion,
+        },
+      );
 
       final data = response.data['data'] as Map<String, dynamic>?;
-      if (data == null) {
-        throw Exception('Unexpected response format.');
-      }
+      if (data == null) throw Exception('Unexpected response format.');
 
       final tokens = data['tokens'] as Map<String, dynamic>? ?? data;
       final user = data['user'] as Map<String, dynamic>?;
@@ -161,19 +164,13 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
 
       if (!mounted) return;
 
-      // A new account is created PENDING. The server returns empty tokens and
-      // requires_verification=true until the emailed code is entered, so
-      // treating registration as a completed sign-in set an empty session and
-      // dropped the user on a home screen that could not load anything —
-      // with nothing on screen explaining that a code was waiting for them.
-      final requiresVerification =
-          data['requires_verification'] == true || token.isEmpty;
+      final requiresVerification = data['requires_verification'] == true || token.isEmpty;
 
       if (requiresVerification) {
         final email = _emailController.text.trim();
         AppToast.success(
           context,
-          'Account created. We sent a 6-digit code to $email — enter it to finish.',
+          'Account created! Check your email for a 6-digit code.',
         );
         final vt = data['verification_token'] as String? ?? '';
         context.go(
@@ -184,25 +181,34 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
         return;
       }
 
-      ref
-          .read(authServiceProvider)
-          .setSession(userId: userId, token: token, refreshToken: refreshToken);
+      ref.read(authServiceProvider).setSession(
+        userId: userId,
+        token: token,
+        refreshToken: refreshToken,
+      );
 
-      AppToast.success(context, 'Welcome to atPost!');
+      AppToast.success(context, 'Welcome to VChat!');
       context.go('/');
     } on DioException catch (e) {
       if (!mounted) return;
-      // One line, because the mapping now lives in UserMessages: server code
-      // first ("USER_EXISTS" -> "This email is already registered"), then
-      // status, then the server's own sentence. The previous unwrapping here
-      // surfaced whatever the backend happened to say, including bare codes.
-      AppToast.error(context, ErrorHandler.userMessageFor(e));
+      final serverCode = ErrorHandler.extractServerCode(e);
+
+      if (serverCode == 'USER_EXISTS' || serverCode == 'EMAIL_EXISTS') {
+        setState(() => _emailError = 'This email is already registered');
+      } else {
+        // Try to show specific validation errors from server if available
+        final serverMessage = ErrorHandler.userMessageFor(e);
+        if (serverMessage.contains('FirstName') || serverMessage.contains('first_name')) {
+          setState(() => _firstNameError = 'First name is required');
+        } else if (serverMessage.contains('LastName') || serverMessage.contains('last_name')) {
+          setState(() => _lastNameError = 'Last name is required');
+        } else {
+          AppToast.error(context, serverMessage);
+        }
+      }
     } catch (_) {
       if (!mounted) return;
-      AppToast.error(
-        context,
-        'We could not create your account. Please try again.',
-      );
+      AppToast.error(context, 'Could not create account. Please try again.');
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -233,154 +239,115 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const SizedBox(height: 16),
-
-              // Subheading
               Text(
                 'Join VChat and connect with the world.',
-                style: AppTextStyles.body.copyWith(
-                  color: AppColors.textTertiary,
-                ),
+                style: AppTextStyles.body.copyWith(color: AppColors.textTertiary),
                 textAlign: TextAlign.center,
               ),
-
               const SizedBox(height: 32),
 
-              // Display Name
-              _buildLabel('Display Name'),
-              const SizedBox(height: 6),
-              _buildTextField(
-                controller: _displayNameController,
-                hint: 'Your full name',
-                textInputAction: TextInputAction.next,
-              ),
-
-              const SizedBox(height: 16),
-
-              // Email
-              _buildLabel('Email'),
-              const SizedBox(height: 6),
-              _buildTextField(
-                controller: _emailController,
-                hint: 'you@example.com',
-                keyboardType: TextInputType.emailAddress,
-                textInputAction: TextInputAction.next,
-              ),
-
-              const SizedBox(height: 16),
-
-              // Password
-              _buildLabel('Password'),
-              const SizedBox(height: 6),
-              _buildTextField(
-                controller: _passwordController,
-                hint: 'At least 8 characters',
-                obscureText: _obscurePassword,
-                textInputAction: TextInputAction.next,
-                suffixIcon: _visibilityToggle(
-                  obscured: _obscurePassword,
-                  onTap: () =>
-                      setState(() => _obscurePassword = !_obscurePassword),
-                ),
-              ),
-
-              const SizedBox(height: 16),
-
-              // Confirm Password
-              _buildLabel('Confirm Password'),
-              const SizedBox(height: 6),
-              _buildTextField(
-                controller: _confirmPasswordController,
-                hint: 'Repeat your password',
-                obscureText: _obscureConfirm,
-                textInputAction: TextInputAction.done,
-                onSubmitted: (_) => _submit(),
-                suffixIcon: _visibilityToggle(
-                  obscured: _obscureConfirm,
-                  onTap: () =>
-                      setState(() => _obscureConfirm = !_obscureConfirm),
-                ),
-              ),
-
-              const SizedBox(height: 16),
-
-              // SR-6: date of birth. Required, and the 18+ rule is stated
-              // before the user picks rather than after they are rejected.
-              _buildLabel('Date of birth'),
-              const SizedBox(height: 6),
-              InkWell(
-                onTap: _loading ? null : _pickDateOfBirth,
-                borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
-                child: InputDecorator(
-                  decoration: InputDecoration(
-                    filled: true,
-                    fillColor: AppColors.bgSecondary,
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 16,
-                    ),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
-                      borderSide: BorderSide(color: AppColors.borderSubtle),
-                    ),
-                    enabledBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
-                      borderSide: BorderSide(color: AppColors.borderSubtle),
-                    ),
-                    suffixIcon: const Icon(
-                      Icons.calendar_today_outlined,
-                      size: 18,
-                      color: AppColors.textMuted,
-                    ),
-                  ),
-                  child: Text(
-                    _dob == null ? 'Select your date of birth' : _formatDob(_dob!),
-                    style: AppTextStyles.body.copyWith(
-                      color: _dob == null
-                          ? AppColors.textMuted
-                          : AppColors.textPrimary,
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                'You must be at least $_minimumAge to use atPost.',
-                style: AppTextStyles.bodySmall.copyWith(
-                  color: AppColors.textSecondary,
-                ),
-              ),
-
-              const SizedBox(height: 16),
-
-              // SR-6: explicit consent. Unchecked by default — a pre-ticked
-              // box is not consent, and the server refuses a registration
-              // whose accepted_terms is false.
+              // First & Last Name row
               Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Checkbox(
-                    value: _acceptedTerms,
-                    onChanged: _loading
-                        ? null
-                        : (v) => setState(() => _acceptedTerms = v ?? false),
-                  ),
                   Expanded(
-                    child: Padding(
-                      padding: const EdgeInsets.only(top: 12),
-                      child: Text(
-                        'I agree to the Terms of Service and the Privacy Policy.',
-                        style: AppTextStyles.bodySmall.copyWith(
-                          color: AppColors.textSecondary,
-                        ),
-                      ),
+                    child: VInputField(
+                      label: 'First Name',
+                      hint: 'John',
+                      controller: _firstNameController,
+                      isMandatory: true,
+                      errorText: _firstNameError,
+                      textInputAction: TextInputAction.next,
+                      onChanged: (_) => setState(() => _firstNameError = null),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: VInputField(
+                      label: 'Last Name',
+                      hint: 'Doe',
+                      controller: _lastNameController,
+                      isMandatory: true,
+                      errorText: _lastNameError,
+                      textInputAction: TextInputAction.next,
+                      onChanged: (_) => setState(() => _lastNameError = null),
                     ),
                   ),
                 ],
               ),
 
+              const SizedBox(height: 20),
+
+              // Email
+              VInputField(
+                label: 'Email',
+                hint: 'you@example.com',
+                controller: _emailController,
+                isMandatory: true,
+                errorText: _emailError,
+                keyboardType: TextInputType.emailAddress,
+                textInputAction: TextInputAction.next,
+                onChanged: (_) => setState(() => _emailError = null),
+              ),
+
+              const SizedBox(height: 20),
+
+              // Password
+              VInputField(
+                label: 'Password',
+                hint: 'At least 8 characters',
+                controller: _passwordController,
+                isMandatory: true,
+                errorText: _passwordError,
+                obscureText: _obscurePassword,
+                textInputAction: TextInputAction.next,
+                onChanged: (_) => setState(() => _passwordError = null),
+                suffixIcon: IconButton(
+                  icon: Icon(
+                    _obscurePassword ? Icons.visibility_off_rounded : Icons.visibility_rounded,
+                    color: AppColors.textMuted,
+                    size: 20,
+                  ),
+                  onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+                ),
+              ),
+
+              const SizedBox(height: 20),
+
+              // Confirm Password
+              VInputField(
+                label: 'Confirm Password',
+                hint: 'Repeat your password',
+                controller: _confirmPasswordController,
+                isMandatory: true,
+                errorText: _confirmPasswordError,
+                obscureText: _obscureConfirm,
+                textInputAction: TextInputAction.done,
+                onChanged: (_) => setState(() => _confirmPasswordError = null),
+                onSubmitted: (_) => _submit(),
+                suffixIcon: IconButton(
+                  icon: Icon(
+                    _obscureConfirm ? Icons.visibility_off_rounded : Icons.visibility_rounded,
+                    color: AppColors.textMuted,
+                    size: 20,
+                  ),
+                  onPressed: () => setState(() => _obscureConfirm = !_obscureConfirm),
+                ),
+              ),
+
+              const SizedBox(height: 20),
+
+              // Date of Birth
+              _buildDobPicker(),
+
+              const SizedBox(height: 24),
+
+              // Terms and Conditions
+              _buildTermsCheckbox(),
+
               const SizedBox(height: 32),
 
-              // Register button
+              // Submit Button
               _GradientButton(
                 label: 'Create Account',
                 loading: _loading,
@@ -389,34 +356,8 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
 
               const SizedBox(height: 24),
 
-              // Already have account
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text(
-                    'Already have an account?',
-                    style: AppTextStyles.bodySmall,
-                  ),
-                  TextButton(
-                    onPressed: () => context.pop(),
-                    style: TextButton.styleFrom(
-                      foregroundColor: AppColors.postbookPrimary,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 6,
-                        vertical: 4,
-                      ),
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    ),
-                    child: Text(
-                      'Log In',
-                      style: AppTextStyles.bodySmall.copyWith(
-                        color: AppColors.postbookPrimary,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
+              // Login Redirect
+              _buildLoginLink(),
             ],
           ),
         ),
@@ -424,115 +365,172 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
     );
   }
 
-  Widget _buildLabel(String text) {
-    return Text(
-      text,
-      style: AppTextStyles.label.copyWith(color: AppColors.textSecondary),
-    );
-  }
-
-  Widget _visibilityToggle({
-    required bool obscured,
-    required VoidCallback onTap,
-  }) {
-    return IconButton(
-      icon: Icon(
-        obscured ? Icons.visibility_off_outlined : Icons.visibility_outlined,
-        color: AppColors.textMuted,
-        size: 20,
-      ),
-      onPressed: onTap,
-    );
-  }
-
-  Widget _buildTextField({
-    required TextEditingController controller,
-    required String hint,
-    bool obscureText = false,
-    TextInputType keyboardType = TextInputType.text,
-    TextInputAction textInputAction = TextInputAction.next,
-    Widget? suffixIcon,
-    void Function(String)? onSubmitted,
-  }) {
-    return TextField(
-      controller: controller,
-      obscureText: obscureText,
-      keyboardType: keyboardType,
-      textInputAction: textInputAction,
-      onSubmitted: onSubmitted,
-      style: AppTextStyles.body.copyWith(color: AppColors.textPrimary),
-      decoration: InputDecoration(
-        hintText: hint,
-        hintStyle: AppTextStyles.body.copyWith(color: AppColors.textDim),
-        filled: true,
-        fillColor: AppColors.bgCard,
-        suffixIcon: suffixIcon,
-        contentPadding: const EdgeInsets.symmetric(
-          horizontal: 16,
-          vertical: 14,
+  Widget _buildDobPicker() {
+    final hasError = _dobError != null;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Text(
+              'Date of birth',
+              style: AppTextStyles.label.copyWith(
+                color: hasError ? AppColors.statusError : AppColors.textSecondary,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.only(left: 4),
+              child: Text(
+                '*',
+                style: AppTextStyles.label.copyWith(color: AppColors.statusError),
+              ),
+            ),
+          ],
         ),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
-          borderSide: BorderSide(color: AppColors.borderSubtle),
-        ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
-          borderSide: BorderSide(color: AppColors.borderSubtle),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
-          borderSide: const BorderSide(
-            color: AppColors.postbookPrimary,
-            width: 1.5,
+        const SizedBox(height: 8),
+        InkWell(
+          onTap: _loading ? null : _pickDateOfBirth,
+          borderRadius: BorderRadius.circular(16),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
+            decoration: BoxDecoration(
+              color: hasError ? AppColors.statusError.withOpacity(0.05) : AppColors.bgCard,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: hasError ? AppColors.statusError : AppColors.borderSubtle,
+              ),
+              boxShadow: hasError ? [
+                BoxShadow(
+                  color: AppColors.statusError.withOpacity(0.1),
+                  blurRadius: 10,
+                  spreadRadius: 2,
+                )
+              ] : null,
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    _dob == null ? 'Select your date of birth' : _formatDob(_dob!),
+                    style: AppTextStyles.body.copyWith(
+                      color: _dob == null ? AppColors.textMuted : AppColors.textPrimary,
+                    ),
+                  ),
+                ),
+                const Icon(
+                  Icons.calendar_today_rounded,
+                  size: 18,
+                  color: AppColors.textMuted,
+                ),
+              ],
+            ),
           ),
         ),
-      ),
+        if (hasError)
+          Padding(
+            padding: const EdgeInsets.only(top: 8, left: 4),
+            child: Text(
+              _dobError!,
+              style: AppTextStyles.bodySmall.copyWith(color: AppColors.statusError),
+            ),
+          ),
+        const SizedBox(height: 6),
+        Text(
+          'You must be at least $_minimumAge to use VChat.',
+          style: AppTextStyles.bodySmall.copyWith(color: AppColors.textDim),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildTermsCheckbox() {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          height: 24,
+          width: 24,
+          child: Checkbox(
+            value: _acceptedTerms,
+            activeColor: AppColors.postbookPrimary,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+            onChanged: _loading ? null : (v) => setState(() => _acceptedTerms = v ?? false),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Text(
+            'I agree to the Terms of Service and the Privacy Policy.',
+            style: AppTextStyles.bodySmall.copyWith(color: AppColors.textSecondary),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildLoginLink() {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Text('Already have an account?', style: AppTextStyles.bodySmall),
+        TextButton(
+          onPressed: () => context.pop(),
+          style: TextButton.styleFrom(foregroundColor: AppColors.postbookPrimary),
+          child: Text(
+            'Log In',
+            style: AppTextStyles.bodySmall.copyWith(
+              color: AppColors.postbookPrimary,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
 
-/// Reusable full-width gradient button.
 class _GradientButton extends StatelessWidget {
   final String label;
   final bool loading;
   final VoidCallback? onTap;
 
-  const _GradientButton({
-    required this.label,
-    this.loading = false,
-    this.onTap,
-  });
+  const _GradientButton({required this.label, this.loading = false, this.onTap});
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 52,
+      height: 56,
       decoration: BoxDecoration(
-        gradient: onTap != null ? AppColors.postbookGradient : null,
-        color: onTap == null ? AppColors.textDim : null,
-        borderRadius: BorderRadius.circular(AppSpacing.radiusFull),
+        gradient: onTap != null ? AppColors.ctaGradient : null,
+        color: onTap == null ? AppColors.textDim.withOpacity(0.3) : null,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: onTap != null ? [
+          BoxShadow(
+            color: AppColors.postbookPrimary.withOpacity(0.3),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          )
+        ] : null,
       ),
       child: Material(
         color: Colors.transparent,
         child: InkWell(
           onTap: onTap,
-          borderRadius: BorderRadius.circular(AppSpacing.radiusFull),
+          borderRadius: BorderRadius.circular(16),
           child: Center(
             child: loading
                 ? const SizedBox(
-                    width: 22,
-                    height: 22,
+                    width: 24,
+                    height: 24,
                     child: CircularProgressIndicator(
-                      strokeWidth: 2.5,
+                      strokeWidth: 2,
                       valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
                     ),
                   )
                 : Text(
                     label,
-                    style: AppTextStyles.h3.copyWith(
-                      color: Colors.white,
-                      letterSpacing: 0.4,
-                    ),
+                    style: AppTextStyles.h3.copyWith(color: Colors.white, fontWeight: FontWeight.bold),
                   ),
           ),
         ),

@@ -8,7 +8,7 @@ class StudioRepository {
   Future<List<Map<String, dynamic>>> getStickerPacks() async {
     final res = await _api.get('/v1/studio/sticker-packs');
     final data = res.data['data'] ?? res.data;
-    return List<Map<String, dynamic>>.from(data['packs'] ?? data ?? []);
+    return List<Map<String, dynamic>>.from((data['packs'] ?? data ?? []) as Iterable);
   }
 
   Future<List<Map<String, dynamic>>> getStickers({String? category, int limit = 20}) async {
@@ -17,7 +17,7 @@ class StudioRepository {
       'limit': limit,
     });
     final data = res.data['data'] ?? res.data;
-    return List<Map<String, dynamic>>.from(data['stickers'] ?? data ?? []);
+    return List<Map<String, dynamic>>.from((data['stickers'] ?? data ?? []) as Iterable);
   }
 
   Future<void> recordStickerUse(String stickerId) async {
@@ -30,19 +30,19 @@ class StudioRepository {
       'limit': 20,
     });
     final data = res.data['data'] ?? res.data;
-    return List<Map<String, dynamic>>.from(data['templates'] ?? data ?? []);
+    return List<Map<String, dynamic>>.from((data['templates'] ?? data ?? []) as Iterable);
   }
 
   Future<List<Map<String, dynamic>>> getEditorSessions() async {
     final res = await _api.get('/v1/studio/sessions');
     final data = res.data['data'] ?? res.data;
-    return List<Map<String, dynamic>>.from(data['sessions'] ?? data ?? []);
+    return List<Map<String, dynamic>>.from((data['sessions'] ?? data ?? []) as Iterable);
   }
 
   Future<List<Map<String, dynamic>>> getSuggestedFrames(String mediaAssetId) async {
     final res = await _api.get('/v1/media/$mediaAssetId/suggested-frames');
     final data = res.data['data'] ?? res.data;
-    return List<Map<String, dynamic>>.from(data['frames'] ?? []);
+    return List<Map<String, dynamic>>.from((data['frames'] ?? []) as Iterable);
   }
 
   Future<void> setCoverFrame(String mediaAssetId, int offsetMs) async {

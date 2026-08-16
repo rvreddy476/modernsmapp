@@ -87,7 +87,7 @@ class Post {
         activityDetail: json['activity_detail']?.toString(),
         locationName: (json['location_name'] ?? json['location'])?.toString(),
         poll: json['poll'] != null
-            ? PollData.fromJson(Map<String, dynamic>.from(json['poll']))
+            ? PollData.fromJson(json['poll'] as Map<String, dynamic>)
             : null,
         tierRequiredId: json['tier_required_id']?.toString(),
         bodyRedacted: _toBool(json['body_redacted']),
@@ -202,7 +202,7 @@ class PollData {
     return PollData(
       question: (json['question'] ?? '').toString(),
       options: (json['options'] as List? ?? [])
-          .map((e) => PollOption.fromJson(Map<String, dynamic>.from(e)))
+          .map((e) => PollOption.fromJson(e as Map<String, dynamic>))
           .toList(),
       allowsMultiple: _toBool(json['allows_multiple']),
       endsAt: _parseDateNullable(json['ends_at']),

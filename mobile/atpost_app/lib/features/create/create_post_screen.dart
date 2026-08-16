@@ -8,7 +8,10 @@ import 'package:atpost_app/features/create/widgets/voice_recorder_sheet.dart';
 import 'package:atpost_app/features/create/widgets/trending_hashtag_strip.dart';
 import 'package:atpost_app/providers/feed_provider.dart';
 import 'package:atpost_app/providers/user_provider.dart';
+import 'package:atpost_app/providers/user_provider.dart';
+import 'package:atpost_app/data/models/user.dart';
 import 'package:flutter/material.dart';
+import 'package:skeletonizer/skeletonizer.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -343,23 +346,37 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
     );
   }
 
-  Widget _buildComposerArea(CreationState state, dynamic user) {
+  Widget _buildComposerArea(CreationState state, User? user) {
     return Column(
       children: [
         Row(
           children: [
-            CircleAvatar(
-              radius: 22,
-              backgroundColor: Colors.white10,
-              backgroundImage: user?.avatarUrl != null
-                  ? NetworkImage(user!.avatarUrl)
-                  : null,
+            Skeletonizer(
+              enabled: user == null,
+              child: CircleAvatar(
+                radius: 22,
+                backgroundColor: Colors.white10,
+                backgroundImage: user?.hasAvatar == true
+                    ? NetworkImage(user!.avatarUrl)
+                    : null,
+                child: user == null
+                    ? null
+                    : (!user.hasAvatar
+                        ? const Icon(Icons.person, color: Colors.white24)
+                        : null),
+              ),
             ),
             const SizedBox(width: 12),
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(user?.displayName ?? 'Anonymous', style: AppTextStyles.h3),
+                Skeletonizer(
+                  enabled: user == null,
+                  child: Text(
+                    user?.displayName ?? 'Loading Profile...',
+                    style: AppTextStyles.h3,
+                  ),
+                ),
                 _buildVisibilityBadge(state),
               ],
             ),

@@ -19,6 +19,8 @@ import 'package:atpost_app/shared/widgets/content_cards.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:skeletonizer/skeletonizer.dart';
+import 'package:atpost_app/data/models/post.dart';
 
 class HomeFeedScreen extends ConsumerStatefulWidget {
   const HomeFeedScreen({super.key});
@@ -436,6 +438,21 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
     return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
   }
 
+  Widget _buildLoadingSliver() {
+    return SliverPadding(
+      padding: AppSpacing.pagePadding.copyWith(top: 12),
+      sliver: Skeletonizer.sliver(
+        enabled: true,
+        child: SliverList(
+          delegate: SliverChildBuilderDelegate(
+            (ctx, i) => const _SimplePostSkeleton(),
+            childCount: 3,
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final feedAsync = ref.watch(homeFeedProvider);
@@ -484,14 +501,7 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
                     _buildSearchResultsSliver()
                   else
                     ...feedAsync.when(
-                      loading: () => [
-                        const SliverToBoxAdapter(
-                          child: Padding(
-                            padding: EdgeInsets.symmetric(vertical: 40),
-                            child: Center(child: CircularProgressIndicator()),
-                          ),
-                        ),
-                      ],
+                      loading: () => [_buildLoadingSliver()],
                       error: (_, _) => [
                         const SliverToBoxAdapter(
                           child: Padding(
@@ -707,8 +717,57 @@ class _FeedTabButton extends StatelessWidget {
 }
 
 
+class _SimplePostSkeleton extends StatelessWidget {
+  const _SimplePostSkeleton();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.bgCard,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: AppColors.borderSubtle),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const CircleAvatar(radius: 20, backgroundColor: Colors.white10),
+              const SizedBox(width: 12),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(width: 120, height: 12, color: Colors.white),
+                  const SizedBox(height: 6),
+                  Container(width: 80, height: 10, color: Colors.white),
+                ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 20),
+          Container(width: double.infinity, height: 14, color: Colors.white),
+          const SizedBox(height: 8),
+          Container(width: double.infinity, height: 14, color: Colors.white),
+          const SizedBox(height: 8),
+          Container(width: 200, height: 14, color: Colors.white),
+          const SizedBox(height: 20),
+          Row(
+            children: [
+              Container(width: 60, height: 24, decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12))),
+              const SizedBox(width: 12),
+              Container(width: 60, height: 24, decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12))),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
 class _EmptyFeedState extends StatelessWidget {
-  const _EmptyFeedState();
+  const _EmptyFeedState({super.key});
 
   @override
   Widget build(BuildContext context) {

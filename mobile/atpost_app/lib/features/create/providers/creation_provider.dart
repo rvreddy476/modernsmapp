@@ -1,5 +1,7 @@
+import 'package:atpost_app/core/errors/error_handler.dart';
 import 'package:atpost_app/data/repositories/post_repository.dart';
 import 'package:atpost_app/services/api_client.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 
@@ -484,10 +486,17 @@ class CreationNotifier extends StateNotifier<CreationState> {
       reset();
       return true;
     } catch (e) {
+      String errorMessage = 'Could not publish post. Please try again.';
+      if (e is DioException) {
+        errorMessage = ErrorHandler.userMessageFor(e);
+      } else if (e is Exception) {
+        errorMessage = e.toString().replaceFirst('Exception: ', '');
+      }
+
       state = state.copyWith(
         isSubmitting: false,
         uploadProgress: 0,
-        error: e.toString(),
+        error: errorMessage,
       );
       return false;
     }

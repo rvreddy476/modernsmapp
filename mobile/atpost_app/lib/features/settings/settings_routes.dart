@@ -3,6 +3,7 @@ import 'package:atpost_app/features/mini_apps/mini_app_sandbox_screen.dart';
 import 'package:atpost_app/features/mini_apps/mini_apps_screen.dart';
 import 'package:atpost_app/features/profile/my_media_screen.dart';
 import 'package:atpost_app/features/profile/profile_detail_screen.dart';
+import 'package:atpost_app/features/profile/profile_screen.dart';
 import 'package:atpost_app/features/services/service_slug_router.dart';
 import 'package:atpost_app/features/services/services_screen.dart';
 import 'package:atpost_app/features/settings/content_preferences_screen.dart';
@@ -17,6 +18,8 @@ import 'package:atpost_app/features/settings/wellbeing_settings_screen.dart';
 import 'package:atpost_app/features/pages/pages_list_screen.dart';
 import 'package:atpost_app/features/pages/create_page_screen.dart';
 import 'package:atpost_app/features/pages/page_detail_screen.dart';
+import 'package:atpost_app/services/auth_service.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 class SettingsRoutes {
@@ -69,9 +72,18 @@ class SettingsRoutes {
         ),
         GoRoute(
           path: '/profile/:userId',
-          builder: (context, state) => ProfileDetailScreen(
-            userId: state.pathParameters['userId'] ?? '',
-          ),
+          builder: (context, state) {
+            final userId = state.pathParameters['userId'] ?? '';
+            return Consumer(
+              builder: (context, ref, _) {
+                final currentUserId = ref.watch(authServiceProvider).userId;
+                if (userId == currentUserId) {
+                  return const ProfileScreen();
+                }
+                return ProfileDetailScreen(userId: userId);
+              },
+            );
+          },
         ),
         GoRoute(path: '/apps', builder: (_, _) => const MiniAppsScreen()),
         GoRoute(

@@ -64,7 +64,7 @@ class Question {
         communityId: json['community_id']?.toString(),
         community: json['community'] != null
             ? SimpleCommunity.fromJson(
-                Map<String, dynamic>.from(json['community']))
+                Map<String, dynamic>.from(json['community'] as Map))
             : null,
         upvoteCount: _toInt(json['upvote_count']),
         downvoteCount: _toInt(json['downvote_count']),
@@ -236,7 +236,7 @@ class QaQuestionSummary {
       isAnswered: json['is_answered'] == true,
       isPinned: json['is_pinned'] == true,
       community: json['community'] != null
-          ? SimpleCommunity.fromJson(Map<String, dynamic>.from(json['community']))
+          ? SimpleCommunity.fromJson(Map<String, dynamic>.from(json['community'] as Map))
           : null,
     );
   }

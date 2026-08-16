@@ -15,6 +15,7 @@ import 'package:atpost_app/shared/widgets/provenance_badge.dart';
 import 'package:atpost_app/services/auth_service.dart';
 import 'package:atpost_app/shared/widgets/clickable_hashtag_text.dart';
 import 'package:atpost_app/shared/widgets/echo_sheet.dart';
+import 'package:skeletonizer/skeletonizer.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -246,24 +247,7 @@ class _PostCardState extends ConsumerState<PostCard> {
     }
   }
 
-  // Pick a deterministic gradient for text-only posts based on the author id
-  // so each user's text posts get a stable, recognisable colour.
-  LinearGradient _textPostGradient() {
-    const palette = <List<Color>>[
-      [AppColors.postbookPrimary, AppColors.postgramPrimary],
-      [AppColors.posttubePrimary, AppColors.accentPurple],
-      [AppColors.accentPurple, AppColors.postgramPrimary],
-      [AppColors.postbookPrimary, AppColors.postbookSecondary],
-      [AppColors.postgramSecondary, AppColors.postgramPrimary],
-    ];
-    final seed = (post.authorId.isNotEmpty ? post.authorId : post.id).hashCode;
-    final colours = palette[seed.abs() % palette.length];
-    return LinearGradient(
-      begin: Alignment.topLeft,
-      end: Alignment.bottomRight,
-      colors: colours,
-    );
-  }
+  // Removed _textPostGradient for simpler card design.
 
   @override
   Widget build(BuildContext context) {
@@ -305,7 +289,9 @@ class _PostCardState extends ConsumerState<PostCard> {
                 creatorName: post.authorName,
               )
             else if (isTextOnly)
-              _buildTextPostBody()
+              (Skeletonizer.maybeOf(context)?.enabled ?? false)
+                ? _buildSkeletonTextBody()
+                : _buildTextPostBody()
             else if (hasMedia) ...[
               if (hasContent)
                 Padding(
@@ -348,12 +334,11 @@ class _PostCardState extends ConsumerState<PostCard> {
   Widget _buildTextPostBody() {
     final body = post.content.trim();
     final isShort = body.length <= 140;
-    final base = AppTextStyles.h2.copyWith(
-      color: Colors.white,
-      fontSize: isShort ? 22 : 17,
-      height: 1.35,
-      fontWeight: FontWeight.w600,
-    );
+
+    if (Skeletonizer.maybeOf(context)?.enabled ?? false) {
+      return _buildSkeletonTextBody();
+    }
+
     return Container(
       margin: const EdgeInsets.fromLTRB(14, 0, 14, 8),
       padding: EdgeInsets.symmetric(
@@ -361,18 +346,43 @@ class _PostCardState extends ConsumerState<PostCard> {
         vertical: isShort ? 28 : 22,
       ),
       decoration: BoxDecoration(
-        gradient: _textPostGradient(),
+        color: AppColors.bgTertiary,
         borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
+        border: Border.all(color: AppColors.borderSubtle),
       ),
       child: ClickableHashtagText(
         text: body,
-        normalStyle: base,
-        hashtagStyle: base.copyWith(
-          // Bright but readable on the gradient backgrounds.
-          color: const Color(0xFFFFE9CC),
-          fontWeight: FontWeight.w800,
+        normalStyle: AppTextStyles.body.copyWith(
+          fontSize: isShort ? 18 : 15,
+          fontWeight: FontWeight.w500,
+          color: Colors.white,
+        ),
+        hashtagStyle: AppTextStyles.body.copyWith(
+          fontSize: isShort ? 18 : 15,
+          color: AppColors.postbookPrimary,
+          fontWeight: FontWeight.w700,
         ),
         onHashtagTap: _onHashtagTap,
+      ),
+    );
+  }
+
+  Widget _buildSkeletonTextBody() {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(14, 0, 14, 8),
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 22),
+      decoration: BoxDecoration(
+        color: AppColors.bgTertiary,
+        borderRadius: BorderRadius.circular(AppSpacing.radiusLarge),
+        border: Border.all(color: AppColors.borderSubtle),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(height: 16, width: double.infinity, color: Colors.white),
+          const SizedBox(height: 8),
+          Container(height: 16, width: 200, color: Colors.white),
+        ],
       ),
     );
   }
@@ -467,7 +477,7 @@ class _PostCardState extends ConsumerState<PostCard> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                authorName.isNotEmpty ? authorName : 'Anonymous',
+                authorName.isNotEmpty ? authorName : 'VChat User',
                 style: AppTextStyles.h3,
               ),
               Text(

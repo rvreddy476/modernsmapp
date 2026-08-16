@@ -22,7 +22,7 @@ class AnalyticsRepository {
       '/v1/analytics/creator/me',
       queryParameters: {'period': period},
     );
-    return Map<String, dynamic>.from(response.data);
+    return Map<String, dynamic>.from(response.data as Map);
   }
 
   /// Records a finished video view as a `play_end` analytics event.
