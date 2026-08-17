@@ -30,16 +30,17 @@ class PostRepository @Inject constructor(
         apiCall(errorMapper) { api.removeReaction(postId) }.map { }
 
     /**
-     * Toggles the bookmark and returns the RESULTING state as the server
-     * reports it.
+     * Saves or unsaves, by SET and CLEAR rather than by toggling.
      *
-     * Returning the boolean rather than `Unit` is the whole point. The endpoint
-     * is a toggle, so the caller cannot infer the outcome from the request it
-     * made — if two taps race, or a response is lost and the user taps again,
-     * only the server's answer says where the post ended up.
+     * The caller states the state it wants; repetition is harmless. Returning
+     * the server's boolean rather than `Unit` is kept anyway — it costs
+     * nothing and means a future divergence between intent and outcome is
+     * visible instead of assumed.
      */
-    suspend fun toggleBookmark(postId: String): AppResult<Boolean> =
-        apiCall(errorMapper) { api.toggleBookmark(postId) }.map { it.bookmarked }
+    suspend fun setBookmarked(postId: String, bookmarked: Boolean): AppResult<Boolean> =
+        apiCall(errorMapper) {
+            if (bookmarked) api.setBookmark(postId) else api.clearBookmark(postId)
+        }.map { it.bookmarked }
 
     suspend fun repost(postId: String): AppResult<Unit> =
         apiCall(errorMapper) { api.repost(postId, RepostRequest(PLAIN)) }.map { }

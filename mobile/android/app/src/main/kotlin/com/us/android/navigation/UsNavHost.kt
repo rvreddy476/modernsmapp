@@ -27,6 +27,9 @@ import com.us.android.core.model.SessionState
 import com.us.android.feature.auth.login.LoginRoute
 import com.us.android.feature.auth.register.RegisterRoute
 import com.us.android.feature.auth.verify.VerifyEmailRoute
+import com.us.android.feature.feed.navigation.FeedRoute
+import com.us.android.feature.feed.navigation.feedScreen
+import com.us.android.feature.post.navigation.navigateToPost
 import com.us.android.feature.post.navigation.postScreen
 import com.us.android.feature.profile.navigation.navigateToProfile
 import com.us.android.feature.profile.navigation.ownProfileScreen
@@ -55,11 +58,9 @@ data class VerifyEmailRoute(
 
 // ── Top-level (tab) destinations ───────────────────────────────────────
 //
-// The Me tab's route is OwnProfileRoute and lives in :feature:profile, because
-// the feature owns the screen. The four below have no feature module yet.
-
-@Serializable
-data object HomeRoute
+// Home is FeedRoute and Me is OwnProfileRoute; both live in their feature
+// modules, because the feature owns the screen. The rest are declared here
+// because no feature module owns them yet.
 
 @Serializable
 data object FriendsRoute
@@ -69,6 +70,16 @@ data object ReelsRoute
 
 @Serializable
 data object ExploreRoute
+
+/**
+ * The design-system gallery.
+ *
+ * Not a tab. It used to occupy Home; the feed took that over, and the gallery
+ * survives as a pushed screen because reviewing tokens at real density on a
+ * real device is still the only way to catch a bad colour or a wrong metric.
+ */
+@Serializable
+data object GalleryRoute
 
 /**
  * The app's navigation graph.
@@ -86,7 +97,7 @@ fun UsNavHost(
     sessionState: SessionState,
     navController: NavHostController = rememberNavController(),
 ) {
-    val startDestination = if (sessionState.isAuthenticated) HomeRoute else LoginRoute
+    val startDestination = if (sessionState.isAuthenticated) FeedRoute else LoginRoute
 
     // The bar lives OUTSIDE the NavHost so it survives destination changes
     // rather than being recomposed away and back on every navigation.
@@ -183,10 +194,16 @@ private fun NavGraphBuilder.authDestinations(navController: NavHostController) {
  * is where that stays visible.
  */
 private fun NavGraphBuilder.tabDestinations(navController: NavHostController) {
-    composable<HomeRoute> {
-        // The design-system gallery still occupies Home so the token port
-        // stays reviewable on a real device. The feed replaces it once a
-        // non-empty /v1/feed/home capture proves the item DTO.
+    // The real home feed. It replaced the design-system gallery once the
+    // 2026-08-17 capture returned a non-empty page and proved the item shape —
+    // before that the feed could only have been built on an invented DTO.
+    feedScreen(
+        onOpenPost = { postId -> navController.navigateToPost(postId) },
+        onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
+    )
+    composable<GalleryRoute> {
+        // The gallery is still reachable from Explore so the design tokens stay
+        // reviewable on a real device at real density.
         DesignSystemGalleryScreen(
             onOpenOwnProfile = { navController.navigateToTopLevel(TopLevelDestination.ME) },
         )
@@ -202,16 +219,20 @@ private fun NavGraphBuilder.tabDestinations(navController: NavHostController) {
     composable<ReelsRoute> {
         PlaceholderScreen(
             title = "Reels",
-            reason = "Blocked on media delivery: the HLS master playlist exists in " +
-                "storage, but /v1/media/:id/serve returns 503 and there is no " +
-                "client-usable URL yet.",
+            reason = "The contract is ready — /v1/feed/reels returns items and HLS " +
+                "delivery works end to end. This needs the Media3 player pool and " +
+                "vertical pager, which is the next slice.",
+            actionLabel = "Open the design gallery",
+            onAction = { navController.navigate(GalleryRoute) },
         )
     }
     composable<ExploreRoute> {
         PlaceholderScreen(
             title = "Explore",
-            reason = "Needs seeded content. Every feed surface currently returns an " +
-                "empty page, so the item shape has never been observed.",
+            reason = "Search is not built yet. The design-system gallery lives here " +
+                "meanwhile so the tokens stay reviewable on a real device.",
+            actionLabel = "Open the design gallery",
+            onAction = { navController.navigate(GalleryRoute) },
         )
     }
 

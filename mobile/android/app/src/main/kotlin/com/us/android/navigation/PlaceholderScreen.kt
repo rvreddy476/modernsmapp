@@ -1,10 +1,15 @@
 package com.us.android.navigation
 
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import com.us.android.core.designsystem.component.UsScaffold
+import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.ui.UsEmptyState
@@ -25,17 +30,31 @@ fun PlaceholderScreen(
     title: String,
     reason: String,
     modifier: Modifier = Modifier,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
 ) {
     UsScaffold(
         modifier = modifier,
         topBar = { UsTopBar(title = title) },
         applyPageGutter = false,
     ) { padding ->
-        UsEmptyState(
-            title = "$title isn't built yet",
-            detail = reason,
-            modifier = Modifier.padding(padding),
-        )
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding),
+            verticalArrangement = Arrangement.Center,
+        ) {
+            UsEmptyState(title = "$title isn't built yet", detail = reason)
+            if (actionLabel != null && onAction != null) {
+                UsSecondaryButton(
+                    text = actionLabel,
+                    onClick = onAction,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = UsTheme.spacing.pageHorizontal),
+                )
+            }
+        }
     }
 }
 

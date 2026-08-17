@@ -27,6 +27,7 @@ dependencies {
     implementation(projects.core.database)
     implementation(projects.core.datastore)
     implementation(projects.feature.auth)
+    implementation(projects.feature.feed)
     implementation(projects.feature.post)
     implementation(projects.feature.profile)
 

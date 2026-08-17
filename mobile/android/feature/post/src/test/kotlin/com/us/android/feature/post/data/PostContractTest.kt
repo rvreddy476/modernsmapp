@@ -150,17 +150,32 @@ class PostContractTest {
     }
 
     /**
-     * The bookmark contract in one test: the endpoint is a toggle, and the
-     * RESPONSE says where the post ended up. The caller must adopt it rather
-     * than assume its tap flipped the state.
+     * Bookmark is SET and CLEAR over two methods, not a toggle over one.
+     *
+     * Repaired and recaptured on 2026-08-17. Pinning the method per direction
+     * matters because the previous contract was a single POST toggle: if the
+     * repository ever regresses to sending POST for both, saving would appear
+     * to work and unsaving would silently re-save.
      */
     @Test
-    fun `bookmark returns the resulting state, not the requested one`() = runTest {
+    fun `saving sends POST and unsaving sends DELETE`() = runTest {
         enqueue(200, """{"data":{"bookmarked":true}}""")
-        assertThat((repository.toggleBookmark("p") as AppResult.Success).data).isTrue()
+        assertThat((repository.setBookmarked("p", true) as AppResult.Success).data).isTrue()
+        assertThat(server.takeRequest().method).isEqualTo("POST")
 
         enqueue(200, """{"data":{"bookmarked":false}}""")
-        assertThat((repository.toggleBookmark("p") as AppResult.Success).data).isFalse()
+        assertThat((repository.setBookmarked("p", false) as AppResult.Success).data).isFalse()
+        assertThat(server.takeRequest().method).isEqualTo("DELETE")
+    }
+
+    /** Both directions are idempotent: repeating a call repeats the result. */
+    @Test
+    fun `repeating a save is harmless`() = runTest {
+        enqueue(200, """{"data":{"bookmarked":true}}""")
+        enqueue(200, """{"data":{"bookmarked":true}}""")
+
+        assertThat((repository.setBookmarked("p", true) as AppResult.Success).data).isTrue()
+        assertThat((repository.setBookmarked("p", true) as AppResult.Success).data).isTrue()
     }
 
     @Test

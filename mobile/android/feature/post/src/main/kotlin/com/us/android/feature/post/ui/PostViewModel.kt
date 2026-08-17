@@ -79,49 +79,40 @@ class PostViewModel @Inject constructor(
     }
 
     /**
-     * Bookmark.
+     * Save or unsave.
      *
-     * NOT optimistic, and that is deliberate — it is the one interaction here
-     * where guessing is unsafe. The endpoint is a toggle with no separate add
-     * and remove, so the outcome is a function of the server's current state
-     * rather than of the request. If two taps race, or a response is lost and
-     * the user taps again, an optimistic flip can end up showing the exact
-     * opposite of the truth.
-     *
-     * So the UI waits and then adopts the boolean the server returned. The
-     * cost is a brief spinner; the alternative is a saved-posts list that
-     * silently disagrees with what the user sees.
-     *
-     * There is also no retry and no offline queue for the same reason: a
-     * replayed toggle un-bookmarks what the user saved. The reversal endpoint,
-     * DELETE /v1/posts/:id/bookmark, is broken server-side (500, missing
-     * `bookmarks` relation), so a second POST is the only working undo.
+     * Optimistic since the 2026-08-17 repair. This was previously the one
+     * interaction here that deliberately waited: the endpoint was a toggle
+     * whose outcome depended on the server's current state rather than on the
+     * request, so an optimistic flip could show the exact opposite of the
+     * truth after a lost response. It is now a SET/CLEAR pair — the client
+     * states the state it wants, repetition is harmless, and the reversal
+     * endpoint works — so the flip is safe and the spinner is no longer worth
+     * its cost.
      */
     fun onBookmarkToggle() {
         val content = _state.value as? PostUiState.Content ?: return
         if (content.busy) return
+        val wasBookmarked = content.post.viewer.isBookmarked
 
-        _state.update {
-            (it as? PostUiState.Content)?.copy(busy = true, actionError = null) ?: it
+        _state.update { state ->
+            (state as? PostUiState.Content)?.withBookmark(!wasBookmarked, busy = true) ?: state
         }
 
         viewModelScope.launch {
-            val result = repository.toggleBookmark(postId)
+            val result = repository.setBookmarked(postId, !wasBookmarked)
             _state.update { state ->
                 val current = state as? PostUiState.Content ?: return@update state
                 when (result) {
-                    is AppResult.Success -> current.copy(
-                        post = current.post.copy(
-                            // The server's answer, not the flip we intended.
-                            viewer = current.post.viewer.copy(isBookmarked = result.data),
-                        ),
-                        busy = false,
-                    )
+                    // Adopt the server's value rather than the requested one.
+                    // With set/clear the two agree, and asserting that here
+                    // means a future divergence surfaces instead of hiding.
+                    is AppResult.Success -> current.withBookmark(result.data, busy = false)
 
-                    is AppResult.Failure -> current.copy(
-                        busy = false,
-                        actionError = PostErrorText.forAction(result.error),
-                    )
+                    is AppResult.Failure -> {
+                        current.withBookmark(wasBookmarked, busy = false)
+                            .copy(actionError = PostErrorText.forAction(result.error))
+                    }
                 }
             }
         }
@@ -182,6 +173,15 @@ class PostViewModel @Inject constructor(
         const val POST_ID_KEY = "postId"
     }
 }
+
+private fun PostUiState.Content.withBookmark(
+    bookmarked: Boolean,
+    busy: Boolean,
+): PostUiState.Content = copy(
+    post = post.copy(viewer = post.viewer.copy(isBookmarked = bookmarked)),
+    busy = busy,
+    actionError = null,
+)
 
 /** Moves the flag and the count together so they cannot disagree. */
 private fun PostUiState.Content.withReaction(

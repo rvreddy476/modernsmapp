@@ -7,6 +7,7 @@ import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.navOptions
 import com.us.android.core.designsystem.component.UsDefaultNavItems
 import com.us.android.core.designsystem.component.UsNavItem
+import com.us.android.feature.feed.navigation.FeedRoute
 import com.us.android.feature.profile.navigation.OwnProfileRoute
 import kotlin.reflect.KClass
 
@@ -23,7 +24,7 @@ import kotlin.reflect.KClass
  * rather than trusting the two lists to stay in step by inspection.
  */
 enum class TopLevelDestination(val route: KClass<*>) {
-    HOME(HomeRoute::class),
+    HOME(FeedRoute::class),
     FRIENDS(FriendsRoute::class),
     REELS(ReelsRoute::class),
     EXPLORE(ExploreRoute::class),
@@ -72,7 +73,7 @@ fun NavController.navigateToTopLevel(destination: TopLevelDestination) {
         restoreState = true
     }
     when (destination) {
-        TopLevelDestination.HOME -> navigate(HomeRoute, options)
+        TopLevelDestination.HOME -> navigate(FeedRoute, options)
         TopLevelDestination.FRIENDS -> navigate(FriendsRoute, options)
         TopLevelDestination.REELS -> navigate(ReelsRoute, options)
         TopLevelDestination.EXPLORE -> navigate(ExploreRoute, options)

@@ -1,6 +1,7 @@
 package com.us.android.feature.post.data
 
 import com.us.android.core.network.ApiEnvelope
+import com.us.android.core.network.retry.Retryable
 import com.us.android.feature.post.data.dto.BookmarkStatusDto
 import com.us.android.feature.post.data.dto.PostDto
 import com.us.android.feature.post.data.dto.ReactionRequest
@@ -44,22 +45,28 @@ interface PostApi {
     ): ApiEnvelope<ReactionStatusDto>
 
     /**
-     * Bookmark TOGGLE. There is no separate add and remove.
+     * Saves the post. SET semantics, not a toggle.
      *
-     * Two consequences the caller must respect:
-     *
-     *  1. The response's `bookmarked` value is authoritative. Do not assume the
-     *     state flipped the way the tap intended.
-     *  2. This must never be retried automatically, and must never sit in an
-     *     offline queue. A replayed toggle lands in the opposite state, so a
-     *     retry silently un-bookmarks what the user saved.
-     *
-     * `DELETE /v1/posts/:id/bookmark` exists in the router but is broken —
-     * it returns 500 `relation "bookmarks" does not exist`. It is deliberately
-     * not declared here; a second POST is the only working reversal.
+     * Repaired on 2026-08-17 and recaptured: two consecutive POSTs both return
+     * `{"bookmarked":true}`, and the saved list reflects one entry. Before the
+     * repair this was a toggle whose reversal endpoint was broken, so a
+     * replayed call silently un-saved the post — which is why this pair is
+     * annotated `@Retryable` only now that repetition is proven harmless.
      */
+    @Retryable
     @POST("v1/posts/{postId}/bookmark")
-    suspend fun toggleBookmark(
+    suspend fun setBookmark(
+        @Path("postId") postId: String,
+    ): ApiEnvelope<BookmarkStatusDto>
+
+    /**
+     * Removes the post from saved items. CLEAR semantics, also idempotent —
+     * two consecutive DELETEs both return `{"bookmarked":false}` and the list
+     * is empty afterwards.
+     */
+    @Retryable
+    @DELETE("v1/posts/{postId}/bookmark")
+    suspend fun clearBookmark(
         @Path("postId") postId: String,
     ): ApiEnvelope<BookmarkStatusDto>
 

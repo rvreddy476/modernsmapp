@@ -64,8 +64,11 @@ class PostViewModelTest {
         override suspend fun removeReaction(postId: String) =
             reaction.also { calls += "removeReaction" }
 
-        override suspend fun toggleBookmark(postId: String) =
-            bookmark.also { calls += "toggleBookmark" }
+        override suspend fun setBookmark(postId: String) =
+            bookmark.also { calls += "setBookmark" }
+
+        override suspend fun clearBookmark(postId: String) =
+            bookmark.also { calls += "clearBookmark" }
 
         override suspend fun repost(postId: String, body: RepostRequest) =
             repostResult.also { calls += "repost(${body.type})" }
@@ -179,31 +182,36 @@ class PostViewModelTest {
     }
 
     /**
-     * THE bookmark test. The endpoint is a toggle, so the client adopts the
-     * server's answer instead of flipping optimistically. Here the server
-     * reports `false` even though the user tapped from an unbookmarked state —
-     * which is exactly what a lost-response retry produces — and the UI must
-     * end up showing false, not true.
+     * Saving now uses SET, not a toggle, so the direction is stated by the
+     * client. Sending POST when the user meant to unsave would silently
+     * re-save, so the endpoint choice is asserted, not just the outcome.
      */
     @Test
-    fun `bookmark adopts the server's reported state, not the intended flip`() = runTest {
-        val api = FakeApi().apply { bookmark = ApiEnvelope(BookmarkStatusDto(bookmarked = false)) }
-        val vm = viewModel(api)
-        assertThat(content(vm).post.viewer.isBookmarked).isFalse()
-
-        vm.onBookmarkToggle()
-
-        assertThat(content(vm).post.viewer.isBookmarked).isFalse()
-    }
-
-    @Test
-    fun `a successful bookmark reflects the server's true value`() = runTest {
+    fun `saving calls set and unsaving calls clear`() = runTest {
         val api = FakeApi().apply { bookmark = ApiEnvelope(BookmarkStatusDto(bookmarked = true)) }
         val vm = viewModel(api)
 
         vm.onBookmarkToggle()
 
+        assertThat(api.calls).contains("setBookmark")
         assertThat(content(vm).post.viewer.isBookmarked).isTrue()
+
+        api.bookmark = ApiEnvelope(BookmarkStatusDto(bookmarked = false))
+        vm.onBookmarkToggle()
+
+        assertThat(api.calls).contains("clearBookmark")
+        assertThat(content(vm).post.viewer.isBookmarked).isFalse()
+    }
+
+    /** Still adopts the server's value, so a future divergence surfaces. */
+    @Test
+    fun `bookmark adopts the server's reported state`() = runTest {
+        val api = FakeApi().apply { bookmark = ApiEnvelope(BookmarkStatusDto(bookmarked = false)) }
+        val vm = viewModel(api)
+
+        vm.onBookmarkToggle()
+
+        assertThat(content(vm).post.viewer.isBookmarked).isFalse()
     }
 
     @Test
