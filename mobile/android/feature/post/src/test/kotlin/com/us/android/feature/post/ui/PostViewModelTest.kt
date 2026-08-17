@@ -77,6 +77,12 @@ class PostViewModelTest {
             calls += "removeRepost"
             removeRepostThrows?.let { throw it }
         }
+
+        // Throws rather than returning an empty page: the post screen must
+        // never fetch comments. If it starts doing so, this fails loudly
+        // instead of the call passing unnoticed.
+        override suspend fun getComments(postId: String, limit: Int): Nothing =
+            error("the post screen must not load comments")
     }
 
     private fun viewModel(api: FakeApi) = PostViewModel(

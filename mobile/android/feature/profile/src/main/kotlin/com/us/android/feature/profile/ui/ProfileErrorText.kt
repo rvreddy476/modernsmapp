@@ -34,6 +34,23 @@ internal object ProfileErrorText {
     }
 
     /**
+     * A failed `PUT /v1/profiles/me`.
+     *
+     * Worded to make clear nothing was lost, because with a full-replacement
+     * endpoint the user's real fear is that a half-applied save mangled their
+     * profile. A rejected request changes nothing server-side, and the form
+     * still holds everything they typed.
+     */
+    fun forSave(error: AppError): String = when (error) {
+        is AppError.NoNetwork -> "You're offline. Nothing was saved — try again when you're back."
+        is AppError.Timeout -> "That took too long. Nothing was saved, so try again."
+        is AppError.AuthFailed -> "Please sign in again to save these changes."
+        is AppError.RateLimited -> "You're saving too quickly. Wait a moment and try again."
+        is AppError.InvalidRequest -> "Some details weren't accepted. Check them and try again."
+        else -> "We couldn't save your changes. Nothing was lost — try again."
+    }
+
+    /**
      * Whether re-running the same request could plausibly succeed.
      *
      * `NotFound` and `Forbidden` are excluded deliberately — retrying either

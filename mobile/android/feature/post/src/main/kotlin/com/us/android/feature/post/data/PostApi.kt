@@ -3,6 +3,7 @@ package com.us.android.feature.post.data
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.retry.Retryable
 import com.us.android.feature.post.data.dto.BookmarkStatusDto
+import com.us.android.feature.post.data.dto.CommentDto
 import com.us.android.feature.post.data.dto.PostDto
 import com.us.android.feature.post.data.dto.ReactionRequest
 import com.us.android.feature.post.data.dto.ReactionStatusDto
@@ -13,18 +14,21 @@ import retrofit2.http.DELETE
 import retrofit2.http.GET
 import retrofit2.http.POST
 import retrofit2.http.Path
+import retrofit2.http.Query
 
 /**
  * Post and interaction endpoints.
  *
  * A Retrofit interface, not a client: created from the app-wide `Retrofit`, so
  * it inherits the base URL, auth, single-flight refresh, tracing and error
- * mapping. Every path here was exercised live on 2026-08-16 through the
- * gateway; see prompt/android-api-contracts.md §2.
+ * mapping. Every path here was exercised live through the gateway; see
+ * prompt/android-api-contracts.md §2, and treat its 2026-08-17 sections as
+ * canonical where they supersede the original capture.
  *
- * Nothing here is annotated `@Retryable`. Retry is opt-in for non-GET methods,
- * and none of these writes honours an idempotency key — see the bookmark note
- * below for what an automatic retry would actually do.
+ * Retry is opt-in for non-GET methods. Only the bookmark pair carries
+ * `@Retryable`, because only that pair has been proven idempotent by repeated
+ * live calls. Reactions and reposts do not honour an idempotency key, so a
+ * replayed one is a second write rather than a no-op.
  */
 interface PostApi {
 
@@ -88,10 +92,32 @@ interface PostApi {
     @DELETE("v1/posts/{postId}/repost")
     suspend fun removeRepost(@Path("postId") postId: String)
 
-    // Deliberately absent: GET /v1/posts/:postId/comments.
-    //
-    // It is reachable and returns 200, but the capture only ever observed
-    // {"data":[]}. The comment item shape and its cursor have never been seen,
-    // so a comment list here would be invented rather than implemented. The
-    // count from the post payload is shown instead.
+    /**
+     * One page of comments. Public — the capture succeeded with no token, and
+     * again with one.
+     *
+     * This route was previously declared unbuildable because the 2026-08-16
+     * capture only ever returned `{"data":[]}`. The 2026-08-17 recapture
+     * returned a populated item, so the shape is now evidence rather than
+     * guesswork.
+     *
+     * It returns exactly ONE page and there is no way to ask for a second.
+     * [limit] is honoured — it is the only query parameter ever sent — but the
+     * non-empty `limit=1` response carried no `meta` and no `next_cursor`, so
+     * nothing in the contract says how to advance. The return type is a bare
+     * `List`, not `Paged`, so no caller can be misled into building a "load
+     * more" that has no cursor to send.
+     *
+     * Deliberately absent: a create-comment method. The captured comment body
+     * reads "This comment proves the native create and list contract", so a
+     * create route plainly exists server-side — but no create request or
+     * response appears anywhere in the capture. Writing one from the shape of
+     * the list item would be inventing a request body, and a rejected POST
+     * loses whatever the user typed.
+     */
+    @GET("v1/posts/{postId}/comments")
+    suspend fun getComments(
+        @Path("postId") postId: String,
+        @Query("limit") limit: Int,
+    ): ApiEnvelope<List<CommentDto>>
 }

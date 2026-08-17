@@ -8,6 +8,7 @@ package com.us.android.feature.profile.navigation
 import androidx.navigation.NavController
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.compose.composable
+import com.us.android.feature.profile.ui.EditProfileScreen
 import com.us.android.feature.profile.ui.ProfileScreen
 import kotlinx.serialization.Serializable
 
@@ -70,11 +71,47 @@ fun NavGraphBuilder.profileScreen(
 fun NavGraphBuilder.ownProfileScreen(
     onOpenFollowers: (userId: String) -> Unit,
     onOpenFollowing: (userId: String) -> Unit,
+    onEditProfile: () -> Unit,
 ) {
     composable<OwnProfileRoute> {
         ProfileScreen(
             onOpenFollowers = onOpenFollowers,
             onOpenFollowing = onOpenFollowing,
+            // Only the OWN-profile registration passes this. A pushed profile
+            // of someone else leaves it null, so the edit control cannot appear
+            // on a screen whose subject the viewer has no right to change.
+            onEditProfile = onEditProfile,
+        )
+    }
+}
+
+/**
+ * Editing the signed-in user's own profile.
+ *
+ * Carries no arguments, and cannot: the endpoint behind it is a full
+ * replacement of the OWNER's fields, keyed off the access token rather than a
+ * path id. A `userId` parameter here would imply an editing-someone-else
+ * capability that neither the route nor the server has.
+ */
+@Serializable
+data object EditProfileRoute
+
+/**
+ * Registers the edit-profile destination.
+ *
+ * [onSaved] is separate from [onBack] because the two outcomes are not the
+ * same event. Backing out abandons unsaved edits; saving completes them, and
+ * the caller usually wants to refresh the profile it returns to. Collapsing
+ * both into one callback would leave the shell unable to tell the difference.
+ */
+fun NavGraphBuilder.editProfileScreen(
+    onBack: () -> Unit,
+    onSaved: () -> Unit,
+) {
+    composable<EditProfileRoute> {
+        EditProfileScreen(
+            onBack = onBack,
+            onSaved = onSaved,
         )
     }
 }
@@ -84,3 +121,6 @@ fun NavController.navigateToProfile(userId: String) = navigate(ProfileRoute(user
 
 /** Type-safe navigation to the signed-in user's own profile. */
 fun NavController.navigateToOwnProfile() = navigate(ProfileRoute())
+
+/** Type-safe navigation to the edit form for the signed-in user's profile. */
+fun NavController.navigateToEditProfile() = navigate(EditProfileRoute)

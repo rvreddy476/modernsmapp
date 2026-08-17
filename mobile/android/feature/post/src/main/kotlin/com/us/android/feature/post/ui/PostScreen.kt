@@ -33,6 +33,7 @@ import com.us.android.core.ui.UsLoadingState
 fun PostScreen(
     onBack: () -> Unit,
     onOpenAuthor: (userId: String) -> Unit,
+    onOpenComments: () -> Unit,
     viewModel: PostViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -45,6 +46,7 @@ fun PostScreen(
         onRepost = viewModel::onRepostToggle,
         onDismissActionError = viewModel::dismissActionError,
         onOpenAuthor = onOpenAuthor,
+        onOpenComments = onOpenComments,
     )
 }
 
@@ -60,6 +62,7 @@ internal fun PostContent(
     onRepost: () -> Unit,
     onDismissActionError: () -> Unit,
     onOpenAuthor: (userId: String) -> Unit,
+    onOpenComments: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     UsScaffold(
@@ -86,6 +89,7 @@ internal fun PostContent(
                 onRepost = onRepost,
                 onDismissActionError = onDismissActionError,
                 onOpenAuthor = onOpenAuthor,
+                onOpenComments = onOpenComments,
                 modifier = Modifier.padding(padding),
             )
         }
@@ -100,6 +104,7 @@ private fun LoadedPost(
     onRepost: () -> Unit,
     onDismissActionError: () -> Unit,
     onOpenAuthor: (userId: String) -> Unit,
+    onOpenComments: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val post = state.post
@@ -119,14 +124,18 @@ private fun LoadedPost(
             )
         }
 
-        // Media is not rendered. The post payload carries no media reference
-        // the client can resolve, and /v1/media/:id/serve returns 503, so
-        // there is nothing playable or displayable to attach yet.
+        // Media is not rendered here yet, but the reason changed on
+        // 2026-08-17: delivery works end to end now — /v1/media/:id/url
+        // returns signed variants and an authorized HLS master path. What is
+        // still missing is client-side, not server-side: this payload carries
+        // no media reference to resolve (the FEED item does), and there is no
+        // player or image loader in the module graph. Both arrive with the
+        // media slice.
         if (post.postType != TEXT_POST) {
             UsEmptyState(
-                title = "Media isn't available yet",
-                detail = "Media delivery returns 503; this post's attachment " +
-                    "can't be shown until that endpoint works.",
+                title = "Media isn't shown here yet",
+                detail = "Delivery is working; this screen gains the player " +
+                    "when the media slice lands.",
                 modifier = Modifier.fillMaxWidth(),
             )
         }
@@ -141,15 +150,17 @@ private fun LoadedPost(
                 hasReacted = post.viewer.hasReacted,
                 isBookmarked = post.viewer.isBookmarked,
                 canReact = post.allowsReactions,
-                // Comments are reachable in principle, but the list DTO was
-                // never observed, so the control stays inert rather than
-                // opening a screen built on a guessed shape.
-                canComment = false,
+                // Live now that the comments list exists and :app wires the
+                // destination. Gated on the AUTHOR's switch, not on whether
+                // the client can render a list — a post with comments turned
+                // off shows a disabled control rather than a route to an empty
+                // screen.
+                canComment = post.allowsComments,
                 canRepost = post.isRepostable,
                 busy = state.busy,
             ),
             onReact = onReact,
-            onComment = {},
+            onComment = onOpenComments,
             onRepost = onRepost,
             onBookmark = onBookmark,
         )
@@ -207,6 +218,7 @@ private fun PreviewHost(state: PostUiState) = UsTheme {
         onRepost = {},
         onDismissActionError = {},
         onOpenAuthor = {},
+        onOpenComments = {},
     )
 }
 

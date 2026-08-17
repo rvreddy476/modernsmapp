@@ -13,6 +13,7 @@ import com.us.android.feature.profile.data.dto.GraphUserIdRequest
 import com.us.android.feature.profile.data.dto.OwnProfileDto
 import com.us.android.feature.profile.data.dto.ProfileStatsDto
 import com.us.android.feature.profile.data.dto.PublicProfileDto
+import com.us.android.feature.profile.data.dto.UpdateProfileRequest
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import org.junit.Rule
@@ -43,6 +44,11 @@ class ProfileViewModelTest {
         override suspend fun getOwnProfile() = ownProfile.also { calls += "getOwnProfile" }
 
         override suspend fun getStats(userId: String) = stats.also { calls += "getStats($userId)" }
+
+        // The read-only profile screen never writes. Present only to satisfy
+        // the interface; EditProfileViewModelTest exercises the real thing.
+        override suspend fun updateProfile(body: UpdateProfileRequest) =
+            ownProfile.also { calls += "updateProfile" }
 
         override suspend fun follow(body: GraphUserIdRequest) =
             mutationResult.also { calls += "follow(${body.userId})" }

@@ -12,6 +12,7 @@ import com.us.android.feature.profile.data.dto.GraphUserIdRequest
 import com.us.android.feature.profile.data.dto.OwnProfileDto
 import com.us.android.feature.profile.data.dto.ProfileStatsDto
 import com.us.android.feature.profile.data.dto.PublicProfileDto
+import com.us.android.feature.profile.data.dto.UpdateProfileRequest
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -36,6 +37,24 @@ class ProfileRepository @Inject constructor(
     suspend fun getOwnProfile(): AppResult<Profile> =
         apiCall(errorMapper) { api.getOwnProfile() }.map { it.toDomain() }
 
+    /**
+     * Saves the owner's editable fields and returns the profile the server
+     * stored.
+     *
+     * The parameter is a complete [EditableProfile] and there is no per-field
+     * overload, because `PUT /v1/profiles/me` replaces rather than patches.
+     * A signature like `updateProfile(displayName: String?)` would let a
+     * caller express "just this one field", which the endpoint would honour by
+     * erasing the rest. The only way to reach this function is to have loaded
+     * a snapshot first.
+     *
+     * The response is the saved owner projection, so callers re-seed their
+     * form from it rather than from what they sent — the server is the
+     * authority on what was actually stored.
+     */
+    suspend fun updateProfile(snapshot: EditableProfile): AppResult<Profile> =
+        apiCall(errorMapper) { api.updateProfile(snapshot.toRequest()) }.map { it.toDomain() }
+
     suspend fun getStats(userId: String): AppResult<ProfileStats> =
         apiCall(errorMapper) { api.getStats(userId) }.map { it.toDomain() }
 
@@ -51,6 +70,26 @@ class ProfileRepository @Inject constructor(
     suspend fun unblock(userId: String): AppResult<Unit> =
         apiCall(errorMapper) { api.unblock(GraphUserIdRequest(userId)) }.map { }
 }
+
+/**
+ * The one and only place an [UpdateProfileRequest] is constructed.
+ *
+ * Private, and takes a whole snapshot, so no other file can assemble a body
+ * with a field missing. Because [UpdateProfileRequest] declares no Kotlin
+ * defaults, this mapping also fails to compile the moment a new editable field
+ * is added to either type without being wired through — which is exactly the
+ * failure mode that a defaulted DTO would have turned into a silent field
+ * erasure at runtime.
+ */
+private fun EditableProfile.toRequest() = UpdateProfileRequest(
+    profileThemeColor = profileThemeColor,
+    website = website,
+    profession = profession,
+    displayName = displayName,
+    location = location,
+    category = category,
+    bio = bio,
+)
 
 private fun PublicProfileDto.toDomain() = Profile(
     userId = userId,

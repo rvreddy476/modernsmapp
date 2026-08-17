@@ -5,13 +5,19 @@ import kotlinx.serialization.Serializable
 
 /**
  * Wire types for profile-service, transcribed from live capture on 2026-08-16
- * (prompt/android-api-contracts.md §5) — not from the Go handler structs.
+ * and the 2026-08-17 repair recapture (prompt/android-api-contracts.md §5) —
+ * not from the Go handler structs.
  *
- * Every field carries a default. That is not defensive habit: the same capture
- * showed `renditions` arriving as `null` where a list was expected, and showed
- * `PUT /v1/profiles/me` with an empty body clearing string fields to `""`
- * rather than leaving them absent. A missing or null field must degrade to an
- * empty value, never throw during deserialization and lose the whole screen.
+ * Every field on a RESPONSE type carries a default. That is not defensive
+ * habit: the same capture showed `renditions` arriving as `null` where a list
+ * was expected, and showed `PUT /v1/profiles/me` with an empty body clearing
+ * string fields to `""` rather than leaving them absent. A missing or null
+ * field must degrade to an empty value, never throw during deserialization and
+ * lose the whole screen.
+ *
+ * [UpdateProfileRequest] inverts that rule and carries NO defaults at all. The
+ * reason is spelled out on the type; do not "make it consistent" with the
+ * response DTOs above it.
  */
 
 /**
@@ -90,6 +96,52 @@ data class OwnProfileDto(
     @SerialName("post_count") val postCount: Int = 0,
     @SerialName("created_at") val createdAt: String = "",
     @SerialName("updated_at") val updatedAt: String = "",
+)
+
+/**
+ * Body for `PUT /v1/profiles/me` — auth: `Authorization: Bearer <access JWT>`.
+ *
+ * NOT ONE PROPERTY HERE HAS A KOTLIN DEFAULT, AND THAT IS THE ENTIRE DESIGN.
+ *
+ * Two captured facts combine into a data-loss bug if this type is written the
+ * obvious way:
+ *
+ *  1. `PUT` is a FULL REPLACEMENT, not a patch. The capture sent `{}`, got a
+ *     `200`, and the account came back with `display_name`, `category`,
+ *     `profession` and `location` cleared to `""`. An omitted key is not
+ *     "leave it alone" — it is "erase it".
+ *  2. The app-wide `Json` leaves `encodeDefaults` at its default of FALSE
+ *     (`:core:network` `NetworkModule.provideJson`). kotlinx omits any
+ *     property whose value equals its DECLARED KOTLIN DEFAULT.
+ *
+ * So `val bio: String = ""` would look harmless and would silently drop `bio`
+ * from the body for every user who has no bio — turning a save of unrelated
+ * fields into an erasure of that one. With no declared default there is no
+ * value kotlinx can consider "default", so all seven keys are always on the
+ * wire, and the Kotlin compiler additionally refuses to construct this type
+ * without every field. Partial bodies become unrepresentable rather than
+ * merely discouraged.
+ *
+ * Property ORDER is also load-bearing, though only for the tests: kotlinx
+ * serializes in declaration order, so this order reproduces the captured
+ * request body byte for byte and lets `EditProfileContractTest` assert against
+ * recorded evidence instead of a re-derived string.
+ *
+ * The seven fields are exactly the ones the capture proved the server accepts.
+ * `first_name`, `last_name`, `dob`, `gender` and `timezone` appear on the `/me`
+ * RESPONSE but were never observed in an accepted request body, so they are not
+ * claimed here — and because this is a full replacement, guessing a field name
+ * the server ignores would be indistinguishable from a field that never saves.
+ */
+@Serializable
+data class UpdateProfileRequest(
+    @SerialName("profile_theme_color") val profileThemeColor: String,
+    val website: String,
+    val profession: String,
+    @SerialName("display_name") val displayName: String,
+    val location: String,
+    val category: String,
+    val bio: String,
 )
 
 /**

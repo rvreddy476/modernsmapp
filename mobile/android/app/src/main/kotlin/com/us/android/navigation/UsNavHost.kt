@@ -29,8 +29,12 @@ import com.us.android.feature.auth.register.RegisterRoute
 import com.us.android.feature.auth.verify.VerifyEmailRoute
 import com.us.android.feature.feed.navigation.FeedRoute
 import com.us.android.feature.feed.navigation.feedScreen
+import com.us.android.feature.post.navigation.commentsScreen
+import com.us.android.feature.post.navigation.navigateToComments
 import com.us.android.feature.post.navigation.navigateToPost
 import com.us.android.feature.post.navigation.postScreen
+import com.us.android.feature.profile.navigation.editProfileScreen
+import com.us.android.feature.profile.navigation.navigateToEditProfile
 import com.us.android.feature.profile.navigation.navigateToProfile
 import com.us.android.feature.profile.navigation.ownProfileScreen
 import com.us.android.feature.profile.navigation.profileScreen
@@ -245,20 +249,31 @@ private fun NavGraphBuilder.tabDestinations(navController: NavHostController) {
     ownProfileScreen(
         onOpenFollowers = {},
         onOpenFollowing = {},
+        onEditProfile = { navController.navigateToEditProfile() },
     )
     profileScreen(
         onOpenFollowers = {},
         onOpenFollowing = {},
         onBack = { navController.popBackStack() },
     )
+    editProfileScreen(
+        onBack = { navController.popBackStack() },
+        // Saving pops back to the profile, which reloads and shows the new
+        // values. Distinct from onBack only in intent today, but the two are
+        // separate callbacks so a later "saved" confirmation has somewhere to
+        // live without changing the abandon path.
+        onSaved = { navController.popBackStack() },
+    )
 
-    // Post detail. Cross-feature navigation is resolved here: :feature:post
-    // hands back an author id and :app decides that opens a profile. Neither
-    // feature imports the other, so each stays testable alone.
+    // Post detail and its comments. Cross-feature navigation is resolved here:
+    // :feature:post hands back an author id and :app decides that opens a
+    // profile. Neither feature imports the other, so each stays testable alone.
     postScreen(
         onBack = { navController.popBackStack() },
         onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
+        onOpenComments = { postId -> navController.navigateToComments(postId) },
     )
+    commentsScreen(onBack = { navController.popBackStack() })
 }
 
 /** Host for [UsNavHost] that observes the session and rebuilds on change. */

@@ -55,6 +55,7 @@ fun ProfileScreen(
     onOpenFollowers: (userId: String) -> Unit,
     onOpenFollowing: (userId: String) -> Unit,
     onBack: (() -> Unit)? = null,
+    onEditProfile: (() -> Unit)? = null,
     viewModel: ProfileViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -67,6 +68,7 @@ fun ProfileScreen(
         onOpenFollowers = onOpenFollowers,
         onOpenFollowing = onOpenFollowing,
         onBack = onBack,
+        onEditProfile = onEditProfile,
     )
 }
 
@@ -82,6 +84,7 @@ internal fun ProfileContent(
     onOpenFollowing: (userId: String) -> Unit,
     modifier: Modifier = Modifier,
     onBack: (() -> Unit)? = null,
+    onEditProfile: (() -> Unit)? = null,
 ) {
     UsScaffold(
         modifier = modifier,
@@ -109,6 +112,7 @@ internal fun ProfileContent(
                 onDismissActionError = onDismissActionError,
                 onOpenFollowers = onOpenFollowers,
                 onOpenFollowing = onOpenFollowing,
+                onEditProfile = onEditProfile,
                 modifier = Modifier.padding(padding),
             )
         }
@@ -121,6 +125,7 @@ private fun ProfileUiState.title(): String = when (this) {
 }
 
 @Composable
+@Suppress("LongParameterList")
 private fun LoadedProfile(
     state: ProfileUiState.Content,
     onFollowToggle: () -> Unit,
@@ -128,6 +133,7 @@ private fun LoadedProfile(
     onDismissActionError: () -> Unit,
     onOpenFollowers: (userId: String) -> Unit,
     onOpenFollowing: (userId: String) -> Unit,
+    onEditProfile: (() -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
     val profile = state.profile
@@ -147,6 +153,19 @@ private fun LoadedProfile(
                 UsStat("Following", state.counts.following) { onOpenFollowing(profile.userId) },
             ),
         )
+
+        // Editing is offered only when the host supplied a destination AND the
+        // loaded profile is genuinely the viewer's. Two conditions rather than
+        // one because the endpoint behind the form replaces the OWNER's fields
+        // keyed off the access token — an edit control on someone else's page
+        // would silently overwrite the viewer's own profile.
+        if (profile.isOwnProfile && onEditProfile != null) {
+            UsSecondaryButton(
+                text = "Edit profile",
+                onClick = onEditProfile,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
 
         if (!profile.isOwnProfile) {
             RelationshipControls(
@@ -346,6 +365,7 @@ private fun PreviewHost(state: ProfileUiState) = UsTheme {
         onDismissActionError = {},
         onOpenFollowers = {},
         onOpenFollowing = {},
+        onEditProfile = {},
     )
 }
 

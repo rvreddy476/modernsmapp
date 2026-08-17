@@ -8,6 +8,7 @@ import com.us.android.core.model.PostViewerState
 import com.us.android.core.network.ErrorMapper
 import com.us.android.core.network.apiCall
 import com.us.android.core.network.noContentApiCall
+import com.us.android.feature.post.data.dto.CommentDto
 import com.us.android.feature.post.data.dto.PostDto
 import com.us.android.feature.post.data.dto.ReactionRequest
 import com.us.android.feature.post.data.dto.RepostRequest
@@ -49,13 +50,58 @@ class PostRepository @Inject constructor(
     suspend fun removeRepost(postId: String): AppResult<Unit> =
         noContentApiCall(errorMapper) { api.removeRepost(postId) }
 
+    /**
+     * The comments on a post — a single page, and there is no second one.
+     *
+     * Returns a plain `List` rather than the `Paged` that `pagedApiCall` would
+     * produce. That choice is the contract, not a simplification: the captured
+     * non-empty response carried no `meta` and therefore no `next_cursor`, so
+     * `Paged` would hand every caller a `hasMore` that is permanently false and
+     * a cursor the server has never been observed to send. A type that
+     * advertises pagination is how an unreachable "load more" gets built.
+     *
+     * If the server later starts returning a cursor here, this becomes
+     * `pagedApiCall` and the screen grows paging in one place.
+     */
+    suspend fun getComments(
+        postId: String,
+        limit: Int = COMMENT_PAGE_SIZE,
+    ): AppResult<List<Comment>> =
+        apiCall(errorMapper) { api.getComments(postId, limit) }
+            .map { comments -> comments.map { it.toDomain() } }
+
     private companion object {
         const val LIKE = "like"
 
         /** The only repost type this client creates. */
         const val PLAIN = "plain"
+
+        /**
+         * How many comments one page asks for.
+         *
+         * A client choice, not a captured one: the capture only ever sent
+         * `limit=1` and `limit=2`, so the server's ceiling and its default are
+         * both unobserved. Sized to fill a tall screen, and kept modest because
+         * an over-large request against an unknown cap is the kind of thing
+         * that comes back truncated with no cursor to recover the remainder.
+         */
+        const val COMMENT_PAGE_SIZE = 50
     }
 }
+
+/**
+ * Drops the wire fields the product has nowhere to put — `post_id`,
+ * `updated_at` and `dislike_count`. See [Comment] for why each one goes.
+ */
+private fun CommentDto.toDomain() = Comment(
+    id = id,
+    authorId = authorId,
+    body = body,
+    likeCount = likeCount,
+    replyCount = replyCount,
+    isReply = isReply,
+    createdAt = createdAt,
+)
 
 private fun PostDto.toDomain() = Post(
     id = id,
