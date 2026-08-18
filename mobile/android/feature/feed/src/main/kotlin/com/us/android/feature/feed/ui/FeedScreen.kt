@@ -3,6 +3,7 @@ package com.us.android.feature.feed.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -116,9 +117,19 @@ private fun FeedList(
 
         else -> LazyColumn(
             state = rememberLazyListState(),
-            modifier = modifier
-                .fillMaxSize()
-                .padding(horizontal = UsTheme.spacing.pageHorizontal),
+            modifier = modifier.fillMaxSize(),
+            // contentPadding, not Modifier.padding: padding the LIST clips the
+            // scroll to a smaller viewport, so cards are cut off at a hard edge
+            // while scrolling. Padding the CONTENT lets them travel to the real
+            // edges and only inset the first and last.
+            contentPadding = PaddingValues(
+                horizontal = UsTheme.spacing.pageHorizontal,
+                vertical = UsTheme.spacing.l,
+            ),
+            // The gap is what makes each card read as a separate object. With
+            // cards flush against each other the boundary disappears and the
+            // list looks like one long panel again.
+            verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
         ) {
             // `key` is what lets Compose keep an item's state across a page
             // append. Without it every append re-keys by index and the whole

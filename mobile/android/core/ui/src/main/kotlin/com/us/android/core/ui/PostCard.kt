@@ -5,6 +5,7 @@
 package com.us.android.core.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,7 +18,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -110,47 +110,21 @@ fun PostCard(
     Column(
         modifier = modifier
             .fillMaxWidth()
+            // Clip BEFORE the background so the surface, its border and the
+            // ripple all stop at the same rounded edge. Clipping afterwards
+            // leaves a square ripple escaping the corners on every tap.
+            .clip(RoundedCornerShape(UsTheme.radii.large))
+            .background(UsTheme.extended.bgCard)
+            .border(
+                width = HAIRLINE,
+                color = UsTheme.extended.borderSubtle,
+                shape = RoundedCornerShape(UsTheme.radii.large),
+            )
             .clickable(onClick = onClick)
-            .padding(vertical = UsTheme.spacing.xxl),
+            .padding(UsTheme.spacing.xxl),
         verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
-            modifier = Modifier.clickable(onClick = onAuthorClick),
-        ) {
-            UsAvatar(
-                name = state.authorName,
-                size = UsAvatarSize.Small,
-                seed = state.authorId,
-            )
-            Column {
-                Text(
-                    text = state.authorName,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    color = UsTheme.extended.textPrimary,
-                    modifier = Modifier.semantics { heading() },
-                )
-                // Omitted rather than shown blank: the formatter returns an
-                // empty string for a timestamp it cannot parse, and an empty
-                // line under the name looks like a layout fault.
-                if (state.timestamp.isNotBlank()) {
-                    Text(
-                        text = state.timestamp,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = UsTheme.extended.textMuted,
-                    )
-                }
-            }
-            if (state.isPinned) {
-                Text(
-                    text = "Pinned",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = UsTheme.extended.statusWarning,
-                )
-            }
-        }
+        CardHeader(state = state, onAuthorClick = onAuthorClick)
 
         if (state.text.isNotBlank()) {
             Text(
@@ -171,6 +145,8 @@ fun PostCard(
             )
         }
 
+        // No divider. The card's own edge is the separator now; a rule inside
+        // a bounded surface just cuts the card in half.
         PostActionBar(
             state = state.actions,
             onReact = onReact,
@@ -179,8 +155,6 @@ fun PostCard(
             onBookmark = onBookmark,
             onShare = onShare,
         )
-
-        HorizontalDivider(color = UsTheme.extended.borderSubtle)
     }
 }
 
@@ -342,3 +316,65 @@ private val PLAY_BADGE = 56.dp
 private val PLAY_GLYPH = 26.dp
 private const val PLAY_BADGE_ALPHA = 0.55f
 private const val COUNT_PILL_ALPHA = 0.55f
+
+/**
+ * One physical pixel at common densities, not a design token.
+ *
+ * The border is meant to define the card's edge against a near-black
+ * background, not to be seen as a line. Anything thicker reads as a frame.
+ */
+private val HAIRLINE = 1.dp
+
+/**
+ * Avatar, name and age — the card's title.
+ *
+ * Kept INSIDE the card surface, which is the whole point of the card: a header
+ * floating on a shared background reads as a section heading over a stream,
+ * not as something a person posted.
+ */
+@Composable
+private fun CardHeader(state: PostCardState, onAuthorClick: () -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+        modifier = Modifier
+            .clip(RoundedCornerShape(UsTheme.radii.medium))
+            .clickable(onClick = onAuthorClick),
+    ) {
+        UsAvatar(
+            name = state.authorName,
+            size = UsAvatarSize.Small,
+            seed = state.authorId,
+        )
+        // weight(1f) so a long display name ellipsises instead of shoving the
+        // pinned marker off the card.
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = state.authorName,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = UsTheme.extended.textPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.semantics { heading() },
+            )
+            // Omitted rather than shown blank: the formatter returns an empty
+            // string for a timestamp it cannot parse, and an empty line under
+            // the name looks like a layout fault.
+            if (state.timestamp.isNotBlank()) {
+                Text(
+                    text = state.timestamp,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = UsTheme.extended.textMuted,
+                )
+            }
+        }
+        if (state.isPinned) {
+            Text(
+                text = "Pinned",
+                style = MaterialTheme.typography.labelSmall,
+                color = UsTheme.extended.statusWarning,
+            )
+        }
+    }
+}
