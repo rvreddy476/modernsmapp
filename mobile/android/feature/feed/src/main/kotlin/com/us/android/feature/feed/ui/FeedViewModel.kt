@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.paging.PagingData
 import androidx.paging.cachedIn
+import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedSurface
 import com.us.android.feature.feed.data.FeedRepository
@@ -18,7 +19,33 @@ import javax.inject.Inject
 @HiltViewModel
 class FeedViewModel @Inject constructor(
     private val repository: FeedRepository,
+    private val urlResolver: MediaUrlResolver,
 ) : ViewModel() {
+
+    /**
+     * The image to show for a row.
+     *
+     * Prefers a LADDER variant over the thumbnail: `thumb_150` is 150px and
+     * visibly soft at feed width. `original` is excluded by the resolver — it
+     * can be arbitrarily large, and a feed that downloads originals burns the
+     * reader's data on images it immediately downscales.
+     *
+     * For video this is the poster frame. The feed never plays; reels does.
+     */
+    fun posterUrl(item: FeedItem): String? {
+        val media = item.media.firstOrNull() ?: return null
+        return if (media.kind == VIDEO_KIND) {
+            // A video's ladder rungs are VIDEO files. `480p` on a video asset
+            // is an mp4, and handing one to an image loader fetches it in full,
+            // fails to decode, and shows an empty box — verified on a device,
+            // where the request returned 200 and nothing rendered. The only
+            // still frame a video has is its thumbnail.
+            urlResolver.thumbnail(media.variants)
+        } else {
+            urlResolver.bestVariant(media.variants, FEED_IMAGE_MAX_HEIGHT)
+                ?: urlResolver.thumbnail(media.variants)
+        }
+    }
 
     /**
      * `cachedIn(viewModelScope)` is not optional here.
@@ -69,3 +96,13 @@ data class FeedActionState(
     val bookmarked: Set<String> = emptySet(),
     val reacted: Set<String> = emptySet(),
 )
+
+/**
+ * Feed rows are at most screen-width, so a 720p rung is already more pixels
+ * than a phone can show. Asking for 1080p would triple the bytes for a row
+ * that gets scrolled past in under a second.
+ */
+private const val FEED_IMAGE_MAX_HEIGHT = 720
+
+/** `kind` on a feed media entry; `image` is the other value in use. */
+private const val VIDEO_KIND = "video"

@@ -98,6 +98,11 @@ paging                    = "3.4.0"
 # Media3 / ExoPlayer. The reels surface is the reason this project chose native
 # over Flutter, and HLS + a recycled player pool is the whole performance story.
 media3                    = "1.9.0"
+
+# Coil 3. Chosen over Glide because it shares OUR OkHttp client, which is the
+# load-bearing detail: feed images are authorized gateway URLs, so a loader
+# with its own HTTP stack would 401 on every one of them.
+coil                      = "3.4.0"
 datastore                 = "1.2.1"
 securityCrypto            = "1.1.0"
 
@@ -183,6 +188,8 @@ media3-exoplayer                   = { module = "androidx.media3:media3-exoplaye
 media3-exoplayer-hls               = { module = "androidx.media3:media3-exoplayer-hls", version.ref = "media3" }
 media3-ui-compose                  = { module = "androidx.media3:media3-ui-compose", version.ref = "media3" }
 media3-datasource-okhttp           = { module = "androidx.media3:media3-datasource-okhttp", version.ref = "media3" }
+coil-compose                       = { module = "io.coil-kt.coil3:coil-compose", version.ref = "coil" }
+coil-network-okhttp                = { module = "io.coil-kt.coil3:coil-network-okhttp", version.ref = "coil" }
 paging-runtime                     = { module = "androidx.paging:paging-runtime", version.ref = "paging" }
 paging-compose                     = { module = "androidx.paging:paging-compose", version.ref = "paging" }
 paging-common                      = { module = "androidx.paging:paging-common", version.ref = "paging" }

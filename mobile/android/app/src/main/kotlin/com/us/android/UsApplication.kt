@@ -1,9 +1,13 @@
 package com.us.android
 
 import android.app.Application
+import coil3.SingletonImageLoader
+import com.us.android.core.network.di.AuthenticatedClient
 import com.us.android.core.notifications.NotificationChannelSpec
 import com.us.android.core.telemetry.Telemetry
+import dagger.Lazy
 import dagger.hilt.android.HiltAndroidApp
+import okhttp3.OkHttpClient
 import javax.inject.Inject
 
 /**
@@ -19,6 +23,15 @@ class UsApplication : Application() {
 
     @Inject lateinit var telemetry: Telemetry
 
+    /**
+     * Lazy on purpose. Injecting the client directly would build the whole
+     * OkHttp stack during Application.onCreate, on the cold-start path, for a
+     * loader that may not be asked for an image until a screen renders.
+     */
+    @Inject
+    @AuthenticatedClient
+    lateinit var httpClient: Lazy<OkHttpClient>
+
     override fun onCreate() {
         super.onCreate()
         installCrashReporter()
@@ -28,6 +41,10 @@ class UsApplication : Application() {
         // opens still has a channel to land on — a notification posted to a
         // missing channel is dropped silently.
         NotificationChannelSpec.createAll(this)
+        // setSafe, not setUnsafe: this is a lambda, so the loader — and the
+        // OkHttp client behind it — is built on first image request rather
+        // than on the cold-start path.
+        SingletonImageLoader.setSafe { context -> buildImageLoader(context, httpClient.get()) }
     }
 
     /**

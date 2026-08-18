@@ -5,13 +5,16 @@ import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import com.us.android.core.designsystem.icon.UsIcons
@@ -94,4 +97,39 @@ private fun UsTopBarLongTitlePreview() {
             onBack = {},
         )
     }
+}
+
+/**
+ * The top bar for a tab root.
+ *
+ * Left-aligned and larger than [UsTopBar], which centres its title because a
+ * detail screen has a back arrow on the left and needs the optical balance. A
+ * tab root has no back arrow, so centring leaves a single word floating in the
+ * middle of an empty bar — the thing that most makes a screen look like a
+ * placeholder rather than a product.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun UsRootTopBar(
+    title: String,
+    modifier: Modifier = Modifier,
+    actions: @Composable RowScope.() -> Unit = {},
+) {
+    TopAppBar(
+        title = {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                color = UsTheme.extended.textPrimary,
+                modifier = Modifier.semantics { heading() },
+            )
+        },
+        actions = actions,
+        colors = TopAppBarDefaults.topAppBarColors(
+            containerColor = Color.Transparent,
+            scrolledContainerColor = Color.Transparent,
+        ),
+        modifier = modifier,
+    )
 }

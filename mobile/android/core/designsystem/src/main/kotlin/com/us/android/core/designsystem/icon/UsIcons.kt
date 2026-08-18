@@ -86,18 +86,27 @@ object UsIcons {
     val BookmarkFilled: ImageVector = filled("BookmarkFilled") { bookmark() }
 
     /**
-     * Share: something leaving the surface it was on.
+     * Share: a paper plane.
      *
-     * The arrow breaks the top edge of the tray on purpose. An arrow contained
-     * inside the tray reads as download.
+     * Replaced a tray-with-arrow, which was the technically correct "share
+     * out" mark and looked like a system affordance rather than something you
+     * send to a friend. In a social feed the plane is the one everybody
+     * already reads as send, and the crease down the middle is what stops it
+     * flattening into a plain triangle at 24dp.
+     *
+     * It does not collide with [Repost]: that is a closed loop of two arrows
+     * and means "put this on my own timeline". This one leaves.
      */
     val Share: ImageVector = stroked("Share") {
-        moveTo(12f, 15.2f)
-        verticalLineTo(3f)
-        moveTo(7.8f, 7.2f)
-        lineTo(12f, 3f)
-        lineTo(16.2f, 7.2f)
-        tray()
+        // Outline of the plane.
+        moveTo(21.2f, 2.8f)
+        lineTo(2.8f, 10.2f)
+        lineTo(10.4f, 13.6f)
+        lineTo(13.8f, 21.2f)
+        close()
+        // The crease: the near wing folded back under the body.
+        moveTo(21.2f, 2.8f)
+        lineTo(10.4f, 13.6f)
     }
 
     /** Upload. The same tray, arrow reversed into it. */

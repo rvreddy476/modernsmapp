@@ -10,6 +10,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -24,9 +26,10 @@ import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.collectAsLazyPagingItems
 import com.us.android.core.common.error.AppError
 import com.us.android.core.common.time.formatRelativeTime
+import com.us.android.core.designsystem.component.UsRootTopBar
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
-import com.us.android.core.designsystem.component.UsTopBar
+import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedMedia
@@ -49,7 +52,23 @@ fun FeedScreen(
     val items = viewModel.items.collectAsLazyPagingItems()
     val actions by viewModel.pendingActions.collectAsStateWithLifecycle()
 
-    UsScaffold(topBar = { UsTopBar(title = "Home") }, applyPageGutter = false) { padding ->
+    UsScaffold(
+        topBar = {
+            UsRootTopBar(
+                title = "Home",
+                actions = {
+                    IconButton(onClick = { }) {
+                        Icon(
+                            imageVector = UsIcons.Create,
+                            contentDescription = "New post",
+                            tint = UsTheme.extended.textPrimary,
+                        )
+                    }
+                },
+            )
+        },
+        applyPageGutter = false,
+    ) { padding ->
         FeedList(
             items = items,
             actions = actions,
@@ -57,6 +76,7 @@ fun FeedScreen(
             onOpenAuthor = onOpenAuthor,
             onBookmark = viewModel::onLocalBookmark,
             onReact = viewModel::onLocalReaction,
+            posterUrl = viewModel::posterUrl,
             modifier = Modifier.padding(padding),
         )
     }
@@ -70,6 +90,7 @@ private fun FeedList(
     onOpenAuthor: (String) -> Unit,
     onBookmark: (String) -> Unit,
     onReact: (String) -> Unit,
+    posterUrl: (FeedItem) -> String?,
     modifier: Modifier = Modifier,
 ) {
     val refresh = items.loadState.refresh
@@ -108,7 +129,7 @@ private fun FeedList(
             ) { index ->
                 val item = items[index] ?: return@items
                 PostCard(
-                    state = item.toCardState(actions),
+                    state = item.toCardState(actions, posterUrl(item)),
                     onClick = { onOpenPost(item.id) },
                     onAuthorClick = { onOpenAuthor(item.author.id) },
                     onReact = { onReact(item.id) },
@@ -174,7 +195,7 @@ private fun Throwable.feedMessage(): String = when ((this as? AppErrorException)
  * Membership in the set means "the user changed this since the page loaded",
  * which is why it is an XOR against the server value rather than a replacement.
  */
-private fun FeedItem.toCardState(actions: FeedActionState) = PostCardState(
+private fun FeedItem.toCardState(actions: FeedActionState, posterUrl: String?) = PostCardState(
     postId = id,
     authorId = author.id,
     // Real author identity, embedded by the server as of 2026-08-17. This was
@@ -185,6 +206,7 @@ private fun FeedItem.toCardState(actions: FeedActionState) = PostCardState(
     timestamp = formatRelativeTime(createdAt),
     postType = postType,
     mediaCount = media.size,
+    mediaUrl = posterUrl,
     mediaAspectRatio = media.firstOrNull()?.aspectRatio() ?: DEFAULT_MEDIA_ASPECT,
     isPinned = isPinned,
     actions = PostActionState(

@@ -36,10 +36,19 @@ fun UsScaffold(
         contentColor = UsTheme.extended.textPrimary,
     ) { inner ->
         val gutter = if (applyPageGutter) UsTheme.spacing.pageHorizontal else 0.dp
+        // The inset is HANDED to content, not applied here.
+        //
+        // Applying it and passing it was a real defect: every caller already
+        // does `Modifier.padding(padding)`, so the top bar's height was
+        // reserved twice and the feed began a full bar-height below where it
+        // should. It read as a mysterious empty band under the title.
+        //
+        // Consuming it in the content is also what lets a list scroll its
+        // items UNDER the bars while keeping the first and last item clear of
+        // them — padding the container instead clips the scroll to a letterbox.
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(inner)
                 .padding(horizontal = gutter),
         ) {
             content(inner)

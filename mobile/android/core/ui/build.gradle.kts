@@ -21,6 +21,9 @@ android {
 dependencies {
     api(projects.core.designsystem)
     implementation(projects.core.common)
+    // AsyncImage only. The ImageLoader itself is configured in :app on the
+    // authenticated OkHttp client — this module still owns no networking.
+    implementation(libs.coil.compose)
 
     testImplementation(libs.junit)
     testImplementation(libs.truth)

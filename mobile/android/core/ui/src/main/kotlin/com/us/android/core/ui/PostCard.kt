@@ -4,16 +4,21 @@
 
 package com.us.android.core.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -21,13 +26,18 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
+import coil3.compose.AsyncImage
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
+import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 
 /**
@@ -48,6 +58,14 @@ data class PostCardState(
     /** `text`, `image`, `video`, … */
     val postType: String,
     val mediaCount: Int,
+    /**
+     * Where to fetch the first attachment.
+     *
+     * Null while an asset is still processing — the server sends no delivery
+     * URL until it is ready — so the box reserves its space and stays empty
+     * rather than the row collapsing and reflowing when it arrives.
+     */
+    val mediaUrl: String? = null,
     /**
      * Aspect ratio of the first attachment, from the server's real width and
      * height. Reserving the true ratio before the bytes arrive is what stops
@@ -145,7 +163,8 @@ fun PostCard(
         }
 
         if (state.mediaCount > 0) {
-            MediaPlaceholder(
+            PostMedia(
+                url = state.mediaUrl,
                 postType = state.postType,
                 count = state.mediaCount,
                 aspectRatio = state.mediaAspectRatio,
@@ -166,41 +185,82 @@ fun PostCard(
 }
 
 /**
- * Stands in for media whose bytes are not on screen yet.
+ * The attachment on a feed row.
  *
- * The feed now carries authorized delivery URLs and real dimensions, so this
- * is no longer a "we cannot resolve this" placeholder — it is the pre-decode
- * frame. It reserves the item's TRUE aspect ratio so the row does not resize
- * when the image or first video frame arrives, which is the single largest
- * source of feed layout shift.
- *
- * Falls back to 16:9 only when the server sent no dimensions.
+ * The box is sized from the server's REAL width and height before any bytes
+ * arrive, so the row never resizes when the image lands. Reflow mid-scroll is
+ * the largest source of feed jank and it throws away the reader's place in the
+ * list. Falls back to 16:9 only when the server sent no dimensions.
  */
 @Composable
-private fun MediaPlaceholder(
+private fun PostMedia(
+    url: String?,
     postType: String,
     count: Int,
     aspectRatio: Float,
     modifier: Modifier = Modifier,
 ) {
-    val label = when (postType) {
-        "video" -> if (count > 1) "$count videos" else "Video"
-        "image" -> if (count > 1) "$count images" else "Image"
-        else -> if (count > 1) "$count attachments" else "Attachment"
-    }
     Box(
         modifier = modifier
             .fillMaxWidth()
             .aspectRatio(aspectRatio)
-            .clip(RoundedCornerShape(UsTheme.radii.medium))
-            .padding(UsTheme.spacing.xxl),
-        contentAlignment = Alignment.Center,
+            .clip(RoundedCornerShape(UsTheme.radii.large))
+            // Painted under the image so the reserved box is a deliberate
+            // surface while bytes are in flight, rather than a hole in the
+            // list that reads as a failed row.
+            .background(UsTheme.extended.bgCardHover),
     ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodySmall,
-            color = UsTheme.extended.textMuted,
-        )
+        if (url != null) {
+            AsyncImage(
+                model = url,
+                contentDescription = null,
+                // Crop, not Fit. The box is already the asset's true ratio, so
+                // crop is a no-op for a correct image and quietly absorbs the
+                // rounding error when it is not — Fit would letterbox that
+                // error into visible bars.
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+
+        // Video still plays only in reels; the feed shows its poster frame.
+        // The mark is what tells a reader this is a video rather than a photo
+        // that happens to be still.
+        if (postType == VIDEO_POST) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .size(PLAY_BADGE)
+                    .background(Color.Black.copy(alpha = PLAY_BADGE_ALPHA), CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = UsIcons.Play,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(PLAY_GLYPH),
+                )
+            }
+        }
+
+        // Only when there is more than one. A "1" on every single-image post
+        // is noise that makes the count meaningless where it matters.
+        if (count > 1) {
+            Text(
+                text = "1/$count",
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.White,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(UsTheme.spacing.l)
+                    .clip(RoundedCornerShape(UsTheme.radii.full))
+                    .background(Color.Black.copy(alpha = COUNT_PILL_ALPHA))
+                    .padding(
+                        horizontal = UsTheme.spacing.m,
+                        vertical = UsTheme.spacing.xs,
+                    ),
+            )
+        }
     }
 }
 
@@ -275,3 +335,10 @@ private fun PostCardMediaOnlyPreview() = CardHost(
 private fun PostCardLongTextPreview() = CardHost(
     previewCard.copy(text = List(LONG_TEXT_LINES) { "Line $it of a very long post." }.joinToString(" ")),
 )
+
+private const val VIDEO_POST = "video"
+
+private val PLAY_BADGE = 56.dp
+private val PLAY_GLYPH = 26.dp
+private const val PLAY_BADGE_ALPHA = 0.55f
+private const val COUNT_PILL_ALPHA = 0.55f
