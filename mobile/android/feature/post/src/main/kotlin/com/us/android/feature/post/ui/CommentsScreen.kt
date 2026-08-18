@@ -20,6 +20,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.us.android.core.common.time.formatRelativeTime
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.component.UsScaffold
@@ -176,7 +177,7 @@ private fun CommentByline(comment: Comment) {
             },
         )
         Text(
-            text = comment.createdAt.substringBefore('T'),
+            text = formatRelativeTime(comment.createdAt),
             style = MaterialTheme.typography.labelLarge,
             color = UsTheme.extended.textMuted,
         )

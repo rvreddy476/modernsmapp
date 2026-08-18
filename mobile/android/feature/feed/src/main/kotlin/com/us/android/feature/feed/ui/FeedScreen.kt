@@ -23,6 +23,7 @@ import androidx.paging.LoadState
 import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.collectAsLazyPagingItems
 import com.us.android.core.common.error.AppError
+import com.us.android.core.common.time.formatRelativeTime
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.component.UsTopBar
@@ -175,7 +176,7 @@ private fun FeedItem.toCardState(actions: FeedActionState) = PostCardState(
     // per-row would have been an N+1 fired from inside a scrolling list.
     authorName = author.nameForDisplay,
     text = text,
-    timestamp = createdAt,
+    timestamp = formatRelativeTime(createdAt),
     postType = postType,
     mediaCount = media.size,
     mediaAspectRatio = media.firstOrNull()?.aspectRatio() ?: DEFAULT_MEDIA_ASPECT,

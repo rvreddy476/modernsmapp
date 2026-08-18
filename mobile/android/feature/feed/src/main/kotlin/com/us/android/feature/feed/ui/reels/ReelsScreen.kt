@@ -22,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -34,6 +35,7 @@ import androidx.paging.LoadState
 import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.collectAsLazyPagingItems
 import com.us.android.core.designsystem.component.UsSecondaryButton
+import com.us.android.core.designsystem.modifier.usMediaScrim
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.media.PlayerPool
 import com.us.android.core.model.FeedItem
@@ -193,7 +195,14 @@ private fun ReelOverlay(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .padding(UsTheme.spacing.pageHorizontal),
+            // The scrim goes on the container, not the text, so it also covers
+            // the padding — a caption whose descenders fall outside the dark
+            // area is exactly as unreadable as one with no scrim at all.
+            .usMediaScrim()
+            .padding(horizontal = UsTheme.spacing.pageHorizontal)
+            // Extra top room gives the gradient somewhere to ramp, so the
+            // scrim fades in instead of starting at a visible line.
+            .padding(top = REEL_SCRIM_RAMP, bottom = UsTheme.spacing.pageHorizontal),
         verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
     ) {
         Text(
@@ -245,3 +254,12 @@ private fun ReleaseOnLifecycle(pool: PlayerPool) {
 }
 
 private const val CAPTION_MAX_LINES = 3
+
+/**
+ * How far above the caption the scrim starts fading in.
+ *
+ * Not a spacing token: this is the length of a gradient ramp, not a gap between
+ * elements, and tying it to a layout token would make it change for reasons
+ * that have nothing to do with legibility.
+ */
+private val REEL_SCRIM_RAMP = 72.dp

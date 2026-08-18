@@ -39,7 +39,7 @@ class TokenAuthenticatorTest {
         server = MockWebServer()
         server.start()
         client = OkHttpClient.Builder()
-            .addInterceptor(AuthInterceptor(provider))
+            .addInterceptor(AuthInterceptor(provider, testApiConfig(server)))
             .authenticator(TokenAuthenticator(refresher))
             .build()
     }
@@ -95,6 +95,7 @@ class TokenAuthenticatorTest {
                     object : TokenProvider {
                         override fun currentAccessToken(): String = "always-the-same"
                     },
+                    testApiConfig(server),
                 ),
             )
             .authenticator(TokenAuthenticator(stubbornRefresher))
@@ -116,7 +117,7 @@ class TokenAuthenticatorTest {
     @Test
     fun `a null refresh surfaces the 401 to the caller`() {
         val failingClient = OkHttpClient.Builder()
-            .addInterceptor(AuthInterceptor(provider))
+            .addInterceptor(AuthInterceptor(provider, testApiConfig(server)))
             .authenticator(
                 TokenAuthenticator(object : TokenRefresher {
                     override suspend fun refresh(): String? = null
@@ -148,3 +149,17 @@ class TokenAuthenticatorTest {
         assertThat(code).isEqualTo(200)
     }
 }
+
+/**
+ * An [ApiConfig] naming the mock server as the API origin.
+ *
+ * AuthInterceptor attaches the bearer only to that origin, so a config that
+ * pointed anywhere else would make these tests pass for the wrong reason.
+ */
+private fun testApiConfig(server: MockWebServer) = ApiConfig(
+    baseUrl = server.url("/").toString(),
+    wsBaseUrl = "ws://localhost",
+    clientVersion = "test",
+    environment = "test",
+    isDebug = true,
+)

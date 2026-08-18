@@ -13,6 +13,7 @@ import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import com.us.android.core.media.MEDIA_CACHE_BYTES
 import com.us.android.core.media.PlayerFactory
+import com.us.android.core.media.PlaylistAwareDataSourceFactory
 import com.us.android.core.media.reelsLoadControl
 import com.us.android.core.network.di.AuthenticatedClient
 import dagger.Module
@@ -54,11 +55,14 @@ object MediaModule {
      * Sharing the client also means media requests inherit single-flight token
      * refresh — two stacks would each hold a stale token and race the rotation.
      *
-     * Segment URLs are pre-signed and absolute, so they carry their own
-     * authorization; sending the bearer alongside is harmless.
+     * Segment URLs are pre-signed and absolute, and the bearer must NOT travel
+     * with them. Verified on a device on 2026-08-18: attaching it made the
+     * object store answer 400 "request has multiple authentication types", and
+     * more seriously it handed a credential that authenticates as the user to
+     * a host that is not ours. AuthInterceptor now scopes the token to the API
+     * origin; see AuthOriginTest.
      *
-     * Writes go through the cache on read, so scrolling back to a recent reel
-     * replays from disk rather than the network.
+     * Segments are cached, playlists are not — see the factory below.
      */
     @Provides
     @Singleton
@@ -71,13 +75,19 @@ object MediaModule {
             context,
             OkHttpDataSource.Factory(client),
         )
-        return CacheDataSource.Factory()
+        val cached = CacheDataSource.Factory()
             .setCache(cache)
             .setUpstreamDataSourceFactory(upstream)
             // A corrupt or truncated cache entry must not break playback; fall
             // through to the network instead of surfacing an error the user
             // cannot act on.
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+
+        // Segments cached, playlists never. An .m3u8 body embeds signed URLs
+        // that expire in five minutes, so caching one leaves the player
+        // replaying dead links AND stops it asking for a fresh playlist that
+        // would have healed it. See PlaylistAwareDataSourceFactory.
+        return PlaylistAwareDataSourceFactory(cacheFactory = cached, upstreamFactory = upstream)
     }
 
     /**

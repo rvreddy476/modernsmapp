@@ -27,13 +27,12 @@ class HeaderContractTest {
     private lateinit var cookieStore: CsrfCookieStore
     private var token: String? = "access-token-1"
 
-    private val config = ApiConfig(
-        baseUrl = "http://localhost",
-        wsBaseUrl = "ws://localhost",
-        clientVersion = "0.1.0",
-        environment = "dev",
-        isDebug = true,
-    )
+    // Built from the mock server in setUp, not a constant. AuthInterceptor now
+    // attaches the bearer only to the configured API origin, so a hardcoded
+    // "http://localhost" (port 80) would be a FOREIGN origin to a MockWebServer
+    // on a random port, and every header assertion below would silently pass
+    // for the wrong reason.
+    private lateinit var config: ApiConfig
 
     private lateinit var client: OkHttpClient
 
@@ -41,6 +40,13 @@ class HeaderContractTest {
     fun setUp() {
         server = MockWebServer()
         server.start()
+        config = ApiConfig(
+            baseUrl = server.url("/").toString(),
+            wsBaseUrl = "ws://localhost",
+            clientVersion = "0.1.0",
+            environment = "dev",
+            isDebug = true,
+        )
         cookieStore = CsrfCookieStore()
         client = OkHttpClient.Builder()
             .cookieJar(cookieStore)
@@ -50,6 +56,7 @@ class HeaderContractTest {
                     object : TokenProvider {
                         override fun currentAccessToken(): String? = token
                     },
+                    config,
                 ),
             )
             .addInterceptor(CsrfInterceptor(cookieStore))

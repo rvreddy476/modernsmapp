@@ -106,11 +106,16 @@ fun PostCard(
                     color = UsTheme.extended.textPrimary,
                     modifier = Modifier.semantics { heading() },
                 )
-                Text(
-                    text = state.timestamp,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = UsTheme.extended.textMuted,
-                )
+                // Omitted rather than shown blank: the formatter returns an
+                // empty string for a timestamp it cannot parse, and an empty
+                // line under the name looks like a layout fault.
+                if (state.timestamp.isNotBlank()) {
+                    Text(
+                        text = state.timestamp,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = UsTheme.extended.textMuted,
+                    )
+                }
             }
             if (state.isPinned) {
                 Text(
