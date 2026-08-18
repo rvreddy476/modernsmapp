@@ -5,7 +5,9 @@ package com.us.android.feature.feed.navigation
 
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.compose.composable
+import com.us.android.core.media.PlayerPool
 import com.us.android.feature.feed.ui.FeedScreen
+import com.us.android.feature.feed.ui.reels.ReelsScreen
 import kotlinx.serialization.Serializable
 
 /** The Home tab root. */
@@ -25,5 +27,26 @@ fun NavGraphBuilder.feedScreen(
 ) {
     composable<FeedRoute> {
         FeedScreen(onOpenPost = onOpenPost, onOpenAuthor = onOpenAuthor)
+    }
+}
+
+/** The Reels tab root. */
+@Serializable
+data object ReelsRoute
+
+/**
+ * Registers the reels destination.
+ *
+ * [pool] is passed in rather than injected into the screen so `:app` owns the
+ * player pool's lifetime. The pool holds decoder sessions, and scoping it to a
+ * composable that the pager recomposes would release and reacquire them mid
+ * scroll.
+ */
+fun NavGraphBuilder.reelsScreen(
+    pool: PlayerPool,
+    onOpenAuthor: (userId: String) -> Unit,
+) {
+    composable<ReelsRoute> {
+        ReelsScreen(pool = pool, onOpenAuthor = onOpenAuthor)
     }
 }

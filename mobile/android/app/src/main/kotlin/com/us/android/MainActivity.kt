@@ -7,9 +7,11 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.media.PlayerPool
 import com.us.android.navigation.MainViewModel
 import com.us.android.navigation.UsApp
 import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
 
 /**
  * The single Activity. Every screen is a Compose destination inside [UsNavHost].
@@ -22,6 +24,14 @@ import dagger.hilt.android.AndroidEntryPoint
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
+    /**
+     * Injected here rather than into the reels screen so the pool outlives any
+     * one composable. It holds decoder sessions and audio focus; scoping it to
+     * a screen the pager recomposes would release and reacquire them mid-scroll.
+     */
+    @Inject
+    lateinit var playerPool: PlayerPool
+
     private val viewModel: MainViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -31,7 +41,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             UsTheme {
-                UsApp(viewModel)
+                UsApp(viewModel, playerPool)
             }
         }
     }

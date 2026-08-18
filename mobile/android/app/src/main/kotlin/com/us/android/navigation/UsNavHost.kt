@@ -23,12 +23,14 @@ import androidx.navigation.toRoute
 import com.us.android.core.designsystem.component.UsNavigationBar
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.media.PlayerPool
 import com.us.android.core.model.SessionState
 import com.us.android.feature.auth.login.LoginRoute
 import com.us.android.feature.auth.register.RegisterRoute
 import com.us.android.feature.auth.verify.VerifyEmailRoute
 import com.us.android.feature.feed.navigation.FeedRoute
 import com.us.android.feature.feed.navigation.feedScreen
+import com.us.android.feature.feed.navigation.reelsScreen
 import com.us.android.feature.post.navigation.commentsScreen
 import com.us.android.feature.post.navigation.navigateToComments
 import com.us.android.feature.post.navigation.navigateToPost
@@ -70,9 +72,6 @@ data class VerifyEmailRoute(
 data object FriendsRoute
 
 @Serializable
-data object ReelsRoute
-
-@Serializable
 data object ExploreRoute
 
 /**
@@ -99,6 +98,7 @@ data object GalleryRoute
 @Composable
 fun UsNavHost(
     sessionState: SessionState,
+    pool: PlayerPool,
     navController: NavHostController = rememberNavController(),
 ) {
     val startDestination = if (sessionState.isAuthenticated) FeedRoute else LoginRoute
@@ -133,7 +133,7 @@ fun UsNavHost(
                 .padding(shellPadding),
         ) {
             authDestinations(navController)
-            tabDestinations(navController)
+            tabDestinations(navController, pool)
         }
     }
 }
@@ -197,7 +197,10 @@ private fun NavGraphBuilder.authDestinations(navController: NavHostController) {
  * are blocked on backend work rather than client effort, and the placeholder
  * is where that stays visible.
  */
-private fun NavGraphBuilder.tabDestinations(navController: NavHostController) {
+private fun NavGraphBuilder.tabDestinations(
+    navController: NavHostController,
+    pool: PlayerPool,
+) {
     // The real home feed. It replaced the design-system gallery once the
     // 2026-08-17 capture returned a non-empty page and proved the item shape —
     // before that the feed could only have been built on an invented DTO.
@@ -220,16 +223,14 @@ private fun NavGraphBuilder.tabDestinations(navController: NavHostController) {
                 "lands with the paging work.",
         )
     }
-    composable<ReelsRoute> {
-        PlaceholderScreen(
-            title = "Reels",
-            reason = "The contract is ready — /v1/feed/reels returns items and HLS " +
-                "delivery works end to end. This needs the Media3 player pool and " +
-                "vertical pager, which is the next slice.",
-            actionLabel = "Open the design gallery",
-            onAction = { navController.navigate(GalleryRoute) },
-        )
-    }
+    // The reels surface. The pool is supplied by :app so its lifetime belongs
+    // to the composition root rather than a composable the pager recomposes —
+    // it holds decoder sessions, and reacquiring those mid-scroll is exactly
+    // the stutter this surface exists to avoid.
+    reelsScreen(
+        pool = pool,
+        onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
+    )
     composable<ExploreRoute> {
         PlaceholderScreen(
             title = "Explore",
@@ -278,9 +279,9 @@ private fun NavGraphBuilder.tabDestinations(navController: NavHostController) {
 
 /** Host for [UsNavHost] that observes the session and rebuilds on change. */
 @Composable
-fun UsApp(viewModel: MainViewModel) {
+fun UsApp(viewModel: MainViewModel, pool: PlayerPool) {
     val sessionState by viewModel.sessionState.collectAsStateWithLifecycle()
-    UsNavHost(sessionState = sessionState)
+    UsNavHost(sessionState = sessionState, pool = pool)
 }
 
 @Preview(name = "Splash", showBackground = true, backgroundColor = 0xFF000000)

@@ -22,6 +22,7 @@ dependencies {
     implementation(projects.core.model)
     implementation(projects.core.designsystem)
     implementation(projects.core.ui)
+    implementation(projects.core.media)
     implementation(projects.core.network)
     implementation(projects.core.auth)
     implementation(projects.core.database)
