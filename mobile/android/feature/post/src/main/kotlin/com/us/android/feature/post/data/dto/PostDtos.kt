@@ -27,6 +27,12 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class PostDto(
     val id: String = "",
+    /**
+     * Asset REFERENCES only — `{media_id, kind}`. Unlike the feed, this
+     * payload carries no dimensions and no delivery URLs, so the client
+     * resolves each asset through media-service. Captured live 2026-08-18.
+     */
+    val media: List<PostMediaDto> = emptyList(),
     @SerialName("author_id") val authorId: String = "",
     val text: String = "",
     val visibility: String = "",
@@ -114,4 +120,17 @@ data class RepostDto(
     val type: String = "",
     val status: String = "",
     @SerialName("created_at") val createdAt: String = "",
+)
+
+/**
+ * A post's attachment as the post payload describes it: an id and a kind.
+ *
+ * Deliberately NOT the feed's media shape. The feed's is hydrated with
+ * variants and dimensions; this one is a pointer. Sharing one type would
+ * invite code to read `variants` here and find it always empty.
+ */
+@Serializable
+data class PostMediaDto(
+    @SerialName("media_id") val mediaId: String = "",
+    val kind: String = "",
 )

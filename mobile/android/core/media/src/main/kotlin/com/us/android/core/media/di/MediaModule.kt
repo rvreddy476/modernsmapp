@@ -14,6 +14,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import com.us.android.core.media.MEDIA_CACHE_BYTES
 import com.us.android.core.media.PlayerFactory
 import com.us.android.core.media.PlaylistAwareDataSourceFactory
+import com.us.android.core.media.data.MediaApi
 import com.us.android.core.media.reelsLoadControl
 import com.us.android.core.network.di.AuthenticatedClient
 import dagger.Module
@@ -115,4 +116,21 @@ object MediaModule {
                 volume = 0f
             }
     }
+}
+
+/**
+ * The media endpoints, created from the app-wide [retrofit2.Retrofit].
+ *
+ * No client, no base URL, no converter here. A module that assembles its own
+ * client forks token refresh, and two refreshers racing a rotating refresh
+ * token sign the user out.
+ */
+@Module
+@InstallIn(SingletonComponent::class)
+object MediaApiModule {
+
+    @Provides
+    @Singleton
+    fun provideMediaApi(retrofit: retrofit2.Retrofit): MediaApi =
+        retrofit.create(MediaApi::class.java)
 }

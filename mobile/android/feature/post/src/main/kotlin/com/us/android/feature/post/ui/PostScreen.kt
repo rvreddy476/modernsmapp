@@ -1,5 +1,7 @@
 package com.us.android.feature.post.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -10,7 +12,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -20,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.common.time.formatRelativeTime
@@ -29,15 +31,19 @@ import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.media.data.MediaDelivery
 import com.us.android.core.model.Post
 import com.us.android.core.model.PostCounts
 import com.us.android.core.model.PostViewerState
 import com.us.android.core.model.Profile
+import com.us.android.core.ui.DEFAULT_MEDIA_ASPECT
 import com.us.android.core.ui.PostActionBar
 import com.us.android.core.ui.PostActionState
+import com.us.android.core.ui.PostMedia
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
+import com.us.android.core.ui.VIDEO_POST
 import com.us.android.core.ui.rememberPostSharer
 
 @Composable
@@ -128,73 +134,84 @@ private fun LoadedPost(
         modifier = modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = UsTheme.spacing.pageHorizontal),
-        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xxl),
-    ) {
-        if (author != null) {
-            AuthorHeader(
-                author = author,
-                createdAt = post.createdAt,
-                onOpenAuthor = onOpenAuthor,
-            )
-        }
-
-        if (post.text.isNotBlank()) {
-            Text(
-                text = post.text,
-                style = MaterialTheme.typography.bodyLarge,
-                color = UsTheme.extended.textPrimary,
-            )
-        }
-
-        // Media is not rendered here yet, but the reason changed on
-        // 2026-08-17: delivery works end to end now — /v1/media/:id/url
-        // returns signed variants and an authorized HLS master path. What is
-        // still missing is client-side, not server-side: this payload carries
-        // no media reference to resolve (the FEED item does), and there is no
-        // player or image loader in the module graph. Both arrive with the
-        // media slice.
-        if (post.postType != TEXT_POST) {
-            UsEmptyState(
-                title = "Media isn't shown here yet",
-                detail = "Delivery is working; this screen gains the player " +
-                    "when the media slice lands.",
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
-
-        HorizontalDivider(color = UsTheme.extended.borderSubtle)
-
-        PostActionBar(
-            state = PostActionState(
-                likeCount = post.counts.likes,
-                commentCount = post.counts.comments,
-                repostCount = post.counts.reposts,
-                hasReacted = post.viewer.hasReacted,
-                isBookmarked = post.viewer.isBookmarked,
-                canReact = post.allowsReactions,
-                // Live now that the comments list exists and :app wires the
-                // destination. Gated on the AUTHOR's switch, not on whether
-                // the client can render a list — a post with comments turned
-                // off shows a disabled control rather than a route to an empty
-                // screen.
-                canComment = post.allowsComments,
-                canRepost = post.isRepostable,
-                busy = state.busy,
+            .padding(
+                horizontal = UsTheme.spacing.pageHorizontal,
+                vertical = UsTheme.spacing.l,
             ),
-            onReact = onReact,
-            onComment = onOpenComments,
-            onRepost = onRepost,
-            onBookmark = onBookmark,
-            onShare = { share(post.text, author?.nameForDisplay) },
-        )
+    ) {
+        // The same card as the feed, so opening a post lands on the object the
+        // reader just tapped rather than a differently-shaped page. Detail adds
+        // the full text and the real media; it does not restyle the post.
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(UsTheme.radii.large))
+                .background(UsTheme.extended.bgCard)
+                .border(
+                    width = HAIRLINE,
+                    color = UsTheme.extended.borderSubtle,
+                    shape = RoundedCornerShape(UsTheme.radii.large),
+                )
+                .padding(UsTheme.spacing.xxl),
+            verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+        ) {
+            if (author != null) {
+                AuthorHeader(
+                    author = author,
+                    createdAt = post.createdAt,
+                    onOpenAuthor = onOpenAuthor,
+                )
+            }
 
+            if (post.text.isNotBlank()) {
+                // No line cap here, unlike the feed card. This screen exists to
+                // show the whole post; truncating it would leave no way to read
+                // the rest.
+                Text(
+                    text = post.text,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = UsTheme.extended.textPrimary,
+                )
+            }
+
+            PostAttachment(post = post, media = state.media)
+
+            PostActionBar(
+                state = PostActionState(
+                    likeCount = post.counts.likes,
+                    commentCount = post.counts.comments,
+                    repostCount = post.counts.reposts,
+                    hasReacted = post.viewer.hasReacted,
+                    isBookmarked = post.viewer.isBookmarked,
+                    canReact = post.allowsReactions,
+                    // Live now that the comments list exists and :app wires the
+                    // destination. Gated on the AUTHOR's switch, not on whether
+                    // the client can render a list — a post with comments turned
+                    // off shows a disabled control rather than a route to an
+                    // empty screen.
+                    canComment = post.allowsComments,
+                    canRepost = post.isRepostable,
+                    busy = state.busy,
+                ),
+                onReact = onReact,
+                onComment = onOpenComments,
+                onRepost = onRepost,
+                onBookmark = onBookmark,
+                onShare = { share(post.text, author?.nameForDisplay) },
+            )
+        }
+
+        // Outside the card. An action failure is about this session, not about
+        // the post, and putting it inside the surface makes it look like part
+        // of what the author wrote.
         state.actionError?.let { error ->
             Text(
                 text = error,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.error,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = UsTheme.spacing.l),
             )
             UsSecondaryButton(
                 text = "Dismiss",
@@ -205,7 +222,37 @@ private fun LoadedPost(
     }
 }
 
-private const val TEXT_POST = "text"
+/**
+ * The post's attachment, or an honest account of why there isn't one.
+ *
+ * Three distinct states, because collapsing them is what made the old screen
+ * unhelpful:
+ *  - resolved and ready → the real image, via the same component the feed uses
+ *  - resolved but still processing → say so; it will appear later
+ *  - a media reference that would not resolve → render nothing rather than an
+ *    apology, since the text is the post and an error block would dominate it
+ */
+@Composable
+private fun PostAttachment(post: Post, media: MediaDelivery?) {
+    val reference = post.media.firstOrNull() ?: return
+
+    when {
+        media == null -> Unit
+
+        media.isReady -> PostMedia(
+            url = media.posterUrl,
+            postType = if (reference.kind == VIDEO_POST) VIDEO_POST else reference.kind,
+            count = post.media.size,
+            aspectRatio = media.aspectRatio ?: DEFAULT_MEDIA_ASPECT,
+        )
+
+        else -> UsEmptyState(
+            title = "Still processing",
+            detail = "This will appear once the upload finishes.",
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+}
 
 // ── Previews ────────────────────────────────────────────────────────────
 
@@ -332,3 +379,10 @@ private fun AuthorHeader(
         }
     }
 }
+
+/**
+ * Matches the feed card's border weight. Defined here rather than shared
+ * because it is a rendering detail of a card edge, not a spacing token — and
+ * the two would look wrong the moment only one of them changed.
+ */
+private val HAIRLINE = 1.dp

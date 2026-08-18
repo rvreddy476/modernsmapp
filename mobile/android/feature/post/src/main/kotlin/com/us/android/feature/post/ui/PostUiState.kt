@@ -1,6 +1,7 @@
 package com.us.android.feature.post.ui
 
 import androidx.compose.runtime.Immutable
+import com.us.android.core.media.data.MediaDelivery
 import com.us.android.core.model.Post
 import com.us.android.core.model.Profile
 
@@ -35,6 +36,14 @@ sealed interface PostUiState {
          * content that is already in hand.
          */
         val author: Profile? = null,
+        /**
+         * Delivery for the first attachment, resolved after the post lands.
+         *
+         * Null means "not resolved yet or not resolvable" — the post still
+         * renders. A post is readable without its picture; it is not readable
+         * if a failed image lookup blanks the screen.
+         */
+        val media: MediaDelivery? = null,
         /** True while any interaction is in flight. */
         val busy: Boolean = false,
         /** True once this viewer reposted in THIS session — see the ViewModel. */

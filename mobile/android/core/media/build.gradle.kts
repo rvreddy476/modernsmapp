@@ -20,6 +20,8 @@ dependencies {
     api(libs.media3.exoplayer)
     api(libs.media3.exoplayer.hls)
     implementation(libs.media3.datasource.okhttp)
+    implementation(libs.retrofit)
+    implementation(libs.kotlinx.serialization.json)
 
     testImplementation(libs.junit)
     testImplementation(libs.truth)

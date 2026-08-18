@@ -34,6 +34,17 @@ data class Post(
     val allowsReactions: Boolean,
     val isRepostable: Boolean,
     val isPinned: Boolean,
+    /**
+     * Attachment references. The post payload carries ids only; delivery URLs
+     * are resolved separately through media-service.
+     */
+    val media: List<PostMediaRef> = emptyList(),
+)
+
+/** An attachment reference on a post: what to resolve, and what it is. */
+data class PostMediaRef(
+    val mediaId: String,
+    val kind: String,
 )
 
 data class PostCounts(

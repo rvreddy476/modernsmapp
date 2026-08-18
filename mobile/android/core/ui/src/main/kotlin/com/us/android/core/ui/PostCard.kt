@@ -167,7 +167,7 @@ fun PostCard(
  * list. Falls back to 16:9 only when the server sent no dimensions.
  */
 @Composable
-private fun PostMedia(
+fun PostMedia(
     url: String?,
     postType: String,
     count: Int,
@@ -310,7 +310,7 @@ private fun PostCardLongTextPreview() = CardHost(
     previewCard.copy(text = List(LONG_TEXT_LINES) { "Line $it of a very long post." }.joinToString(" ")),
 )
 
-private const val VIDEO_POST = "video"
+const val VIDEO_POST = "video"
 
 private val PLAY_BADGE = 56.dp
 private val PLAY_GLYPH = 26.dp

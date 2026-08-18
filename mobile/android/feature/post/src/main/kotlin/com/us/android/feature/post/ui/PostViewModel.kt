@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
+import com.us.android.core.media.data.MediaRepository
 import com.us.android.core.profile.data.ProfileRepository
 import com.us.android.feature.post.data.PostRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -19,6 +20,7 @@ import javax.inject.Inject
 class PostViewModel @Inject constructor(
     private val repository: PostRepository,
     private val profiles: ProfileRepository,
+    private val media: MediaRepository,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
 
@@ -41,7 +43,10 @@ class PostViewModel @Inject constructor(
                     retryable = PostErrorText.isRetryable(result.error),
                 )
             }
-            (_state.value as? PostUiState.Content)?.let { loadAuthor(it.post.authorId) }
+            (_state.value as? PostUiState.Content)?.let { content ->
+                loadAuthor(content.post.authorId)
+                loadMedia(content.post.media.firstOrNull()?.mediaId)
+            }
         }
     }
 
@@ -57,6 +62,25 @@ class PostViewModel @Inject constructor(
         val profile = (profiles.getProfile(authorId) as? AppResult.Success)?.data ?: return
         _state.update { state ->
             (state as? PostUiState.Content)?.copy(author = profile) ?: state
+        }
+    }
+
+    /**
+     * Resolves the first attachment.
+     *
+     * Separate from the post load, and its failure is swallowed, for the same
+     * reason as the author: the text is already on screen and a missing image
+     * must not replace it with a retry button.
+     *
+     * Only the FIRST asset. A carousel needs a pager and a per-page resolve;
+     * fetching all of them up front would spend the reader's data on images
+     * they may never swipe to.
+     */
+    private suspend fun loadMedia(mediaId: String?) {
+        if (mediaId.isNullOrBlank()) return
+        val delivery = (media.delivery(mediaId) as? AppResult.Success)?.data ?: return
+        _state.update { state ->
+            (state as? PostUiState.Content)?.copy(media = delivery) ?: state
         }
     }
 

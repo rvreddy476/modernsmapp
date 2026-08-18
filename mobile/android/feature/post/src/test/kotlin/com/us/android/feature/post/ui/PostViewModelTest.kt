@@ -2,6 +2,10 @@ package com.us.android.feature.post.ui
 
 import androidx.lifecycle.SavedStateHandle
 import com.google.common.truth.Truth.assertThat
+import com.us.android.core.media.MediaUrlResolver
+import com.us.android.core.media.data.MediaApi
+import com.us.android.core.media.data.MediaRepository
+import com.us.android.core.network.ApiConfig
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.ApiErrorBody
 import com.us.android.core.network.ErrorMapper
@@ -118,9 +122,31 @@ class PostViewModelTest {
             error("post screen must not unblock")
     }
 
+    /**
+     * The post screen resolves at most ONE asset — the first. Anything else
+     * fails loudly here rather than quietly costing the reader their data.
+     */
+    private class FakeMediaApi : MediaApi {
+        override suspend fun getDelivery(mediaId: String): Nothing =
+            error("this post carries no media; nothing should be resolved")
+    }
+
     private fun viewModel(api: FakeApi, authorName: String? = null) = PostViewModel(
         repository = PostRepository(api, ErrorMapper(json)),
         profiles = ProfileRepository(FakeProfileApi(authorName), ErrorMapper(json)),
+        media = MediaRepository(
+            FakeMediaApi(),
+            MediaUrlResolver(
+                ApiConfig(
+                    baseUrl = "http://127.0.0.1:8080",
+                    wsBaseUrl = "ws://127.0.0.1:8093",
+                    clientVersion = "test",
+                    environment = "test",
+                    isDebug = true,
+                ),
+            ),
+            ErrorMapper(json),
+        ),
         savedStateHandle = SavedStateHandle(mapOf("postId" to "p")),
     )
 

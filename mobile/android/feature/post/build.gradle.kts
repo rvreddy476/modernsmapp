@@ -16,6 +16,7 @@ dependencies {
     implementation(projects.core.ui)
     implementation(projects.core.network)
     implementation(projects.core.profile)
+    implementation(projects.core.media)
 
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.navigation.compose)
