@@ -60,6 +60,24 @@ jobs:
       - name: Module graph check
         run: ./gradlew moduleGraphCheck
 
+      # Firebase config. Deliberately NOT in the repo (see mobile/android/
+      # .gitignore): it carries a project API key that is package-restricted
+      # but still an identifier this repo should not publish. The google-services
+      # Gradle plugin fails the build without it, so CI materialises it from a
+      # secret holding the base64 of the file downloaded from the Firebase
+      # console. Set GOOGLE_SERVICES_JSON in repository secrets.
+      - name: Write google-services.json
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          if [ -z "$GOOGLE_SERVICES_JSON" ]; then
+            echo "GOOGLE_SERVICES_JSON secret is not set — the Android build cannot run." >&2
+            exit 1
+          fi
+          echo "$GOOGLE_SERVICES_JSON" | base64 -d > mobile/android/app/google-services.json
+          echo "clients:"
+          grep -o '"package_name": "[^"]*"' mobile/android/app/google-services.json | cut -d'"' -f4
+
       # ── Job 1: assemble ───────────────────────────────────────────────
       - name: Assemble devDebug
         run: ./gradlew assembleDevDebug

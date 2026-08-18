@@ -71,6 +71,13 @@ desugarJdkLibs            = "2.1.5"
 # ── Static analysis ────────────────────────────────────────────────────
 detekt                    = "1.23.8"
 
+# ── Push ───────────────────────────────────────────────────────────────
+# Firebase Cloud Messaging. Android push physically routes through FCM, so
+# this is not a vendor preference — see the migration plan §5.2 for why it is
+# used directly rather than behind AWS SNS.
+firebaseBom               = "34.4.0"
+googleServices            = "4.4.4"
+
 # ── Test ───────────────────────────────────────────────────────────────
 junit                     = "4.13.2"
 truth                     = "1.4.5"
@@ -121,6 +128,10 @@ compose-material3                  = { module = "androidx.compose.material3:mate
 # Material 3 stopped depending on this transitively, so it is declared here.
 # When the brand gets its own icon set, this is the single place it is replaced.
 compose-material-icons-core        = { module = "androidx.compose.material:material-icons-core" }
+
+# ── Push (versions come from the Firebase BOM) ─────────────────────────
+firebase-bom                       = { module = "com.google.firebase:firebase-bom", version.ref = "firebaseBom" }
+firebase-messaging                 = { module = "com.google.firebase:firebase-messaging" }
 
 # ── DI ─────────────────────────────────────────────────────────────────
 hilt-android                       = { module = "com.google.dagger:hilt-android", version.ref = "hilt" }
@@ -193,6 +204,7 @@ kotlin-compose            = { id = "org.jetbrains.kotlin.plugin.compose", versio
 ksp                       = { id = "com.google.devtools.ksp", version.ref = "ksp" }
 hilt                      = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }
 detekt                    = { id = "io.gitlab.arturbosch.detekt", version.ref = "detekt" }
+google-services           = { id = "com.google.gms.google-services", version.ref = "googleServices" }
 
 # ── Convention plugins defined in build-logic ──────────────────────────
 us-android-application    = { id = "us.android.application" }

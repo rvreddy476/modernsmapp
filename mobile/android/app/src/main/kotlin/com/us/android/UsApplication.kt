@@ -1,6 +1,7 @@
 package com.us.android
 
 import android.app.Application
+import com.us.android.core.notifications.NotificationChannelSpec
 import com.us.android.core.telemetry.Telemetry
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
@@ -21,6 +22,12 @@ class UsApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         installCrashReporter()
+        // Cheap and idempotent: creating a channel that already exists is a
+        // no-op, and the platform refuses to let re-registration override a
+        // user's setting. Done here so a push arriving before any screen
+        // opens still has a channel to land on — a notification posted to a
+        // missing channel is dropped silently.
+        NotificationChannelSpec.createAll(this)
     }
 
     /**

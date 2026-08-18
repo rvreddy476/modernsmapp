@@ -13,6 +13,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+
     <application
         android:name=".UsApplication"
         android:allowBackup="false"
@@ -42,6 +43,7 @@
               Phase 9 together with assetlinks.json. Finding F4.
             -->
         </activity>
+
     </application>
 
 </manifest>

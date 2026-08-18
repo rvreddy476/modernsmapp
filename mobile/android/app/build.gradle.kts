@@ -5,6 +5,7 @@ plugins {
     // Navigation Compose's type-safe routes are @Serializable objects, so
     // the serialization plugin is required even though we do no JSON here yet.
     alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.google.services)
 }
 
 android {
@@ -23,6 +24,7 @@ dependencies {
     implementation(projects.core.designsystem)
     implementation(projects.core.ui)
     implementation(projects.core.media)
+    implementation(projects.core.notifications)
     implementation(projects.core.network)
     implementation(projects.core.auth)
     implementation(projects.core.database)
