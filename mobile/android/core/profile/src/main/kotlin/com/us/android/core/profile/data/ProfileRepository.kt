@@ -1,4 +1,4 @@
-package com.us.android.feature.profile.data
+package com.us.android.core.profile.data
 
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.common.result.map
@@ -8,11 +8,11 @@ import com.us.android.core.model.ProfileCounts
 import com.us.android.core.model.ProfileStats
 import com.us.android.core.network.ErrorMapper
 import com.us.android.core.network.apiCall
-import com.us.android.feature.profile.data.dto.GraphUserIdRequest
-import com.us.android.feature.profile.data.dto.OwnProfileDto
-import com.us.android.feature.profile.data.dto.ProfileStatsDto
-import com.us.android.feature.profile.data.dto.PublicProfileDto
-import com.us.android.feature.profile.data.dto.UpdateProfileRequest
+import com.us.android.core.profile.data.dto.GraphUserIdRequest
+import com.us.android.core.profile.data.dto.OwnProfileDto
+import com.us.android.core.profile.data.dto.ProfileStatsDto
+import com.us.android.core.profile.data.dto.PublicProfileDto
+import com.us.android.core.profile.data.dto.UpdateProfileRequest
 import javax.inject.Inject
 import javax.inject.Singleton
 

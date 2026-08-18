@@ -2,8 +2,8 @@ package com.us.android.feature.profile.ui
 
 import androidx.compose.runtime.Immutable
 import com.us.android.core.designsystem.component.UsMessage
-import com.us.android.feature.profile.data.EditProfileField
-import com.us.android.feature.profile.data.EditableProfile
+import com.us.android.core.profile.data.EditProfileField
+import com.us.android.core.profile.data.EditableProfile
 
 /**
  * Everything the edit-profile screen renders, as one immutable value.

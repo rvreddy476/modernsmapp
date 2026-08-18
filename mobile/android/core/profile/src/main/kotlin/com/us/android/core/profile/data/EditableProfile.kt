@@ -1,4 +1,4 @@
-package com.us.android.feature.profile.data
+package com.us.android.core.profile.data
 
 import com.us.android.core.model.Profile
 

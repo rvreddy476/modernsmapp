@@ -5,7 +5,7 @@
 // scoped to this file only.
 @file:Suppress("MaxLineLength", "MaximumLineLength")
 
-package com.us.android.feature.profile.data
+package com.us.android.core.profile.data
 
 import com.google.common.truth.Truth.assertThat
 import com.us.android.core.common.result.AppResult

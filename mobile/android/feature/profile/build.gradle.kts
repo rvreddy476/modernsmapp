@@ -14,6 +14,7 @@ dependencies {
     implementation(projects.core.common)
     implementation(projects.core.designsystem)
     implementation(projects.core.ui)
+    implementation(projects.core.profile)
     // For Retrofit, the shared envelope and apiCall. This feature declares
     // endpoint interfaces; it never builds a client.
     implementation(projects.core.network)

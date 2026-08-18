@@ -27,10 +27,10 @@ import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.component.UsTextField
 import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.profile.data.EditProfileField
+import com.us.android.core.profile.data.EditableProfile
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
-import com.us.android.feature.profile.data.EditProfileField
-import com.us.android.feature.profile.data.EditableProfile
 
 /**
  * Edit-profile screen — stateful entry point.

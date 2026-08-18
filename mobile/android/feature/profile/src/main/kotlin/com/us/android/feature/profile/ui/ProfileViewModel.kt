@@ -5,7 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.model.ProfileRelationship
-import com.us.android.feature.profile.data.ProfileRepository
+import com.us.android.core.profile.data.ProfileRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope

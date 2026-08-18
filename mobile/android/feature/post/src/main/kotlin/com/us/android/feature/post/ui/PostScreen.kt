@@ -1,31 +1,38 @@
 package com.us.android.feature.post.ui
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.us.android.core.common.time.formatRelativeTime
+import com.us.android.core.designsystem.component.UsAvatar
+import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.component.UsTopBar
-import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.model.Post
 import com.us.android.core.model.PostCounts
 import com.us.android.core.model.PostViewerState
+import com.us.android.core.model.Profile
 import com.us.android.core.ui.PostActionBar
 import com.us.android.core.ui.PostActionState
 import com.us.android.core.ui.UsEmptyState
@@ -69,32 +76,12 @@ internal fun PostContent(
     onOpenComments: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    // Only a loaded post has an author to open.
-    val authorId = (state as? PostUiState.Content)?.post?.authorId
-
     UsScaffold(
         modifier = modifier,
-        topBar = {
-            UsTopBar(
-                title = "Post",
-                onBack = onBack,
-                actions = {
-                    // The post payload carries only author_id — no name — so
-                    // there is no header to render yet. This keeps the route
-                    // to the profile available without inventing a display
-                    // name the server did not send.
-                    if (authorId != null) {
-                        IconButton(onClick = { onOpenAuthor(authorId) }) {
-                            Icon(
-                                imageVector = UsIcons.Profile,
-                                contentDescription = "View author",
-                                tint = UsTheme.extended.textPrimary,
-                            )
-                        }
-                    }
-                },
-            )
-        },
+        // No author action here. The header inside the content is the route to
+        // the profile, and a second control for the same destination makes a
+        // reader wonder what the difference is.
+        topBar = { UsTopBar(title = "Post", onBack = onBack) },
         applyPageGutter = false,
     ) { padding ->
         when (state) {
@@ -115,6 +102,7 @@ internal fun PostContent(
                 onBookmark = onBookmark,
                 onRepost = onRepost,
                 onDismissActionError = onDismissActionError,
+                onOpenAuthor = onOpenAuthor,
                 onOpenComments = onOpenComments,
                 modifier = Modifier.padding(padding),
             )
@@ -129,10 +117,12 @@ private fun LoadedPost(
     onBookmark: () -> Unit,
     onRepost: () -> Unit,
     onDismissActionError: () -> Unit,
+    onOpenAuthor: (userId: String) -> Unit,
     onOpenComments: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val post = state.post
+    val author = state.author
     val share = rememberPostSharer()
     Column(
         modifier = modifier
@@ -141,12 +131,19 @@ private fun LoadedPost(
             .padding(horizontal = UsTheme.spacing.pageHorizontal),
         verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xxl),
     ) {
+        if (author != null) {
+            AuthorHeader(
+                author = author,
+                createdAt = post.createdAt,
+                onOpenAuthor = onOpenAuthor,
+            )
+        }
+
         if (post.text.isNotBlank()) {
             Text(
                 text = post.text,
                 style = MaterialTheme.typography.bodyLarge,
                 color = UsTheme.extended.textPrimary,
-                modifier = Modifier.padding(top = UsTheme.spacing.xxl),
             )
         }
 
@@ -189,7 +186,7 @@ private fun LoadedPost(
             onComment = onOpenComments,
             onRepost = onRepost,
             onBookmark = onBookmark,
-            onShare = { share(post.text, null) },
+            onShare = { share(post.text, author?.nameForDisplay) },
         )
 
         state.actionError?.let { error ->
@@ -285,3 +282,53 @@ private fun PostLoadingPreview() = PreviewHost(PostUiState.Loading)
 private fun PostDeletedPreview() = PreviewHost(
     PostUiState.Error("This post isn't available. It may have been deleted.", retryable = false),
 )
+
+/**
+ * Avatar, name and age, above the post body.
+ *
+ * Rendered only once the author lookup lands. The post payload carries just
+ * `author_id`, so the name comes from a second call to the public profile
+ * endpoint; showing a placeholder that later changes into a real name is a
+ * worse first impression than the header arriving whole a moment later.
+ *
+ * The whole row is the target, not just the name. A 48dp-tall strip is far
+ * easier to hit than a line of text, and every social surface has trained
+ * people that the avatar is tappable too.
+ */
+@Composable
+private fun AuthorHeader(
+    author: Profile,
+    createdAt: String,
+    onOpenAuthor: (userId: String) -> Unit,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+        modifier = Modifier
+            .padding(top = UsTheme.spacing.xxl)
+            .clip(RoundedCornerShape(UsTheme.radii.medium))
+            .clickable { onOpenAuthor(author.userId) },
+    ) {
+        UsAvatar(
+            name = author.nameForDisplay,
+            size = UsAvatarSize.Small,
+            seed = author.userId,
+        )
+        Column {
+            Text(
+                text = author.nameForDisplay,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = UsTheme.extended.textPrimary,
+            )
+            val age = formatRelativeTime(createdAt)
+            if (age.isNotBlank()) {
+                Text(
+                    text = age,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = UsTheme.extended.textMuted,
+                )
+            }
+        }
+    }
+}

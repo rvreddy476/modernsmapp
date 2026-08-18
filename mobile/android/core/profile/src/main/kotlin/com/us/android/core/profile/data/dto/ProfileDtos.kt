@@ -1,4 +1,4 @@
-package com.us.android.feature.profile.data.dto
+package com.us.android.core.profile.data.dto
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable

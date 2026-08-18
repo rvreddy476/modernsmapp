@@ -1,12 +1,12 @@
-package com.us.android.feature.profile.data
+package com.us.android.core.profile.data
 
 import com.us.android.core.network.ApiEnvelope
-import com.us.android.feature.profile.data.dto.GraphStatusDto
-import com.us.android.feature.profile.data.dto.GraphUserIdRequest
-import com.us.android.feature.profile.data.dto.OwnProfileDto
-import com.us.android.feature.profile.data.dto.ProfileStatsDto
-import com.us.android.feature.profile.data.dto.PublicProfileDto
-import com.us.android.feature.profile.data.dto.UpdateProfileRequest
+import com.us.android.core.profile.data.dto.GraphStatusDto
+import com.us.android.core.profile.data.dto.GraphUserIdRequest
+import com.us.android.core.profile.data.dto.OwnProfileDto
+import com.us.android.core.profile.data.dto.ProfileStatsDto
+import com.us.android.core.profile.data.dto.PublicProfileDto
+import com.us.android.core.profile.data.dto.UpdateProfileRequest
 import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.HTTP

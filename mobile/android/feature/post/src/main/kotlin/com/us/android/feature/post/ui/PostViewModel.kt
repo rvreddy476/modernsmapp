@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
+import com.us.android.core.profile.data.ProfileRepository
 import com.us.android.feature.post.data.PostRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -17,6 +18,7 @@ import javax.inject.Inject
 @HiltViewModel
 class PostViewModel @Inject constructor(
     private val repository: PostRepository,
+    private val profiles: ProfileRepository,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
 
@@ -39,6 +41,22 @@ class PostViewModel @Inject constructor(
                     retryable = PostErrorText.isRetryable(result.error),
                 )
             }
+            (_state.value as? PostUiState.Content)?.let { loadAuthor(it.post.authorId) }
+        }
+    }
+
+    /**
+     * Fills in the author header after the post is already on screen.
+     *
+     * A failure is swallowed on purpose. The name is decoration around content
+     * the viewer already has; turning a missing profile into an error state
+     * would replace a readable post with a retry button.
+     */
+    private suspend fun loadAuthor(authorId: String) {
+        if (authorId.isBlank()) return
+        val profile = (profiles.getProfile(authorId) as? AppResult.Success)?.data ?: return
+        _state.update { state ->
+            (state as? PostUiState.Content)?.copy(author = profile) ?: state
         }
     }
 

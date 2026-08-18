@@ -1,6 +1,6 @@
-package com.us.android.feature.profile.di
+package com.us.android.core.profile.di
 
-import com.us.android.feature.profile.data.ProfileApi
+import com.us.android.core.profile.data.ProfileApi
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn

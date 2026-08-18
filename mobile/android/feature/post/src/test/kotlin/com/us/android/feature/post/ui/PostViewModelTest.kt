@@ -5,6 +5,11 @@ import com.google.common.truth.Truth.assertThat
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.ApiErrorBody
 import com.us.android.core.network.ErrorMapper
+import com.us.android.core.profile.data.ProfileApi
+import com.us.android.core.profile.data.ProfileRepository
+import com.us.android.core.profile.data.dto.GraphUserIdRequest
+import com.us.android.core.profile.data.dto.PublicProfileDto
+import com.us.android.core.profile.data.dto.UpdateProfileRequest
 import com.us.android.core.testing.MainDispatcherRule
 import com.us.android.feature.post.data.PostApi
 import com.us.android.feature.post.data.PostRepository
@@ -85,8 +90,37 @@ class PostViewModelTest {
             error("the post screen must not load comments")
     }
 
-    private fun viewModel(api: FakeApi) = PostViewModel(
+    /**
+     * Answers the author lookup and refuses everything else.
+     *
+     * The post screen resolves ONE public profile. If it ever starts
+     * following, blocking or writing a profile, these fail loudly rather than
+     * letting the call pass unnoticed.
+     */
+    private class FakeProfileApi(private val displayName: String?) : ProfileApi {
+        override suspend fun getProfile(userId: String) = ApiEnvelope(
+            data = displayName?.let { PublicProfileDto(userId = userId, displayName = it) },
+            error = null,
+        )
+
+        override suspend fun getOwnProfile(): Nothing = error("post screen must not read /me")
+        override suspend fun updateProfile(body: UpdateProfileRequest): Nothing =
+            error("post screen must not write a profile")
+        override suspend fun getStats(userId: String): Nothing =
+            error("post screen must not read stats")
+        override suspend fun follow(body: GraphUserIdRequest): Nothing =
+            error("post screen must not follow")
+        override suspend fun unfollow(body: GraphUserIdRequest): Nothing =
+            error("post screen must not unfollow")
+        override suspend fun block(body: GraphUserIdRequest): Nothing =
+            error("post screen must not block")
+        override suspend fun unblock(body: GraphUserIdRequest): Nothing =
+            error("post screen must not unblock")
+    }
+
+    private fun viewModel(api: FakeApi, authorName: String? = null) = PostViewModel(
         repository = PostRepository(api, ErrorMapper(json)),
+        profiles = ProfileRepository(FakeProfileApi(authorName), ErrorMapper(json)),
         savedStateHandle = SavedStateHandle(mapOf("postId" to "p")),
     )
 
@@ -100,6 +134,30 @@ class PostViewModelTest {
 
         assertThat(state).isInstanceOf(PostUiState.Content::class.java)
         assertThat((state as PostUiState.Content).post.counts.likes).isEqualTo(10)
+    }
+
+    /**
+     * The post payload carries only `author_id`. The name comes from a second
+     * call to the public profile endpoint, which is why this is asserted
+     * separately from the post load.
+     */
+    @Test
+    fun `the author header is resolved from the profile endpoint`() = runTest {
+        val state = viewModel(FakeApi(), authorName = "RaghuVaran").state.value
+
+        assertThat((state as PostUiState.Content).author?.nameForDisplay).isEqualTo("RaghuVaran")
+    }
+
+    /**
+     * A missing profile must not cost the reader the post. The content is
+     * already in hand; only the header is unknown.
+     */
+    @Test
+    fun `a failed author lookup leaves the post readable`() = runTest {
+        val state = viewModel(FakeApi(), authorName = null).state.value
+
+        assertThat(state).isInstanceOf(PostUiState.Content::class.java)
+        assertThat((state as PostUiState.Content).author).isNull()
     }
 
     @Test

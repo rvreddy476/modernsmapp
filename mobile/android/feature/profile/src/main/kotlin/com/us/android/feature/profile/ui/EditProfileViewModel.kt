@@ -6,9 +6,9 @@ import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.designsystem.component.UsMessage
 import com.us.android.core.designsystem.component.UsMessageType
-import com.us.android.feature.profile.data.EditProfileField
-import com.us.android.feature.profile.data.EditableProfile
-import com.us.android.feature.profile.data.ProfileRepository
+import com.us.android.core.profile.data.EditProfileField
+import com.us.android.core.profile.data.EditableProfile
+import com.us.android.core.profile.data.ProfileRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow

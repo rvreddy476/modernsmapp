@@ -2,6 +2,7 @@ package com.us.android.feature.post.ui
 
 import androidx.compose.runtime.Immutable
 import com.us.android.core.model.Post
+import com.us.android.core.model.Profile
 
 /**
  * Everything the post screen renders.
@@ -24,6 +25,16 @@ sealed interface PostUiState {
     @Immutable
     data class Content(
         val post: Post,
+        /**
+         * The post payload carries only `author_id`; the name and avatar come
+         * from a second call to the public profile endpoint.
+         *
+         * Nullable and NOT part of the load gate: the post renders as soon as
+         * it arrives, and the header fills in when the profile does. Blocking
+         * a post on its author lookup would let a slow profile service hide
+         * content that is already in hand.
+         */
+        val author: Profile? = null,
         /** True while any interaction is in flight. */
         val busy: Boolean = false,
         /** True once this viewer reposted in THIS session — see the ViewModel. */
