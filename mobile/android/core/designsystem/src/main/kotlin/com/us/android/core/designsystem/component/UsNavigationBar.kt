@@ -4,23 +4,17 @@
 
 package com.us.android.core.designsystem.component
 
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AccountCircle
-import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 
 /**
@@ -67,14 +61,18 @@ fun UsNavigationBar(
                 icon = {
                     Icon(
                         imageVector = item.icon,
-                        // Null: NavigationBarItem already exposes the label to
-                        // accessibility services. Describing the icon too makes
-                        // a screen reader announce every tab twice.
-                        contentDescription = null,
+                        // The visible label is gone, so the icon now carries
+                        // the accessible name. Leaving this null would make the
+                        // whole bar five unlabelled buttons.
+                        contentDescription = item.contentDescription,
                     )
                 },
-                label = { Text(item.label) },
-                alwaysShowLabel = true,
+                // No labels. Five words across the bottom of every screen buy
+                // nothing after the first session — these five destinations are
+                // the most-used surfaces in the app and are learned immediately
+                // — and they cost vertical space on every screen forever.
+                // The names survive in [UsNavItem.label] for accessibility.
+                label = null,
                 colors = NavigationBarItemDefaults.colors(
                     selectedIconColor = UsTheme.extended.textPrimary,
                     selectedTextColor = UsTheme.extended.textPrimary,
@@ -98,11 +96,11 @@ fun UsNavigationBar(
  * muscle memory carries over for anyone moving between the two builds.
  */
 val UsDefaultNavItems: List<UsNavItem> = listOf(
-    UsNavItem("Home", Icons.Filled.Home),
-    UsNavItem("Friends", Icons.Filled.Person),
-    UsNavItem("Reels", Icons.Filled.PlayArrow),
-    UsNavItem("Explore", Icons.Filled.Search),
-    UsNavItem("Me", Icons.Filled.AccountCircle, contentDescription = "My profile"),
+    UsNavItem("Home", UsIcons.Home),
+    UsNavItem("Friends", UsIcons.Friends),
+    UsNavItem("Reels", UsIcons.Reels),
+    UsNavItem("Explore", UsIcons.Explore),
+    UsNavItem("Me", UsIcons.Profile, contentDescription = "My profile"),
 )
 
 @Preview(name = "Navigation bar", showBackground = true)

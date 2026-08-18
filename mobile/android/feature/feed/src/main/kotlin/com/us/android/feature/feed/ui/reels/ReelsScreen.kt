@@ -2,14 +2,20 @@ package com.us.android.feature.feed.ui.reels
 
 import androidx.annotation.OptIn
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -19,7 +25,14 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -34,7 +47,7 @@ import androidx.media3.ui.compose.SURFACE_TYPE_SURFACE_VIEW
 import androidx.paging.LoadState
 import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.collectAsLazyPagingItems
-import com.us.android.core.designsystem.component.UsSecondaryButton
+import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.modifier.usMediaScrim
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.media.PlayerPool
@@ -42,6 +55,7 @@ import com.us.android.core.model.FeedItem
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
+import com.us.android.core.ui.formatCount
 
 /**
  * The reels surface: a full-screen vertical pager of short video.
@@ -176,19 +190,127 @@ private fun ReelPage(
 
         ReelOverlay(
             item = item,
-            muted = muted,
-            onToggleMute = onToggleMute,
             onOpenAuthor = onOpenAuthor,
             modifier = Modifier.align(Alignment.BottomStart),
+        )
+
+        // The rail sits on the right edge, clear of the caption, because that
+        // is where a thumb rests while the other hand holds nothing. Putting
+        // controls under the caption means reaching across the video to use
+        // them.
+        ReelActionRail(
+            item = item,
+            muted = muted,
+            onToggleMute = onToggleMute,
+            modifier = Modifier.align(Alignment.BottomEnd),
+        )
+    }
+}
+
+/**
+ * The vertical control strip over a reel.
+ *
+ * Icons only, each on a translucent dark disc. The first attempt used
+ * `Modifier.shadow` on the glyph instead, on the theory that a plate would
+ * fight the caption scrim; on a device that drew a hard elevation disc behind
+ * the icon that was more obtrusive than any plate. A soft circle is both more
+ * legible over a white frame and quieter.
+ */
+@Composable
+private fun ReelActionRail(
+    item: FeedItem,
+    muted: Boolean,
+    onToggleMute: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier.padding(
+            end = UsTheme.spacing.l,
+            bottom = RAIL_BOTTOM_INSET,
+        ),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
+    ) {
+        RailButton(
+            icon = if (item.viewer.hasReacted) UsIcons.HeartFilled else UsIcons.HeartOutline,
+            description = if (item.viewer.hasReacted) "Liked" else "Like",
+            count = item.counts.likes,
+            tint = if (item.viewer.hasReacted) UsTheme.extended.liveRed else Color.White,
+            onClick = { },
+        )
+        RailButton(
+            icon = UsIcons.Comment,
+            description = "Comments",
+            count = item.counts.comments,
+            onClick = { },
+        )
+        RailButton(
+            icon = UsIcons.Share,
+            description = "Share",
+            count = null,
+            onClick = { },
+        )
+        RailButton(
+            icon = if (muted) UsIcons.SoundOff else UsIcons.SoundOn,
+            description = if (muted) "Unmute" else "Mute",
+            count = null,
+            onClick = onToggleMute,
         )
     }
 }
 
 @Composable
+private fun RailButton(
+    icon: ImageVector,
+    description: String,
+    count: Int?,
+    onClick: () -> Unit,
+    tint: Color = Color.White,
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier
+            .clip(CircleShape)
+            .clickable(onClick = onClick)
+            .sizeIn(minWidth = RAIL_TARGET, minHeight = RAIL_TARGET)
+            .padding(vertical = UsTheme.spacing.s)
+            .clearAndSetSemantics {
+                contentDescription = if (count != null) "$description, $count" else description
+                role = Role.Button
+            },
+        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = tint,
+            modifier = Modifier
+                // The disc, not the glyph, carries the contrast. A bare white
+                // icon vanishes against a white frame no matter its weight.
+                .background(Color.Black.copy(alpha = RAIL_PLATE_ALPHA), CircleShape)
+                .padding(UsTheme.spacing.m)
+                .size(RAIL_ICON),
+        )
+        if (count != null && count > 0) {
+            Text(
+                text = formatCount(count),
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.White,
+            )
+        }
+    }
+}
+
+/**
+ * Author and caption, bottom-left.
+ *
+ * Holds no controls. Everything actionable moved to [ReelActionRail]; text and
+ * targets interleaved in one column made the caption look tappable and the
+ * buttons look like part of the sentence.
+ */
+@Composable
 private fun ReelOverlay(
     item: FeedItem,
-    muted: Boolean,
-    onToggleMute: () -> Unit,
     onOpenAuthor: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -205,11 +327,18 @@ private fun ReelOverlay(
             .padding(top = REEL_SCRIM_RAMP, bottom = UsTheme.spacing.pageHorizontal),
         verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
     ) {
+        // The name is the way to the author's profile. A separate "View
+        // author" button restated what tapping a name already means on every
+        // social surface ever shipped.
         Text(
             text = item.author.nameForDisplay,
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.SemiBold,
             color = Color.White,
+            modifier = Modifier
+                .clip(RoundedCornerShape(UsTheme.radii.small))
+                .clickable { onOpenAuthor(item.author.id) }
+                .semantics { role = Role.Button },
         )
         if (item.text.isNotBlank()) {
             Text(
@@ -220,14 +349,6 @@ private fun ReelOverlay(
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        UsSecondaryButton(
-            text = if (muted) "Sound off" else "Sound on",
-            onClick = onToggleMute,
-        )
-        UsSecondaryButton(
-            text = "View author",
-            onClick = { onOpenAuthor(item.author.id) },
-        )
     }
 }
 
@@ -263,3 +384,26 @@ private const val CAPTION_MAX_LINES = 3
  * that have nothing to do with legibility.
  */
 private val REEL_SCRIM_RAMP = 72.dp
+
+/**
+ * Keeps the rail clear of the caption block below it.
+ *
+ * Larger than it looks it needs to be: the caption can run to three lines, and
+ * a rail that overlaps the last line of someone's text is worse than one
+ * sitting slightly high on a short caption.
+ */
+private val RAIL_BOTTOM_INSET = 132.dp
+
+/** Comfortably past the 48dp minimum — this is a one-thumb surface. */
+private val RAIL_TARGET = 56.dp
+
+private val RAIL_ICON = 26.dp
+
+/**
+ * Dark enough to read as neutral over ANY frame.
+ *
+ * Started at 0.32 and it was too weak: over a yellow frame the disc tinted
+ * olive and looked like a rendering artefact rather than a control. The plate
+ * has to dominate the pixels behind it or it should not be there.
+ */
+private const val RAIL_PLATE_ALPHA = 0.55f

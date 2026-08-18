@@ -70,6 +70,13 @@ data class PostCardState(
  * Text is capped at [MAX_LINES]. A feed row that grows to a thousand words
  * destroys scroll performance and hides everything after it.
  */
+/**
+ * Suppressed rather than bundled into a callbacks object: a data class of
+ * lambdas gets a new identity on every recomposition, which would make every
+ * visible row in the feed recompose. Flat parameters keep each callback
+ * individually stable.
+ */
+@Suppress("LongParameterList")
 @Composable
 fun PostCard(
     state: PostCardState,
@@ -79,6 +86,7 @@ fun PostCard(
     onComment: () -> Unit,
     onRepost: () -> Unit,
     onBookmark: () -> Unit,
+    onShare: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -150,6 +158,7 @@ fun PostCard(
             onComment = onComment,
             onRepost = onRepost,
             onBookmark = onBookmark,
+            onShare = onShare,
         )
 
         HorizontalDivider(color = UsTheme.extended.borderSubtle)
@@ -228,7 +237,7 @@ private val previewCard = PostCardState(
 @Composable
 private fun CardHost(state: PostCardState) = UsTheme {
     Column(modifier = Modifier.padding(horizontal = UsTheme.spacing.pageHorizontal)) {
-        PostCard(state, {}, {}, {}, {}, {}, {})
+        PostCard(state, {}, {}, {}, {}, {}, {}, {})
     }
 }
 

@@ -7,15 +7,10 @@ package com.us.android.core.ui
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.sizeIn
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.FavoriteBorder
-import androidx.compose.material.icons.filled.MailOutline
-import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -32,6 +27,7 @@ import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 
 /**
@@ -56,16 +52,22 @@ data class PostActionState(
 )
 
 /**
- * Like, comment, repost and bookmark.
+ * Like, comment, repost, share and save.
  *
- * Lives in `:core:ui` because the feed, the post detail screen and later the
- * reels overlay all render exactly this row, and the accessibility contract
- * below must not diverge between them.
+ * Lives in `:core:ui` because the feed, the post detail screen and the reels
+ * overlay all render exactly this row, and the accessibility contract below
+ * must not diverge between them.
  *
- * Each control merges its icon and count into a single semantic node reading
- * "Like, 12" rather than exposing an unlabelled icon beside a bare number, and
- * every target is at least 48dp. Rendered naively this row is four unlabelled
- * glyphs — the single most common accessibility failure in a social feed.
+ * NO WORDS. Every control is its icon and, where it has one, its count. A
+ * label under each glyph is five words of chrome repeated on every post in an
+ * infinite list, and it pushes the content — which is the reason anyone is
+ * here — further down the screen on every single row.
+ *
+ * That puts the entire burden on the icons being unambiguous, which is why
+ * they are drawn for this product rather than borrowed, and why on/off states
+ * change FILL and not just colour. Each control still merges its icon and
+ * count into one semantic node reading "Like, 12", so what a screen reader
+ * hears is unaffected by what the eye is spared.
  */
 @Composable
 fun PostActionBar(
@@ -74,24 +76,25 @@ fun PostActionBar(
     onComment: () -> Unit,
     onRepost: () -> Unit,
     onBookmark: () -> Unit,
+    onShare: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Row(
         modifier = modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.xxl),
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         ActionButton(
-            icon = if (state.hasReacted) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+            icon = if (state.hasReacted) UsIcons.HeartFilled else UsIcons.HeartOutline,
             label = "Like",
             count = state.likeCount,
             active = state.hasReacted,
             enabled = state.canReact && !state.busy,
-            activeTint = MaterialTheme.colorScheme.error,
+            activeTint = UsTheme.extended.liveRed,
             onClick = onReact,
         )
         ActionButton(
-            icon = Icons.Filled.MailOutline,
+            icon = UsIcons.Comment,
             label = "Comment",
             count = state.commentCount,
             active = false,
@@ -99,21 +102,32 @@ fun PostActionBar(
             onClick = onComment,
         )
         ActionButton(
-            icon = Icons.AutoMirrored.Filled.Send,
+            icon = UsIcons.Repost,
             label = "Repost",
             count = state.repostCount,
             active = false,
             enabled = state.canRepost && !state.busy,
+            activeTint = UsTheme.extended.statusSuccess,
             onClick = onRepost,
         )
-        // The icon set has no outlined star, so saved state is carried by a
-        // word as well as a tint. Colour alone would be the only signal, which
-        // fails for anyone who cannot distinguish it.
         ActionButton(
-            icon = Icons.Filled.Star,
-            label = "Bookmark",
+            icon = UsIcons.Share,
+            label = "Share",
             count = null,
-            text = if (state.isBookmarked) "Saved" else "Save",
+            active = false,
+            enabled = !state.busy,
+            onClick = onShare,
+        )
+
+        // Save is pushed to the far edge. Everything to its left broadcasts;
+        // save acts on the post for this viewer alone. Sitting them flush
+        // together invites a private save to be read as one more way to post.
+        Spacer(Modifier.weight(1f))
+
+        ActionButton(
+            icon = if (state.isBookmarked) UsIcons.BookmarkFilled else UsIcons.BookmarkOutline,
+            label = "Save",
+            count = null,
             active = state.isBookmarked,
             enabled = !state.busy,
             activeTint = UsTheme.extended.statusWarning,
@@ -130,7 +144,6 @@ private fun ActionButton(
     active: Boolean,
     enabled: Boolean,
     onClick: () -> Unit,
-    text: String? = null,
     activeTint: Color = Color.Unspecified,
 ) {
     val tint = when {
@@ -145,7 +158,10 @@ private fun ActionButton(
         append(if (active) "$label, selected" else label)
         if (count != null) append(", $count")
     }
-    val caption = text ?: count?.let { formatCount(it) }
+    // A zero is not information. Showing "0" three times on every new post
+    // makes an empty feed look like a failed one; the count appears the moment
+    // there is something to count.
+    val caption = count?.takeIf { it > 0 }?.let { formatCount(it) }
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
@@ -181,7 +197,7 @@ private val previewState = PostActionState(
 @Preview(name = "Action bar", showBackground = true)
 @Composable
 private fun PostActionBarPreview() {
-    UsTheme { PostActionBar(previewState, {}, {}, {}, {}) }
+    UsTheme { PostActionBar(previewState, {}, {}, {}, {}, {}) }
 }
 
 @Preview(name = "Action bar — engaged", showBackground = true)
@@ -194,6 +210,7 @@ private fun PostActionBarActivePreview() {
             onComment = {},
             onRepost = {},
             onBookmark = {},
+            onShare = {},
         )
     }
 }
@@ -208,6 +225,7 @@ private fun PostActionBarRestrictedPreview() {
             onComment = {},
             onRepost = {},
             onBookmark = {},
+            onShare = {},
         )
     }
 }
@@ -215,5 +233,5 @@ private fun PostActionBarRestrictedPreview() {
 @Preview(name = "Action bar — busy", showBackground = true)
 @Composable
 private fun PostActionBarBusyPreview() {
-    UsTheme { PostActionBar(previewState.copy(busy = true), {}, {}, {}, {}) }
+    UsTheme { PostActionBar(previewState.copy(busy = true), {}, {}, {}, {}, {}) }
 }

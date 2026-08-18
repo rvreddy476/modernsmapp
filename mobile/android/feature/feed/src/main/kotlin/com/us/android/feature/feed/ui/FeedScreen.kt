@@ -37,6 +37,7 @@ import com.us.android.core.ui.PostCardState
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
+import com.us.android.core.ui.rememberPostSharer
 import com.us.android.feature.feed.data.AppErrorException
 
 @Composable
@@ -72,6 +73,10 @@ private fun FeedList(
     modifier: Modifier = Modifier,
 ) {
     val refresh = items.loadState.refresh
+    // Hoisted out of the list body: this resolves a Context and would
+    // otherwise be re-created inside every visible row.
+    val share = rememberPostSharer()
+
     when {
         refresh is LoadState.Loading && items.itemCount == 0 ->
             UsLoadingState(modifier = modifier, label = "Loading feed")
@@ -110,6 +115,7 @@ private fun FeedList(
                     onComment = { onOpenPost(item.id) },
                     onRepost = { onOpenPost(item.id) },
                     onBookmark = { onBookmark(item.id) },
+                    onShare = { share(item.text, item.author.nameForDisplay) },
                 )
             }
 

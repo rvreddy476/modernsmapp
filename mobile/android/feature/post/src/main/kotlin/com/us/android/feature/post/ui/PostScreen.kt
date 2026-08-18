@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -19,6 +21,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.component.UsTopBar
+import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.model.Post
 import com.us.android.core.model.PostCounts
@@ -28,6 +31,7 @@ import com.us.android.core.ui.PostActionState
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
+import com.us.android.core.ui.rememberPostSharer
 
 @Composable
 fun PostScreen(
@@ -65,9 +69,32 @@ internal fun PostContent(
     onOpenComments: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // Only a loaded post has an author to open.
+    val authorId = (state as? PostUiState.Content)?.post?.authorId
+
     UsScaffold(
         modifier = modifier,
-        topBar = { UsTopBar(title = "Post", onBack = onBack) },
+        topBar = {
+            UsTopBar(
+                title = "Post",
+                onBack = onBack,
+                actions = {
+                    // The post payload carries only author_id — no name — so
+                    // there is no header to render yet. This keeps the route
+                    // to the profile available without inventing a display
+                    // name the server did not send.
+                    if (authorId != null) {
+                        IconButton(onClick = { onOpenAuthor(authorId) }) {
+                            Icon(
+                                imageVector = UsIcons.Profile,
+                                contentDescription = "View author",
+                                tint = UsTheme.extended.textPrimary,
+                            )
+                        }
+                    }
+                },
+            )
+        },
         applyPageGutter = false,
     ) { padding ->
         when (state) {
@@ -88,7 +115,6 @@ internal fun PostContent(
                 onBookmark = onBookmark,
                 onRepost = onRepost,
                 onDismissActionError = onDismissActionError,
-                onOpenAuthor = onOpenAuthor,
                 onOpenComments = onOpenComments,
                 modifier = Modifier.padding(padding),
             )
@@ -103,11 +129,11 @@ private fun LoadedPost(
     onBookmark: () -> Unit,
     onRepost: () -> Unit,
     onDismissActionError: () -> Unit,
-    onOpenAuthor: (userId: String) -> Unit,
     onOpenComments: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val post = state.post
+    val share = rememberPostSharer()
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -163,12 +189,7 @@ private fun LoadedPost(
             onComment = onOpenComments,
             onRepost = onRepost,
             onBookmark = onBookmark,
-        )
-
-        UsSecondaryButton(
-            text = "View author",
-            onClick = { onOpenAuthor(post.authorId) },
-            modifier = Modifier.fillMaxWidth(),
+            onShare = { share(post.text, null) },
         )
 
         state.actionError?.let { error ->

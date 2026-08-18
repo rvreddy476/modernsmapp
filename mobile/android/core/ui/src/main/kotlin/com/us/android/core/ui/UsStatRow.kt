@@ -97,8 +97,12 @@ fun UsStatRow(
  * separator must match them — a device set to a comma-decimal locale would
  * otherwise render "1,2K", which reads as twelve thousand in the very locales
  * where the comma means something else.
+ *
+ * Public because the reels rail renders the same counts as the feed card, and
+ * two different roundings of the same number on two screens reads as one of
+ * them being wrong.
  */
-internal fun formatCount(value: Int): String = when {
+fun formatCount(value: Int): String = when {
     value < 0 -> "0"
     value < THOUSAND -> value.toString()
     value < MILLION -> compact(value / THOUSAND.toDouble(), "K")
