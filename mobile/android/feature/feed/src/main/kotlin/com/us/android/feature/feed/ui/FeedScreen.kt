@@ -28,6 +28,8 @@ import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.model.FeedItem
+import com.us.android.core.model.FeedMedia
+import com.us.android.core.ui.DEFAULT_MEDIA_ASPECT
 import com.us.android.core.ui.PostActionState
 import com.us.android.core.ui.PostCard
 import com.us.android.core.ui.PostCardState
@@ -102,7 +104,7 @@ private fun FeedList(
                 PostCard(
                     state = item.toCardState(actions),
                     onClick = { onOpenPost(item.id) },
-                    onAuthorClick = { onOpenAuthor(item.authorId) },
+                    onAuthorClick = { onOpenAuthor(item.author.id) },
                     onReact = { onReact(item.id) },
                     onComment = { onOpenPost(item.id) },
                     onRepost = { onOpenPost(item.id) },
@@ -167,29 +169,30 @@ private fun Throwable.feedMessage(): String = when ((this as? AppErrorException)
  */
 private fun FeedItem.toCardState(actions: FeedActionState) = PostCardState(
     postId = id,
-    authorId = authorId,
-    // The feed item carries no author name — only `author_id`. Resolving it
-    // needs a profile lookup per author, which is an N+1 the feed must not
-    // fire from a list row. Recorded as a contract gap; the avatar and label
-    // fall back to the id until the feed carries author identity.
-    authorName = authorId.take(AUTHOR_ID_PREFIX),
+    authorId = author.id,
+    // Real author identity, embedded by the server as of 2026-08-17. This was
+    // a truncated user id until the feed carried `author` — resolving it
+    // per-row would have been an N+1 fired from inside a scrolling list.
+    authorName = author.nameForDisplay,
     text = text,
     timestamp = createdAt,
     postType = postType,
     mediaCount = media.size,
+    mediaAspectRatio = media.firstOrNull()?.aspectRatio() ?: DEFAULT_MEDIA_ASPECT,
     isPinned = isPinned,
     actions = PostActionState(
         likeCount = counts.likes,
         commentCount = counts.comments,
-        repostCount = 0, // Feed items carry no repost_count; post detail does.
-        hasReacted = id in actions.reacted,
-        isBookmarked = isBookmarked xor (id in actions.bookmarked),
-        canComment = true,
-        canRepost = true,
+        repostCount = counts.reposts,
+        // Server truth XOR this session's taps. Membership in the set means
+        // "the user changed this since the page loaded", so it flips the
+        // server value rather than replacing it — a PagingData page is
+        // immutable, so a tap cannot be written back into the item itself.
+        hasReacted = viewer.hasReacted xor (id in actions.reacted),
+        isBookmarked = viewer.isBookmarked xor (id in actions.bookmarked),
+        canRepost = isRepostable,
     ),
 )
-
-private const val AUTHOR_ID_PREFIX = 8
 
 @Preview(name = "Feed — empty", showBackground = true, heightDp = 400)
 @Composable
@@ -201,3 +204,13 @@ private fun FeedEmptyPreview() {
         )
     }
 }
+
+/**
+ * Aspect ratio from the server's real dimensions.
+ *
+ * Guards against a zero height: a still-processing asset can report 0x0, and
+ * dividing by it yields Infinity, which Compose resolves to a zero-height box
+ * that then jumps to full size when the real frame arrives.
+ */
+private fun FeedMedia.aspectRatio(): Float =
+    if (width > 0 && height > 0) width.toFloat() / height.toFloat() else DEFAULT_MEDIA_ASPECT

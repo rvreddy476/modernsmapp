@@ -3,10 +3,12 @@ package com.us.android.feature.feed.data
 import androidx.paging.PagingSource
 import androidx.paging.PagingState
 import com.us.android.core.common.error.AppError
+import com.us.android.core.model.FeedAuthor
 import com.us.android.core.model.FeedCounts
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedMedia
 import com.us.android.core.model.FeedSurface
+import com.us.android.core.model.FeedViewerState
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.ErrorMapper
 import com.us.android.feature.feed.data.dto.FeedItemDto
@@ -51,7 +53,7 @@ class FeedPagingSource(
         } ?: LoadResult.Page(
             data = (envelope.data ?: emptyList()).map { it.toDomain() },
             prevKey = null, // Feeds are forward-only; there is no previous page.
-            nextKey = envelope.nextKeyFor(surface),
+            nextKey = envelope.nextKey(),
         )
     } catch (e: CancellationException) {
         // Rethrown before the generic branch: swallowing it here would break
@@ -91,8 +93,19 @@ class FeedPagingSource(
  * full. A short page means the end regardless of what `meta` says — otherwise
  * a server that always echoes a cursor would page forever.
  */
-private fun ApiEnvelope<List<FeedItemDto>>.nextKeyFor(surface: FeedSurface): String? {
-    if (!surface.paginated) return null
+/**
+ * The cursor for the next page, or null at the end.
+ *
+ * All four surfaces paginate as of the 2026-08-17 hydration closure. Home
+ * returns an RFC3339 timestamp and the ranked surfaces return an opaque
+ * base64 timeuuid; both are replayed verbatim and neither is ever parsed.
+ *
+ * The terminal page omits `meta` entirely rather than sending an empty
+ * cursor, so an absent or blank value is the end. An empty page is also
+ * treated as the end regardless of what `meta` says — otherwise a server that
+ * always echoed a cursor would page forever.
+ */
+private fun ApiEnvelope<List<FeedItemDto>>.nextKey(): String? {
     val items = data ?: return null
     if (items.isEmpty()) return null
     return meta?.nextCursor?.takeIf { it.isNotBlank() }
@@ -104,18 +117,47 @@ class AppErrorException(val error: AppError) : Exception(error::class.simpleName
 internal fun FeedItemDto.toDomain() = FeedItem(
     id = id,
     authorId = authorId,
+    author = FeedAuthor(
+        // The server always sends `author`; a genuinely deleted profile comes
+        // back as its non-enumerating placeholder, which is the server's call
+        // to make, not the client's. Falling back to `authorId` here keeps a
+        // row renderable if the object is ever absent entirely.
+        id = author.id.ifBlank { authorId },
+        displayName = author.displayName,
+        username = author.username,
+        avatarMediaId = author.avatarMediaId,
+    ),
     text = text,
     visibility = visibility,
     feedContentType = feedContentType,
     postType = postType,
     createdAt = createdAt,
     isPinned = isPinned,
-    media = media.map { FeedMedia(mediaId = it.mediaId, kind = it.kind) },
+    media = media.map {
+        FeedMedia(
+            mediaId = it.mediaId,
+            kind = it.kind,
+            status = it.status,
+            width = it.width,
+            height = it.height,
+            blurhash = it.blurhash,
+            variants = it.variants,
+            hlsUrl = it.hlsUrl,
+            expiresAt = it.expiresAt,
+        )
+    },
     counts = FeedCounts(
         likes = counts.likes,
         comments = counts.comments,
+        reposts = repostCount,
         views = viewCount,
     ),
-    isBookmarked = isBookmarked,
+    viewer = FeedViewerState(
+        isBookmarked = isBookmarked,
+        hasReacted = hasReacted,
+        hasReposted = hasReposted,
+        viewerReaction = viewerReaction,
+    ),
+    isRepostable = isRepostable,
     score = score,
 )

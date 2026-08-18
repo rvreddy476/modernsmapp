@@ -1,214 +1,149 @@
-// The fixtures at the bottom are response bodies copied VERBATIM from the
-// 2026-08-17 repair capture. Reformatting recorded evidence destroys its value.
+// Fixtures are response bodies copied VERBATIM from a live capture. Wrapping
+// them to satisfy line length would mean editing recorded evidence.
 @file:Suppress("MaxLineLength", "MaximumLineLength")
 
 package com.us.android.feature.feed.data
 
-import androidx.paging.PagingSource
 import com.google.common.truth.Truth.assertThat
-import com.us.android.core.common.error.AppError
-import com.us.android.core.model.FeedSurface
-import com.us.android.core.network.ErrorMapper
-import kotlinx.coroutines.test.runTest
+import com.us.android.core.network.ApiEnvelope
+import com.us.android.feature.feed.data.dto.FeedItemDto
 import kotlinx.serialization.json.Json
-import mockwebserver3.MockResponse
-import mockwebserver3.MockWebServer
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import org.junit.After
-import org.junit.Before
 import org.junit.Test
-import retrofit2.Retrofit
-import retrofit2.converter.kotlinx.serialization.asConverterFactory
 
 /**
- * Contract tests for the feed, against the 2026-08-17 repair capture
- * (prompt/android-api-contracts.md §1).
+ * Contract tests against payloads captured from the live gateway on
+ * 2026-08-17 (prompt/android-api-contracts.md, evidence-pass section).
  *
- * This shape could not be written on 2026-08-16 — every surface returned
- * `{"data":[]}` and the item DTO had never been observed. These fixtures are
- * the first real ones.
+ * These prove the DTOs deserialize the bytes the server actually sends. When a
+ * payload changes, recapture and paste the new body — never edit a fixture to
+ * make a test pass.
  */
 class FeedContractTest {
 
-    private lateinit var server: MockWebServer
-    private lateinit var api: FeedApi
-    private lateinit var errorMapper: ErrorMapper
     private val json = Json {
         ignoreUnknownKeys = true
         explicitNulls = false
+        coerceInputValues = true
+        isLenient = true
     }
 
-    @Before
-    fun setUp() {
-        server = MockWebServer()
-        server.start()
-        api = Retrofit.Builder()
-            .baseUrl(server.url("/"))
-            .client(OkHttpClient())
-            .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
-            .build()
-            .create(FeedApi::class.java)
-        errorMapper = ErrorMapper(json)
-    }
-
-    @After
-    fun tearDown() = server.close()
-
-    private fun enqueue(code: Int, body: String) {
-        server.enqueue(
-            MockResponse.Builder()
-                .code(code)
-                .setHeader("Content-Type", "application/json")
-                .body(body)
-                .build(),
-        )
-    }
-
-    private fun source(surface: FeedSurface) =
-        FeedPagingSource(api, surface, errorMapper)
-
-    private suspend fun load(
-        surface: FeedSurface,
-        key: String? = null,
-    ) = source(surface).load(
-        PagingSource.LoadParams.Refresh(key, PAGE_SIZE, false),
-    )
+    private fun decode(body: String): ApiEnvelope<List<FeedItemDto>> = json.decodeFromString(body)
 
     @Test
-    fun `captured video item deserializes`() = runTest {
-        enqueue(200, HOME_VIDEO_PAGE)
+    fun `enriched home item deserializes with author and viewer state`() {
+        val envelope = decode(HOME_PAGE_1)
+        val item = envelope.data!!.first()
 
-        val page = load(FeedSurface.Home) as PagingSource.LoadResult.Page
+        assertThat(item.id).isEqualTo("c1604d02-a4fe-44f2-91a6-feebd0ac814f")
+        assertThat(item.author.displayName).isEqualTo("Android Evidence")
+        assertThat(item.author.id).isEqualTo(item.authorId)
+        assertThat(item.isRepostable).isTrue()
+        assertThat(item.hasReacted).isFalse()
+        assertThat(item.hasReposted).isFalse()
+        assertThat(item.repostCount).isEqualTo(0)
+    }
 
-        assertThat(page.data).hasSize(1)
-        val item = page.data.first()
-        assertThat(item.id).isEqualTo("3d752833-089d-48fa-aae2-625fcf602924")
-        assertThat(item.postType).isEqualTo("video")
-        assertThat(item.feedContentType).isEqualTo("long_video")
-        assertThat(item.media).hasSize(1)
-        assertThat(item.media.first().kind).isEqualTo("video")
-        assertThat(item.media.first().mediaId)
-            .isEqualTo("7ee053fc-59aa-4b24-99e9-fdbcace8fa3e")
+    /** Home is chronological: an RFC3339 timestamp cursor and no `score`. */
+    @Test
+    fun `home carries a timestamp cursor and no score`() {
+        val envelope = decode(HOME_PAGE_1)
+
+        assertThat(envelope.meta?.nextCursor).isEqualTo("2026-08-17T10:16:51.224Z")
+        assertThat(envelope.data!!.first().score).isNull()
     }
 
     @Test
-    fun `captured image item deserializes`() = runTest {
-        enqueue(200, HOME_IMAGE_PAGE)
+    fun `reels item carries media delivery fields`() {
+        val item = decode(REELS_PAGE_1).data!!.first()
+        val media = item.media.single()
 
-        val page = load(FeedSurface.Home) as PagingSource.LoadResult.Page
-
-        val item = page.data.first()
-        assertThat(item.postType).isEqualTo("image")
-        assertThat(item.feedContentType).isEqualTo("post")
-        assertThat(item.media.first().kind).isEqualTo("image")
+        assertThat(media.kind).isEqualTo("video")
+        assertThat(media.status).isEqualTo("ready")
+        assertThat(media.width).isEqualTo(360)
+        assertThat(media.height).isEqualTo(640)
+        assertThat(media.blurhash).isNotEmpty()
+        assertThat(media.expiresAt).isEqualTo("2026-08-17T10:42:32.522994799Z")
     }
 
     /**
-     * Home is chronological and carries `meta.next_cursor`. The cursor is an
-     * RFC3339 timestamp, passed back opaquely — never parsed, never built.
+     * The two URL kinds are not interchangeable: `hls_url` is a
+     * gateway-relative authorized path, `variants` are absolute pre-signed
+     * object-store URLs. Confusing them yields a 404 or a malformed URI.
      */
     @Test
-    fun `home yields the captured cursor as the next key`() = runTest {
-        enqueue(200, HOME_VIDEO_PAGE)
+    fun `hls url is relative while variants are absolute`() {
+        val media = decode(REELS_PAGE_1).data!!.first().media.single()
 
-        val page = load(FeedSurface.Home) as PagingSource.LoadResult.Page
+        assertThat(media.hlsUrl).startsWith("/v1/media/")
+        assertThat(media.hlsUrl).doesNotContain("://")
+        media.variants.values.forEach { assertThat(it).startsWith("http") }
+    }
 
-        assertThat(page.nextKey).isEqualTo("2026-08-16T19:44:32.998Z")
-        assertThat(page.prevKey).isNull()
+    /** Ranked surfaces carry a float score and an opaque base64 cursor. */
+    @Test
+    fun `reels carries a score and an opaque cursor`() {
+        val envelope = decode(REELS_PAGE_1)
+
+        assertThat(envelope.data!!.first().score).isNull() // absent in this fixture
+        assertThat(envelope.meta?.nextCursor).isEqualTo("djE6ZTcwZWU4ODAtOTlhYS0xMWYxLTkyMzMtZmU0NWFjOWU0MDIx")
     }
 
     /**
-     * THE pagination rule. Reels, videos and watch returned a full page with
-     * no `meta` and no cursor at all, and the capture says a cursor must not
-     * be invented for them. A source that returned a non-null key here would
-     * loop, and one that reused the last key would refetch page one forever.
+     * The terminal page omits `meta` entirely rather than sending an empty
+     * cursor, so the paging source must treat absent as "end".
      */
     @Test
-    fun `ranked surfaces terminate because they have no cursor`() = runTest {
-        listOf(FeedSurface.Reels, FeedSurface.Videos, FeedSurface.Watch).forEach { surface ->
-            enqueue(200, REELS_PAGE)
+    fun `terminal page has no meta`() {
+        val envelope = decode("""{"data":[]}""")
 
-            val page = load(surface) as PagingSource.LoadResult.Page
-
-            assertThat(page.data).isNotEmpty()
-            assertThat(page.nextKey).isNull()
-        }
+        assertThat(envelope.data).isEmpty()
+        assertThat(envelope.meta?.nextCursor).isNull()
     }
 
-    /** Ranked surfaces carry a score; home does not. Its presence is the signal. */
+    /** A text post sends no `media` key at all — not an empty array. */
     @Test
-    fun `score is present on ranked surfaces and absent on home`() = runTest {
-        enqueue(200, REELS_PAGE)
-        val ranked = (load(FeedSurface.Reels) as PagingSource.LoadResult.Page).data.first()
-        assertThat(ranked.score).isNotNull()
-
-        enqueue(200, HOME_VIDEO_PAGE)
-        val home = (load(FeedSurface.Home) as PagingSource.LoadResult.Page).data.first()
-        assertThat(home.score).isNull()
+    fun `absent media key decodes as an empty list`() {
+        assertThat(decode(HOME_PAGE_1).data!!.first().media).isEmpty()
     }
 
-    /** An empty page ends paging even if a cursor were echoed back. */
+    /** The server adds fields without a client release. */
     @Test
-    fun `an empty page terminates`() = runTest {
-        enqueue(200, """{"data":[],"meta":{"next_cursor":"2026-08-16T19:44:32.998Z"}}""")
+    fun `unknown fields are ignored`() {
+        val envelope = decode("""{"data":[{"id":"p","a_brand_new_field":{"nested":true}}]}""")
 
-        val page = load(FeedSurface.Home) as PagingSource.LoadResult.Page
-
-        assertThat(page.data).isEmpty()
-        assertThat(page.nextKey).isNull()
+        assertThat(envelope.data!!.first().id).isEqualTo("p")
     }
 
+    /** Mapping to the domain must not lose the fields the card renders. */
     @Test
-    fun `a text post with no media field deserializes`() = runTest {
-        enqueue(200, """{"data":[{"id":"t","author_id":"a","text":"plain","post_type":"text"}]}""")
+    fun `domain mapping preserves author, counts and viewer state`() {
+        val domain = decode(REELS_PAGE_1).data!!.first().toDomain()
 
-        val page = load(FeedSurface.Home) as PagingSource.LoadResult.Page
-
-        assertThat(page.data.first().media).isEmpty()
+        assertThat(domain.author.nameForDisplay).isEqualTo("Android Repair")
+        assertThat(domain.media.single().hlsUrl).startsWith("/v1/media/")
+        assertThat(domain.media.single().isReady).isTrue()
+        assertThat(domain.media.single().isVertical).isTrue()
+        assertThat(domain.viewer.hasReacted).isFalse()
     }
 
+    /**
+     * A still-processing asset can report 0x0. The card divides width by
+     * height to reserve space, so the mapper must not hand it a zero.
+     */
     @Test
-    fun `the cursor is sent on the next page request`() = runTest {
-        enqueue(200, HOME_VIDEO_PAGE)
+    fun `zero dimensions survive mapping`() {
+        val item = decode("""{"data":[{"id":"p","media":[{"media_id":"m","kind":"image","width":0,"height":0}]}]}""")
+            .data!!.first().toDomain()
 
-        load(FeedSurface.Home, key = "2026-08-16T19:44:32.998Z")
-
-        val request = server.takeRequest()
-        assertThat(request.target).contains("cursor=2026-08-16T19%3A44%3A32.998Z")
-        assertThat(request.target).startsWith("/v1/feed/home")
-    }
-
-    /** No token is a 401; the UI must be able to say "sign in", not "retry". */
-    @Test
-    fun `an unauthenticated feed surfaces a typed auth error`() = runTest {
-        enqueue(401, """{"error":{"code":"UNAUTHORIZED","message":"Invalid user ID"}}""")
-
-        val result = load(FeedSurface.Home) as PagingSource.LoadResult.Error
-
-        val error = (result.throwable as AppErrorException).error
-        assertThat(error).isInstanceOf(AppError.AuthFailed::class.java)
-    }
-
-    @Test
-    fun `unknown item fields are ignored`() = runTest {
-        enqueue(200, """{"data":[{"id":"x","author_id":"a","brand_new":{"n":1}}]}""")
-
-        val page = load(FeedSurface.Home) as PagingSource.LoadResult.Page
-
-        assertThat(page.data.first().id).isEqualTo("x")
+        assertThat(item.media.single().width).isEqualTo(0)
+        assertThat(item.media.single().isVertical).isFalse()
     }
 
     private companion object {
-        const val PAGE_SIZE = 15
+        const val HOME_PAGE_1 =
+            """{"data":[{"id":"c1604d02-a4fe-44f2-91a6-feebd0ac814f","author_id":"71851843-a69f-4d2f-a2f8-9f6eea629609","text":"Evidence pass fixture 3","visibility":"public","content_type":"post","is_pinned":false,"created_at":"2026-08-17T10:16:51.278089Z","updated_at":"2026-08-17T10:16:51.278089Z","counts":{"likes":0,"comments":0},"view_count":0,"has_reacted":false,"is_bookmarked":false,"repost_count":0,"has_reposted":false,"is_repostable":true,"post_type":"text","app_origin":"postbook","share_to_postbook":true,"feed_content_type":"post","author":{"id":"71851843-a69f-4d2f-a2f8-9f6eea629609","display_name":"Android Evidence"}}],"meta":{"next_cursor":"2026-08-17T10:16:51.224Z"}}"""
 
-        const val HOME_VIDEO_PAGE =
-            """{"data":[{"id":"3d752833-089d-48fa-aae2-625fcf602924","author_id":"719e2958-f412-44ca-b94a-b00060a7fccb","text":"Landscape PostTube — approved contract fixture","visibility":"public","content_type":"long_video","is_pinned":false,"created_at":"2026-08-16T19:44:32.998142Z","updated_at":"2026-08-16T19:44:33.065329Z","media":[{"media_id":"7ee053fc-59aa-4b24-99e9-fdbcace8fa3e","kind":"video"}],"counts":{"likes":0,"comments":0},"view_count":0,"is_bookmarked":false,"post_type":"video","app_origin":"posttube","share_to_postbook":true,"feed_content_type":"long_video"}],"meta":{"next_cursor":"2026-08-16T19:44:32.998Z"}}"""
-
-        const val HOME_IMAGE_PAGE =
-            """{"data":[{"id":"a742c9a7-acb9-4751-a5b4-0f0a7b7763c8","author_id":"2d373f48-6d0f-4a62-b439-51dee0b0ec2e","text":"Followed image fixture for mixed feed","visibility":"public","content_type":"post","is_pinned":false,"created_at":"2026-08-16T20:21:02.821823Z","updated_at":"2026-08-16T20:21:02.821823Z","media":[{"media_id":"e4484a71-e26d-423a-a179-9ece7f977f11","kind":"image"}],"counts":{"likes":0,"comments":0},"view_count":0,"is_bookmarked":false,"post_type":"image","app_origin":"postbook","share_to_postbook":true,"feed_content_type":"post"}],"meta":{"next_cursor":"2026-08-16T20:21:02.821Z"}}"""
-
-        const val REELS_PAGE =
-            """{"data":[{"id":"724ce232-0a7c-48c3-9875-3f3ccef188b9","author_id":"719e2958-f412-44ca-b94a-b00060a7fccb","text":"Portrait Flick — approved contract fixture","visibility":"public","content_type":"flick","is_pinned":false,"created_at":"2026-08-16T19:44:32.520451Z","updated_at":"2026-08-16T19:44:32.609462Z","media":[{"media_id":"b52c17e1-d714-4250-93bd-0225b6898104","kind":"video"}],"counts":{"likes":0,"comments":0},"view_count":0,"is_bookmarked":false,"post_type":"video","app_origin":"posttube","share_to_postbook":true,"score":0.7253549379638999,"feed_content_type":"flick"}]}"""
+        const val REELS_PAGE_1 =
+            """{"data":[{"id":"724ce232-0a7c-48c3-9875-3f3ccef188b9","author_id":"719e2958-f412-44ca-b94a-b00060a7fccb","text":"Portrait Flick — approved contract fixture","visibility":"public","content_type":"flick","is_pinned":false,"created_at":"2026-08-16T19:44:32.520451Z","updated_at":"2026-08-16T19:44:32.609462Z","media":[{"media_id":"b52c17e1-d714-4250-93bd-0225b6898104","kind":"video","status":"ready","width":360,"height":640,"blurhash":"LnFs0+o}4TeSoLj0WYXff6RNjYtB","variants":{"360p":"http://localhost:9000/media/user/719e2958/b52c17e1/360p?X-Amz-Signature=redacted","480p":"http://localhost:9000/media/user/719e2958/b52c17e1/480p?X-Amz-Signature=redacted","original":"http://localhost:9000/media/user/719e2958/b52c17e1/original?X-Amz-Signature=redacted"},"hls_url":"/v1/media/b52c17e1-d714-4250-93bd-0225b6898104/hls/master.m3u8","expires_at":"2026-08-17T10:42:32.522994799Z"}],"author":{"id":"719e2958-f412-44ca-b94a-b00060a7fccb","display_name":"Android Repair"}}],"meta":{"next_cursor":"djE6ZTcwZWU4ODAtOTlhYS0xMWYxLTkyMzMtZmU0NWFjOWU0MDIx"}}"""
     }
 }

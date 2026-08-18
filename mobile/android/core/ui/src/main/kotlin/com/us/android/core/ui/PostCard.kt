@@ -48,6 +48,12 @@ data class PostCardState(
     /** `text`, `image`, `video`, … */
     val postType: String,
     val mediaCount: Int,
+    /**
+     * Aspect ratio of the first attachment, from the server's real width and
+     * height. Reserving the true ratio before the bytes arrive is what stops
+     * the row resizing mid-scroll. Defaults to 16:9 when unknown.
+     */
+    val mediaAspectRatio: Float = DEFAULT_MEDIA_ASPECT,
     val actions: PostActionState,
     val isPinned: Boolean = false,
 )
@@ -126,7 +132,11 @@ fun PostCard(
         }
 
         if (state.mediaCount > 0) {
-            MediaPlaceholder(postType = state.postType, count = state.mediaCount)
+            MediaPlaceholder(
+                postType = state.postType,
+                count = state.mediaCount,
+                aspectRatio = state.mediaAspectRatio,
+            )
         }
 
         PostActionBar(
@@ -142,17 +152,23 @@ fun PostCard(
 }
 
 /**
- * Stands in for media that has not been fetched.
+ * Stands in for media whose bytes are not on screen yet.
  *
- * A feed item carries `media: [{media_id, kind}]` — an id and a kind, with no
- * delivery URL. Rendering the bytes needs a second call per item to
- * `GET /v1/media/:id/url`, which is an N+1 against the feed. Rather than fire
- * that from a list row, the card states what is there and leaves resolution to
- * the media slice. The alternative — constructing a URL from the storage keys
- * the metadata exposes — is explicitly warned against by the contract capture.
+ * The feed now carries authorized delivery URLs and real dimensions, so this
+ * is no longer a "we cannot resolve this" placeholder — it is the pre-decode
+ * frame. It reserves the item's TRUE aspect ratio so the row does not resize
+ * when the image or first video frame arrives, which is the single largest
+ * source of feed layout shift.
+ *
+ * Falls back to 16:9 only when the server sent no dimensions.
  */
 @Composable
-private fun MediaPlaceholder(postType: String, count: Int, modifier: Modifier = Modifier) {
+private fun MediaPlaceholder(
+    postType: String,
+    count: Int,
+    aspectRatio: Float,
+    modifier: Modifier = Modifier,
+) {
     val label = when (postType) {
         "video" -> if (count > 1) "$count videos" else "Video"
         "image" -> if (count > 1) "$count images" else "Image"
@@ -161,7 +177,7 @@ private fun MediaPlaceholder(postType: String, count: Int, modifier: Modifier = 
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .aspectRatio(MEDIA_ASPECT)
+            .aspectRatio(aspectRatio)
             .clip(RoundedCornerShape(UsTheme.radii.medium))
             .padding(UsTheme.spacing.xxl),
         contentAlignment = Alignment.Center,
@@ -175,7 +191,9 @@ private fun MediaPlaceholder(postType: String, count: Int, modifier: Modifier = 
 }
 
 private const val MAX_LINES = 8
-private const val MEDIA_ASPECT = 16f / 9f
+
+/** Used when the server sent no dimensions for an attachment. */
+const val DEFAULT_MEDIA_ASPECT = 16f / 9f
 
 /** Preview-only: enough lines to prove the ellipsis at MAX_LINES. */
 private const val LONG_TEXT_LINES = 40
