@@ -2,12 +2,14 @@ package http
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/atpost/feed-service/internal/service"
@@ -177,16 +179,13 @@ func (h *Handler) GetReelFeed(c *gin.Context) {
 		return
 	}
 
-	limitStr := c.DefaultQuery("limit", "20")
-	limit, err := strconv.Atoi(limitStr)
-	if err != nil || limit <= 0 {
-		limit = 20
-	}
-	if limit > 50 {
-		limit = 50
+	limit, before, err := rankedPageParams(c)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CURSOR", err.Error(), nil)
+		return
 	}
 
-	feedItems, err := h.svc.GetReelFeed(c.Request.Context(), userID, limit)
+	feedItems, next, err := h.svc.GetReelFeedPage(c.Request.Context(), userID, limit, before)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -206,7 +205,7 @@ func (h *Handler) GetReelFeed(c *gin.Context) {
 	}
 
 	c.Writer.Header().Set("X-Feed-Surface", "reels")
-	api.JSON(c.Writer, http.StatusOK, hydrated, nil)
+	api.JSON(c.Writer, http.StatusOK, hydrated, rankedPageMeta(next))
 }
 
 func (h *Handler) GetFlickFeed(c *gin.Context) {
@@ -217,16 +216,13 @@ func (h *Handler) GetFlickFeed(c *gin.Context) {
 		return
 	}
 
-	limitStr := c.DefaultQuery("limit", "20")
-	limit, err := strconv.Atoi(limitStr)
-	if err != nil || limit <= 0 {
-		limit = 20
-	}
-	if limit > 50 {
-		limit = 50
+	limit, before, err := rankedPageParams(c)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CURSOR", err.Error(), nil)
+		return
 	}
 
-	feedItems, err := h.svc.GetFlickFeed(c.Request.Context(), userID, limit)
+	feedItems, next, err := h.svc.GetFlickFeedPage(c.Request.Context(), userID, limit, before)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -243,7 +239,7 @@ func (h *Handler) GetFlickFeed(c *gin.Context) {
 	}
 
 	c.Writer.Header().Set("X-Feed-Surface", "flicks")
-	api.JSON(c.Writer, http.StatusOK, hydrated, nil)
+	api.JSON(c.Writer, http.StatusOK, hydrated, rankedPageMeta(next))
 }
 
 func (h *Handler) GetLongVideoFeed(c *gin.Context) {
@@ -254,16 +250,13 @@ func (h *Handler) GetLongVideoFeed(c *gin.Context) {
 		return
 	}
 
-	limitStr := c.DefaultQuery("limit", "20")
-	limit, err := strconv.Atoi(limitStr)
-	if err != nil || limit <= 0 {
-		limit = 20
-	}
-	if limit > 50 {
-		limit = 50
+	limit, before, err := rankedPageParams(c)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CURSOR", err.Error(), nil)
+		return
 	}
 
-	feedItems, err := h.svc.GetLongVideoFeed(c.Request.Context(), userID, limit)
+	feedItems, next, err := h.svc.GetLongVideoFeedPage(c.Request.Context(), userID, limit, before)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -280,7 +273,7 @@ func (h *Handler) GetLongVideoFeed(c *gin.Context) {
 	}
 
 	c.Writer.Header().Set("X-Feed-Surface", "videos")
-	api.JSON(c.Writer, http.StatusOK, hydrated, nil)
+	api.JSON(c.Writer, http.StatusOK, hydrated, rankedPageMeta(next))
 }
 
 func (h *Handler) GetVideoFeed(c *gin.Context) {
@@ -291,17 +284,14 @@ func (h *Handler) GetVideoFeed(c *gin.Context) {
 		return
 	}
 
-	limitStr := c.DefaultQuery("limit", "20")
-	limit, err := strconv.Atoi(limitStr)
-	if err != nil || limit <= 0 {
-		limit = 20
-	}
-	if limit > 50 {
-		limit = 50
+	limit, before, err := rankedPageParams(c)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CURSOR", err.Error(), nil)
+		return
 	}
 
 	followingOnly := c.DefaultQuery("following_only", "") == "true"
-	feedItems, err := h.svc.GetVideoFeed(c.Request.Context(), userID, limit, followingOnly)
+	feedItems, next, err := h.svc.GetVideoFeedPage(c.Request.Context(), userID, limit, before, followingOnly)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -322,7 +312,45 @@ func (h *Handler) GetVideoFeed(c *gin.Context) {
 	}
 
 	c.Writer.Header().Set("X-Feed-Surface", "watch")
-	api.JSON(c.Writer, http.StatusOK, hydrated, nil)
+	api.JSON(c.Writer, http.StatusOK, hydrated, rankedPageMeta(next))
+}
+
+// Ranked-surface cursors are opaque base64 tokens containing the exact Scylla
+// timeline timeuuid. New posts inserted above the watermark do not shift later
+// pages, equal timestamps do not collide, and earlier pages are not re-scanned.
+func rankedPageParams(c *gin.Context) (limit int, before string, err error) {
+	limit, err = strconv.Atoi(c.DefaultQuery("limit", "20"))
+	if err != nil || limit <= 0 {
+		limit = 20
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	raw := c.Query("cursor")
+	if raw == "" {
+		return limit, "", nil
+	}
+	decoded, decodeErr := base64.RawURLEncoding.DecodeString(raw)
+	if decodeErr != nil {
+		return 0, "", fmt.Errorf("invalid ranked feed cursor")
+	}
+	version, token, ok := strings.Cut(string(decoded), ":")
+	if !ok || version != "v1" {
+		return 0, "", fmt.Errorf("invalid ranked feed cursor")
+	}
+	parsed, parseErr := uuid.Parse(token)
+	if parseErr != nil || parsed.Version() != 1 {
+		return 0, "", fmt.Errorf("invalid ranked feed cursor")
+	}
+	return limit, parsed.String(), nil
+}
+
+func rankedPageMeta(next string) *api.Meta {
+	if next == "" {
+		return nil
+	}
+	token := base64.RawURLEncoding.EncodeToString([]byte("v1:" + next))
+	return &api.Meta{NextCursor: token}
 }
 
 type preferenceRequest struct {

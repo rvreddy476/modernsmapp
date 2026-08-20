@@ -153,7 +153,7 @@ func (c *Client) BlockedIDs(ctx context.Context, viewerID uuid.UUID) ([]string, 
 func (c *Client) fetchBlocked(ctx context.Context, viewerID uuid.UUID) ([]string, error) {
 	// Default relation set = blocks (both directions) + the viewer's
 	// outgoing mutes. See BlockedIDs for why mutes are included.
-	url := fmt.Sprintf("%s/v1/graph/blocked-and-muted?user_id=%s",
+	url := fmt.Sprintf("%s/v1/internal/graph/blocked-and-muted?user_id=%s",
 		c.baseURL, viewerID.String())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {

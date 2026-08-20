@@ -22,14 +22,14 @@ type NotificationDigest struct {
 // NotificationBundle groups similar notifications (e.g. multiple likes on one post)
 // to reduce noise. Sent once a threshold or TTL is reached.
 type NotificationBundle struct {
-	ID            uuid.UUID  `json:"id"`
-	UserID        uuid.UUID  `json:"user_id"`
-	BundleType    string     `json:"bundle_type"`
-	Count         int        `json:"count"`
+	ID            uuid.UUID   `json:"id"`
+	UserID        uuid.UUID   `json:"user_id"`
+	BundleType    string      `json:"bundle_type"`
+	Count         int         `json:"count"`
 	ActorIDs      []uuid.UUID `json:"actor_ids"`
-	RefID         *uuid.UUID `json:"ref_id,omitempty"`
-	LastUpdatedAt time.Time  `json:"last_updated_at"`
-	SentAt        *time.Time `json:"sent_at,omitempty"`
+	RefID         *uuid.UUID  `json:"ref_id,omitempty"`
+	LastUpdatedAt time.Time   `json:"last_updated_at"`
+	SentAt        *time.Time  `json:"sent_at,omitempty"`
 }
 
 // UpsertBundle creates or updates a notification bundle for the given user.

@@ -312,6 +312,7 @@ func (s *Store) GetTrendingPosts(ctx context.Context, contentTypes []string, lim
 // trending score DESC). Cursor format depends on the sort mode:
 //   - recent: RFC3339Nano timestamp
 //   - top:    base64(JSON{score, post_id})
+//
 // GetPostsByHashtag returns posts containing a specific hashtag, paginated.
 // contentTypes filters by content_type (e.g. ["post"], ["flick"], ["long_video"]).
 // Pass nil or empty slice to return all content types.

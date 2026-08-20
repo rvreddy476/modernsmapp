@@ -1,6 +1,12 @@
 plugins {
     id("us.android.library")
     id("us.android.hilt")
+    // Required, not optional: this module declares @Serializable DTOs for the
+    // media delivery endpoint. Without the compiler plugin the annotation
+    // still COMPILES and no serializer is generated, so the failure is a
+    // runtime SerializationException on first parse — which is exactly how it
+    // was found, silently, on a device.
+    alias(libs.plugins.kotlin.serialization)
 }
 
 android {

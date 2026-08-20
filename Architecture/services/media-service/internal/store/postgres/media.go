@@ -208,7 +208,7 @@ func (s *MediaAssetStore) GetMediaBatch(ctx context.Context, ids []uuid.UUID) ([
 	}
 	defer rows.Close()
 
-	mediaMap := make(map[uuid.UUID]*MediaAsset)
+	mediaMap := make(map[uuid.UUID]int, len(ids))
 	var result []MediaAsset
 	for rows.Next() {
 		var m MediaAsset
@@ -220,7 +220,7 @@ func (s *MediaAssetStore) GetMediaBatch(ctx context.Context, ids []uuid.UUID) ([
 			return nil, err
 		}
 		result = append(result, m)
-		mediaMap[m.ID] = &result[len(result)-1]
+		mediaMap[m.ID] = len(result) - 1
 	}
 
 	// Batch-load variants
@@ -239,8 +239,8 @@ func (s *MediaAssetStore) GetMediaBatch(ctx context.Context, ids []uuid.UUID) ([
 		if err := vRows.Scan(&v.MediaAssetID, &v.Name, &v.Width, &v.Height, &v.SizeBytes, &v.Mime, &v.ObjectKey, &v.CreatedAt); err != nil {
 			continue
 		}
-		if m, ok := mediaMap[v.MediaAssetID]; ok {
-			m.Variants = append(m.Variants, v)
+		if idx, ok := mediaMap[v.MediaAssetID]; ok {
+			result[idx].Variants = append(result[idx].Variants, v)
 		}
 	}
 

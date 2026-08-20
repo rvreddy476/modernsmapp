@@ -40,6 +40,11 @@ env:
   ENV: prod
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  USER_SERVICE_URL: http://identity-user-service.atpost.svc.cluster.local:8110
+  GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083
+  POST_SERVICE_URL: http://post-service.atpost.svc.cluster.local:8084
+  PROFILE_SERVICE_URL: http://identity-profile-service.atpost.svc.cluster.local:8098
+  MEDIA_SERVICE_URL: http://media-service.atpost.svc.cluster.local:8087
 
 ingress:
   enabled: false

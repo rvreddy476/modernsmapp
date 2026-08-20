@@ -7,9 +7,8 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.pager.VerticalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -27,7 +26,7 @@ import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.collectAsLazyPagingItems
 import com.us.android.core.common.error.AppError
 import com.us.android.core.common.time.formatRelativeTime
-import com.us.android.core.designsystem.component.UsRootTopBar
+import com.us.android.core.designsystem.component.UsHomeTopBar
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.icon.UsIcons
@@ -55,13 +54,27 @@ fun FeedScreen(
 
     UsScaffold(
         topBar = {
-            UsRootTopBar(
-                title = "Home",
+            UsHomeTopBar(
+                onHomeClick = { },
                 actions = {
+                    IconButton(onClick = { }) {
+                        Icon(
+                            imageVector = UsIcons.Explore,
+                            contentDescription = "Search",
+                            tint = UsTheme.extended.textPrimary,
+                        )
+                    }
                     IconButton(onClick = { }) {
                         Icon(
                             imageVector = UsIcons.Create,
                             contentDescription = "New post",
+                            tint = UsTheme.extended.textPrimary,
+                        )
+                    }
+                    IconButton(onClick = { }) {
+                        Icon(
+                            imageVector = UsIcons.Comment,
+                            contentDescription = "Messages",
                             tint = UsTheme.extended.textPrimary,
                         )
                     }
@@ -82,6 +95,7 @@ fun FeedScreen(
         )
     }
 }
+
 
 @Composable
 private fun FeedList(
@@ -115,30 +129,15 @@ private fun FeedList(
             modifier = modifier,
         )
 
-        else -> LazyColumn(
-            state = rememberLazyListState(),
-            modifier = modifier.fillMaxSize(),
-            // contentPadding, not Modifier.padding: padding the LIST clips the
-            // scroll to a smaller viewport, so cards are cut off at a hard edge
-            // while scrolling. Padding the CONTENT lets them travel to the real
-            // edges and only inset the first and last.
-            contentPadding = PaddingValues(
-                horizontal = UsTheme.spacing.pageHorizontal,
-                vertical = UsTheme.spacing.l,
-            ),
-            // The gap is what makes each card read as a separate object. With
-            // cards flush against each other the boundary disappears and the
-            // list looks like one long panel again.
-            verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
-        ) {
-            // `key` is what lets Compose keep an item's state across a page
-            // append. Without it every append re-keys by index and the whole
-            // visible list recomposes, which is the classic feed jank.
-            items(
-                count = items.itemCount,
+        else -> {
+            val pagerState = rememberPagerState(pageCount = { items.itemCount })
+            VerticalPager(
+                state = pagerState,
                 key = { index -> items.peek(index)?.id ?: index },
+                modifier = modifier.fillMaxSize(),
+                beyondViewportPageCount = 1,
             ) { index ->
-                val item = items[index] ?: return@items
+                val item = items[index] ?: return@VerticalPager
                 PostCard(
                     state = item.toCardState(actions, posterUrl(item)),
                     onClick = { onOpenPost(item.id) },
@@ -148,13 +147,14 @@ private fun FeedList(
                     onRepost = { onOpenPost(item.id) },
                     onBookmark = { onBookmark(item.id) },
                     onShare = { share(item.text, item.author.nameForDisplay) },
+                    modifier = Modifier.fillMaxSize(),
                 )
             }
-
-            item { AppendState(state = items.loadState.append, onRetry = items::retry) }
         }
     }
 }
+
+
 
 /** The footer: a spinner while appending, an inline retry when it failed. */
 @Composable

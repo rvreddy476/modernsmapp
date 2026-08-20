@@ -7,10 +7,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/identity-shared/api"
+	identitymiddleware "github.com/atpost/identity-shared/middleware"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
-	"github.com/atpost/identity-shared/api"
 )
 
 const (
@@ -57,7 +58,7 @@ func AuthMiddlewareWithKeys(keys JWTKeySet) gin.HandlerFunc {
 			return
 		}
 
-		tokenStr := readBearerToken(c)
+		tokenStr, credentialSource := identitymiddleware.ReadAccessToken(c, accessTokenCookieName)
 		if tokenStr == "" {
 			api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing access token", nil, nil)
 			c.Abort()
@@ -92,6 +93,7 @@ func AuthMiddlewareWithKeys(keys JWTKeySet) gin.HandlerFunc {
 		}
 
 		c.Request.Header.Set("X-User-Id", claims.Subject)
+		identitymiddleware.MarkAuthenticatedCredential(c, credentialSource)
 		c.Next()
 	}
 }
@@ -172,40 +174,5 @@ func RecoveryMiddleware(log *slog.Logger) gin.HandlerFunc {
 }
 
 func RequireCSRFMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if isSafeMethod(c.Request.Method) {
-			c.Next()
-			return
-		}
-
-		headerToken := c.GetHeader(csrfHeaderName)
-		cookieToken, err := c.Cookie(csrfCookieName)
-		if err != nil || headerToken == "" || cookieToken == "" || headerToken != cookieToken {
-			api.Error(c.Writer, http.StatusForbidden, "CSRF_FAILED", "Missing or invalid CSRF token", nil, nil)
-			c.Abort()
-			return
-		}
-
-		c.Next()
-	}
-}
-
-func readBearerToken(c *gin.Context) string {
-	if token, err := c.Cookie(accessTokenCookieName); err == nil && token != "" {
-		return token
-	}
-	authHeader := c.GetHeader("Authorization")
-	if strings.HasPrefix(authHeader, "Bearer ") {
-		return strings.TrimPrefix(authHeader, "Bearer ")
-	}
-	return ""
-}
-
-func isSafeMethod(method string) bool {
-	switch method {
-	case http.MethodGet, http.MethodHead, http.MethodOptions:
-		return true
-	default:
-		return false
-	}
+	return identitymiddleware.RequireCSRF(csrfCookieName, csrfHeaderName)
 }

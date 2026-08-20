@@ -86,12 +86,32 @@ CREATE TABLE IF NOT EXISTS resumable_uploads (
     chunk_size      BIGINT NOT NULL DEFAULT 5242880,
     status          TEXT NOT NULL DEFAULT 'initiated'
                        CHECK (status IN ('initiated','uploading','completed','aborted','expired')),
-    storage_key     TEXT NOT NULL,
+    object_key      TEXT NOT NULL,
     last_chunk_at   TIMESTAMPTZ,
     expires_at      TIMESTAMPTZ NOT NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- CREATE TABLE IF NOT EXISTS does not add columns to an already-created
+-- table. Earlier bootstraps recorded migration 004 while this setup copy was
+-- incomplete, so repair upgrades additively as well as creating correctly.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+         WHERE table_schema = current_schema()
+           AND table_name = 'resumable_uploads' AND column_name = 'storage_key'
+    ) AND NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+         WHERE table_schema = current_schema()
+           AND table_name = 'resumable_uploads' AND column_name = 'object_key'
+    ) THEN
+        ALTER TABLE resumable_uploads RENAME COLUMN storage_key TO object_key;
+    END IF;
+END $$;
+ALTER TABLE resumable_uploads ADD COLUMN IF NOT EXISTS total_parts INT NOT NULL DEFAULT 0;
+ALTER TABLE resumable_uploads ADD COLUMN IF NOT EXISTS mime_type TEXT NOT NULL DEFAULT 'application/octet-stream';
+ALTER TABLE resumable_uploads ADD COLUMN IF NOT EXISTS upload_token TEXT;
 CREATE INDEX IF NOT EXISTS idx_resumable_uploads_media ON resumable_uploads(media_id);
 CREATE INDEX IF NOT EXISTS idx_resumable_uploads_status ON resumable_uploads(status) WHERE status IN ('initiated', 'uploading');
 CREATE INDEX IF NOT EXISTS idx_resumable_uploads_expiry ON resumable_uploads(expires_at) WHERE status != 'completed';

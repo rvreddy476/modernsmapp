@@ -30,6 +30,14 @@ const (
 	defaultURLExpiry = 15 * time.Minute
 )
 
+var (
+	ErrUploadForbidden    = errors.New("upload confirmation forbidden")
+	ErrUploadObjectAbsent = errors.New("upload object is absent")
+	ErrUploadSizeMismatch = errors.New("upload object size does not match the declared size")
+	ErrUploadState        = errors.New("upload cannot be confirmed in its current state")
+	ErrUploadIntegrity    = errors.New("upload metadata integrity check failed")
+)
+
 type Service struct {
 	pgStore   *postgres.MediaAssetStore
 	blobStore *blob.Store
@@ -296,31 +304,64 @@ func (s *Service) ConfirmUpload(ctx context.Context, mediaID uuid.UUID, userID u
 		return nil, err
 	}
 	if media.UploaderID != userID {
-		return nil, fmt.Errorf("forbidden: you do not own this media")
+		return nil, fmt.Errorf("%w: you do not own this media", ErrUploadForbidden)
+	}
+	// Confirmation is idempotent after work has been accepted. It must not
+	// enqueue duplicate transcodes or repeat synchronous image processing.
+	switch media.ProcessingStatus {
+	case "processing", "ready":
+		return media, nil
+	case "failed", "rejected":
+		return nil, fmt.Errorf("%w: media is %s", ErrUploadState, media.ProcessingStatus)
+	case "pending_upload", "uploaded":
+		// continue; uploaded is recoverable after a crash between the status
+		// update and the durable work-intent transaction.
+	default:
+		return nil, fmt.Errorf("%w: unknown status %q", ErrUploadState, media.ProcessingStatus)
 	}
 
-	// Magic-bytes validation: download first 16 bytes and verify file signature
-	headerData, err := s.blobStore.DownloadObject(ctx, media.StorageKey)
-	if err == nil && len(headerData) >= 16 {
-		switch media.FileType {
-		case "video":
-			if _, valid := processing.ValidateVideoMagicBytes(headerData[:min(len(headerData), 64)]); !valid {
-				_ = s.pgStore.UpdateStatus(ctx, mediaID, "rejected")
-				return nil, fmt.Errorf("invalid video file: magic bytes do not match declared MIME type")
-			}
-		case "image":
-			if _, valid := processing.ValidateImageMagicBytes(headerData[:min(len(headerData), 64)]); !valid {
-				_ = s.pgStore.UpdateStatus(ctx, mediaID, "rejected")
-				return nil, fmt.Errorf("invalid image file: magic bytes do not match declared MIME type")
-			}
-		case "audio":
-			// P0-6: a spoofed container (declared audio/*, actually
-			// something else) is rejected before any processing runs.
-			if _, valid := processing.ValidateAudioMagicBytes(headerData[:min(len(headerData), 64)]); !valid {
-				_ = s.pgStore.UpdateStatus(ctx, mediaID, "rejected")
-				return nil, fmt.Errorf("invalid audio file: magic bytes do not match declared MIME type")
-			}
+	expectedKey := fmt.Sprintf("user/%s/%s/original", media.UploaderID, media.ID)
+	if media.StorageKey != expectedKey {
+		return nil, fmt.Errorf("%w: unexpected storage key", ErrUploadIntegrity)
+	}
+	info, err := s.blobStore.StatObject(ctx, media.StorageKey)
+	if errors.Is(err, blob.ErrObjectNotFound) {
+		return nil, fmt.Errorf("%w: %s", ErrUploadObjectAbsent, media.StorageKey)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("verify uploaded object: %w", err)
+	}
+	if info.Size != media.FileSizeBytes {
+		return nil, fmt.Errorf("%w: declared=%d actual=%d", ErrUploadSizeMismatch, media.FileSizeBytes, info.Size)
+	}
+
+	// Magic-byte validation reads at most 64 bytes. A storage read failure is
+	// not an approval; confirmation is retried with no state change.
+	headerEnd := int64(63)
+	if info.Size-1 < headerEnd {
+		headerEnd = info.Size - 1
+	}
+	if headerEnd < 0 {
+		return nil, fmt.Errorf("%w: uploaded object is empty", ErrUploadSizeMismatch)
+	}
+	headerData, err := s.blobStore.ReadObjectRange(ctx, media.StorageKey, 0, headerEnd)
+	if err != nil {
+		return nil, fmt.Errorf("read uploaded object header: %w", err)
+	}
+	valid := false
+	switch media.FileType {
+	case "video":
+		_, valid = processing.ValidateVideoMagicBytes(headerData)
+	case "image":
+		_, valid = processing.ValidateImageMagicBytes(headerData)
+	case "audio":
+		_, valid = processing.ValidateAudioMagicBytes(headerData)
+	}
+	if !valid {
+		if updateErr := s.pgStore.UpdateStatus(ctx, mediaID, "rejected"); updateErr != nil {
+			return nil, fmt.Errorf("reject invalid %s and persist status: %w", media.FileType, updateErr)
 		}
+		return nil, fmt.Errorf("invalid %s file: magic bytes do not match declared MIME type", media.FileType)
 	}
 
 	// 2. Update status to 'uploaded'
@@ -396,7 +437,7 @@ func (s *Service) ConfirmUpload(ctx context.Context, mediaID uuid.UUID, userID u
 
 // processImage handles synchronous image processing (resize + upload variants).
 func (s *Service) processImage(ctx context.Context, media *postgres.MediaAsset) error {
-	moderationStatus := "manual_review"
+	moderationStatus := "passed"
 	// Content safety scan for images.
 	//
 	// Audit H8: previously this block "skipped" the scan on download
@@ -413,6 +454,7 @@ func (s *Service) processImage(ctx context.Context, media *postgres.MediaAsset) 
 	// When the scanner is disabled entirely the block is skipped and
 	// the image is admitted unscanned (dev / behind-perimeter mode).
 	if s.cfg.ScannerEnabled && isImage(media.MimeType) {
+		moderationStatus = "manual_review"
 		if _, isStub := s.scanner.(*processing.StubScanner); isStub && !s.cfg.ScannerAllowStub {
 			slog.Error("media: rejecting upload — scanner enabled but only StubScanner configured",
 				"media_id", media.ID)
@@ -510,14 +552,19 @@ func (s *Service) GetMedia(ctx context.Context, mediaID uuid.UUID) (*postgres.Me
 
 // MediaURLResponse is the response for serving media URLs.
 type MediaURLResponse struct {
-	MediaID  uuid.UUID         `json:"media_id"`
-	FileType string            `json:"kind"`
-	Status   string            `json:"status"`
-	Width    *int              `json:"width,omitempty"`
-	Height   *int              `json:"height,omitempty"`
-	Blurhash *string           `json:"blurhash,omitempty"`
-	Variants map[string]string `json:"variants"`
-	HLSURL   string            `json:"hls_url,omitempty"`
+	MediaID   uuid.UUID         `json:"media_id"`
+	FileType  string            `json:"kind"`
+	Status    string            `json:"status"`
+	Width     *int              `json:"width,omitempty"`
+	Height    *int              `json:"height,omitempty"`
+	Blurhash  *string           `json:"blurhash,omitempty"`
+	Variants  map[string]string `json:"variants,omitempty"`
+	HLSURL    string            `json:"hls_url,omitempty"`
+	// ExpiresAt tells native clients when the bounded delivery capability
+	// must be refreshed. Public variants may be stable, but using the same
+	// refresh boundary keeps one DTO valid when visibility later becomes
+	// protected and covers the signed HLS child/segment URLs.
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
 // GetMediaURL returns authorized delivery URLs for a media item and all its
@@ -554,19 +601,119 @@ func (s *Service) GetMediaURL(ctx context.Context, viewerID, mediaID uuid.UUID) 
 		return nil, err
 	}
 
-	hlsURL := urls["hls"]
+	if media.ProcessingStatus != "ready" {
+		slog.InfoContext(ctx, "media single: asset permitted but not ready",
+			"media_id", media.ID,
+			"viewer_id", viewerID,
+			"status", media.ProcessingStatus)
+		return &MediaURLResponse{
+			MediaID:  media.ID,
+			FileType: media.FileType,
+			Status:   media.ProcessingStatus,
+			Width:    media.Width,
+			Height:   media.Height,
+			Blurhash: media.Blurhash,
+			Variants: nil,
+			HLSURL:   "",
+		}, nil
+	}
+
+	hlsURL := ""
+	if media.HLSMasterKey != "" {
+		// A signature on the storage master does not propagate to its relative
+		// child playlists and segments. Return the authorized API playlist path;
+		// that path rewrites children and signs the byte-bearing segments.
+		hlsURL = hlsPlaylistURL(media.ID, "master.m3u8")
+	}
 	delete(urls, "hls")
+	expires := time.Now().UTC().Add(delivery.MaxProtectedTTL)
 
 	return &MediaURLResponse{
-		MediaID:  media.ID,
-		FileType: media.FileType,
-		Status:   media.ProcessingStatus,
-		Width:    media.Width,
-		Height:   media.Height,
-		Blurhash: media.Blurhash,
-		Variants: urls,
-		HLSURL:   hlsURL,
+		MediaID:   media.ID,
+		FileType:  media.FileType,
+		Status:    media.ProcessingStatus,
+		Width:     media.Width,
+		Height:    media.Height,
+		Blurhash:  media.Blurhash,
+		Variants:  urls,
+		HLSURL:    hlsURL,
+		ExpiresAt: &expires,
 	}, nil
+}
+
+func hlsPlaylistURL(mediaID uuid.UUID, playlist string) string {
+	return fmt.Sprintf("/v1/media/%s/hls/%s", mediaID, playlist)
+}
+
+// GetHLSPlaylist authorizes an asset and rewrites its playlist into a graph a
+// native player can follow. Only generated basename playlists are accepted;
+// callers cannot turn this endpoint into an arbitrary bucket reader.
+func (s *Service) GetHLSPlaylist(ctx context.Context, viewerID, mediaID uuid.UUID, playlist string) ([]byte, error) {
+	if s.gate == nil {
+		return nil, fmt.Errorf("%w: delivery gate not configured", delivery.ErrDeliveryUnresolved)
+	}
+	media, err := s.pgStore.GetMedia(ctx, mediaID)
+	if err != nil {
+		return nil, err
+	}
+	if media.HLSMasterKey == "" {
+		return nil, fmt.Errorf("HLS is not available for media %s", mediaID)
+	}
+	playlist = strings.TrimSpace(playlist)
+	if playlist == "" || playlist == "hls" {
+		playlist = "master.m3u8"
+	}
+	if strings.ContainsAny(playlist, `/\\`) || playlist == "." || playlist == ".." || !strings.HasSuffix(playlist, ".m3u8") {
+		return nil, fmt.Errorf("invalid HLS playlist %q", playlist)
+	}
+
+	baseKey := strings.TrimSuffix(media.HLSMasterKey, "master.m3u8")
+	playlistKey := baseKey + playlist
+	raw, err := s.blobStore.DownloadObject(ctx, playlistKey)
+	if err != nil {
+		return nil, fmt.Errorf("load HLS playlist: %w", err)
+	}
+	lines := strings.Split(strings.ReplaceAll(string(raw), "\r\n", "\n"), "\n")
+	keys := map[string]string{"playlist": playlistKey}
+	if playlist != "master.m3u8" {
+		for _, line := range lines {
+			name := strings.TrimSpace(line)
+			if name == "" || strings.HasPrefix(name, "#") {
+				continue
+			}
+			if strings.ContainsAny(name, `/\\`) || name == "." || name == ".." {
+				return nil, fmt.Errorf("invalid HLS segment reference %q", name)
+			}
+			keys[name] = baseKey + name
+		}
+	}
+
+	// URLsForAsset is the authorization choke point. Including the playlist
+	// key makes even an empty playlist require a resolved permission decision;
+	// child segment URLs are then signed after that same single decision.
+	urls, err := s.gate.URLsForAsset(ctx, viewerID.String(), mediaID.String(), keys)
+	if err != nil {
+		return nil, err
+	}
+	for i, line := range lines {
+		name := strings.TrimSpace(line)
+		if name == "" || strings.HasPrefix(name, "#") {
+			continue
+		}
+		if playlist == "master.m3u8" {
+			if !strings.HasSuffix(name, ".m3u8") || strings.ContainsAny(name, `/\\`) {
+				return nil, fmt.Errorf("invalid HLS child playlist reference %q", name)
+			}
+			lines[i] = hlsPlaylistURL(mediaID, name)
+			continue
+		}
+		signed, ok := urls[name]
+		if !ok || signed == "" {
+			return nil, fmt.Errorf("missing signed URL for HLS segment %q", name)
+		}
+		lines[i] = signed
+	}
+	return []byte(strings.Join(lines, "\n")), nil
 }
 
 // GetMediaVariantURL returns an authorized delivery URL for one variant.
@@ -620,7 +767,19 @@ func (s *Service) BatchMediaURLs(ctx context.Context, viewerID uuid.UUID, ids []
 		return nil, err
 	}
 
-	result := make(map[uuid.UUID]*MediaURLResponse, len(medias))
+	foundMap := make(map[uuid.UUID]bool, len(medias))
+	for _, m := range medias {
+		foundMap[m.ID] = true
+	}
+	for _, id := range ids {
+		if !foundMap[id] {
+			slog.WarnContext(ctx, "media batch: requested asset absent from database",
+				"viewer_id", viewerID,
+				"media_id", id)
+		}
+	}
+
+	assetKeys := make(map[string]map[string]string, len(medias))
 	for _, m := range medias {
 		keys := map[string]string{"original": m.StorageKey}
 		for _, v := range m.Variants {
@@ -630,25 +789,59 @@ func (s *Service) BatchMediaURLs(ctx context.Context, viewerID uuid.UUID, ids []
 			keys["hls"] = m.HLSMasterKey
 		}
 
-		urls, err := s.gate.URLsForAsset(ctx, viewerID.String(), m.ID.String(), keys)
-		if err != nil {
-			if errors.Is(err, delivery.ErrDeliveryDenied) {
-				continue // resolved no — omit, do not fail the page
-			}
-			return nil, err // unresolved — surface the outage
+		assetKeys[m.ID.String()] = keys
+	}
+	urlsByMedia, err := s.gate.URLsForAssets(ctx, viewerID.String(), assetKeys)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[uuid.UUID]*MediaURLResponse, len(medias))
+	for _, m := range medias {
+		urls, ok := urlsByMedia[m.ID.String()]
+		if !ok {
+			slog.InfoContext(ctx, "media batch: asset denied for viewer",
+				"viewer_id", viewerID,
+				"media_id", m.ID,
+				"status", m.ProcessingStatus)
+			continue // resolved denial — omit without revealing existence
 		}
 
-		hlsURL := urls["hls"]
+		if m.ProcessingStatus != "ready" {
+			// Permitted content, but asset processing is not yet ready for URL delivery.
+			slog.InfoContext(ctx, "media batch: asset permitted but not ready",
+				"viewer_id", viewerID,
+				"media_id", m.ID,
+				"status", m.ProcessingStatus)
+			result[m.ID] = &MediaURLResponse{
+				MediaID:  m.ID,
+				FileType: m.FileType,
+				Status:   m.ProcessingStatus,
+				Width:    m.Width,
+				Height:   m.Height,
+				Blurhash: m.Blurhash,
+				Variants: nil,
+				HLSURL:   "",
+			}
+			continue
+		}
+
+		hlsURL := ""
+		if m.HLSMasterKey != "" {
+			hlsURL = hlsPlaylistURL(m.ID, "master.m3u8")
+		}
 		delete(urls, "hls")
+		expires := time.Now().UTC().Add(delivery.MaxProtectedTTL)
 		result[m.ID] = &MediaURLResponse{
-			MediaID:  m.ID,
-			FileType: m.FileType,
-			Status:   m.ProcessingStatus,
-			Width:    m.Width,
-			Height:   m.Height,
-			Blurhash: m.Blurhash,
-			Variants: urls,
-			HLSURL:   hlsURL,
+			MediaID:   m.ID,
+			FileType:  m.FileType,
+			Status:    m.ProcessingStatus,
+			Width:     m.Width,
+			Height:    m.Height,
+			Blurhash:  m.Blurhash,
+			Variants:  urls,
+			HLSURL:    hlsURL,
+			ExpiresAt: &expires,
 		}
 	}
 

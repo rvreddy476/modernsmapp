@@ -94,10 +94,23 @@ func (h *Handler) EvaluateMe(c *gin.Context) {
 		return
 	}
 
-	// If no key, maybe list all? For V1, let's just require key or return empty.
-	// Or we could implement "GetAllFlagsForUser" in service.
-	// For simplicity in V1, let's just return a generic message or required key.
-	api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Key query parameter required for V1", nil)
+	flags, err := h.svc.ListFlags(c.Request.Context())
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Evaluation failed", nil)
+		return
+	}
+	// Return evaluated values only. Targeting lists, rollout configuration and
+	// admin metadata never cross the public client boundary.
+	results := make(map[string]*service.EvalResult, len(flags))
+	for _, flag := range flags {
+		result, err := h.svc.Evaluate(c.Request.Context(), flag.Key, userID)
+		if err != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Evaluation failed", nil)
+			return
+		}
+		results[flag.Key] = result
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"flags": results}, nil)
 }
 
 func (h *Handler) UpsertFlag(c *gin.Context) {

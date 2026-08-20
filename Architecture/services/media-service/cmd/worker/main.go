@@ -430,6 +430,9 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload events.
 	// 1. Download original video from MinIO
 	videoData, err := blobStore.DownloadObject(ctx, payload.StorageKey)
 	if err != nil {
+		if errors.Is(err, blob.ErrObjectNotFound) {
+			return permanentTranscode(fmt.Errorf("download original: %w", err))
+		}
 		return fmt.Errorf("download original: %w", err)
 	}
 
@@ -548,7 +551,7 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload events.
 
 	// 6. Insert variants into DB
 	if len(variants) == 0 {
-		return fmt.Errorf("transcode produced no uploadable variants")
+		return permanentTranscode(fmt.Errorf("transcode produced no uploadable variants"))
 	}
 	if err := pgStore.InsertVariants(ctx, variants); err != nil {
 		return fmt.Errorf("insert variants: %w", err)

@@ -349,9 +349,11 @@ type PostDetail struct {
 	Counts         *scylla.Counts     `json:"counts"`
 	ViewCount      int64              `json:"view_count"`
 	ViewerReaction *string            `json:"viewer_reaction,omitempty"`
+	HasReacted     bool               `json:"has_reacted"`
 	IsBookmarked   bool               `json:"is_bookmarked"`
 	RepostCount    int                `json:"repost_count"`
 	ViewerRepost   *RepostStateResult `json:"viewer_repost,omitempty"`
+	HasReposted    bool               `json:"has_reposted"`
 	IsRepostable   bool               `json:"is_repostable"`
 }
 
@@ -1249,17 +1251,28 @@ func (s *Service) GetPost(ctx context.Context, id uuid.UUID, viewerID *uuid.UUID
 
 	// Enrich with viewer-specific state
 	if viewerID != nil {
-		reaction, _ := s.scyllaStore.GetReaction(ctx, id, *viewerID)
+		reaction, err := s.scyllaStore.GetReaction(ctx, id, *viewerID)
+		if err != nil {
+			return nil, fmt.Errorf("load viewer reaction: %w", err)
+		}
 		if reaction != "" {
 			detail.ViewerReaction = &reaction
+			detail.HasReacted = true
 		}
-		bookmarked, _ := s.pgStore.IsBookmarked(ctx, *viewerID, id)
+		bookmarked, err := s.pgStore.IsBookmarked(ctx, *viewerID, id)
+		if err != nil {
+			return nil, fmt.Errorf("load viewer bookmark: %w", err)
+		}
 		detail.IsBookmarked = bookmarked
 
 		// Repost state
-		repostState, _ := s.GetRepostState(ctx, *viewerID, id)
+		repostState, err := s.GetRepostState(ctx, *viewerID, id)
+		if err != nil {
+			return nil, fmt.Errorf("load viewer repost: %w", err)
+		}
 		if repostState != nil && repostState.HasReposted {
 			detail.ViewerRepost = repostState
+			detail.HasReposted = true
 		}
 	}
 
@@ -1324,6 +1337,42 @@ func (s *Service) GetPostsByIDs(ctx context.Context, ids []uuid.UUID, viewerID *
 		return nil, err
 	}
 
+	// Page hydration must stay batch-shaped. The previous loop issued one
+	// PostgreSQL query for every bookmark and repost count/state, which merely
+	// moved the client's N+1 problem behind the gateway. PostgreSQL-owned state
+	// is loaded in a constant number of round trips for the whole page.
+	repostCounts, err := s.pgStore.BatchGetRepostCounts(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("load repost counts: %w", err)
+	}
+	bookmarks := map[uuid.UUID]bool{}
+	activeReposts := map[uuid.UUID]*postgres.Repost{}
+	if viewerID != nil {
+		bookmarks, err = s.pgStore.BatchIsBookmarked(ctx, *viewerID, ids)
+		if err != nil {
+			return nil, fmt.Errorf("load viewer bookmarks: %w", err)
+		}
+		activeReposts, err = s.pgStore.BatchGetActiveReposts(ctx, *viewerID, ids)
+		if err != nil {
+			return nil, fmt.Errorf("load viewer reposts: %w", err)
+		}
+	}
+
+	// Scylla partitions reactions and counters by post. The store helper runs
+	// those independent point reads with bounded concurrency, so one slow
+	// partition cannot turn this into a serial page-length latency chain.
+	countsByPost, err := s.scyllaStore.BatchGetCounts(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("load post counts: %w", err)
+	}
+	reactions := map[uuid.UUID]string{}
+	if viewerID != nil {
+		reactions, err = s.scyllaStore.BatchGetReactions(ctx, ids, *viewerID)
+		if err != nil {
+			return nil, fmt.Errorf("load viewer reactions: %w", err)
+		}
+	}
+
 	result := make(map[uuid.UUID]*PostDetail, len(posts))
 	for _, p := range posts {
 		post := p // copy to avoid pointer reuse
@@ -1351,18 +1400,36 @@ func (s *Service) GetPostsByIDs(ctx context.Context, ids []uuid.UUID, viewerID *
 			}
 		}
 
-		counts, _ := s.scyllaStore.GetCounts(ctx, post.ID)
+		counts := countsByPost[post.ID]
+		if counts == nil {
+			counts = &scylla.Counts{}
+		}
 
-		detail := &PostDetail{Post: &post, Counts: counts}
+		detail := &PostDetail{
+			Post:         &post,
+			Counts:       counts,
+			RepostCount:  repostCounts[post.ID],
+			IsRepostable: post.Visibility != "private",
+		}
 
 		// Enrich with viewer-specific state
 		if viewerID != nil {
-			reaction, _ := s.scyllaStore.GetReaction(ctx, post.ID, *viewerID)
+			reaction := reactions[post.ID]
 			if reaction != "" {
 				detail.ViewerReaction = &reaction
+				detail.HasReacted = true
 			}
-			bookmarked, _ := s.pgStore.IsBookmarked(ctx, *viewerID, post.ID)
-			detail.IsBookmarked = bookmarked
+			detail.IsBookmarked = bookmarks[post.ID]
+			if repost := activeReposts[post.ID]; repost != nil {
+				detail.HasReposted = true
+				detail.ViewerRepost = &RepostStateResult{
+					HasReposted: true,
+					RepostID:    &repost.ID,
+					Type:        repost.RepostType,
+					QuoteText:   repost.QuoteText,
+					CreatedAt:   repost.CreatedAt.Format(time.RFC3339),
+				}
+			}
 		}
 
 		// Enrich with poll data if post is a poll
@@ -1414,6 +1481,7 @@ func (s *Service) React(ctx context.Context, postID, userID uuid.UUID, reaction 
 	if err := s.scyllaStore.React(ctx, postID, userID, reaction); err != nil {
 		return err
 	}
+	s.invalidateFeedHydration(ctx, userID, postID)
 
 	// Audit H4: PostReacted via outbox. Synchronous insert so a
 	// process crash in the React goroutine window doesn't drop the
@@ -1460,6 +1528,7 @@ func (s *Service) Unreact(ctx context.Context, postID, userID uuid.UUID) error {
 	if err := s.scyllaStore.Unreact(ctx, postID, userID); err != nil {
 		return err
 	}
+	s.invalidateFeedHydration(ctx, userID, postID)
 
 	// Fire-and-forget: Redis publish in background
 	go func() {
@@ -1485,6 +1554,19 @@ func (s *Service) Unreact(ctx context.Context, postID, userID uuid.UUID) error {
 
 func (s *Service) GetMyReaction(ctx context.Context, postID, userID uuid.UUID) (string, error) {
 	return s.scyllaStore.GetReaction(ctx, postID, userID)
+}
+
+// invalidateFeedHydration removes the per-viewer feed cache entry after a
+// viewer mutation. Without this, a successful like/bookmark/repost could be
+// followed by five minutes of a false action bar on another device.
+func (s *Service) invalidateFeedHydration(ctx context.Context, userID, postID uuid.UUID) {
+	if s.rdb == nil {
+		return
+	}
+	if err := s.rdb.Del(ctx, fmt.Sprintf("feed:hydrate:%s:%s", userID, postID)).Err(); err != nil {
+		slog.Warn("failed to invalidate feed hydration", "error", err,
+			"user_id", userID, "post_id", postID)
+	}
 }
 
 func (s *Service) AddComment(ctx context.Context, postID, userID uuid.UUID, text string) (uuid.UUID, error) {
@@ -1538,14 +1620,22 @@ func (s *Service) AddBookmark(ctx context.Context, userID, postID uuid.UUID) err
 	if err := s.checkEngagementVisibility(ctx, postID, userID); err != nil {
 		return err
 	}
-	return s.pgStore.AddBookmark(ctx, userID, postID)
+	if err := s.pgStore.AddBookmark(ctx, userID, postID); err != nil {
+		return err
+	}
+	s.invalidateFeedHydration(ctx, userID, postID)
+	return nil
 }
 
 func (s *Service) RemoveBookmark(ctx context.Context, userID, postID uuid.UUID) error {
 	// No visibility gate on remove — a user who already bookmarked
 	// must always be able to clean up their own row even if the
 	// post's visibility tightened (author switched to followers-only).
-	return s.pgStore.RemoveBookmark(ctx, userID, postID)
+	if err := s.pgStore.RemoveBookmark(ctx, userID, postID); err != nil {
+		return err
+	}
+	s.invalidateFeedHydration(ctx, userID, postID)
+	return nil
 }
 
 func (s *Service) GetBookmarks(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]PostDetail, string, error) {
@@ -1655,6 +1745,7 @@ func (s *Service) ToggleLike(ctx context.Context, postID, userID uuid.UUID) (*Li
 			log.Printf("Warning: failed to remove reaction from ScyllaDB: %v", err)
 		}
 	}
+	s.invalidateFeedHydration(ctx, userID, postID)
 
 	// Author already loaded above — no second GetPost needed.
 	authorID := post.AuthorID
@@ -1981,6 +2072,9 @@ func (s *Service) IsSharedFromRedis(ctx context.Context, userID, postID uuid.UUI
 
 // CreateCommentPG creates a comment in PostgreSQL with counter update.
 func (s *Service) CreateCommentPG(ctx context.Context, postID, authorID uuid.UUID, body string) (*postgres.Comment, error) {
+	if strings.TrimSpace(body) == "" {
+		return nil, fmt.Errorf("INVALID_REQUEST: comment body cannot be blank")
+	}
 	// Audit C5 + H2: one fetch covers visibility, NoComments flag,
 	// and the post-author-id used for the CommentCreated event below.
 	// Previously the handler did a GetPost just to check NoComments,
@@ -2967,6 +3061,7 @@ func (s *Service) CreateRepost(ctx context.Context, input CreateRepostInput) (*R
 			}
 		}()
 	}
+	s.invalidateFeedHydration(ctx, input.UserID, input.PostID)
 
 	return &RepostResult{
 		ID:             repost.ID,
@@ -3019,6 +3114,7 @@ func (s *Service) UndoRepost(ctx context.Context, userID, postID uuid.UUID) erro
 			}
 		}()
 	}
+	s.invalidateFeedHydration(ctx, userID, postID)
 
 	return nil
 }

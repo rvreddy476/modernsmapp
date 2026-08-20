@@ -124,7 +124,18 @@ const postCols = `id, author_id, text, visibility, content_type, is_pinned,
 
 func scanPost(row pgx.Row) (*Post, error) {
 	var p Post
-	err := row.Scan(
+	err := row.Scan(postScanDestinations(&p)...)
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// postScanDestinations is the single source of truth for postCols scan order.
+// Keeping the destinations reusable also lets joined queries append their own
+// private ordering columns without duplicating this fragile list.
+func postScanDestinations(p *Post) []any {
+	return []any{
 		&p.ID, &p.AuthorID, &p.Text, &p.Visibility, &p.ContentType, &p.IsPinned,
 		&p.Feeling, &p.Activity, &p.ActivityDetail, &p.RichText,
 		&p.NoComments, &p.NoLikes,
@@ -140,34 +151,14 @@ func scanPost(row pgx.Row) (*Post, error) {
 		&p.Distribution, &p.DistributionRev,
 		&p.ThreadRootID, &p.ThreadReplyToID, &p.ThreadSeq,
 		&p.CreatedAt, &p.UpdatedAt, &p.ReviewStatus,
-	)
-	if err != nil {
-		return nil, err
 	}
-	return &p, nil
 }
 
 func scanPostRows(rows pgx.Rows) ([]Post, error) {
 	var posts []Post
 	for rows.Next() {
 		var p Post
-		if err := rows.Scan(
-			&p.ID, &p.AuthorID, &p.Text, &p.Visibility, &p.ContentType, &p.IsPinned,
-			&p.Feeling, &p.Activity, &p.ActivityDetail, &p.RichText,
-			&p.NoComments, &p.NoLikes,
-			&p.Hashtags, &p.Mentions, &p.LocationName, &p.LocationLat, &p.LocationLng,
-			&p.PostType, &p.AppOrigin, &p.ShareToPostbook,
-			&p.Title, &p.Tags, &p.Category, &p.Language, &p.SEOTitle,
-			&p.PaidPromotion, &p.AlteredContent, &p.IsMadeForKids,
-			&p.License, &p.AllowEmbedding, &p.PublishToFeed, &p.RemixSetting,
-			&p.CommentModeration, &p.CommentAccess,
-			&p.RecordingDate, &p.RecordingLocation,
-			&p.CoverMediaID, &p.OriginalAudioVol, &p.OverlayAudioVol,
-			&p.TierRequiredID,
-			&p.Distribution, &p.DistributionRev,
-			&p.ThreadRootID, &p.ThreadReplyToID, &p.ThreadSeq,
-			&p.CreatedAt, &p.UpdatedAt, &p.ReviewStatus,
-		); err != nil {
+		if err := rows.Scan(postScanDestinations(&p)...); err != nil {
 			return nil, err
 		}
 		posts = append(posts, p)
@@ -261,6 +252,33 @@ func (s *Store) PostIDsByMediaID(ctx context.Context, mediaID uuid.UUID) ([]uuid
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+// PostIDsByMediaIDs is the page-sized form used by media delivery
+// authorization. It replaces one post lookup per media asset.
+func (s *Store) PostIDsByMediaIDs(ctx context.Context, mediaIDs []uuid.UUID) (map[uuid.UUID][]uuid.UUID, error) {
+	result := make(map[uuid.UUID][]uuid.UUID, len(mediaIDs))
+	if len(mediaIDs) == 0 {
+		return result, nil
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT pm.media_id, p.id
+		FROM post_media pm
+		JOIN posts p ON p.id = pm.post_id
+		WHERE pm.media_id = ANY($1) AND p.deleted_at IS NULL
+	`, mediaIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var mediaID, postID uuid.UUID
+		if err := rows.Scan(&mediaID, &postID); err != nil {
+			return nil, err
+		}
+		result[mediaID] = append(result[mediaID], postID)
+	}
+	return result, rows.Err()
 }
 
 // MediaOwnership is the ownership + readiness view needed before a post
@@ -955,17 +973,18 @@ func (s *Store) PublishPost(ctx context.Context, postID uuid.UUID) error {
 // AddBookmark adds a post to the user's bookmarks.
 func (s *Store) AddBookmark(ctx context.Context, userID, postID uuid.UUID) error {
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO bookmarks (user_id, post_id, created_at)
-		VALUES ($1, $2, NOW())
-		ON CONFLICT (user_id, post_id) DO NOTHING
-	`, userID, postID)
+		INSERT INTO saved_items (id, user_id, target_type, target_id, collection_name, created_at)
+		VALUES ($1, $2, 'post', $3, 'All Saved', NOW())
+		ON CONFLICT (user_id, target_type, target_id) DO NOTHING
+	`, uuid.New(), userID, postID)
 	return err
 }
 
 // RemoveBookmark removes a post from the user's bookmarks.
 func (s *Store) RemoveBookmark(ctx context.Context, userID, postID uuid.UUID) error {
 	_, err := s.db.Exec(ctx, `
-		DELETE FROM bookmarks WHERE user_id = $1 AND post_id = $2
+		DELETE FROM saved_items
+		WHERE user_id = $1 AND target_type = 'post' AND target_id = $2
 	`, userID, postID)
 	return err
 }
@@ -974,9 +993,37 @@ func (s *Store) RemoveBookmark(ctx context.Context, userID, postID uuid.UUID) er
 func (s *Store) IsBookmarked(ctx context.Context, userID, postID uuid.UUID) (bool, error) {
 	var exists bool
 	err := s.db.QueryRow(ctx, `
-		SELECT EXISTS(SELECT 1 FROM bookmarks WHERE user_id = $1 AND post_id = $2)
+		SELECT EXISTS(
+			SELECT 1 FROM saved_items
+			WHERE user_id = $1 AND target_type = 'post' AND target_id = $2
+		)
 	`, userID, postID).Scan(&exists)
 	return exists, err
+}
+
+// BatchIsBookmarked returns the bookmarked subset of postIDs for one viewer.
+// One query serves an entire feed page; absent IDs are false.
+func (s *Store) BatchIsBookmarked(ctx context.Context, userID uuid.UUID, postIDs []uuid.UUID) (map[uuid.UUID]bool, error) {
+	result := make(map[uuid.UUID]bool, len(postIDs))
+	if len(postIDs) == 0 {
+		return result, nil
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT target_id FROM saved_items
+		WHERE user_id = $1 AND target_type = 'post' AND target_id = ANY($2)
+	`, userID, postIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		result[id] = true
+	}
+	return result, rows.Err()
 }
 
 // GetBookmarks returns paginated bookmarked posts for a user.
@@ -988,20 +1035,26 @@ func (s *Store) GetBookmarks(ctx context.Context, userID uuid.UUID, limit int, c
 	var args []interface{}
 	args = append(args, userID, limit+1)
 
-	query := `SELECT ` + postCols + `
+	// The subquery deliberately exposes saved_at instead of its own id and
+	// created_at names. This keeps the shared postCols projection unambiguous.
+	query := `SELECT ` + postCols + `, b.saved_at
 		FROM posts p
-		INNER JOIN bookmarks b ON b.post_id = p.id
+		INNER JOIN (
+			SELECT user_id, target_id, created_at AS saved_at
+			FROM saved_items
+			WHERE target_type = 'post'
+		) b ON b.target_id = p.id
 		WHERE b.user_id = $1 AND p.deleted_at IS NULL`
 
 	if cursor != "" {
 		cursorTime, err := time.Parse(time.RFC3339Nano, cursor)
 		if err == nil {
-			query += ` AND b.created_at < $3`
+			query += ` AND b.saved_at < $3`
 			args = append(args, cursorTime)
 		}
 	}
 
-	query += ` ORDER BY b.created_at DESC LIMIT $2`
+	query += ` ORDER BY b.saved_at DESC LIMIT $2`
 
 	rows, err := s.db.Query(ctx, query, args...)
 	if err != nil {
@@ -1009,14 +1062,25 @@ func (s *Store) GetBookmarks(ctx context.Context, userID uuid.UUID, limit int, c
 	}
 	defer rows.Close()
 
-	posts, err := scanPostRows(rows)
-	if err != nil {
+	var posts []Post
+	var savedAt []time.Time
+	for rows.Next() {
+		var p Post
+		var saved time.Time
+		destinations := append(postScanDestinations(&p), &saved)
+		if err := rows.Scan(destinations...); err != nil {
+			return nil, "", err
+		}
+		posts = append(posts, p)
+		savedAt = append(savedAt, saved)
+	}
+	if err := rows.Err(); err != nil {
 		return nil, "", err
 	}
 
 	var nextCursor string
 	if len(posts) > limit {
-		nextCursor = posts[limit-1].CreatedAt.Format(time.RFC3339Nano)
+		nextCursor = savedAt[limit-1].Format(time.RFC3339Nano)
 		posts = posts[:limit]
 	}
 

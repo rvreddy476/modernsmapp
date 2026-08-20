@@ -139,12 +139,12 @@ enum class AppEnvironment(
     DEV(
         flavorName = "dev",
         idSuffix = ".dev",
-        apiBaseUrl = "http://127.0.0.1:8080",
-        wsBaseUrl = "ws://127.0.0.1:8093/v1/ws/connect",
-        // Jaeger's OTLP/HTTP receiver, reached the same way as the API:
-        //   adb reverse tcp:4318 tcp:4318
-        otlpEndpoint = "http://127.0.0.1:4318",
+        apiBaseUrl = "http://10.0.2.2:8080",
+        wsBaseUrl = "ws://10.0.2.2:8093/v1/ws/connect",
+        // Jaeger's OTLP/HTTP receiver:
+        otlpEndpoint = "http://10.0.2.2:4318",
     ),
+
 
     // TODO(B5): no staging environment has been provisioned yet. The empty
     // values are intentional — a staging build must fail loudly at the first

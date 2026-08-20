@@ -14,9 +14,9 @@ import (
 
 // AggregationState tracks the current aggregation window for a recipient+event+target triple.
 type AggregationState struct {
-	NotificationID string   `json:"notification_id"`
-	Count          int      `json:"count"`
-	Actors         []string `json:"actors"`
+	NotificationID string    `json:"notification_id"`
+	Count          int       `json:"count"`
+	Actors         []string  `json:"actors"`
 	CreatedAt      time.Time `json:"created_at"`
 }
 

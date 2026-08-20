@@ -31,9 +31,10 @@ const affiliateValidatorCacheTTL = 5 * time.Minute
 // they don't own is a real fraud vector (commission attribution).
 //
 // Endpoint: GET /v1/monetization/affiliate/links/:linkId
-//   200 with body → check creator_id
-//   404           → ErrAffiliateLinkNotFound
-//   other         → wrapped error
+//
+//	200 with body → check creator_id
+//	404           → ErrAffiliateLinkNotFound
+//	other         → wrapped error
 //
 // Reuses the same internal-key + httpClient plumbing the membership
 // gate already established.
@@ -188,9 +189,10 @@ func (s *Service) InvalidateAffiliateValidatorCache(
 }
 
 // Errors the handler maps:
-//   ErrAffiliateLinkNotFound  → 404
-//   ErrAffiliateLinkInactive  → 410 Gone
-//   ErrAffiliateLinkNotOwned  → 403
+//
+//	ErrAffiliateLinkNotFound  → 404
+//	ErrAffiliateLinkInactive  → 410 Gone
+//	ErrAffiliateLinkNotOwned  → 403
 var (
 	ErrAffiliateLinkNotFound = errors.New("affiliate link not found")
 	ErrAffiliateLinkInactive = errors.New("affiliate link is inactive")

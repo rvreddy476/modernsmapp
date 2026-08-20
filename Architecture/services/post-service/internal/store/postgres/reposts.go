@@ -361,6 +361,33 @@ func (s *Store) GetRepostCount(ctx context.Context, postID uuid.UUID) (int, erro
 	return count, nil
 }
 
+// BatchGetRepostCounts returns canonical repost counts for a page of posts.
+// Posts without a materialized engagement row remain zero in the result.
+func (s *Store) BatchGetRepostCounts(ctx context.Context, postIDs []uuid.UUID) (map[uuid.UUID]int, error) {
+	result := make(map[uuid.UUID]int, len(postIDs))
+	if len(postIDs) == 0 {
+		return result, nil
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT post_id, COALESCE(repost_count, 0)
+		FROM post_engagement_counts
+		WHERE post_id = ANY($1)
+	`, postIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id uuid.UUID
+		var count int
+		if err := rows.Scan(&id, &count); err != nil {
+			return nil, err
+		}
+		result[id] = count
+	}
+	return result, rows.Err()
+}
+
 func isUniqueViolation(err error) bool {
 	return IsUniqueViolation(err)
 }

@@ -9,30 +9,30 @@ import (
 
 // NotificationPreferences stores granular per-user notification settings.
 type NotificationPreferences struct {
-	UserID              string  `json:"user_id"`
-	PushEnabled         bool    `json:"push_enabled"`
-	EmailEnabled        bool    `json:"email_enabled"`
-	QuietHoursEnabled   bool    `json:"quiet_hours_enabled"`
-	QuietHoursStart     *string `json:"quiet_hours_start,omitempty"`
-	QuietHoursEnd       *string `json:"quiet_hours_end,omitempty"`
-	QuietHoursTZ        *string `json:"quiet_hours_tz,omitempty"`
-	PushLikes           bool    `json:"push_likes"`
-	PushSuperLikes      bool    `json:"push_super_likes"`
-	PushComments        bool    `json:"push_comments"`
-	PushReplies         bool    `json:"push_replies"`
-	PushMentions        bool    `json:"push_mentions"`
-	PushFollows         bool    `json:"push_follows"`
-	PushFriendRequests  bool    `json:"push_friend_requests"`
-	PushGroupPosts      bool    `json:"push_group_posts"`
-	PushGroupMentions   bool    `json:"push_group_mentions"`
-	PushChannelUpdates  bool    `json:"push_channel_updates"`
-	PushChannelUrgent   bool    `json:"push_channel_urgent"`
-	PushCommunityPosts  bool    `json:"push_community_posts"`
-	PushCommunityMentions bool  `json:"push_community_mentions"`
-	PushEventReminders  bool    `json:"push_event_reminders"`
-	PushSystem          bool    `json:"push_system"`
-	EmailDigest         string  `json:"email_digest"`
-	UpdatedAt           time.Time `json:"updated_at"`
+	UserID                string    `json:"user_id"`
+	PushEnabled           bool      `json:"push_enabled"`
+	EmailEnabled          bool      `json:"email_enabled"`
+	QuietHoursEnabled     bool      `json:"quiet_hours_enabled"`
+	QuietHoursStart       *string   `json:"quiet_hours_start,omitempty"`
+	QuietHoursEnd         *string   `json:"quiet_hours_end,omitempty"`
+	QuietHoursTZ          *string   `json:"quiet_hours_tz,omitempty"`
+	PushLikes             bool      `json:"push_likes"`
+	PushSuperLikes        bool      `json:"push_super_likes"`
+	PushComments          bool      `json:"push_comments"`
+	PushReplies           bool      `json:"push_replies"`
+	PushMentions          bool      `json:"push_mentions"`
+	PushFollows           bool      `json:"push_follows"`
+	PushFriendRequests    bool      `json:"push_friend_requests"`
+	PushGroupPosts        bool      `json:"push_group_posts"`
+	PushGroupMentions     bool      `json:"push_group_mentions"`
+	PushChannelUpdates    bool      `json:"push_channel_updates"`
+	PushChannelUrgent     bool      `json:"push_channel_urgent"`
+	PushCommunityPosts    bool      `json:"push_community_posts"`
+	PushCommunityMentions bool      `json:"push_community_mentions"`
+	PushEventReminders    bool      `json:"push_event_reminders"`
+	PushSystem            bool      `json:"push_system"`
+	EmailDigest           string    `json:"email_digest"`
+	UpdatedAt             time.Time `json:"updated_at"`
 }
 
 // GetNotificationPreferences returns the v2 notification preferences for a user.
@@ -114,26 +114,26 @@ func (s *Store) UpdateNotificationPreferences(ctx context.Context, p *Notificati
 
 func defaultPreferencesV2(userID string) *NotificationPreferences {
 	return &NotificationPreferences{
-		UserID:              userID,
-		PushEnabled:         true,
-		EmailEnabled:        false,
-		QuietHoursEnabled:   false,
-		PushLikes:           false,
-		PushSuperLikes:      true,
-		PushComments:        true,
-		PushReplies:         true,
-		PushMentions:        true,
-		PushFollows:         true,
-		PushFriendRequests:  true,
-		PushGroupPosts:      true,
-		PushGroupMentions:   true,
-		PushChannelUpdates:  true,
-		PushChannelUrgent:   true,
-		PushCommunityPosts:  false,
+		UserID:                userID,
+		PushEnabled:           true,
+		EmailEnabled:          false,
+		QuietHoursEnabled:     false,
+		PushLikes:             false,
+		PushSuperLikes:        true,
+		PushComments:          true,
+		PushReplies:           true,
+		PushMentions:          true,
+		PushFollows:           true,
+		PushFriendRequests:    true,
+		PushGroupPosts:        true,
+		PushGroupMentions:     true,
+		PushChannelUpdates:    true,
+		PushChannelUrgent:     true,
+		PushCommunityPosts:    false,
 		PushCommunityMentions: true,
-		PushEventReminders:  true,
-		PushSystem:          true,
-		EmailDigest:         "weekly",
-		UpdatedAt:           time.Now(),
+		PushEventReminders:    true,
+		PushSystem:            true,
+		EmailDigest:           "weekly",
+		UpdatedAt:             time.Now(),
 	}
 }

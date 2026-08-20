@@ -15,7 +15,7 @@ import (
 // FeedInjectPayload describes a single item to inject into a user's home timeline.
 type FeedInjectPayload struct {
 	TargetUserID string          `json:"target_user_id"`
-	ItemType     string          `json:"item_type"`   // "channel_update"
+	ItemType     string          `json:"item_type"` // "channel_update"
 	ItemID       string          `json:"item_id"`
 	SourceType   string          `json:"source_type"` // "channel"
 	SourceID     string          `json:"source_id"`

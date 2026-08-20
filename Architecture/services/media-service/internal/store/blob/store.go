@@ -3,6 +3,7 @@ package blob
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -14,6 +15,21 @@ import (
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
+
+// ErrObjectNotFound is returned when the backing object store resolves that
+// an object does not exist. Callers use the distinction to reject an upload
+// confirmation and to quarantine an impossible transcode instead of retrying
+// it forever and stalling the Kafka partition.
+var ErrObjectNotFound = errors.New("blob: object not found")
+
+// ObjectInfo is the small, provider-neutral subset of object metadata needed
+// by the service. It deliberately does not expose MinIO/S3 implementation
+// types outside this package.
+type ObjectInfo struct {
+	Size        int64
+	ContentType string
+	ETag        string
+}
 
 type Store struct {
 	client        *minio.Client
@@ -181,6 +197,38 @@ func (s *Store) GeneratePresignedGetURL(ctx context.Context, objectKey string, e
 	return s.presignClient.PresignedGetObject(ctx, s.bucket, objectKey, expiry, reqParams)
 }
 
+// StatObject verifies that objectKey exists without downloading its bytes.
+func (s *Store) StatObject(ctx context.Context, objectKey string) (ObjectInfo, error) {
+	info, err := s.client.StatObject(ctx, s.bucket, objectKey, minio.StatObjectOptions{})
+	if err != nil {
+		return ObjectInfo{}, normalizeObjectError(objectKey, err)
+	}
+	return ObjectInfo{Size: info.Size, ContentType: info.ContentType, ETag: info.ETag}, nil
+}
+
+// ReadObjectRange downloads only the inclusive byte range [start,end]. It is
+// used for magic-byte validation so confirming a multi-gigabyte upload never
+// buffers the entire object in the API process.
+func (s *Store) ReadObjectRange(ctx context.Context, objectKey string, start, end int64) ([]byte, error) {
+	if start < 0 || end < start {
+		return nil, fmt.Errorf("blob: invalid byte range %d-%d", start, end)
+	}
+	opts := minio.GetObjectOptions{}
+	if err := opts.SetRange(start, end); err != nil {
+		return nil, fmt.Errorf("blob: set range for %s: %w", objectKey, err)
+	}
+	obj, err := s.client.GetObject(ctx, s.bucket, objectKey, opts)
+	if err != nil {
+		return nil, normalizeObjectError(objectKey, err)
+	}
+	defer obj.Close()
+	data, err := io.ReadAll(obj)
+	if err != nil {
+		return nil, normalizeObjectError(objectKey, err)
+	}
+	return data, nil
+}
+
 // DownloadObject fetches an object's content from the bucket.
 func (s *Store) DownloadObject(ctx context.Context, objectKey string) ([]byte, error) {
 	obj, err := s.client.GetObject(ctx, s.bucket, objectKey, minio.GetObjectOptions{})
@@ -191,9 +239,22 @@ func (s *Store) DownloadObject(ctx context.Context, objectKey string) ([]byte, e
 
 	data, err := io.ReadAll(obj)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read object %s: %w", objectKey, err)
+		return nil, normalizeObjectError(objectKey, err)
 	}
 	return data, nil
+}
+
+func normalizeObjectError(objectKey string, err error) error {
+	if err == nil {
+		return nil
+	}
+	resp := minio.ToErrorResponse(err)
+	switch resp.Code {
+	case "NoSuchKey", "NoSuchObject", "NoSuchBucket", "NotFound":
+		return fmt.Errorf("%w: %s", ErrObjectNotFound, objectKey)
+	default:
+		return fmt.Errorf("blob: object %s: %w", objectKey, err)
+	}
 }
 
 // UploadObject puts data into the bucket at the given key.

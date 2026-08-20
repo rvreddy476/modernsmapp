@@ -34,6 +34,12 @@ func TestEveryFeedSurfaceResolvesBlockScope(t *testing.T) {
 
 	// Surfaces that legitimately do not return other people's content.
 	exempt := map[string]string{}
+	methods := make(map[string]*ast.FuncDecl)
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv != nil && fn.Body != nil {
+			methods[fn.Name.Name] = fn
+		}
+	}
 
 	var checked int
 	for _, decl := range file.Decls {
@@ -51,7 +57,7 @@ func TestEveryFeedSurfaceResolvesBlockScope(t *testing.T) {
 		}
 
 		checked++
-		if !callsBlockResolution(fn) {
+		if !callsBlockResolution(fn, methods, map[string]bool{}) {
 			t.Errorf("%s returns feed content but never resolves block/mute state; "+
 				"a blocked author's posts would reach the viewer who blocked them", name)
 		}
@@ -67,7 +73,11 @@ func TestEveryFeedSurfaceResolvesBlockScope(t *testing.T) {
 
 // callsBlockResolution reports whether the function body mentions the
 // block-scope resolution helper or the direct graph lookup.
-func callsBlockResolution(fn *ast.FuncDecl) bool {
+func callsBlockResolution(fn *ast.FuncDecl, methods map[string]*ast.FuncDecl, seen map[string]bool) bool {
+	if fn == nil || seen[fn.Name.Name] {
+		return false
+	}
+	seen[fn.Name.Name] = true
 	found := false
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		sel, ok := n.(*ast.SelectorExpr)
@@ -76,6 +86,13 @@ func callsBlockResolution(fn *ast.FuncDecl) bool {
 		}
 		switch sel.Sel.Name {
 		case "resolveBlockedSet", "getBlockedAndMuted":
+			found = true
+			return false
+		}
+		// A public compatibility method may delegate to a paginated method.
+		// Follow that service-method call so adding a wrapper cannot either
+		// create a false alarm or hide a real missing safety gate.
+		if delegated := methods[sel.Sel.Name]; delegated != nil && callsBlockResolution(delegated, methods, seen) {
 			found = true
 			return false
 		}

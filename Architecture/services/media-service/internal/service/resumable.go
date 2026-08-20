@@ -97,8 +97,16 @@ func (s *Service) InitResumableUpload(ctx context.Context, userID uuid.UUID, fil
 // ResumableUploadStatus is the GET-status payload: the session plus the
 // part numbers already stored, so a resuming client can skip them.
 type ResumableUploadStatus struct {
-	*postgres.ResumableUpload
-	UploadedParts []int `json:"uploaded_parts"`
+	UploadID      uuid.UUID `json:"upload_id"`
+	MediaID       uuid.UUID `json:"media_id"`
+	TotalBytes    int64     `json:"total_bytes"`
+	UploadedBytes int64     `json:"uploaded_bytes"`
+	ChunkSize     int       `json:"chunk_size"`
+	TotalParts    int       `json:"total_parts"`
+	Status        string    `json:"status"`
+	MimeType      string    `json:"mime_type"`
+	ExpiresAt     time.Time `json:"expires_at"`
+	UploadedParts []int     `json:"uploaded_parts"`
 }
 
 // GetResumableUploadStatus returns the current state of a resumable upload
@@ -119,7 +127,13 @@ func (s *Service) GetResumableUploadStatus(ctx context.Context, uploadID, userID
 	for i, p := range parts {
 		nums[i] = p.PartNumber
 	}
-	return &ResumableUploadStatus{ResumableUpload: upload, UploadedParts: nums}, nil
+	return &ResumableUploadStatus{
+		UploadID: upload.UploadID, MediaID: upload.MediaID,
+		TotalBytes: upload.TotalBytes, UploadedBytes: upload.UploadedBytes,
+		ChunkSize: upload.ChunkSize, TotalParts: upload.TotalParts,
+		Status: upload.Status, MimeType: upload.MimeType,
+		ExpiresAt: upload.ExpiresAt, UploadedParts: nums,
+	}, nil
 }
 
 // UploadChunkResponse is returned after a part is uploaded.
@@ -153,6 +167,13 @@ func (s *Service) UploadPart(ctx context.Context, uploadID, userID uuid.UUID, pa
 	}
 	if size <= 0 {
 		return nil, fmt.Errorf("empty part")
+	}
+	expectedSize := int64(upload.ChunkSize)
+	if partNumber == upload.TotalParts {
+		expectedSize = upload.TotalBytes - int64(upload.ChunkSize)*int64(upload.TotalParts-1)
+	}
+	if size != expectedSize {
+		return nil, fmt.Errorf("part %d has %d bytes, expected %d", partNumber, size, expectedSize)
 	}
 
 	part, err := s.blobStore.UploadPart(ctx, upload.ObjectKey, upload.StorageUploadID, partNumber, data, size)

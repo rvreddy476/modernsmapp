@@ -52,7 +52,7 @@ var allowedGraphWriteSources = writesource.Allowed
 // warns loudly when it is on.
 func RequireCanonicalWriteSource(strict bool, warn func(string, ...any)) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if !isGraphMutation(c.Request.Method) {
+		if !isGraphMutation(c.Request.Method) || isReadOnlyPost(c.FullPath()) {
 			c.Next()
 			return
 		}
@@ -84,3 +84,30 @@ func RequireCanonicalWriteSource(strict bool, warn func(string, ...any)) gin.Han
 }
 
 func isGraphMutation(method string) bool { return writesource.IsMutation(method) }
+
+// readOnlyPostRoutes are POST routes on /v1/graph that READ rather than mutate.
+//
+// The guard's premise is "a mutating method names an approved writer", and it
+// derives "mutating" from the HTTP method alone. That is right for follow,
+// block and mute, and wrong for a batch lookup that happens to use POST
+// because its input is a list of ids too long for a query string.
+//
+// Found on 2026-08-17 by the feed-hydration evidence pass. post-service asks
+// this route to resolve relationships while authorizing a page of media; the
+// guard refused it with UNRECOGNISED_GRAPH_WRITER, post-service returned
+// ErrStoryPolicyUnresolved, media-service returned 503, and every ranked feed
+// surface answered 503 FEED_UNAVAILABLE.
+//
+// The fix is deliberately NOT to add post-service to allowedGraphWriteSources.
+// That list is the closed set of services permitted to MUTATE the graph, and
+// every entry in it is a reviewed block-safety risk. post-service does not
+// write edges; granting it write attribution to fix a read would weaken the
+// boundary SR-3 exists to hold.
+var readOnlyPostRoutes = map[string]bool{
+	"/v1/graph/relationships/batch": true,
+}
+
+// isReadOnlyPost matches on the registered route template, not the raw path,
+// so a caller cannot slip past the guard with a crafted URL that merely looks
+// like one of these.
+func isReadOnlyPost(fullPath string) bool { return readOnlyPostRoutes[fullPath] }

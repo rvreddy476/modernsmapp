@@ -133,3 +133,69 @@ fun UsRootTopBar(
         modifier = modifier,
     )
 }
+
+/**
+ * The modern top bar for the home feed screen.
+ *
+ * Features the Home / brand symbol on the top left, removes the bare "Home" text,
+ * and provides action slots for search, new post creation, and direct messages on the right.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun UsHomeTopBar(
+    onHomeClick: () -> Unit = {},
+    modifier: Modifier = Modifier,
+    actions: @Composable RowScope.() -> Unit = {},
+) {
+    TopAppBar(
+        title = {},
+        navigationIcon = {
+            IconButton(onClick = onHomeClick) {
+                Icon(
+                    imageVector = UsIcons.Home,
+                    contentDescription = "Home",
+                    tint = UsTheme.extended.textPrimary,
+                )
+            }
+        },
+        actions = actions,
+        colors = TopAppBarDefaults.topAppBarColors(
+            containerColor = Color.Transparent,
+            scrolledContainerColor = Color.Transparent,
+        ),
+        modifier = modifier,
+    )
+}
+
+@Preview(name = "Top bar — home feed", showBackground = true)
+@Composable
+private fun UsHomeTopBarPreview() {
+    UsTheme {
+        UsHomeTopBar(
+            actions = {
+                IconButton(onClick = {}) {
+                    Icon(
+                        imageVector = UsIcons.Explore,
+                        contentDescription = "Search",
+                        tint = UsTheme.extended.textPrimary,
+                    )
+                }
+                IconButton(onClick = {}) {
+                    Icon(
+                        imageVector = UsIcons.Create,
+                        contentDescription = "New post",
+                        tint = UsTheme.extended.textPrimary,
+                    )
+                }
+                IconButton(onClick = {}) {
+                    Icon(
+                        imageVector = UsIcons.Comment,
+                        contentDescription = "Messages",
+                        tint = UsTheme.extended.textPrimary,
+                    )
+                }
+            },
+        )
+    }
+}
+

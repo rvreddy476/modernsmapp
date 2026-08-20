@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -222,6 +223,22 @@ func (s *Service) CreateStoryPending(ctx context.Context, input *CreateStoryInpu
 	return s.pgStore.CreateStoryPending(ctx, story, input.IdempotencyKey)
 }
 
+type MediaAccessDecision string
+
+const (
+	DecisionAllowed  MediaAccessDecision = "allowed"
+	DecisionNotReady MediaAccessDecision = "not_ready"
+	DecisionDenied   MediaAccessDecision = "denied"
+)
+
+// MediaAccessResult conveys the binary allowed verdict along with the granular
+// decision status and explicit attribution reason.
+type MediaAccessResult struct {
+	Allowed  bool                `json:"allowed"`
+	Decision MediaAccessDecision `json:"decision"`
+	Reason   string              `json:"reason"`
+}
+
 // ViewerMayAccessMedia reports whether a viewer may receive the bytes of a
 // canonical media asset, based on the content that references it.
 //
@@ -236,48 +253,329 @@ func (s *Service) CreateStoryPending(ctx context.Context, input *CreateStoryInpu
 // never created, and media whose content was deleted — both of which must stop
 // being fetchable. The uploader keeps access so an in-progress compose screen
 // can still preview its own upload.
-func (s *Service) ViewerMayAccessMedia(ctx context.Context, viewerID, mediaID uuid.UUID) (bool, error) {
+func (s *Service) ViewerMayAccessMedia(ctx context.Context, viewerID, mediaID uuid.UUID) (MediaAccessResult, error) {
 	if viewerID == uuid.Nil || mediaID == uuid.Nil {
-		return false, nil
+		return MediaAccessResult{Allowed: false, Decision: DecisionDenied, Reason: "nil_id"}, nil
 	}
 
 	facts, err := s.pgStore.GetMediaAccessFacts(ctx, mediaID)
 	if err != nil {
-		return false, err
+		return MediaAccessResult{}, err
 	}
 	if facts == nil {
-		return false, nil
+		slog.InfoContext(ctx, "media access excluded: asset facts not found",
+			"viewer_id", viewerID,
+			"media_id", mediaID,
+			"reason", "not_found")
+		return MediaAccessResult{Allowed: false, Decision: DecisionDenied, Reason: "not_found"}, nil
 	}
 	// Owner preview is the sole pre-publication exception. A rejected or failed
 	// asset does not keep minting fresh delivery URLs after takedown/failure.
 	if facts.UploaderID == viewerID {
-		return facts.ProcessingStatus != "rejected" && facts.ProcessingStatus != "failed" &&
-			facts.ModerationStatus != "rejected", nil
+		if facts.ProcessingStatus == "rejected" || facts.ProcessingStatus == "failed" || facts.ModerationStatus == "rejected" {
+			slog.InfoContext(ctx, "media access excluded: uploader asset rejected or failed",
+				"viewer_id", viewerID,
+				"media_id", mediaID,
+				"processing_status", facts.ProcessingStatus,
+				"moderation_status", facts.ModerationStatus,
+				"reason", "uploader_rejected_or_failed")
+			return MediaAccessResult{Allowed: false, Decision: DecisionDenied, Reason: "uploader_rejected_or_failed"}, nil
+		}
+		if facts.ProcessingStatus != "ready" {
+			slog.InfoContext(ctx, "media access permitted: uploader asset not ready",
+				"viewer_id", viewerID,
+				"media_id", mediaID,
+				"processing_status", facts.ProcessingStatus,
+				"reason", "uploader_not_ready")
+			return MediaAccessResult{Allowed: true, Decision: DecisionNotReady, Reason: "uploader_not_ready"}, nil
+		}
+		slog.DebugContext(ctx, "media access allowed: uploader preview",
+			"viewer_id", viewerID,
+			"media_id", mediaID,
+			"reason", "uploader_allowed")
+		return MediaAccessResult{Allowed: true, Decision: DecisionAllowed, Reason: "uploader_allowed"}, nil
 	}
-	// No content policy can override the canonical media safety/lifecycle gate.
-	if facts.ProcessingStatus != "ready" || facts.ModerationStatus != "passed" {
-		return false, nil
+	// No content policy can override the canonical media safety gate.
+	if facts.ModerationStatus == "rejected" {
+		slog.InfoContext(ctx, "media access excluded: moderation rejected",
+			"viewer_id", viewerID,
+			"media_id", mediaID,
+			"reason", "moderation_rejected")
+		return MediaAccessResult{Allowed: false, Decision: DecisionDenied, Reason: "moderation_rejected"}, nil
 	}
 
 	story, err := s.pgStore.StoryForMedia(ctx, mediaID)
 	if err != nil {
-		return false, err
+		return MediaAccessResult{}, err
 	}
-	if story == nil {
-		return s.viewerMayAccessPostMedia(ctx, viewerID, mediaID)
+	if story != nil {
+		rel := ViewerRelationship{}
+		if story.AuthorID != viewerID {
+			rels, relErr := s.storyAudience.Relationships(ctx, viewerID.String(), []string{story.AuthorID.String()})
+			if relErr != nil {
+				return MediaAccessResult{}, relErr
+			}
+			rel = rels[story.AuthorID.String()]
+		}
+		d := EvaluateStoryVisibility(viewerID.String(), story.AuthorID.String(),
+			storyFacts(story, nowUnix()), rel)
+		if d == DenyNone {
+			if facts.ProcessingStatus != "ready" {
+				slog.InfoContext(ctx, "media access permitted: story visible but asset not ready",
+					"viewer_id", viewerID,
+					"media_id", mediaID,
+					"processing_status", facts.ProcessingStatus,
+					"reason", "story_not_ready")
+				return MediaAccessResult{Allowed: true, Decision: DecisionNotReady, Reason: "story_not_ready"}, nil
+			}
+			slog.DebugContext(ctx, "media access allowed: story visible",
+				"viewer_id", viewerID,
+				"media_id", mediaID,
+				"reason", "story_allowed")
+			return MediaAccessResult{Allowed: true, Decision: DecisionAllowed, Reason: "story_allowed"}, nil
+		}
 	}
 
-	rel := ViewerRelationship{}
-	if story.AuthorID != viewerID {
-		rels, relErr := s.storyAudience.Relationships(ctx, viewerID.String(), []string{story.AuthorID.String()})
-		if relErr != nil {
-			return false, relErr
-		}
-		rel = rels[story.AuthorID.String()]
+	postVisible, err := s.viewerMayAccessPostMedia(ctx, viewerID, mediaID)
+	if err != nil {
+		return MediaAccessResult{}, err
 	}
-	d := EvaluateStoryVisibility(viewerID.String(), story.AuthorID.String(),
-		storyFacts(story, nowUnix()), rel)
-	return d == DenyNone, nil
+	if postVisible {
+		if facts.ProcessingStatus != "ready" {
+			slog.InfoContext(ctx, "media access permitted: post visible but asset not ready",
+				"viewer_id", viewerID,
+				"media_id", mediaID,
+				"processing_status", facts.ProcessingStatus,
+				"reason", "post_not_ready")
+			return MediaAccessResult{Allowed: true, Decision: DecisionNotReady, Reason: "post_not_ready"}, nil
+		}
+		slog.DebugContext(ctx, "media access allowed: post visible",
+			"viewer_id", viewerID,
+			"media_id", mediaID,
+			"reason", "post_allowed")
+		return MediaAccessResult{Allowed: true, Decision: DecisionAllowed, Reason: "post_allowed"}, nil
+	}
+
+	slog.InfoContext(ctx, "media access excluded: no visible post or story for viewer",
+		"viewer_id", viewerID,
+		"media_id", mediaID,
+		"reason", "no_visible_post_or_story")
+	return MediaAccessResult{Allowed: false, Decision: DecisionDenied, Reason: "no_visible_post_or_story"}, nil
+}
+
+// ViewerMayAccessMediaBatch evaluates a feed page with a fixed number of
+// PostgreSQL queries and one graph relationship batch. It is policy-equivalent
+// to ViewerMayAccessMedia; only the data-loading shape differs.
+func (s *Service) ViewerMayAccessMediaBatch(ctx context.Context, viewerID uuid.UUID, mediaIDs []uuid.UUID) (map[uuid.UUID]MediaAccessResult, error) {
+	results := make(map[uuid.UUID]MediaAccessResult, len(mediaIDs))
+	if viewerID == uuid.Nil || len(mediaIDs) == 0 {
+		return results, nil
+	}
+	factsByMedia, err := s.pgStore.GetMediaAccessFactsBatch(ctx, mediaIDs)
+	if err != nil {
+		return nil, err
+	}
+	storiesByMedia, err := s.pgStore.StoriesForMediaBatch(ctx, mediaIDs)
+	if err != nil {
+		return nil, err
+	}
+	postIDsByMedia, err := s.pgStore.PostIDsByMediaIDs(ctx, mediaIDs)
+	if err != nil {
+		return nil, err
+	}
+	postIDSet := make(map[uuid.UUID]bool)
+	var postIDs []uuid.UUID
+	for _, ids := range postIDsByMedia {
+		for _, id := range ids {
+			if !postIDSet[id] {
+				postIDSet[id] = true
+				postIDs = append(postIDs, id)
+			}
+		}
+	}
+	posts, err := s.pgStore.GetPostsByIDs(ctx, postIDs)
+	if err != nil {
+		return nil, err
+	}
+	postsByID := make(map[uuid.UUID]*postgres.Post, len(posts))
+	authorSet := make(map[string]bool)
+	var authorIDs []string
+	addAuthor := func(id uuid.UUID) {
+		if id == viewerID {
+			return
+		}
+		value := id.String()
+		if !authorSet[value] {
+			authorSet[value] = true
+			authorIDs = append(authorIDs, value)
+		}
+	}
+	for i := range posts {
+		postsByID[posts[i].ID] = &posts[i]
+		if strings.EqualFold(posts[i].ReviewStatus, "approved") {
+			addAuthor(posts[i].AuthorID)
+		}
+	}
+	for _, story := range storiesByMedia {
+		if story != nil {
+			addAuthor(story.AuthorID)
+		}
+	}
+	rels := map[string]ViewerRelationship{}
+	if len(authorIDs) > 0 {
+		rels, err = s.storyAudience.Relationships(ctx, viewerID.String(), authorIDs)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	for _, mediaID := range mediaIDs {
+		facts, ok := factsByMedia[mediaID]
+		if !ok {
+			slog.InfoContext(ctx, "media access excluded: asset facts not found",
+				"viewer_id", viewerID,
+				"media_id", mediaID,
+				"reason", "not_found")
+			results[mediaID] = MediaAccessResult{
+				Allowed:  false,
+				Decision: DecisionDenied,
+				Reason:   "not_found",
+			}
+			continue
+		}
+
+		if facts.UploaderID == viewerID {
+			if facts.ProcessingStatus == "rejected" || facts.ProcessingStatus == "failed" || facts.ModerationStatus == "rejected" {
+				slog.InfoContext(ctx, "media access excluded: uploader asset rejected or failed",
+					"viewer_id", viewerID,
+					"media_id", mediaID,
+					"processing_status", facts.ProcessingStatus,
+					"moderation_status", facts.ModerationStatus,
+					"reason", "uploader_rejected_or_failed")
+				results[mediaID] = MediaAccessResult{
+					Allowed:  false,
+					Decision: DecisionDenied,
+					Reason:   "uploader_rejected_or_failed",
+				}
+				continue
+			}
+			if facts.ProcessingStatus != "ready" {
+				slog.InfoContext(ctx, "media access permitted: uploader asset not ready",
+					"viewer_id", viewerID,
+					"media_id", mediaID,
+					"processing_status", facts.ProcessingStatus,
+					"reason", "uploader_not_ready")
+				results[mediaID] = MediaAccessResult{
+					Allowed:  true,
+					Decision: DecisionNotReady,
+					Reason:   "uploader_not_ready",
+				}
+				continue
+			}
+			slog.DebugContext(ctx, "media access allowed: uploader preview",
+				"viewer_id", viewerID,
+				"media_id", mediaID,
+				"reason", "uploader_allowed")
+			results[mediaID] = MediaAccessResult{
+				Allowed:  true,
+				Decision: DecisionAllowed,
+				Reason:   "uploader_allowed",
+			}
+			continue
+		}
+
+		if facts.ModerationStatus == "rejected" {
+			slog.InfoContext(ctx, "media access excluded: moderation rejected",
+				"viewer_id", viewerID,
+				"media_id", mediaID,
+				"reason", "moderation_rejected")
+			results[mediaID] = MediaAccessResult{
+				Allowed:  false,
+				Decision: DecisionDenied,
+				Reason:   "moderation_rejected",
+			}
+			continue
+		}
+
+		if story := storiesByMedia[mediaID]; story != nil {
+			decision := EvaluateStoryVisibility(viewerID.String(), story.AuthorID.String(),
+				storyFacts(story, nowUnix()), rels[story.AuthorID.String()])
+			if decision == DenyNone {
+				if facts.ProcessingStatus != "ready" {
+					slog.InfoContext(ctx, "media access permitted: story visible but asset not ready",
+						"viewer_id", viewerID,
+						"media_id", mediaID,
+						"processing_status", facts.ProcessingStatus,
+						"reason", "story_not_ready")
+					results[mediaID] = MediaAccessResult{
+						Allowed:  true,
+						Decision: DecisionNotReady,
+						Reason:   "story_not_ready",
+					}
+				} else {
+					slog.DebugContext(ctx, "media access allowed: story visible",
+						"viewer_id", viewerID,
+						"media_id", mediaID,
+						"reason", "story_allowed")
+					results[mediaID] = MediaAccessResult{
+						Allowed:  true,
+						Decision: DecisionAllowed,
+						Reason:   "story_allowed",
+					}
+				}
+				continue
+			}
+		}
+
+		postAllowed := false
+		for _, postID := range postIDsByMedia[mediaID] {
+			post := postsByID[postID]
+			if post == nil || !strings.EqualFold(post.ReviewStatus, "approved") {
+				continue
+			}
+			if evaluatePostMediaVisibility(viewerID, post, rels[post.AuthorID.String()]) {
+				postAllowed = true
+				break
+			}
+		}
+
+		if postAllowed {
+			if facts.ProcessingStatus != "ready" {
+				slog.InfoContext(ctx, "media access permitted: post visible but asset not ready",
+					"viewer_id", viewerID,
+					"media_id", mediaID,
+					"processing_status", facts.ProcessingStatus,
+					"reason", "post_not_ready")
+				results[mediaID] = MediaAccessResult{
+					Allowed:  true,
+					Decision: DecisionNotReady,
+					Reason:   "post_not_ready",
+				}
+			} else {
+				slog.DebugContext(ctx, "media access allowed: post visible",
+					"viewer_id", viewerID,
+					"media_id", mediaID,
+					"reason", "post_allowed")
+				results[mediaID] = MediaAccessResult{
+					Allowed:  true,
+					Decision: DecisionAllowed,
+					Reason:   "post_allowed",
+				}
+			}
+			continue
+		}
+
+		slog.InfoContext(ctx, "media access excluded: no visible post or story for viewer",
+			"viewer_id", viewerID,
+			"media_id", mediaID,
+			"reason", "no_visible_post_or_story")
+		results[mediaID] = MediaAccessResult{
+			Allowed:  false,
+			Decision: DecisionDenied,
+			Reason:   "no_visible_post_or_story",
+		}
+	}
+	return results, nil
 }
 
 // viewerMayAccessPostMedia extends protected delivery to the shared canonical

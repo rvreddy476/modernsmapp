@@ -77,7 +77,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// Mute
 		v1.POST("/mute", h.Mute)
 		v1.DELETE("/mute", h.Unmute)
-		// Internal: blocked + muted union
+		// Viewer-scoped public contract. Internal callers that need to name a
+		// subject use /v1/internal/graph below, which the gateway does not proxy.
 		v1.GET("/blocked-and-muted", h.GetBlockedAndMuted)
 		// Batch relationship lookup
 		v1.POST("/relationships/batch", h.GetRelationshipBatch)
@@ -123,6 +124,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		favsGroup.POST("/:userId", h.AddFavorite)
 		favsGroup.DELETE("/:userId", h.RemoveFavorite)
 	}
+
+	internal := r.Group("/v1/internal/graph")
+	internal.GET("/blocked-and-muted", h.GetBlockedAndMutedInternal)
 
 	// Permission check API (spec §9.8). Single source of truth for
 	// "can actor do X to target" — used by clients to render buttons
@@ -813,13 +817,28 @@ func (h *Handler) Unmute(c *gin.Context) {
 // and — worse — it made "return fewer suppressions than the caller
 // probably needs" a one-word opt-in. Both callers now get the full set.
 func (h *Handler) GetBlockedAndMuted(c *gin.Context) {
-	userIDStr := c.Query("user_id")
-	userID, err := uuid.Parse(userIDStr)
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	if requested := c.Query("user_id"); requested != "" && requested != userID.String() {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest,
+			"VIEWER_BOUND", "user_id cannot name another viewer", nil)
+		return
+	}
+	h.writeBlockedAndMuted(c, userID, true)
+}
+
+func (h *Handler) GetBlockedAndMutedInternal(c *gin.Context) {
+	userID, err := uuid.Parse(c.Query("user_id"))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user_id", nil)
 		return
 	}
+	h.writeBlockedAndMuted(c, userID, false)
+}
 
+func (h *Handler) writeBlockedAndMuted(c *gin.Context, userID uuid.UUID, envelope bool) {
 	ids, err := h.svc.GetBlockedAndMuted(c.Request.Context(), userID)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
@@ -827,6 +846,10 @@ func (h *Handler) GetBlockedAndMuted(c *gin.Context) {
 	}
 	if ids == nil {
 		ids = []uuid.UUID{}
+	}
+	if envelope {
+		api.JSON(c.Writer, http.StatusOK, gin.H{"user_ids": ids}, nil)
+		return
 	}
 	c.JSON(http.StatusOK, gin.H{"user_ids": ids})
 }

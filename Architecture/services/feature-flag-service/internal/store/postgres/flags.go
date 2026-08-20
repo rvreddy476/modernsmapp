@@ -10,18 +10,18 @@ import (
 )
 
 type Flag struct {
-	Key              string          `json:"key"`
-	Enabled          bool            `json:"enabled"`
-	RolloutPct       int             `json:"rollout_pct"`
-	TargetUserIDs    []string        `json:"target_user_ids"`
-	Payload          json.RawMessage `json:"payload"`
-	UpdatedAt        time.Time       `json:"updated_at"`
-	ExperimentName   string          `json:"experiment_name"`
-	Hypothesis       string          `json:"hypothesis"`
-	StartDate        *time.Time      `json:"start_date"`
-	EndDate          *time.Time      `json:"end_date"`
-	ControlGroupPct  int             `json:"control_group_pct"`
-	TreatmentGroupPct int            `json:"treatment_group_pct"`
+	Key               string          `json:"key"`
+	Enabled           bool            `json:"enabled"`
+	RolloutPct        int             `json:"rollout_pct"`
+	TargetUserIDs     []string        `json:"target_user_ids"`
+	Payload           json.RawMessage `json:"payload"`
+	UpdatedAt         time.Time       `json:"updated_at"`
+	ExperimentName    string          `json:"experiment_name"`
+	Hypothesis        string          `json:"hypothesis"`
+	StartDate         *time.Time      `json:"start_date"`
+	EndDate           *time.Time      `json:"end_date"`
+	ControlGroupPct   int             `json:"control_group_pct"`
+	TreatmentGroupPct int             `json:"treatment_group_pct"`
 }
 
 // FlagAuditEntry represents a single audit log record for a flag change.

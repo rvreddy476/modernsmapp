@@ -430,28 +430,28 @@ func (h *Handler) GetNotifPreferences(c *gin.Context) {
 
 // UpdateNotifPreferencesRequest is the request body for PUT /v1/notifications/preferences (granular).
 type UpdateNotifPreferencesRequest struct {
-	PushEnabled         *bool   `json:"push_enabled"`
-	EmailEnabled        *bool   `json:"email_enabled"`
-	QuietHoursEnabled   *bool   `json:"quiet_hours_enabled"`
-	QuietHoursStart     *string `json:"quiet_hours_start"`
-	QuietHoursEnd       *string `json:"quiet_hours_end"`
-	QuietHoursTZ        *string `json:"quiet_hours_tz"`
-	PushLikes           *bool   `json:"push_likes"`
-	PushSuperLikes      *bool   `json:"push_super_likes"`
-	PushComments        *bool   `json:"push_comments"`
-	PushReplies         *bool   `json:"push_replies"`
-	PushMentions        *bool   `json:"push_mentions"`
-	PushFollows         *bool   `json:"push_follows"`
-	PushFriendRequests  *bool   `json:"push_friend_requests"`
-	PushGroupPosts      *bool   `json:"push_group_posts"`
-	PushGroupMentions   *bool   `json:"push_group_mentions"`
-	PushChannelUpdates  *bool   `json:"push_channel_updates"`
-	PushChannelUrgent   *bool   `json:"push_channel_urgent"`
-	PushCommunityPosts  *bool   `json:"push_community_posts"`
-	PushCommunityMentions *bool `json:"push_community_mentions"`
-	PushEventReminders  *bool   `json:"push_event_reminders"`
-	PushSystem          *bool   `json:"push_system"`
-	EmailDigest         *string `json:"email_digest"`
+	PushEnabled           *bool   `json:"push_enabled"`
+	EmailEnabled          *bool   `json:"email_enabled"`
+	QuietHoursEnabled     *bool   `json:"quiet_hours_enabled"`
+	QuietHoursStart       *string `json:"quiet_hours_start"`
+	QuietHoursEnd         *string `json:"quiet_hours_end"`
+	QuietHoursTZ          *string `json:"quiet_hours_tz"`
+	PushLikes             *bool   `json:"push_likes"`
+	PushSuperLikes        *bool   `json:"push_super_likes"`
+	PushComments          *bool   `json:"push_comments"`
+	PushReplies           *bool   `json:"push_replies"`
+	PushMentions          *bool   `json:"push_mentions"`
+	PushFollows           *bool   `json:"push_follows"`
+	PushFriendRequests    *bool   `json:"push_friend_requests"`
+	PushGroupPosts        *bool   `json:"push_group_posts"`
+	PushGroupMentions     *bool   `json:"push_group_mentions"`
+	PushChannelUpdates    *bool   `json:"push_channel_updates"`
+	PushChannelUrgent     *bool   `json:"push_channel_urgent"`
+	PushCommunityPosts    *bool   `json:"push_community_posts"`
+	PushCommunityMentions *bool   `json:"push_community_mentions"`
+	PushEventReminders    *bool   `json:"push_event_reminders"`
+	PushSystem            *bool   `json:"push_system"`
+	EmailDigest           *string `json:"email_digest"`
 }
 
 // UpdateNotifPreferences handles PUT /v1/notifications/preferences (granular)

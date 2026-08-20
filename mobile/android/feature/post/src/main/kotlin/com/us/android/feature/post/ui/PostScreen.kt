@@ -4,12 +4,14 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
@@ -19,6 +21,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -142,19 +146,28 @@ private fun LoadedPost(
         // The same card as the feed, so opening a post lands on the object the
         // reader just tapped rather than a differently-shaped page. Detail adds
         // the full text and the real media; it does not restyle the post.
+        val cardShape = RoundedCornerShape(18.dp)
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(UsTheme.radii.large))
-                .background(UsTheme.extended.bgCard)
+                .clip(cardShape)
+                .background(
+                    brush = Brush.verticalGradient(
+                        listOf(
+                            Color(0xFF18181D),
+                            Color(0xFF121215),
+                        ),
+                    ),
+                )
                 .border(
                     width = HAIRLINE,
-                    color = UsTheme.extended.borderSubtle,
-                    shape = RoundedCornerShape(UsTheme.radii.large),
+                    color = Color(0x1FFFFFFF),
+                    shape = cardShape,
                 )
                 .padding(UsTheme.spacing.xxl),
             verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
         ) {
+
             if (author != null) {
                 AuthorHeader(
                     author = author,
@@ -356,16 +369,26 @@ private fun AuthorHeader(
             .clip(RoundedCornerShape(UsTheme.radii.medium))
             .clickable { onOpenAuthor(author.userId) },
     ) {
-        UsAvatar(
-            name = author.nameForDisplay,
-            size = UsAvatarSize.Small,
-            seed = author.userId,
-        )
+        Box(
+            modifier = Modifier
+                .clip(CircleShape)
+                .border(
+                    width = HAIRLINE,
+                    color = Color(0x26FFFFFF),
+                    shape = CircleShape,
+                ),
+        ) {
+            UsAvatar(
+                name = author.nameForDisplay,
+                size = UsAvatarSize.Small,
+                seed = author.userId,
+            )
+        }
         Column {
             Text(
                 text = author.nameForDisplay,
                 style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
+                fontWeight = FontWeight.Bold,
                 color = UsTheme.extended.textPrimary,
             )
             val age = formatRelativeTime(createdAt)
@@ -379,6 +402,7 @@ private fun AuthorHeader(
         }
     }
 }
+
 
 /**
  * Matches the feed card's border weight. Defined here rather than shared

@@ -85,7 +85,7 @@ func (g *GraphBlockChecker) BlockedEitherWay(ctx context.Context, viewerID, targ
 		return blocked, nil
 	}
 
-	url := fmt.Sprintf("%s/v1/graph/blocked-and-muted?user_id=%s", g.baseURL, viewerID)
+	url := fmt.Sprintf("%s/v1/internal/graph/blocked-and-muted?user_id=%s", g.baseURL, viewerID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return false, err

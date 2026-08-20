@@ -14,7 +14,7 @@ type Candidate struct {
 	PostID      uuid.UUID
 	AuthorID    uuid.UUID
 	CreatedAt   time.Time
-	ContentType string  // "text", "image", "video"
+	ContentType string // "text", "image", "video"
 	Score       float64
 }
 
@@ -109,7 +109,7 @@ func ScoreCandidates(candidates []Candidate, signals *ViewerSignals) []Candidate
 			qualityBoost = cqs * 0.25
 		}
 
-		c.Score = (interest*recency*mediaBoost) + momentum + socialProximity + qualityBoost - interactionPenalty
+		c.Score = (interest * recency * mediaBoost) + momentum + socialProximity + qualityBoost - interactionPenalty
 	}
 
 	return scored

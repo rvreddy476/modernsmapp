@@ -288,7 +288,7 @@ services:
       MESSAGE_SERVICE_URL: http://chat-message-service:8092
       ANALYTICS_SERVICE_URL: http://analytics-service:8094
       AI_SERVICE_URL: http://ai-service:8117
-      FLAGS_SERVICE_URL: http://feature-flag-service:8095
+      FLAGS_SERVICE_URL: http://feature-flag-service:8117
       GROUP_SERVICE_URL: http://group-service:8090
       ADMIN_SERVICE_URL: http://admin-service:8096
       PROFILE_SERVICE_URL: http://identity-profile:8098
@@ -456,6 +456,21 @@ services:
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
       JWT_SECRET: ${JWT_SECRET:-local_dev_jwt_change_me}
+      # Required for authenticated profile reads to return anything at all.
+      #
+      # profile-service enforces blocks by asking graph-service, and it fails
+      # CLOSED when it cannot: with this unset, filterBlockedProfileMap drops
+      # every entry and POST /v1/profiles/batch answers `{}` to any caller that
+      # sends X-User-Id — including the viewer's own profile. That behaviour is
+      # correct (SR-4: a caller must not probe by bisection); the defect was
+      # that this variable was never wired here.
+      #
+      # Found on 2026-08-17 by the feed-hydration evidence pass: every feed
+      # item rendered `author.display_name = "Deleted account"` because the
+      # batch it depends on was silently returning nothing. The service logged
+      # the cause at startup as an ERROR and nothing consumed it until now.
+      GRAPH_SERVICE_URL: http://graph-service:8083
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       # No SCHEMA_MIGRATIONS_* knobs here, deliberately. As of 2026-08-16 this
       # service does not migrate its own database: it applies its own additive
       # schema file (services/*/database/setup.sql) and then VERIFIES its
@@ -606,8 +621,24 @@ services:
       KAFKA_BROKERS: redpanda:9092
       USER_SERVICE_URL: http://identity-user:8110
       REVIEWER_SERVICE_URL: http://reviewer-service:8120
-      REVIEW_ALL_VIDEOS: "true"
+      # Local media uses the non-production stub scanner and has no human
+      # reviewer deployment. Production AWS manifests may opt into review-all;
+      # the local contract stack must allow already-scanned fixtures to flow.
+      REVIEW_ALL_VIDEOS: ${REVIEW_ALL_VIDEOS:-false}
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      # Required for the internal media-access authority to answer at all.
+      #
+      # Story visibility is a relationship question, so story_policy.go needs a
+      # graph client. Without one it returns ErrStoryPolicyUnresolved — an
+      # honest "I could not decide", which the handler surfaces as 503 so the
+      # caller retries rather than caching a denial produced by an outage.
+      #
+      # Found on 2026-08-17 by the feed-hydration evidence pass: media-service
+      # asks this route to authorize a page of media, so an unresolvable answer
+      # here made every ranked feed surface (reels, videos, watch) return
+      # 503 FEED_UNAVAILABLE. The fail-closed chain behaved correctly; the
+      # defect was that this variable was never wired here.
+      GRAPH_SERVICE_URL: http://graph-service:8083
       # Moderation capability HMAC keys.
       #
       # trust-safety-service ISSUES these capabilities and post-service VERIFIES
@@ -664,6 +695,9 @@ services:
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
       GRAPH_SERVICE_URL: http://graph-service:8083
+      POST_SERVICE_URL: http://post-service:8084
+      PROFILE_SERVICE_URL: http://identity-profile:8098
+      MEDIA_SERVICE_URL: http://media-service:8087
       # Reads tc_close_friends_posts to gate close-friends ("trusted") fanout.
       USER_SERVICE_URL: http://identity-user:8110
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
@@ -701,13 +735,17 @@ services:
       JWT_PUBLIC_KEY_PEM: ${JWT_PUBLIC_KEY_PEM:-}
       JWT_RS256_KID: ${JWT_RS256_KID:-rsa-1}
       MINIO_ENDPOINT: minio:9000
-      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-https://cleestudio.com}
+      # Presigned URLs must name the host used by the local Android client.
+      # Production uses S3/CloudFront and never consumes this MinIO default.
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-http://localhost:9000}
       MINIO_ACCESS_KEY: *minio_access_key
       MINIO_SECRET_KEY: *minio_secret_key
       MINIO_BUCKET: media
       KAFKA_BROKERS: redpanda:9092
       MEDIA_SCANNER_ENABLED: ${MEDIA_SCANNER_ENABLED:-false}
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      POST_SERVICE_URL: http://post-service:8084
+      CHAT_MESSAGE_SERVICE_URL: http://chat-message-service:8092
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
       REDIS_ADDR: redis:6379
     ports:
@@ -790,6 +828,7 @@ services:
       SCYLLA_HOSTS: scylla
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:9092
+      POSTGRES_DSN: *app_postgres_dsn
       # FCM push (Firebase HTTP v1) — leave blank to disable push in dev
       FCM_PROJECT_ID: ${FCM_PROJECT_ID:-}
       FCM_SERVICE_ACCOUNT_KEY: ${FCM_SERVICE_ACCOUNT_KEY:-}
@@ -818,6 +857,8 @@ services:
       # mount fails to start, which is the safe behavior.
       - ../../.secrets/firebase-cleestudio-2b06d.json:/run/secrets/firebase-key.json:ro
     depends_on:
+      postgres:
+        condition: service_healthy
       scylla-init:
         condition: service_completed_successfully
       redis:

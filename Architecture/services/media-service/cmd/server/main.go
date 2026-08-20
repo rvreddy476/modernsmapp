@@ -138,7 +138,7 @@ func main() {
 	// to remove. In production that is a boot failure instead (below), because
 	// a production media service that cannot serve protected media is broken
 	// and should say so loudly rather than 503 every story image.
-	if gate, gerr := buildDeliveryGate(); gerr != nil {
+	if gate, gerr := buildDeliveryGate(blobStore); gerr != nil {
 		if isProductionEnv() {
 			slog.Error("delivery gate could not be configured; refusing to start in production",
 				"err", gerr)
@@ -298,16 +298,7 @@ func collectDBPoolStats(ctx context.Context, pool *pgxpool.Pool, m *metrics.DBPo
 // a manifest. There is deliberately no default and no fallback: a signer that
 // degrades to unsigned delivery when misconfigured reintroduces the exact hole
 // this replaces.
-func buildDeliveryGate() (*delivery.Gate, error) {
-	signer, err := delivery.NewSigner(delivery.Config{
-		CDNBaseURL:    env("MEDIA_CDN_BASE_URL", ""),
-		KeyPairID:     env("MEDIA_CLOUDFRONT_KEY_PAIR_ID", ""),
-		PrivateKeyPEM: []byte(os.Getenv("MEDIA_CLOUDFRONT_PRIVATE_KEY")),
-	})
-	if err != nil {
-		return nil, err
-	}
-
+func buildDeliveryGate(blobStore *blob.Store) (*delivery.Gate, error) {
 	postURL := env("POST_SERVICE_URL", "")
 	if postURL == "" {
 		// Without a content authority there is nobody to ask, and "nobody to
@@ -324,7 +315,39 @@ func buildDeliveryGate() (*delivery.Gate, error) {
 		delivery.NewHTTPContentAuthorizer(postURL, internalKey, nil),
 		delivery.NewHTTPChatAuthorizer(chatURL, internalKey, nil),
 	}
+
+	var signer delivery.URLSigner
+	if isProductionEnv() || os.Getenv("MEDIA_CLOUDFRONT_KEY_PAIR_ID") != "" || os.Getenv("MEDIA_CLOUDFRONT_PRIVATE_KEY") != "" {
+		cloudFrontSigner, err := delivery.NewSigner(delivery.Config{
+			CDNBaseURL:    env("MEDIA_CDN_BASE_URL", ""),
+			KeyPairID:     env("MEDIA_CLOUDFRONT_KEY_PAIR_ID", ""),
+			PrivateKeyPEM: []byte(os.Getenv("MEDIA_CLOUDFRONT_PRIVATE_KEY")),
+		})
+		if err != nil {
+			return nil, err
+		}
+		signer = cloudFrontSigner
+	} else {
+		// Local Docker has no CloudFront key pair. It still uses the exact same
+		// content-authorization gate, then issues bounded MinIO signatures.
+		// Production cannot select this branch.
+		signer = localBlobSigner{store: blobStore}
+	}
 	return delivery.NewGate(signer, authz), nil
+}
+
+type localBlobSigner struct{ store *blob.Store }
+
+func (s localBlobSigner) PublicURL(key string) (string, error) {
+	return s.store.ObjectURL(context.Background(), key, delivery.MaxProtectedTTL)
+}
+
+func (s localBlobSigner) SignProtected(key string, ttl time.Duration, _ time.Time) (string, error) {
+	u, err := s.store.GeneratePresignedGetURL(context.Background(), key, ttl)
+	if err != nil {
+		return "", err
+	}
+	return u.String(), nil
 }
 
 // isProductionEnv mirrors the production detection used elsewhere in this

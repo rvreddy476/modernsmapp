@@ -143,6 +143,21 @@ type authzFunc func() error
 
 func (f authzFunc) Authorize(context.Context, string, string) error { return f() }
 
+type batchAuthz struct {
+	allowed map[string]bool
+	err     error
+	calls   int
+}
+
+func (b *batchAuthz) Authorize(context.Context, string, string) error {
+	return errors.New("individual authorization must not be called")
+}
+
+func (b *batchAuthz) AuthorizeBatch(_ context.Context, _ string, _ []string) (map[string]bool, error) {
+	b.calls++
+	return b.allowed, b.err
+}
+
 // ── HTTP authorizer: every failure shape must fail closed ──────────────────
 
 func TestHTTPAuthorizerFailsClosedOnEveryFailureShape(t *testing.T) {
@@ -311,5 +326,72 @@ func TestURLsForAssetWithoutAuthorizerRefusesProtected(t *testing.T) {
 	g := NewGate(gateSigner(t), nil)
 	if _, err := g.URLsForAsset(context.Background(), "v", "m", assetKeys()); err == nil {
 		t.Fatal("protected asset served with no content authorizer configured")
+	}
+}
+
+func TestURLsForAssetsAuthorizesPageExactlyOnceAndOmitsDenied(t *testing.T) {
+	authz := &batchAuthz{allowed: map[string]bool{"m1": true, "m2": false}}
+	g := NewGate(gateSigner(t), authz)
+	got, err := g.URLsForAssets(context.Background(), "viewer", map[string]map[string]string{
+		"m1": {"original": ProtectedPrefix + "posts/one.jpg", "thumb": ProtectedPrefix + "posts/one-thumb.jpg"},
+		"m2": {"original": ProtectedPrefix + "posts/two.jpg"},
+	})
+	if err != nil {
+		t.Fatalf("batch URLs: %v", err)
+	}
+	if authz.calls != 1 {
+		t.Fatalf("authorization calls=%d want 1", authz.calls)
+	}
+	if len(got["m1"]) != 2 {
+		t.Fatalf("allowed asset variants=%v", got["m1"])
+	}
+	if _, exists := got["m2"]; exists {
+		t.Fatal("denied asset was not omitted")
+	}
+}
+
+func TestURLsForAssetsFailsWholePageWhenAuthorizationUnresolved(t *testing.T) {
+	authz := &batchAuthz{err: ErrDeliveryUnresolved}
+	g := NewGate(gateSigner(t), authz)
+	got, err := g.URLsForAssets(context.Background(), "viewer", map[string]map[string]string{
+		"m1": {"original": ProtectedPrefix + "posts/one.jpg"},
+	})
+	if !errors.Is(err, ErrDeliveryUnresolved) {
+		t.Fatalf("err=%v want unresolved", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("unresolved page returned URLs: %v", got)
+	}
+}
+
+func TestAnyContentAuthorizerBatchDistinguishesDeniedFromUnresolved(t *testing.T) {
+	// Post authorizer resolves m1=true, m2=false.
+	// Chat authorizer is unreachable (ErrDeliveryUnresolved).
+	// Because post authorizer evaluated both, m2 is a resolved denial, not an outage.
+	authorizers := AnyContentAuthorizer{
+		&batchAuthz{allowed: map[string]bool{"m1": true, "m2": false}},
+		fakeAuthz{err: ErrDeliveryUnresolved},
+	}
+	allowed, err := authorizers.AuthorizeBatch(context.Background(), "viewer", []string{"m1", "m2"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !allowed["m1"] {
+		t.Error("m1 should be allowed")
+	}
+	if allowed["m2"] {
+		t.Error("m2 should be denied")
+	}
+}
+
+func TestAnyContentAuthorizerBatchFailsWhenAllAuthorizersUnresolved(t *testing.T) {
+	// Both post and chat authorizers are unreachable.
+	authorizers := AnyContentAuthorizer{
+		&batchAuthz{err: ErrDeliveryUnresolved},
+		fakeAuthz{err: ErrDeliveryUnresolved},
+	}
+	_, err := authorizers.AuthorizeBatch(context.Background(), "viewer", []string{"m1", "m2"})
+	if !errors.Is(err, ErrDeliveryUnresolved) {
+		t.Fatalf("got %v, want ErrDeliveryUnresolved", err)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -38,10 +39,25 @@ var ErrDeliveryDenied = errors.New("delivery: not authorized")
 // a retryable 503 and must not fall back to serving.
 var ErrDeliveryUnresolved = errors.New("delivery: authorization unresolved")
 
+var errBatchUnsupported = errors.New("delivery: batch authorization unsupported")
+
 // ContentAuthorizer answers whether a viewer may receive an asset's bytes.
 type ContentAuthorizer interface {
 	// Authorize returns nil when the viewer may receive mediaID.
 	Authorize(ctx context.Context, viewerID, mediaID string) error
+}
+
+type batchContentAuthorizer interface {
+	AuthorizeBatch(ctx context.Context, viewerID string, mediaIDs []string) (map[string]bool, error)
+}
+
+// URLSigner is implemented by the CloudFront signer in production and by the
+// local S3-compatible presigner in development. Keeping the gate provider-
+// neutral lets local contract tests exercise the same authorization boundary
+// without weakening the production CloudFront requirement.
+type URLSigner interface {
+	PublicURL(key string) (string, error)
+	SignProtected(key string, ttl time.Duration, now time.Time) (string, error)
 }
 
 // HTTPContentAuthorizer asks post-service, which owns the content that
@@ -127,6 +143,67 @@ func (a *HTTPContentAuthorizer) Authorize(ctx context.Context, viewerID, mediaID
 	}
 }
 
+// AuthorizeBatch asks the post content authority once for an entire feed page.
+// Chat's authority does not expose this contract and explicitly falls back to
+// individual checks only for assets post-service denied.
+func (a *HTTPContentAuthorizer) AuthorizeBatch(ctx context.Context, viewerID string, mediaIDs []string) (map[string]bool, error) {
+	if a == nil || a.baseURL == "" {
+		return nil, fmt.Errorf("%w: no content authorizer configured", ErrDeliveryUnresolved)
+	}
+	if a.path != "/v1/internal/media-access" {
+		return nil, errBatchUnsupported
+	}
+	body, err := json.Marshal(map[string]any{"viewer_id": viewerID, "media_ids": mediaIDs})
+	if err != nil {
+		return nil, fmt.Errorf("%w: encode batch request: %v", ErrDeliveryUnresolved, err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		a.baseURL+a.path+"/batch", strings.NewReader(string(body)))
+	if err != nil {
+		return nil, fmt.Errorf("%w: build batch request: %v", ErrDeliveryUnresolved, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if a.internalKey != "" {
+		req.Header.Set("X-Internal-Service-Key", a.internalKey)
+	}
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrDeliveryUnresolved, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%w: content authority batch returned %d", ErrDeliveryUnresolved, resp.StatusCode)
+	}
+	var out struct {
+		Allowed   map[string]bool   `json:"allowed"`
+		Decisions map[string]string `json:"decisions,omitempty"`
+		Reasons   map[string]string `json:"reasons,omitempty"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("%w: decode batch response: %v", ErrDeliveryUnresolved, err)
+	}
+	if out.Allowed == nil {
+		return nil, fmt.Errorf("%w: batch response omitted allowed map", ErrDeliveryUnresolved)
+	}
+	for id, allowed := range out.Allowed {
+		decision := out.Decisions[id]
+		reason := out.Reasons[id]
+		if !allowed {
+			slog.InfoContext(ctx, "content authority denied asset",
+				"viewer_id", viewerID,
+				"media_id", id,
+				"decision", decision,
+				"reason", reason)
+		} else if decision == "not_ready" {
+			slog.InfoContext(ctx, "content authority permitted asset (not ready)",
+				"viewer_id", viewerID,
+				"media_id", id,
+				"reason", reason)
+		}
+	}
+	return out.Allowed, nil
+}
+
 // AnyContentAuthorizer permits an asset when any canonical owning surface
 // permits it. A denial from post-service may simply mean the asset belongs to
 // chat; unresolved dependencies remain retryable unless another authority can
@@ -157,16 +234,73 @@ func (authorizers AnyContentAuthorizer) Authorize(ctx context.Context, viewerID,
 	return ErrDeliveryDenied
 }
 
+func (authorizers AnyContentAuthorizer) AuthorizeBatch(ctx context.Context, viewerID string, mediaIDs []string) (map[string]bool, error) {
+	allowed := make(map[string]bool, len(mediaIDs))
+	remaining := make(map[string]bool, len(mediaIDs))
+	evaluated := make(map[string]bool, len(mediaIDs))
+	for _, id := range mediaIDs {
+		remaining[id] = true
+	}
+	for _, authorizer := range authorizers {
+		if len(remaining) == 0 {
+			break
+		}
+		if authorizer == nil {
+			continue
+		}
+		ids := make([]string, 0, len(remaining))
+		for id := range remaining {
+			ids = append(ids, id)
+		}
+		if batcher, ok := authorizer.(batchContentAuthorizer); ok {
+			batch, err := batcher.AuthorizeBatch(ctx, viewerID, ids)
+			if err == nil {
+				for id, yes := range batch {
+					evaluated[id] = true
+					if yes && remaining[id] {
+						allowed[id] = true
+						delete(remaining, id)
+					}
+				}
+				continue
+			}
+			if !errors.Is(err, errBatchUnsupported) {
+				continue
+			}
+		}
+		for _, id := range ids {
+			err := authorizer.Authorize(ctx, viewerID, id)
+			switch {
+			case err == nil:
+				evaluated[id] = true
+				allowed[id] = true
+				delete(remaining, id)
+			case errors.Is(err, ErrDeliveryDenied):
+				evaluated[id] = true
+			}
+		}
+	}
+	// Any remaining item that was never evaluated by any authorizer (i.e. every
+	// authorizer that could have owned it had an outage / unresolved error) must
+	// fail the batch as unresolved.
+	for id := range remaining {
+		if !evaluated[id] {
+			return nil, ErrDeliveryUnresolved
+		}
+	}
+	return allowed, nil
+}
+
 // Gate combines class detection, authorization and signing.
 //
 // It is the single entry point every media read path must use, so a new read
 // endpoint cannot accidentally serve bytes by calling the store directly.
 type Gate struct {
-	signer *Signer
+	signer URLSigner
 	authz  ContentAuthorizer
 }
 
-func NewGate(signer *Signer, authz ContentAuthorizer) *Gate {
+func NewGate(signer URLSigner, authz ContentAuthorizer) *Gate {
 	return &Gate{signer: signer, authz: authz}
 }
 
@@ -252,4 +386,87 @@ func (g *Gate) URLsForAsset(ctx context.Context, viewerID, mediaID string, keys 
 		out[name] = u
 	}
 	return out, nil
+}
+
+// URLsForAssets is the true batch form used by feed hydration. It performs at
+// most one post-authority HTTP call for all protected assets in the page,
+// while preserving the existing omit-denied / fail-unresolved semantics.
+func (g *Gate) URLsForAssets(ctx context.Context, viewerID string, assets map[string]map[string]string) (map[string]map[string]string, error) {
+	if g == nil || g.signer == nil {
+		return nil, fmt.Errorf("%w: delivery gate not configured", ErrDeliveryUnresolved)
+	}
+	result := make(map[string]map[string]string, len(assets))
+	protected := make([]string, 0, len(assets))
+	for mediaID, keys := range assets {
+		needsAuth := false
+		if len(keys) == 0 {
+			needsAuth = true
+		} else {
+			for _, key := range keys {
+				if ClassForKey(key) == ClassProtected {
+					needsAuth = true
+					break
+				}
+			}
+		}
+		if needsAuth {
+			protected = append(protected, mediaID)
+		}
+	}
+
+	allowed := make(map[string]bool, len(protected))
+	if len(protected) > 0 {
+		if g.authz == nil {
+			return nil, fmt.Errorf("%w: no content authorizer configured", ErrDeliveryUnresolved)
+		}
+		if batcher, ok := g.authz.(batchContentAuthorizer); ok {
+			batch, err := batcher.AuthorizeBatch(ctx, viewerID, protected)
+			if err != nil {
+				return nil, err
+			}
+			allowed = batch
+		} else {
+			for _, mediaID := range protected {
+				err := g.authz.Authorize(ctx, viewerID, mediaID)
+				if err == nil {
+					allowed[mediaID] = true
+					continue
+				}
+				if !errors.Is(err, ErrDeliveryDenied) {
+					return nil, err
+				}
+			}
+		}
+	}
+
+	now := time.Now()
+	for mediaID, keys := range assets {
+		urls := make(map[string]string, len(keys))
+		denied := false
+		if len(keys) == 0 {
+			if !allowed[mediaID] {
+				denied = true
+			}
+		}
+		for name, key := range keys {
+			var u string
+			var err error
+			if ClassForKey(key) == ClassPublic {
+				u, err = g.signer.PublicURL(key)
+			} else if allowed[mediaID] {
+				u, err = g.signer.SignProtected(key, MaxProtectedTTL, now)
+			} else {
+				denied = true
+				break
+			}
+			if err != nil {
+				return nil, err
+			}
+			urls[name] = u
+		}
+		if !denied {
+			result[mediaID] = urls
+		}
+	}
+	return result, nil
 }

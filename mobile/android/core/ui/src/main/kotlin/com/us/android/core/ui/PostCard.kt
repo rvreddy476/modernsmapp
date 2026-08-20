@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -26,6 +27,7 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.heading
@@ -106,65 +108,257 @@ fun PostCard(
     onBookmark: () -> Unit,
     onShare: () -> Unit,
     modifier: Modifier = Modifier,
+    onOptionClick: () -> Unit = {},
+    onFollow: () -> Unit = {},
 ) {
-    Column(
+    Box(
         modifier = modifier
-            .fillMaxWidth()
-            // Clip BEFORE the background so the surface, its border and the
-            // ripple all stop at the same rounded edge. Clipping afterwards
-            // leaves a square ripple escaping the corners on every tap.
-            .clip(RoundedCornerShape(UsTheme.radii.large))
-            .background(UsTheme.extended.bgCard)
-            .border(
-                width = HAIRLINE,
-                color = UsTheme.extended.borderSubtle,
-                shape = RoundedCornerShape(UsTheme.radii.large),
-            )
-            .clickable(onClick = onClick)
-            .padding(UsTheme.spacing.xxl),
-        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+            .fillMaxSize()
+            .background(Color(0xFF0C0C0F))
+            .clickable(onClick = onClick),
     ) {
-        CardHeader(state = state, onAuthorClick = onAuthorClick)
-
-        if (state.text.isNotBlank()) {
-            Text(
-                text = state.text,
-                style = MaterialTheme.typography.bodyMedium,
-                color = UsTheme.extended.textPrimary,
-                maxLines = MAX_LINES,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-
+        // 1. Media or Text background canvas
         if (state.mediaCount > 0) {
-            PostMedia(
-                url = state.mediaUrl,
-                postType = state.postType,
-                count = state.mediaCount,
-                aspectRatio = state.mediaAspectRatio,
-            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (state.mediaUrl != null) {
+                    AsyncImage(
+                        model = state.mediaUrl,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(
+                                brush = Brush.verticalGradient(
+                                    listOf(
+                                        Color(0xFF1E1E26),
+                                        Color(0xFF121217),
+                                    ),
+                                ),
+                            ),
+                    )
+                }
+
+                // Video play badge overlay
+                if (state.postType == VIDEO_POST || state.postType == "flick" || state.postType == "long_video") {
+                    Box(
+                        modifier = Modifier
+                            .size(64.dp)
+                            .clip(CircleShape)
+                            .background(Color.Black.copy(alpha = 0.6f))
+                            .border(HAIRLINE, Color(0x40FFFFFF), CircleShape),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = UsIcons.Play,
+                            contentDescription = "Play video",
+                            tint = Color.White,
+                            modifier = Modifier.size(30.dp),
+                        )
+                    }
+                }
+
+                // Multiple media indicator
+                if (state.mediaCount > 1) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(top = 16.dp, end = 16.dp)
+                            .clip(RoundedCornerShape(UsTheme.radii.full))
+                            .background(Color.Black.copy(alpha = 0.65f))
+                            .border(HAIRLINE, Color(0x33FFFFFF), RoundedCornerShape(UsTheme.radii.full))
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                    ) {
+                        Text(
+                            text = "1/${state.mediaCount}",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White,
+                        )
+                    }
+                }
+            }
+        } else {
+            // Text-only thought / status canvas
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        brush = Brush.verticalGradient(
+                            listOf(
+                                Color(0xFF1C1C24),
+                                Color(0xFF121217),
+                                Color(0xFF09090C),
+                            ),
+                        ),
+                    )
+                    .padding(horizontal = 28.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = state.text,
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color.White,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    modifier = Modifier.padding(bottom = 120.dp),
+                )
+            }
         }
 
-        // No divider. The card's own edge is the separator now; a rule inside
-        // a bounded surface just cuts the card in half.
-        PostActionBar(
-            state = state.actions,
-            onReact = onReact,
-            onComment = onComment,
-            onRepost = onRepost,
-            onBookmark = onBookmark,
-            onShare = onShare,
-        )
+        // 2. Bottom-anchored Creator Info, Follow Button, Caption & Social Actions
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .fillMaxWidth()
+                .background(
+                    brush = Brush.verticalGradient(
+                        listOf(
+                            Color.Transparent,
+                            Color.Black.copy(alpha = 0.75f),
+                            Color.Black.copy(alpha = 0.96f),
+                        ),
+                    ),
+                )
+                .padding(horizontal = UsTheme.spacing.pageHorizontal)
+                .padding(top = 48.dp, bottom = UsTheme.spacing.l),
+            verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+        ) {
+            // Bottom Creator Row (Profile Icon, Name, Timestamp, Follow Button)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(UsTheme.radii.medium))
+                        .clickable(onClick = onAuthorClick),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .border(
+                                width = HAIRLINE,
+                                color = Color(0x66FFFFFF),
+                                shape = CircleShape,
+                            ),
+                    ) {
+                        UsAvatar(
+                            name = state.authorName,
+                            size = UsAvatarSize.Medium,
+                            seed = state.authorId,
+                        )
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = state.authorName,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.semantics { heading() },
+                        )
+                        if (state.timestamp.isNotBlank()) {
+                            Text(
+                                text = state.timestamp,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.White.copy(alpha = 0.7f),
+                            )
+                        }
+                    }
+                }
+
+                // Follow Button
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(UsTheme.radii.full))
+                        .background(Color.White)
+                        .clickable(onClick = onFollow)
+                        .padding(horizontal = 14.dp, vertical = 6.dp),
+                ) {
+                    Text(
+                        text = "Follow",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.Black,
+                    )
+                }
+
+                // Pinned badge
+                if (state.isPinned) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(UsTheme.radii.full))
+                            .background(UsTheme.extended.statusWarning.copy(alpha = 0.2f))
+                            .border(
+                                width = HAIRLINE,
+                                color = UsTheme.extended.statusWarning,
+                                shape = RoundedCornerShape(UsTheme.radii.full),
+                            )
+                            .padding(horizontal = UsTheme.spacing.m, vertical = UsTheme.spacing.xs),
+                    ) {
+                        Text(
+                            text = "Pinned",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = UsTheme.extended.statusWarning,
+                        )
+                    }
+                }
+
+                IconButton(
+                    onClick = onOptionClick,
+                    modifier = Modifier.size(28.dp),
+                ) {
+                    Icon(
+                        imageVector = UsIcons.More,
+                        contentDescription = "Post options",
+                        tint = Color.White.copy(alpha = 0.8f),
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+
+            // Caption / Description for media posts
+            if (state.mediaCount > 0 && state.text.isNotBlank()) {
+                Text(
+                    text = state.text,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.White,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+
+            // Social Action Bar (Like, Comment, Repost, Share, Bookmark)
+            PostActionBar(
+                state = state.actions,
+                onReact = onReact,
+                onComment = onComment,
+                onRepost = onRepost,
+                onBookmark = onBookmark,
+                onShare = onShare,
+            )
+        }
     }
 }
 
+
 /**
- * The attachment on a feed row.
- *
- * The box is sized from the server's REAL width and height before any bytes
- * arrive, so the row never resizes when the image lands. Reflow mid-scroll is
- * the largest source of feed jank and it throws away the reader's place in the
- * list. Falls back to 16:9 only when the server sent no dimensions.
+ * The attachment on a post detail screen.
  */
 @Composable
 fun PostMedia(
@@ -174,66 +368,67 @@ fun PostMedia(
     aspectRatio: Float,
     modifier: Modifier = Modifier,
 ) {
+    val mediaShape = RoundedCornerShape(14.dp)
     Box(
         modifier = modifier
             .fillMaxWidth()
             .aspectRatio(aspectRatio)
-            .clip(RoundedCornerShape(UsTheme.radii.large))
-            // Painted under the image so the reserved box is a deliberate
-            // surface while bytes are in flight, rather than a hole in the
-            // list that reads as a failed row.
-            .background(UsTheme.extended.bgCardHover),
+            .clip(mediaShape)
+            .background(UsTheme.extended.bgCardHover)
+            .border(
+                width = HAIRLINE,
+                color = Color(0x14FFFFFF),
+                shape = mediaShape,
+            ),
     ) {
         if (url != null) {
             AsyncImage(
                 model = url,
                 contentDescription = null,
-                // Crop, not Fit. The box is already the asset's true ratio, so
-                // crop is a no-op for a correct image and quietly absorbs the
-                // rounding error when it is not — Fit would letterbox that
-                // error into visible bars.
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize(),
             )
         }
 
-        // Video still plays only in reels; the feed shows its poster frame.
-        // The mark is what tells a reader this is a video rather than a photo
-        // that happens to be still.
-        if (postType == VIDEO_POST) {
+        if (postType == VIDEO_POST || postType == "flick" || postType == "long_video") {
             Box(
                 modifier = Modifier
                     .align(Alignment.Center)
                     .size(PLAY_BADGE)
-                    .background(Color.Black.copy(alpha = PLAY_BADGE_ALPHA), CircleShape),
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = PLAY_BADGE_ALPHA))
+                    .border(HAIRLINE, Color(0x33FFFFFF), CircleShape),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
                     imageVector = UsIcons.Play,
-                    contentDescription = null,
+                    contentDescription = "Play video",
                     tint = Color.White,
                     modifier = Modifier.size(PLAY_GLYPH),
                 )
             }
         }
 
-        // Only when there is more than one. A "1" on every single-image post
-        // is noise that makes the count meaningless where it matters.
         if (count > 1) {
-            Text(
-                text = "1/$count",
-                style = MaterialTheme.typography.labelSmall,
-                color = Color.White,
+            Box(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
                     .padding(UsTheme.spacing.l)
                     .clip(RoundedCornerShape(UsTheme.radii.full))
                     .background(Color.Black.copy(alpha = COUNT_PILL_ALPHA))
+                    .border(HAIRLINE, Color(0x33FFFFFF), RoundedCornerShape(UsTheme.radii.full))
                     .padding(
                         horizontal = UsTheme.spacing.m,
                         vertical = UsTheme.spacing.xs,
                     ),
-            )
+            ) {
+                Text(
+                    text = "1/$count",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Medium,
+                    color = Color.White,
+                )
+            }
         }
     }
 }
@@ -325,56 +520,6 @@ private const val COUNT_PILL_ALPHA = 0.55f
  */
 private val HAIRLINE = 1.dp
 
-/**
- * Avatar, name and age — the card's title.
- *
- * Kept INSIDE the card surface, which is the whole point of the card: a header
- * floating on a shared background reads as a section heading over a stream,
- * not as something a person posted.
- */
-@Composable
-private fun CardHeader(state: PostCardState, onAuthorClick: () -> Unit) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
-        modifier = Modifier
-            .clip(RoundedCornerShape(UsTheme.radii.medium))
-            .clickable(onClick = onAuthorClick),
-    ) {
-        UsAvatar(
-            name = state.authorName,
-            size = UsAvatarSize.Small,
-            seed = state.authorId,
-        )
-        // weight(1f) so a long display name ellipsises instead of shoving the
-        // pinned marker off the card.
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = state.authorName,
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-                color = UsTheme.extended.textPrimary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.semantics { heading() },
-            )
-            // Omitted rather than shown blank: the formatter returns an empty
-            // string for a timestamp it cannot parse, and an empty line under
-            // the name looks like a layout fault.
-            if (state.timestamp.isNotBlank()) {
-                Text(
-                    text = state.timestamp,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = UsTheme.extended.textMuted,
-                )
-            }
-        }
-        if (state.isPinned) {
-            Text(
-                text = "Pinned",
-                style = MaterialTheme.typography.labelSmall,
-                color = UsTheme.extended.statusWarning,
-            )
-        }
-    }
-}
+
+
+

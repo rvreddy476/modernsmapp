@@ -66,6 +66,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, optionalAuthMW gin.Handl
 		v1.GET("/:mediaId/url/:variant", h.GetMediaVariantURL)
 		v1.GET("/:mediaId/serve", h.ServeMedia)
 		v1.GET("/:mediaId/serve/:variant", h.ServeMediaVariant)
+		v1.GET("/:mediaId/hls/:playlist", h.ServeHLSPlaylist)
 	}
 
 	// Module 1 fixes-v3 / LB-1 — service-to-service only.
@@ -197,11 +198,20 @@ func (h *Handler) ConfirmUpload(c *gin.Context) {
 
 	res, err := h.svc.ConfirmUpload(c.Request.Context(), mediaID, userID)
 	if err != nil {
-		if err.Error() == "forbidden: you do not own this media" {
+		switch {
+		case errors.Is(err, service.ErrUploadForbidden):
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
-			return
+		case errors.Is(err, service.ErrUploadObjectAbsent):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "UPLOAD_OBJECT_MISSING", err.Error(), nil)
+		case errors.Is(err, service.ErrUploadSizeMismatch):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnprocessableEntity, "UPLOAD_SIZE_MISMATCH", err.Error(), nil)
+		case errors.Is(err, service.ErrUploadState):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "UPLOAD_STATE_CONFLICT", err.Error(), nil)
+		case errors.Is(err, service.ErrUploadIntegrity):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "UPLOAD_INTEGRITY_ERROR", err.Error(), nil)
+		default:
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -363,6 +373,10 @@ func (h *Handler) ServeMediaVariant(c *gin.Context) {
 	}
 
 	variant := c.Param("variant")
+	if variant == "hls" {
+		h.serveHLSPlaylist(c, mediaID, "master.m3u8")
+		return
+	}
 	imgURL, err := h.svc.GetMediaVariantURL(c.Request.Context(), deliveryViewer(c), mediaID, variant)
 	if err != nil {
 		writeDeliveryError(c, err)
@@ -370,6 +384,31 @@ func (h *Handler) ServeMediaVariant(c *gin.Context) {
 	}
 
 	c.Redirect(http.StatusTemporaryRedirect, imgURL)
+}
+
+// ServeHLSPlaylist returns a small authorized playlist through the API. The
+// master points to child playlists on this route; child playlists point to
+// bounded, signed segment URLs, so Media3 can actually follow the full HLS
+// graph without leaking bearer tokens to object storage or proxying video
+// bytes through the API service.
+func (h *Handler) ServeHLSPlaylist(c *gin.Context) {
+	mediaID, err := uuid.Parse(c.Param("mediaId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil)
+		return
+	}
+	h.serveHLSPlaylist(c, mediaID, c.Param("playlist"))
+}
+
+func (h *Handler) serveHLSPlaylist(c *gin.Context, mediaID uuid.UUID, playlist string) {
+	body, err := h.svc.GetHLSPlaylist(c.Request.Context(), deliveryViewer(c), mediaID, playlist)
+	if err != nil {
+		writeDeliveryError(c, err)
+		return
+	}
+	c.Header("Content-Type", "application/vnd.apple.mpegurl")
+	c.Header("Cache-Control", "private, no-store")
+	c.Data(http.StatusOK, "application/vnd.apple.mpegurl", body)
 }
 
 // DeleteOrphanMedia — DELETE /v1/media/internal/orphan/:mediaId

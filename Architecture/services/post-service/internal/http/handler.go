@@ -87,7 +87,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.POST("/:postId/comments", idempotent, h.AddComment)
 		v1.GET("/:postId/comments", h.ListComments)
 		v1.GET("/:postId/comments/around/:commentId", h.ListCommentsAround)
-		v1.POST("/:postId/bookmark", h.ToggleBookmark)
+		// PUT-like semantics on POST for mobile retries: repeated calls keep the
+		// bookmark set. DELETE is the inverse. The former toggle made a network
+		// retry silently undo the user's first successful tap.
+		v1.POST("/:postId/bookmark", h.AddBookmark)
 		v1.DELETE("/:postId/bookmark", h.RemoveBookmark)
 		v1.POST("/:postId/resubmit", h.Resubmit)
 		v1.POST("/:postId/moderation", h.ModeratePost)
@@ -131,6 +134,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// policy for it), and media-service is its only intended caller. The
 	// internal-key middleware applied to all /v1 routes above is what gates it.
 	r.POST("/v1/internal/media-access", h.MediaAccess)
+	r.POST("/v1/internal/media-access/batch", h.MediaAccessBatch)
 
 	// Stories
 	stories := r.Group("/v1/stories")
@@ -799,6 +803,10 @@ func (h *Handler) AddComment(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
+	if strings.TrimSpace(req.Text) == "" {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "comment text cannot be blank", nil)
+		return
+	}
 
 	comment, err := h.svc.CreateCommentPG(c.Request.Context(), postID, userID, req.Text)
 	if err != nil {
@@ -1038,7 +1046,7 @@ func (h *Handler) AddBookmark(c *gin.Context) {
 		return
 	}
 
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "bookmarked"}, nil)
+	api.JSON(c.Writer, http.StatusOK, map[string]bool{"bookmarked": true}, nil)
 }
 
 func (h *Handler) RemoveBookmark(c *gin.Context) {
@@ -1061,7 +1069,7 @@ func (h *Handler) RemoveBookmark(c *gin.Context) {
 		return
 	}
 
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "unbookmarked"}, nil)
+	api.JSON(c.Writer, http.StatusOK, map[string]bool{"bookmarked": false}, nil)
 }
 
 func (h *Handler) GetBookmarks(c *gin.Context) {

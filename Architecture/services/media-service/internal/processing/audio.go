@@ -24,9 +24,9 @@ func ExtractAudio(ctx context.Context, inputPath, outputDir string) (outputPath 
 
 	args := []string{
 		"-y", "-i", inputPath,
-		"-vn",            // no video
-		"-c:a", "aac",    // AAC codec
-		"-b:a", "128k",   // 128 kbps
+		"-vn",         // no video
+		"-c:a", "aac", // AAC codec
+		"-b:a", "128k", // 128 kbps
 		"-movflags", "+faststart",
 		outputPath,
 	}
@@ -94,9 +94,9 @@ func GenerateWaveform(ctx context.Context, inputPath, outputDir string, numBins 
 	pcmPath := filepath.Join(outputDir, "waveform.pcm")
 	args := []string{
 		"-y", "-i", inputPath,
-		"-ac", "1",           // mono
-		"-ar", "8000",        // 8kHz
-		"-f", "s16le",        // 16-bit signed PCM
+		"-ac", "1", // mono
+		"-ar", "8000", // 8kHz
+		"-f", "s16le", // 16-bit signed PCM
 		"-acodec", "pcm_s16le",
 		pcmPath,
 	}
@@ -180,9 +180,9 @@ func ExtractFrames(ctx context.Context, inputPath, outputDir string, numFrames i
 		return nil, fmt.Errorf("probe video for frames: %w", err)
 	}
 
-	durationSec := float64(meta.DurationMs) / 1000.0
-	if durationSec < 1 {
-		durationSec = 1
+	durationSec := meta.DurationFloat
+	if durationSec <= 0 {
+		return nil, fmt.Errorf("video has no positive duration")
 	}
 
 	interval := durationSec / float64(numFrames+1)

@@ -106,7 +106,7 @@ func main() {
 		target string
 	}{
 		// Longest prefixes first for correct matching
-		{"/v1/admin/flags", env("FLAGS_SERVICE_URL", "http://feature-flag-service:8095")},
+		{"/v1/admin/flags", env("FLAGS_SERVICE_URL", "http://feature-flag-service:8117")},
 		{"/v1/auth", env("AUTH_SERVICE_URL", "http://identity-auth:8081")},
 		{"/v1/profiles", env("PROFILE_SERVICE_URL", "http://identity-profile:8098")},
 		// User service: onboarding, users, channels, pages, links
@@ -149,7 +149,7 @@ func main() {
 		{"/v1/chat", env("MESSAGE_SERVICE_URL", "http://chat-message-service:8092")},
 		{"/v1/analytics", env("ANALYTICS_SERVICE_URL", "http://analytics-service:8094")},
 		{"/v1/ai", env("AI_SERVICE_URL", "http://ai-service:8117")},
-		{"/v1/flags", env("FLAGS_SERVICE_URL", "http://feature-flag-service:8095")},
+		{"/v1/flags", env("FLAGS_SERVICE_URL", "http://feature-flag-service:8117")},
 		{"/v1/admin", env("ADMIN_SERVICE_URL", "http://admin-service:8096")},
 		{"/v1/apps", env("ADMIN_SERVICE_URL", "http://admin-service:8096")},
 		{"/v1/oauth", env("ADMIN_SERVICE_URL", "http://admin-service:8096")},

@@ -40,11 +40,11 @@ env:
   ENV: staging
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
-  # Add per-service inter-service URLs here. Common ones:
-  #   USER_SERVICE_URL:  http://user-service.atpost.svc.cluster.local:8082
-  #   GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083
-  #   POST_SERVICE_URL:  http://post-service.atpost.svc.cluster.local:8084
-  #   MEDIA_SERVICE_URL: http://media-service.atpost.svc.cluster.local:8087
+  USER_SERVICE_URL: http://identity-user-service.atpost.svc.cluster.local:8110
+  GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083
+  POST_SERVICE_URL: http://post-service.atpost.svc.cluster.local:8084
+  PROFILE_SERVICE_URL: http://identity-profile-service.atpost.svc.cluster.local:8098
+  MEDIA_SERVICE_URL: http://media-service.atpost.svc.cluster.local:8087
 
 # Internal-only — api-gateway is the external surface.
 ingress:

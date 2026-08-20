@@ -8,15 +8,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/notification-service/database"
 	"github.com/atpost/notification-service/internal/events"
 	"github.com/atpost/notification-service/internal/graph"
 	"github.com/atpost/notification-service/internal/http"
 	"github.com/atpost/notification-service/internal/push"
 	"github.com/atpost/notification-service/internal/service"
-	"github.com/atpost/notification-service/internal/subscribers"
-	"github.com/atpost/notification-service/database"
 	"github.com/atpost/notification-service/internal/store/postgres"
 	"github.com/atpost/notification-service/internal/store/scylla"
+	"github.com/atpost/notification-service/internal/subscribers"
 	"github.com/atpost/notification-service/internal/workers"
 	"github.com/atpost/shared/health"
 	"github.com/atpost/shared/mailer"
@@ -81,45 +81,41 @@ func main() {
 
 	// 5. Database (Postgres -- for preferences & devices)
 	pgDSN := os.Getenv("POSTGRES_DSN")
-	var pgStore *postgres.Store
-	var dbPool *pgxpool.Pool
-	if pgDSN != "" {
-		pgPoolCfg, err := pgxpool.ParseConfig(pgDSN)
-		if err != nil {
-			slog.Warn("unable to parse postgres config (preferences disabled)", "error", err)
-		} else {
-			pgPoolCfg.MaxConns = 25
-			pgPoolCfg.MinConns = 5
-			pgPoolCfg.MaxConnLifetime = 15 * time.Minute
-			pgPoolCfg.MaxConnIdleTime = 5 * time.Minute
-			pool, err := pgxpool.NewWithConfig(ctx, pgPoolCfg)
-			if err != nil {
-				slog.Warn("unable to connect to postgres (preferences disabled)", "error", err)
-			} else {
-				dbPool = pool
-				defer dbPool.Close()
-				if err := dbPool.Ping(ctx); err != nil {
-					slog.Warn("postgres ping failed", "error", err)
-				} else {
-					slog.Info("connected to postgres")
-					pgStore = postgres.New(dbPool)
-					if err := postgres.BootstrapSchema(ctx, dbPool, database.SetupSQL, database.Migrations); err != nil {
-						slog.Warn("notification schema bootstrap failed", "error", err)
-					} else {
-						slog.Info("notification schema ready")
-					}
-				}
-			}
-		}
+	if pgDSN == "" {
+		slog.Error("POSTGRES_DSN is required: device registration, preferences, and durable subscriber fan-out cannot run without it")
+		os.Exit(1)
 	}
+	pgPoolCfg, err := pgxpool.ParseConfig(pgDSN)
+	if err != nil {
+		slog.Error("unable to parse postgres config", "error", err)
+		os.Exit(1)
+	}
+	pgPoolCfg.MaxConns = 25
+	pgPoolCfg.MinConns = 5
+	pgPoolCfg.MaxConnLifetime = 15 * time.Minute
+	pgPoolCfg.MaxConnIdleTime = 5 * time.Minute
+	dbPool, err := pgxpool.NewWithConfig(ctx, pgPoolCfg)
+	if err != nil {
+		slog.Error("unable to configure postgres pool", "error", err)
+		os.Exit(1)
+	}
+	defer dbPool.Close()
+	if err := dbPool.Ping(ctx); err != nil {
+		slog.Error("postgres ping failed", "error", err)
+		os.Exit(1)
+	}
+	if err := postgres.BootstrapSchema(ctx, dbPool, database.SetupSQL, database.Migrations); err != nil {
+		slog.Error("notification schema bootstrap failed", "error", err)
+		os.Exit(1)
+	}
+	pgStore := postgres.New(dbPool)
+	slog.Info("connected to postgres; notification schema ready")
 
 	// 6. Prometheus metrics
 	httpMetrics := metrics.NewHTTPMetrics("notification-service")
 
-	if dbPool != nil {
-		dbMetrics := metrics.NewDBPoolMetrics("notification-service", "postgres")
-		go collectDBPoolStats(ctx, dbPool, dbMetrics)
-	}
+	dbMetrics := metrics.NewDBPoolMetrics("notification-service", "postgres")
+	go collectDBPoolStats(ctx, dbPool, dbMetrics)
 
 	// 7. Health checker
 	checker := health.New("notification-service")
@@ -129,16 +125,12 @@ func main() {
 	checker.Register("redis", health.RedisPingCheck(func(ctx context.Context) error {
 		return rdb.Ping(ctx).Err()
 	}))
-	if dbPool != nil {
-		checker.Register("postgres", health.PingCheck(dbPool))
-	}
+	checker.Register("postgres", health.PingCheck(dbPool))
 
 	// 8. Dependencies
 	scyllaStore := scylla.New(session)
 	notifSvc := service.New(scyllaStore, rdb)
-	if pgStore != nil {
-		notifSvc.SetPGStore(pgStore)
-	}
+	notifSvc.SetPGStore(pgStore)
 
 	// Transactional email transport. Uses SMTP when configured, otherwise logs.
 	if smtpHost := os.Getenv("SMTP_HOST"); smtpHost != "" {
@@ -241,24 +233,20 @@ func main() {
 	// Postgres store (job + dedup tables) and the internal user-service
 	// subscriber contract. Without both, upload notifications are skipped
 	// entirely — there is deliberately no follower fallback.
-	if pgStore != nil {
-		userURL := env("USER_SERVICE_URL", "http://user-service:8082")
-		fanout := service.NewSubscriberFanout(
-			notifSvc, pgStore, subscribers.New(userURL, internalKey),
-		)
-		// Per-recipient eligibility re-checked at delivery time (P1-8):
-		// blocks, followers-only access, deletion, and moderation state.
-		fanout.SetEligibilityDeps(
-			graphURL,
-			env("POST_SERVICE_URL", "http://post-service:8084"),
-			internalKey,
-		)
-		consumer.WithSubscriberFanout(fanout)
-		fanout.StartWorker(ctx)
-		slog.Info("subscriber fan-out worker started", "user_service_url", userURL)
-	} else {
-		slog.Warn("subscriber fan-out disabled: no Postgres store — upload notifications will not be delivered")
-	}
+	userURL := env("USER_SERVICE_URL", "http://user-service:8082")
+	fanout := service.NewSubscriberFanout(
+		notifSvc, pgStore, subscribers.New(userURL, internalKey),
+	)
+	// Per-recipient eligibility re-checked at delivery time (P1-8):
+	// blocks, followers-only access, deletion, and moderation state.
+	fanout.SetEligibilityDeps(
+		graphURL,
+		env("POST_SERVICE_URL", "http://post-service:8084"),
+		internalKey,
+	)
+	consumer.WithSubscriberFanout(fanout)
+	fanout.StartWorker(ctx)
+	slog.Info("subscriber fan-out worker started", "user_service_url", userURL)
 
 	go consumer.Start(ctx)
 	slog.Info("kafka consumer started", "topic", "social.events.v1")
@@ -453,4 +441,3 @@ func collectDBPoolStats(ctx context.Context, pool *pgxpool.Pool, m *metrics.DBPo
 		}
 	}
 }
-

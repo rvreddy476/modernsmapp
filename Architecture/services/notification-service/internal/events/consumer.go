@@ -578,7 +578,6 @@ func unmarshalPayload(raw json.RawMessage, v interface{}) error {
 	return json.Unmarshal(b, v)
 }
 
-
 // fanOutLiveStarted pages through the creator's followers and pushes a
 // "creator is live" notification. Same CR2-style sub-pool as the
 // upload fanout. Paid streams are skipped — those go through commerce

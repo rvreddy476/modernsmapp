@@ -110,7 +110,7 @@ func (s *NotificationStore) CreateNotificationIfNotExists(ctx context.Context, n
 func DeterministicTS(at time.Time, identity string) gocql.UUID {
 	u := gocql.UUIDFromTime(at) // correct time_low/mid/hi + version bits
 	sum := sha256.Sum256([]byte(identity))
-	copy(u[8:16], sum[:8]) // clock_seq (2) + node (6)
+	copy(u[8:16], sum[:8])      // clock_seq (2) + node (6)
 	u[8] = (u[8] & 0x3F) | 0x80 // restore the RFC-4122 variant marker
 	return u
 }

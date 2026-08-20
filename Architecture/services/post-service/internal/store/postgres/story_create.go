@@ -241,6 +241,32 @@ func (s *Store) GetMediaAccessFacts(ctx context.Context, mediaID uuid.UUID) (*Me
 	return &f, nil
 }
 
+// GetMediaAccessFactsBatch loads lifecycle/ownership gates for a media page in
+// one query. Missing assets are absent from the result and therefore denied.
+func (s *Store) GetMediaAccessFactsBatch(ctx context.Context, mediaIDs []uuid.UUID) (map[uuid.UUID]MediaAccessFacts, error) {
+	result := make(map[uuid.UUID]MediaAccessFacts, len(mediaIDs))
+	if len(mediaIDs) == 0 {
+		return result, nil
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT id, uploader_id, processing_status, moderation_status
+		FROM media_assets WHERE id = ANY($1)
+	`, mediaIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id uuid.UUID
+		var facts MediaAccessFacts
+		if err := rows.Scan(&id, &facts.UploaderID, &facts.ProcessingStatus, &facts.ModerationStatus); err != nil {
+			return nil, err
+		}
+		result[id] = facts
+	}
+	return result, rows.Err()
+}
+
 // StoryForMedia returns the live story referencing this asset, if any.
 //
 // Soft-deleted stories are excluded: a deleted story must stop authorizing its
@@ -260,4 +286,34 @@ func (s *Store) StoryForMedia(ctx context.Context, mediaID uuid.UUID) (*Story, e
 		return nil, err
 	}
 	return story, nil
+}
+
+// StoriesForMediaBatch returns the newest live story for each media asset.
+func (s *Store) StoriesForMediaBatch(ctx context.Context, mediaIDs []uuid.UUID) (map[uuid.UUID]*Story, error) {
+	result := make(map[uuid.UUID]*Story, len(mediaIDs))
+	if len(mediaIDs) == 0 {
+		return result, nil
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT `+storyCols+` FROM stories
+		WHERE media_id = ANY($1) AND deleted_at IS NULL
+		ORDER BY created_at DESC
+	`, mediaIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var story Story
+		if err := scanStoryInto(&story, rows.Scan); err != nil {
+			return nil, err
+		}
+		if story.MediaID != nil {
+			if _, exists := result[*story.MediaID]; !exists {
+				copy := story
+				result[*story.MediaID] = &copy
+			}
+		}
+	}
+	return result, rows.Err()
 }
