@@ -10,8 +10,10 @@ import com.us.android.core.profile.data.ProfileRepository
 import com.us.android.core.profile.data.dto.GraphStatusDto
 import com.us.android.core.profile.data.dto.GraphUserIdRequest
 import com.us.android.core.profile.data.dto.OwnProfileDto
+import com.us.android.core.profile.data.dto.ProfileMediaUpdateDto
 import com.us.android.core.profile.data.dto.ProfileStatsDto
 import com.us.android.core.profile.data.dto.PublicProfileDto
+import com.us.android.core.profile.data.dto.UpdateMediaIdRequest
 import com.us.android.core.profile.data.dto.UpdateProfileRequest
 import com.us.android.core.testing.MainDispatcherRule
 import kotlinx.coroutines.test.runTest
@@ -61,6 +63,12 @@ class EditProfileViewModelTest {
                 ),
             )
         }
+
+        override suspend fun updateAvatar(body: UpdateMediaIdRequest) =
+            ApiEnvelope(ProfileMediaUpdateDto(avatarMediaId = body.mediaId))
+
+        override suspend fun updateCover(body: UpdateMediaIdRequest) =
+            ApiEnvelope(ProfileMediaUpdateDto(coverMediaId = body.mediaId))
 
         override suspend fun follow(body: GraphUserIdRequest) = ApiEnvelope(GraphStatusDto("followed"))
 

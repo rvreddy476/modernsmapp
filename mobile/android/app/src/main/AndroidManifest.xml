@@ -12,6 +12,16 @@
     -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!--
+      POST_NOTIFICATIONS — Slice D.
+
+      Required from API 33 to display anything at all. Declaring it does NOT
+      show a prompt; the runtime request is a separate, deliberate act made
+      when the user has a reason to say yes, not on first launch. Without the
+      declaration the runtime request cannot even be made and every push is
+      silently dropped by the system.
+    -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
 
     <application
@@ -44,6 +54,25 @@
             -->
         </activity>
 
+
+        <!--
+          FCM entry point — Slice D.
+
+          Its absence is why push has never worked: UsMessagingService existed,
+          was @AndroidEntryPoint, and was never declared, so FCM had nothing to
+          dispatch to. No token was ever stored, PushTokenRegistrar was never
+          called, and every notification stopped at the database.
+
+          exported="false" with the MESSAGING_EVENT filter is the standard
+          declaration: only Google Play services may bind it.
+        -->
+        <service
+            android:name="com.us.android.core.notifications.UsMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
     </application>
 
 </manifest>

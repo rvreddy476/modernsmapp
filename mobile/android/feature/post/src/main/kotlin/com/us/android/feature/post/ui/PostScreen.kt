@@ -35,12 +35,20 @@ import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.engagement.data.EngagementAction
+import com.us.android.core.engagement.data.EngagementFailure
+import com.us.android.core.engagement.data.bookmarkedOr
+import com.us.android.core.engagement.data.likeCountOr
+import com.us.android.core.engagement.data.reactedOr
+import com.us.android.core.engagement.data.repostCountOr
+import com.us.android.core.engagement.data.repostedOr
 import com.us.android.core.media.data.MediaDelivery
 import com.us.android.core.model.Post
 import com.us.android.core.model.PostCounts
 import com.us.android.core.model.PostViewerState
 import com.us.android.core.model.Profile
 import com.us.android.core.ui.DEFAULT_MEDIA_ASPECT
+import com.us.android.core.ui.EngagementFailureBar
 import com.us.android.core.ui.PostActionBar
 import com.us.android.core.ui.PostActionState
 import com.us.android.core.ui.PostMedia
@@ -58,8 +66,12 @@ fun PostScreen(
     viewModel: PostViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val failures by viewModel.failures.collectAsStateWithLifecycle()
     PostContent(
         state = state,
+        failures = failures,
+        onRetryFailure = viewModel::retryFailure,
+        onDismissFailure = viewModel::dismissFailure,
         onBack = onBack,
         onRetry = viewModel::load,
         onReact = viewModel::onReactToggle,
@@ -76,6 +88,9 @@ fun PostScreen(
 @Composable
 internal fun PostContent(
     state: PostUiState,
+    failures: List<EngagementFailure> = emptyList(),
+    onRetryFailure: (String, EngagementAction) -> Unit = { _, _ -> },
+    onDismissFailure: (String, EngagementAction) -> Unit = { _, _ -> },
     onBack: () -> Unit,
     onRetry: () -> Unit,
     onReact: () -> Unit,
@@ -94,32 +109,41 @@ internal fun PostContent(
         topBar = { UsTopBar(title = "Post", onBack = onBack) },
         applyPageGutter = false,
     ) { padding ->
-        when (state) {
-            is PostUiState.Loading -> UsLoadingState(
-                modifier = Modifier.padding(padding),
-                label = "Loading post",
+        // The scaffold inset is applied ONCE here, on the column, rather than
+        // on each branch below. Applying it in both places would inset twice.
+        Column(modifier = Modifier.padding(padding)) {
+            // Above the post, not inside its card: a failed like is about this
+            // session, not about what the author wrote.
+            EngagementFailureBar(
+                failures = failures,
+                onRetry = onRetryFailure,
+                onDismiss = onDismissFailure,
             )
+            when (state) {
+                is PostUiState.Loading -> UsLoadingState(label = "Loading post")
 
-            is PostUiState.Error -> UsErrorState(
-                message = state.message,
-                modifier = Modifier.padding(padding),
-                onRetry = if (state.retryable) onRetry else null,
-            )
+                is PostUiState.Error -> UsErrorState(
+                    message = state.message,
+                    onRetry = if (state.retryable) onRetry else null,
+                )
 
-            is PostUiState.Content -> LoadedPost(
-                state = state,
-                onReact = onReact,
-                onBookmark = onBookmark,
-                onRepost = onRepost,
-                onDismissActionError = onDismissActionError,
-                onOpenAuthor = onOpenAuthor,
-                onOpenComments = onOpenComments,
-                modifier = Modifier.padding(padding),
-            )
+                is PostUiState.Content -> LoadedPost(
+                    state = state,
+                    onReact = onReact,
+                    onBookmark = onBookmark,
+                    onRepost = onRepost,
+                    onDismissActionError = onDismissActionError,
+                    onOpenAuthor = onOpenAuthor,
+                    onOpenComments = onOpenComments,
+                )
+            }
         }
     }
 }
 
+// One Compose layout; see PostCard for why it is not split to fit a budget.
+// MagicNumber: inline ARGB surface colours from the current visual design.
+@Suppress("LongMethod", "MagicNumber")
 @Composable
 private fun LoadedPost(
     state: PostUiState.Content,
@@ -134,6 +158,7 @@ private fun LoadedPost(
     val post = state.post
     val author = state.author
     val share = rememberPostSharer()
+    val overlay = state.overlay
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -167,7 +192,6 @@ private fun LoadedPost(
                 .padding(UsTheme.spacing.xxl),
             verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
         ) {
-
             if (author != null) {
                 AuthorHeader(
                     author = author,
@@ -191,11 +215,18 @@ private fun LoadedPost(
 
             PostActionBar(
                 state = PostActionState(
-                    likeCount = post.counts.likes,
+                    // Same derivation as the feed, from the same shared
+                    // overlay — so a like made in one surface is already
+                    // applied when the other opens.
+                    likeCount = overlay.likeCountOr(post.counts.likes, post.viewer.hasReacted),
                     commentCount = post.counts.comments,
-                    repostCount = post.counts.reposts,
-                    hasReacted = post.viewer.hasReacted,
-                    isBookmarked = post.viewer.isBookmarked,
+                    repostCount = overlay.repostCountOr(
+                        post.counts.reposts,
+                        post.viewer.hasReposted,
+                    ),
+                    hasReacted = overlay.reactedOr(post.viewer.hasReacted),
+                    hasReposted = overlay.repostedOr(post.viewer.hasReposted),
+                    isBookmarked = overlay.bookmarkedOr(post.viewer.isBookmarked),
                     canReact = post.allowsReactions,
                     // Live now that the comments list exists and :app wires the
                     // destination. Gated on the AUTHOR's switch, not on whether
@@ -257,6 +288,8 @@ private fun PostAttachment(post: Post, media: MediaDelivery?) {
             postType = if (reference.kind == VIDEO_POST) VIDEO_POST else reference.kind,
             count = post.media.size,
             aspectRatio = media.aspectRatio ?: DEFAULT_MEDIA_ASPECT,
+            // The description the author was required to write, finally read.
+            contentDescription = reference.contentDescription,
         )
 
         else -> UsEmptyState(
@@ -355,6 +388,8 @@ private fun PostDeletedPreview() = PreviewHost(
  * easier to hit than a line of text, and every social surface has trained
  * people that the avatar is tappable too.
  */
+// MagicNumber: inline ARGB border colour from the current visual design.
+@Suppress("MagicNumber")
 @Composable
 private fun AuthorHeader(
     author: Profile,
@@ -402,7 +437,6 @@ private fun AuthorHeader(
         }
     }
 }
-
 
 /**
  * Matches the feed card's border weight. Defined here rather than shared

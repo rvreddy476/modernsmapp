@@ -4,22 +4,27 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.paging.PagingData
 import androidx.paging.cachedIn
+import com.us.android.core.engagement.data.EngagementAction
+import com.us.android.core.engagement.data.EngagementFailure
+import com.us.android.core.engagement.data.EngagementOverlay
+import com.us.android.core.engagement.data.EngagementRepository
+import com.us.android.core.engagement.data.EngagementStore
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedSurface
 import com.us.android.feature.feed.data.FeedRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @HiltViewModel
 class FeedViewModel @Inject constructor(
     private val repository: FeedRepository,
     private val urlResolver: MediaUrlResolver,
+    private val engagement: EngagementStore,
+    private val shares: EngagementRepository,
 ) : ViewModel() {
 
     /**
@@ -58,44 +63,95 @@ class FeedViewModel @Inject constructor(
     val items: Flow<PagingData<FeedItem>> =
         repository.feed(FeedSurface.Home).cachedIn(viewModelScope)
 
-    private val _pendingActions = MutableStateFlow(FeedActionState())
-    val pendingActions: StateFlow<FeedActionState> = _pendingActions.asStateFlow()
+    /**
+     * Optimistic engagement, layered over the immutable page.
+     *
+     * A PagingData page cannot be edited in place, so a tap cannot be written
+     * back into the item it belongs to. The overlay carries the viewer's
+     * intent instead, and [EngagementStore] performs the real write — the same
+     * store post detail observes, so a like in the feed is already applied
+     * when the post opens.
+     */
+    val overlays: StateFlow<Map<String, EngagementOverlay>> = engagement.overlays
+
+    val failures: StateFlow<List<EngagementFailure>> = engagement.failures
+
+    fun onReact(postId: String, serverReacted: Boolean) = viewModelScope.launch {
+        engagement.toggleReaction(postId, serverReacted)
+    }
+
+    fun onBookmark(postId: String, serverBookmarked: Boolean) = viewModelScope.launch {
+        engagement.toggleBookmark(postId, serverBookmarked)
+    }
+
+    fun onRepost(postId: String, serverReposted: Boolean) = viewModelScope.launch {
+        engagement.toggleRepost(postId, serverReposted)
+    }
 
     /**
-     * Interactions are recorded locally, not written through.
+     * Records an external share AFTER the chooser was launched.
      *
-     * The feed's own item carries `is_bookmarked` and counts, but a PagingData
-     * stream is immutable — an item cannot be edited in place without either a
-     * Room-backed mediator or a full refresh that loses scroll position. So a
-     * tap here records intent in [FeedActionState], the card reflects it
-     * immediately, and the write lands with the post slice.
-     *
-     * This is a deliberate seam, not a stub: wiring writes into the list before
-     * the mediator exists would mean a refresh silently reverting what the user
-     * just did, which is worse than an action that visibly does nothing yet.
+     * Fire-and-forget: the share already happened in another app, so a failed
+     * count must not produce an error the user cannot act on. Exactly one
+     * server event per chooser launch.
      */
-    fun onLocalBookmark(postId: String) = _pendingActions.update {
-        it.copy(bookmarked = it.bookmarked.toggle(postId))
+    fun onExternalShared(postId: String) = viewModelScope.launch {
+        shares.recordExternalShare(postId)
     }
 
-    fun onLocalReaction(postId: String) = _pendingActions.update {
-        it.copy(reacted = it.reacted.toggle(postId))
+    fun dismissFailure(postId: String, action: EngagementAction) =
+        engagement.clearFailure(postId, action)
+
+    fun retryFailure(postId: String, action: EngagementAction) = viewModelScope.launch {
+        engagement.retry(postId, action)
     }
 
-    private fun Set<String>.toggle(id: String): Set<String> =
-        if (contains(id)) this - id else this + id
+    /**
+     * Post ids already reconciled for the current refresh generation.
+     *
+     * The paging snapshot is cumulative: after appending page two it still
+     * contains page one's ORIGINAL rows, captured before anything was liked.
+     * Those rows are not new server authority, and treating them as such is
+     * how a successful like silently undid itself on scroll.
+     */
+    private val hydratedIds = mutableSetOf<String>()
+
+    /**
+     * A refresh generation completed: every row is genuinely fresh.
+     *
+     * This is the only place old server values may retire a settled overlay,
+     * because it is the only place they are known to have just come from the
+     * server rather than from a snapshot held since before the tap.
+     */
+    fun onRefreshHydrated(items: List<FeedItem>) {
+        hydratedIds.clear()
+        items.forEach { item ->
+            hydratedIds += item.id
+            reconcile(item)
+        }
+    }
+
+    /**
+     * A page was appended: only rows never seen this generation are new.
+     *
+     * Everything already in [hydratedIds] is a retained snapshot row. Passing
+     * it to the store would hand it a stale `has_reacted=false` and retire a
+     * confirmed like — the heart and count visibly reverting while the server
+     * still holds the reaction.
+     */
+    fun onAppendHydrated(items: List<FeedItem>) {
+        items.forEach { item ->
+            if (hydratedIds.add(item.id)) reconcile(item)
+        }
+    }
+
+    private fun reconcile(item: FeedItem) = engagement.reconcile(
+        postId = item.id,
+        serverReacted = item.viewer.hasReacted,
+        serverBookmarked = item.viewer.isBookmarked,
+        serverReposted = item.viewer.hasReposted,
+    )
 }
-
-/**
- * Local, session-scoped interaction state layered over the immutable page.
- *
- * Sets rather than a map of booleans: absence means "as the server reported
- * it", which is different from an explicit false.
- */
-data class FeedActionState(
-    val bookmarked: Set<String> = emptySet(),
-    val reacted: Set<String> = emptySet(),
-)
 
 /**
  * Feed rows are at most screen-width, so a 720p rung is already more pixels

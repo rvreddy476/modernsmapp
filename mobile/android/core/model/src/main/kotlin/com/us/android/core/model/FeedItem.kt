@@ -80,6 +80,15 @@ data class FeedMedia(
     val mediaId: String,
     /** `image` or `video` in the captured fixtures. */
     val kind: String,
+    /**
+     * The author's accessibility decision — Slice C, C-CLB-3.
+     *
+     * Delivered by feed hydration alongside the delivery fields. The feed is
+     * where most images are seen, so a feed that drops these makes the
+     * composer's mandatory description pointless for almost every reader.
+     */
+    val altText: String = "",
+    val altDecorative: Boolean = false,
     val status: String = "",
     val width: Int = 0,
     val height: Int = 0,
@@ -95,6 +104,16 @@ data class FeedMedia(
     val expiresAt: String? = null,
 ) {
     val isReady: Boolean get() = status == "ready"
+
+    /**
+     * What a screen reader should announce, or null for silence.
+     *
+     * Same rule as [PostMediaRef.contentDescription]: a described image is
+     * announced, a deliberately decorative one is not, and an undecided legacy
+     * asset has nothing to say.
+     */
+    val contentDescription: String?
+        get() = altText.takeIf { it.isNotBlank() && !altDecorative }
     val isVertical: Boolean get() = height > width
 }
 

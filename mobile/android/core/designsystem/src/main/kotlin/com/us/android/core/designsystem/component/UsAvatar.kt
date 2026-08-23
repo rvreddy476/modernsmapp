@@ -17,6 +17,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.font.FontWeight
@@ -26,6 +27,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil3.compose.AsyncImage
 import com.us.android.core.designsystem.theme.UsTheme
 import kotlin.math.absoluteValue
 
@@ -39,17 +41,8 @@ enum class UsAvatarSize(val diameter: Dp, val initialsSize: TextUnit) {
 /**
  * A user avatar.
  *
- * Renders initials on a colour derived from the user id — NOT a remote image.
- * That is a contract decision, not a placeholder: neither captured profile
- * payload (`/v1/profiles/:userId` or `/me`) contains an avatar field at all.
- * `avatar_media_id` exists in the database and is not serialized. Adding an
- * image-loading dependency now would be building for a response the server
- * does not send.
- *
- * When the backend starts returning an avatar, add an image slot here and
- * every call site gains it at once. Resolve it through a media URL resolver —
- * the capture (§3) warns specifically against constructing URLs from the
- * storage keys the public metadata exposes.
+ * Renders the canonical delivery URL when available and deterministic
+ * initials otherwise. Callers pass a resolved URL, never a storage key.
  *
  * Accessibility: the initials are decorative. A screen reader announcing "A C"
  * next to a name it is about to read anyway is noise, so semantics are cleared
@@ -63,6 +56,7 @@ fun UsAvatar(
     size: UsAvatarSize = UsAvatarSize.Medium,
     /** Stable colour seed. Use the user id so a person keeps one colour. */
     seed: String = name,
+    imageUrl: String? = null,
     contentDescription: String? = null,
 ) {
     val background = avatarColor(seed)
@@ -76,13 +70,22 @@ fun UsAvatar(
             },
         contentAlignment = Alignment.Center,
     ) {
-        Text(
-            text = initialsOf(name),
-            color = Color.White,
-            fontSize = size.initialsSize,
-            fontWeight = FontWeight.SemiBold,
-            textAlign = TextAlign.Center,
-        )
+        if (imageUrl.isNullOrBlank()) {
+            Text(
+                text = initialsOf(name),
+                color = Color.White,
+                fontSize = size.initialsSize,
+                fontWeight = FontWeight.SemiBold,
+                textAlign = TextAlign.Center,
+            )
+        } else {
+            AsyncImage(
+                model = imageUrl,
+                contentDescription = null,
+                modifier = Modifier.matchParentSize(),
+                contentScale = ContentScale.Crop,
+            )
+        }
     }
 }
 

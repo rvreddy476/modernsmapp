@@ -60,12 +60,14 @@ interface RemoteKeyDao {
  * there is nothing for a migration test to migrate *from*.
  */
 @Database(
-    entities = [RemoteKeyEntity::class],
-    version = 1,
+    entities = [RemoteKeyEntity::class, ComposerDraftEntity::class],
+    version = 2,
     exportSchema = true,
 )
 abstract class UsDatabase : RoomDatabase() {
     abstract fun remoteKeyDao(): RemoteKeyDao
+
+    abstract fun composerDraftDao(): ComposerDraftDao
 
     companion object {
         const val NAME = "us.db"

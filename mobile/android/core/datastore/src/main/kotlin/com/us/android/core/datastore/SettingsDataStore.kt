@@ -60,6 +60,24 @@ class SettingsDataStore @Inject constructor(
         store.edit { it[KEY_DATA_SAVER] = enabled }
     }
 
+    /**
+     * Whether the notification permission has ever been REQUESTED — Slice D.
+     *
+     * Persisted because the platform cannot tell us.
+     * `shouldShowRequestPermissionRationale` is false both BEFORE the first ask
+     * and AFTER a permanent denial, so without this flag the app cannot
+     * distinguish "never asked" from "asked and shut the door" — and would
+     * either never prompt, or prompt forever into a dialog the system no
+     * longer shows.
+     */
+    val notificationPermissionAsked: Flow<Boolean> = store.data
+        .safe()
+        .map { it[KEY_NOTIFICATION_PERMISSION_ASKED] ?: false }
+
+    suspend fun setNotificationPermissionAsked() {
+        store.edit { it[KEY_NOTIFICATION_PERMISSION_ASKED] = true }
+    }
+
     suspend fun clear() {
         store.edit { it.clear() }
     }
@@ -75,5 +93,6 @@ class SettingsDataStore @Inject constructor(
     private companion object {
         val KEY_LAST_EVENT_ID = stringPreferencesKey("last_notification_event_id")
         val KEY_DATA_SAVER = booleanPreferencesKey("data_saver_enabled")
+        val KEY_NOTIFICATION_PERMISSION_ASKED = booleanPreferencesKey("notification_permission_asked")
     }
 }

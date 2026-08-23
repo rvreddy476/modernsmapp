@@ -9,7 +9,13 @@ import androidx.navigation.NavController
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.compose.composable
 import com.us.android.feature.profile.ui.EditProfileScreen
+import com.us.android.feature.profile.ui.NotificationSettingsScreen
+import com.us.android.feature.profile.ui.PrivacySettingsScreen
+import com.us.android.feature.profile.ui.ProfileDestinations
+import com.us.android.feature.profile.ui.ProfileDetailsScreen
 import com.us.android.feature.profile.ui.ProfileScreen
+import com.us.android.feature.profile.ui.SecuritySettingsScreen
+import com.us.android.feature.profile.ui.SettingsHubScreen
 import kotlinx.serialization.Serializable
 
 /**
@@ -52,12 +58,21 @@ fun NavGraphBuilder.profileScreen(
     onOpenFollowers: (userId: String) -> Unit,
     onOpenFollowing: (userId: String) -> Unit,
     onBack: () -> Unit,
+    onOpenChat: (conversationId: String, title: String) -> Unit,
 ) {
     composable<ProfileRoute> {
         ProfileScreen(
-            onOpenFollowers = onOpenFollowers,
-            onOpenFollowing = onOpenFollowing,
-            onBack = onBack,
+            destinations = ProfileDestinations(
+                onOpenFollowers = onOpenFollowers,
+                onOpenFollowing = onOpenFollowing,
+                onBack = onBack,
+                // Only the PUSHED registration passes this, and [ownProfileScreen]
+                // deliberately does not: message-service refuses a conversation
+                // with yourself ("cannot create conversation with self"), so a
+                // Message button on your own profile is a control whose only
+                // possible outcome is an error.
+                onOpenChat = onOpenChat,
+            ),
         )
     }
 }
@@ -72,15 +87,19 @@ fun NavGraphBuilder.ownProfileScreen(
     onOpenFollowers: (userId: String) -> Unit,
     onOpenFollowing: (userId: String) -> Unit,
     onEditProfile: () -> Unit,
+    onOpenSettings: () -> Unit,
 ) {
     composable<OwnProfileRoute> {
         ProfileScreen(
-            onOpenFollowers = onOpenFollowers,
-            onOpenFollowing = onOpenFollowing,
-            // Only the OWN-profile registration passes this. A pushed profile
-            // of someone else leaves it null, so the edit control cannot appear
-            // on a screen whose subject the viewer has no right to change.
-            onEditProfile = onEditProfile,
+            destinations = ProfileDestinations(
+                onOpenFollowers = onOpenFollowers,
+                onOpenFollowing = onOpenFollowing,
+                // Only the OWN-profile registration passes this. A pushed profile
+                // of someone else leaves it null, so the edit control cannot appear
+                // on a screen whose subject the viewer has no right to change.
+                onEditProfile = onEditProfile,
+                onOpenSettings = onOpenSettings,
+            ),
         )
     }
 }
@@ -95,6 +114,16 @@ fun NavGraphBuilder.ownProfileScreen(
  */
 @Serializable
 data object EditProfileRoute
+
+@Serializable data object SettingsRoute
+
+@Serializable data object PrivacySettingsRoute
+
+@Serializable data object NotificationSettingsRoute
+
+@Serializable data object SecuritySettingsRoute
+
+@Serializable data object ProfileDetailsRoute
 
 /**
  * Registers the edit-profile destination.
@@ -116,6 +145,41 @@ fun NavGraphBuilder.editProfileScreen(
     }
 }
 
+fun NavGraphBuilder.settingsScreens(
+    destinations: SettingsDestinations,
+) {
+    composable<SettingsRoute> {
+        SettingsHubScreen(
+            destinations.onBack,
+            destinations.onEditProfile,
+            destinations.onProfileDetails,
+            destinations.sections.onPrivacy,
+            destinations.sections.onNotifications,
+            destinations.sections.onSecurity,
+        )
+    }
+    composable<ProfileDetailsRoute> { ProfileDetailsScreen(destinations.onBack) }
+    composable<PrivacySettingsRoute> { PrivacySettingsScreen(destinations.onBack) }
+    composable<NotificationSettingsRoute> { NotificationSettingsScreen(destinations.onBack) }
+    composable<SecuritySettingsRoute> {
+        SecuritySettingsScreen(destinations.onBack, destinations.onSignedOut)
+    }
+}
+
+data class SettingsDestinations(
+    val onBack: () -> Unit,
+    val onEditProfile: () -> Unit,
+    val onProfileDetails: () -> Unit,
+    val onSignedOut: () -> Unit,
+    val sections: SettingsSections,
+)
+
+data class SettingsSections(
+    val onPrivacy: () -> Unit,
+    val onNotifications: () -> Unit,
+    val onSecurity: () -> Unit,
+)
+
 /** Type-safe navigation to another user's profile. */
 fun NavController.navigateToProfile(userId: String) = navigate(ProfileRoute(userId))
 
@@ -124,3 +188,4 @@ fun NavController.navigateToOwnProfile() = navigate(ProfileRoute())
 
 /** Type-safe navigation to the edit form for the signed-in user's profile. */
 fun NavController.navigateToEditProfile() = navigate(EditProfileRoute)
+fun NavController.navigateToSettings() = navigate(SettingsRoute)

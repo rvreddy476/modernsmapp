@@ -39,8 +39,21 @@ annotation class AuthenticatedClient
  * (`init` → presigned PUT → `confirm`) depends on this existing, which is why
  * it is declared now rather than discovered later. See PHASE_0_1_PLAN §D.5.
  */
+/*
+ * RUNTIME retention, unlike the other qualifiers here.
+ *
+ * Dagger reads qualifiers at compile time, so this costs nothing and changes no
+ * behaviour. It exists so the WIRING can be asserted: `MediaUploadWireTest`
+ * checks by reflection that `PresignedUploader` still asks for this client, and
+ * BINARY retention makes that annotation invisible to reflection.
+ *
+ * That assertion is load-bearing. Deleting the qualifier from the uploader
+ * compiles, passes every other test, and silently switches presigned PUTs to
+ * the authenticated client — sending the user's bearer token to a third-party
+ * object-store host. Nothing else in the build notices.
+ */
 @Qualifier
-@Retention(AnnotationRetention.BINARY)
+@Retention(AnnotationRetention.RUNTIME)
 annotation class BareClient
 
 @Module

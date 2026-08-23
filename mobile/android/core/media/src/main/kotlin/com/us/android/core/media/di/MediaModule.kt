@@ -16,6 +16,7 @@ import com.us.android.core.media.PlayerFactory
 import com.us.android.core.media.PlaylistAwareDataSourceFactory
 import com.us.android.core.media.data.MediaApi
 import com.us.android.core.media.reelsLoadControl
+import com.us.android.core.media.upload.MediaUploadApi
 import com.us.android.core.network.di.AuthenticatedClient
 import dagger.Module
 import dagger.Provides
@@ -133,4 +134,17 @@ object MediaApiModule {
     @Singleton
     fun provideMediaApi(retrofit: retrofit2.Retrofit): MediaApi =
         retrofit.create(MediaApi::class.java)
+
+    /**
+     * The upload endpoints, on the AUTHENTICATED Retrofit.
+     *
+     * `init` and `confirm` are ours and must carry the bearer. The presigned
+     * `PUT` between them must NOT, and is deliberately absent from this
+     * interface — it goes through [com.us.android.core.media.upload.PresignedUploader]
+     * on the bare client instead.
+     */
+    @Provides
+    @Singleton
+    fun provideMediaUploadApi(retrofit: retrofit2.Retrofit): MediaUploadApi =
+        retrofit.create(MediaUploadApi::class.java)
 }

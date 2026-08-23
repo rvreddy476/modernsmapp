@@ -3,6 +3,7 @@ package com.us.android.core.auth
 import com.google.common.truth.Truth.assertThat
 import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
+import com.us.android.core.common.session.SessionTeardownTask
 import com.us.android.core.model.SessionState
 import com.us.android.core.network.ErrorMapper
 import com.us.android.core.network.cookie.CsrfCookieStore
@@ -40,7 +41,10 @@ class AuthRepositoryTest {
     @After
     fun tearDown() = server.close()
 
-    private fun buildRepository(scope: kotlinx.coroutines.CoroutineScope): AuthRepository {
+    private fun buildRepository(
+        scope: kotlinx.coroutines.CoroutineScope,
+        teardownTasks: Set<SessionTeardownTask> = emptySet(),
+    ): AuthRepository {
         val api = Retrofit.Builder()
             .baseUrl(server.url("/"))
             .client(OkHttpClient())
@@ -54,7 +58,7 @@ class AuthRepositoryTest {
             telemetry = NoOpTelemetry,
             scope = scope,
         )
-        return AuthRepository(api, sessionManager, ErrorMapper(json))
+        return AuthRepository(api, sessionManager, ErrorMapper(json), teardownTasks)
     }
 
     private fun enqueue(code: Int, body: String) {
@@ -136,5 +140,67 @@ class AuthRepositoryTest {
         assertThat(result).isInstanceOf(AppResult.Success::class.java)
         assertThat(repository.sessionState.value).isEqualTo(SessionState.Unauthenticated)
         assertThat(tokenStore.hasRefreshToken()).isFalse()
+    }
+
+    /**
+     * Sign-out cleanup runs WHILE the session is still valid — Slice D.
+     *
+     * The ordering is the whole point. Unregistering this device's push token
+     * is a DELETE the server rejects once the session is gone, so a task that
+     * ran after `clearSession` — or that reacted to the state becoming
+     * Unauthenticated — would always fail. The device would keep receiving the
+     * previous account's notifications on a shared handset.
+     */
+    @Test
+    fun `sign-out teardown runs before the session is cleared`() = runTest {
+        tokenStore = FakeTokenStore(userId = "u1", refreshToken = "rt")
+        var stateWhenTaskRan: SessionState? = null
+        var hadRefreshTokenWhenTaskRan: Boolean? = null
+
+        repository = buildRepository(
+            this,
+            teardownTasks = setOf(
+                SessionTeardownTask {
+                    stateWhenTaskRan = repository.sessionState.value
+                    hadRefreshTokenWhenTaskRan = tokenStore.hasRefreshToken()
+                },
+            ),
+        )
+        enqueue(200, """{"data":{}}""")
+
+        repository.logout()
+
+        assertThat(stateWhenTaskRan).isNotEqualTo(SessionState.Unauthenticated)
+        assertThat(hadRefreshTokenWhenTaskRan).isTrue()
+        assertThat(repository.sessionState.value).isEqualTo(SessionState.Unauthenticated)
+    }
+
+    /**
+     * A throwing teardown task must not prevent sign-out.
+     *
+     * A user who taps "log out" ends up logged out even if the push
+     * unregistration fails — the same rule the logout call itself follows.
+     */
+    @Test
+    fun `a failing teardown task does not block sign-out`() = runTest {
+        tokenStore = FakeTokenStore(userId = "u1", refreshToken = "rt")
+        var secondTaskRan = false
+
+        repository = buildRepository(
+            this,
+            teardownTasks = linkedSetOf(
+                SessionTeardownTask { error("push unregistration exploded") },
+                SessionTeardownTask { secondTaskRan = true },
+            ),
+        )
+        enqueue(200, """{"data":{}}""")
+
+        val result = repository.logout()
+
+        assertThat(result).isInstanceOf(AppResult.Success::class.java)
+        assertThat(repository.sessionState.value).isEqualTo(SessionState.Unauthenticated)
+        assertThat(tokenStore.hasRefreshToken()).isFalse()
+        // One task failing must not skip the others.
+        assertThat(secondTaskRan).isTrue()
     }
 }

@@ -3,11 +3,13 @@
 // as proof, so this file opts out of the line-length rules rather than wrap it.
 @file:Suppress("MaxLineLength", "MaximumLineLength")
 
-package com.us.android.feature.post.data
+package com.us.android.core.engagement
 
 import com.google.common.truth.Truth.assertThat
 import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
+import com.us.android.core.engagement.data.EngagementApi
+import com.us.android.core.engagement.data.EngagementRepository
 import com.us.android.core.network.ErrorMapper
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
@@ -36,7 +38,7 @@ import retrofit2.converter.kotlinx.serialization.asConverterFactory
 class CommentsContractTest {
 
     private lateinit var server: MockWebServer
-    private lateinit var repository: PostRepository
+    private lateinit var repository: EngagementRepository
     private val json = Json {
         ignoreUnknownKeys = true
         explicitNulls = false
@@ -51,8 +53,8 @@ class CommentsContractTest {
             .client(OkHttpClient())
             .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
             .build()
-            .create(PostApi::class.java)
-        repository = PostRepository(api, ErrorMapper(json))
+            .create(EngagementApi::class.java)
+        repository = EngagementRepository(api, ErrorMapper(json))
     }
 
     @After
@@ -72,7 +74,7 @@ class CommentsContractTest {
     fun `captured comment payload deserializes`() = runTest {
         enqueue(200, COMMENTS)
 
-        val comments = (repository.getComments("e6106fb3") as AppResult.Success).data
+        val comments = (repository.comments("e6106fb3") as AppResult.Success).data.items
 
         assertThat(comments).hasSize(1)
         val comment = comments.single()
@@ -88,7 +90,7 @@ class CommentsContractTest {
     fun `the comment text arrives under body, not text`() = runTest {
         enqueue(200, """{"data":[{"id":"c","body":"hello","text":"wrong field"}]}""")
 
-        val comment = (repository.getComments("p") as AppResult.Success).data.single()
+        val comment = (repository.comments("p") as AppResult.Success).data.items.single()
 
         assertThat(comment.body).isEqualTo("hello")
     }
@@ -97,7 +99,7 @@ class CommentsContractTest {
     fun `counts and the reply flag come across`() = runTest {
         enqueue(200, COMMENT_ENGAGED)
 
-        val comment = (repository.getComments("p") as AppResult.Success).data.single()
+        val comment = (repository.comments("p") as AppResult.Success).data.items.single()
 
         assertThat(comment.likeCount).isEqualTo(9)
         assertThat(comment.replyCount).isEqualTo(2)
@@ -115,7 +117,7 @@ class CommentsContractTest {
     fun `the request sends a limit and nothing else`() = runTest {
         enqueue(200, COMMENTS)
 
-        repository.getComments("e6106fb3", limit = 2)
+        repository.comments("e6106fb3", limit = 2)
 
         val request = server.takeRequest()
         assertThat(request.method).isEqualTo("GET")
@@ -133,7 +135,7 @@ class CommentsContractTest {
     fun `comments load without an Authorization header`() = runTest {
         enqueue(200, COMMENTS)
 
-        val result = repository.getComments("p")
+        val result = repository.comments("p")
 
         assertThat(result).isInstanceOf(AppResult.Success::class.java)
         assertThat(server.takeRequest().headers["Authorization"]).isNull()
@@ -144,9 +146,9 @@ class CommentsContractTest {
     fun `an empty list is a success, not a failure`() = runTest {
         enqueue(200, """{"data":[]}""")
 
-        val result = repository.getComments("p")
+        val result = repository.comments("p")
 
-        assertThat((result as AppResult.Success).data).isEmpty()
+        assertThat((result as AppResult.Success).data.items).isEmpty()
     }
 
     /**
@@ -161,7 +163,7 @@ class CommentsContractTest {
     fun `a response with no meta still succeeds`() = runTest {
         enqueue(200, COMMENTS)
 
-        val result = repository.getComments("p")
+        val result = repository.comments("p")
 
         assertThat(result).isInstanceOf(AppResult.Success::class.java)
     }
@@ -170,7 +172,7 @@ class CommentsContractTest {
     fun `missing post maps to NotFound`() = runTest {
         enqueue(404, """{"error":{"code":"NOT_FOUND","message":"Post not found"}}""")
 
-        val result = repository.getComments("00000000-0000-0000-0000-000000000000")
+        val result = repository.comments("00000000-0000-0000-0000-000000000000")
 
         assertThat((result as AppResult.Failure).error).isInstanceOf(AppError.NotFound::class.java)
     }
@@ -182,7 +184,7 @@ class CommentsContractTest {
             """{"data":[{"id":"c","body":"hi","parent_comment_id":"x","pinned":true}]}""",
         )
 
-        val comment = (repository.getComments("p") as AppResult.Success).data.single()
+        val comment = (repository.comments("p") as AppResult.Success).data.items.single()
 
         assertThat(comment.body).isEqualTo("hi")
     }
@@ -192,7 +194,7 @@ class CommentsContractTest {
     fun `a sparse comment falls back to defaults`() = runTest {
         enqueue(200, """{"data":[{"id":"c"}]}""")
 
-        val comment = (repository.getComments("p") as AppResult.Success).data.single()
+        val comment = (repository.comments("p") as AppResult.Success).data.items.single()
 
         assertThat(comment.body).isEmpty()
         assertThat(comment.likeCount).isEqualTo(0)

@@ -1,6 +1,7 @@
 package com.us.android.feature.post.ui
 
 import androidx.compose.runtime.Immutable
+import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.media.data.MediaDelivery
 import com.us.android.core.model.Post
 import com.us.android.core.model.Profile
@@ -44,6 +45,8 @@ sealed interface PostUiState {
          * if a failed image lookup blanks the screen.
          */
         val media: MediaDelivery? = null,
+        /** Shared optimistic engagement for this post — see EngagementStore. */
+        val overlay: EngagementOverlay = EngagementOverlay(),
         /** True while any interaction is in flight. */
         val busy: Boolean = false,
         /** True once this viewer reposted in THIS session — see the ViewModel. */

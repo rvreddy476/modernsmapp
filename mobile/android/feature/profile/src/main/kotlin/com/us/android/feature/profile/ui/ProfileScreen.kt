@@ -5,27 +5,36 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import coil3.compose.AsyncImage
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.component.UsTopBar
+import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.model.PersonalProfile
 import com.us.android.core.model.Profile
@@ -52,45 +61,102 @@ import com.us.android.core.ui.UsStatRow
  */
 @Composable
 fun ProfileScreen(
-    onOpenFollowers: (userId: String) -> Unit,
-    onOpenFollowing: (userId: String) -> Unit,
-    onBack: (() -> Unit)? = null,
-    onEditProfile: (() -> Unit)? = null,
+    destinations: ProfileDestinations,
     viewModel: ProfileViewModel = hiltViewModel(),
+    startChatViewModel: StartChatViewModel = hiltViewModel(),
+    mediaViewModel: ProfileMediaViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val chatState by startChatViewModel.state.collectAsStateWithLifecycle()
+    val mediaState by mediaViewModel.state.collectAsStateWithLifecycle()
+
+    val loadedProfile = (state as? ProfileUiState.Content)?.profile
+    LaunchedEffect(loadedProfile?.avatarMediaId, loadedProfile?.coverMediaId) {
+        loadedProfile?.let { profile ->
+            mediaViewModel.bind(profile.avatarMediaId, profile.coverMediaId)
+        }
+    }
+
+    // The server returns the conversation; the host decides that opening it
+    // means pushing the thread. Consumed once and cleared, or the thread would
+    // be pushed again every time this screen resumed.
+    LaunchedEffect(chatState.openConversation) {
+        chatState.openConversation?.let { open ->
+            destinations.onOpenChat?.invoke(open.conversationId, open.title)
+            startChatViewModel.onConversationOpened()
+        }
+    }
+
     ProfileContent(
         state = state,
-        onRetry = viewModel::load,
-        onFollowToggle = viewModel::onFollowToggle,
-        onBlockToggle = viewModel::onBlockToggle,
-        onDismissActionError = viewModel::dismissActionError,
-        onOpenFollowers = onOpenFollowers,
-        onOpenFollowing = onOpenFollowing,
-        onBack = onBack,
-        onEditProfile = onEditProfile,
+        destinations = destinations,
+        actions = ProfileActions(
+            onRetry = viewModel::load,
+            onFollowToggle = viewModel::onFollowToggle,
+            onBlockToggle = viewModel::onBlockToggle,
+            onDismissActionError = viewModel::dismissActionError,
+            onMessage = if (destinations.onOpenChat == null) {
+                null
+            } else {
+                { userId, name -> startChatViewModel.open(userId, name) }
+            },
+            onDismissChatError = startChatViewModel::dismissError,
+        ),
+        chatState = chatState,
+        media = ProfileMediaUrls(mediaState.avatarUrl, mediaState.coverUrl),
     )
 }
+
+data class ProfileDestinations(
+    val onOpenFollowers: (userId: String) -> Unit,
+    val onOpenFollowing: (userId: String) -> Unit,
+    val onBack: (() -> Unit)? = null,
+    val onEditProfile: (() -> Unit)? = null,
+    val onOpenSettings: (() -> Unit)? = null,
+    val onOpenChat: ((conversationId: String, title: String) -> Unit)? = null,
+)
+
+internal data class ProfileActions(
+    val onRetry: () -> Unit,
+    val onFollowToggle: () -> Unit,
+    val onBlockToggle: () -> Unit,
+    val onDismissActionError: () -> Unit,
+    val onMessage: ((userId: String, displayName: String) -> Unit)? = null,
+    val onDismissChatError: () -> Unit = {},
+)
+
+internal data class ProfileMediaUrls(
+    val avatar: String? = null,
+    val cover: String? = null,
+)
 
 /** Stateless renderer. Receives immutable state and callbacks; fetches nothing. */
 @Composable
 internal fun ProfileContent(
     state: ProfileUiState,
-    onRetry: () -> Unit,
-    onFollowToggle: () -> Unit,
-    onBlockToggle: () -> Unit,
-    onDismissActionError: () -> Unit,
-    onOpenFollowers: (userId: String) -> Unit,
-    onOpenFollowing: (userId: String) -> Unit,
+    actions: ProfileActions,
+    destinations: ProfileDestinations,
     modifier: Modifier = Modifier,
-    onBack: (() -> Unit)? = null,
-    onEditProfile: (() -> Unit)? = null,
+    chatState: StartChatUiState = StartChatUiState(),
+    media: ProfileMediaUrls = ProfileMediaUrls(),
 ) {
     UsScaffold(
         modifier = modifier,
         // The title tracks the loaded profile. While loading it stays generic
         // rather than flashing a placeholder name that then changes.
-        topBar = { UsTopBar(title = state.title(), onBack = onBack) },
+        topBar = {
+            UsTopBar(
+                title = state.title(),
+                onBack = destinations.onBack,
+                actions = {
+                    if (destinations.onOpenSettings != null) {
+                        IconButton(onClick = destinations.onOpenSettings) {
+                            Icon(UsIcons.Settings, contentDescription = "Settings")
+                        }
+                    }
+                },
+            )
+        },
         applyPageGutter = false,
     ) { padding ->
         when (state) {
@@ -102,17 +168,15 @@ internal fun ProfileContent(
             is ProfileUiState.Error -> UsErrorState(
                 message = state.message,
                 modifier = Modifier.padding(padding),
-                onRetry = if (state.retryable) onRetry else null,
+                onRetry = if (state.retryable) actions.onRetry else null,
             )
 
             is ProfileUiState.Content -> LoadedProfile(
                 state = state,
-                onFollowToggle = onFollowToggle,
-                onBlockToggle = onBlockToggle,
-                onDismissActionError = onDismissActionError,
-                onOpenFollowers = onOpenFollowers,
-                onOpenFollowing = onOpenFollowing,
-                onEditProfile = onEditProfile,
+                actions = actions,
+                destinations = destinations,
+                chatState = chatState,
+                media = media,
                 modifier = Modifier.padding(padding),
             )
         }
@@ -125,15 +189,12 @@ private fun ProfileUiState.title(): String = when (this) {
 }
 
 @Composable
-@Suppress("LongParameterList")
 private fun LoadedProfile(
     state: ProfileUiState.Content,
-    onFollowToggle: () -> Unit,
-    onBlockToggle: () -> Unit,
-    onDismissActionError: () -> Unit,
-    onOpenFollowers: (userId: String) -> Unit,
-    onOpenFollowing: (userId: String) -> Unit,
-    onEditProfile: (() -> Unit)?,
+    actions: ProfileActions,
+    destinations: ProfileDestinations,
+    chatState: StartChatUiState,
+    media: ProfileMediaUrls,
     modifier: Modifier = Modifier,
 ) {
     val profile = state.profile
@@ -144,13 +205,13 @@ private fun LoadedProfile(
             .padding(horizontal = UsTheme.spacing.pageHorizontal),
         verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xxl),
     ) {
-        ProfileHeader(profile = profile)
+        ProfileHeader(profile = profile, avatarUrl = media.avatar, coverUrl = media.cover)
 
         UsStatRow(
             stats = listOf(
                 UsStat("Posts", state.counts.posts),
-                UsStat("Followers", state.counts.followers) { onOpenFollowers(profile.userId) },
-                UsStat("Following", state.counts.following) { onOpenFollowing(profile.userId) },
+                UsStat("Followers", state.counts.followers) { destinations.onOpenFollowers(profile.userId) },
+                UsStat("Following", state.counts.following) { destinations.onOpenFollowing(profile.userId) },
             ),
         )
 
@@ -159,20 +220,27 @@ private fun LoadedProfile(
         // one because the endpoint behind the form replaces the OWNER's fields
         // keyed off the access token — an edit control on someone else's page
         // would silently overwrite the viewer's own profile.
-        if (profile.isOwnProfile && onEditProfile != null) {
+        if (profile.isOwnProfile && destinations.onEditProfile != null) {
             UsSecondaryButton(
                 text = "Edit profile",
-                onClick = onEditProfile,
+                onClick = destinations.onEditProfile,
                 modifier = Modifier.fillMaxWidth(),
             )
         }
 
         if (!profile.isOwnProfile) {
+            MessageControls(
+                profile = profile,
+                chatState = chatState,
+                onMessage = actions.onMessage,
+                onDismissChatError = actions.onDismissChatError,
+            )
+
             RelationshipControls(
                 relationship = state.relationship,
                 busy = state.relationshipBusy,
-                onFollowToggle = onFollowToggle,
-                onBlockToggle = onBlockToggle,
+                onFollowToggle = actions.onFollowToggle,
+                onBlockToggle = actions.onBlockToggle,
             )
         }
 
@@ -190,7 +258,7 @@ private fun LoadedProfile(
             )
             UsSecondaryButton(
                 text = "Dismiss",
-                onClick = onDismissActionError,
+                onClick = actions.onDismissActionError,
                 modifier = Modifier.fillMaxWidth(),
             )
         }
@@ -206,18 +274,90 @@ private fun LoadedProfile(
     }
 }
 
+/**
+ * Start a conversation with the person whose profile this is.
+ *
+ * The button is ALWAYS offered when the host has somewhere to open a thread —
+ * it is never pre-filtered on a locally known privacy setting. graph-service
+ * owns that decision and re-evaluates it on every attempt; a client-side copy
+ * would be a second implementation of the privacy matrix that goes stale the
+ * moment somebody changes a setting, and stale in whichever direction the last
+ * deploy happened to choose. A refusal is answered with a reason instead.
+ */
 @Composable
-private fun ProfileHeader(profile: Profile, modifier: Modifier = Modifier) {
+private fun MessageControls(
+    profile: Profile,
+    chatState: StartChatUiState,
+    onMessage: ((userId: String, displayName: String) -> Unit)?,
+    onDismissChatError: () -> Unit,
+) {
+    if (onMessage != null) {
+        UsSecondaryButton(
+            text = "Message",
+            onClick = { onMessage(profile.userId, profile.nameForDisplay) },
+            enabled = !chatState.busy,
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+
+    // A policy refusal is NOT retryable, so it gets no retry control. The
+    // answer stays the same until the other person changes their settings, and
+    // a button that cannot work reads as a broken app rather than as a
+    // boundary somebody set.
+    chatState.notAllowed?.let { message ->
+        Text(
+            text = message,
+            style = MaterialTheme.typography.bodyMedium,
+            color = UsTheme.extended.textMuted,
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+
+    chatState.error?.let { message ->
+        Text(
+            text = message,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.error,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        UsSecondaryButton(
+            text = "Dismiss",
+            onClick = onDismissChatError,
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+}
+
+@Composable
+private fun ProfileHeader(
+    profile: Profile,
+    avatarUrl: String?,
+    coverUrl: String?,
+    modifier: Modifier = Modifier,
+) {
     Column(
         modifier = modifier
             .fillMaxWidth()
             .padding(top = UsTheme.spacing.xxxxl),
         verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
     ) {
+        if (!coverUrl.isNullOrBlank()) {
+            AsyncImage(
+                model = coverUrl,
+                contentDescription = "${profile.nameForDisplay}'s cover photo",
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(152.dp)
+                    .clip(MaterialTheme.shapes.large),
+                contentScale = ContentScale.Crop,
+            )
+        }
         UsAvatar(
             name = profile.nameForDisplay,
             size = UsAvatarSize.Large,
             seed = profile.userId,
+            imageUrl = avatarUrl,
+            contentDescription = "${profile.nameForDisplay}'s profile photo",
         )
 
         Column(verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs)) {
@@ -359,13 +499,8 @@ private fun previewState(
 private fun PreviewHost(state: ProfileUiState) = UsTheme {
     ProfileContent(
         state = state,
-        onRetry = {},
-        onFollowToggle = {},
-        onBlockToggle = {},
-        onDismissActionError = {},
-        onOpenFollowers = {},
-        onOpenFollowing = {},
-        onEditProfile = {},
+        actions = ProfileActions({}, {}, {}, {}),
+        destinations = ProfileDestinations({}, {}, onEditProfile = {}),
     )
 }
 

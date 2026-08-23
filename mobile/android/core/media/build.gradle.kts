@@ -27,8 +27,15 @@ dependencies {
     api(libs.media3.exoplayer.hls)
     implementation(libs.media3.datasource.okhttp)
     implementation(libs.retrofit)
+    // The presigned PUT is raw OkHttp on the BARE client, not Retrofit.
+    implementation(libs.okhttp)
     implementation(libs.kotlinx.serialization.json)
 
     testImplementation(libs.junit)
     testImplementation(libs.truth)
+    testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.okhttp.mockwebserver)
+    // The converter is `implementation` in :core:network by design; wire tests
+    // build their own Retrofit against MockWebServer and need it explicitly.
+    testImplementation(libs.retrofit.kotlinx.serialization)
 }

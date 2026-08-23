@@ -68,6 +68,14 @@ data class FeedAuthorDto(
 data class FeedMediaDto(
     @SerialName("media_id") val mediaId: String = "",
     val kind: String = "",
+    /**
+     * The author's accessibility decision — Slice C, C-CLB-3.
+     *
+     * Defaulted for the same reason as [com.us.android.feature.post.data.dto.PostMediaDto]:
+     * older posts do not carry these and must still decode.
+     */
+    @SerialName("alt_text") val altText: String = "",
+    @SerialName("alt_decorative") val altDecorative: Boolean = false,
     val status: String = "",
     val width: Int = 0,
     val height: Int = 0,

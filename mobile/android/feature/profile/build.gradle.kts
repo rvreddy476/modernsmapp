@@ -15,6 +15,14 @@ dependencies {
     implementation(projects.core.designsystem)
     implementation(projects.core.ui)
     implementation(projects.core.profile)
+    implementation(projects.core.auth)
+    implementation(projects.core.media)
+    // Start-direct only: the Message button on someone else's profile opens a
+    // conversation through :core:chat. This is a feature depending on a core
+    // module, which the graph rule allows; :feature:chat is NOT a dependency
+    // and the chat screens stay unreachable from here — :app decides that the
+    // returned conversation opens the thread destination.
+    implementation(projects.core.chat)
     // For Retrofit, the shared envelope and apiCall. This feature declares
     // endpoint interfaces; it never builds a client.
     implementation(projects.core.network)
@@ -23,6 +31,7 @@ dependencies {
     implementation(libs.androidx.navigation.compose)
     implementation(libs.hilt.navigation.compose)
     implementation(libs.kotlinx.serialization.json)
+    implementation(libs.coil.compose)
 
     testImplementation(projects.core.testing)
     testImplementation(libs.okhttp.mockwebserver)

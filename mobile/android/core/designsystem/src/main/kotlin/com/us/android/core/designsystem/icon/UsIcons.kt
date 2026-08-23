@@ -57,6 +57,27 @@ object UsIcons {
     }
 
     /**
+     * A bell — the notification inbox.
+     *
+     * Stroked to match the rest of the top-bar set. The clapper is a separate
+     * short arc rather than part of the body path: a single closed outline
+     * reads as a dome at 24dp, and the gap under the bell is what makes it
+     * recognisable at that size.
+     */
+    val Notifications: ImageVector = stroked("Notifications") {
+        moveTo(18f, 8.6f)
+        curveTo(18f, 5.3f, 15.3f, 2.6f, 12f, 2.6f)
+        curveTo(8.7f, 2.6f, 6f, 5.3f, 6f, 8.6f)
+        curveTo(6f, 14.4f, 3.5f, 16.1f, 3.5f, 16.1f)
+        lineTo(20.5f, 16.1f)
+        curveTo(20.5f, 16.1f, 18f, 14.4f, 18f, 8.6f)
+        close()
+        moveTo(13.7f, 19.4f)
+        curveTo(13.4f, 20.4f, 12.5f, 21f, 11.5f, 21f)
+        curveTo(10.5f, 21f, 9.6f, 20.4f, 9.3f, 19.4f)
+    }
+
+    /**
      * Two arrows chasing each other.
      *
      * Deliberately not a paper plane: a plane means "send this to someone",
@@ -132,6 +153,20 @@ object UsIcons {
         dot(12f, 5.2f)
         dot(12f, 12f)
         dot(12f, 18.8f)
+    }
+
+    /** Settings sliders: adjustable controls, without borrowing a platform glyph. */
+    val Settings: ImageVector = stroked("Settings") {
+        moveTo(4f, 6f)
+        horizontalLineTo(9f)
+        moveTo(15f, 6f)
+        horizontalLineTo(20f)
+        circle(12f, 6f, 3f)
+        moveTo(4f, 18f)
+        horizontalLineTo(7f)
+        moveTo(13f, 18f)
+        horizontalLineTo(20f)
+        circle(10f, 18f, 3f)
     }
 
     /** Muted speaker. Reels open in this state. */

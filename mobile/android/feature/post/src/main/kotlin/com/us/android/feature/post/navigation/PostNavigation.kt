@@ -8,6 +8,7 @@ import androidx.navigation.NavController
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.compose.composable
 import androidx.navigation.toRoute
+import com.us.android.feature.post.composer.ComposerScreen
 import com.us.android.feature.post.ui.CommentsScreen
 import com.us.android.feature.post.ui.PostScreen
 import kotlinx.serialization.Serializable
@@ -75,3 +76,33 @@ fun NavGraphBuilder.commentsScreen(
 
 /** Type-safe navigation to a post's comments. */
 fun NavController.navigateToComments(postId: String) = navigate(CommentsRoute(postId))
+
+/**
+ * The composer.
+ *
+ * A pushed destination with no arguments: it opens empty, or restores whatever
+ * draft the ViewModel persisted. Carrying draft content on the route would put
+ * a half-written post — potentially thousands of characters — into the back
+ * stack's saved state, which is not what that mechanism is for.
+ */
+@Serializable
+data object ComposerRoute
+
+/**
+ * Registers the composer.
+ *
+ * [onPublished] receives the SERVER's post id. `:app` decides that opening it
+ * means the real post destination, so this feature never learns which screen
+ * comes next and `:feature:post` stays independent of every other feature.
+ */
+fun NavGraphBuilder.composerScreen(
+    onClose: () -> Unit,
+    onPublished: (postId: String) -> Unit,
+) {
+    composable<ComposerRoute> {
+        ComposerScreen(onClose = onClose, onPublished = onPublished)
+    }
+}
+
+/** Type-safe navigation to the composer. */
+fun NavController.navigateToComposer() = navigate(ComposerRoute)

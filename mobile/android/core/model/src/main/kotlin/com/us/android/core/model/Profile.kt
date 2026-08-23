@@ -27,7 +27,11 @@ package com.us.android.core.model
  */
 data class Profile(
     val userId: String,
+    val username: String = "",
     val displayName: String,
+    val pronouns: String = "",
+    val avatarMediaId: String? = null,
+    val coverMediaId: String? = null,
     val bio: String,
     val category: String,
     val profession: String,
@@ -38,8 +42,13 @@ data class Profile(
     val verificationLevel: String,
     val statusText: String,
     val statusEmoji: String,
+    val statusExpiresAt: String? = null,
     val profileThemeColor: String,
     val memberSinceBadge: Boolean,
+    val introMediaUrl: String = "",
+    val introMediaType: String = "",
+    val ctaLabel: String = "",
+    val ctaUrl: String = "",
     val counts: ProfileCounts,
     val createdAt: String,
     /**
@@ -68,6 +77,7 @@ data class Profile(
 data class PersonalProfile(
     val firstName: String,
     val lastName: String,
+    val preferredName: String = "",
     /** ISO-8601 instant, e.g. `1990-01-01T00:00:00Z` — not a plain date. */
     val dateOfBirth: String?,
     val gender: String,

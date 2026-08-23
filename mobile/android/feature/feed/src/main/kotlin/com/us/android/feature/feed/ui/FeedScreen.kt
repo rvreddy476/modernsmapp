@@ -7,17 +7,26 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.pager.VerticalPager
-import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -31,9 +40,16 @@ import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.engagement.data.EngagementOverlay
+import com.us.android.core.engagement.data.bookmarkedOr
+import com.us.android.core.engagement.data.likeCountOr
+import com.us.android.core.engagement.data.reactedOr
+import com.us.android.core.engagement.data.repostCountOr
+import com.us.android.core.engagement.data.repostedOr
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedMedia
 import com.us.android.core.ui.DEFAULT_MEDIA_ASPECT
+import com.us.android.core.ui.EngagementFailureBar
 import com.us.android.core.ui.PostActionState
 import com.us.android.core.ui.PostCard
 import com.us.android.core.ui.PostCardState
@@ -42,69 +58,122 @@ import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.core.ui.rememberPostSharer
 import com.us.android.feature.feed.data.AppErrorException
+import com.us.android.feature.feed.ui.comments.CommentsSheet
 
 @Composable
 fun FeedScreen(
     onOpenPost: (postId: String) -> Unit,
     onOpenAuthor: (userId: String) -> Unit,
+    onOpenMessages: () -> Unit,
+    onOpenNotifications: () -> Unit,
+    onCreatePost: () -> Unit,
     viewModel: FeedViewModel = hiltViewModel(),
 ) {
     val items = viewModel.items.collectAsLazyPagingItems()
-    val actions by viewModel.pendingActions.collectAsStateWithLifecycle()
+    val overlays by viewModel.overlays.collectAsStateWithLifecycle()
+    val failures by viewModel.failures.collectAsStateWithLifecycle()
+    var commentsFor by rememberSaveable { mutableStateOf<String?>(null) }
+
+    // Two effects, deliberately. A refresh replaces the whole list with values
+    // just fetched, so all of them are server authority. An append leaves the
+    // earlier pages in the snapshot exactly as they were loaded — including a
+    // `has_reacted=false` captured before the viewer liked the row — so those
+    // rows must NOT be reprocessed. Reconciling the whole snapshot on append
+    // is what made a confirmed like revert on scroll.
+    LaunchedEffect(items.loadState.refresh) {
+        if (items.loadState.refresh is LoadState.NotLoading && items.itemCount > 0) {
+            viewModel.onRefreshHydrated(items.itemSnapshotList.items)
+        }
+    }
+    LaunchedEffect(items.loadState.append, items.itemCount) {
+        if (items.loadState.append is LoadState.NotLoading && items.itemCount > 0) {
+            viewModel.onAppendHydrated(items.itemSnapshotList.items)
+        }
+    }
 
     UsScaffold(
+        // TWO actions: Create and Messages, both of which work.
+        //
+        // Search, New post and Messages were all rendered here once with empty
+        // click handlers, because the navigation host only ever supplied
+        // onOpenPost and onOpenAuthor. All three were removed on the rule that
+        // a visible primary control which does nothing is worse than an absent
+        // one — the user blames themselves for the missed tap.
+        //
+        // Each returns only once it has somewhere to go, and each callback is a
+        // REQUIRED parameter so neither can be re-added inert. Search stays out;
+        // it is a bottom-nav destination.
         topBar = {
             UsHomeTopBar(
                 onHomeClick = { },
                 actions = {
-                    IconButton(onClick = { }) {
-                        Icon(
-                            imageVector = UsIcons.Explore,
-                            contentDescription = "Search",
-                            tint = UsTheme.extended.textPrimary,
-                        )
-                    }
-                    IconButton(onClick = { }) {
+                    // Create sits beside Messages. Like Messages, its callback
+                    // is REQUIRED rather than defaulted: this control was once
+                    // rendered with an empty handler and shipped inert, and a
+                    // required parameter is what stops that recurring.
+                    IconButton(onClick = onCreatePost) {
                         Icon(
                             imageVector = UsIcons.Create,
                             contentDescription = "New post",
                             tint = UsTheme.extended.textPrimary,
                         )
                     }
-                    IconButton(onClick = { }) {
+                    IconButton(onClick = onOpenMessages) {
                         Icon(
                             imageVector = UsIcons.Comment,
                             contentDescription = "Messages",
                             tint = UsTheme.extended.textPrimary,
                         )
                     }
+                    NotificationsAction(onClick = onOpenNotifications)
                 },
             )
         },
         applyPageGutter = false,
     ) { padding ->
-        FeedList(
-            items = items,
-            actions = actions,
-            onOpenPost = onOpenPost,
-            onOpenAuthor = onOpenAuthor,
-            onBookmark = viewModel::onLocalBookmark,
-            onReact = viewModel::onLocalReaction,
-            posterUrl = viewModel::posterUrl,
-            modifier = Modifier.padding(padding),
-        )
+        Column(modifier = Modifier.padding(padding)) {
+            EngagementFailureBar(
+                failures = failures,
+                onRetry = viewModel::retryFailure,
+                onDismiss = viewModel::dismissFailure,
+            )
+            FeedList(
+                items = items,
+                overlays = overlays,
+                onOpenPost = onOpenPost,
+                onOpenAuthor = onOpenAuthor,
+                onOpenComments = { commentsFor = it },
+                onReact = viewModel::onReact,
+                onBookmark = viewModel::onBookmark,
+                onRepost = viewModel::onRepost,
+                onExternalShared = viewModel::onExternalShared,
+                posterUrl = viewModel::posterUrl,
+            )
+        }
+    }
+
+    // Comments open over the feed rather than navigating away, so the reader
+    // keeps their place in the list and the post stays visible above the
+    // conversation about it.
+    commentsFor?.let { postId ->
+        CommentsSheet(postId = postId, onDismiss = { commentsFor = null })
     }
 }
 
-
+// Flat callbacks rather than a bundled object: a data class of lambdas gets a
+// new identity on every recomposition, which would recompose every visible row.
+@Suppress("LongParameterList")
 @Composable
 private fun FeedList(
     items: LazyPagingItems<FeedItem>,
-    actions: FeedActionState,
+    overlays: Map<String, EngagementOverlay>,
     onOpenPost: (String) -> Unit,
     onOpenAuthor: (String) -> Unit,
-    onBookmark: (String) -> Unit,
-    onReact: (String) -> Unit,
+    onOpenComments: (String) -> Unit,
+    onReact: (postId: String, serverReacted: Boolean) -> Unit,
+    onBookmark: (postId: String, serverBookmarked: Boolean) -> Unit,
+    onRepost: (postId: String, serverReposted: Boolean) -> Unit,
+    onExternalShared: (String) -> Unit,
     posterUrl: (FeedItem) -> String?,
     modifier: Modifier = Modifier,
 ) {
@@ -117,6 +186,9 @@ private fun FeedList(
         refresh is LoadState.Loading && items.itemCount == 0 ->
             UsLoadingState(modifier = modifier, label = "Loading feed")
 
+        // Only when nothing is on screen. A refresh failure with rows already
+        // loaded must never clear them — the reader would lose their place to
+        // a transient network blip.
         refresh is LoadState.Error && items.itemCount == 0 -> UsErrorState(
             message = refresh.error.feedMessage(),
             modifier = modifier,
@@ -129,32 +201,56 @@ private fun FeedList(
             modifier = modifier,
         )
 
-        else -> {
-            val pagerState = rememberPagerState(pageCount = { items.itemCount })
-            VerticalPager(
-                state = pagerState,
+        // A scrollable column of compact cards, not a full-screen pager.
+        //
+        // The immersive one-post-per-screen presentation belongs to Reels,
+        // where every item is video. Applying it to the home timeline turns a
+        // two-line text post into a full screen of empty space and makes a
+        // mixed feed unreadable. ImmersivePostPage remains available in
+        // :core:ui for the surfaces that genuinely want it.
+        else -> LazyColumn(
+            state = rememberLazyListState(),
+            modifier = modifier.fillMaxSize(),
+            // contentPadding, not Modifier.padding: padding the list shrinks
+            // the scroll viewport so cards are clipped at a hard inset edge
+            // mid-scroll. Padding the content lets them reach the real screen
+            // edges and insets only the first and last.
+            contentPadding = PaddingValues(vertical = UsTheme.spacing.m),
+        ) {
+            // `key` is what lets Compose keep an item's state across a page
+            // append. Without it every append re-keys by index and the whole
+            // visible list recomposes, which is the classic feed jank.
+            items(
+                count = items.itemCount,
                 key = { index -> items.peek(index)?.id ?: index },
-                modifier = modifier.fillMaxSize(),
-                beyondViewportPageCount = 1,
             ) { index ->
-                val item = items[index] ?: return@VerticalPager
+                val item = items[index] ?: return@items
+                val overlay = overlays[item.id] ?: EngagementOverlay()
                 PostCard(
-                    state = item.toCardState(actions, posterUrl(item)),
+                    state = item.toCardState(overlay, posterUrl(item)),
                     onClick = { onOpenPost(item.id) },
                     onAuthorClick = { onOpenAuthor(item.author.id) },
-                    onReact = { onReact(item.id) },
-                    onComment = { onOpenPost(item.id) },
-                    onRepost = { onOpenPost(item.id) },
-                    onBookmark = { onBookmark(item.id) },
-                    onShare = { share(item.text, item.author.nameForDisplay) },
-                    modifier = Modifier.fillMaxSize(),
+                    onReact = { onReact(item.id, item.viewer.hasReacted) },
+                    onComment = { onOpenComments(item.id) },
+                    onRepost = { onRepost(item.id, item.viewer.hasReposted) },
+                    onBookmark = { onBookmark(item.id, item.viewer.isBookmarked) },
+                    onShare = {
+                        share(item.text, item.author.nameForDisplay)
+                        // Recorded only after the chooser was actually
+                        // launched, and only here — the repost endpoint
+                        // already records repost/quote shares, so counting
+                        // this one through both would double it.
+                        onExternalShared(item.id)
+                    },
                 )
+            }
+
+            item(key = "append_state") {
+                AppendState(state = items.loadState.append, onRetry = items::retry)
             }
         }
     }
 }
-
-
 
 /** The footer: a spinner while appending, an inline retry when it failed. */
 @Composable
@@ -206,7 +302,7 @@ private fun Throwable.feedMessage(): String = when ((this as? AppErrorException)
  * Membership in the set means "the user changed this since the page loaded",
  * which is why it is an XOR against the server value rather than a replacement.
  */
-private fun FeedItem.toCardState(actions: FeedActionState, posterUrl: String?) = PostCardState(
+private fun FeedItem.toCardState(overlay: EngagementOverlay, posterUrl: String?) = PostCardState(
     postId = id,
     authorId = author.id,
     // Real author identity, embedded by the server as of 2026-08-17. This was
@@ -219,17 +315,20 @@ private fun FeedItem.toCardState(actions: FeedActionState, posterUrl: String?) =
     mediaCount = media.size,
     mediaUrl = posterUrl,
     mediaAspectRatio = media.firstOrNull()?.aspectRatio() ?: DEFAULT_MEDIA_ASPECT,
+    // Slice C / C-CLB-3. The feed is where most images are seen, so this is
+    // the surface where a dropped description costs the most.
+    mediaContentDescription = media.firstOrNull()?.contentDescription,
     isPinned = isPinned,
     actions = PostActionState(
-        likeCount = counts.likes,
+        // Server value plus at most a one-step correction for local intent.
+        // Derived rather than accumulated, so repeated taps cannot drift the
+        // number and an unlike at zero cannot go negative.
+        likeCount = overlay.likeCountOr(counts.likes, viewer.hasReacted),
         commentCount = counts.comments,
-        repostCount = counts.reposts,
-        // Server truth XOR this session's taps. Membership in the set means
-        // "the user changed this since the page loaded", so it flips the
-        // server value rather than replacing it — a PagingData page is
-        // immutable, so a tap cannot be written back into the item itself.
-        hasReacted = viewer.hasReacted xor (id in actions.reacted),
-        isBookmarked = viewer.isBookmarked xor (id in actions.bookmarked),
+        repostCount = overlay.repostCountOr(counts.reposts, viewer.hasReposted),
+        hasReacted = overlay.reactedOr(viewer.hasReacted),
+        hasReposted = overlay.repostedOr(viewer.hasReposted),
+        isBookmarked = overlay.bookmarkedOr(viewer.isBookmarked),
         canRepost = isRepostable,
     ),
 )
@@ -254,3 +353,60 @@ private fun FeedEmptyPreview() {
  */
 private fun FeedMedia.aspectRatio(): Float =
     if (width > 0 && height > 0) width.toFloat() / height.toFloat() else DEFAULT_MEDIA_ASPECT
+
+/**
+ * The notification bell, with its unread badge — Slice D.
+ *
+ * ## WHY THE BADGE IS A COUNT AND NOT A DOT
+ *
+ * A dot says "something happened". A number says how much, which is what
+ * decides whether the user opens it now or later. Above [BADGE_MAX] it becomes
+ * "99+": the exact number stops being useful long before it stops being
+ * renderable, and a four-digit badge overflows the icon.
+ *
+ * The count is refreshed when the feed appears rather than polled. Polling a
+ * count on a timer costs a request per interval per user forever, and the feed
+ * is looked at often enough that the badge is never meaningfully stale.
+ */
+@Composable
+private fun NotificationsAction(
+    onClick: () -> Unit,
+    viewModel: UnreadBadgeViewModel = hiltViewModel(),
+) {
+    val count by viewModel.count.collectAsStateWithLifecycle()
+
+    LaunchedEffect(Unit) { viewModel.refresh() }
+
+    IconButton(
+        onClick = onClick,
+        modifier = Modifier.semantics {
+            // The badge is decorative to a screen reader; the COUNT belongs in
+            // the button's own description, because "Notifications" followed by
+            // a detached "3" is not a sentence.
+            contentDescription = when {
+                count <= 0 -> "Notifications"
+                count == 1 -> "Notifications, 1 unread"
+                else -> "Notifications, $count unread"
+            }
+        },
+    ) {
+        BadgedBox(
+            badge = {
+                if (count > 0) {
+                    Badge {
+                        Text(if (count > BADGE_MAX) "$BADGE_MAX+" else "$count")
+                    }
+                }
+            },
+        ) {
+            Icon(
+                imageVector = UsIcons.Notifications,
+                contentDescription = null,
+                tint = UsTheme.extended.textPrimary,
+            )
+        }
+    }
+}
+
+/** Above this the exact number stops being useful and stops fitting. */
+private const val BADGE_MAX = 99

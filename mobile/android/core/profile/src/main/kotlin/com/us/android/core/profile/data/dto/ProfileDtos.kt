@@ -33,7 +33,11 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class PublicProfileDto(
     @SerialName("user_id") val userId: String = "",
+    val username: String = "",
     @SerialName("display_name") val displayName: String = "",
+    val pronouns: String = "",
+    @SerialName("avatar_media_id") val avatarMediaId: String? = null,
+    @SerialName("cover_media_id") val coverMediaId: String? = null,
     val bio: String = "",
     val category: String = "",
     val profession: String = "",
@@ -44,9 +48,12 @@ data class PublicProfileDto(
     @SerialName("verification_level") val verificationLevel: String = "",
     @SerialName("status_text") val statusText: String = "",
     @SerialName("status_emoji") val statusEmoji: String = "",
+    @SerialName("status_expires_at") val statusExpiresAt: String? = null,
     @SerialName("profile_theme_color") val profileThemeColor: String = "",
     @SerialName("intro_media_type") val introMediaType: String = "",
+    @SerialName("intro_media_url") val introMediaUrl: String = "",
     @SerialName("cta_label") val ctaLabel: String = "",
+    @SerialName("cta_url") val ctaUrl: String = "",
     @SerialName("member_since_badge") val memberSinceBadge: Boolean = false,
     @SerialName("follower_count") val followerCount: Int = 0,
     @SerialName("following_count") val followingCount: Int = 0,
@@ -68,9 +75,14 @@ data class PublicProfileDto(
 @Serializable
 data class OwnProfileDto(
     @SerialName("user_id") val userId: String = "",
+    val username: String = "",
     @SerialName("display_name") val displayName: String = "",
     @SerialName("first_name") val firstName: String = "",
     @SerialName("last_name") val lastName: String = "",
+    @SerialName("preferred_name") val preferredName: String = "",
+    val pronouns: String = "",
+    @SerialName("avatar_media_id") val avatarMediaId: String? = null,
+    @SerialName("cover_media_id") val coverMediaId: String? = null,
     val bio: String = "",
     val dob: String? = null,
     val gender: String = "",
@@ -83,6 +95,7 @@ data class OwnProfileDto(
     @SerialName("verification_level") val verificationLevel: String = "",
     @SerialName("status_text") val statusText: String = "",
     @SerialName("status_emoji") val statusEmoji: String = "",
+    @SerialName("status_expires_at") val statusExpiresAt: String? = null,
     @SerialName("profile_theme_color") val profileThemeColor: String = "",
     @SerialName("intro_media_url") val introMediaUrl: String = "",
     @SerialName("intro_media_type") val introMediaType: String = "",
@@ -142,6 +155,28 @@ data class UpdateProfileRequest(
     val location: String,
     val category: String,
     val bio: String,
+    @SerialName("first_name") val firstName: String,
+    @SerialName("last_name") val lastName: String,
+    @SerialName("preferred_name") val preferredName: String,
+    val pronouns: String,
+    val gender: String,
+    val dob: String?,
+    @SerialName("status_text") val statusText: String,
+    @SerialName("status_emoji") val statusEmoji: String,
+    @SerialName("cta_label") val ctaLabel: String,
+    @SerialName("cta_url") val ctaUrl: String,
+    @SerialName("member_since_badge") val memberSinceBadge: Boolean,
+    val timezone: String,
+)
+
+@Serializable
+data class UpdateMediaIdRequest(@SerialName("media_id") val mediaId: String)
+
+@Serializable
+data class ProfileMediaUpdateDto(
+    val status: String = "",
+    @SerialName("avatar_media_id") val avatarMediaId: String? = null,
+    @SerialName("cover_media_id") val coverMediaId: String? = null,
 )
 
 /**

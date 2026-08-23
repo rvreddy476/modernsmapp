@@ -1,24 +1,38 @@
 package com.us.android.feature.profile.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import coil3.compose.AsyncImage
+import com.us.android.core.designsystem.component.UsAvatar
+import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.component.UsButton
+import com.us.android.core.designsystem.component.UsChoice
+import com.us.android.core.designsystem.component.UsChoiceRow
+import com.us.android.core.designsystem.component.UsDatePickerField
 import com.us.android.core.designsystem.component.UsMessage
 import com.us.android.core.designsystem.component.UsMessageHost
 import com.us.android.core.designsystem.component.UsMessageType
@@ -31,6 +45,7 @@ import com.us.android.core.profile.data.EditProfileField
 import com.us.android.core.profile.data.EditableProfile
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
+import java.time.LocalDate
 
 /**
  * Edit-profile screen — stateful entry point.
@@ -44,8 +59,18 @@ fun EditProfileScreen(
     onBack: () -> Unit,
     onSaved: () -> Unit,
     viewModel: EditProfileViewModel = hiltViewModel(),
+    mediaViewModel: ProfileMediaViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val mediaState by mediaViewModel.state.collectAsStateWithLifecycle()
+    val avatarPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia(),
+    ) { uri -> uri?.let { mediaViewModel.upload(it.toString(), ProfileMediaKind.Avatar) } }
+    val coverPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia(),
+    ) { uri -> uri?.let { mediaViewModel.upload(it.toString(), ProfileMediaKind.Cover) } }
+
+    LaunchedEffect(Unit) { mediaViewModel.loadOwnerMedia() }
 
     // Navigation is driven by the saved flag rather than by the button's click
     // handler: the save is asynchronous, and leaving on the tap would dismiss
@@ -58,10 +83,19 @@ fun EditProfileScreen(
     EditProfileContent(
         state = state,
         onFieldChange = viewModel::onFieldChange,
+        onMemberSinceBadgeChange = viewModel::onMemberSinceBadgeChange,
         onSave = viewModel::save,
         onRetry = viewModel::load,
         onDismissMessage = viewModel::dismissMessage,
         onBack = onBack,
+        mediaState = mediaState,
+        onPickAvatar = {
+            avatarPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+        },
+        onPickCover = {
+            coverPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+        },
+        onDismissMediaMessage = mediaViewModel::dismissMessage,
     )
 }
 
@@ -70,11 +104,16 @@ fun EditProfileScreen(
 internal fun EditProfileContent(
     state: EditProfileUiState,
     onFieldChange: (EditProfileField, String) -> Unit,
+    onMemberSinceBadgeChange: (Boolean) -> Unit,
     onSave: () -> Unit,
     onRetry: () -> Unit,
     onDismissMessage: () -> Unit,
     modifier: Modifier = Modifier,
     onBack: (() -> Unit)? = null,
+    mediaState: ProfileMediaUiState = ProfileMediaUiState(),
+    onPickAvatar: () -> Unit = {},
+    onPickCover: () -> Unit = {},
+    onDismissMediaMessage: () -> Unit = {},
 ) {
     UsScaffold(
         modifier = modifier,
@@ -96,8 +135,15 @@ internal fun EditProfileContent(
 
                 is EditProfileUiState.Editing -> EditProfileForm(
                     state = state,
-                    onFieldChange = onFieldChange,
-                    onSave = onSave,
+                    mediaState = mediaState,
+                    actions = EditProfileFormActions(
+                        onFieldChange = onFieldChange,
+                        onMemberSinceBadgeChange = onMemberSinceBadgeChange,
+                        onSave = onSave,
+                        onPickAvatar = onPickAvatar,
+                        onPickCover = onPickCover,
+                        onDismissMediaMessage = onDismissMediaMessage,
+                    ),
                     modifier = Modifier.padding(padding),
                 )
             }
@@ -113,8 +159,8 @@ internal fun EditProfileContent(
 @Composable
 private fun EditProfileForm(
     state: EditProfileUiState.Editing,
-    onFieldChange: (EditProfileField, String) -> Unit,
-    onSave: () -> Unit,
+    mediaState: ProfileMediaUiState,
+    actions: EditProfileFormActions,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -135,11 +181,23 @@ private fun EditProfileForm(
             modifier = Modifier.padding(top = UsTheme.spacing.xxl),
         )
 
-        EditProfileFields(state = state, onFieldChange = onFieldChange)
+        ProfileMediaEditor(
+            displayName = state.form.displayName,
+            state = mediaState,
+            onPickAvatar = actions.onPickAvatar,
+            onPickCover = actions.onPickCover,
+            onDismissMessage = actions.onDismissMediaMessage,
+        )
+
+        EditProfileFields(
+            state = state,
+            onFieldChange = actions.onFieldChange,
+            onMemberSinceBadgeChange = actions.onMemberSinceBadgeChange,
+        )
 
         UsButton(
             text = "Save changes",
-            onClick = onSave,
+            onClick = actions.onSave,
             modifier = Modifier.fillMaxWidth(),
             enabled = state.canSave,
             loading = state.isSaving,
@@ -159,10 +217,88 @@ private fun EditProfileForm(
     }
 }
 
+private data class EditProfileFormActions(
+    val onFieldChange: (EditProfileField, String) -> Unit,
+    val onMemberSinceBadgeChange: (Boolean) -> Unit,
+    val onSave: () -> Unit,
+    val onPickAvatar: () -> Unit,
+    val onPickCover: () -> Unit,
+    val onDismissMediaMessage: () -> Unit,
+)
+
+@Composable
+private fun ProfileMediaEditor(
+    displayName: String,
+    state: ProfileMediaUiState,
+    onPickAvatar: () -> Unit,
+    onPickCover: () -> Unit,
+    onDismissMessage: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l)) {
+        Text("Profile photos", style = MaterialTheme.typography.titleMedium)
+        UsAvatar(
+            name = displayName,
+            size = UsAvatarSize.Large,
+            imageUrl = state.avatarUrl,
+            contentDescription = "Current profile photo",
+        )
+        UsSecondaryButton(
+            text = if (state.uploading == ProfileMediaKind.Avatar) {
+                "Uploading profile photo…"
+            } else {
+                "Change profile photo"
+            },
+            onClick = onPickAvatar,
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !state.busy,
+        )
+        if (!state.coverUrl.isNullOrBlank()) {
+            AsyncImage(
+                model = state.coverUrl,
+                contentDescription = "Current cover photo",
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(PROFILE_COVER_HEIGHT_DP.dp)
+                    .clip(MaterialTheme.shapes.large),
+                contentScale = ContentScale.Crop,
+            )
+        }
+        UsSecondaryButton(
+            text = if (state.uploading == ProfileMediaKind.Cover) {
+                "Uploading cover photo…"
+            } else {
+                "Change cover photo"
+            },
+            onClick = onPickCover,
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !state.busy,
+        )
+        if (state.busy && state.totalBytes > 0) {
+            val percent = (
+                (state.uploadedBytes * PERCENT_SCALE) / state.totalBytes
+                ).coerceIn(0, PERCENT_SCALE)
+            Text("Upload $percent%", style = MaterialTheme.typography.bodySmall)
+        }
+        (state.error ?: state.message)?.let { message ->
+            Text(
+                text = message,
+                color = if (state.error != null) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    UsTheme.extended.statusSuccess
+                },
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            UsSecondaryButton("Dismiss", onDismissMessage, Modifier.fillMaxWidth())
+        }
+    }
+}
+
 @Composable
 private fun EditProfileFields(
     state: EditProfileUiState.Editing,
     onFieldChange: (EditProfileField, String) -> Unit,
+    onMemberSinceBadgeChange: (Boolean) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xxl)) {
         // Driven from one list rather than seven hand-written blocks. Every
@@ -179,6 +315,36 @@ private fun EditProfileFields(
                 enabled = !state.isSaving,
                 singleLine = spec.singleLine,
                 keyboardType = spec.keyboardType,
+            )
+        }
+        UsDatePickerField(
+            value = state.form.dateOfBirth,
+            onValueChange = { onFieldChange(EditProfileField.DATE_OF_BIRTH, it) },
+            label = "Date of birth",
+            enabled = !state.isSaving,
+            maxDate = LocalDate.now(),
+            minDate = LocalDate.now().minusYears(MAX_PROFILE_AGE_YEARS),
+        )
+        UsChoiceRow(
+            options = GENDER_OPTIONS,
+            selected = state.form.gender.ifBlank { null },
+            onSelect = { onFieldChange(EditProfileField.GENDER, it.orEmpty()) },
+            label = "Gender (private)",
+            enabled = !state.isSaving,
+        )
+        androidx.compose.foundation.layout.Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "Show member-since badge",
+                style = MaterialTheme.typography.bodyLarge,
+                modifier = Modifier.weight(1f),
+            )
+            Switch(
+                checked = state.form.memberSinceBadge,
+                onCheckedChange = onMemberSinceBadgeChange,
+                enabled = !state.isSaving,
             )
         }
     }
@@ -215,6 +381,10 @@ private data class FieldSpec(
  */
 private val FIELD_SPECS = listOf(
     FieldSpec(EditProfileField.DISPLAY_NAME, "Display name", "How your name appears"),
+    FieldSpec(EditProfileField.FIRST_NAME, "First name (private)", null),
+    FieldSpec(EditProfileField.LAST_NAME, "Last name (private)", null),
+    FieldSpec(EditProfileField.PREFERRED_NAME, "Preferred name (private)", null),
+    FieldSpec(EditProfileField.PRONOUNS, "Pronouns", "e.g. she/her"),
     FieldSpec(
         field = EditProfileField.BIO,
         label = "Bio",
@@ -230,8 +400,28 @@ private val FIELD_SPECS = listOf(
         keyboardType = KeyboardType.Uri,
     ),
     FieldSpec(EditProfileField.LOCATION, "Location", "Where you're based"),
+    FieldSpec(EditProfileField.STATUS_TEXT, "Status", "What are you up to?"),
+    FieldSpec(EditProfileField.STATUS_EMOJI, "Status emoji", "✨"),
+    FieldSpec(EditProfileField.CTA_LABEL, "Action label", "Visit my work"),
+    FieldSpec(
+        EditProfileField.CTA_URL,
+        "Action URL",
+        "https://example.com",
+        keyboardType = KeyboardType.Uri,
+    ),
+    FieldSpec(EditProfileField.TIMEZONE, "Timezone (private)", "Asia/Kolkata"),
     FieldSpec(EditProfileField.THEME_COLOR, "Theme colour", "#1A73E8"),
 )
+
+private val GENDER_OPTIONS = listOf(
+    UsChoice("male", "Male"),
+    UsChoice("female", "Female"),
+    UsChoice("other", "Other"),
+)
+
+private const val MAX_PROFILE_AGE_YEARS = 120L
+private const val PERCENT_SCALE = 100L
+private const val PROFILE_COVER_HEIGHT_DP = 128
 
 // ── Previews ────────────────────────────────────────────────────────────
 //
@@ -241,12 +431,24 @@ private val FIELD_SPECS = listOf(
 /** The snapshot from the 2026-08-17 repair capture, as a loaded form. */
 private val previewLoaded = EditableProfile(
     displayName = "Android Repair",
+    firstName = "Android",
+    lastName = "Repair",
+    preferredName = "",
+    pronouns = "",
     bio = "Native bearer contract verified",
+    dateOfBirth = "1990-01-01",
+    gender = "other",
     category = "personal",
     profession = "android-contract",
     website = "",
     location = "",
+    statusText = "",
+    statusEmoji = "",
     profileThemeColor = "#1A73E8",
+    ctaLabel = "",
+    ctaUrl = "",
+    memberSinceBadge = false,
+    timezone = "Asia/Kolkata",
 )
 
 @Composable
@@ -254,6 +456,7 @@ private fun PreviewHost(state: EditProfileUiState) = UsTheme {
     EditProfileContent(
         state = state,
         onFieldChange = { _, _ -> },
+        onMemberSinceBadgeChange = {},
         onSave = {},
         onRetry = {},
         onDismissMessage = {},
@@ -328,8 +531,20 @@ private fun EditProfileClearedPreview() = PreviewHost(
     EditProfileUiState.Editing(
         // The state a `{}` full replacement leaves behind. Real accounts reach
         // it, so the form has to look sane with every field empty.
-        original = EditableProfile("", "", "", "", "", "", ""),
-        form = EditableProfile("", "", "", "", "", "", ""),
+        original = previewLoaded.copy(
+            displayName = "", firstName = "", lastName = "", preferredName = "",
+            pronouns = "", bio = "", dateOfBirth = "", gender = "", category = "",
+            profession = "", website = "", location = "", statusText = "", statusEmoji = "",
+            profileThemeColor = "", ctaLabel = "", ctaUrl = "", memberSinceBadge = false,
+            timezone = "",
+        ),
+        form = previewLoaded.copy(
+            displayName = "", firstName = "", lastName = "", preferredName = "",
+            pronouns = "", bio = "", dateOfBirth = "", gender = "", category = "",
+            profession = "", website = "", location = "", statusText = "", statusEmoji = "",
+            profileThemeColor = "", ctaLabel = "", ctaUrl = "", memberSinceBadge = false,
+            timezone = "",
+        ),
     ),
 )
 

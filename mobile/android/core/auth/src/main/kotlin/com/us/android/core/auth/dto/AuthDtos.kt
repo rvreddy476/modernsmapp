@@ -1,5 +1,6 @@
 package com.us.android.core.auth.dto
 
+import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -84,13 +85,32 @@ data class VerifyEmailRequestDto(
 )
 
 /**
- * Mirrors ResendVerificationRequest (handler.go:1003).
+ * Mirrors ResendVerificationRequest (handler.go:1037).
  *
  * [type] is `email` only. `phone` returns 410 SMS_UNAVAILABLE — there is no
  * SMS delivery, and reporting success would be a lie the user acts on.
+ *
+ * ## `@EncodeDefault` IS LOAD-BEARING
+ *
+ * kotlinx.serialization omits any property equal to its default unless told
+ * otherwise, and the shared `Json` in `NetworkModule` deliberately leaves
+ * `encodeDefaults` off. `AuthRepository` builds this DTO with only the token
+ * (`AuthRepository.kt:139`), so `type` took its default and vanished from the
+ * body — while the server binds it `required`
+ * (`auth-service/internal/http/handler.go:1038`).
+ *
+ * Every resend therefore returned 400. That endpoint is the RECOVERY path for
+ * someone whose first verification email never arrived, so the failure landed
+ * on exactly the users who were already stuck, and it looked like the account
+ * was broken rather than the request.
+ *
+ * Same defect and same fix as `SendMessageRequest.type` in `:core:chat`. The
+ * default stays because `email` is the only kind that works; the annotation is
+ * what puts it on the wire. `AuthRequestEncodingTest` pins the exact bytes.
  */
 @Serializable
 data class ResendVerificationRequestDto(
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS)
     val type: String = "email",
     @SerialName("verification_token") val verificationToken: String,
 )

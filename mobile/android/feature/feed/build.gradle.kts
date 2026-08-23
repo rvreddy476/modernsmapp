@@ -19,6 +19,11 @@ dependencies {
     // shares the whole data layer with home, so a separate Gradle module would
     // be fragmentation without reuse.
     implementation(projects.core.media)
+    implementation(projects.core.engagement)
+    // Slice D: the top-bar badge observes the SHARED unread count so the feed
+    // and the inbox can never disagree about it. A core module, so no
+    // feature-to-feature edge is created.
+    implementation(projects.core.notifications)
 
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.navigation.compose)

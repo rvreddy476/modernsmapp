@@ -43,6 +43,15 @@ data class PostActionState(
     val commentCount: Int,
     val repostCount: Int,
     val hasReacted: Boolean,
+    /**
+     * Whether THIS viewer has reposted.
+     *
+     * The control used to be hardcoded inactive, so a post the viewer had
+     * already reposted looked untouched and the only affordance offered was to
+     * repost it again — which the server rejects with `409 ALREADY_REPOSTED`.
+     * An action whose current state is invisible cannot be undone.
+     */
+    val hasReposted: Boolean = false,
     val isBookmarked: Boolean,
     val canReact: Boolean = true,
     val canComment: Boolean = true,
@@ -105,7 +114,7 @@ fun PostActionBar(
             icon = UsIcons.Repost,
             label = "Repost",
             count = state.repostCount,
-            active = false,
+            active = state.hasReposted,
             enabled = state.canRepost && !state.busy,
             activeTint = UsTheme.extended.statusSuccess,
             onClick = onRepost,

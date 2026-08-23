@@ -9,6 +9,7 @@ android {
 
 dependencies {
     implementation(projects.core.common)
+    implementation(libs.coil.compose)
 
     testImplementation(libs.junit)
     testImplementation(libs.truth)

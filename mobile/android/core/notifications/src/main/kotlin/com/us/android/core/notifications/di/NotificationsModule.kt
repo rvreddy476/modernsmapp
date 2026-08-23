@@ -2,13 +2,18 @@ package com.us.android.core.notifications.di
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.us.android.core.common.session.SessionTeardownTask
 import com.us.android.core.notifications.data.DeviceApi
+import com.us.android.core.notifications.data.NotificationsApi
+import com.us.android.core.notifications.data.PushTeardown
 import com.us.android.core.notifications.data.PushTokenStore
+import dagger.Binds
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
+import dagger.multibindings.IntoSet
 import retrofit2.Retrofit
 import javax.inject.Singleton
 
@@ -19,6 +24,11 @@ object NotificationsModule {
     @Provides
     @Singleton
     fun provideDeviceApi(retrofit: Retrofit): DeviceApi = retrofit.create(DeviceApi::class.java)
+
+    @Provides
+    @Singleton
+    fun provideNotificationsApi(retrofit: Retrofit): NotificationsApi =
+        retrofit.create(NotificationsApi::class.java)
 
     /**
      * Plain SharedPreferences, not the encrypted store.
@@ -68,4 +78,19 @@ internal class SharedPrefsPushTokenStore(
         const val KEY_REGISTERED = "registered_token"
         const val KEY_DEVICE_ID = "device_id"
     }
+}
+
+/**
+ * Contributes push-token cleanup to sign-out — Slice D.
+ *
+ * `@IntoSet` rather than a direct call from `:core:auth`: that module must not
+ * depend on push. See [com.us.android.core.common.session.SessionTeardownTask].
+ */
+@Module
+@InstallIn(SingletonComponent::class)
+abstract class NotificationsTeardownModule {
+
+    @Binds
+    @IntoSet
+    abstract fun bindPushTeardown(impl: PushTeardown): SessionTeardownTask
 }

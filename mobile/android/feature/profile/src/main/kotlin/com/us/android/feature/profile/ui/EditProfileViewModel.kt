@@ -84,6 +84,11 @@ class EditProfileViewModel @Inject constructor(
         )
     }
 
+    fun onMemberSinceBadgeChange(value: Boolean) = _state.update { state ->
+        val editing = state as? EditProfileUiState.Editing ?: return@update state
+        editing.copy(form = editing.form.withMemberSinceBadge(value), message = null)
+    }
+
     fun save() {
         val current = _state.value as? EditProfileUiState.Editing ?: return
         if (!current.canSave) return
@@ -162,20 +167,19 @@ class EditProfileViewModel @Inject constructor(
      * clearing a field impossible on the only screen that can clear it.
      */
     private fun validate(form: EditableProfile): Map<EditProfileField, String> = buildMap {
-        if (form.displayName.length > MAX_DISPLAY_NAME) {
-            put(EditProfileField.DISPLAY_NAME, "Use $MAX_DISPLAY_NAME characters or fewer")
+        PROFILE_TEXT_LIMITS.forEach { (field, limit) ->
+            if (form.value(field).length > limit) {
+                put(field, "Use $limit characters or fewer")
+            }
         }
-        if (form.bio.length > MAX_BIO) {
-            put(EditProfileField.BIO, "Use $MAX_BIO characters or fewer")
+        if (form.statusEmoji.codePointCount(0, form.statusEmoji.length) > MAX_STATUS_EMOJI_CODEPOINTS) {
+            put(EditProfileField.STATUS_EMOJI, "Use one short emoji")
         }
-        if (form.category.length > MAX_SHORT_TEXT) {
-            put(EditProfileField.CATEGORY, "Use $MAX_SHORT_TEXT characters or fewer")
+        if (form.ctaUrl.isNotBlank() && !WEBSITE_PATTERN.matches(form.ctaUrl.trim())) {
+            put(EditProfileField.CTA_URL, "Enter an http or https web address")
         }
-        if (form.profession.length > MAX_SHORT_TEXT) {
-            put(EditProfileField.PROFESSION, "Use $MAX_SHORT_TEXT characters or fewer")
-        }
-        if (form.location.length > MAX_SHORT_TEXT) {
-            put(EditProfileField.LOCATION, "Use $MAX_SHORT_TEXT characters or fewer")
+        if (form.timezone.isNotBlank() && !TIMEZONE_PATTERN.matches(form.timezone.trim())) {
+            put(EditProfileField.TIMEZONE, "Use an IANA timezone such as Asia/Kolkata")
         }
         if (form.website.isNotBlank() && !WEBSITE_PATTERN.matches(form.website.trim())) {
             put(EditProfileField.WEBSITE, "Enter a web address like example.com")
@@ -195,6 +199,23 @@ class EditProfileViewModel @Inject constructor(
         const val MAX_DISPLAY_NAME = 50
         const val MAX_BIO = 300
         const val MAX_SHORT_TEXT = 80
+        const val MAX_STATUS_TEXT = 120
+        const val MAX_CTA_LABEL = 40
+        const val MAX_STATUS_EMOJI_CODEPOINTS = 4
+
+        val PROFILE_TEXT_LIMITS = listOf(
+            EditProfileField.DISPLAY_NAME to MAX_DISPLAY_NAME,
+            EditProfileField.FIRST_NAME to MAX_SHORT_TEXT,
+            EditProfileField.LAST_NAME to MAX_SHORT_TEXT,
+            EditProfileField.PREFERRED_NAME to MAX_SHORT_TEXT,
+            EditProfileField.PRONOUNS to MAX_SHORT_TEXT,
+            EditProfileField.BIO to MAX_BIO,
+            EditProfileField.CATEGORY to MAX_SHORT_TEXT,
+            EditProfileField.PROFESSION to MAX_SHORT_TEXT,
+            EditProfileField.LOCATION to MAX_SHORT_TEXT,
+            EditProfileField.STATUS_TEXT to MAX_STATUS_TEXT,
+            EditProfileField.CTA_LABEL to MAX_CTA_LABEL,
+        )
 
         /** `#RRGGBB`, the form the capture returned (`#1A73E8`). */
         val HEX_COLOR_PATTERN = Regex("^#[0-9A-Fa-f]{6}$")
@@ -205,6 +226,7 @@ class EditProfileViewModel @Inject constructor(
          * writing here would reject valid addresses the server accepts.
          */
         val WEBSITE_PATTERN = Regex("""^(https?://)?[^\s.]+\.[^\s]{2,}$""")
+        val TIMEZONE_PATTERN = Regex("^[A-Za-z_+-]+(?:/[A-Za-z0-9_+.-]+)+$")
     }
 }
 

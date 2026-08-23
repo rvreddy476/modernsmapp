@@ -7,6 +7,7 @@ import com.us.android.core.auth.dto.VerifyEmailRequestDto
 import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.common.result.map
+import com.us.android.core.common.session.SessionTeardownTask
 import com.us.android.core.model.SessionState
 import com.us.android.core.network.ErrorMapper
 import com.us.android.core.network.apiCall
@@ -21,6 +22,13 @@ class AuthRepository @Inject constructor(
     private val authApi: AuthApi,
     private val sessionManager: SessionManager,
     private val errorMapper: ErrorMapper,
+    /**
+     * Cleanup that must run while the session is still valid — Slice D.
+     *
+     * A multibound set rather than a named dependency: this module must not
+     * learn what needs tearing down. See [SessionTeardownTask].
+     */
+    private val teardownTasks: Set<@JvmSuppressWildcards SessionTeardownTask>,
 ) {
 
     val sessionState: StateFlow<SessionState> = sessionManager.state
@@ -146,6 +154,28 @@ class AuthRepository @Inject constructor(
      * device is offline or the endpoint 500s.
      */
     suspend fun logout(): AppResult<Unit> {
+        // Teardown runs FIRST, while the access token is still valid — Slice D.
+        //
+        // Unregistering this device's push token is a `DELETE` the server
+        // rejects once the session is gone, so it cannot be done by reacting to
+        // the session becoming Unauthenticated. Ordering it here is the whole
+        // reason SessionTeardownTask exists.
+        //
+        // Each task is isolated: a throwing task must not prevent sign-out. A
+        // user who taps "log out" ends up logged out even if the network is
+        // down, which is the same rule the logout call below already follows.
+        for (task in teardownTasks) {
+            try {
+                task.onSignOut()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Throwable) {
+                // Deliberately swallowed. The device may keep receiving push
+                // until the token rotates or the server prunes it — undesirable,
+                // and still better than a sign-out that cannot complete.
+            }
+        }
+
         val result = try {
             apiCall(errorMapper) { authApi.logout() }
         } catch (e: CancellationException) {

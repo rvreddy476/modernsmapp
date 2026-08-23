@@ -5,13 +5,21 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
+import com.us.android.core.engagement.data.EngagementAction
+import com.us.android.core.engagement.data.EngagementFailure
+import com.us.android.core.engagement.data.EngagementOverlay
+import com.us.android.core.engagement.data.EngagementRepository
+import com.us.android.core.engagement.data.EngagementStore
 import com.us.android.core.media.data.MediaRepository
 import com.us.android.core.profile.data.ProfileRepository
 import com.us.android.feature.post.data.PostRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -21,6 +29,8 @@ class PostViewModel @Inject constructor(
     private val repository: PostRepository,
     private val profiles: ProfileRepository,
     private val media: MediaRepository,
+    private val engagement: EngagementStore,
+    private val engagementRepository: EngagementRepository,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
 
@@ -28,6 +38,19 @@ class PostViewModel @Inject constructor(
 
     private val _state = MutableStateFlow<PostUiState>(PostUiState.Loading)
     val state: StateFlow<PostUiState> = _state.asStateFlow()
+
+    init {
+        // Republish the shared overlay into this screen's state so post
+        // detail and the feed can never disagree about the same post.
+        viewModelScope.launch {
+            engagement.overlays.collect { all ->
+                val overlay = all[postId] ?: EngagementOverlay()
+                _state.update { state ->
+                    (state as? PostUiState.Content)?.copy(overlay = overlay) ?: state
+                }
+            }
+        }
+    }
 
     init {
         load()
@@ -44,6 +67,16 @@ class PostViewModel @Inject constructor(
                 )
             }
             (_state.value as? PostUiState.Content)?.let { content ->
+                // Retire local intent this response has now confirmed. Without
+                // a production caller the overlay would outlive its purpose
+                // and keep re-applying a value the server already agrees with,
+                // pinning it against later changes made elsewhere.
+                engagement.reconcile(
+                    postId = postId,
+                    serverReacted = content.post.viewer.hasReacted,
+                    serverBookmarked = content.post.viewer.isBookmarked,
+                    serverReposted = content.post.viewer.hasReposted,
+                )
                 loadAuthor(content.post.authorId)
                 loadMedia(content.post.media.firstOrNull()?.mediaId)
             }
@@ -85,126 +118,74 @@ class PostViewModel @Inject constructor(
     }
 
     /**
-     * Like or unlike.
+     * Like or unlike, save, and repost.
      *
-     * Optimistic, with the count moved alongside the flag so the number and
-     * the icon never disagree mid-flight. Add and remove are distinct
-     * endpoints here, so unlike a bookmark this one is safe to reason about
-     * from the request that was made.
+     * All three delegate to the shared [EngagementStore] rather than keeping
+     * their own optimistic copy. Two reasons:
+     *
+     *  - ONE ANSWER PER POST. The feed and this screen showed the same post
+     *    with independent local state, so liking in one and opening the other
+     *    displayed the opposite value until a refresh.
+     *  - ORDERING. The previous implementation rolled back on any failure,
+     *    including a stale one, which meant a failed unlike arriving after a
+     *    successful like restored "liked" while the server held "not liked".
+     *    The store discards responses that a newer tap has superseded.
+     *
+     * The `busy` flag is gone with them: it blocked the second tap of a rapid
+     * double-tap, which is a real thing users do to undo a mistap.
      */
     fun onReactToggle() {
         val content = _state.value as? PostUiState.Content ?: return
-        if (content.busy || !content.post.allowsReactions) return
-        val wasReacted = content.post.viewer.hasReacted
-
-        _state.update { state ->
-            (state as? PostUiState.Content)?.withReaction(!wasReacted, busy = true) ?: state
-        }
-
+        if (!content.post.allowsReactions) return
         viewModelScope.launch {
-            val result = if (wasReacted) {
-                repository.removeReaction(postId)
-            } else {
-                repository.addReaction(postId)
-            }
-            _state.update { state ->
-                val current = state as? PostUiState.Content ?: return@update state
-                when (result) {
-                    is AppResult.Success -> current.copy(busy = false)
-                    is AppResult.Failure -> {
-                        current.withReaction(wasReacted, busy = false)
-                            .copy(actionError = PostErrorText.forAction(result.error))
-                    }
-                }
-            }
+            engagement.toggleReaction(postId, content.post.viewer.hasReacted)
         }
     }
 
-    /**
-     * Save or unsave.
-     *
-     * Optimistic since the 2026-08-17 repair. This was previously the one
-     * interaction here that deliberately waited: the endpoint was a toggle
-     * whose outcome depended on the server's current state rather than on the
-     * request, so an optimistic flip could show the exact opposite of the
-     * truth after a lost response. It is now a SET/CLEAR pair — the client
-     * states the state it wants, repetition is harmless, and the reversal
-     * endpoint works — so the flip is safe and the spinner is no longer worth
-     * its cost.
-     */
     fun onBookmarkToggle() {
         val content = _state.value as? PostUiState.Content ?: return
-        if (content.busy) return
-        val wasBookmarked = content.post.viewer.isBookmarked
-
-        _state.update { state ->
-            (state as? PostUiState.Content)?.withBookmark(!wasBookmarked, busy = true) ?: state
-        }
-
         viewModelScope.launch {
-            val result = repository.setBookmarked(postId, !wasBookmarked)
-            _state.update { state ->
-                val current = state as? PostUiState.Content ?: return@update state
-                when (result) {
-                    // Adopt the server's value rather than the requested one.
-                    // With set/clear the two agree, and asserting that here
-                    // means a future divergence surfaces instead of hiding.
-                    is AppResult.Success -> current.withBookmark(result.data, busy = false)
-
-                    is AppResult.Failure -> {
-                        current.withBookmark(wasBookmarked, busy = false)
-                            .copy(actionError = PostErrorText.forAction(result.error))
-                    }
-                }
-            }
+            engagement.toggleBookmark(postId, content.post.viewer.isBookmarked)
         }
     }
 
     /**
      * Repost or undo.
      *
-     * [PostUiState.Content.hasReposted] tracks only what happened in this
-     * session. The post payload carries a `repost_count` but no per-viewer
-     * flag, so on a cold start the client genuinely cannot know whether this
-     * viewer already reposted, and the control starts in the un-reposted
-     * state. That is a contract gap, not a client shortcut.
+     * Passes the SERVER's `has_reposted`. It used to pass a hardcoded `false`,
+     * so the first tap on a post this viewer had already reposted sent another
+     * POST, took `409 ALREADY_REPOSTED`, rolled back, and left no way to undo
+     * the repost at all.
      */
     fun onRepostToggle() {
         val content = _state.value as? PostUiState.Content ?: return
-        if (content.busy || !content.post.isRepostable) return
-        val wasReposted = content.hasReposted
-
-        _state.update {
-            (it as? PostUiState.Content)?.copy(busy = true, actionError = null) ?: it
-        }
-
+        if (!content.post.isRepostable) return
         viewModelScope.launch {
-            val result = if (wasReposted) {
-                repository.removeRepost(postId)
-            } else {
-                repository.repost(postId)
-            }
-            _state.update { state ->
-                val current = state as? PostUiState.Content ?: return@update state
-                when (result) {
-                    is AppResult.Success -> current.copy(
-                        hasReposted = !wasReposted,
-                        post = current.post.copy(
-                            counts = current.post.counts.copy(
-                                reposts = (current.post.counts.reposts + if (wasReposted) -1 else 1)
-                                    .coerceAtLeast(0),
-                            ),
-                        ),
-                        busy = false,
-                    )
-
-                    is AppResult.Failure -> current.copy(
-                        busy = false,
-                        actionError = PostErrorText.forAction(result.error),
-                    )
-                }
-            }
+            engagement.toggleRepost(postId, content.post.viewer.hasReposted)
         }
+    }
+
+    /**
+     * Failed mutations for THIS post.
+     *
+     * Filtered to the post on screen: the store is shared, and a failure from
+     * a row the viewer liked in the feed must not appear as an error on an
+     * unrelated post they then opened.
+     */
+    val failures: StateFlow<List<EngagementFailure>> = engagement.failures
+        .map { all -> all.filter { it.postId == postId } }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    fun retryFailure(postId: String, action: EngagementAction) = viewModelScope.launch {
+        engagement.retry(postId, action)
+    }
+
+    fun dismissFailure(postId: String, action: EngagementAction) =
+        engagement.clearFailure(postId, action)
+
+    /** Records an external share once, after the chooser was launched. */
+    fun onExternalShared() = viewModelScope.launch {
+        engagementRepository.recordExternalShare(postId)
     }
 
     fun dismissActionError() = _state.update {
@@ -214,31 +195,6 @@ class PostViewModel @Inject constructor(
     private companion object {
         const val POST_ID_KEY = "postId"
     }
-}
-
-private fun PostUiState.Content.withBookmark(
-    bookmarked: Boolean,
-    busy: Boolean,
-): PostUiState.Content = copy(
-    post = post.copy(viewer = post.viewer.copy(isBookmarked = bookmarked)),
-    busy = busy,
-    actionError = null,
-)
-
-/** Moves the flag and the count together so they cannot disagree. */
-private fun PostUiState.Content.withReaction(
-    reacted: Boolean,
-    busy: Boolean,
-): PostUiState.Content {
-    val delta = if (reacted) 1 else -1
-    return copy(
-        post = post.copy(
-            viewer = post.viewer.copy(hasReacted = reacted),
-            counts = post.counts.copy(likes = (post.counts.likes + delta).coerceAtLeast(0)),
-        ),
-        busy = busy,
-        actionError = null,
-    )
 }
 
 /** Error text, scoped to this screen — see ProfileErrorText for the rationale. */

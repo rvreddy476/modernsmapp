@@ -4,8 +4,10 @@ import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.profile.data.dto.GraphStatusDto
 import com.us.android.core.profile.data.dto.GraphUserIdRequest
 import com.us.android.core.profile.data.dto.OwnProfileDto
+import com.us.android.core.profile.data.dto.ProfileMediaUpdateDto
 import com.us.android.core.profile.data.dto.ProfileStatsDto
 import com.us.android.core.profile.data.dto.PublicProfileDto
+import com.us.android.core.profile.data.dto.UpdateMediaIdRequest
 import com.us.android.core.profile.data.dto.UpdateProfileRequest
 import retrofit2.http.Body
 import retrofit2.http.GET
@@ -61,6 +63,12 @@ interface ProfileApi {
      */
     @PUT("v1/profiles/me")
     suspend fun updateProfile(@Body body: UpdateProfileRequest): ApiEnvelope<OwnProfileDto>
+
+    @PUT("v1/profiles/me/avatar")
+    suspend fun updateAvatar(@Body body: UpdateMediaIdRequest): ApiEnvelope<ProfileMediaUpdateDto>
+
+    @PUT("v1/profiles/me/cover")
+    suspend fun updateCover(@Body body: UpdateMediaIdRequest): ApiEnvelope<ProfileMediaUpdateDto>
 
     /** Counts, including the two the profile payload does not carry. */
     @GET("v1/profiles/{userId}/stats")

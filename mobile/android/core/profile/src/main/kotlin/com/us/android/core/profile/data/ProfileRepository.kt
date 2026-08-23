@@ -12,6 +12,7 @@ import com.us.android.core.profile.data.dto.GraphUserIdRequest
 import com.us.android.core.profile.data.dto.OwnProfileDto
 import com.us.android.core.profile.data.dto.ProfileStatsDto
 import com.us.android.core.profile.data.dto.PublicProfileDto
+import com.us.android.core.profile.data.dto.UpdateMediaIdRequest
 import com.us.android.core.profile.data.dto.UpdateProfileRequest
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -55,6 +56,12 @@ class ProfileRepository @Inject constructor(
     suspend fun updateProfile(snapshot: EditableProfile): AppResult<Profile> =
         apiCall(errorMapper) { api.updateProfile(snapshot.toRequest()) }.map { it.toDomain() }
 
+    suspend fun updateAvatar(mediaId: String): AppResult<Unit> =
+        apiCall(errorMapper) { api.updateAvatar(UpdateMediaIdRequest(mediaId)) }.map { }
+
+    suspend fun updateCover(mediaId: String): AppResult<Unit> =
+        apiCall(errorMapper) { api.updateCover(UpdateMediaIdRequest(mediaId)) }.map { }
+
     suspend fun getStats(userId: String): AppResult<ProfileStats> =
         apiCall(errorMapper) { api.getStats(userId) }.map { it.toDomain() }
 
@@ -89,11 +96,27 @@ private fun EditableProfile.toRequest() = UpdateProfileRequest(
     location = location,
     category = category,
     bio = bio,
+    firstName = firstName,
+    lastName = lastName,
+    preferredName = preferredName,
+    pronouns = pronouns,
+    gender = gender,
+    dob = dateOfBirth.ifBlank { null }?.let { "${it}T00:00:00Z" },
+    statusText = statusText,
+    statusEmoji = statusEmoji,
+    ctaLabel = ctaLabel,
+    ctaUrl = ctaUrl,
+    memberSinceBadge = memberSinceBadge,
+    timezone = timezone,
 )
 
 private fun PublicProfileDto.toDomain() = Profile(
     userId = userId,
+    username = username,
     displayName = displayName,
+    pronouns = pronouns,
+    avatarMediaId = avatarMediaId,
+    coverMediaId = coverMediaId,
     bio = bio,
     category = category,
     profession = profession,
@@ -104,8 +127,13 @@ private fun PublicProfileDto.toDomain() = Profile(
     verificationLevel = verificationLevel,
     statusText = statusText,
     statusEmoji = statusEmoji,
+    statusExpiresAt = statusExpiresAt,
     profileThemeColor = profileThemeColor,
     memberSinceBadge = memberSinceBadge,
+    introMediaUrl = introMediaUrl,
+    introMediaType = introMediaType,
+    ctaLabel = ctaLabel,
+    ctaUrl = ctaUrl,
     counts = ProfileCounts(
         followers = followerCount,
         following = followingCount,
@@ -120,7 +148,11 @@ private fun PublicProfileDto.toDomain() = Profile(
 
 private fun OwnProfileDto.toDomain() = Profile(
     userId = userId,
+    username = username,
     displayName = displayName,
+    pronouns = pronouns,
+    avatarMediaId = avatarMediaId,
+    coverMediaId = coverMediaId,
     bio = bio,
     category = category,
     profession = profession,
@@ -131,8 +163,13 @@ private fun OwnProfileDto.toDomain() = Profile(
     verificationLevel = verificationLevel,
     statusText = statusText,
     statusEmoji = statusEmoji,
+    statusExpiresAt = statusExpiresAt,
     profileThemeColor = profileThemeColor,
     memberSinceBadge = memberSinceBadge,
+    introMediaUrl = introMediaUrl,
+    introMediaType = introMediaType,
+    ctaLabel = ctaLabel,
+    ctaUrl = ctaUrl,
     counts = ProfileCounts(
         followers = followerCount,
         following = followingCount,
@@ -143,6 +180,7 @@ private fun OwnProfileDto.toDomain() = Profile(
     personal = PersonalProfile(
         firstName = firstName,
         lastName = lastName,
+        preferredName = preferredName,
         dateOfBirth = dob,
         gender = gender,
         timezone = timezone,

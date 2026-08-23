@@ -24,22 +24,41 @@ import com.us.android.core.designsystem.component.UsNavigationBar
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.media.PlayerPool
+import com.us.android.core.model.NotificationTarget
 import com.us.android.core.model.SessionState
 import com.us.android.feature.auth.login.LoginRoute
 import com.us.android.feature.auth.register.RegisterRoute
 import com.us.android.feature.auth.verify.VerifyEmailRoute
+import com.us.android.feature.chat.navigation.chatInboxScreen
+import com.us.android.feature.chat.navigation.chatThreadScreen
+import com.us.android.feature.chat.navigation.navigateToChatInbox
+import com.us.android.feature.chat.navigation.navigateToChatThread
 import com.us.android.feature.feed.navigation.FeedRoute
 import com.us.android.feature.feed.navigation.feedScreen
 import com.us.android.feature.feed.navigation.reelsScreen
+import com.us.android.feature.notifications.navigation.navigateToNotifications
+import com.us.android.feature.notifications.navigation.notificationsScreen
+import com.us.android.feature.post.navigation.ComposerRoute
+import com.us.android.feature.post.navigation.PostRoute
 import com.us.android.feature.post.navigation.commentsScreen
+import com.us.android.feature.post.navigation.composerScreen
 import com.us.android.feature.post.navigation.navigateToComments
+import com.us.android.feature.post.navigation.navigateToComposer
 import com.us.android.feature.post.navigation.navigateToPost
 import com.us.android.feature.post.navigation.postScreen
+import com.us.android.feature.profile.navigation.NotificationSettingsRoute
+import com.us.android.feature.profile.navigation.PrivacySettingsRoute
+import com.us.android.feature.profile.navigation.ProfileDetailsRoute
+import com.us.android.feature.profile.navigation.SecuritySettingsRoute
+import com.us.android.feature.profile.navigation.SettingsDestinations
+import com.us.android.feature.profile.navigation.SettingsSections
 import com.us.android.feature.profile.navigation.editProfileScreen
 import com.us.android.feature.profile.navigation.navigateToEditProfile
 import com.us.android.feature.profile.navigation.navigateToProfile
+import com.us.android.feature.profile.navigation.navigateToSettings
 import com.us.android.feature.profile.navigation.ownProfileScreen
 import com.us.android.feature.profile.navigation.profileScreen
+import com.us.android.feature.profile.navigation.settingsScreens
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -207,7 +226,61 @@ private fun NavGraphBuilder.tabDestinations(
     feedScreen(
         onOpenPost = { postId -> navController.navigateToPost(postId) },
         onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
+        onOpenMessages = { navController.navigateToChatInbox() },
+        onOpenNotifications = { navController.navigateToNotifications() },
+        onCreatePost = { navController.navigateToComposer() },
     )
+
+    // The composer. `:feature:feed` hands back "the user wants to write" and
+    // `:app` decides that opens `:feature:post`, so neither feature imports the
+    // other.
+    //
+    // On success the created post REPLACES the composer in the back stack:
+    // popUpTo(inclusive) means Back from the new post returns to the feed, not
+    // to a composer whose content is already published.
+    composerScreen(
+        onClose = { navController.popBackStack() },
+        onPublished = { postId ->
+            navController.navigate(PostRoute(postId)) {
+                popUpTo<ComposerRoute> { inclusive = true }
+            }
+        },
+    )
+
+    // The notification inbox — Slice D.
+    //
+    // `:feature:notifications` hands back a resolved TARGET, never a URL, and
+    // `:app` maps it to a destination here. That is what stops the inbox from
+    // importing `:feature:post` or `:feature:profile`, and it is the same
+    // contract the composer uses for `onPublished`.
+    //
+    // A comment notification opens the POST rather than the comments sheet:
+    // the sheet is a modal over the post, so the post is where a deep link has
+    // to land for Back to behave. Focusing the specific comment is tracked
+    // follow-up work — the id is carried, nothing yet consumes it.
+    notificationsScreen(
+        onBack = { navController.popBackStack() },
+        onOpenTarget = { target -> navController.openNotificationTarget(target) },
+        // Preferences are a `:feature:profile` destination. The inbox asks
+        // for "settings"; :app decides that means this route.
+        onOpenPreferences = { navController.navigate(NotificationSettingsRoute) },
+    )
+
+    // Messages. The entry point is the feed's top bar; a profile's Message
+    // button is the other way in, and it arrives already holding a
+    // conversation id because the SERVER decided which conversation that is.
+    //
+    // The inbox resolves each row's title and hands it over, so a thread has a
+    // name on its first frame. Deriving it inside the thread would need the
+    // viewer's own id, which the thread does not have — every direct
+    // conversation would open with a blank header until its member list loaded.
+    chatInboxScreen(
+        onBack = { navController.popBackStack() },
+        onOpenThread = { conversationId, title ->
+            navController.navigateToChatThread(conversationId, title)
+        },
+    )
+    chatThreadScreen(onBack = { navController.popBackStack() })
     composable<GalleryRoute> {
         // The gallery is still reachable from Explore so the design tokens stay
         // reviewable on a real device at real density.
@@ -241,30 +314,7 @@ private fun NavGraphBuilder.tabDestinations(
         )
     }
 
-    // Registered through the feature's own NavGraphBuilder extensions so
-    // `:app` never imports its screens or ViewModels — it supplies only the
-    // destinations profile navigates to.
-    //
-    // Two registrations, one screen: the Me tab is a root with no back
-    // control; a pushed profile has one.
-    ownProfileScreen(
-        onOpenFollowers = {},
-        onOpenFollowing = {},
-        onEditProfile = { navController.navigateToEditProfile() },
-    )
-    profileScreen(
-        onOpenFollowers = {},
-        onOpenFollowing = {},
-        onBack = { navController.popBackStack() },
-    )
-    editProfileScreen(
-        onBack = { navController.popBackStack() },
-        // Saving pops back to the profile, which reloads and shows the new
-        // values. Distinct from onBack only in intent today, but the two are
-        // separate callbacks so a later "saved" confirmation has somewhere to
-        // live without changing the abandon path.
-        onSaved = { navController.popBackStack() },
-    )
+    profileDestinations(navController)
 
     // Post detail and its comments. Cross-feature navigation is resolved here:
     // :feature:post hands back an author id and :app decides that opens a
@@ -275,6 +325,49 @@ private fun NavGraphBuilder.tabDestinations(
         onOpenComments = { postId -> navController.navigateToComments(postId) },
     )
     commentsScreen(onBack = { navController.popBackStack() })
+}
+
+/** Profile, edit-profile and settings destinations registered by the feature. */
+private fun NavGraphBuilder.profileDestinations(navController: NavHostController) {
+    // Two registrations, one screen: the Me tab is a root with no back
+    // control; a pushed profile has one.
+    ownProfileScreen(
+        onOpenFollowers = {},
+        onOpenFollowing = {},
+        onEditProfile = { navController.navigateToEditProfile() },
+        onOpenSettings = { navController.navigateToSettings() },
+    )
+    profileScreen(
+        onOpenFollowers = {},
+        onOpenFollowing = {},
+        onBack = { navController.popBackStack() },
+        // `:feature:profile` resolves the direct conversation through
+        // `:core:chat`; :app alone knows which feature renders it.
+        onOpenChat = { conversationId, title ->
+            navController.navigateToChatThread(conversationId, title)
+        },
+    )
+    editProfileScreen(
+        onBack = { navController.popBackStack() },
+        onSaved = { navController.popBackStack() },
+    )
+    settingsScreens(
+        SettingsDestinations(
+            onBack = { navController.popBackStack() },
+            onEditProfile = { navController.navigateToEditProfile() },
+            onProfileDetails = { navController.navigate(ProfileDetailsRoute) },
+            onSignedOut = {
+                navController.navigate(LoginRoute) {
+                    popUpTo<FeedRoute> { inclusive = true }
+                }
+            },
+            sections = SettingsSections(
+                onPrivacy = { navController.navigate(PrivacySettingsRoute) },
+                onNotifications = { navController.navigate(NotificationSettingsRoute) },
+                onSecurity = { navController.navigate(SecuritySettingsRoute) },
+            ),
+        ),
+    )
 }
 
 /** Host for [UsNavHost] that observes the session and rebuilds on change. */
@@ -301,5 +394,30 @@ private fun SplashPreview() {
                 )
             }
         }
+    }
+}
+
+/**
+ * Maps a notification target to a destination — Slice D.
+ *
+ * `:feature:notifications` hands back a resolved [NotificationTarget], never a
+ * URL, and this is the only place that knows which destination each one means.
+ * That is what stops the inbox importing `:feature:post` or `:feature:profile`.
+ *
+ * A comment notification opens the POST rather than the comments sheet: the
+ * sheet is a modal over the post, so the post is where a deep link has to land
+ * for Back to behave. Focusing the individual comment is tracked follow-up
+ * work — the id is carried on the target, nothing yet consumes it.
+ *
+ * [NotificationTarget.None] navigates nowhere. It is the vertical this build
+ * has no screen for, or a deep link that did not parse; either way, doing
+ * nothing is the only honest option.
+ */
+private fun NavHostController.openNotificationTarget(target: NotificationTarget) {
+    when (target) {
+        is NotificationTarget.Post -> navigateToPost(target.postId)
+        is NotificationTarget.PostComment -> navigateToPost(target.postId)
+        is NotificationTarget.Profile -> navigateToProfile(target.userId)
+        NotificationTarget.None -> Unit
     }
 }

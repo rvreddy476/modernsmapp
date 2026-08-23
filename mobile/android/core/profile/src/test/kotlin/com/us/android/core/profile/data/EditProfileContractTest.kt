@@ -113,28 +113,40 @@ class EditProfileContractTest {
      *
      * Every field is the empty string here — precisely the value a well-meaning
      * `= ""` default would take. With no declared defaults on the DTO, kotlinx
-     * has nothing to consider default and emits all seven keys. If someone adds
+     * has nothing to consider default and emits every non-null key. If someone adds
      * defaults, this body collapses towards `{}` and the test fails loudly
      * instead of the user's profile being erased quietly.
      */
     @Test
-    fun `an all-blank snapshot still serializes all seven keys`() = runTest {
+    fun `an all-blank snapshot still serializes the complete profile`() = runTest {
         enqueue(200, SAVED_PROFILE)
 
         repository.updateProfile(
             EditableProfile(
                 displayName = "",
+                firstName = "",
+                lastName = "",
+                preferredName = "",
+                pronouns = "",
                 bio = "",
+                dateOfBirth = "",
+                gender = "",
                 category = "",
                 profession = "",
                 website = "",
                 location = "",
+                statusText = "",
+                statusEmoji = "",
                 profileThemeColor = "",
+                ctaLabel = "",
+                ctaUrl = "",
+                memberSinceBadge = false,
+                timezone = "",
             ),
         )
 
         assertThat(server.takeRequest().body?.utf8()).isEqualTo(
-            """{"profile_theme_color":"","website":"","profession":"","display_name":"","location":"","category":"","bio":""}""",
+            """{"profile_theme_color":"","website":"","profession":"","display_name":"","location":"","category":"","bio":"","first_name":"","last_name":"","preferred_name":"","pronouns":"","gender":"","status_text":"","status_emoji":"","cta_label":"","cta_url":"","member_since_badge":false,"timezone":""}""",
         )
     }
 
@@ -155,7 +167,7 @@ class EditProfileContractTest {
 
         val body = server.takeRequest().body?.utf8()
         assertThat(body).isEqualTo(
-            """{"profile_theme_color":"#1A73E8","website":"","profession":"android-contract","display_name":"Android Repair","location":"Hyderabad","category":"personal","bio":"Native bearer contract verified"}""",
+            """{"profile_theme_color":"#1A73E8","website":"","profession":"android-contract","display_name":"Android Repair","location":"Hyderabad","category":"personal","bio":"Native bearer contract verified","first_name":"Android","last_name":"Repair","preferred_name":"","pronouns":"","gender":"other","dob":"1990-01-01T00:00:00Z","status_text":"","status_emoji":"","cta_label":"","cta_url":"","member_since_badge":false,"timezone":""}""",
         )
     }
 
@@ -229,17 +241,29 @@ class EditProfileContractTest {
          * `UpdateProfileRequest` is declared to reproduce this exactly.
          */
         const val CAPTURED_REQUEST =
-            """{"profile_theme_color":"#1A73E8","website":"","profession":"contract-test","display_name":"Android Contract","location":"India","category":"personal","bio":"Live Android API contract capture"}"""
+            """{"profile_theme_color":"#1A73E8","website":"","profession":"contract-test","display_name":"Android Contract","location":"India","category":"personal","bio":"Live Android API contract capture","first_name":"Android","last_name":"Contract","preferred_name":"","pronouns":"","gender":"other","dob":"1990-01-01T00:00:00Z","status_text":"Building","status_emoji":"🚧","cta_label":"Portfolio","cta_url":"https://example.com","member_since_badge":true,"timezone":"Asia/Kolkata"}"""
 
         /** The same values, as the snapshot the form would hold. */
         val CAPTURED_SNAPSHOT = EditableProfile(
             displayName = "Android Contract",
+            firstName = "Android",
+            lastName = "Contract",
+            preferredName = "",
+            pronouns = "",
             bio = "Live Android API contract capture",
+            dateOfBirth = "1990-01-01",
+            gender = "other",
             category = "personal",
             profession = "contract-test",
             website = "",
             location = "India",
+            statusText = "Building",
+            statusEmoji = "🚧",
             profileThemeColor = "#1A73E8",
+            ctaLabel = "Portfolio",
+            ctaUrl = "https://example.com",
+            memberSinceBadge = true,
+            timezone = "Asia/Kolkata",
         )
 
         // Verbatim from the 2026-08-17 repair viewer's successful response.

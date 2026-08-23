@@ -8,11 +8,7 @@ import com.us.android.core.model.PostMediaRef
 import com.us.android.core.model.PostViewerState
 import com.us.android.core.network.ErrorMapper
 import com.us.android.core.network.apiCall
-import com.us.android.core.network.noContentApiCall
-import com.us.android.feature.post.data.dto.CommentDto
 import com.us.android.feature.post.data.dto.PostDto
-import com.us.android.feature.post.data.dto.ReactionRequest
-import com.us.android.feature.post.data.dto.RepostRequest
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -25,88 +21,27 @@ class PostRepository @Inject constructor(
     suspend fun getPost(postId: String): AppResult<Post> =
         apiCall(errorMapper) { api.getPost(postId) }.map { it.toDomain() }
 
-    suspend fun addReaction(postId: String, reaction: String = LIKE): AppResult<Unit> =
-        apiCall(errorMapper) { api.addReaction(postId, ReactionRequest(reaction)) }.map { }
-
-    suspend fun removeReaction(postId: String): AppResult<Unit> =
-        apiCall(errorMapper) { api.removeReaction(postId) }.map { }
-
-    /**
-     * Saves or unsaves, by SET and CLEAR rather than by toggling.
-     *
-     * The caller states the state it wants; repetition is harmless. Returning
-     * the server's boolean rather than `Unit` is kept anyway — it costs
-     * nothing and means a future divergence between intent and outcome is
-     * visible instead of assumed.
-     */
-    suspend fun setBookmarked(postId: String, bookmarked: Boolean): AppResult<Boolean> =
-        apiCall(errorMapper) {
-            if (bookmarked) api.setBookmark(postId) else api.clearBookmark(postId)
-        }.map { it.bookmarked }
-
-    suspend fun repost(postId: String): AppResult<Unit> =
-        apiCall(errorMapper) { api.repost(postId, RepostRequest(PLAIN)) }.map { }
-
-    /** 204 with no body, so this cannot go through the envelope path. */
-    suspend fun removeRepost(postId: String): AppResult<Unit> =
-        noContentApiCall(errorMapper) { api.removeRepost(postId) }
-
-    /**
-     * The comments on a post — a single page, and there is no second one.
-     *
-     * Returns a plain `List` rather than the `Paged` that `pagedApiCall` would
-     * produce. That choice is the contract, not a simplification: the captured
-     * non-empty response carried no `meta` and therefore no `next_cursor`, so
-     * `Paged` would hand every caller a `hasMore` that is permanently false and
-     * a cursor the server has never been observed to send. A type that
-     * advertises pagination is how an unreachable "load more" gets built.
-     *
-     * If the server later starts returning a cursor here, this becomes
-     * `pagedApiCall` and the screen grows paging in one place.
-     */
-    suspend fun getComments(
-        postId: String,
-        limit: Int = COMMENT_PAGE_SIZE,
-    ): AppResult<List<Comment>> =
-        apiCall(errorMapper) { api.getComments(postId, limit) }
-            .map { comments -> comments.map { it.toDomain() } }
-
-    private companion object {
-        const val LIKE = "like"
-
-        /** The only repost type this client creates. */
-        const val PLAIN = "plain"
-
-        /**
-         * How many comments one page asks for.
-         *
-         * A client choice, not a captured one: the capture only ever sent
-         * `limit=1` and `limit=2`, so the server's ceiling and its default are
-         * both unobserved. Sized to fill a tall screen, and kept modest because
-         * an over-large request against an unknown cap is the kind of thing
-         * that comes back truncated with no cursor to recover the remainder.
-         */
-        const val COMMENT_PAGE_SIZE = 50
-    }
-}
-
-/**
- * Drops the wire fields the product has nowhere to put — `post_id`,
- * `updated_at` and `dislike_count`. See [Comment] for why each one goes.
+/*
+ * ENGAGEMENT MOVED OUT.
+ *
+ * Reactions, bookmarks, reposts and comments now live in :core:engagement.
+ * They were declared here AND needed by the feed, and the module graph forbids
+ * :feature:feed depending on :feature:post — so leaving them would have meant
+ * two Retrofit interfaces describing the same routes, free to drift apart on
+ * payload names, error handling and idempotency. One seam, one definition.
  */
-private fun CommentDto.toDomain() = Comment(
-    id = id,
-    authorId = authorId,
-    body = body,
-    likeCount = likeCount,
-    replyCount = replyCount,
-    isReply = isReply,
-    createdAt = createdAt,
-)
+}
 
 private fun PostDto.toDomain() = Post(
     id = id,
-    media = media.map { PostMediaRef(mediaId = it.mediaId, kind = it.kind) },
+    media = media.map {
+        PostMediaRef(
+            mediaId = it.mediaId,
+            kind = it.kind,
+            altText = it.altText,
+            altDecorative = it.altDecorative,
+        )
+    },
     authorId = authorId,
     text = text,
     visibility = visibility,
@@ -120,10 +55,12 @@ private fun PostDto.toDomain() = Post(
     ),
     viewer = PostViewerState(
         isBookmarked = isBookmarked,
-        // The payload carries no per-viewer reaction flag, so this starts
-        // false for everyone and only a local action changes it. See
-        // PostViewerState for why inventing the field would be worse.
-        hasReacted = false,
+        // Server-authoritative. These were previously hardcoded to false,
+        // which made an already-liked or already-reposted post render as
+        // untouched and sent the first tap in the wrong direction.
+        hasReacted = hasReacted,
+        viewerReaction = viewerReaction,
+        hasReposted = hasReposted,
     ),
     // Negatives inverted once, here, rather than at every call site.
     allowsComments = !noComments,

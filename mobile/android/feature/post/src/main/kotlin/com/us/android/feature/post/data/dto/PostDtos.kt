@@ -55,6 +55,20 @@ data class PostDto(
     @SerialName("view_count") val viewCount: Int = 0,
     @SerialName("repost_count") val repostCount: Int = 0,
     @SerialName("is_bookmarked") val isBookmarked: Boolean = false,
+    /**
+     * Per-viewer engagement, all three captured live on 2026-08-21 from
+     * `GET /v1/posts/{id}` with an engaged viewer:
+     *
+     *   "viewer_reaction":"love","has_reacted":true,"is_bookmarked":true,
+     *   "repost_count":1,"has_reposted":true
+     *
+     * `viewer_reaction` is `omitempty` on the wire — absent, not null, when
+     * there is no reaction — which is why it is nullable with a null default.
+     * `has_reacted` remains the binary the UI trusts.
+     */
+    @SerialName("has_reacted") val hasReacted: Boolean = false,
+    @SerialName("viewer_reaction") val viewerReaction: String? = null,
+    @SerialName("has_reposted") val hasReposted: Boolean = false,
     @SerialName("is_repostable") val isRepostable: Boolean = false,
 )
 
@@ -133,4 +147,13 @@ data class RepostDto(
 data class PostMediaDto(
     @SerialName("media_id") val mediaId: String = "",
     val kind: String = "",
+    /**
+     * The author's accessibility decision — Slice C, C-CLB-3.
+     *
+     * Defaulted, because posts created before this field existed do not carry
+     * it and a strict decoder would otherwise fail the whole read. The default
+     * is the honest one: no description, not marked decorative — "nobody said".
+     */
+    @SerialName("alt_text") val altText: String = "",
+    @SerialName("alt_decorative") val altDecorative: Boolean = false,
 )

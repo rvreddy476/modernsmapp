@@ -63,3 +63,12 @@ include(":feature:feed")
 include(":core:media")
 include(":core:notifications")
 include(":core:profile")
+include(":core:engagement")
+include(":core:chat")
+include(":feature:chat")
+
+// The notification inbox — Slice D. A feature module rather than screens bolted
+// onto :feature:feed: the inbox is its own destination with its own paging and
+// read-state, and putting it in the feed would make the feed depend on
+// :core:notifications for a surface it does not render.
+include(":feature:notifications")

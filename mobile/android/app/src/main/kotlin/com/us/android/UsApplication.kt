@@ -5,6 +5,7 @@ import coil3.SingletonImageLoader
 import com.us.android.core.network.di.AuthenticatedClient
 import com.us.android.core.notifications.NotificationChannelSpec
 import com.us.android.core.telemetry.Telemetry
+import com.us.android.push.PushRegistrationCoordinator
 import dagger.Lazy
 import dagger.hilt.android.HiltAndroidApp
 import okhttp3.OkHttpClient
@@ -24,6 +25,15 @@ class UsApplication : Application() {
     @Inject lateinit var telemetry: Telemetry
 
     /**
+     * Slice D: posts the FCM token once a session exists.
+     *
+     * Cheap to inject — it holds two references and starts one flow
+     * collection. The registrar itself does nothing until there is both a
+     * stored token and an authenticated session.
+     */
+    @Inject lateinit var pushRegistration: PushRegistrationCoordinator
+
+    /**
      * Lazy on purpose. Injecting the client directly would build the whole
      * OkHttp stack during Application.onCreate, on the cold-start path, for a
      * loader that may not be asked for an image until a screen renders.
@@ -41,6 +51,9 @@ class UsApplication : Application() {
         // opens still has a channel to land on — a notification posted to a
         // missing channel is dropped silently.
         NotificationChannelSpec.createAll(this)
+        // Starts a single flow collection. Without this the FCM token is
+        // stored and never sent, which is the state the app shipped in.
+        pushRegistration.start()
         // setSafe, not setUnsafe: this is a lambda, so the loader — and the
         // OkHttp client behind it — is built on first image request rather
         // than on the cold-start path.

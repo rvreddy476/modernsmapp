@@ -137,6 +137,8 @@ internal fun FeedItemDto.toDomain() = FeedItem(
         FeedMedia(
             mediaId = it.mediaId,
             kind = it.kind,
+            altText = it.altText,
+            altDecorative = it.altDecorative,
             status = it.status,
             width = it.width,
             height = it.height,

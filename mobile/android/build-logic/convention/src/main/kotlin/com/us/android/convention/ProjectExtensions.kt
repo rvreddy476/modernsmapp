@@ -124,23 +124,33 @@ enum class AppEnvironment(
     /**
      * Local development against the docker stack.
      *
-     * 127.0.0.1, NOT 10.0.2.2. The loopback works on a **physical device**
-     * via `adb reverse`, which is the common case here; 10.0.2.2 is the host
-     * alias visible only from an emulator and resolves to nothing on real
-     * hardware. The Flutter reference reached the same conclusion
-     * ([environment.dart:105]) and defaults the same way.
+     * `10.0.2.2` is the emulator's alias for the host loopback, and it is what
+     * these values use. On a PHYSICAL device that address resolves to nothing,
+     * so a device run needs the host forwarded to the handset's own loopback
+     * first:
      *
-     * Before running a dev build on a device:
      *   adb reverse tcp:8080 tcp:8080
-     *   adb reverse tcp:8093 tcp:8093
      *
-     * For an emulator, forward nothing and point these at 10.0.2.2 instead.
+     * and these URLs changed to `127.0.0.1`. Both the API and the socket ride
+     * port 8080 through the api-gateway, so one forward covers both.
+     *
+     * (This KDoc previously claimed the values WERE 127.0.0.1 while they were
+     * already 10.0.2.2 — the comment had drifted from the code it describes.)
      */
     DEV(
         flavorName = "dev",
         idSuffix = ".dev",
         apiBaseUrl = "http://10.0.2.2:8080",
-        wsBaseUrl = "ws://10.0.2.2:8093/v1/ws/connect",
+        // ORIGIN ONLY — no path. ChatSocket appends `/v1/ws/connect`, so the
+        // old value `ws://10.0.2.2:8093/v1/ws/connect` was doubled into
+        // `…/v1/ws/connect/v1/ws/connect` and could never connect. Nothing
+        // noticed while chat was unreachable from the app; `ApiConfig` now
+        // rejects a path here at construction.
+        //
+        // Port 8080, not 8093: the socket goes through the api-gateway like
+        // every other request, so it inherits the same auth and the same
+        // reverse-proxy rules rather than talking to ws-gateway directly.
+        wsBaseUrl = "ws://10.0.2.2:8080",
         // Jaeger's OTLP/HTTP receiver:
         otlpEndpoint = "http://10.0.2.2:4318",
     ),
@@ -160,7 +170,8 @@ enum class AppEnvironment(
         flavorName = "prod",
         idSuffix = null,
         apiBaseUrl = "https://cleestudio.com",
-        wsBaseUrl = "wss://cleestudio.com/v1/ws/connect",
+        // Origin only, same rule as DEV — the connect path is ChatSocket's.
+        wsBaseUrl = "wss://cleestudio.com",
     ),
 }
 
