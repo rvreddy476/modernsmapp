@@ -38,3 +38,9 @@ prompt/
 
 # Codex/agent Go build cache — tool artifact, never source.
 .codex-cache/
+
+# Swift Package Manager build output. The Android side already ignores
+# Gradle's `build/`; SPM's is dot-prefixed and slipped past that rule,
+# which put 694 generated files into a commit.
+.build/
+**/.build/
