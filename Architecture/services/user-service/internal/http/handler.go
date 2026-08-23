@@ -447,53 +447,14 @@ func (h *Handler) UpdateMyLinks(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, links, nil)
 }
 
-func (h *Handler) GetMySettings(c *gin.Context) {
-	userIDStr := c.GetHeader("X-User-Id")
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
-		return
-	}
+// GetMySettings and UpdateMySettings are RETIRED. See settings_moved.go.
+//
+// Both used to read and write this service's three-column privacy record.
+// That record is not the one anything enforces, so a client that wrote to it
+// was told 200 and protected by nothing.
+func (h *Handler) GetMySettings(c *gin.Context) { settingsMoved(c) }
 
-	s, err := h.svc.GetSettings(c.Request.Context(), userID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-	api.JSON(c.Writer, http.StatusOK, s, nil)
-}
-
-func (h *Handler) UpdateMySettings(c *gin.Context) {
-	userIDStr := c.GetHeader("X-User-Id")
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
-		return
-	}
-
-	var req store.UserSettings
-	if err := c.ShouldBindJSON(&req); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
-		return
-	}
-
-	// SR-5: public accounts only. See public_accounts_only.go — storing
-	// "private" here protected nobody, because the follow path never read it.
-	if AccountVisibilityRejected(req.AccountVisibility) {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest,
-			"UNSUPPORTED_ACCOUNT_VISIBILITY", PublicAccountsOnlyMessage,
-			map[string]any{"supported": []string{SupportedAccountVisibility}})
-		return
-	}
-	req.UserID = userID
-
-	s, err := h.svc.UpdateSettings(c.Request.Context(), &req)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-	api.JSON(c.Writer, http.StatusOK, s, nil)
-}
+func (h *Handler) UpdateMySettings(c *gin.Context) { settingsMoved(c) }
 
 // --- About ---
 

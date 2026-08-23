@@ -139,8 +139,19 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 }
 
 // permissionTTLSeconds is the freshness budget callers may cache a decision
-// for — it matches the privacy-settings cache TTL (spec §6.2).
-const permissionTTLSeconds = 60
+// for.
+//
+// It is DERIVED from the server's own privacy cache rather than written down
+// separately. It used to be a hard-coded 60 while the cache was also 60; when
+// the cache dropped to 3 seconds to close the privacy hole in B-LB-2, a
+// literal here would have kept telling every client it may hold a decision for
+// a minute — so a user who set themselves to `no_one` would still be
+// messageable by any client that believed the advertised budget, no matter how
+// fresh the server had become.
+//
+// A number a client caches against must never be larger than the number the
+// server refreshes at.
+var permissionTTLSeconds = int(service.PrivacyCacheTTL.Seconds())
 
 // CheckPermission resolves one actor→target tuple for the requested actions.
 // The actor is the X-User-Id caller; target_user_id and a comma-separated

@@ -310,10 +310,15 @@ func buildDeliveryGate(blobStore *blob.Store) (*delivery.Gate, error) {
 	if chatURL == "" {
 		return nil, fmt.Errorf("CHAT_MESSAGE_SERVICE_URL is required: protected chat media cannot be authorized")
 	}
+	profileURL := env("PROFILE_SERVICE_URL", "")
+	if profileURL == "" {
+		return nil, fmt.Errorf("PROFILE_SERVICE_URL is required: profile media privacy cannot be authorized")
+	}
 	internalKey := os.Getenv("INTERNAL_SERVICE_KEY")
 	authz := delivery.AnyContentAuthorizer{
 		delivery.NewHTTPContentAuthorizer(postURL, internalKey, nil),
 		delivery.NewHTTPChatAuthorizer(chatURL, internalKey, nil),
+		delivery.NewHTTPProfileAuthorizer(profileURL, internalKey, nil),
 	}
 
 	var signer delivery.URLSigner

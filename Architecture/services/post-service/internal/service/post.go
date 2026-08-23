@@ -47,7 +47,11 @@ var (
 	// engagement flags. Pushed into the service layer (was: handler-
 	// layer GetPost round trip) per audit H2 so engagement no longer
 	// double-fetches the post.
-	ErrLikesDisabled    = errors.New("likes are disabled on this post")
+	ErrLikesDisabled = errors.New("likes are disabled on this post")
+
+	// ErrCreateKeyReused: this actor already used this Idempotency-Key for a
+	// DIFFERENT payload (C-LB-3.5). Distinct from a replay, which succeeds.
+	ErrCreateKeyReused  = errors.New("idempotency key already used with different content")
 	ErrCommentsDisabled = errors.New("comments are disabled on this post")
 )
 
@@ -408,6 +412,28 @@ type CreatePostInput struct {
 	// from old clients. When no typed policy is present these express the
 	// creator's real intent and are honored (Codex P1-1).
 	LegacyDistribution LegacyDistributionFields
+
+	// VisibilityExplicit records that the CALLER chose this audience, as
+	// opposed to inheriting a default (Slice C, C-LB-2).
+	//
+	// The after-hours Trusted Circle rule below could not tell the two apart:
+	// it matched on the VALUE "public", which a defaulting client and a
+	// deliberate client produce identically. Its own comment says a manually
+	// selected wider audience should win, and the implementation rewrote both.
+	// A user who explicitly published to Public at 23:00 got a trusted-circle
+	// post and was told it was public.
+	//
+	// The HTTP handler sets this because `visibility` is `binding:"required"`
+	// there — every request over the wire is an explicit choice. Internal
+	// callers that genuinely default leave it false and keep the old behaviour.
+	VisibilityExplicit bool
+
+	// CreateKey and CreateFingerprint carry the durable idempotency claim
+	// (C-LB-3). Empty CreateKey disables the claim, which is what internal
+	// callers (draft publish, thread entries) do — they have their own
+	// exactly-once mechanism through PostID.
+	CreateKey         string
+	CreateFingerprint string
 }
 
 // CreatePollInput holds poll creation data.
@@ -613,6 +639,38 @@ func normalizeLegacyContentType(contentType string) string {
 }
 
 func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*postgres.Post, error) {
+	// Non-empty and length ceiling, before anything is written (C-LB-1.3).
+	// Server-side because a hostile or older client will not enforce it.
+	if err := ValidatePostContent(input.Text, len(input.MediaIDs)); err != nil {
+		return nil, err
+	}
+
+	// DURABLE IDEMPOTENCY — fast path (C-LB-3.3).
+	//
+	// An ordinary retry is answered here without redoing validation, media
+	// authority, spam scoring and event construction. This read is only an
+	// optimisation: the authority is the unique index inside
+	// CreatePostWithEventIdempotent, because another request can claim the key
+	// between this lookup and that insert.
+	if input.CreateKey != "" {
+		postID, fingerprint, found, lookupErr := s.pgStore.LookupCreateIdempotency(
+			ctx, input.AuthorID, input.CreateKey)
+		if lookupErr != nil {
+			// Fail closed: an unreadable authority must not become "assume new".
+			return nil, lookupErr
+		}
+		if found {
+			if fingerprint != input.CreateFingerprint {
+				return nil, ErrCreateKeyReused
+			}
+			existing, getErr := s.pgStore.GetPost(ctx, postID)
+			if getErr != nil {
+				return nil, fmt.Errorf("replay created post: %w", getErr)
+			}
+			return existing, nil
+		}
+	}
+
 	// Validate the distribution policy up front so a malformed/unsupported
 	// policy fails the whole request (400) before any row is written —
 	// never silently ignored (Codex P0-1).
@@ -645,12 +703,24 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	// visibility. The user can always manually pick a wider audience
 	// for a specific post — this only fires when they leave the
 	// default visibility selection alone.
-	if input.Visibility == "" || input.Visibility == "public" || input.Visibility == "followers" {
-		if s.shouldRestrictToTrustedCircle(ctx, input.AuthorID, time.Now()) {
-			input.Visibility = "trusted"
-			slog.Info("post: after-hours protection applied",
-				"author_id", input.AuthorID, "visibility", input.Visibility)
-		}
+	//
+	// Slice C / C-LB-2: "leave the default alone" is now actually detected.
+	// The condition used to match on the VALUE, which a defaulting client and
+	// a deliberate one produce identically, so an explicitly Public post made
+	// at 23:00 was silently rewritten to `trusted` while the composer, the
+	// response and the author all still said Public. Consent to a narrower
+	// audience cannot be inferred from a normal publish.
+	//
+	// A future auto-audience feature needs its own request signal and its own
+	// enforced audience contract; until then an explicit choice is honoured.
+	//
+	// The toggle fetch stays INSIDE the guard: an explicit audience must not
+	// cost a cross-service call to arrive at the same answer.
+	if audienceMayBeAutoRestricted(input.VisibilityExplicit, input.Visibility) &&
+		s.shouldRestrictToTrustedCircle(ctx, input.AuthorID, time.Now()) {
+		input.Visibility = "trusted"
+		slog.Info("post: after-hours protection applied",
+			"author_id", input.AuthorID, "visibility", input.Visibility)
 	}
 
 	postType := input.PostType
@@ -767,6 +837,27 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		p.DistributionRev = 1
 	}
 
+	// AUTHORITY BEFORE ATTACHMENT (Slice C, C-LB-4).
+	//
+	// Ordinary create-post used to look up media KIND only, and silently
+	// treated a missing row as an image. It never established that the caller
+	// uploaded the asset, that processing had finished, or that moderation had
+	// passed. Any authenticated user could therefore attach another user's
+	// media by id, or publish an asset that was still processing or had already
+	// been rejected by safety review.
+	//
+	// Thread creation already got this right (`threads.go`, Codex P1-6) using
+	// the same batched query. The ordinary path is the one people actually use.
+	//
+	// The FK added by migration 030 prevents a DANGLING row; it says nothing
+	// about who owns the media or whether it is safe to publish. Those are
+	// different questions and only this check answers them.
+	if err := s.verifyMediaAuthority(
+		ctx, input.AuthorID, input.MediaIDs, contentType, postType,
+	); err != nil {
+		return nil, err
+	}
+
 	// Attach media in a single round trip — audit H1.
 	// Previously this loop did 1 SELECT per media-id (kind), plus a
 	// second SELECT per video (duration), plus a third SELECT for
@@ -801,9 +892,20 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 				kind = "image"
 			}
 		}
+		// Slice C / C-CLB-3: the create response carries the accessibility
+		// decision the author just made. The composer navigates straight to
+		// the post it created, so without this the first render of a brand-new
+		// image post is the one render guaranteed to be unlabelled.
+		//
+		// Absent metadata leaves both zero: no description and not decorative,
+		// which is "nobody said" — the state a renderer must treat as missing
+		// rather than as an explicit decorative mark.
+		meta := mediaMeta[mediaID]
 		p.Media = append(p.Media, postgres.PostMedia{
-			MediaID: mediaID,
-			Kind:    kind,
+			MediaID:       mediaID,
+			Kind:          kind,
+			AltText:       meta.AltText,
+			AltDecorative: meta.AltDecorative,
 		})
 		if kind == "video" && dur > maxDuration {
 			maxDuration = dur
@@ -968,7 +1070,32 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		createPayload = pc
 	}
 
-	if err := s.pgStore.CreatePostWithEvent(ctx, p, createEventType, createPayload); err != nil {
+	// The post, its outbox event and the durable idempotency claim commit
+	// together or not at all (C-LB-3.2).
+	var idem *postgres.CreateIdempotency
+	if input.CreateKey != "" {
+		idem = &postgres.CreateIdempotency{
+			ActorID:     input.AuthorID,
+			ClientKey:   input.CreateKey,
+			Fingerprint: input.CreateFingerprint,
+		}
+	}
+	if err := s.pgStore.CreatePostWithEventIdempotent(
+		ctx, p, createEventType, createPayload, idem,
+	); err != nil {
+		// A concurrent request won the key. Whether it was the same intent
+		// decides between replaying its post and refusing the reuse.
+		var replay postgres.ErrCreateKeyReplay
+		if errors.As(err, &replay) {
+			existing, getErr := s.pgStore.GetPost(ctx, replay.PostID)
+			if getErr != nil {
+				return nil, fmt.Errorf("replay created post: %w", getErr)
+			}
+			return existing, nil
+		}
+		if errors.Is(err, postgres.ErrCreateKeyConflict) {
+			return nil, ErrCreateKeyReused
+		}
 		return nil, err
 	}
 
@@ -2071,7 +2198,12 @@ func (s *Service) IsSharedFromRedis(ctx context.Context, userID, postID uuid.UUI
 }
 
 // CreateCommentPG creates a comment in PostgreSQL with counter update.
-func (s *Service) CreateCommentPG(ctx context.Context, postID, authorID uuid.UUID, body string) (*postgres.Comment, error) {
+// CreateCommentPG creates a comment.
+//
+// clientKey/fingerprint make the insert durably idempotent (see
+// postgres.CreateCommentIdempotent). Both may be empty, in which case the
+// caller made no idempotency promise and none is enforced.
+func (s *Service) CreateCommentPG(ctx context.Context, postID, authorID uuid.UUID, body, clientKey, fingerprint string) (*postgres.Comment, error) {
 	if strings.TrimSpace(body) == "" {
 		return nil, fmt.Errorf("INVALID_REQUEST: comment body cannot be blank")
 	}
@@ -2092,9 +2224,16 @@ func (s *Service) CreateCommentPG(ctx context.Context, postID, authorID uuid.UUI
 		return nil, fmt.Errorf("RATE_LIMITED")
 	}
 
-	comment, err := s.pgStore.CreateComment(ctx, postID, authorID, body)
+	comment, replayed, err := s.pgStore.CreateCommentIdempotent(ctx, postID, authorID, body, clientKey, fingerprint)
 	if err != nil {
 		return nil, err
+	}
+	if replayed {
+		// The intent was already recorded. Return the original comment and do
+		// NOT re-run any of the side effects below — bumping trending scores,
+		// counters or notifications a second time is exactly the duplication
+		// this path exists to prevent.
+		return comment, nil
 	}
 
 	// Bump trending scores for hashtags in the comment body (max 5 per design spec).
@@ -2896,9 +3035,7 @@ func (s *Service) shouldRestrictToTrustedCircle(ctx context.Context, authorID uu
 	if err != nil || !on {
 		return false
 	}
-	hour := now.Hour()
-	// 22:00–05:59 inclusive (06:00 is back to normal-hours).
-	return hour >= 22 || hour < 6
+	return isAfterHours(now)
 }
 
 // fetchAfterHoursToggle reads the user's settings from user-service.
@@ -3231,4 +3368,39 @@ func (s *Service) BatchGetRepostStates(ctx context.Context, userID uuid.UUID, po
 		}
 	}
 	return result, nil
+}
+
+// audienceMayBeAutoRestricted answers whether the after-hours rule is even
+// allowed to consider this post — Slice C, C-LB-2.
+//
+// # WHY THIS IS A NAMED, PURE FUNCTION
+//
+// This is the consent boundary. The rule narrows a post's audience without
+// being asked, so the one thing that must never regress is that it cannot
+// touch an audience the author chose deliberately. The condition used to match
+// on the VALUE alone — and a defaulting client and a deliberate one send the
+// identical value — so an explicitly Public post made at 23:00 was silently
+// rewritten to `trusted` while the composer, the response and the author all
+// still said Public.
+//
+// It lived inline inside a method that makes a cross-service call and reads the
+// wall clock, so it could not be tested at all. As a pure function it is a
+// table test against a fixed clock, which is what NC-C2A mutates.
+//
+// `followers` is included because it is also a value a client can arrive at
+// without a decision. An explicit `followers` is protected by the same flag.
+func audienceMayBeAutoRestricted(visibilityExplicit bool, visibility string) bool {
+	if visibilityExplicit {
+		return false
+	}
+	return visibility == "" || visibility == "public" || visibility == "followers"
+}
+
+// isAfterHours is the 22:00–05:59 window, on whatever clock it is given.
+//
+// Separated from the toggle fetch so the window itself is testable without a
+// user-service standing behind it. 06:00 is back to normal hours.
+func isAfterHours(now time.Time) bool {
+	hour := now.Hour()
+	return hour >= 22 || hour < 6
 }

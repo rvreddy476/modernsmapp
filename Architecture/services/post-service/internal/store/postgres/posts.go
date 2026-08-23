@@ -73,10 +73,48 @@ type Post struct {
 	Poll            *PollData   `json:"poll,omitempty"`
 }
 
+// PostMedia is one attached asset as a READER sees it — Slice C, C-CLB-3.
+//
+// # WHY THE ACCESSIBILITY FIELDS ARE HERE AND NOT LOOKED UP LATER
+//
+// The composer REQUIRES an accessibility decision before an image post can be
+// created: either a description or an explicit decorative mark. That decision
+// was persisted on `media_assets` and then never delivered to anybody. Reads
+// returned `{media_id, kind}`, so no client could announce the description, and
+// a mandatory accessibility field was write-only — the work was demanded of the
+// author and thrown away before it reached the person it was for.
+//
+// Delivering it as part of the post read, rather than as a second call to
+// media-service, is what makes it usable: a renderer needs the description at
+// the moment it builds the image node, and a feed that resolved N descriptions
+// over N requests would simply drop them under load.
+//
+// AltDecorative is carried as its own field rather than inferred from an empty
+// AltText, because "" means two different things — "marked as carrying no
+// information" and "nobody said" — and only the first one may silently render
+// an unlabelled image.
 type PostMedia struct {
-	MediaID uuid.UUID `json:"media_id"`
-	Kind    string    `json:"kind"`
+	MediaID       uuid.UUID `json:"media_id"`
+	Kind          string    `json:"kind"`
+	AltText       string    `json:"alt_text"`
+	AltDecorative bool      `json:"alt_decorative"`
 }
+
+// The one projection every post-media read uses.
+//
+// Shared so the direct read and the batch hydrations cannot drift: the defect
+// this closes existed because eight separate queries each independently
+// selected `media_id, kind`, and there was no single place where "what a
+// reader gets" was written down.
+//
+// LEFT JOIN, not INNER: `post_media` has an ON DELETE RESTRICT foreign key so a
+// missing asset should be impossible, but if one ever is, the image must still
+// be returned without its description rather than disappearing from the post
+// entirely. COALESCE for the same reason.
+const (
+	postMediaColumns = `pm.media_id, pm.kind, COALESCE(ma.alt_text, ''), COALESCE(ma.alt_decorative, FALSE)`
+	postMediaSource  = `FROM post_media pm LEFT JOIN media_assets ma ON ma.id = pm.media_id`
+)
 
 // Poll types
 
@@ -186,6 +224,11 @@ type MediaMetadata struct {
 	DurationSeconds int
 	Width           int
 	Height          int
+	// Slice C / C-CLB-3. Carried so the CREATE response describes its image
+	// the same way a later read does; a client that renders the post it just
+	// made would otherwise show an unlabelled image until it refetched.
+	AltText       string
+	AltDecorative bool
 }
 
 // BatchGetMediaMetadata fetches file_type + duration_seconds + width
@@ -206,7 +249,9 @@ func (s *Store) BatchGetMediaMetadata(ctx context.Context, ids []uuid.UUID) (map
 		       file_type,
 		       COALESCE(duration_seconds, 0),
 		       COALESCE(width, 0),
-		       COALESCE(height, 0)
+		       COALESCE(height, 0),
+		       COALESCE(alt_text, ''),
+		       COALESCE(alt_decorative, FALSE)
 		FROM media_assets
 		WHERE id = ANY($1)
 	`, ids)
@@ -219,7 +264,8 @@ func (s *Store) BatchGetMediaMetadata(ctx context.Context, ids []uuid.UUID) (map
 			id   uuid.UUID
 			meta MediaMetadata
 		)
-		if err := rows.Scan(&id, &meta.Kind, &meta.DurationSeconds, &meta.Width, &meta.Height); err != nil {
+		if err := rows.Scan(&id, &meta.Kind, &meta.DurationSeconds, &meta.Width, &meta.Height,
+			&meta.AltText, &meta.AltDecorative); err != nil {
 			return nil, fmt.Errorf("batch media scan: %w", err)
 		}
 		if meta.Kind == "" {
@@ -344,11 +390,93 @@ func (s *Store) CreatePost(ctx context.Context, p *Post) error {
 // atomically through outbox"; closes the historic dual-write window on
 // create too).
 func (s *Store) CreatePostWithEvent(ctx context.Context, p *Post, eventType string, eventPayload interface{}) error {
+	return s.CreatePostWithEventIdempotent(ctx, p, eventType, eventPayload, nil)
+}
+
+// CreateIdempotency is the durable exactly-once claim for one create intent.
+//
+// See migrations/035_post_create_idempotency.sql. `Fingerprint` binds the
+// intent to its exact payload so a retry with edited text is refused instead
+// of replaying the earlier post.
+type CreateIdempotency struct {
+	ActorID     uuid.UUID
+	ClientKey   string
+	Fingerprint string
+}
+
+// ErrCreateKeyConflict means this actor already used this client key for a
+// DIFFERENT payload. The caller maps it to 409 IDEMPOTENCY_KEY_REUSED.
+var ErrCreateKeyConflict = errors.New("idempotency key reused with different content")
+
+// ErrCreateKeyReplay means this exact intent already produced a post. The
+// embedded ID is that post; the caller replays it rather than creating another.
+type ErrCreateKeyReplay struct{ PostID uuid.UUID }
+
+func (e ErrCreateKeyReplay) Error() string {
+	return "create replayed from durable idempotency: " + e.PostID.String()
+}
+
+// CreatePostWithEventIdempotent is CreatePostWithEvent plus, when `idem` is
+// non-nil, the durable idempotency claim — written in the SAME transaction as
+// the post row and the outbox event.
+//
+// THE ORDERING IS THE WHOLE POINT (C-LB-3).
+//
+// The claim cannot be recorded after the post commits. That gap — commit, then
+// record — is exactly where the Redis middleware loses exactly-once: a crash or
+// a failed write in between leaves a committed post with no record of the
+// intent that made it, and the client's retry creates a second one. Putting the
+// INSERT inside this transaction makes "the post exists" and "we know it exists"
+// the same durable fact.
+//
+// A conflicting key is detected by the primary key rather than by a prior SELECT,
+// so two concurrent first-use requests cannot both pass a check and both insert:
+// one wins the unique index and the other is told what the winner produced.
+func (s *Store) CreatePostWithEventIdempotent(
+	ctx context.Context,
+	p *Post,
+	eventType string,
+	eventPayload interface{},
+	idem *CreateIdempotency,
+) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
+
+	if idem != nil {
+		// ON CONFLICT DO NOTHING + RETURNING gives zero rows when the key is
+		// already claimed. That is the concurrency gate: the loser of a race
+		// reads the winner's row below instead of inserting a second post.
+		var claimed uuid.UUID
+		err := tx.QueryRow(ctx, `
+			INSERT INTO post_create_idempotency (actor_id, client_key, fingerprint, post_id)
+			VALUES ($1, $2, $3, $4)
+			ON CONFLICT (actor_id, client_key) DO NOTHING
+			RETURNING post_id`,
+			idem.ActorID, idem.ClientKey, idem.Fingerprint, p.ID).Scan(&claimed)
+
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Someone else owns this key. Whether it is the same intent
+			// decides between a replay and a conflict.
+			var existingID uuid.UUID
+			var existingFingerprint string
+			if err := tx.QueryRow(ctx, `
+				SELECT post_id, fingerprint FROM post_create_idempotency
+				WHERE actor_id = $1 AND client_key = $2`,
+				idem.ActorID, idem.ClientKey).Scan(&existingID, &existingFingerprint); err != nil {
+				return fmt.Errorf("read existing create claim: %w", err)
+			}
+			if existingFingerprint != idem.Fingerprint {
+				return ErrCreateKeyConflict
+			}
+			return ErrCreateKeyReplay{PostID: existingID}
+		}
+		if err != nil {
+			return fmt.Errorf("claim create idempotency: %w", err)
+		}
+	}
 
 	if err := insertPostTx(ctx, tx, p); err != nil {
 		return err
@@ -362,6 +490,28 @@ func (s *Store) CreatePostWithEvent(ctx context.Context, p *Post, eventType stri
 	}
 
 	return tx.Commit(ctx)
+}
+
+// LookupCreateIdempotency returns the post a prior identical intent produced.
+//
+// A fast pre-transaction path so an ordinary retry does not redo validation,
+// media authority checks and event construction before discovering it is a
+// replay. It is an OPTIMISATION only — the authority is the unique index inside
+// CreatePostWithEventIdempotent, because between this read and that write another
+// request may claim the key.
+func (s *Store) LookupCreateIdempotency(
+	ctx context.Context, actorID uuid.UUID, clientKey string,
+) (postID uuid.UUID, fingerprint string, found bool, err error) {
+	err = s.db.QueryRow(ctx, `
+		SELECT post_id, fingerprint FROM post_create_idempotency
+		WHERE actor_id = $1 AND client_key = $2`, actorID, clientKey).Scan(&postID, &fingerprint)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, "", false, nil
+	}
+	if err != nil {
+		return uuid.Nil, "", false, fmt.Errorf("lookup create idempotency: %w", err)
+	}
+	return postID, fingerprint, true, nil
 }
 
 // insertPostTx writes one post row (+media, +poll) inside tx. Shared by
@@ -591,14 +741,15 @@ func (s *Store) GetPost(ctx context.Context, id uuid.UUID) (*Post, error) {
 	}
 
 	// Load media
-	rows, err := s.db.Query(ctx, `SELECT media_id, kind FROM post_media WHERE post_id = $1`, id)
+	rows, err := s.db.Query(ctx,
+		`SELECT `+postMediaColumns+` `+postMediaSource+` WHERE pm.post_id = $1`, id)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var m PostMedia
-		if err := rows.Scan(&m.MediaID, &m.Kind); err != nil {
+		if err := rows.Scan(&m.MediaID, &m.Kind, &m.AltText, &m.AltDecorative); err != nil {
 			return nil, err
 		}
 		p.Media = append(p.Media, m)
@@ -667,7 +818,8 @@ func (s *Store) GetPostsByAuthor(ctx context.Context, authorID uuid.UUID, conten
 			postIDs[i] = p.ID
 		}
 		mediaRows, err := s.db.Query(ctx, `
-			SELECT post_id, media_id, kind FROM post_media WHERE post_id = ANY($1)
+			SELECT pm.post_id, `+postMediaColumns+`
+			`+postMediaSource+` WHERE pm.post_id = ANY($1)
 		`, postIDs)
 		if err == nil {
 			defer mediaRows.Close()
@@ -675,7 +827,7 @@ func (s *Store) GetPostsByAuthor(ctx context.Context, authorID uuid.UUID, conten
 			for mediaRows.Next() {
 				var postID uuid.UUID
 				var m PostMedia
-				if err := mediaRows.Scan(&postID, &m.MediaID, &m.Kind); err == nil {
+				if err := mediaRows.Scan(&postID, &m.MediaID, &m.Kind, &m.AltText, &m.AltDecorative); err == nil {
 					mediaMap[postID] = append(mediaMap[postID], m)
 				}
 			}
@@ -744,7 +896,8 @@ func (s *Store) GetRecentPosts(ctx context.Context, excludeAuthor *uuid.UUID, li
 			postIDs[i] = p.ID
 		}
 		mediaRows, err := s.db.Query(ctx, `
-			SELECT post_id, media_id, kind FROM post_media WHERE post_id = ANY($1)
+			SELECT pm.post_id, `+postMediaColumns+`
+			`+postMediaSource+` WHERE pm.post_id = ANY($1)
 		`, postIDs)
 		if err == nil {
 			defer mediaRows.Close()
@@ -752,7 +905,7 @@ func (s *Store) GetRecentPosts(ctx context.Context, excludeAuthor *uuid.UUID, li
 			for mediaRows.Next() {
 				var postID uuid.UUID
 				var m PostMedia
-				if err := mediaRows.Scan(&postID, &m.MediaID, &m.Kind); err == nil {
+				if err := mediaRows.Scan(&postID, &m.MediaID, &m.Kind, &m.AltText, &m.AltDecorative); err == nil {
 					mediaMap[postID] = append(mediaMap[postID], m)
 				}
 			}
@@ -1186,7 +1339,8 @@ func (s *Store) GetPostsByIDs(ctx context.Context, ids []uuid.UUID) ([]Post, err
 			postIDs[i] = p.ID
 		}
 		mediaRows, err := s.db.Query(ctx, `
-			SELECT post_id, media_id, kind FROM post_media WHERE post_id = ANY($1)
+			SELECT pm.post_id, `+postMediaColumns+`
+			`+postMediaSource+` WHERE pm.post_id = ANY($1)
 		`, postIDs)
 		if err == nil {
 			defer mediaRows.Close()
@@ -1194,7 +1348,7 @@ func (s *Store) GetPostsByIDs(ctx context.Context, ids []uuid.UUID) ([]Post, err
 			for mediaRows.Next() {
 				var postID uuid.UUID
 				var m PostMedia
-				if err := mediaRows.Scan(&postID, &m.MediaID, &m.Kind); err == nil {
+				if err := mediaRows.Scan(&postID, &m.MediaID, &m.Kind, &m.AltText, &m.AltDecorative); err == nil {
 					mediaMap[postID] = append(mediaMap[postID], m)
 				}
 			}

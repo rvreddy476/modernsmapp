@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/atpost/notification-service/internal/service"
+	"github.com/atpost/notification-service/internal/store/postgres"
 	"github.com/atpost/notification-service/internal/store/scylla"
 	"github.com/atpost/shared/api"
 	sharedmiddleware "github.com/atpost/shared/middleware"
@@ -542,6 +543,10 @@ func (h *Handler) UpdateNotifPreferences(c *gin.Context) {
 		current.EmailDigest = *req.EmailDigest
 	}
 	current.UserID = userID
+	if err := validateDetailedNotificationPreferences(current); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PREFERENCES", err.Error(), nil)
+		return
+	}
 
 	if err := h.svc.UpdateNotifPreferences(c.Request.Context(), current); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to update preferences", nil)
@@ -549,6 +554,30 @@ func (h *Handler) UpdateNotifPreferences(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, current, nil)
+}
+
+func validateDetailedNotificationPreferences(current *postgres.NotificationPreferences) error {
+	switch current.EmailDigest {
+	case "never", "daily", "weekly":
+	default:
+		return fmt.Errorf("email_digest must be never, daily or weekly")
+	}
+	if !current.QuietHoursEnabled {
+		return nil
+	}
+	if current.QuietHoursStart == nil || current.QuietHoursEnd == nil || current.QuietHoursTZ == nil {
+		return fmt.Errorf("quiet hours require start, end and timezone")
+	}
+	if _, err := time.Parse("15:04", *current.QuietHoursStart); err != nil {
+		return fmt.Errorf("quiet_hours_start must use HH:mm")
+	}
+	if _, err := time.Parse("15:04", *current.QuietHoursEnd); err != nil {
+		return fmt.Errorf("quiet_hours_end must use HH:mm")
+	}
+	if _, err := time.LoadLocation(*current.QuietHoursTZ); err != nil {
+		return fmt.Errorf("quiet_hours_tz must be an IANA timezone")
+	}
+	return nil
 }
 
 // streamHeartbeat is how often the SSE handler emits a `:` comment

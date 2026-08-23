@@ -63,10 +63,11 @@ type URLSigner interface {
 // HTTPContentAuthorizer asks post-service, which owns the content that
 // references an asset.
 type HTTPContentAuthorizer struct {
-	baseURL     string
-	path        string
-	internalKey string
-	client      *http.Client
+	baseURL        string
+	path           string
+	internalKey    string
+	client         *http.Client
+	allowAnonymous bool
 }
 
 func NewHTTPContentAuthorizer(baseURL, internalKey string, client *http.Client) *HTTPContentAuthorizer {
@@ -90,11 +91,21 @@ func NewHTTPChatAuthorizer(baseURL, internalKey string, client *http.Client) *HT
 	return authorizer
 }
 
+func NewHTTPProfileAuthorizer(baseURL, internalKey string, client *http.Client) *HTTPContentAuthorizer {
+	authorizer := NewHTTPContentAuthorizer(baseURL, internalKey, client)
+	authorizer.path = "/v1/profiles/internal/media-access"
+	// An anonymous viewer is a real audience category for public profile
+	// photos. Profile-service resolves it against `who_can_see_profile_photo`;
+	// post and chat authorities remain authenticated-only.
+	authorizer.allowAnonymous = true
+	return authorizer
+}
+
 func (a *HTTPContentAuthorizer) Authorize(ctx context.Context, viewerID, mediaID string) error {
 	if a == nil || a.baseURL == "" {
 		return fmt.Errorf("%w: no content authorizer configured", ErrDeliveryUnresolved)
 	}
-	if viewerID == "" {
+	if viewerID == "" && !a.allowAnonymous {
 		// No viewer means no audience decision is possible. Protected bytes
 		// have no anonymous reading.
 		return fmt.Errorf("%w: no viewer", ErrDeliveryDenied)
@@ -237,7 +248,7 @@ func (authorizers AnyContentAuthorizer) Authorize(ctx context.Context, viewerID,
 func (authorizers AnyContentAuthorizer) AuthorizeBatch(ctx context.Context, viewerID string, mediaIDs []string) (map[string]bool, error) {
 	allowed := make(map[string]bool, len(mediaIDs))
 	remaining := make(map[string]bool, len(mediaIDs))
-	evaluated := make(map[string]bool, len(mediaIDs))
+	unresolved := make(map[string]bool, len(mediaIDs))
 	for _, id := range mediaIDs {
 		remaining[id] = true
 	}
@@ -246,6 +257,9 @@ func (authorizers AnyContentAuthorizer) AuthorizeBatch(ctx context.Context, view
 			break
 		}
 		if authorizer == nil {
+			for id := range remaining {
+				unresolved[id] = true
+			}
 			continue
 		}
 		ids := make([]string, 0, len(remaining))
@@ -256,15 +270,18 @@ func (authorizers AnyContentAuthorizer) AuthorizeBatch(ctx context.Context, view
 			batch, err := batcher.AuthorizeBatch(ctx, viewerID, ids)
 			if err == nil {
 				for id, yes := range batch {
-					evaluated[id] = true
 					if yes && remaining[id] {
 						allowed[id] = true
 						delete(remaining, id)
+						delete(unresolved, id)
 					}
 				}
 				continue
 			}
 			if !errors.Is(err, errBatchUnsupported) {
+				for _, id := range ids {
+					unresolved[id] = true
+				}
 				continue
 			}
 		}
@@ -272,19 +289,20 @@ func (authorizers AnyContentAuthorizer) AuthorizeBatch(ctx context.Context, view
 			err := authorizer.Authorize(ctx, viewerID, id)
 			switch {
 			case err == nil:
-				evaluated[id] = true
 				allowed[id] = true
 				delete(remaining, id)
+				delete(unresolved, id)
 			case errors.Is(err, ErrDeliveryDenied):
-				evaluated[id] = true
+				// Resolved denial by this authorizer; does not clear unresolved from other authorities.
+			default:
+				unresolved[id] = true
 			}
 		}
 	}
-	// Any remaining item that was never evaluated by any authorizer (i.e. every
-	// authorizer that could have owned it had an outage / unresolved error) must
-	// fail the batch as unresolved.
+	// Any asset that remains not allowed and encountered an unresolved error on
+	// a candidate authorizer must fail the batch as unresolved.
 	for id := range remaining {
-		if !evaluated[id] {
+		if unresolved[id] {
 			return nil, ErrDeliveryUnresolved
 		}
 	}

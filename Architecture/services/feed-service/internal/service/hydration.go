@@ -86,16 +86,29 @@ type Author struct {
 // HydratedMedia preserves the existing media_id/kind contract and adds the
 // authorized delivery DTO inline. Android can render a page without issuing a
 // request per row and can batch-refresh the URLs after ExpiresAt.
+//
+// AltText/AltDecorative are Slice C / C-CLB-3. They arrive already populated
+// from post-service's batch response and are NOT overwritten by the delivery
+// merge below, which only fills in the authorized-URL fields. A feed that
+// dropped them would leave every image in the main scrolling surface
+// unlabelled — the single place where it matters most.
+//
+// NOT omitempty, matching post-service. Omitting a false `alt_decorative`
+// would make the feed and the post read two different contracts for the same
+// image, and "field absent" is a third state neither renderer should have to
+// reason about.
 type HydratedMedia struct {
-	MediaID   uuid.UUID         `json:"media_id"`
-	Kind      string            `json:"kind"`
-	Status    string            `json:"status,omitempty"`
-	Width     *int              `json:"width,omitempty"`
-	Height    *int              `json:"height,omitempty"`
-	Blurhash  *string           `json:"blurhash,omitempty"`
-	Variants  map[string]string `json:"variants,omitempty"`
-	HLSURL    string            `json:"hls_url,omitempty"`
-	ExpiresAt *time.Time        `json:"expires_at,omitempty"`
+	MediaID       uuid.UUID         `json:"media_id"`
+	Kind          string            `json:"kind"`
+	AltText       string            `json:"alt_text"`
+	AltDecorative bool              `json:"alt_decorative"`
+	Status        string            `json:"status,omitempty"`
+	Width         *int              `json:"width,omitempty"`
+	Height        *int              `json:"height,omitempty"`
+	Blurhash      *string           `json:"blurhash,omitempty"`
+	Variants      map[string]string `json:"variants,omitempty"`
+	HLSURL        string            `json:"hls_url,omitempty"`
+	ExpiresAt     *time.Time        `json:"expires_at,omitempty"`
 }
 
 // HydratePosts calls post-service's batch endpoint to enrich timeline entries

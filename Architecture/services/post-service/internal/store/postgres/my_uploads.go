@@ -54,7 +54,8 @@ func (s *Store) GetUploadsByContentTypes(ctx context.Context, authorID uuid.UUID
 			postIDs[i] = p.ID
 		}
 		mediaRows, err := s.db.Query(ctx, `
-			SELECT post_id, media_id, kind FROM post_media WHERE post_id = ANY($1)
+			SELECT pm.post_id, `+postMediaColumns+`
+			`+postMediaSource+` WHERE pm.post_id = ANY($1)
 		`, postIDs)
 		if err == nil {
 			defer mediaRows.Close()
@@ -62,7 +63,7 @@ func (s *Store) GetUploadsByContentTypes(ctx context.Context, authorID uuid.UUID
 			for mediaRows.Next() {
 				var postID uuid.UUID
 				var m PostMedia
-				if err := mediaRows.Scan(&postID, &m.MediaID, &m.Kind); err == nil {
+				if err := mediaRows.Scan(&postID, &m.MediaID, &m.Kind, &m.AltText, &m.AltDecorative); err == nil {
 					mediaMap[postID] = append(mediaMap[postID], m)
 				}
 			}

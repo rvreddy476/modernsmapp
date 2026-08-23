@@ -236,7 +236,7 @@ func ValidateUpload(fileType, mediaSubtype, mimeType string, fileSizeBytes int64
 	return nil
 }
 
-func (s *Service) InitUpload(ctx context.Context, userID uuid.UUID, fileType, mediaSubtype, mimeType string, fileSizeBytes int64, altText string, decorative bool) (*InitUploadResponse, error) {
+func (s *Service) InitUpload(ctx context.Context, userID uuid.UUID, fileType, mediaSubtype, mimeType string, fileSizeBytes int64, altText string, decorative bool, uploadPurpose string) (*InitUploadResponse, error) {
 	// Absolute size cap (applies to all file types)
 	if err := ValidateUploadSize(fileSizeBytes); err != nil {
 		return nil, err
@@ -282,7 +282,10 @@ func (s *Service) InitUpload(ctx context.Context, userID uuid.UUID, fileType, me
 		ProcessingStatus: "pending_upload",
 		AltText:          altText,
 		AltDecorative:    decorative,
-		CreatedAt:        time.Now(),
+		// Only the value the caller named. An unknown or absent purpose stays
+		// NULL, and a NULL lease is never a confirmed-reclamation candidate.
+		UploadPurpose: normaliseUploadPurpose(uploadPurpose),
+		CreatedAt:     time.Now(),
 	}
 
 	if err := s.pgStore.CreateMedia(ctx, media); err != nil {
@@ -552,14 +555,14 @@ func (s *Service) GetMedia(ctx context.Context, mediaID uuid.UUID) (*postgres.Me
 
 // MediaURLResponse is the response for serving media URLs.
 type MediaURLResponse struct {
-	MediaID   uuid.UUID         `json:"media_id"`
-	FileType  string            `json:"kind"`
-	Status    string            `json:"status"`
-	Width     *int              `json:"width,omitempty"`
-	Height    *int              `json:"height,omitempty"`
-	Blurhash  *string           `json:"blurhash,omitempty"`
-	Variants  map[string]string `json:"variants,omitempty"`
-	HLSURL    string            `json:"hls_url,omitempty"`
+	MediaID  uuid.UUID         `json:"media_id"`
+	FileType string            `json:"kind"`
+	Status   string            `json:"status"`
+	Width    *int              `json:"width,omitempty"`
+	Height   *int              `json:"height,omitempty"`
+	Blurhash *string           `json:"blurhash,omitempty"`
+	Variants map[string]string `json:"variants,omitempty"`
+	HLSURL   string            `json:"hls_url,omitempty"`
 	// ExpiresAt tells native clients when the bounded delivery capability
 	// must be refreshed. Public variants may be stable, but using the same
 	// refresh boundary keeps one DTO valid when visibility later becomes
@@ -887,6 +890,12 @@ func (s *Service) DeleteOrphanMedia(ctx context.Context, mediaID uuid.UUID) erro
 		return nil
 	case errors.Is(err, postgres.ErrMediaTooYoung):
 		return fmt.Errorf("%w: asset is younger than the reclaim window", ErrMediaNotOrphaned)
+	case errors.Is(err, postgres.ErrMediaConfirmed):
+		// Slice C / C-CLB-1. Confirmed assets are not reclaimable while
+		// non-FK live references exist, so this is a policy refusal, not a
+		// fault: the sweeper logs it and moves on, exactly as it does for an
+		// asset that gained a reference mid-scan.
+		return fmt.Errorf("%w: confirmed assets are not reclaimable", ErrMediaNotOrphaned)
 	case errors.Is(err, postgres.ErrMediaStillReferenced):
 		return fmt.Errorf("%w: still attached to a post or surviving draft", ErrMediaNotOrphaned)
 	case err != nil:
@@ -975,14 +984,61 @@ func (s *Service) DeleteMedia(ctx context.Context, mediaID uuid.UUID, userID uui
 // ─── Status ────────────────────────────────────────────────────────
 
 // MediaStatusResponse is the response for the status endpoint.
+// MediaStatusResponse is what a CLIENT polls while it waits to attach an asset.
+//
+// ModerationStatus is part of the answer, not an extra.
+//
+// An asset is attachable only at EXACT `processing_status=ready` AND
+// `moderation_status=passed` — post-service enforces both. This response
+// carried only the processing half, so a client polling here could never learn
+// the safety verdict: it either waited forever for a field that is never sent,
+// or attached on `ready` alone and had the create refused with an error the
+// person could not act on. Found by the C-LB-8 live run; every unit test passed
+// because their fakes supplied the field this endpoint does not.
 type MediaStatusResponse struct {
 	MediaID          uuid.UUID                 `json:"media_id"`
 	ProcessingStatus string                    `json:"processing_status"`
+	ModerationStatus string                    `json:"moderation_status"`
 	FileType         string                    `json:"file_type"`
 	Width            *int                      `json:"width,omitempty"`
 	Height           *int                      `json:"height,omitempty"`
 	DurationSeconds  *int                      `json:"duration_seconds,omitempty"`
 	TranscodingJobs  []postgres.TranscodingJob `json:"transcoding_jobs,omitempty"`
+}
+
+// ProfileMediaAuthority is the server-to-server answer used before an
+// identity profile is allowed to reference an asset.  A client-side upload
+// check is not an authority: a caller can bypass the Android application and
+// submit any UUID to profile-service.  Keeping this decision in media-service
+// means ownership, processing and moderation are evaluated where the asset
+// record lives.
+type ProfileMediaAuthority struct {
+	MediaID    uuid.UUID `json:"media_id"`
+	OwnerID    uuid.UUID `json:"owner_id"`
+	Subtype    string    `json:"media_subtype"`
+	Attachable bool      `json:"attachable"`
+}
+
+// CheckProfileMediaAuthority returns an attachable verdict for an avatar or
+// cover.  Unknown subtypes fail closed and no storage coordinates are exposed.
+func (s *Service) CheckProfileMediaAuthority(ctx context.Context, mediaID, ownerID uuid.UUID, subtype string) (*ProfileMediaAuthority, error) {
+	if subtype != "avatar" && subtype != "cover" {
+		return nil, fmt.Errorf("unsupported profile media subtype %q", subtype)
+	}
+	media, err := s.pgStore.GetMedia(ctx, mediaID)
+	if err != nil {
+		return nil, err
+	}
+	return &ProfileMediaAuthority{
+		MediaID: media.ID,
+		OwnerID: media.UploaderID,
+		Subtype: media.MediaSubtype,
+		Attachable: media.UploaderID == ownerID &&
+			media.FileType == "image" &&
+			media.MediaSubtype == subtype &&
+			media.ProcessingStatus == "ready" &&
+			media.ModerationStatus == "passed",
+	}, nil
 }
 
 // GetMediaStatus returns the processing status and transcoding job details.
@@ -995,6 +1051,7 @@ func (s *Service) GetMediaStatus(ctx context.Context, mediaID uuid.UUID) (*Media
 	resp := &MediaStatusResponse{
 		MediaID:          media.ID,
 		ProcessingStatus: media.ProcessingStatus,
+		ModerationStatus: media.ModerationStatus,
 		FileType:         media.FileType,
 		Width:            media.Width,
 		Height:           media.Height,
@@ -1102,4 +1159,17 @@ func (s *Service) GetPresignedUploadURL(ctx context.Context, userID uuid.UUID, f
 		ObjectKey: objectKey,
 		ExpiresAt: time.Now().Add(expiry),
 	}, nil
+}
+
+// normaliseUploadPurpose accepts only leases this service recognises.
+//
+// An allowlist, not passthrough: `upload_purpose` is a client-supplied string
+// that decides whether an asset can later be reclaimed, so an arbitrary value
+// must not become a lease. Anything unrecognised is stored as empty, which the
+// insert maps to NULL — the permanently-protected state.
+func normaliseUploadPurpose(purpose string) string {
+	if purpose == postgres.UploadPurposeComposer {
+		return purpose
+	}
+	return ""
 }

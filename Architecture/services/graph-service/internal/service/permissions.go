@@ -59,9 +59,31 @@ func strictPrivacyDefaults() permission.Privacy {
 	}
 }
 
-// fetchPrivacy returns the target's privacy settings, cached in Redis for 60s
-// (spec §6.2 freshness budget). Any fetch failure falls back to strict
-// defaults rather than failing the permission check.
+// PrivacyCacheTTL is how stale a cached privacy record may be.
+//
+// It was 60 seconds, matching the spec's §6.2 freshness budget, and there is
+// no settings-invalidation consumer here — nothing tells graph-service that a
+// user just changed who_can_message. Sixty seconds of that is a full minute in
+// which someone who has just set themselves to `no_one` still receives direct
+// messages, and a minute in which someone who has just opened up is still told
+// they cannot be reached. The first of those is a privacy failure, not a
+// staleness inconvenience.
+//
+// Three seconds is the freshness bound this service now documents and the
+// closure proof measures against. It costs one extra internal GET per target
+// per three seconds under load, which is a cache on a single-row read behind
+// the internal key — cheap next to enforcing a privacy setting the user
+// believes is already in effect.
+//
+// If this becomes a load problem, the answer is an invalidation channel keyed
+// on the settings write, not a longer TTL: the TTL is the fallback for when
+// invalidation is missed, and its length is the size of the privacy hole.
+const PrivacyCacheTTL = 3 * time.Second
+
+// fetchPrivacy returns the target's privacy settings, cached in Redis for
+// [PrivacyCacheTTL]. Any fetch failure falls back to strict defaults rather
+// than failing the permission check — a dependency outage must not open
+// messaging up.
 func (s *Service) fetchPrivacy(ctx context.Context, userID uuid.UUID) permission.Privacy {
 	cacheKey := "privacy:" + userID.String()
 	if val, err := s.rdb.Get(ctx, cacheKey).Result(); err == nil {
@@ -82,7 +104,7 @@ func (s *Service) fetchPrivacy(ctx context.Context, userID uuid.UUID) permission
 	}
 
 	if data, err := json.Marshal(p); err == nil {
-		s.rdb.Set(ctx, cacheKey, data, 60*time.Second)
+		s.rdb.Set(ctx, cacheKey, data, PrivacyCacheTTL)
 	}
 	return p
 }

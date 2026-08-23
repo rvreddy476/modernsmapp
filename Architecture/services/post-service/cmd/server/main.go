@@ -593,6 +593,21 @@ func ensureSchema(ctx context.Context, db *pgxpool.Pool) {
 			created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_app_feedback_user ON app_feedback (user_id, created_at DESC)`,
+
+		// Durable comment idempotency. See migrations/034_comment_idempotency.sql
+		// — duplicated here for the same schema-drift reason as app_feedback.
+		// Redis is a concurrency gate; this table is the exactly-once authority,
+		// because the comment commits before any Redis result is written.
+		`CREATE TABLE IF NOT EXISTS comment_idempotency (
+			actor_id    UUID        NOT NULL,
+			post_id     UUID        NOT NULL,
+			client_key  TEXT        NOT NULL,
+			fingerprint TEXT        NOT NULL,
+			comment_id  UUID        NOT NULL,
+			created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+			PRIMARY KEY (actor_id, post_id, client_key)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_comment_idempotency_age ON comment_idempotency (created_at)`,
 	}
 
 	for _, stmt := range ddl {

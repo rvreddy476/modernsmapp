@@ -265,6 +265,14 @@ services:
       context: ..
       dockerfile: services/api-gateway/Dockerfile
     environment:
+      # Per-environment capacity tuning. Unset means the production values.
+      #
+      # Added during C-CLB-PROOF-1 on the assumption that the gateway limiter
+      # was rejecting most of a 50-concurrent same-key burst. It was not — 50
+      # fits under 100/60; post-service's MAX_POSTS_PER_HOUR was the blocker.
+      # Leave these UNSET in production until bounds and alerting exist.
+      RATE_LIMIT_IP_PER_SEC: "${RATE_LIMIT_IP_PER_SEC:-100}"
+      RATE_LIMIT_USER_PER_SEC: "${RATE_LIMIT_USER_PER_SEC:-60}"
       HTTP_PORT: "8080"
       JWT_SECRET: ${JWT_SECRET:-local_dev_jwt_change_me}
       # RS256 (optional): set JWT_PUBLIC_KEY_PEM to also verify RS256 tokens
@@ -275,6 +283,17 @@ services:
       CORS_ORIGINS: "${CORS_ORIGINS:-http://localhost:3000}"
       AUTH_SERVICE_URL: http://identity-auth:8081
       CALL_SERVICE_URL: http://call-service:8097
+      # The gateway's built-in default is http://ws-gateway:8093, but the
+      # compose service is named chat-ws-gateway, so /v1/ws resolved to a
+      # non-existent host and every socket upgrade returned 502. Chat sockets
+      # are routed here, never to notification-service.
+      WS_GATEWAY_URL: http://chat-ws-gateway:8093
+      # Privacy settings only. `/v1/users/me/settings` is routed to the
+      # IDENTITY user-service because that is the service that owns
+      # who_can_message and the one graph-service reads when it decides
+      # whether a direct message is allowed. Everything else under /v1/users
+      # still goes to the Architecture user-service on the next line.
+      IDENTITY_USER_SERVICE_URL: http://identity-user:8110
       USER_SERVICE_URL: http://user-service:8082
       GRAPH_SERVICE_URL: http://graph-service:8083
       POST_SERVICE_URL: http://post-service:8084
@@ -470,6 +489,13 @@ services:
       # batch it depends on was silently returning nothing. The service logged
       # the cause at startup as an ERROR and nothing consumed it until now.
       GRAPH_SERVICE_URL: http://graph-service:8083
+      # Avatar/cover writes fail closed unless media-service proves that the
+      # asset is owned by the profile owner, ready, approved and the right
+      # subtype.
+      MEDIA_SERVICE_URL: http://media-service:8087
+      # Anonymous profile-photo policy is read directly; authenticated viewers
+      # are resolved by graph-service's permission matrix.
+      USER_SERVICE_URL: http://identity-user:8110
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       # No SCHEMA_MIGRATIONS_* knobs here, deliberately. As of 2026-08-16 this
       # service does not migrate its own database: it applies its own additive
@@ -613,6 +639,11 @@ services:
       context: ..
       dockerfile: services/post-service/Dockerfile
     environment:
+      # C-CLB-PROOF-1: the 50-way same-key durability proof needs the
+      # frequency cap out of the way so requests reach the idempotency gate.
+      # Unset means the production values (20/hour, 50/day).
+      MAX_POSTS_PER_HOUR: "${MAX_POSTS_PER_HOUR:-20}"
+      MAX_POSTS_PER_DAY: "${MAX_POSTS_PER_DAY:-50}"
       <<: [*redis_client_env, *kafka_client_env]
       HTTP_PORT: "8084"
       POSTGRES_DSN: *app_postgres_dsn
@@ -746,6 +777,7 @@ services:
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       POST_SERVICE_URL: http://post-service:8084
       CHAT_MESSAGE_SERVICE_URL: http://chat-message-service:8092
+      PROFILE_SERVICE_URL: http://identity-profile:8098
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
       REDIS_ADDR: redis:6379
     ports:
@@ -850,12 +882,19 @@ services:
     ports:
       - "8088:8088"
     volumes:
-      # Mount the Firebase service-account JSON as a read-only file.
-      # main.go's FCM wiring detects path-shaped FCM_SERVICE_ACCOUNT_KEY
-      # values and reads the file at startup. The host file is in
-      # .secrets/ which is gitignored. Missing on the host = container
-      # mount fails to start, which is the safe behavior.
-      - ../../.secrets/firebase-cleestudio-2b06d.json:/run/secrets/firebase-key.json:ro
+      # The Firebase service-account JSON, read-only.
+      #
+      # main.go reads this only when FCM_SERVICE_ACCOUNT_KEY holds a path;
+      # that variable defaults to blank, so dev runs with push DISABLED and
+      # the file is merely present.
+      #
+      # The filename must match a real file. It previously named
+      # `firebase-cleestudio-2b06d.json`, which does not exist here — Docker
+      # then silently created an empty DIRECTORY at that path and the service
+      # never started at all. That is why no notification has ever been
+      # delivered: the whole service was absent from the running stack while
+      # the gateway happily answered /v1/notifications with 502.
+      - ../../.secrets/fcm-service-account.json:/run/secrets/firebase-key.json:ro
     depends_on:
       postgres:
         condition: service_healthy

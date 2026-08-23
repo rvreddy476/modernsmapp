@@ -4,6 +4,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"os"
 	"sync"
 	"testing"
@@ -182,16 +183,32 @@ func TestMediaForeignKeysValidationState(t *testing.T) {
 	}
 }
 
-// seedMedia inserts an asset with a chosen age.
+// seedMedia inserts a RECLAIMABLE asset with a chosen age.
+//
+// `pending_upload`, not `ready` — Slice C, C-CLB-1. These tests are about the
+// reference checks and the row lock, and a confirmed asset is now refused
+// before either is reached, so a `ready` fixture would only ever prove the
+// confirmed refusal and would tell us nothing about what it is here to test.
+//
+// TestOrphanDelete_ConfirmedMediaRefused covers the confirmed case directly.
 func seedMedia(t *testing.T, pool *pgxpool.Pool, age time.Duration) uuid.UUID {
+	return seedMediaWithStatus(t, pool, age, ProcessingStatusPendingUpload)
+}
+
+func seedMediaWithStatus(
+	t *testing.T,
+	pool *pgxpool.Pool,
+	age time.Duration,
+	processingStatus string,
+) uuid.UUID {
 	t.Helper()
 	id := uuid.New()
 	created := time.Now().Add(-age)
 	_, err := pool.Exec(context.Background(), `
 		INSERT INTO media_assets (id, uploader_id, file_type, media_subtype, mime_type,
 		    file_size_bytes, storage_bucket, storage_key, processing_status, created_at, updated_at)
-		VALUES ($1, $2, 'image', 'general', 'image/jpeg', 100, 'media', $3, 'ready', $4, $4)`,
-		id, uuid.New(), "test/"+id.String(), created)
+		VALUES ($1, $2, 'image', 'general', 'image/jpeg', 100, 'media', $3, $5, $4, $4)`,
+		id, uuid.New(), "test/"+id.String(), created, processingStatus)
 	if err != nil {
 		t.Fatalf("seed media: %v", err)
 	}
@@ -199,6 +216,37 @@ func seedMedia(t *testing.T, pool *pgxpool.Pool, age time.Duration) uuid.UUID {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM media_assets WHERE id = $1`, id)
 	})
 	return id
+}
+
+// A confirmed asset is refused outright — Slice C, C-CLB-1.
+//
+// Checked BEFORE the age window and before the reference scan, because the
+// reason has nothing to do with either: a finished asset can be claimed by
+// writers that take no lock on the media row, so nothing inside this
+// transaction can see the claim coming. See ErrMediaConfirmed.
+func TestOrphanDelete_ConfirmedMediaRefused(t *testing.T) {
+	pool := testPool(t)
+	store := New(pool)
+
+	for _, status := range []string{"uploaded", "processing", "ready", "failed"} {
+		t.Run(status, func(t *testing.T) {
+			id := seedMediaWithStatus(t, pool, 48*time.Hour, status)
+
+			_, err := store.DeleteOrphanMediaAtomic(context.Background(), id, 24*time.Hour)
+
+			if !errors.Is(err, ErrMediaConfirmed) {
+				t.Fatalf("a %q asset must be refused with ErrMediaConfirmed, got %v", status, err)
+			}
+			var remaining int
+			if err := pool.QueryRow(context.Background(),
+				`SELECT count(*) FROM media_assets WHERE id = $1`, id).Scan(&remaining); err != nil {
+				t.Fatalf("count: %v", err)
+			}
+			if remaining != 1 {
+				t.Error("the asset was deleted despite the refusal")
+			}
+		})
+	}
 }
 
 func TestOrphanDelete_YoungMediaRefused(t *testing.T) {

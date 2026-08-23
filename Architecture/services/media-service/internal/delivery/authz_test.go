@@ -58,6 +58,27 @@ func TestAnyContentAuthorizerPreservesUnresolvedWhenNobodyAllows(t *testing.T) {
 	}
 }
 
+func TestProfileAuthorizerSendsAnonymousViewerToPrivacyAuthority(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		if r.URL.Path != "/v1/profiles/internal/media-access" {
+			t.Errorf("path=%s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"allowed":true}`))
+	}))
+	defer server.Close()
+
+	authorizer := NewHTTPProfileAuthorizer(server.URL, "internal", server.Client())
+	if err := authorizer.Authorize(context.Background(), "", "media"); err != nil {
+		t.Fatalf("anonymous public-profile photo was denied: %v", err)
+	}
+	if !called {
+		t.Fatal("profile privacy authority was bypassed")
+	}
+}
+
 type fakeAuthz struct {
 	allow bool
 	err   error
@@ -364,13 +385,27 @@ func TestURLsForAssetsFailsWholePageWhenAuthorizationUnresolved(t *testing.T) {
 	}
 }
 
-func TestAnyContentAuthorizerBatchDistinguishesDeniedFromUnresolved(t *testing.T) {
+func TestAnyContentAuthorizerBatchPreservesUnresolvedWhenCandidateAuthorityFails(t *testing.T) {
 	// Post authorizer resolves m1=true, m2=false.
 	// Chat authorizer is unreachable (ErrDeliveryUnresolved).
-	// Because post authorizer evaluated both, m2 is a resolved denial, not an outage.
+	// Because chat might own m2 and chat is unresolved, m2 cannot be treated as a resolved denial.
 	authorizers := AnyContentAuthorizer{
 		&batchAuthz{allowed: map[string]bool{"m1": true, "m2": false}},
 		fakeAuthz{err: ErrDeliveryUnresolved},
+	}
+	_, err := authorizers.AuthorizeBatch(context.Background(), "viewer", []string{"m1", "m2"})
+	if !errors.Is(err, ErrDeliveryUnresolved) {
+		t.Fatalf("got %v, want ErrDeliveryUnresolved", err)
+	}
+}
+
+func TestAnyContentAuthorizerBatchDeniesWhenAllCandidateAuthoritiesResolveDenial(t *testing.T) {
+	// Post authorizer resolves m1=true, m2=false.
+	// Chat authorizer resolves m1=false, m2=false (allow=false).
+	// Both authorities resolved; m2 is a truthful resolved denial.
+	authorizers := AnyContentAuthorizer{
+		&batchAuthz{allowed: map[string]bool{"m1": true, "m2": false}},
+		fakeAuthz{allow: false},
 	}
 	allowed, err := authorizers.AuthorizeBatch(context.Background(), "viewer", []string{"m1", "m2"})
 	if err != nil {

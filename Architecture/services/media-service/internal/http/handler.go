@@ -84,6 +84,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, optionalAuthMW gin.Handl
 		{
 			internal.DELETE("/orphan/:mediaId", h.DeleteOrphanMedia)
 			internal.POST("/chat-attachment/reserve", h.ReserveChatAttachment)
+			internal.GET("/:mediaId/profile-authority", h.GetProfileMediaAuthority)
 		}
 	} else {
 		slog.Warn("media-service: INTERNAL_SERVICE_KEY not set — the internal orphan-delete route is NOT registered; draft-media reclamation is disabled")
@@ -132,6 +133,12 @@ type InitUploadRequest struct {
 	AltText       string `json:"alt_text"`
 	// Decorative marks the upload as carrying no information (P1-7).
 	Decorative bool `json:"decorative"`
+	// UploadPurpose is an optional lease naming the surface that created this
+	// upload (Slice C, C-P0-4). Only `composer` is meaningful today, and only
+	// leased assets are ever candidates for CONFIRMED-media reclamation. An
+	// omitted value leaves the column NULL, which is what keeps every existing
+	// asset and every other surface permanently out of the sweep.
+	UploadPurpose string `json:"upload_purpose"`
 }
 
 func (h *Handler) InitUpload(c *gin.Context) {
@@ -153,7 +160,7 @@ func (h *Handler) InitUpload(c *gin.Context) {
 		subtype = "general"
 	}
 
-	res, err := h.svc.InitUpload(c.Request.Context(), userID, req.FileType, subtype, req.MimeType, req.FileSizeBytes, req.AltText, req.Decorative)
+	res, err := h.svc.InitUpload(c.Request.Context(), userID, req.FileType, subtype, req.MimeType, req.FileSizeBytes, req.AltText, req.Decorative, req.UploadPurpose)
 	if err != nil {
 		msg := err.Error()
 		switch {
@@ -344,6 +351,33 @@ func (h *Handler) GetMediaStatus(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, res, nil)
+}
+
+// GetProfileMediaAuthority is an internal, fail-closed attachment check.  The
+// internal route-group middleware authenticates the caller; owner_id is
+// still explicit because profile-service is checking a proposed reference on
+// behalf of that owner, not asking about the gateway's own identity.
+func (h *Handler) GetProfileMediaAuthority(c *gin.Context) {
+	mediaID, err := uuid.Parse(c.Param("mediaId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid media ID", nil)
+		return
+	}
+	ownerID, err := uuid.Parse(c.Query("owner_id"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid owner_id", nil)
+		return
+	}
+	result, err := h.svc.CheckProfileMediaAuthority(c.Request.Context(), mediaID, ownerID, c.Query("subtype"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found", nil)
+		return
+	}
+	if !result.Attachable {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "MEDIA_NOT_ATTACHABLE", "Media is not an owned, ready and approved profile image", nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, result, nil)
 }
 
 // ServeMedia redirects to the presigned URL of the original file.

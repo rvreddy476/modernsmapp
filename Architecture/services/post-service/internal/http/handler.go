@@ -345,6 +345,50 @@ type CreatePostRequest struct {
 
 // writeDistributionError maps distribution policy errors to their typed
 // HTTP responses; returns false when err is not a distribution error.
+// maxCreatePostBodyBytes caps a create-post body before JSON binding.
+//
+// 256 KiB. The largest legal Slice C payload is ~20 KiB (5,000 code points at
+// up to 4 bytes each, plus one media UUID, the distribution object and field
+// names), so this leaves an order of magnitude of headroom for the richer
+// fields the shared route still serves, while staying small enough that a flood
+// of over-limit requests cannot pressure memory.
+//
+// Deliberately NOT the middleware's 8 KiB comment cap, which is sized for a
+// comment body and would reject a legitimate long post.
+const maxCreatePostBodyBytes = 256 * 1024
+
+// writeCreateGuardError maps the Slice C create guards onto stable HTTP codes.
+//
+// Every one of these is a 4xx: they are all statements about the request, and
+// returning 500 for a rejected attachment would tell the client to retry
+// something that can never succeed (C-LB-1.3, C-LB-4.2).
+func writeCreateGuardError(c *gin.Context, err error) bool {
+	ctx := c.Request.Context()
+	switch {
+	case errors.Is(err, service.ErrEmptyPost):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "EMPTY_POST", err.Error(), nil)
+	case errors.Is(err, service.ErrTextTooLong):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "TEXT_TOO_LONG", err.Error(), nil)
+	case errors.Is(err, service.ErrCreateKeyReused):
+		// 409, not 400: the request is well-formed, it conflicts with an
+		// earlier one. The client must mint a new key, not fix a field.
+		api.ErrorWithContext(ctx, c.Writer, http.StatusConflict, "IDEMPOTENCY_KEY_REUSED", err.Error(), nil)
+	case errors.Is(err, service.ErrMediaNotFound):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "MEDIA_NOT_FOUND", err.Error(), nil)
+	case errors.Is(err, service.ErrMediaNotOwned):
+		// 403 and a message that discloses nothing about the asset.
+		api.ErrorWithContext(ctx, c.Writer, http.StatusForbidden, "MEDIA_NOT_OWNED",
+			"You cannot attach this media", nil)
+	case errors.Is(err, service.ErrMediaNotReady):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "MEDIA_NOT_READY", err.Error(), nil)
+	case errors.Is(err, service.ErrMediaTypeMismatch):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "MEDIA_TYPE_MISMATCH", err.Error(), nil)
+	default:
+		return false
+	}
+	return true
+}
+
 func writeDistributionError(c *gin.Context, err error) bool {
 	switch {
 	case errors.Is(err, service.ErrUnsupportedDistribution):
@@ -374,8 +418,46 @@ func (h *Handler) CreatePost(c *gin.Context) {
 		return
 	}
 
+	// DURABLE CREATION KEY (C-LB-3.1).
+	//
+	// Required and must parse as a UUID. Required, because a create without one
+	// cannot be made exactly-once and "server committed, response lost" is the
+	// normal outcome of publishing from a phone. A UUID specifically, because an
+	// attacker-chosen or colliding key is a way to read back or clobber another
+	// intent, and because it gives the client no reason to invent a scheme.
+	createKey := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+	if createKey == "" {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest,
+			"MISSING_IDEMPOTENCY_KEY", "Idempotency-Key header is required", nil)
+		return
+	}
+	if _, err := uuid.Parse(createKey); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest,
+			"INVALID_IDEMPOTENCY_KEY", "Idempotency-Key must be a UUID", nil)
+		return
+	}
+
+	// BODY CAP BEFORE BIND (C-LB-1.4).
+	//
+	// `MaxBytesReader` wraps the body itself, so the limit is enforced as the
+	// JSON decoder reads. A `Content-Length` pre-check is not equivalent: a
+	// chunked request carries no length, and a hostile one can simply lie.
+	// Capping the reader means an over-limit body is cut off mid-decode and
+	// nothing is ever written.
+	//
+	// The ceiling is far above the largest legal P0 payload (5,000 code points
+	// of text, at most 4 bytes each, plus one media UUID and a small policy
+	// object) and far below anything that could pressure memory.
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxCreatePostBodyBytes)
+
 	var req CreatePostRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusRequestEntityTooLarge,
+				"PAYLOAD_TOO_LARGE", "Request body exceeds the maximum size", nil)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
@@ -427,6 +509,17 @@ func (h *Handler) CreatePost(c *gin.Context) {
 		shareToPostbook = *req.ShareToPostbook
 	}
 
+	// The fingerprint is taken over the WHOLE accepted request (C-P0-5).
+	// Computed before anything is written: a request whose canonical form
+	// cannot be produced cannot be safely bound to an idempotency key, and
+	// guessing one would let a different body replay an earlier post.
+	fingerprint, err := createFingerprint(req)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest,
+			"INVALID_REQUEST", err.Error(), nil)
+		return
+	}
+
 	input := &service.CreatePostInput{
 		AuthorID:          authorID,
 		Text:              req.Text,
@@ -472,6 +565,13 @@ func (h *Handler) CreatePost(c *gin.Context) {
 			PublishToFeed:   req.PublishToFeed,
 			ShareToPostbook: req.ShareToPostbook,
 		},
+		// `visibility` is binding:"required" on this route, so anything that
+		// reaches here chose its audience deliberately. That is what stops the
+		// after-hours rule silently rewriting an explicit Public to `trusted`
+		// (C-LB-2.3).
+		VisibilityExplicit: true,
+		CreateKey:          createKey,
+		CreateFingerprint:  fingerprint,
 	}
 
 	if req.Poll != nil {
@@ -485,6 +585,9 @@ func (h *Handler) CreatePost(c *gin.Context) {
 
 	p, err := h.svc.CreatePost(c.Request.Context(), input)
 	if err != nil {
+		if writeCreateGuardError(c, err) {
+			return
+		}
 		if writeDistributionError(c, err) {
 			return
 		}
@@ -808,9 +911,22 @@ func (h *Handler) AddComment(c *gin.Context) {
 		return
 	}
 
-	comment, err := h.svc.CreateCommentPG(c.Request.Context(), postID, userID, req.Text)
+	// The client key and a fingerprint of the NORMALIZED text make the insert
+	// durably idempotent in PostgreSQL. The Redis middleware in front of this
+	// handler is a fast concurrency gate; it cannot be the authority, because
+	// the comment commits before it records anything.
+	//
+	// The fingerprint covers the text rather than the raw body so that
+	// insignificant encoding differences between two attempts at the same
+	// intent do not read as a changed payload.
+	clientKey := c.GetHeader("Idempotency-Key")
+	fingerprint := middleware.CommentFingerprint(postID.String(), req.Text)
+
+	comment, err := h.svc.CreateCommentPG(c.Request.Context(), postID, userID, req.Text, clientKey, fingerprint)
 	if err != nil {
 		switch {
+		case errors.Is(err, postgres.ErrIdempotencyKeyReused):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "IDEMPOTENCY_KEY_REUSED", "This Idempotency-Key was already used for a different comment.", nil)
 		case err.Error() == "RATE_LIMITED":
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many comments, please slow down", nil)
 		case errors.Is(err, service.ErrCommentsDisabled):

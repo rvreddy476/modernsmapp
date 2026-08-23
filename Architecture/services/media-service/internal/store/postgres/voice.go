@@ -52,6 +52,41 @@ var ErrMediaTooYoung = errors.New("media is inside the reclaim window")
 // ErrMediaNotFound means there is no such asset (already reclaimed).
 var ErrMediaNotFound = errors.New("media not found")
 
+// ErrMediaConfirmed means the asset completed its upload, and confirmed assets
+// are not reclaimable — Slice C, C-CLB-1.
+//
+// # WHY CONFIRMED DELETION IS OFF AT LAUNCH
+//
+// Reclaiming a confirmed asset is only safe if every writer that can claim one
+// serializes against this deletion. FK-backed claims do: inserting a child row
+// takes the parent's key-share lock, so the insert and this DELETE conflict and
+// one of them loses cleanly.
+//
+// Most claims are NOT FK-backed. `users.avatar_media_id`,
+// `channels.banner_media_id`, `business_pages.cover_media_id` and the rest are
+// plain UUID (or TEXT) columns, and their writers update the owning row WITHOUT
+// touching media_assets. The row lock this function takes therefore serializes
+// nothing at all for them, and the review proved it live: a writer setting an
+// avatar committed in 304 ms while this transaction held the media row lock,
+// and afterwards the media row was gone with the reference still pointing at it.
+//
+// Making that safe means every one of those writers must join a claim protocol
+// — a cross-service change spanning user-service, channels, business pages,
+// portfolios, reels and audio. That is real work, and it is not this slice's.
+// Until it exists, the only honest position is that a confirmed asset is never
+// reclaimed.
+//
+// What this COSTS: an abandoned composer photo is retained rather than swept —
+// bounded growth on one surface, reclaimable later by a sweeper that can prove
+// it is safe. What the alternative RISKED: silently deleting a live avatar with
+// no error raised anywhere. Those are not comparable, and the storage bill is
+// the correct thing to pay.
+//
+// `pending_upload` reclamation is UNAFFECTED. Bytes that never arrived cannot
+// be claimed by anybody, so the race does not exist there, and the original
+// audit-H9 sweep keeps running.
+var ErrMediaConfirmed = errors.New("media is confirmed and not reclaimable")
+
 // DeleteOrphanMediaAtomic performs the ENTIRE eligibility decision and the
 // deletion inside one transaction (Module 1 fixes-v3 / LB-1).
 //
@@ -89,9 +124,11 @@ func (s *MediaAssetStore) DeleteOrphanMediaAtomic(ctx context.Context, mediaID u
 	// 1. Lock the asset row.
 	var createdAt time.Time
 	var storageKey string
+	var processingStatus string
 	err = tx.QueryRow(ctx, `
-		SELECT created_at, storage_key FROM media_assets WHERE id = $1 FOR UPDATE`,
-		mediaID).Scan(&createdAt, &storageKey)
+		SELECT created_at, storage_key, processing_status
+		FROM media_assets WHERE id = $1 FOR UPDATE`,
+		mediaID).Scan(&createdAt, &storageKey, &processingStatus)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrMediaNotFound
 	}
@@ -104,16 +141,46 @@ func (s *MediaAssetStore) DeleteOrphanMediaAtomic(ctx context.Context, mediaID u
 		return nil, ErrMediaTooYoung
 	}
 
-	// 3. References — published AND surviving drafts. Any error here is
-	// fail-closed: we refuse rather than guess.
+	// 2b. A CONFIRMED ASSET IS NEVER RECLAIMED — Slice C, C-CLB-1.
+	//
+	// Enforced here as well as in the candidate scan, deliberately. The scan
+	// decides what gets looked at; this function is the only thing that
+	// deletes, and it is also reachable from the on-demand internal delete
+	// route. A policy that lives only in the query selecting candidates is one
+	// caller away from being bypassed.
+	//
+	// See ErrMediaConfirmed for why the row lock taken above cannot make
+	// confirmed reclamation safe while non-FK claims exist.
+	if processingStatus != ProcessingStatusPendingUpload {
+		return nil, ErrMediaConfirmed
+	}
+
+	// 3. References — EVERY canonical live claim, not just posts and drafts.
+	//
+	// Slice C / C-LB-5.6: this check used to name post_media and surviving
+	// post_draft_media inline. That was already the right shape and the wrong
+	// scope — stories, post covers, chat attachment reservations, owner/profile
+	// slots and audio source records all claim media and none were consulted.
+	// `owner_media_slots` is the dangerous omission: it cascades, so reclaiming
+	// an asset held only by a profile slot would have deleted a live avatar and
+	// raised no error at all.
+	//
+	// The predicate is now built from LiveMediaReferences, shared with the
+	// candidate scan, so the list that FINDS orphans and the list that CONFIRMS
+	// them are the same list by construction.
+	//
+	// Any error here is fail-closed: we refuse rather than guess.
+	//
+	// Resolved INSIDE the transaction so the check and the delete see the same
+	// catalog, and so an unclassified media-referencing column refuses this
+	// deletion too — not only the candidate scan.
+	refs, resolveErr := ResolveLiveReferences(ctx, tx)
+	if resolveErr != nil {
+		return nil, fmt.Errorf("%w: %v", ErrMediaStillReferenced, resolveErr)
+	}
 	var referenced bool
-	err = tx.QueryRow(ctx, `
-		SELECT EXISTS(SELECT 1 FROM post_media WHERE media_id = $1)
-		    OR EXISTS(
-		        SELECT 1 FROM post_draft_media dm
-		        JOIN post_drafts d ON d.id = dm.draft_id
-		        WHERE dm.media_id = $1 AND d.status <> 'deleted')`,
-		mediaID).Scan(&referenced)
+	err = tx.QueryRow(ctx,
+		`SELECT `+liveReferenceSQL(refs, "$1"), mediaID).Scan(&referenced)
 	if err != nil {
 		return nil, fmt.Errorf("%w: reference check unavailable: %v", ErrMediaStillReferenced, err)
 	}

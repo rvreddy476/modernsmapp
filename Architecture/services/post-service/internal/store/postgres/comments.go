@@ -606,3 +606,119 @@ func (s *Store) ListFlaggedComments(ctx context.Context, status string, cursor t
 	}
 	return out, rows.Err()
 }
+
+// ErrIdempotencyKeyReused reports the same (actor, post, client key) arriving
+// with a different payload. Replaying the stored comment would show the caller
+// a result for content they did not send.
+var ErrIdempotencyKeyReused = errors.New("idempotency key reused with a different payload")
+
+// CreateCommentIdempotent inserts a comment and its idempotency record in ONE
+// transaction, making exactly-once a property of PostgreSQL rather than of a
+// cache.
+//
+// # WHY THIS EXISTS
+//
+// The Redis middleware claims a key, runs the handler, and only then records
+// the result. The comment is COMMITTED in the middle of that sequence, so a
+// process death — or a failed Redis write, which the middleware deliberately
+// resolves by deleting the record — leaves the insert done and no evidence it
+// happened. The client's retry with the same key then inserts a duplicate,
+// which is the exact failure idempotency exists to prevent.
+//
+// Here the evidence and the insert commit together or not at all. Redis
+// remains valuable as a fast concurrency gate; it is no longer the authority.
+//
+// Returns replayed=true when the intent had already been recorded, in which
+// case the previously created comment is returned unchanged.
+func (s *Store) CreateCommentIdempotent(
+	ctx context.Context,
+	postID, authorID uuid.UUID,
+	body, clientKey, fingerprint string,
+) (comment *Comment, replayed bool, err error) {
+	// No key means no promise; behave exactly as before.
+	if clientKey == "" {
+		c, err := s.CreateComment(ctx, postID, authorID, body)
+		return c, false, err
+	}
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	defer tx.Rollback(ctx)
+
+	created := &Comment{
+		ID:        uuid.New(),
+		PostID:    postID,
+		AuthorID:  authorID,
+		Body:      body,
+		IsReply:   false,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+
+	// Claim the intent first. ON CONFLICT DO NOTHING makes the winner the row
+	// that inserts; everyone else takes the replay path below.
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO comment_idempotency (actor_id, post_id, client_key, fingerprint, comment_id)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (actor_id, post_id, client_key) DO NOTHING`,
+		authorID, postID, clientKey, fingerprint, created.ID,
+	)
+	if err != nil {
+		return nil, false, fmt.Errorf("claim comment idempotency: %w", err)
+	}
+
+	if tag.RowsAffected() == 0 {
+		// Someone already owns this intent. Roll back and answer from the
+		// record rather than inserting a second comment.
+		_ = tx.Rollback(ctx)
+		return s.replayComment(ctx, postID, authorID, clientKey, fingerprint)
+	}
+
+	if _, err = tx.Exec(ctx, `
+		INSERT INTO comments (id, post_id, author_id, body, is_reply, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		created.ID, created.PostID, created.AuthorID, created.Body,
+		created.IsReply, created.CreatedAt, created.UpdatedAt,
+	); err != nil {
+		return nil, false, fmt.Errorf("insert comment: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, false, err
+	}
+	return created, false, nil
+}
+
+// replayComment answers a repeated intent from the committed record.
+func (s *Store) replayComment(
+	ctx context.Context,
+	postID, authorID uuid.UUID,
+	clientKey, fingerprint string,
+) (*Comment, bool, error) {
+	var storedFingerprint string
+	var commentID uuid.UUID
+	if err := s.db.QueryRow(ctx, `
+		SELECT fingerprint, comment_id FROM comment_idempotency
+		WHERE actor_id = $1 AND post_id = $2 AND client_key = $3`,
+		authorID, postID, clientKey,
+	).Scan(&storedFingerprint, &commentID); err != nil {
+		return nil, false, fmt.Errorf("read comment idempotency: %w", err)
+	}
+
+	if storedFingerprint != fingerprint {
+		return nil, false, ErrIdempotencyKeyReused
+	}
+
+	c := &Comment{}
+	if err := s.db.QueryRow(ctx, `
+		SELECT id, post_id, author_id, body, is_reply, like_count, dislike_count,
+		       reply_count, created_at, updated_at
+		FROM comments WHERE id = $1`, commentID,
+	).Scan(&c.ID, &c.PostID, &c.AuthorID, &c.Body, &c.IsReply, &c.LikeCount,
+		&c.DislikeCount, &c.ReplyCount, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		return nil, false, fmt.Errorf("load replayed comment: %w", err)
+	}
+	return c, true, nil
+}

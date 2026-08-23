@@ -270,10 +270,10 @@ func (c *MediaTranscodeConsumer) finalizeReviewGate(ctx context.Context, mediaID
 		decision = "rejected"
 	case p.ProcessingStatus == "ready" && p.ModerationStatus == "rejected":
 		decision = "rejected"
-	case p.ProcessingStatus == "ready":
+	case p.ProcessingStatus == "ready" && (p.ModerationStatus == "passed" || p.ModerationStatus == "approved"):
 		decision = "approved"
 	default:
-		return // intermediate status — wait for a terminal event
+		return // intermediate or non-approved status (pending, manual_review, scanner failure, etc.) — wait for a terminal verdict
 	}
 
 	vm, err := c.store.GetVideoMetadataByMediaAsset(ctx, mediaID)

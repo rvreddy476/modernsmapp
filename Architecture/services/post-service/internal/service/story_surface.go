@@ -239,6 +239,31 @@ type MediaAccessResult struct {
 	Reason   string              `json:"reason"`
 }
 
+// EvaluateMediaAccessFacts is the pure canonical media safety gate.
+// For the uploader: allows preview unless processing or moderation is rejected/failed.
+// For non-uploaders: requires moderation status to be explicitly "passed" or "approved".
+// Returns (terminal, res).
+// If terminal is true, the result is definitive (owner allowed/denied, or non-owner moderation denied).
+// If terminal is false, evaluation proceeds to story/post content visibility checks.
+func EvaluateMediaAccessFacts(viewerID, uploaderID uuid.UUID, processingStatus, moderationStatus string) (bool, MediaAccessResult) {
+	if uploaderID == viewerID {
+		if processingStatus == "rejected" || processingStatus == "failed" || moderationStatus == "rejected" {
+			return true, MediaAccessResult{Allowed: false, Decision: DecisionDenied, Reason: "uploader_rejected_or_failed"}
+		}
+		if processingStatus != "ready" {
+			return true, MediaAccessResult{Allowed: true, Decision: DecisionNotReady, Reason: "uploader_not_ready"}
+		}
+		return true, MediaAccessResult{Allowed: true, Decision: DecisionAllowed, Reason: "uploader_allowed"}
+	}
+	// No content policy can override the canonical media safety gate. Non-owner
+	// delivery requires an explicitly approved/passed canonical media verdict.
+	// pending, manual_review, empty/unknown, scanner failure, and rejected must never produce protected URLs.
+	if moderationStatus != "passed" && moderationStatus != "approved" {
+		return true, MediaAccessResult{Allowed: false, Decision: DecisionDenied, Reason: "moderation_not_approved"}
+	}
+	return false, MediaAccessResult{}
+}
+
 // ViewerMayAccessMedia reports whether a viewer may receive the bytes of a
 // canonical media asset, based on the content that references it.
 //
@@ -269,39 +294,22 @@ func (s *Service) ViewerMayAccessMedia(ctx context.Context, viewerID, mediaID uu
 			"reason", "not_found")
 		return MediaAccessResult{Allowed: false, Decision: DecisionDenied, Reason: "not_found"}, nil
 	}
-	// Owner preview is the sole pre-publication exception. A rejected or failed
-	// asset does not keep minting fresh delivery URLs after takedown/failure.
-	if facts.UploaderID == viewerID {
-		if facts.ProcessingStatus == "rejected" || facts.ProcessingStatus == "failed" || facts.ModerationStatus == "rejected" {
-			slog.InfoContext(ctx, "media access excluded: uploader asset rejected or failed",
+
+	if terminal, res := EvaluateMediaAccessFacts(viewerID, facts.UploaderID, facts.ProcessingStatus, facts.ModerationStatus); terminal {
+		if !res.Allowed {
+			slog.InfoContext(ctx, "media access excluded: canonical gate",
 				"viewer_id", viewerID,
 				"media_id", mediaID,
 				"processing_status", facts.ProcessingStatus,
 				"moderation_status", facts.ModerationStatus,
-				"reason", "uploader_rejected_or_failed")
-			return MediaAccessResult{Allowed: false, Decision: DecisionDenied, Reason: "uploader_rejected_or_failed"}, nil
-		}
-		if facts.ProcessingStatus != "ready" {
-			slog.InfoContext(ctx, "media access permitted: uploader asset not ready",
+				"reason", res.Reason)
+		} else {
+			slog.DebugContext(ctx, "media access allowed: canonical gate",
 				"viewer_id", viewerID,
 				"media_id", mediaID,
-				"processing_status", facts.ProcessingStatus,
-				"reason", "uploader_not_ready")
-			return MediaAccessResult{Allowed: true, Decision: DecisionNotReady, Reason: "uploader_not_ready"}, nil
+				"reason", res.Reason)
 		}
-		slog.DebugContext(ctx, "media access allowed: uploader preview",
-			"viewer_id", viewerID,
-			"media_id", mediaID,
-			"reason", "uploader_allowed")
-		return MediaAccessResult{Allowed: true, Decision: DecisionAllowed, Reason: "uploader_allowed"}, nil
-	}
-	// No content policy can override the canonical media safety gate.
-	if facts.ModerationStatus == "rejected" {
-		slog.InfoContext(ctx, "media access excluded: moderation rejected",
-			"viewer_id", viewerID,
-			"media_id", mediaID,
-			"reason", "moderation_rejected")
-		return MediaAccessResult{Allowed: false, Decision: DecisionDenied, Reason: "moderation_rejected"}, nil
+		return res, nil
 	}
 
 	story, err := s.pgStore.StoryForMedia(ctx, mediaID)
@@ -364,13 +372,14 @@ func (s *Service) ViewerMayAccessMedia(ctx context.Context, viewerID, mediaID uu
 }
 
 // ViewerMayAccessMediaBatch evaluates a feed page with a fixed number of
-// PostgreSQL queries and one graph relationship batch. It is policy-equivalent
+// database queries rather than one per card. The semantics are identical
 // to ViewerMayAccessMedia; only the data-loading shape differs.
 func (s *Service) ViewerMayAccessMediaBatch(ctx context.Context, viewerID uuid.UUID, mediaIDs []uuid.UUID) (map[uuid.UUID]MediaAccessResult, error) {
 	results := make(map[uuid.UUID]MediaAccessResult, len(mediaIDs))
-	if viewerID == uuid.Nil || len(mediaIDs) == 0 {
+	if len(mediaIDs) == 0 || viewerID == uuid.Nil {
 		return results, nil
 	}
+
 	factsByMedia, err := s.pgStore.GetMediaAccessFactsBatch(ctx, mediaIDs)
 	if err != nil {
 		return nil, err
@@ -430,9 +439,9 @@ func (s *Service) ViewerMayAccessMediaBatch(ctx context.Context, viewerID uuid.U
 	}
 
 	for _, mediaID := range mediaIDs {
-		facts, ok := factsByMedia[mediaID]
-		if !ok {
-			slog.InfoContext(ctx, "media access excluded: asset facts not found",
+		facts, found := factsByMedia[mediaID]
+		if !found {
+			slog.InfoContext(ctx, "media access excluded: asset facts not found in batch",
 				"viewer_id", viewerID,
 				"media_id", mediaID,
 				"reason", "not_found")
@@ -444,56 +453,21 @@ func (s *Service) ViewerMayAccessMediaBatch(ctx context.Context, viewerID uuid.U
 			continue
 		}
 
-		if facts.UploaderID == viewerID {
-			if facts.ProcessingStatus == "rejected" || facts.ProcessingStatus == "failed" || facts.ModerationStatus == "rejected" {
-				slog.InfoContext(ctx, "media access excluded: uploader asset rejected or failed",
+		if terminal, res := EvaluateMediaAccessFacts(viewerID, facts.UploaderID, facts.ProcessingStatus, facts.ModerationStatus); terminal {
+			if !res.Allowed {
+				slog.InfoContext(ctx, "media access excluded: canonical gate in batch",
 					"viewer_id", viewerID,
 					"media_id", mediaID,
 					"processing_status", facts.ProcessingStatus,
 					"moderation_status", facts.ModerationStatus,
-					"reason", "uploader_rejected_or_failed")
-				results[mediaID] = MediaAccessResult{
-					Allowed:  false,
-					Decision: DecisionDenied,
-					Reason:   "uploader_rejected_or_failed",
-				}
-				continue
-			}
-			if facts.ProcessingStatus != "ready" {
-				slog.InfoContext(ctx, "media access permitted: uploader asset not ready",
+					"reason", res.Reason)
+			} else {
+				slog.DebugContext(ctx, "media access allowed: canonical gate in batch",
 					"viewer_id", viewerID,
 					"media_id", mediaID,
-					"processing_status", facts.ProcessingStatus,
-					"reason", "uploader_not_ready")
-				results[mediaID] = MediaAccessResult{
-					Allowed:  true,
-					Decision: DecisionNotReady,
-					Reason:   "uploader_not_ready",
-				}
-				continue
+					"reason", res.Reason)
 			}
-			slog.DebugContext(ctx, "media access allowed: uploader preview",
-				"viewer_id", viewerID,
-				"media_id", mediaID,
-				"reason", "uploader_allowed")
-			results[mediaID] = MediaAccessResult{
-				Allowed:  true,
-				Decision: DecisionAllowed,
-				Reason:   "uploader_allowed",
-			}
-			continue
-		}
-
-		if facts.ModerationStatus == "rejected" {
-			slog.InfoContext(ctx, "media access excluded: moderation rejected",
-				"viewer_id", viewerID,
-				"media_id", mediaID,
-				"reason", "moderation_rejected")
-			results[mediaID] = MediaAccessResult{
-				Allowed:  false,
-				Decision: DecisionDenied,
-				Reason:   "moderation_rejected",
-			}
+			results[mediaID] = res
 			continue
 		}
 

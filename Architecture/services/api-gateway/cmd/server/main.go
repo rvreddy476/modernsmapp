@@ -13,6 +13,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -114,6 +115,24 @@ func main() {
 		{"/v1/channels", env("USER_SERVICE_URL", "http://user-service:8082")},
 		{"/v1/pages", env("USER_SERVICE_URL", "http://user-service:8082")},
 		{"/v1/links", env("USER_SERVICE_URL", "http://user-service:8082")},
+		// Privacy settings are served by the IDENTITY user-service, not the
+		// Architecture one, and this route is what makes that reachable.
+		//
+		// Two services answer `/v1/users/me/settings`. The Architecture one
+		// stores three legacy columns and has no `who_can_message` at all, so
+		// a client PUT returned 200 while the field it sent was silently
+		// dropped. graph-service reads messaging privacy from the identity
+		// service, so the user's choice never reached the decision that
+		// enforces it: the setting appeared to save and changed nothing.
+		//
+		// The identity service owns the full privacy matrix and is the single
+		// authority. The Architecture handlers now refuse this path outright
+		// (410) rather than accept-and-drop, so a misrouted deployment is loud
+		// instead of silently unenforced.
+		//
+		// MUST stay above `/v1/users` — matching walks this slice in order and
+		// takes the first prefix that fits.
+		{"/v1/users/me/settings", env("IDENTITY_USER_SERVICE_URL", "http://identity-user:8110")},
 		{"/v1/users", env("USER_SERVICE_URL", "http://user-service:8082")},
 		{"/v1/graph", env("GRAPH_SERVICE_URL", "http://graph-service:8083")},
 		// Post service: videos, reels, posts, comments, stories, reactions, saved, hashtags, uploads
@@ -261,13 +280,32 @@ func main() {
 	// limiter still runs in front of this and acts as a fast-path
 	// short-circuit + the dev fallback when REDIS_ADDR isn't set.
 	rateRDB := connectRedisForRateLimit(env("REDIS_ADDR", ""))
+	// Limits are environment-configurable for capacity tuning.
+	//
+	// The DEFAULTS ARE THE PRODUCTION VALUES, unchanged: an environment that
+	// sets nothing behaves exactly as before.
+	//
+	// A NOTE ON WHAT THESE DID NOT DO. They were added during C-CLB-PROOF-1, on
+	// the assumption that this limiter was rejecting most of a 50-concurrent
+	// same-key write burst. It was not: 50 requests fit comfortably under
+	// 100/IP and 60/user per second. The actual blocker was post-service's
+	// MAX_POSTS_PER_HOUR (20). These knobs are kept because per-environment
+	// capacity tuning is legitimate, but they were not what unblocked that
+	// proof — see the closure verdict §7.
+	//
+	// Any positive value is accepted, so a deployment typo can effectively
+	// remove abuse protection. Bounding these, and alerting on non-default
+	// production values, is tracked as operational hardening debt.
+	ipLimit := envInt("RATE_LIMIT_IP_PER_SEC", 100)
+	userLimit := envInt("RATE_LIMIT_USER_PER_SEC", 60)
 	var rateLimitHandler func(http.Handler) http.Handler
 	if rateRDB != nil {
-		rl := newRedisRateLimiter(rateRDB, 100, 60, time.Second)
+		rl := newRedisRateLimiter(rateRDB, ipLimit, userLimit, time.Second)
 		rateLimitHandler = func(next http.Handler) http.Handler {
 			return rateLimitMiddleware(redisRateLimitMiddleware(rl, next))
 		}
-		slog.Info("rate limiter: redis-backed (fleet-wide) enabled")
+		slog.Info("rate limiter: redis-backed (fleet-wide) enabled",
+			"ip_per_sec", ipLimit, "user_per_sec", userLimit)
 	} else {
 		rateLimitHandler = rateLimitMiddleware
 		slog.Info("rate limiter: in-memory only (per-pod)")
@@ -538,8 +576,11 @@ func (s *rateLimiterStore) get(key string) *rate.Limiter {
 // rateLimitMiddleware enforces per-IP (100 rps, burst 200) and per-user
 // (60 rps, burst 120) rate limits. Returns HTTP 429 when a limit is exceeded.
 func rateLimitMiddleware(next http.Handler) http.Handler {
-	ipStore := newRateLimiterStore(100, 200)
-	userStore := newRateLimiterStore(60, 120)
+	// Same knobs as the Redis limiter; production defaults unchanged.
+	ipRate := envInt("RATE_LIMIT_IP_PER_SEC", 100)
+	userRate := envInt("RATE_LIMIT_USER_PER_SEC", 60)
+	ipStore := newRateLimiterStore(float64(ipRate), ipRate*2)
+	userStore := newRateLimiterStore(float64(userRate), userRate*2)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ip := r.RemoteAddr
 		if realIP := r.Header.Get("X-Real-IP"); realIP != "" {
@@ -667,6 +708,25 @@ func corsMiddleware(allowedOrigins []string, next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// envInt reads an integer environment variable, falling back on anything
+// unset, unparseable or non-positive.
+//
+// Non-positive falls back deliberately: a limiter configured to allow zero
+// requests would reject everything, and a typo in a deployment variable must
+// not be able to take the gateway down.
+func envInt(key string, fallback int) int {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(raw)
+	if err != nil || parsed <= 0 {
+		slog.Warn("ignoring invalid integer env var", "key", key, "value", raw)
+		return fallback
+	}
+	return parsed
 }
 
 func env(key, fallback string) string {
