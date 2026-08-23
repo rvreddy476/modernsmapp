@@ -159,6 +159,27 @@ func main() {
 			"cannot run, so authenticated profile reads will be REFUSED. Set it, or " +
 			"blocked users would be able to read the profile of whoever blocked them.")
 	}
+	if mediaURL := os.Getenv("MEDIA_SERVICE_URL"); mediaURL != "" {
+		profileHandler.WithMediaAuthority(
+			http.NewMediaAuthorityClient(mediaURL, os.Getenv("INTERNAL_SERVICE_KEY")))
+		logger.Info("profile-service: media reference authority enabled", "media_service_url", mediaURL)
+	} else {
+		logger.Error("profile-service: MEDIA_SERVICE_URL not set — avatar and cover updates will be refused")
+	}
+	graphURL := os.Getenv("GRAPH_SERVICE_URL")
+	identityUserURL := os.Getenv("USER_SERVICE_URL")
+	if graphURL != "" && identityUserURL != "" {
+		profileHandler.WithProfilePhotoAccess(
+			http.NewProfilePhotoAccessChecker(
+				graphURL,
+				identityUserURL,
+				os.Getenv("INTERNAL_SERVICE_KEY"),
+			),
+		)
+		logger.Info("profile-service: profile-photo privacy authority enabled")
+	} else {
+		logger.Error("profile-service: GRAPH_SERVICE_URL and USER_SERVICE_URL are required; profile media delivery will fail closed")
+	}
 
 	// 3b. Kafka consumer (inbox-dedup enabled)
 	consumer := events.NewConsumerWithDialer(cfg.KafkaBrokers, cfg.KafkaTopic, cfg.KafkaGroupID, kafkaDialer, dbPool, profileSvc, logger)

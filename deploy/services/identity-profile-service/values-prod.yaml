@@ -46,6 +46,8 @@ env:
   # than served unprotected, so an unset value is a visible outage, not a
   # silent one where blocked users can read the profile of whoever blocked them.
   GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083
+  MEDIA_SERVICE_URL: http://media-service.atpost.svc.cluster.local:8087
+  USER_SERVICE_URL: http://identity-user-service.atpost.svc.cluster.local:8082
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
 
 ingress:

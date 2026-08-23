@@ -52,6 +52,28 @@ type Profile struct {
 	UpdatedAt         time.Time  `json:"updated_at"`
 }
 
+// FindProfileMediaOwner resolves only canonical profile avatar/cover claims.
+func (s *Store) FindProfileMediaOwner(
+	ctx context.Context,
+	mediaID uuid.UUID,
+) (uuid.UUID, string, bool, error) {
+	var ownerID uuid.UUID
+	var kind string
+	err := s.db.QueryRow(ctx, `
+		SELECT user_id,
+		       CASE WHEN avatar_media_id = $1 THEN 'avatar' ELSE 'cover' END
+		FROM profile.profiles
+		WHERE avatar_media_id = $1 OR cover_media_id = $1
+		LIMIT 1`, mediaID).Scan(&ownerID, &kind)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, "", false, nil
+	}
+	if err != nil {
+		return uuid.Nil, "", false, err
+	}
+	return ownerID, kind, true, nil
+}
+
 // UserLink represents a social/external link on a user's profile (legacy table).
 type UserLink struct {
 	UserID       uuid.UUID `json:"user_id"`
@@ -898,8 +920,8 @@ func (s *Store) ListFollowersCursor(ctx context.Context, userID uuid.UUID, limit
 	defer rows.Close()
 	var entries []FollowerEntry
 	type withID struct {
-		entry  FollowerEntry
-		rowID  uuid.UUID
+		entry FollowerEntry
+		rowID uuid.UUID
 	}
 	var lastRows []withID
 	for rows.Next() {

@@ -304,9 +304,34 @@ func (h *Handler) Me(c *gin.Context) {
 		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Missing user identity", nil, nil)
 		return
 	}
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user identity", nil, nil)
+		return
+	}
+	user, err := h.svc.GetUserContact(c.Request.Context(), uid)
+	if err != nil || user == nil {
+		h.log.Error("account summary lookup failed", "err", err, "user_id", uid, "request_id", RequestIDFromContext(c))
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Unable to load account details", nil, nil)
+		return
+	}
+	email := ""
+	if user.Email != nil {
+		email = *user.Email
+	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{
-		"id":      userID,
-		"user_id": userID,
+		"id":                 userID,
+		"user_id":            userID,
+		"email":              email,
+		"phone":              user.Phone,
+		"email_verified":     user.EmailVerified,
+		"phone_verified":     user.PhoneVerified,
+		"two_factor_enabled": user.TwoFactorEnabled,
+		"account_type":       user.AccountType,
+		"account_status":     user.AccountStatus,
+		"age_verification":   user.AgeVerification,
+		"last_login_at":      user.LastLoginAt,
+		"created_at":         user.CreatedAt,
 	}, nil)
 }
 

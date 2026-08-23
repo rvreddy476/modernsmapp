@@ -47,6 +47,7 @@ externalSecret:
     # KAFKA_BROKERS, SCYLLA_HOSTS, courier API keys, etc.).
 
 env:
+  USER_SERVICE_URL: http://identity-user-service.atpost.svc.cluster.local:8082
   ENV: staging
   LOG_LEVEL: info
   # Module 3 LB-3: refuse an unattributed graph mutation. The gateway stamps

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/atpost/identity-profile-service/internal/store"
@@ -22,11 +23,25 @@ type Handler struct {
 	// asks graph-service, which is canonical. Nil means NOT CONFIGURED —
 	// see blockedFromViewer, which refuses rather than serving unprotected.
 	blocks BlockChecker
+	// Canonical media ownership/readiness/moderation check for avatar and cover
+	// references. Nil is fail-closed on those writes.
+	media  ProfileMediaAuthority
+	photos ProfilePhotoAccessChecker
 }
 
 // WithBlockChecker wires block denial on every profile read surface.
 func (h *Handler) WithBlockChecker(b BlockChecker) *Handler {
 	h.blocks = b
+	return h
+}
+
+func (h *Handler) WithMediaAuthority(m ProfileMediaAuthority) *Handler {
+	h.media = m
+	return h
+}
+
+func (h *Handler) WithProfilePhotoAccess(checker ProfilePhotoAccessChecker) *Handler {
+	h.photos = checker
 	return h
 }
 
@@ -61,6 +76,7 @@ type ProfileService interface {
 	// Avatar/Cover
 	UpdateAvatar(ctx context.Context, userID uuid.UUID, mediaID uuid.UUID) error
 	UpdateCover(ctx context.Context, userID uuid.UUID, mediaID uuid.UUID) error
+	FindProfileMediaOwner(ctx context.Context, mediaID uuid.UUID) (uuid.UUID, string, bool, error)
 	// Follow
 	FollowUser(ctx context.Context, followerID, followingID uuid.UUID) (*store.Follow, error)
 	UnfollowUser(ctx context.Context, followerID, followingID uuid.UUID) error
@@ -107,8 +123,14 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, auth gin.HandlerFunc, csrf gin.H
 	v1 := r.Group("/v1/profiles")
 	{
 		v1.GET("/health", h.Health)
+		// Internal static routes must be registered before the public :userId
+		// wildcard so a framework upgrade cannot reinterpret "internal" as a
+		// public profile identifier.
+		if h.internalKey != "" {
+			v1.GET("/internal/changes", h.ListProfileChanges)
+			v1.POST("/internal/media-access", h.ProfileMediaAccess)
+		}
 		v1.GET("/discover", h.DiscoverProfiles)
-		v1.GET("/changes", h.ListProfileChanges)
 		v1.GET("/by-username/:username", h.GetProfileByUsername)
 		v1.POST("/batch", h.GetProfilesBatch)
 		v1.GET("/:userId", h.GetProfile)
@@ -131,6 +153,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, auth gin.HandlerFunc, csrf gin.H
 	{
 		protected.GET("/me", h.GetMe)
 		protected.PUT("/me", csrf, h.UpdateMe)
+		// Owner projection: unlike /:userId/about this includes non-public rows.
+		protected.GET("/me/about", h.GetMyAbout)
 		// Legacy links (bulk PUT)
 		protected.PUT("/me/links", csrf, h.UpdateMyLinks)
 		// New profile links (individual CRUD)
@@ -202,8 +226,9 @@ func (h *Handler) DiscoverProfiles(c *gin.Context) {
 
 	// SR-4: discovery must not surface an account the viewer blocked, and
 	// must not publish private fields to an unauthenticated browser.
+	publicProfiles := h.filterBlockedProfiles(c, ToPublicProfiles(profiles))
 	api.JSON(c.Writer, http.StatusOK, gin.H{
-		"items": h.filterBlockedProfiles(c, ToPublicProfiles(profiles)),
+		"items": h.applyProfilePhotoPrivacyList(c, publicProfiles),
 		"meta": paginationMeta{
 			Limit:   limit,
 			Offset:  offset,
@@ -294,7 +319,7 @@ func (h *Handler) GetProfile(c *gin.Context) {
 	// SR-4: never serialise store.Profile to a viewer. This route is
 	// UNAUTHENTICATED and that struct carries the exact date of birth,
 	// gender and timezone.
-	api.JSON(c.Writer, http.StatusOK, ToPublicProfile(p), nil)
+	api.JSON(c.Writer, http.StatusOK, h.applyProfilePhotoPrivacy(c, ToPublicProfile(p)), nil)
 }
 
 func (h *Handler) GetProfileByUsername(c *gin.Context) {
@@ -320,7 +345,7 @@ func (h *Handler) GetProfileByUsername(c *gin.Context) {
 		return
 	}
 
-	api.JSON(c.Writer, http.StatusOK, ToPublicProfile(p), nil)
+	api.JSON(c.Writer, http.StatusOK, h.applyProfilePhotoPrivacy(c, ToPublicProfile(p)), nil)
 }
 
 // GetMe returns the caller's OWN profile, in full. The private fields are
@@ -394,6 +419,20 @@ func (h *Handler) UpdateMe(c *gin.Context) {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
 		return
 	}
+	if req.AvatarMediaID != nil || req.CoverMediaID != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "DEDICATED_MEDIA_ROUTE_REQUIRED",
+			"Use /v1/profiles/me/avatar or /v1/profiles/me/cover so media ownership and safety can be verified", nil, nil)
+		return
+	}
+	if problems := validateProfileUpdate(req); len(problems) != 0 {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PROFILE", "Profile details are invalid", problems, nil)
+		return
+	}
+	req.Website = normalizeProfileURL(req.Website)
+	if req.CTAURL != nil && strings.TrimSpace(*req.CTAURL) != "" {
+		normalized := normalizeProfileURL(*req.CTAURL)
+		req.CTAURL = &normalized
+	}
 
 	themeColor := req.ProfileThemeColor
 	if themeColor == "" {
@@ -460,6 +499,15 @@ func (h *Handler) UpdateMyAvatar(c *gin.Context) {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
 		return
 	}
+	if h.media == nil {
+		api.Error(c.Writer, http.StatusServiceUnavailable, "MEDIA_AUTHORITY_UNAVAILABLE", "Profile image verification is unavailable", nil, nil)
+		return
+	}
+	if err := h.media.RequireAttachable(c.Request.Context(), userID, req.MediaID, "avatar"); err != nil {
+		h.log.Warn("avatar media authority refused reference", "err", err, "user_id", userID, "media_id", req.MediaID)
+		api.Error(c.Writer, http.StatusConflict, "MEDIA_NOT_ATTACHABLE", "Choose an owned, ready and approved avatar image", nil, nil)
+		return
+	}
 
 	if err := h.svc.UpdateAvatar(c.Request.Context(), userID, req.MediaID); err != nil {
 		h.log.Error("failed to update avatar", "err", err, "user_id", userID, "request_id", RequestIDFromContext(c))
@@ -480,6 +528,15 @@ func (h *Handler) UpdateMyCover(c *gin.Context) {
 	var req UpdateMediaIDRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	if h.media == nil {
+		api.Error(c.Writer, http.StatusServiceUnavailable, "MEDIA_AUTHORITY_UNAVAILABLE", "Profile image verification is unavailable", nil, nil)
+		return
+	}
+	if err := h.media.RequireAttachable(c.Request.Context(), userID, req.MediaID, "cover"); err != nil {
+		h.log.Warn("cover media authority refused reference", "err", err, "user_id", userID, "media_id", req.MediaID)
+		api.Error(c.Writer, http.StatusConflict, "MEDIA_NOT_ATTACHABLE", "Choose an owned, ready and approved cover image", nil, nil)
 		return
 	}
 
@@ -565,6 +622,24 @@ func (h *Handler) UpdateMyLinks(c *gin.Context) {
 // User About
 // ---------------------------------------------------------------
 
+func (h *Handler) GetMyAbout(c *gin.Context) {
+	userID, err := parseUserHeader(c)
+	if err != nil {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil, nil)
+		return
+	}
+	items, err := h.svc.GetAllAbout(c.Request.Context(), userID)
+	if err != nil {
+		h.log.Error("failed to fetch owner about items", "err", err, "user_id", userID, "request_id", RequestIDFromContext(c))
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
+		return
+	}
+	if items == nil {
+		items = []store.AboutItem{}
+	}
+	api.JSON(c.Writer, http.StatusOK, items, nil)
+}
+
 func (h *Handler) GetAllAbout(c *gin.Context) {
 	// LB-4: public per-user surface — block denial applies.
 	userID, ok := h.publicTargetOrDeny(c)
@@ -629,6 +704,10 @@ func (h *Handler) UpsertMyAboutItem(c *gin.Context) {
 	var req UpsertAboutItemRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	if err := validateAboutItem(section, req.Data, req.Visibility); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ABOUT_ITEM", err.Error(), nil, nil)
 		return
 	}
 
@@ -727,6 +806,11 @@ func (h *Handler) CreateMyProfileLink(c *gin.Context) {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
 		return
 	}
+	if err := validateProfileLink(req.Title, req.URL, req.Visibility); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PROFILE_LINK", err.Error(), nil, nil)
+		return
+	}
+	req.URL = normalizeProfileURL(req.URL)
 
 	visibility := req.Visibility
 	if visibility == "" {
@@ -782,6 +866,11 @@ func (h *Handler) UpdateMyProfileLink(c *gin.Context) {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
 		return
 	}
+	if err := validateProfileLink(req.Title, req.URL, req.Visibility); err != nil {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PROFILE_LINK", err.Error(), nil, nil)
+		return
+	}
+	req.URL = normalizeProfileURL(req.URL)
 
 	visibility := req.Visibility
 	if visibility == "" {
@@ -1231,7 +1320,8 @@ func (h *Handler) GetProfilesBatch(c *gin.Context) {
 	// user IDs and receive 100 full dates of birth in one response. Blocked
 	// entries are omitted rather than refused: denying the whole request
 	// because one entry is blocked lets a caller probe by bisection.
-	c.JSON(http.StatusOK, h.filterBlockedProfileMap(c, ToPublicProfileMap(profiles)))
+	publicProfiles := h.filterBlockedProfileMap(c, ToPublicProfileMap(profiles))
+	c.JSON(http.StatusOK, h.applyProfilePhotoPrivacyMap(c, publicProfiles))
 }
 
 // ---------------------------------------------------------------

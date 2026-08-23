@@ -47,6 +47,7 @@ externalSecret:
     - { secretKey: LEGACY_PROFILE_BLOCKS_DSN, remoteRef: legacy_profile_blocks_dsn }
 
 env:
+  USER_SERVICE_URL: http://identity-user-service.atpost.svc.cluster.local:8082
   ENV: prod
   LOG_LEVEL: info
   # Module 3 LB-3: refuse an unattributed graph mutation. The gateway stamps

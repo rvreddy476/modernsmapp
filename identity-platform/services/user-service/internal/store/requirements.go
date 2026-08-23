@@ -22,7 +22,34 @@ var SchemaRequirements = []schemaguard.Requirement{
 	// would refuse a boot that should have succeeded, so both are taken from
 	// the live catalog rather than assumed to match.
 	{Table: "usr.users", Columns: []string{"id", "status"}},
-	{Table: "usr.user_settings", Columns: []string{"user_id", "account_visibility"}},
+
+	// EVERY column in userSettingsColumns, not a sample.
+	//
+	// The package doc says to list columns sparingly, and this is the case it
+	// carves out for: GetSettings and UpdateSettings both name the whole list
+	// in one SELECT/RETURNING, so a single missing column is not a degraded
+	// read — it is a hard 42703 on every settings request the service serves.
+	// graph-service then cannot fetch the target's privacy, falls back to
+	// strict defaults, and direct messaging silently stops working for
+	// everyone while the service reports itself healthy.
+	//
+	// That is exactly what happened: auth-service's setup.sql created only the
+	// legacy three columns, the guard checked only two of them, and the
+	// service passed its boot check and failed its first real request. The
+	// columns are now created there and asserted in full here, so the two
+	// cannot drift apart again without the boot failing loudly.
+	//
+	// Keep this list byte-identical to userSettingsColumns in users.go.
+	{Table: "usr.user_settings", Columns: []string{
+		"user_id", "account_visibility", "allow_messages_from", "allow_comments_from",
+		"who_can_message", "who_can_send_connection_request", "who_can_call", "who_can_add_to_groups",
+		"who_can_see_online_status", "who_can_see_read_receipts", "who_can_see_last_seen",
+		"who_can_see_profile_photo",
+		"allow_phone_discovery", "allow_contact_sync_match", "discoverable_by_phone_to_contacts",
+		"strict_privacy_mode", "block_unknown_calls", "auto_filter_abusive_content", "under_18_mode",
+		"tc_close_friends_posts", "tc_location_pings", "tc_after_hours_posts", "tc_audio_room_invite",
+		"privacy_version", "created_at", "updated_at",
+	}},
 
 	// Consumer idempotency. Its absence would not fail a request — it would
 	// make redelivered Kafka events reapply, silently.

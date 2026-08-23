@@ -42,7 +42,7 @@ type User struct {
 type Session struct {
 	ID             uuid.UUID  `json:"id"`
 	UserID         uuid.UUID  `json:"user_id"`
-	RefreshToken   string     `json:"refresh_token"`
+	RefreshToken   string     `json:"-"`
 	DeviceID       string     `json:"device_id"`
 	Platform       string     `json:"platform"`
 	IP             string     `json:"ip"`

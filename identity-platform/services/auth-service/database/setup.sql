@@ -156,6 +156,51 @@ CREATE TABLE IF NOT EXISTS usr.user_settings (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- usr.user_settings is OWNED HERE, and the three columns above are only the
+-- legacy subset. identity user-service selects the FULL privacy matrix on
+-- every settings read (its store's `userSettingsColumns`), so a database
+-- carrying only the legacy columns lets that service boot and then answer
+-- `GET /v1/users/{id}/settings` with a 500 -- at which point graph-service
+-- falls back to strict privacy defaults and direct messaging looks randomly
+-- unavailable to everyone.
+--
+-- These columns were added by hand to one developer volume during the Slice B
+-- chat capture. A hand-edited volume is not a deployment, so the DDL lives
+-- here, next to the CREATE TABLE that owns the table. Same pattern and the
+-- same reason as the profile.profiles ALTER above: additive and idempotent,
+-- so the bootstrap does not depend on a migration having run first.
+--
+-- Defaults are the spec 5.2/5.4 posture for a NEW account, not the fail-safe
+-- posture graph-service uses when a fetch fails. Restrictive where the
+-- setting gates contact (who_can_message, who_can_call, who_can_add_to_groups)
+-- and permissive only where it does not (who_can_see_profile_photo).
+--
+-- who_can_send_connection_request defaults to 'everyone' rather than graph's
+-- fail-safe 'friends_of_friends_or_contacts': connection requests are Slice A's
+-- surface and were proven against 'everyone'. Tightening it is a product
+-- decision, not a schema repair, and does not belong in a chat pass.
+ALTER TABLE usr.user_settings
+    ADD COLUMN IF NOT EXISTS who_can_message                   TEXT    NOT NULL DEFAULT 'connections_only',
+    ADD COLUMN IF NOT EXISTS who_can_send_connection_request   TEXT    NOT NULL DEFAULT 'everyone',
+    ADD COLUMN IF NOT EXISTS who_can_call                      TEXT    NOT NULL DEFAULT 'connections_only',
+    ADD COLUMN IF NOT EXISTS who_can_add_to_groups             TEXT    NOT NULL DEFAULT 'connections_only',
+    ADD COLUMN IF NOT EXISTS who_can_see_online_status         TEXT    NOT NULL DEFAULT 'connections_only',
+    ADD COLUMN IF NOT EXISTS who_can_see_read_receipts         TEXT    NOT NULL DEFAULT 'connections_only',
+    ADD COLUMN IF NOT EXISTS who_can_see_last_seen             TEXT    NOT NULL DEFAULT 'connections_only',
+    ADD COLUMN IF NOT EXISTS who_can_see_profile_photo         TEXT    NOT NULL DEFAULT 'everyone',
+    ADD COLUMN IF NOT EXISTS allow_phone_discovery             BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS allow_contact_sync_match          BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS discoverable_by_phone_to_contacts BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS strict_privacy_mode               BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS block_unknown_calls               BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS auto_filter_abusive_content       BOOLEAN NOT NULL DEFAULT TRUE,
+    ADD COLUMN IF NOT EXISTS under_18_mode                     BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS tc_close_friends_posts            BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS tc_location_pings                 BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS tc_after_hours_posts              BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS tc_audio_room_invite              BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS privacy_version                   INT     NOT NULL DEFAULT 1;
+
 CREATE TABLE IF NOT EXISTS profile.profiles (
     user_id UUID PRIMARY KEY REFERENCES auth.users(user_id) ON DELETE CASCADE,
     username TEXT,

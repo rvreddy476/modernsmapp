@@ -94,9 +94,8 @@ var publicTargetResolvers = []struct {
 // another unclassified resolver from shipping.
 var publicRoutePolicy = map[string]routePolicy{
 	// No target.
-	"/v1/profiles/health":  policyNoTarget,
-	"/v1/links/:id/click":  policyNoTarget,
-	"/v1/profiles/changes": policyListSurface,
+	"/v1/profiles/health": policyNoTarget,
+	"/v1/links/:id/click": policyNoTarget,
 
 	// Many targets.
 	"/v1/profiles/discover": policyListSurface,

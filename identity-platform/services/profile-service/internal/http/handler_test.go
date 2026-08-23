@@ -28,6 +28,9 @@ func (s *stubProfileService) GetProfile(ctx context.Context, userID uuid.UUID) (
 func (s *stubProfileService) GetProfileByUsername(ctx context.Context, username string) (*store.Profile, error) {
 	return nil, nil
 }
+func (s *stubProfileService) FindProfileMediaOwner(context.Context, uuid.UUID) (uuid.UUID, string, bool, error) {
+	return uuid.Nil, "", false, nil
+}
 func (s *stubProfileService) UpdateProfile(ctx context.Context, userID uuid.UUID, params store.UpdateProfileParams) (*store.Profile, error) {
 	return nil, nil
 }
